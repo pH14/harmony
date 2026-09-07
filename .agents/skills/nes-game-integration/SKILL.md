@@ -11,7 +11,7 @@ Do not fit the searcher, or hide a solution in the adapter, to obtain a win.
 
 Paths below are relative to the Harmony repository root unless linked as a
 skill reference. Read the current `AGENTS.md`, `dissonance/README.md`,
-`dissonance/searcher/README.md`, and the chosen example's nearby README.
+`dissonance/searcher/README.md`, `workloads/nes/README.md`, and the chosen example's nearby README.
 
 ## 1. Establish the task and implementation boundary
 

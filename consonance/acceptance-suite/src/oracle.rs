@@ -419,8 +419,8 @@ mod tests {
         fn work(&self) -> u64 {
             self.work
         }
-        fn state_hash(&self) -> [u8; 32] {
-            self.out
+        fn state_hash(&self) -> Result<[u8; 32], unison::SubjectError> {
+            Ok(self.out)
         }
         fn observable_digest(&self) -> [u8; 32] {
             self.out

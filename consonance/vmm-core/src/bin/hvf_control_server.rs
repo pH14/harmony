@@ -216,7 +216,13 @@ fn main() -> std::process::ExitCode {
              normalized_digest={} state_hash={}",
             trace.normalized_log().events.len(),
             hex(trace.normalized_digest()),
-            hex(vmm.state_hash())
+            hex(match vmm.state_hash() {
+                Ok(hash) => hash,
+                Err(error) => {
+                    eprintln!("state capture failed: {error}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            })
         );
         for (label, digest) in vmm.state_components() {
             println!(

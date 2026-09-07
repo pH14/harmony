@@ -46,8 +46,9 @@ thiserror = "2"
 # LIBRARY stays substrate-free — this is a `[[bin]]`-only edge, gated on the
 # `real-vmm` feature so a portable build never pulls it in.
 #
-# vmm-core dev-depends on this crate (its box_corpus gate drives these oracles),
-# so this is the allowed normal-dep/dev-dep cycle, not a build cycle.
+# The standalone `acceptance-tests` crate owns the integration tests that
+# compose this runner with `vmm-core`; this binary feature remains a normal
+# composition edge for the hardware registry.
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
 vmm-core = { path = "../vmm-core", version = "0.1.0", optional = true }
 vmm-backend = { path = "../vmm-backend", version = "0.1.0", optional = true }

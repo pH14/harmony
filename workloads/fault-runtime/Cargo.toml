@@ -1,0 +1,20 @@
+[package]
+name = "fault-runtime"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+description = "Deterministic guest fault supervisor with explicit process and network backends"
+
+# Workload packages are deliberately kept out of the root workspace.  This
+# crate is built inside the guest image and must therefore remain standalone.
+[workspace]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }

@@ -1,0 +1,15 @@
+[package]
+name = "workload-tools"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[workspace]
+
+[dependencies]
+vmm-core = { version = "=0.1.0", path = "../../consonance/vmm-core" }
+vmm-backend = { version = "=0.1.0", path = "../../consonance/vmm-backend" }
+control-proto = { version = "=0.1.0", path = "../../consonance/control-proto" }
+environment = { version = "=0.1.0", path = "../../consonance/environment" }
+vtime = { path = "../../consonance/vtime", version = "0.1.0" }
+sha2 = "0.10"

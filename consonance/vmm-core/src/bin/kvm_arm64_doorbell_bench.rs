@@ -201,7 +201,13 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE;
     }
     let guard = guard_hash(seed, iterations, &source_commit, doorbell_exits, &image);
-    let state_hash = vmm.state_hash();
+    let state_hash = match vmm.state_hash() {
+        Ok(hash) => hash,
+        Err(error) => {
+            eprintln!("state capture failed: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     let elapsed_ns = elapsed.as_nanos();
     let elapsed_us = format_micros(elapsed_ns);
     let per_exit_us = format_micros(elapsed_ns / u128::from(iterations));

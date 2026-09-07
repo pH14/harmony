@@ -404,7 +404,7 @@ where
 
     /// Number of selectable steps represented by the visible all-history table.
     #[must_use]
-    pub(crate) fn history_len(&self) -> usize {
+    pub fn history_len(&self) -> usize {
         if self.hash_rule == EmpiricalStepHashRule::IncrementalCompactHistory {
             self.compact_history_len
         } else {
@@ -414,14 +414,14 @@ where
 
     /// Bounded historical frequency table used by the compact rule.
     #[must_use]
-    pub(crate) fn compact_history(&self) -> Option<&BTreeMap<Step, usize>> {
+    pub fn compact_history(&self) -> Option<&BTreeMap<Step, usize>> {
         (self.hash_rule == EmpiricalStepHashRule::IncrementalCompactHistory)
             .then_some(&self.compact_history)
     }
 
     /// Logical live bytes held by the empirical draw acceleration state.
     #[must_use]
-    pub(crate) fn memory_bytes(&self) -> usize {
+    pub fn memory_bytes(&self) -> usize {
         let step = std::mem::size_of::<Step>();
         let pending_steps = self.pending.iter().map(Vec::len).sum::<usize>();
         let recent_sequence_steps = self.recent_sequences.iter().map(Vec::len).sum::<usize>();
@@ -472,7 +472,7 @@ impl<'a, Step> EmpiricalStepTableRef<'a, Step> {
 
     /// Assemble a view from a bounded deterministic frequency table.
     #[must_use]
-    pub(crate) fn from_counts(
+    pub fn from_counts(
         parameters: EmpiricalStepParameters,
         recent: &'a [Step],
         history: &'a BTreeMap<Step, usize>,

@@ -44,10 +44,16 @@ fn main() -> std::process::ExitCode {
         eprintln!("HVF control composition omitted the doorbell state component");
         return std::process::ExitCode::FAILURE;
     }
+    let hash = match vmm.state_hash() {
+        Ok(hash) => hash,
+        Err(error) => {
+            eprintln!("HVF state capture failed: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     println!(
         "HVF_CONTROL_MAP_OK bytes=16384 component=doorbell state_hash={}",
-        vmm.state_hash()
-            .iter()
+        hash.iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>()
     );

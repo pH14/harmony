@@ -39,7 +39,7 @@ jobs:
             title: World 5 · Finale
             slug: world-5-finale
     env:
-      NOVA_BUILD: dissonance/nova-build
+      NOVA_BUILD: workloads/nes/build/nova
       NOVA_ARTIFACT: dissonance/nova-level-artifact
       NOVA_EXECUTIONS: "100000"
       NOVA_SEED: "1"
@@ -54,14 +54,14 @@ jobs:
           sudo apt-get install --yes cc65 ffmpeg jq
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: dissonance -> target
+          workspaces: workloads/nes -> target
       - name: Reproduce pinned Nova and QuickNES
         run: |
-          dissonance/scripts/build-nova-rom.sh "${NOVA_BUILD}"
+          workloads/nes/scripts/build-nova-rom.sh "${NOVA_BUILD}"
           scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
       - name: Search level ${{ matrix.level }} headlessly and film its champion with music
         run: |
-          cargo run --locked --release --manifest-path dissonance/Cargo.toml \
+          cargo run --locked --release --manifest-path workloads/nes/Cargo.toml \
             --bin nova-campaign -- \
             --core "${NOVA_BUILD}/quicknes_libretro.so" \
             --rom "${NOVA_BUILD}/nova.nes" \
@@ -85,7 +85,7 @@ jobs:
             -show_entries stream=codec_type -of csv=p=0 \
             "${NOVA_ARTIFACT}/best.mp4")" = audio
           test -s "${NOVA_ARTIFACT}/progress.jsonl"
-          cp dissonance/NOVA-ARTIFACT-LICENSE.md \
+          cp workloads/nes/NOVA-ARTIFACT-LICENSE.md \
             "${NOVA_ARTIFACT}/ARTIFACT-LICENSE.md"
           if find "${NOVA_ARTIFACT}" -type f \( -name '*.nes' -o -name '*.so' \) | grep -q .; then
             echo "ROM or emulator binary entered the public artifact" >&2
@@ -130,7 +130,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 330
     env:
-      NOVA_BUILD: dissonance/nova-build
+      NOVA_BUILD: workloads/nes/build/nova
       NOVA_ARTIFACT: dissonance/nova-artifact
       NOVA_EXECUTIONS: "500000"
       NOVA_SEED: "1"
@@ -145,14 +145,14 @@ jobs:
           sudo apt-get install --yes cc65 ffmpeg jq
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: dissonance -> target
+          workspaces: workloads/nes -> target
       - name: Reproduce pinned Nova and QuickNES
         run: |
-          dissonance/scripts/build-nova-rom.sh "${NOVA_BUILD}"
+          workloads/nes/scripts/build-nova-rom.sh "${NOVA_BUILD}"
           scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
       - name: Run the headless soak and film its champion with music
         run: |
-          cargo run --locked --release --manifest-path dissonance/Cargo.toml \
+          cargo run --locked --release --manifest-path workloads/nes/Cargo.toml \
             --bin nova-campaign -- \
             --core "${NOVA_BUILD}/quicknes_libretro.so" \
             --rom "${NOVA_BUILD}/nova.nes" \
@@ -174,7 +174,7 @@ jobs:
             -show_entries stream=codec_type -of csv=p=0 \
             "${NOVA_ARTIFACT}/best.mp4")" = audio
           test -s "${NOVA_ARTIFACT}/progress.jsonl"
-          cp dissonance/NOVA-ARTIFACT-LICENSE.md \
+          cp workloads/nes/NOVA-ARTIFACT-LICENSE.md \
             "${NOVA_ARTIFACT}/ARTIFACT-LICENSE.md"
           if find "${NOVA_ARTIFACT}" -type f \( -name '*.nes' -o -name '*.so' \) | grep -q .; then
             echo "ROM or emulator binary entered the public artifact" >&2

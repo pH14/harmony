@@ -71,7 +71,7 @@ fn n3_repeat_gate() {
         let mut m = boot_patched_corpus(&payload, GUEST_RAM_LEN, seed)
             .unwrap_or_else(|e| panic!("boot_patched_corpus({item}) failed at rep {rep}: {e}"));
         let outcome = m.run_to(LIMIT).expect("run_to never fails forward");
-        let sh = hex32(&m.state_hash());
+        let sh = hex32(&m.state_hash().unwrap());
         let od = hex32(&m.observable_digest());
         // A rep counts as identical ONLY if the run was CLEAN: halted, no captured
         // VMM error (`corpus.rs` documents `run_error` exists precisely so runners

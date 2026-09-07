@@ -17,7 +17,7 @@
 
 use core::fmt;
 
-use crate::exit::ExitReason;
+use crate::exit::{CommonExit, ExitReason};
 
 pub mod arm64;
 pub mod x86;
@@ -53,6 +53,14 @@ pub trait Arch {
     /// hypercall completions stay monomorphic methods on
     /// [`Backend`](crate::Backend).
     type Completion: fmt::Debug;
+
+    /// Whether a common exit leaves a completion staged on this architecture.
+    /// The default is conservative only for common read-style completions;
+    /// architectures whose MMIO stores retain a callback until the next entry
+    /// may override this classification.
+    fn stages_common_completion(exit: &CommonExit) -> bool {
+        exit.stages_completion()
+    }
 }
 
 /// What every arch's exit enum must answer for the engine and the counters.

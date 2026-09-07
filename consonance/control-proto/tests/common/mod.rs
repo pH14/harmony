@@ -9,7 +9,7 @@
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, DecisionId,
     EventRef, HashScope, HostFault, Moment, ProtocolError, RegsView, Reply, Reproducer, Request,
-    SnapId, StopConditions, StopMask, StopReason,
+    Resolution, SnapId, StopConditions, StopMask, StopReason,
 };
 use proptest::prelude::*;
 
@@ -73,12 +73,19 @@ pub fn arb_request() -> impl Strategy<Value = Request> {
             env
         }),
         any::<u64>().prop_map(|s| Request::Replay(SnapId(s))),
-        (arb_stop_conditions(), proptest::option::of(arb_bytes())).prop_map(|(until, resolve)| {
-            Request::Run {
+        (
+            arb_stop_conditions(),
+            proptest::option::of((any::<u64>(), any::<u16>(), any::<u64>(), arb_bytes())),
+        )
+            .prop_map(|(until, resolve)| Request::Run {
                 until,
-                resolve: resolve.map(Answer),
-            }
-        }),
+                resolve: resolve.map(|(vtime, service, id, answer)| Resolution {
+                    vtime: Moment(vtime),
+                    service,
+                    id: DecisionId(id),
+                    answer: Answer(answer),
+                }),
+            }),
         arb_hash_scope().prop_map(|scope| Request::Hash { scope }),
         (arb_bytes(), any::<u64>()).prop_map(|(fault, at)| Request::Perturb {
             fault: HostFault(fault),

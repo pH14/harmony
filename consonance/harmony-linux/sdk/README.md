@@ -4,11 +4,12 @@
 
 `harmony-sdk` is a `no_std`, allocation-free guest SDK generic over a
 `hypercall_proto::Transport`. It provides catalog declarations, assertions,
-state registers, buggify decisions, lifecycle points, coverage-yield handshakes,
+state registers, lifecycle points, and coverage-yield handshakes,
 and seeded entropy through the existing hypercall services.
 
 The SDK is hooks and transport only. It emits raw event identities and values;
-the host supplies timestamps, interprets `state_max`, resolves buggify, and
+the host supplies timestamps and interprets `state_max`; optional fault packages
+resolve buggify through the separate `workloads/fault-sdk` adapter. The host
 turns lifecycle events into snapshot boundaries. Event IDs use an 8-bit
 namespace and 24-bit local identifier. The wire constants and payload builders
 live in `src/wire.rs`.

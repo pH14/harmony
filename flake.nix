@@ -14,12 +14,12 @@
           pkgs = import nixpkgs { inherit system; };
           isArm64 = system == "aarch64-linux";
           agentCargoVendor = pkgs.rustPlatform.importCargoLock {
-            lockFile = ./consonance/harmony-linux/tetanes-agent/Cargo.lock;
+            lockFile = ./workloads/tetanes-guest/Cargo.lock;
           };
           rustCargoVendor = pkgs.rustPlatform.fetchCargoVendor {
             name = "harmony-rust-std-cargo-vendor";
             src = pkgs.rustPlatform.rustLibSrc;
-            hash = "sha256-5oJ/mtsJW0R3F7jgxafP23+WMLkyMKu10De5WIzb7Ro=";
+            hash = "sha256-5oJ/mtsJW0R3F7jgxafP23+WMLkyMKu10De5WIzb7Ro="; # pragma: allowlist secret — public source integrity hash
           };
           cargoVendor = pkgs.symlinkJoin {
             name = "harmony-guest-cargo-vendor";
@@ -33,7 +33,10 @@
             sha256 = "f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236";
           };
           busyboxSource = pkgs.fetchurl {
-            url = "https://busybox.net/downloads/busybox-1.38.0.tar.bz2";
+            urls = [
+              "https://sources.buildroot.net/busybox/busybox-1.38.0.tar.bz2"
+              "https://busybox.net/downloads/busybox-1.38.0.tar.bz2"
+            ];
             sha256 = "34f9ea6ff8636f2c9241153b9114eefa9e65674a45318ae1ef95bb5f31c53bb2";
           };
           muslSource = pkgs.fetchurl {
@@ -129,6 +132,7 @@
             '';
           };
         in {
+          busybox-source = busyboxSource;
           guest-images = builder;
           default = builder;
         });

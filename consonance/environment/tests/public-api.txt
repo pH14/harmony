@@ -1,183 +1,154 @@
 pub mod environment
-pub enum environment::Action
-pub environment::Action::Guest(environment::Answer)
-pub environment::Action::Host(environment::HostFault)
-impl environment::Action
-pub fn environment::Action::decode(&[u8]) -> core::result::Result<Self, environment::EnvError>
-pub fn environment::Action::encode(&self) -> alloc::vec::Vec<u8>
-pub fn environment::Action::guest_answer(&self) -> core::option::Option<&environment::Answer>
-pub fn environment::Action::host_fault(&self) -> core::option::Option<environment::HostFault>
-impl core::convert::From<environment::Answer> for environment::Action
-pub fn environment::Action::from(environment::Answer) -> Self
-impl core::convert::From<environment::HostFault> for environment::Action
-pub fn environment::Action::from(environment::HostFault) -> Self
-pub enum environment::Answer
-pub environment::Answer::Fault(environment::Fault)
-pub environment::Answer::Nominal
-pub environment::Answer::Supply(alloc::vec::Vec<u8>)
-impl environment::Answer
-pub fn environment::Answer::decode(&[u8]) -> core::result::Result<Self, environment::EnvError>
-pub fn environment::Answer::encode(&self) -> alloc::vec::Vec<u8>
-impl core::convert::From<environment::Answer> for environment::Action
-pub fn environment::Action::from(environment::Answer) -> Self
-#[repr(u8)] pub enum environment::BlockOp
-pub environment::BlockOp::Flush = 2
-pub environment::BlockOp::Read = 0
-pub environment::BlockOp::Write = 1
-#[repr(u16)] pub enum environment::DecisionClass
-pub environment::DecisionClass::BlockIo = 5
-pub environment::DecisionClass::Buggify = 7
-pub environment::DecisionClass::Entropy = 1
-pub environment::DecisionClass::NetFlow = 4
-pub environment::DecisionClass::Payload = 2
-pub environment::DecisionClass::Process = 6
-pub environment::DecisionClass::Scheduler = 3
-impl environment::DecisionClass
-pub fn environment::DecisionClass::is_fault(self) -> bool
-pub fn environment::DecisionClass::is_supply(self) -> bool
-pub enum environment::DecisionPoint
-pub environment::DecisionPoint::BlockIo
-pub environment::DecisionPoint::BlockIo::lba: u64
-pub environment::DecisionPoint::BlockIo::len: u32
-pub environment::DecisionPoint::BlockIo::op: environment::BlockOp
-pub environment::DecisionPoint::Buggify
-pub environment::DecisionPoint::Buggify::point: u32
-pub environment::DecisionPoint::Entropy
-pub environment::DecisionPoint::Entropy::bytes: u32
-pub environment::DecisionPoint::NetFlow
-pub environment::DecisionPoint::NetFlow::conn: environment::ConnId
-pub environment::DecisionPoint::NetFlow::dst: environment::NodeId
-pub environment::DecisionPoint::NetFlow::event: environment::FlowEvent
-pub environment::DecisionPoint::NetFlow::src: environment::NodeId
-pub environment::DecisionPoint::Payload
-pub environment::DecisionPoint::Payload::bytes: u32
-pub environment::DecisionPoint::Process
-pub environment::DecisionPoint::Process::node: environment::NodeId
-pub environment::DecisionPoint::Scheduler
-pub environment::DecisionPoint::Scheduler::ready: u32
-impl environment::DecisionPoint
-pub fn environment::DecisionPoint::admits(&self, &environment::Answer) -> bool
-pub fn environment::DecisionPoint::class(&self) -> environment::DecisionClass
-pub enum environment::EnvError
-pub environment::EnvError::BadVersion(u16)
-pub environment::EnvError::Malformed
-pub environment::EnvError::Overflow
-pub environment::EnvError::UnsupportedComposition
-pub enum environment::EnvSpec
-pub environment::EnvSpec::Recorded
-pub environment::EnvSpec::Recorded::overrides: alloc::collections::btree::map::BTreeMap<environment::Moment, environment::Action>
-pub environment::EnvSpec::Recorded::payloads: core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>
-pub environment::EnvSpec::Recorded::policy: environment::FaultPolicy
-pub environment::EnvSpec::Recorded::reseeds: alloc::collections::btree::map::BTreeMap<environment::Moment, u64>
-pub environment::EnvSpec::Recorded::seed: u64
-pub environment::EnvSpec::Recorded::standing: alloc::vec::Vec<environment::StandingFault>
-pub environment::EnvSpec::Seeded
-pub environment::EnvSpec::Seeded::policy: environment::FaultPolicy
-pub environment::EnvSpec::Seeded::seed: u64
-impl environment::EnvSpec
-pub const environment::EnvSpec::BLOB_VERSION: u16
-pub fn environment::EnvSpec::decode(&[u8]) -> core::result::Result<Self, environment::EnvError>
-pub fn environment::EnvSpec::encode(&self) -> alloc::vec::Vec<u8>
-pub fn environment::EnvSpec::host_faults(&self) -> impl core::iter::traits::iterator::Iterator<Item = (environment::Moment, environment::HostFault)> + '_
-pub fn environment::EnvSpec::materialize(&self) -> environment::RecordedEnv
-pub fn environment::EnvSpec::overrides(&self) -> &alloc::collections::btree::map::BTreeMap<environment::Moment, environment::Action>
-pub fn environment::EnvSpec::payloads(&self) -> core::option::Option<&[alloc::vec::Vec<u8>]>
-pub fn environment::EnvSpec::perturb(&mut self, environment::HostFault, environment::Moment)
-pub fn environment::EnvSpec::policy(&self) -> &environment::FaultPolicy
-pub fn environment::EnvSpec::record(&mut self, environment::Moment, environment::Action)
-pub fn environment::EnvSpec::record_reseed(&mut self, environment::Moment, u64)
-pub fn environment::EnvSpec::reseeds(&self) -> &alloc::collections::btree::map::BTreeMap<environment::Moment, u64>
-pub fn environment::EnvSpec::seed(&self) -> u64
-pub fn environment::EnvSpec::set_payloads(&mut self, core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>)
-pub enum environment::Fault
-pub environment::Fault::BlockEio
-pub environment::Fault::BlockLatency(environment::Span)
-pub environment::Fault::BlockNospc
-pub environment::Fault::BlockTorn(u32)
-pub environment::Fault::BuggifyFire
-pub environment::Fault::NetLatency(environment::Span)
-pub environment::Fault::NetLoss
-pub environment::Fault::NetLoss::den: u16
-pub environment::Fault::NetLoss::num: u16
-pub environment::Fault::NetReset
-pub environment::Fault::NetThrottle
-pub environment::Fault::NetThrottle::bps: u32
-pub environment::Fault::ProcKill
-pub environment::Fault::ProcPause(environment::Span)
-pub environment::Fault::ProcRestart
-impl environment::Fault
-pub fn environment::Fault::class(&self) -> environment::DecisionClass
-#[repr(u16)] pub enum environment::FlowEvent
-pub environment::FlowEvent::Open = 0
-pub enum environment::HostFault
-pub environment::HostFault::CorruptMemory
-pub environment::HostFault::CorruptMemory::gpa: u64
-pub environment::HostFault::CorruptMemory::mask: environment::BitMask
-pub environment::HostFault::InjectInterrupt
-pub environment::HostFault::InjectInterrupt::vector: u32
-pub environment::HostFault::SetClockRate(environment::Ratio)
-pub environment::HostFault::SkewTime(environment::Span)
-impl environment::HostFault
-pub fn environment::HostFault::decode(&[u8]) -> core::result::Result<Self, environment::EnvError>
-pub fn environment::HostFault::encode(&self) -> alloc::vec::Vec<u8>
-impl core::convert::From<environment::HostFault> for environment::Action
-pub fn environment::Action::from(environment::HostFault) -> Self
-pub enum environment::Outcome
-pub environment::Outcome::NeedsHost
-pub environment::Outcome::Resolved(environment::Answer)
-pub struct environment::BitMask(pub u64)
-pub struct environment::ConnId(pub u64)
-pub struct environment::EnvCodec
-impl environment::EnvCodec
-pub fn environment::EnvCodec::compose(&environment::EnvSpec, &environment::EnvSpec, environment::Moment) -> core::result::Result<environment::EnvSpec, environment::EnvError>
-pub fn environment::EnvCodec::mutate(&environment::EnvSpec, u64) -> environment::EnvSpec
-pub fn environment::EnvCodec::seeded(u64, environment::FaultPolicy) -> environment::EnvSpec
-pub struct environment::FaultPolicy
-impl environment::FaultPolicy
-pub fn environment::FaultPolicy::from_bytes(&[u8]) -> core::result::Result<Self, environment::EnvError>
-pub fn environment::FaultPolicy::is_buggify_only(&self) -> bool
-pub fn environment::FaultPolicy::is_enforceable_only(&self) -> bool
-pub fn environment::FaultPolicy::none() -> Self
-pub fn environment::FaultPolicy::set_buggify_default(&mut self, u32, u32) -> core::result::Result<(), environment::EnvError>
-pub fn environment::FaultPolicy::set_buggify_point(&mut self, u32, u32, u32) -> core::result::Result<(), environment::EnvError>
-pub fn environment::FaultPolicy::set_class(&mut self, environment::DecisionClass, u32, u32, &[environment::Fault]) -> core::result::Result<(), environment::EnvError>
-pub fn environment::FaultPolicy::to_bytes(&self) -> alloc::vec::Vec<u8>
-pub struct environment::NodeId(pub u32)
-pub struct environment::Ratio
-impl environment::Ratio
-pub fn environment::Ratio::den(self) -> u64
-pub fn environment::Ratio::new(u64, u64) -> core::option::Option<Self>
-pub fn environment::Ratio::num(self) -> u64
-pub struct environment::RecordedEnv
-impl environment::RecordedEnv
-pub fn environment::RecordedEnv::moment(&self) -> environment::Moment
-pub fn environment::RecordedEnv::payload_configured(&self) -> bool
-pub fn environment::RecordedEnv::pull_payload(&mut self, u32) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, u32>
-pub fn environment::RecordedEnv::remaining_payloads(&self) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>
-pub fn environment::RecordedEnv::restore_payloads(&mut self, core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>)
-pub fn environment::RecordedEnv::restore_stream_state(&mut self, &[u8; 16])
-pub fn environment::RecordedEnv::set_moment(&mut self, environment::Moment)
-pub fn environment::RecordedEnv::stream_state(&self) -> [u8; 16]
-impl environment::Environment for environment::RecordedEnv
-pub fn environment::RecordedEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
-pub struct environment::SeededEnv
-impl environment::SeededEnv
-pub fn environment::SeededEnv::new(u64, environment::FaultPolicy) -> Self
-pub fn environment::SeededEnv::restore_stream_state(&mut self, &[u8; 16])
-pub fn environment::SeededEnv::stream_state(&self) -> [u8; 16]
-impl environment::Environment for environment::SeededEnv
-pub fn environment::SeededEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
-pub struct environment::Span(pub u64)
-pub struct environment::StandingFault
-pub environment::StandingFault::class: environment::DecisionClass
-pub environment::StandingFault::target: alloc::vec::Vec<u8>
-pub environment::StandingFault::window: (environment::Moment, environment::Moment)
-pub const environment::CATALOG_VERSION: u16
-pub const environment::MAX_SUPPLY_LEN: u32
-pub trait environment::Environment
-pub fn environment::Environment::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
-impl environment::Environment for environment::RecordedEnv
-pub fn environment::RecordedEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
-impl environment::Environment for environment::SeededEnv
-pub fn environment::SeededEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
+pub mod environment::channel
+pub enum environment::channel::Answer
+pub environment::channel::Answer::Data(alloc::vec::Vec<u8>)
+pub environment::channel::Answer::Nominal
+impl environment::channel::Answer
+pub fn environment::channel::Answer::data(alloc::vec::Vec<u8>) -> core::result::Result<Self, environment::channel::ChannelError>
+pub fn environment::channel::Answer::decode(&[u8]) -> core::result::Result<Self, environment::channel::ChannelError>
+pub fn environment::channel::Answer::encode(&self) -> alloc::vec::Vec<u8>
+pub fn environment::channel::Answer::payload(&self) -> core::option::Option<&[u8]>
+pub enum environment::channel::ChannelError
+pub environment::channel::ChannelError::Handler(alloc::string::String)
+pub environment::channel::ChannelError::Malformed
+pub environment::channel::ChannelError::TooLarge
+pub enum environment::channel::Effect
+pub environment::channel::Effect::InjectInterrupt
+pub environment::channel::Effect::InjectInterrupt::vector: u32
+pub environment::channel::Effect::WriteMemory
+pub environment::channel::Effect::WriteMemory::bytes: alloc::vec::Vec<u8>
+pub environment::channel::Effect::WriteMemory::gpa: u64
+pub environment::channel::Effect::XorMemory
+pub environment::channel::Effect::XorMemory::bytes: alloc::vec::Vec<u8>
+pub environment::channel::Effect::XorMemory::gpa: u64
+impl environment::channel::Effect
+pub fn environment::channel::Effect::decode(&[u8]) -> core::result::Result<Self, environment::channel::ChannelError>
+pub fn environment::channel::Effect::encode(&self) -> alloc::vec::Vec<u8>
+pub fn environment::channel::Effect::write_memory(u64, alloc::vec::Vec<u8>) -> core::result::Result<Self, environment::channel::ChannelError>
+pub fn environment::channel::Effect::xor_memory(u64, alloc::vec::Vec<u8>) -> core::result::Result<Self, environment::channel::ChannelError>
+pub enum environment::channel::ServiceResponse
+pub environment::channel::ServiceResponse::Answered(environment::channel::Answer)
+pub environment::channel::ServiceResponse::External
+pub struct environment::channel::EffectSchedule
+impl environment::channel::EffectSchedule
+pub fn environment::channel::EffectSchedule::at(&self, environment::Moment) -> &[environment::channel::Effect]
+pub fn environment::channel::EffectSchedule::insert(&mut self, environment::Moment, environment::channel::Effect)
+pub fn environment::channel::EffectSchedule::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = (environment::Moment, &[environment::channel::Effect])>
+pub struct environment::channel::HandlerSnapshot
+impl environment::channel::HandlerSnapshot
+pub fn environment::channel::HandlerSnapshot::capture(&dyn environment::channel::ServiceHandler) -> core::result::Result<Self, environment::channel::ChannelError>
+pub fn environment::channel::HandlerSnapshot::configuration(&self) -> &[u8]
+pub fn environment::channel::HandlerSnapshot::identity(&self) -> &[u8]
+pub fn environment::channel::HandlerSnapshot::restore<F: environment::channel::ServiceHandlerFactory>(&self, &F) -> core::result::Result<<F as environment::channel::ServiceHandlerFactory>::Handler, environment::channel::ChannelError>
+pub fn environment::channel::HandlerSnapshot::state(&self) -> &[u8]
+pub struct environment::channel::NominalHandler
+impl environment::channel::ServiceHandler for environment::channel::NominalHandler
+pub fn environment::channel::NominalHandler::clone_box(&self) -> alloc::boxed::Box<dyn environment::channel::ServiceHandler>
+pub fn environment::channel::NominalHandler::configuration(&self) -> &[u8]
+pub fn environment::channel::NominalHandler::identity(&self) -> &[u8]
+pub fn environment::channel::NominalHandler::reseed(&mut self, u64)
+pub fn environment::channel::NominalHandler::respond(&mut self, &environment::channel::Question) -> core::result::Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+pub fn environment::channel::NominalHandler::restore_state(&mut self, &[u8]) -> core::result::Result<(), environment::channel::ChannelError>
+pub fn environment::channel::NominalHandler::snapshot_state(&self) -> core::result::Result<alloc::vec::Vec<u8>, environment::channel::ChannelError>
+pub struct environment::channel::Question
+impl environment::channel::Question
+pub fn environment::channel::Question::entropy(u32) -> core::result::Result<Self, environment::channel::ChannelError>
+pub fn environment::channel::Question::new(u16, alloc::vec::Vec<u8>) -> core::result::Result<Self, environment::channel::ChannelError>
+pub fn environment::channel::Question::payload(&self) -> &[u8]
+pub fn environment::channel::Question::request_id(&self) -> u64
+pub fn environment::channel::Question::scheduler(u32) -> core::result::Result<Self, environment::channel::ChannelError>
+pub fn environment::channel::Question::service(&self) -> u16
+pub fn environment::channel::Question::with_request_id(u64, u16, alloc::vec::Vec<u8>) -> core::result::Result<Self, environment::channel::ChannelError>
+pub struct environment::channel::RecordedEnv<H: environment::channel::ServiceHandler>
+impl environment::channel::RecordedEnv<environment::channel::NominalHandler>
+pub fn environment::channel::RecordedEnv<environment::channel::NominalHandler>::nominal(u64) -> Self
+impl<H: environment::channel::ServiceHandler> environment::channel::RecordedEnv<H>
+pub fn environment::channel::RecordedEnv<H>::decide(&mut self, &environment::channel::Question) -> core::result::Result<environment::channel::ServiceResponse, environment::channel::ChannelError> where H: core::clone::Clone
+pub fn environment::channel::RecordedEnv<H>::handler(&self) -> &H
+pub fn environment::channel::RecordedEnv<H>::new(u64, H) -> Self
+pub fn environment::channel::RecordedEnv<H>::payload_configured(&self) -> bool
+pub fn environment::channel::RecordedEnv<H>::pull_payload(&mut self, usize) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, environment::channel::ChannelError>
+pub fn environment::channel::RecordedEnv<H>::record(&mut self, environment::Moment, environment::channel::Answer)
+pub fn environment::channel::RecordedEnv<H>::record_question(&mut self, environment::Moment, &environment::channel::Question, environment::channel::Answer)
+pub fn environment::channel::RecordedEnv<H>::record_request(&mut self, environment::Moment, u64, environment::channel::Answer)
+pub fn environment::channel::RecordedEnv<H>::record_service_request(&mut self, environment::Moment, u16, u64, environment::channel::Answer)
+pub fn environment::channel::RecordedEnv<H>::remaining_payloads(&self) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>
+pub fn environment::channel::RecordedEnv<H>::reseed(&mut self, u64)
+pub fn environment::channel::RecordedEnv<H>::set_moment(&mut self, environment::Moment)
+pub fn environment::channel::RecordedEnv<H>::set_payloads(&mut self, core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>) -> core::result::Result<(), environment::channel::ChannelError>
+pub fn environment::channel::RecordedEnv<H>::snapshot_state(&self) -> core::result::Result<environment::channel::RecordedState, environment::channel::ChannelError>
+impl<H: environment::channel::ServiceHandler> core::fmt::Debug for environment::channel::RecordedEnv<H>
+pub fn environment::channel::RecordedEnv<H>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<H> core::clone::Clone for environment::channel::RecordedEnv<H> where H: environment::channel::ServiceHandler + core::clone::Clone
+pub fn environment::channel::RecordedEnv<H>::clone(&self) -> Self
+pub struct environment::channel::RecordedState
+impl environment::channel::RecordedState
+pub fn environment::channel::RecordedState::answers(&self) -> impl core::iter::traits::iterator::Iterator<Item = ((environment::Moment, u16, u64), &environment::channel::Answer)>
+pub fn environment::channel::RecordedState::capture<H: environment::channel::ServiceHandler>(&environment::channel::RecordedEnv<H>) -> core::result::Result<Self, environment::channel::ChannelError>
+pub fn environment::channel::RecordedState::decode(&[u8]) -> core::result::Result<Self, environment::channel::ChannelError>
+pub fn environment::channel::RecordedState::encode(&self) -> alloc::vec::Vec<u8>
+pub fn environment::channel::RecordedState::remaining_payloads(&self) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>
+pub fn environment::channel::RecordedState::restore_into<H: environment::channel::ServiceHandler + core::clone::Clone>(&self, &mut environment::channel::RecordedEnv<H>) -> core::result::Result<(), environment::channel::ChannelError>
+pub const environment::channel::MAX_CHANNEL_BYTES: usize
+pub const environment::channel::SERVICE_ENTROPY: u16
+pub const environment::channel::SERVICE_PAYLOAD: u16
+pub const environment::channel::SERVICE_SCHEDULER: u16
+pub trait environment::channel::ServiceHandler: core::marker::Send
+pub fn environment::channel::ServiceHandler::clone_box(&self) -> alloc::boxed::Box<dyn environment::channel::ServiceHandler>
+pub fn environment::channel::ServiceHandler::configuration(&self) -> &[u8]
+pub fn environment::channel::ServiceHandler::identity(&self) -> &[u8]
+pub fn environment::channel::ServiceHandler::reseed(&mut self, u64)
+pub fn environment::channel::ServiceHandler::respond(&mut self, &environment::channel::Question) -> core::result::Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+pub fn environment::channel::ServiceHandler::restore_state(&mut self, &[u8]) -> core::result::Result<(), environment::channel::ChannelError>
+pub fn environment::channel::ServiceHandler::snapshot_state(&self) -> core::result::Result<alloc::vec::Vec<u8>, environment::channel::ChannelError>
+impl environment::channel::ServiceHandler for alloc::boxed::Box<dyn environment::channel::ServiceHandler>
+pub fn alloc::boxed::Box<dyn environment::channel::ServiceHandler>::clone_box(&self) -> alloc::boxed::Box<dyn environment::channel::ServiceHandler>
+pub fn alloc::boxed::Box<dyn environment::channel::ServiceHandler>::configuration(&self) -> &[u8]
+pub fn alloc::boxed::Box<dyn environment::channel::ServiceHandler>::identity(&self) -> &[u8]
+pub fn alloc::boxed::Box<dyn environment::channel::ServiceHandler>::reseed(&mut self, u64)
+pub fn alloc::boxed::Box<dyn environment::channel::ServiceHandler>::respond(&mut self, &environment::channel::Question) -> core::result::Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+pub fn alloc::boxed::Box<dyn environment::channel::ServiceHandler>::restore_state(&mut self, &[u8]) -> core::result::Result<(), environment::channel::ChannelError>
+pub fn alloc::boxed::Box<dyn environment::channel::ServiceHandler>::snapshot_state(&self) -> core::result::Result<alloc::vec::Vec<u8>, environment::channel::ChannelError>
+impl environment::channel::ServiceHandler for environment::channel::NominalHandler
+pub fn environment::channel::NominalHandler::clone_box(&self) -> alloc::boxed::Box<dyn environment::channel::ServiceHandler>
+pub fn environment::channel::NominalHandler::configuration(&self) -> &[u8]
+pub fn environment::channel::NominalHandler::identity(&self) -> &[u8]
+pub fn environment::channel::NominalHandler::reseed(&mut self, u64)
+pub fn environment::channel::NominalHandler::respond(&mut self, &environment::channel::Question) -> core::result::Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+pub fn environment::channel::NominalHandler::restore_state(&mut self, &[u8]) -> core::result::Result<(), environment::channel::ChannelError>
+pub fn environment::channel::NominalHandler::snapshot_state(&self) -> core::result::Result<alloc::vec::Vec<u8>, environment::channel::ChannelError>
+pub trait environment::channel::ServiceHandlerFactory
+pub type environment::channel::ServiceHandlerFactory::Handler: environment::channel::ServiceHandler
+pub fn environment::channel::ServiceHandlerFactory::build(&self, &[u8], &[u8]) -> core::result::Result<Self::Handler, environment::channel::ChannelError>
+pub fn environment::channel::restore_handler<F: environment::channel::ServiceHandlerFactory>(&environment::channel::HandlerSnapshot, &F) -> core::result::Result<<F as environment::channel::ServiceHandlerFactory>::Handler, environment::channel::ChannelError>
+pub mod environment::input_spec
+pub struct environment::input_spec::InputSpec
+impl environment::input_spec::InputSpec
+pub const environment::input_spec::InputSpec::BLOB_VERSION: u16
+pub fn environment::input_spec::InputSpec::answers(&self) -> &alloc::collections::btree::map::BTreeMap<(u64, u16, u64), environment::channel::Answer>
+pub fn environment::input_spec::InputSpec::config(&self) -> &environment::input_spec::ServiceConfig
+pub fn environment::input_spec::InputSpec::decode(&[u8]) -> core::result::Result<Self, environment::channel::ChannelError>
+pub fn environment::input_spec::InputSpec::effects(&self) -> &alloc::collections::btree::map::BTreeMap<u64, environment::channel::Effect>
+pub fn environment::input_spec::InputSpec::encode(&self) -> alloc::vec::Vec<u8>
+pub fn environment::input_spec::InputSpec::materialize(&self, &environment::input_spec::ServiceFactory) -> core::result::Result<environment::channel::RecordedEnv<alloc::boxed::Box<dyn environment::channel::ServiceHandler>>, environment::channel::ChannelError>
+pub fn environment::input_spec::InputSpec::payloads(&self) -> core::option::Option<&[alloc::vec::Vec<u8>]>
+pub fn environment::input_spec::InputSpec::record_answer(&mut self, u64, u16, u64, environment::channel::Answer) -> core::result::Result<(), environment::channel::ChannelError>
+pub fn environment::input_spec::InputSpec::record_effect(&mut self, u64, environment::channel::Effect)
+pub fn environment::input_spec::InputSpec::record_reseed(&mut self, u64, u64)
+pub fn environment::input_spec::InputSpec::reseeds(&self) -> &alloc::collections::btree::map::BTreeMap<u64, u64>
+pub fn environment::input_spec::InputSpec::seed(&self) -> u64
+pub fn environment::input_spec::InputSpec::seeded(u64) -> Self
+pub fn environment::input_spec::InputSpec::set_config(&mut self, environment::input_spec::ServiceConfig)
+pub fn environment::input_spec::InputSpec::set_payloads(&mut self, core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>)
+pub fn environment::input_spec::InputSpec::try_encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, environment::channel::ChannelError>
+pub struct environment::input_spec::ServiceConfig
+pub environment::input_spec::ServiceConfig::configuration: alloc::vec::Vec<u8>
+pub environment::input_spec::ServiceConfig::identity: alloc::vec::Vec<u8>
+impl environment::input_spec::ServiceConfig
+pub fn environment::input_spec::ServiceConfig::decode(&[u8]) -> core::result::Result<Self, environment::channel::ChannelError>
+pub fn environment::input_spec::ServiceConfig::encode(&self) -> alloc::vec::Vec<u8>
+impl core::default::Default for environment::input_spec::ServiceConfig
+pub fn environment::input_spec::ServiceConfig::default() -> Self
+pub fn environment::input_spec::nominal_factory() -> environment::input_spec::ServiceFactory
+pub type environment::input_spec::ServiceFactory = alloc::sync::Arc<(dyn core::ops::function::Fn(&environment::input_spec::ServiceConfig) -> core::result::Result<alloc::boxed::Box<dyn environment::channel::ServiceHandler>, environment::channel::ChannelError> + core::marker::Send + core::marker::Sync)>
 pub type environment::Moment = u64

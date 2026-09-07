@@ -425,7 +425,7 @@ fn c_linux_boot_deterministic_twice_patched() {
         )
         .expect("boot_linux_selected (patched) — needs the LOADED patched KVM modules");
         let out = run_bounded(&mut vmm);
-        (vmm.serial().to_vec(), vmm.state_hash(), out)
+        (vmm.serial().to_vec(), vmm.state_hash().unwrap(), out)
     };
 
     let (serial_a, hash_a, out_a) = boot_once();

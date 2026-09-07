@@ -117,7 +117,7 @@ impl<M: Perturbable> Subject for FlakyMachine<M> {
         self.inner.work()
     }
 
-    fn state_hash(&self) -> [u8; 32] {
+    fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
         self.inner.state_hash()
     }
 
@@ -188,20 +188,20 @@ mod tests {
         // Run straight past the boundary in one call.
         let mut m = f.spawn(SEED);
         m.run_to(100).unwrap();
-        let hash_at_boundary = m.state_hash();
+        let hash_at_boundary = m.state_hash().unwrap();
 
         // A clean machine run to the same point, then perturbed by hand,
         // must match: proves the perturbation fired at 100, not at 150.
         let mut clean = toy().spawn(SEED);
         clean.run_to(100).unwrap();
-        assert_ne!(clean.state_hash(), hash_at_boundary);
+        assert_ne!(clean.state_hash().unwrap(), hash_at_boundary);
         clean.apply_perturbation(&XOR_R0);
-        assert_eq!(clean.state_hash(), hash_at_boundary);
+        assert_eq!(clean.state_hash().unwrap(), hash_at_boundary);
 
         // And both continue identically afterwards.
         m.run_to(150).unwrap();
         clean.run_to(150).unwrap();
-        assert_eq!(clean.state_hash(), m.state_hash());
+        assert_eq!(clean.state_hash().unwrap(), m.state_hash().unwrap());
     }
 
     #[test]
@@ -212,10 +212,10 @@ mod tests {
         let mut b = f.spawn(SEED);
         a.run_to(99).unwrap();
         b.run_to(99).unwrap();
-        assert_eq!(a.state_hash(), b.state_hash());
+        assert_eq!(a.state_hash().unwrap(), b.state_hash().unwrap());
         a.run_to(100).unwrap();
         b.run_to(100).unwrap();
-        assert_ne!(a.state_hash(), b.state_hash());
+        assert_ne!(a.state_hash().unwrap(), b.state_hash().unwrap());
     }
 
     #[test]
@@ -229,7 +229,7 @@ mod tests {
         // ...must equal one big call.
         let mut b = f.spawn(SEED);
         b.run_to(700).unwrap();
-        assert_eq!(a.state_hash(), b.state_hash());
+        assert_eq!(a.state_hash().unwrap(), b.state_hash().unwrap());
     }
 
     #[test]
@@ -242,7 +242,7 @@ mod tests {
         let wb = b.run_to(u64::MAX).unwrap();
         assert_eq!(wa, wb);
         assert_eq!(a.work(), b.work());
-        assert_eq!(a.state_hash(), b.state_hash());
+        assert_eq!(a.state_hash().unwrap(), b.state_hash().unwrap());
     }
 
     #[test]
@@ -250,9 +250,9 @@ mod tests {
         let f = flaky(0, XOR_R0);
         let m = f.spawn(SEED);
         let mut clean = toy().spawn(SEED);
-        assert_ne!(m.state_hash(), clean.state_hash());
+        assert_ne!(m.state_hash().unwrap(), clean.state_hash().unwrap());
         clean.apply_perturbation(&XOR_R0);
-        assert_eq!(m.state_hash(), clean.state_hash());
+        assert_eq!(m.state_hash().unwrap(), clean.state_hash().unwrap());
     }
 
     #[test]
@@ -271,10 +271,10 @@ mod tests {
         assert_eq!(m.work(), 3);
         let mut clean = ToyFactory { program: prog }.spawn(SEED);
         clean.run_to(50).unwrap();
-        assert_eq!(m.state_hash(), clean.state_hash());
+        assert_eq!(m.state_hash().unwrap(), clean.state_hash().unwrap());
         // Repeated calls stay clean (the boundary check re-runs harmlessly).
         assert_eq!(m.run_to(60).unwrap(), RunOutcome::Halted);
-        assert_eq!(m.state_hash(), clean.state_hash());
+        assert_eq!(m.state_hash().unwrap(), clean.state_hash().unwrap());
     }
 
     #[test]
@@ -292,9 +292,9 @@ mod tests {
         assert_eq!(m.run_to(50).unwrap(), RunOutcome::Halted);
         let mut clean = ToyFactory { program: prog }.spawn(SEED);
         clean.run_to(50).unwrap();
-        assert_ne!(m.state_hash(), clean.state_hash());
+        assert_ne!(m.state_hash().unwrap(), clean.state_hash().unwrap());
         clean.apply_perturbation(&XOR_R0);
-        assert_eq!(m.state_hash(), clean.state_hash());
+        assert_eq!(m.state_hash().unwrap(), clean.state_hash().unwrap());
     }
 
     #[test]
@@ -328,16 +328,16 @@ mod tests {
         fn work(&self) -> u64 {
             self.work
         }
-        fn state_hash(&self) -> [u8; 32] {
+        fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
             let mut h = [0u8; 32];
             h[0] = u8::from(self.perturbed);
             h[1..9].copy_from_slice(&self.work.to_le_bytes());
-            h
+            Ok(h)
         }
         fn observable_digest(&self) -> [u8; 32] {
             // A bisection mock with no output channel: its work counter is all
             // there is to observe, and there is no latent state to exclude.
-            self.state_hash()
+            self.state_hash().unwrap()
         }
     }
 
@@ -375,8 +375,8 @@ mod tests {
         clean.run_to(u64::MAX).unwrap();
         assert_eq!(m.work(), u64::MAX);
         assert_eq!(
-            m.state_hash(),
-            clean.state_hash(),
+            m.state_hash().unwrap(),
+            clean.state_hash().unwrap(),
             "u64::MAX sentinel must be an unconditional no-op"
         );
 
@@ -388,7 +388,7 @@ mod tests {
         };
         let m = f.spawn(SEED);
         let clean = JumpFactory { spawn_at: u64::MAX }.spawn(SEED);
-        assert_eq!(m.state_hash(), clean.state_hash());
+        assert_eq!(m.state_hash().unwrap(), clean.state_hash().unwrap());
     }
 
     #[test]
@@ -404,6 +404,6 @@ mod tests {
         m.run_to(u64::MAX).unwrap();
         clean.run_to(u64::MAX).unwrap();
         assert_eq!(m.work(), u64::MAX);
-        assert_ne!(m.state_hash(), clean.state_hash());
+        assert_ne!(m.state_hash().unwrap(), clean.state_hash().unwrap());
     }
 }

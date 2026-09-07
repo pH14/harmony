@@ -61,7 +61,7 @@ jobs:
       # Run each unsafe crate as its own step so a single crate's failure is legible
       # and one crate's Miri memory footprint is reclaimed before the next.
       - name: miri — hypercall-doorbell
-        run: cargo "+${PINNED_NIGHTLY}" miri test -p hypercall-doorbell
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p hypercall-doorbell --features linux-device
       - name: miri — vm-state
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vm-state
       # Only watchdog contains CLI unsafe; native signal syscalls sit behind
@@ -81,8 +81,8 @@ jobs:
       # machine's native QuickNES loader is cfg(not(miri)); the loopback table
       # drives the same function-pointer, fixed-buffer, and direct-RAM logic.
       - name: miri — machine
-        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path dissonance/Cargo.toml -p machine
-      # consonance/harmony-linux/play-agent is out-of-workspace (its own manifest): its
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path workloads/nes-machine/Cargo.toml
+      # workloads/nes-guest is out-of-workspace (its own manifest): its
       # ONLY unsafe is the binary's cfg(linux) libretro dlopen FFI + the hugetlb/
       # pagemap/mlock billboard pinning + the /dev/mem doorbell — real syscalls
       # Miri cannot execute, cfg-gated off non-Linux hosts. This run is the UB
@@ -95,11 +95,11 @@ jobs:
       # under Miri — and executes the bin's own unit tests, which drive the one
       # residual value-carrying unsafe (env_cb's bool store) through a real
       # pointer with no FFI. Proptest cases are cut under cfg(miri).
-      - name: miri — consonance/harmony-linux/play-agent (lib + agent + bin unit tests, out-of-workspace manifest)
-        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --lib --test agent --bins
+      - name: miri — workloads/nes-guest (lib + agent + bin unit tests, out-of-workspace manifest)
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path workloads/nes-guest/Cargo.toml --lib --test agent --bins
       # The M2 TetaNES agent's input-dependent buffer and pagemap decisions are
       # in its library and execute under Miri. Linux/aarch64 device mmap is
       # cfg-gated like play-agent's privileged edge; --bins still compiles the
       # Miri-safe fallback entry point.
-      - name: miri — consonance/harmony-linux/tetanes-agent (out-of-workspace manifest)
-        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml --lib --bins
+      - name: miri — workloads/tetanes-guest (out-of-workspace manifest)
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path workloads/tetanes-guest/Cargo.toml --lib --bins

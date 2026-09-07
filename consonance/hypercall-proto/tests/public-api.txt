@@ -35,15 +35,14 @@ pub struct hypercall_proto::Client<T: hypercall_proto::Transport>
 impl<T: hypercall_proto::Transport> hypercall_proto::Client<T>
 pub fn hypercall_proto::Client<T>::block_capacity(&mut self) -> core::result::Result<u64, hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::block_read(&mut self, u64, &mut [u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
-pub fn hypercall_proto::Client<T>::buggify_decide(&mut self, u32) -> core::result::Result<bool, hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::console_write(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::coverage_yield(&mut self, u32, u64, u32) -> core::result::Result<(u64, u32), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::entropy_fill(&mut self, &mut [u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::event_emit(&mut self, u32, &[u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
-pub fn hypercall_proto::Client<T>::net_decide(&mut self, u32, u32, u64, u16, &mut [u8]) -> core::result::Result<usize, hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::new(T) -> Self
 pub fn hypercall_proto::Client<T>::payload_fetch(&mut self, &mut [u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::pvclock_register(&mut self, u64) -> core::result::Result<u32, hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
+pub fn hypercall_proto::Client<T>::service_request(&mut self, u16, u64, &[u8], &mut [u8]) -> core::result::Result<core::option::Option<usize>, hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub struct hypercall_proto::ConsoleSink
 impl hypercall_proto::ConsoleSink
 pub fn hypercall_proto::ConsoleSink::bytes(&self) -> &[u8]
@@ -52,6 +51,14 @@ impl hypercall_proto::Service for hypercall_proto::ConsoleSink
 pub fn hypercall_proto::ConsoleSink::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
 pub fn hypercall_proto::ConsoleSink::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
 pub fn hypercall_proto::ConsoleSink::save_state(&self) -> alloc::vec::Vec<u8>
+pub struct hypercall_proto::CoverageService
+impl hypercall_proto::CoverageService
+pub fn hypercall_proto::CoverageService::asked(&self) -> &[(u32, u64, u32, u32)]
+pub fn hypercall_proto::CoverageService::new() -> Self
+impl hypercall_proto::Service for hypercall_proto::CoverageService
+pub fn hypercall_proto::CoverageService::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
+pub fn hypercall_proto::CoverageService::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
+pub fn hypercall_proto::CoverageService::save_state(&self) -> alloc::vec::Vec<u8>
 pub struct hypercall_proto::Dispatcher
 impl hypercall_proto::Dispatcher
 pub fn hypercall_proto::Dispatcher::dispatch(&mut self, &[u8], &mut [u8]) -> usize
@@ -88,22 +95,6 @@ impl hypercall_proto::Service for hypercall_proto::MemBlockDevice
 pub fn hypercall_proto::MemBlockDevice::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
 pub fn hypercall_proto::MemBlockDevice::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
 pub fn hypercall_proto::MemBlockDevice::save_state(&self) -> alloc::vec::Vec<u8>
-pub struct hypercall_proto::NetDecider
-impl hypercall_proto::NetDecider
-pub fn hypercall_proto::NetDecider::asked(&self) -> &[hypercall_proto::NetFlowPoint]
-pub fn hypercall_proto::NetDecider::new(alloc::vec::Vec<u8>) -> Self
-pub fn hypercall_proto::NetDecider::set_flow(&mut self, u64, alloc::vec::Vec<u8>)
-impl hypercall_proto::Service for hypercall_proto::NetDecider
-pub fn hypercall_proto::NetDecider::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
-pub fn hypercall_proto::NetDecider::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
-pub fn hypercall_proto::NetDecider::save_state(&self) -> alloc::vec::Vec<u8>
-pub struct hypercall_proto::NetFlowPoint
-pub hypercall_proto::NetFlowPoint::conn: u64
-pub hypercall_proto::NetFlowPoint::dst: u32
-pub hypercall_proto::NetFlowPoint::event: u16
-pub hypercall_proto::NetFlowPoint::src: u32
-impl hypercall_proto::NetFlowPoint
-pub fn hypercall_proto::NetFlowPoint::decode(&[u8]) -> core::option::Option<Self>
 pub struct hypercall_proto::PvclockRegistrar
 impl hypercall_proto::PvclockRegistrar
 pub fn hypercall_proto::PvclockRegistrar::new(u64, u32) -> Self
@@ -112,16 +103,6 @@ impl hypercall_proto::Service for hypercall_proto::PvclockRegistrar
 pub fn hypercall_proto::PvclockRegistrar::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
 pub fn hypercall_proto::PvclockRegistrar::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
 pub fn hypercall_proto::PvclockRegistrar::save_state(&self) -> alloc::vec::Vec<u8>
-pub struct hypercall_proto::SdkBuggify
-impl hypercall_proto::SdkBuggify
-pub fn hypercall_proto::SdkBuggify::asked(&self) -> &[u32]
-pub fn hypercall_proto::SdkBuggify::coverage_asked(&self) -> &[(u32, u64, u32, u32)]
-pub fn hypercall_proto::SdkBuggify::new(bool) -> Self
-pub fn hypercall_proto::SdkBuggify::set_point(&mut self, u32, bool)
-impl hypercall_proto::Service for hypercall_proto::SdkBuggify
-pub fn hypercall_proto::SdkBuggify::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
-pub fn hypercall_proto::SdkBuggify::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
-pub fn hypercall_proto::SdkBuggify::save_state(&self) -> alloc::vec::Vec<u8>
 pub struct hypercall_proto::SeededEntropy
 impl hypercall_proto::SeededEntropy
 pub fn hypercall_proto::SeededEntropy::new(u64) -> Self
@@ -132,7 +113,6 @@ pub fn hypercall_proto::SeededEntropy::save_state(&self) -> alloc::vec::Vec<u8>
 pub const hypercall_proto::HEADER_LEN: usize
 pub const hypercall_proto::MAX_FRAME: usize
 pub const hypercall_proto::MAX_PAYLOAD: usize
-pub const hypercall_proto::NET_REQUEST_LEN: usize
 pub const hypercall_proto::SDK_COVERAGE_QUANTUM: u64
 pub const hypercall_proto::SDK_COVERAGE_REQUEST_LEN: usize
 pub const hypercall_proto::SDK_COVERAGE_RESPONSE_LEN: usize
@@ -144,6 +124,10 @@ impl hypercall_proto::Service for hypercall_proto::ConsoleSink
 pub fn hypercall_proto::ConsoleSink::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
 pub fn hypercall_proto::ConsoleSink::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
 pub fn hypercall_proto::ConsoleSink::save_state(&self) -> alloc::vec::Vec<u8>
+impl hypercall_proto::Service for hypercall_proto::CoverageService
+pub fn hypercall_proto::CoverageService::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
+pub fn hypercall_proto::CoverageService::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
+pub fn hypercall_proto::CoverageService::save_state(&self) -> alloc::vec::Vec<u8>
 impl hypercall_proto::Service for hypercall_proto::EventSink
 pub fn hypercall_proto::EventSink::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
 pub fn hypercall_proto::EventSink::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
@@ -152,18 +136,10 @@ impl hypercall_proto::Service for hypercall_proto::MemBlockDevice
 pub fn hypercall_proto::MemBlockDevice::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
 pub fn hypercall_proto::MemBlockDevice::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
 pub fn hypercall_proto::MemBlockDevice::save_state(&self) -> alloc::vec::Vec<u8>
-impl hypercall_proto::Service for hypercall_proto::NetDecider
-pub fn hypercall_proto::NetDecider::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
-pub fn hypercall_proto::NetDecider::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
-pub fn hypercall_proto::NetDecider::save_state(&self) -> alloc::vec::Vec<u8>
 impl hypercall_proto::Service for hypercall_proto::PvclockRegistrar
 pub fn hypercall_proto::PvclockRegistrar::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
 pub fn hypercall_proto::PvclockRegistrar::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
 pub fn hypercall_proto::PvclockRegistrar::save_state(&self) -> alloc::vec::Vec<u8>
-impl hypercall_proto::Service for hypercall_proto::SdkBuggify
-pub fn hypercall_proto::SdkBuggify::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
-pub fn hypercall_proto::SdkBuggify::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
-pub fn hypercall_proto::SdkBuggify::save_state(&self) -> alloc::vec::Vec<u8>
 impl hypercall_proto::Service for hypercall_proto::SeededEntropy
 pub fn hypercall_proto::SeededEntropy::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
 pub fn hypercall_proto::SeededEntropy::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>

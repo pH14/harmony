@@ -540,7 +540,7 @@ fn run_fork(
     }
     let outcome = drive_to_terminal(&mut vmm);
     ForkResult {
-        hash: vmm.state_hash(),
+        hash: vmm.state_hash().unwrap(),
         components: vmm.state_components(),
         outcome,
     }
@@ -697,7 +697,7 @@ fn gate2_mid_postgres_roundtrip_is_deterministic() {
         );
         (
             snap,
-            live.state_hash(),
+            live.state_hash().unwrap(),
             live.serial().to_vec(),
             live.observable_digest(),
             outcome.reason,
@@ -736,7 +736,7 @@ fn gate2_mid_postgres_roundtrip_is_deterministic() {
             outcome.step_error,
         );
         (
-            b.state_hash(),
+            b.state_hash().unwrap(),
             b.serial().to_vec(),
             b.observable_digest(),
             outcome.reason,

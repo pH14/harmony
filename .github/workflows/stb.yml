@@ -5,13 +5,16 @@ on:
   pull_request:
     paths:
       - .github/workflows/stb.yml
-      - dissonance/stb-versions.env
-      - dissonance/STB-ARTIFACT-LICENSE.md
-      - dissonance/scripts/build-stb-rom.sh
+      - workloads/nes/stb-versions.env
+      - workloads/nes/STB-ARTIFACT-LICENSE.md
+      - workloads/nes/scripts/build-stb-rom.sh
+      - workloads/nes/Cargo.toml
+      - workloads/nes/Cargo.lock
+      - workloads/nes-machine/**
+      - dissonance/searcher/**
       - dissonance/Cargo.toml
       - dissonance/Cargo.lock
-      - dissonance/machine/**
-      - dissonance/searcher/**
+      - workloads/nes/**
       - scripts/build-quicknes-core.sh
       - rust-toolchain.toml
   schedule:
@@ -42,8 +45,8 @@ jobs:
         # nightly/manual runs exercise the same policy across all three.
         seed: ${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1,2,3]') }}
     env:
-      STB_BUILD: dissonance/stb-build
-      STB_ARTIFACT: dissonance/stb-artifact
+      STB_BUILD: workloads/nes/build/stb
+      STB_ARTIFACT: workloads/nes/build/stb-artifact
       STB_EXECUTIONS: "2000"
       STB_SEED: ${{ matrix.seed }}
       STB_WORKERS: "2"
@@ -57,24 +60,24 @@ jobs:
           sudo apt-get install --yes --no-install-recommends build-essential curl git unzip python3 python3-pil ffmpeg jq
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: dissonance -> target
+          workspaces: workloads/nes -> target
       - name: Reproduce pinned Super Tilt Bro and QuickNES
         run: |
-          dissonance/scripts/build-stb-rom.sh "${STB_BUILD}"
+          workloads/nes/scripts/build-stb-rom.sh "${STB_BUILD}"
           scripts/build-quicknes-core.sh "${STB_BUILD}/quicknes_libretro.so"
       - name: Build campaign and correctness probe
         run: |
-          cargo build --locked --release --manifest-path dissonance/Cargo.toml \
+          cargo build --locked --release --manifest-path workloads/nes/Cargo.toml \
             --bin stb-probe --bin stb-campaign
       - name: Verify controls, native opposition and restored continuations
         run: |
           mkdir -p "${STB_ARTIFACT}"
-          cp dissonance/STB-ARTIFACT-LICENSE.md "${STB_ARTIFACT}/ARTIFACT-LICENSE.md"
+          cp workloads/nes/STB-ARTIFACT-LICENSE.md "${STB_ARTIFACT}/ARTIFACT-LICENSE.md"
           cp "${STB_BUILD}/UPSTREAM-LICENSE.txt" "${STB_BUILD}/UPSTREAM-CREDITS.asm" \
             "${STB_BUILD}/stb-versions.env" "${STB_ARTIFACT}/"
           HARMONY_QUICKNES_CORE="${STB_BUILD}/quicknes_libretro.so" \
           HARMONY_STB_CORRECTNESS=1 \
-            dissonance/target/release/stb-probe "${STB_BUILD}/stb.nes" \
+            workloads/nes/target/release/stb-probe "${STB_BUILD}/stb.nes" \
             | tee "${STB_ARTIFACT}/control-snapshot-probe.jsonl"
           python3 - "${STB_ARTIFACT}/control-snapshot-probe.jsonl" <<'PY'
           import json
@@ -102,7 +105,7 @@ jobs:
           PY
       - name: Search the normal local match and verify recorded replay
         run: |
-          dissonance/target/release/stb-campaign \
+          workloads/nes/target/release/stb-campaign \
             --core "${STB_BUILD}/quicknes_libretro.so" \
             --rom "${STB_BUILD}/stb.nes" \
             --output "${STB_ARTIFACT}" \
@@ -171,21 +174,21 @@ jobs:
         with:
           name: stb-seed-${{ matrix.seed }}-${{ github.run_id }}
           path: |
-            dissonance/stb-artifact/witness.mp4
-            dissonance/stb-artifact/run-summary.json
-            dissonance/stb-artifact/progress.jsonl
-            dissonance/stb-artifact/champion-input.json
-            dissonance/stb-artifact/champion-observation.json
-            dissonance/stb-artifact/render-input.json
-            dissonance/stb-artifact/render-observation.json
-            dissonance/stb-artifact/video.json
-            dissonance/stb-artifact/campaign-report.json
-            dissonance/stb-artifact/replay-report.json
-            dissonance/stb-artifact/control-snapshot-probe.jsonl
-            dissonance/stb-artifact/ARTIFACT-LICENSE.md
-            dissonance/stb-artifact/UPSTREAM-LICENSE.txt
-            dissonance/stb-artifact/UPSTREAM-CREDITS.asm
-            dissonance/stb-artifact/stb-versions.env
-            dissonance/stb-artifact/SHA256SUMS
+            workloads/nes/build/stb-artifact/witness.mp4
+            workloads/nes/build/stb-artifact/run-summary.json
+            workloads/nes/build/stb-artifact/progress.jsonl
+            workloads/nes/build/stb-artifact/champion-input.json
+            workloads/nes/build/stb-artifact/champion-observation.json
+            workloads/nes/build/stb-artifact/render-input.json
+            workloads/nes/build/stb-artifact/render-observation.json
+            workloads/nes/build/stb-artifact/video.json
+            workloads/nes/build/stb-artifact/campaign-report.json
+            workloads/nes/build/stb-artifact/replay-report.json
+            workloads/nes/build/stb-artifact/control-snapshot-probe.jsonl
+            workloads/nes/build/stb-artifact/ARTIFACT-LICENSE.md
+            workloads/nes/build/stb-artifact/UPSTREAM-LICENSE.txt
+            workloads/nes/build/stb-artifact/UPSTREAM-CREDITS.asm
+            workloads/nes/build/stb-artifact/stb-versions.env
+            workloads/nes/build/stb-artifact/SHA256SUMS
           if-no-files-found: warn
           retention-days: 30

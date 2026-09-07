@@ -1,0 +1,15 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Exec a node inside the namespace provisioned by network-init.sh.  `exec`
+# keeps LinuxBackend's child handle attached to the actual service process.
+set -eu
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+export PATH
+
+if [ "$#" -lt 2 ]; then
+    echo "usage: netns-exec NAMESPACE PROGRAM [ARG... ]" >&2
+    exit 64
+fi
+namespace=$1
+shift
+exec ip netns exec "$namespace" "$@"

@@ -13,8 +13,8 @@
 //! | [`Entropy`](ServiceId::Entropy) | 2 | `1` = fill from the seeded stream |
 //! | [`Block`](ServiceId::Block)     | 3 | `1` = capacity, `2` = read sectors |
 //! | [`Event`](ServiceId::Event)     | 4 | `1` = emit `(event_id, bytes)` (fire-and-forget) |
-//! | [`Net`](ServiceId::Net)         | 5 | `1` = `net_decide` (round-trips a per-flow policy answer) |
-//! | [`Sdk`](ServiceId::Sdk)         | 6 | `1` = `buggify_decide`; `2` = `coverage_yield` (round-trips the next coverage threshold and runnable selection) |
+//! | [`Net`](ServiceId::Net)         | 5 | reserved legacy service id |
+//! | [`Sdk`](ServiceId::Sdk)         | 6 | `2` = `coverage_yield`; `3` = opaque package service request |
 //! | [`Pvclock`](ServiceId::Pvclock) | 7 | `1` = `pvclock_register` (publishes the guest clock-page GPA) |
 //! | [`Payload`](ServiceId::Payload) | 8 | `1` = consume one exact-length staged payload entry |
 //!
@@ -26,32 +26,10 @@
 //! unregistered service id or an opcode a service does not implement is a
 //! [`Status::UnknownService`] / [`Status::UnknownOpcode`], never a silent drop.
 //!
-//! ## `Net` — the per-flow decision service (task 61)
-//!
-//! `net_decide` (op `1`) round-trips one **per-flow** decision: the guest flow
-//! agent asks "what should I do with this flow?" once per flow/connection (never
-//! per frame — the host is on the control path only). The request payload is a
-//! fixed **18-byte little-endian** `NetFlow` decision point:
-//!
-//! | offset | field   | type  |
-//! |--------|---------|-------|
-//! | 0      | `src`   | `u32` |
-//! | 4      | `dst`   | `u32` |
-//! | 8      | `conn`  | `u64` |
-//! | 16     | `event` | `u16` |
-//!
-//! The response payload is the **opaque, environment-encoded flow-policy answer**
-//! (the guest decodes it against its own catalog — a `Nominal` deliver-normally, or
-//! a `NetLatency`/`NetLoss`/`NetThrottle`/`NetReset` policy it enforces on the
-//! intra-guest CNI). This crate is `consonance` substrate and deliberately does
-//! **not** depend on the environment catalog: it frames the request
-//! fields and ferries the answer bytes verbatim, bounding their length but never
-//! interpreting them. The production host ([`consonance/vmm-core`]) decodes the
-//! request into an `environment::DecisionPoint::NetFlow`, resolves it through its
-//! `Environment::decide` seam, records the answer at the surfacing `Moment`, and
-//! writes back `Answer::encode()` — exactly as the `Sdk` service wires
-//! `buggify_decide`, one wire shape either way. [`NetDecider`] is the deterministic
-//! **reference** answerer used by loopback tests (a scripted per-flow table).
+//! Fault packages use SDK opcode 3 for package-defined requests. The namespace,
+//! request identity, and payload are opaque to this crate; a package adapter
+//! owns any catalog or policy encoding. Service id 5 remains reserved so old
+//! frames receive an explicit status rather than being silently reinterpreted.
 
 #[cfg(feature = "host")]
 extern crate std;
@@ -74,10 +52,6 @@ const KIND_RESPONSE: u16 = 2;
 const SECTOR_SIZE: usize = 512;
 const BLOCK_READ_MAX_SECTORS: usize = 7;
 
-/// Wire length of a [`ServiceId::Net`] `net_decide` request payload: the fixed
-/// 18-byte little-endian `NetFlow { src:u32, dst:u32, conn:u64, event:u16 }`
-/// decision point (see the crate-level `Net` service docs).
-pub const NET_REQUEST_LEN: usize = 18;
 /// Wire length of an SDK `coverage_yield` request: `thread:u32`,
 /// `observed:u64`, then `ready:u32`, all little-endian.
 pub const SDK_COVERAGE_REQUEST_LEN: usize = 16;
@@ -105,21 +79,11 @@ pub enum ServiceId {
     Block = 3,
     /// Test/coverage event service.
     Event = 4,
-    /// Network per-flow decision service (task 61): the guest flow agent asks the
-    /// host what to do with a flow (op 1, `net_decide`). One request carries an
-    /// 18-byte little-endian `NetFlow { src:u32, dst:u32, conn:u64, event:u16 }`
-    /// decision point; the response carries the **opaque** environment-encoded
-    /// flow-policy answer the guest enforces on the intra-guest CNI. The host
-    /// resolves it through its `Environment::decide` seam and records it at the
-    /// surfacing `Moment`. One decision per flow/connection, never per frame.
+    /// Reserved legacy network service id. Fault packages use the generic SDK
+    /// opcode-3 channel and own their request encoding in an optional adapter.
     Net = 5,
-    /// SDK control service (task 73): the guest asks the host to resolve a
-    /// buggify decision (op 1, `buggify_decide`) or reaches an instrumented
-    /// coverage threshold (op 2, `coverage_yield`). Service id **5** is the
-    /// task-61 `Net` vertical, so the SDK takes **6**. Unlike the
-    /// fire-and-forget [`Event`](ServiceId::Event) service, these operations
-    /// round-trip a deterministic answer; the host resolves scheduling through
-    /// its `Environment::decide` seam at the surfacing `Moment`.
+    /// SDK control service (task 73): opcode 2 reaches an instrumented coverage
+    /// threshold and opcode 3 carries an opaque package-defined request.
     Sdk = 6,
     /// Paravirt virtual-time clock registration (task 110,
     /// `consonance/vtime/README.md`): the guest publishes the guest-physical
@@ -639,23 +603,6 @@ mod guest {
             Ok(())
         }
 
-        /// Ask the host to resolve a **buggify** decision for `point` (task 73's
-        /// SDK control service, [`ServiceId::Sdk`], op 1). Returns whether the
-        /// host decided to **fire** the deliberate perturbation. One request
-        /// carries the 4-byte little-endian `point`; the response is exactly one
-        /// byte (`0` = don't fire, non-zero = fire) — any other length is a
-        /// protocol error, never trusted.
-        pub fn buggify_decide(&mut self, point: u32) -> Result<bool, ClientError<T::Error>> {
-            let mut payload = [0_u8; 4];
-            put_u32(&mut payload, point);
-            let mut out = [0_u8; 1];
-            let copied = self.call_copy(ServiceId::Sdk, 1, &payload, &mut out)?;
-            if copied != 1 {
-                return Err(ClientError::Protocol(ProtoError::BadPayload));
-            }
-            Ok(out[0] != 0)
-        }
-
         /// Surface one crossed instrumented-coverage threshold (SDK op 2).
         ///
         /// `thread` is the payload's stable logical-thread id, `observed` is
@@ -691,34 +638,40 @@ mod guest {
             Ok((next, selected))
         }
 
-        /// Ask the host what to do with a flow (task 61's `Net` service,
-        /// [`ServiceId::Net`], op 1). Sends the [`NET_REQUEST_LEN`]-byte
-        /// `NetFlow { src, dst, conn, event }` decision point and copies the
-        /// host's **opaque** flow-policy answer bytes into `out`, returning their
-        /// length. One ask per flow/connection (never per frame): the host is on
-        /// the control path only. The answer is the environment-encoded policy the
-        /// caller decodes against its own catalog — this transport neither
-        /// interprets nor bounds it beyond `out`'s capacity (a longer answer is a
-        /// [`ProtoError::BufferTooSmall`]). An empty answer (`0` bytes copied) is a
-        /// protocol error: the host always answers at least a one-byte `Nominal`.
-        pub fn net_decide(
+        /// Ask a package-defined service through SDK opcode 3. The namespace and
+        /// request identity are replay coordinates; payload bytes belong to the
+        /// package. A nominal response is `None`; a data response returns the
+        /// number of bytes copied, including zero for an empty data response.
+        pub fn service_request(
             &mut self,
-            src: u32,
-            dst: u32,
-            conn: u64,
-            event: u16,
+            namespace: u16,
+            request_id: u64,
+            request: &[u8],
             out: &mut [u8],
-        ) -> Result<usize, ClientError<T::Error>> {
-            let mut payload = [0_u8; NET_REQUEST_LEN];
-            put_u32(&mut payload[0..4], src);
-            put_u32(&mut payload[4..8], dst);
-            put_u64(&mut payload[8..16], conn);
-            put_u16(&mut payload[16..18], event);
-            let copied = self.call_copy(ServiceId::Net, 1, &payload, out)?;
-            if copied == 0 {
-                return Err(ClientError::Protocol(ProtoError::BadPayload));
+        ) -> Result<Option<usize>, ClientError<T::Error>> {
+            if namespace <= 3 || request.len() > MAX_PAYLOAD - 10 {
+                return Err(ClientError::InvalidLength);
             }
-            Ok(copied)
+            let mut payload = [0_u8; MAX_PAYLOAD];
+            put_u16(&mut payload[..2], namespace);
+            put_u64(&mut payload[2..10], request_id);
+            payload[10..10 + request.len()].copy_from_slice(request);
+            let mut response = [0_u8; MAX_PAYLOAD];
+            let len = self.call_copy(
+                ServiceId::Sdk,
+                3,
+                &payload[..10 + request.len()],
+                &mut response,
+            )?;
+            match response.get(..len) {
+                Some([0]) => Ok(None),
+                Some([1, bytes @ ..]) if bytes.len() <= out.len() => {
+                    out[..bytes.len()].copy_from_slice(bytes);
+                    Ok(Some(bytes.len()))
+                }
+                Some([1, ..]) => Err(ClientError::Protocol(ProtoError::BufferTooSmall)),
+                _ => Err(ClientError::Protocol(ProtoError::BadPayload)),
+            }
         }
 
         /// Publish the guest's paravirt clock-page GPA to the host (task 110's
@@ -1307,59 +1260,24 @@ mod host {
         }
     }
 
-    /// Reference SDK control service ([`ServiceId::Sdk`]): resolves a guest
-    /// `buggify_decide(point)` (op 1) and the M6 `coverage_yield` threshold
-    /// handshake (op 2).
-    ///
-    /// This is the deterministic **reference** answerer used by loopback tests —
-    /// it maps a point to a fixed decision from a per-point table plus a default,
-    /// mirroring the host's per-point biasing at a table level (no PRNG). The
-    /// production host wires this opcode to its `Environment::decide` seam
-    /// instead; the wire shape is identical either way. Every ask is recorded, so
-    /// a test can assert which points the guest actually reached.
+    /// Deterministic reference implementation of the generic SDK coverage
+    /// handshake. Package-specific request decoding belongs outside this crate;
+    /// this service only owns the opcode-2 scheduling protocol.
     #[derive(Clone, Debug, Default, Eq, PartialEq)]
-    pub struct SdkBuggify {
-        default_fire: bool,
-        decisions: BTreeMap<u32, bool>,
-        asked: Vec<u32>,
+    pub struct CoverageService {
         coverage_thresholds: BTreeMap<u32, u64>,
         coverage_asked: Vec<(u32, u64, u32, u32)>,
     }
 
-    impl SdkBuggify {
-        /// A service that answers every point with `default_fire` unless a
-        /// per-point decision is set.
-        pub fn new(default_fire: bool) -> Self {
-            Self {
-                default_fire,
-                decisions: BTreeMap::new(),
-                asked: Vec::new(),
-                coverage_thresholds: BTreeMap::new(),
-                coverage_asked: Vec::new(),
-            }
-        }
-
-        /// Pin the fire/don't-fire answer for a specific `point`.
-        pub fn set_point(&mut self, point: u32, fire: bool) {
-            self.decisions.insert(point, fire);
-        }
-
-        /// The points the guest has asked about, in call order.
-        pub fn asked(&self) -> &[u32] {
-            &self.asked
+    impl CoverageService {
+        /// Create an empty coverage service.
+        pub fn new() -> Self {
+            Self::default()
         }
 
         /// Coverage asks in call order as `(thread, observed, ready, selected)`.
-        pub fn coverage_asked(&self) -> &[(u32, u64, u32, u32)] {
+        pub fn asked(&self) -> &[(u32, u64, u32, u32)] {
             &self.coverage_asked
-        }
-
-        /// The decision in force for `point` (its override, else the default).
-        fn decide(&self, point: u32) -> bool {
-            self.decisions
-                .get(&point)
-                .copied()
-                .unwrap_or(self.default_fire)
         }
 
         fn handle_coverage(&mut self, payload: &[u8], resp_payload: &mut [u8]) -> (Status, usize) {
@@ -1398,7 +1316,7 @@ mod host {
         }
     }
 
-    impl Service for SdkBuggify {
+    impl Service for CoverageService {
         fn handle(
             &mut self,
             opcode: u16,
@@ -1406,286 +1324,57 @@ mod host {
             resp_payload: &mut [u8],
         ) -> (Status, usize) {
             if opcode == 2 {
-                return self.handle_coverage(payload, resp_payload);
+                self.handle_coverage(payload, resp_payload)
+            } else {
+                (Status::UnknownOpcode, 0)
             }
-            if opcode != 1 {
-                return (Status::UnknownOpcode, 0);
-            }
-            if payload.len() != 4 {
-                return (Status::BadRequest, 0);
-            }
-            let point = match read_u32(payload, 0) {
-                Ok(value) => value,
-                Err(_) => return (Status::BadRequest, 0),
-            };
-            if resp_payload.is_empty() {
-                return (Status::Internal, 0);
-            }
-            self.asked.push(point);
-            resp_payload[0] = u8::from(self.decide(point));
-            (Status::Ok, 1)
         }
 
         fn save_state(&self) -> Vec<u8> {
             let mut out = Vec::new();
-            out.push(u8::from(self.default_fire));
-            out.extend_from_slice(&(self.decisions.len() as u32).to_le_bytes());
-            for (point, fire) in &self.decisions {
-                out.extend_from_slice(&point.to_le_bytes());
-                out.push(u8::from(*fire));
+            out.extend_from_slice(&(self.coverage_thresholds.len() as u32).to_le_bytes());
+            for (thread, threshold) in &self.coverage_thresholds {
+                out.extend_from_slice(&thread.to_le_bytes());
+                out.extend_from_slice(&threshold.to_le_bytes());
             }
-            out.extend_from_slice(&(self.asked.len() as u32).to_le_bytes());
-            for point in &self.asked {
-                out.extend_from_slice(&point.to_le_bytes());
-            }
-            if !self.coverage_thresholds.is_empty() || !self.coverage_asked.is_empty() {
-                out.extend_from_slice(b"COVR");
-                out.extend_from_slice(&(self.coverage_thresholds.len() as u32).to_le_bytes());
-                for (thread, threshold) in &self.coverage_thresholds {
-                    out.extend_from_slice(&thread.to_le_bytes());
-                    out.extend_from_slice(&threshold.to_le_bytes());
-                }
-                out.extend_from_slice(&(self.coverage_asked.len() as u32).to_le_bytes());
-                for (thread, observed, ready, selected) in &self.coverage_asked {
-                    out.extend_from_slice(&thread.to_le_bytes());
-                    out.extend_from_slice(&observed.to_le_bytes());
-                    out.extend_from_slice(&ready.to_le_bytes());
-                    out.extend_from_slice(&selected.to_le_bytes());
-                }
+            out.extend_from_slice(&(self.coverage_asked.len() as u32).to_le_bytes());
+            for (thread, observed, ready, selected) in &self.coverage_asked {
+                out.extend_from_slice(&thread.to_le_bytes());
+                out.extend_from_slice(&observed.to_le_bytes());
+                out.extend_from_slice(&ready.to_le_bytes());
+                out.extend_from_slice(&selected.to_le_bytes());
             }
             out
         }
 
         fn restore_state(&mut self, state: &[u8]) -> Result<(), ProtoError> {
             let mut offset = 0;
-            let default_fire = *state.get(offset).ok_or(ProtoError::BadState)? != 0;
-            offset += 1;
-            let dec_count = {
-                let b = state.get(offset..offset + 4).ok_or(ProtoError::BadState)?;
-                offset += 4;
-                u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize
-            };
-            let mut decisions = BTreeMap::new();
-            for _ in 0..dec_count {
-                let b = state.get(offset..offset + 4).ok_or(ProtoError::BadState)?;
-                let point = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-                offset += 4;
-                let fire = *state.get(offset).ok_or(ProtoError::BadState)? != 0;
-                offset += 1;
-                decisions.insert(point, fire);
-            }
-            let ask_count = {
-                let b = state.get(offset..offset + 4).ok_or(ProtoError::BadState)?;
-                offset += 4;
-                u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize
-            };
-            let mut asked = Vec::new();
-            for _ in 0..ask_count {
-                let b = state.get(offset..offset + 4).ok_or(ProtoError::BadState)?;
-                asked.push(u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-                offset += 4;
-            }
-            let mut coverage_thresholds = BTreeMap::new();
-            let mut coverage_asked = Vec::new();
-            if offset != state.len() {
-                if state.get(offset..).and_then(|tail| tail.get(..4)) != Some(b"COVR") {
+            let count = take_u32(state, &mut offset)? as usize;
+            let mut thresholds = BTreeMap::new();
+            for _ in 0..count {
+                let thread = take_u32(state, &mut offset)?;
+                let threshold = take_u64(state, &mut offset)?;
+                if threshold == 0 || thresholds.insert(thread, threshold).is_some() {
                     return Err(ProtoError::BadState);
                 }
-                offset += 4;
-                let count = read_u32(state, offset)? as usize;
-                offset += 4;
-                for _ in 0..count {
-                    let thread = read_u32(state, offset)?;
-                    offset += 4;
-                    let threshold = read_u64(state, offset)?;
-                    offset += 8;
-                    if threshold == 0 || coverage_thresholds.insert(thread, threshold).is_some() {
-                        return Err(ProtoError::BadState);
-                    }
-                }
-                let count = read_u32(state, offset)? as usize;
-                offset += 4;
-                for _ in 0..count {
-                    let thread = read_u32(state, offset)?;
-                    offset += 4;
-                    let observed = read_u64(state, offset)?;
-                    offset += 8;
-                    let ready = read_u32(state, offset)?;
-                    offset += 4;
-                    let selected = read_u32(state, offset)?;
-                    offset += 4;
-                    if ready == 0 || selected >= ready {
-                        return Err(ProtoError::BadState);
-                    }
-                    coverage_asked.push((thread, observed, ready, selected));
-                }
             }
-            if offset != state.len() {
-                return Err(ProtoError::BadState);
-            }
-            self.default_fire = default_fire;
-            self.decisions = decisions;
-            self.asked = asked;
-            self.coverage_thresholds = coverage_thresholds;
-            self.coverage_asked = coverage_asked;
-            Ok(())
-        }
-    }
-
-    /// A decoded [`ServiceId::Net`] `net_decide` request — the `NetFlow` decision
-    /// point the guest flow agent asks about. Carried in the fixed
-    /// [`NET_REQUEST_LEN`]-byte little-endian wire form; part of the *live*
-    /// decision a service reads, never of a serialized blob.
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    pub struct NetFlowPoint {
-        /// Source node of the flow.
-        pub src: u32,
-        /// Destination node of the flow.
-        pub dst: u32,
-        /// Connection identity (for fault targeting).
-        pub conn: u64,
-        /// What surfaced this flow decision (today, always `0` = flow open).
-        pub event: u16,
-    }
-
-    impl NetFlowPoint {
-        /// Decode the fixed [`NET_REQUEST_LEN`]-byte little-endian request payload,
-        /// rejecting any other length.
-        pub fn decode(payload: &[u8]) -> Option<Self> {
-            if payload.len() != NET_REQUEST_LEN {
-                return None;
-            }
-            Some(Self {
-                src: read_u32(payload, 0).ok()?,
-                dst: read_u32(payload, 4).ok()?,
-                conn: read_u64(payload, 8).ok()?,
-                event: read_u16(payload, 16).ok()?,
-            })
-        }
-    }
-
-    /// Reference network per-flow answerer (task 61, [`ServiceId::Net`]): resolves
-    /// a guest `net_decide(point)` (op 1) to an **opaque** flow-policy answer.
-    ///
-    /// This is the deterministic **reference** answerer used by loopback tests — it
-    /// maps a flow's `conn` to a fixed answer from a per-connection table plus a
-    /// default, mirroring the host's per-flow policy at a table level (no PRNG). The
-    /// production host wires this opcode to its `Environment::decide` seam instead,
-    /// encoding the resolved `Answer`; the wire shape is identical either way. The
-    /// answer bytes are opaque to this crate (it is `consonance` substrate and does
-    /// not depend on the `environment` catalog): callers supply and decode them.
-    /// Every ask is recorded, so a test can assert which flows the guest reached.
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    pub struct NetDecider {
-        default_answer: Vec<u8>,
-        answers: BTreeMap<u64, Vec<u8>>,
-        asked: Vec<NetFlowPoint>,
-    }
-
-    impl NetDecider {
-        /// A service that answers every flow with `default_answer` (the encoded
-        /// policy bytes) unless a per-connection answer is set. `default_answer`
-        /// must be non-empty — the host always answers at least a one-byte
-        /// `Nominal`, and an empty answer is a guest-side protocol error.
-        pub fn new(default_answer: Vec<u8>) -> Self {
-            Self {
-                default_answer,
-                answers: BTreeMap::new(),
-                asked: Vec::new(),
-            }
-        }
-
-        /// Pin the opaque answer bytes for a specific flow `conn`.
-        pub fn set_flow(&mut self, conn: u64, answer: Vec<u8>) {
-            let _old = self.answers.insert(conn, answer);
-        }
-
-        /// The flows the guest has asked about, in call order.
-        pub fn asked(&self) -> &[NetFlowPoint] {
-            &self.asked
-        }
-
-        /// The answer bytes in force for `conn` (its override, else the default).
-        fn answer_for(&self, conn: u64) -> &[u8] {
-            self.answers
-                .get(&conn)
-                .map_or(self.default_answer.as_slice(), Vec::as_slice)
-        }
-    }
-
-    impl Service for NetDecider {
-        fn handle(
-            &mut self,
-            opcode: u16,
-            payload: &[u8],
-            resp_payload: &mut [u8],
-        ) -> (Status, usize) {
-            if opcode != 1 {
-                return (Status::UnknownOpcode, 0);
-            }
-            let Some(point) = NetFlowPoint::decode(payload) else {
-                return (Status::BadRequest, 0);
-            };
-            let answer = self.answer_for(point.conn);
-            if answer.len() > resp_payload.len() || answer.len() > MAX_PAYLOAD {
-                return (Status::Internal, 0);
-            }
-            // Record the ask only once the response is known to fit, so a rejected
-            // (too-large) answer does not leave a phantom decision in the log.
-            resp_payload[..answer.len()].copy_from_slice(answer);
-            let n = answer.len();
-            self.asked.push(point);
-            (Status::Ok, n)
-        }
-
-        fn save_state(&self) -> Vec<u8> {
-            let mut out = Vec::new();
-            put_len_prefixed(&mut out, &self.default_answer);
-            out.extend_from_slice(&(self.answers.len() as u32).to_le_bytes());
-            for (conn, answer) in &self.answers {
-                out.extend_from_slice(&conn.to_le_bytes());
-                put_len_prefixed(&mut out, answer);
-            }
-            out.extend_from_slice(&(self.asked.len() as u32).to_le_bytes());
-            for point in &self.asked {
-                out.extend_from_slice(&point.src.to_le_bytes());
-                out.extend_from_slice(&point.dst.to_le_bytes());
-                out.extend_from_slice(&point.conn.to_le_bytes());
-                out.extend_from_slice(&point.event.to_le_bytes());
-            }
-            out
-        }
-
-        fn restore_state(&mut self, state: &[u8]) -> Result<(), ProtoError> {
-            let mut offset = 0;
-            let default_answer = take_len_prefixed(state, &mut offset)?.to_vec();
-            let ans_count = take_u32(state, &mut offset)? as usize;
-            let mut answers = BTreeMap::new();
-            for _ in 0..ans_count {
-                let conn = take_u64(state, &mut offset)?;
-                let answer = take_len_prefixed(state, &mut offset)?.to_vec();
-                answers.insert(conn, answer);
-            }
-            let ask_count = take_u32(state, &mut offset)? as usize;
+            let count = take_u32(state, &mut offset)? as usize;
             let mut asked = Vec::new();
-            for _ in 0..ask_count {
-                let src = take_u32(state, &mut offset)?;
-                let dst = take_u32(state, &mut offset)?;
-                let conn = take_u64(state, &mut offset)?;
-                let event = take_u16(state, &mut offset)?;
-                asked.push(NetFlowPoint {
-                    src,
-                    dst,
-                    conn,
-                    event,
-                });
+            for _ in 0..count {
+                let thread = take_u32(state, &mut offset)?;
+                let observed = take_u64(state, &mut offset)?;
+                let ready = take_u32(state, &mut offset)?;
+                let selected = take_u32(state, &mut offset)?;
+                if ready == 0 || selected >= ready {
+                    return Err(ProtoError::BadState);
+                }
+                asked.push((thread, observed, ready, selected));
             }
             if offset != state.len() {
                 return Err(ProtoError::BadState);
             }
-            self.default_answer = default_answer;
-            self.answers = answers;
-            self.asked = asked;
+            self.coverage_thresholds = thresholds;
+            self.coverage_asked = asked;
             Ok(())
         }
     }
@@ -1696,7 +1385,7 @@ mod host {
     /// size and page alignment, records it, and answers the 4-byte ABI
     /// version. The production host is `vmm-core`'s doorbell dispatch, which
     /// additionally stamps the page and gates on its V-time wiring; this
-    /// reference exists so the guest [`Client::pvclock_register`] verb and the
+    /// reference exists so the guest `Client::pvclock_register` verb and the
     /// frame shape are loopback-testable with no VM.
     pub struct PvclockRegistrar {
         ram_len: u64,
@@ -1814,20 +1503,9 @@ mod host {
         }
     }
 
-    fn put_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
-        out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-        out.extend_from_slice(bytes);
-    }
-
     fn take_u8(state: &[u8], offset: &mut usize) -> Result<u8, ProtoError> {
         let v = *state.get(*offset).ok_or(ProtoError::BadState)?;
         *offset += 1;
-        Ok(v)
-    }
-
-    fn take_u16(state: &[u8], offset: &mut usize) -> Result<u16, ProtoError> {
-        let v = read_u16(state, *offset).map_err(|_| ProtoError::BadState)?;
-        *offset += 2;
         Ok(v)
     }
 
@@ -1842,19 +1520,10 @@ mod host {
         *offset += 8;
         Ok(v)
     }
-
-    fn take_len_prefixed<'a>(state: &'a [u8], offset: &mut usize) -> Result<&'a [u8], ProtoError> {
-        let len = take_u32(state, offset)? as usize;
-        let bytes = state
-            .get(*offset..*offset + len)
-            .ok_or(ProtoError::BadState)?;
-        *offset += len;
-        Ok(bytes)
-    }
 }
 
 #[cfg(feature = "host")]
 pub use host::{
-    ConsoleSink, Dispatcher, EventSink, MemBlockDevice, NetDecider, NetFlowPoint, PvclockRegistrar,
-    SdkBuggify, SeededEntropy, Service,
+    ConsoleSink, CoverageService, Dispatcher, EventSink, MemBlockDevice, PvclockRegistrar,
+    SeededEntropy, Service,
 };

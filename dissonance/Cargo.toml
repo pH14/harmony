@@ -2,7 +2,7 @@
 # See AGENTS.md in this directory before working here.
 [workspace]
 resolver = "2"
-members = ["machine", "searcher"]
+members = ["searcher"]
 
 [workspace.package]
 edition = "2024"

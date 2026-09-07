@@ -204,9 +204,9 @@ fn state_hash_is_pure_and_covers_every_component() {
         v.run().unwrap();
         v
     };
-    let h0 = baseline.state_hash();
+    let h0 = baseline.state_hash().unwrap();
     // Pure: two calls agree.
-    assert_eq!(h0, baseline.state_hash());
+    assert_eq!(h0, baseline.state_hash().unwrap());
 
     // An identical run reproduces the hash.
     let same = {
@@ -214,7 +214,7 @@ fn state_hash_is_pure_and_covers_every_component() {
         v.run().unwrap();
         v
     };
-    assert_eq!(h0, same.state_hash());
+    assert_eq!(h0, same.state_hash().unwrap());
 
     // Flip the serial output (drop the last byte's write) ⇒ different hash.
     let diff_serial = {
@@ -230,7 +230,7 @@ fn state_hash_is_pure_and_covers_every_component() {
     };
     assert_ne!(
         h0,
-        diff_serial.state_hash(),
+        diff_serial.state_hash().unwrap(),
         "serial divergence breaks the hash"
     );
 
@@ -248,7 +248,7 @@ fn state_hash_is_pure_and_covers_every_component() {
     };
     assert_ne!(
         h0,
-        diff_code.state_hash(),
+        diff_code.state_hash().unwrap(),
         "terminal code divergence breaks the hash"
     );
 
@@ -268,7 +268,7 @@ fn state_hash_is_pure_and_covers_every_component() {
     };
     assert_ne!(
         h0,
-        diff_mem.state_hash(),
+        diff_mem.state_hash().unwrap(),
         "memory divergence breaks the hash"
     );
 
@@ -289,7 +289,7 @@ fn state_hash_is_pure_and_covers_every_component() {
     };
     assert_ne!(
         h0,
-        diff_reg.state_hash(),
+        diff_reg.state_hash().unwrap(),
         "register divergence breaks the hash"
     );
 }
@@ -433,8 +433,8 @@ fn state_hash_covers_msrs_xsave_and_mp_state() {
     mock.set_state(st);
     let mut vmm = Vmm::new(mock, GuestRam::new(4096).unwrap());
     assert_eq!(vmm.run().unwrap().reason, TerminalReason::Idle);
-    assert_eq!(vmm.state_hash(), vmm.state_hash());
-    assert_ne!(vmm.state_hash(), [0u8; 32]);
+    assert_eq!(vmm.state_hash().unwrap(), vmm.state_hash().unwrap());
+    assert_ne!(vmm.state_hash().unwrap(), [0u8; 32]);
 }
 
 #[test]
@@ -455,7 +455,7 @@ fn state_hash_distinguishes_segment_and_event_fields() {
         mock.set_state(st);
         let mut v = Vmm::new(mock, GuestRam::new(4096).unwrap());
         v.run().unwrap();
-        v.state_hash()
+        v.state_hash().unwrap()
     };
     let base = hash_with(&|_| {});
     assert_ne!(
@@ -493,7 +493,7 @@ fn state_hash_masks_only_an_unusable_segments_type() {
         mock.set_state(st);
         let mut v = Vmm::new(mock, GuestRam::new(4096).unwrap());
         v.run().unwrap();
-        v.state_hash()
+        v.state_hash().unwrap()
     };
     // Usable (unusable = 0): the type is live state → it MUST move the hash.
     // Original keeps `seg.type_` (0 vs 5 differ); the `==` mutant masks both to 0 (equal).

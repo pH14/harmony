@@ -38,11 +38,11 @@ fi
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo"
-cargo build --release --locked -p vmm-core --bin hvf_postgres_m3
+cargo build --release --locked --manifest-path workloads/tools/Cargo.toml --bin hvf_postgres_m3
 codesign --force --sign - \
     --entitlements consonance/vmm-backend/hvf.entitlements.plist \
-    target/release/hvf_postgres_m3
-target/release/hvf_postgres_m3 "$image" "$initramfs" - "$report"
+    workloads/tools/target/release/hvf_postgres_m3
+workloads/tools/target/release/hvf_postgres_m3 "$image" "$initramfs" - "$report"
 
 rg -q '^status PASS$' "$report"
 rg -q '^checkpoint_hashes count=700 workers=8 status=PASS$' "$report"

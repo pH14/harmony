@@ -58,7 +58,7 @@ use std::time::Duration;
 use control_proto::{
     HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
 };
-use environment::{EnvSpec, FaultPolicy};
+use environment::input_spec::InputSpec as EnvSpec;
 use vmm_backend::{Backend, X86};
 use vmm_core::control::{ControlServer, RemapVmmFactory, RestoreMode, VmmFactory, server_caps};
 use vmm_core::vendor::x86::bringup::{boot_linux_patched_with_dirty_log, compose_restore_target};
@@ -256,11 +256,7 @@ fn hash_whole<B: Backend<A = X86>>(s: &mut ControlServer<B>) -> [u8; 32] {
 fn seeded_env(seed: u64) -> Reproducer {
     Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
-        bytes: EnvSpec::Seeded {
-            seed,
-            policy: FaultPolicy::none(),
-        }
-        .encode(),
+        bytes: EnvSpec::seeded(seed).encode(),
     }
 }
 

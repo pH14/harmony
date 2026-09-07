@@ -124,7 +124,7 @@ impl<B: Backend<A: Vendor>> Subject for CorpusMachine<B> {
         u64::from(self.ran)
     }
 
-    fn state_hash(&self) -> [u8; 32] {
+    fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
         // Fold the report stream (via `observable_digest`) into the O1 hash so
         // `acceptance-suite` determinism DIRECTLY observes the report channel: a
         // same-seed run that diverges ONLY in `REPORT_PORT` values must fail O1,
@@ -132,9 +132,13 @@ impl<B: Backend<A: Vendor>> Subject for CorpusMachine<B> {
         // `Vmm::state_hash` itself is left UNCHANGED — this composition lives only
         // in the corpus Subject adapter, so M1/M2/P6 stay byte-identical.
         let mut h = sha2::Sha256::new();
-        h.update(self.vmm.state_hash());
+        h.update(
+            self.vmm
+                .state_hash()
+                .map_err(|error| SubjectError::StateCapture(error.to_string()))?,
+        );
         h.update(self.vmm.observable_digest());
-        h.finalize().into()
+        Ok(h.finalize().into())
     }
 
     fn observable_digest(&self) -> [u8; 32] {
@@ -316,14 +320,14 @@ mod tests {
         // The underlying Vmm hash is identical (the report stream is not in it —
         // M1/M2/P6 stay byte-identical)...
         assert_eq!(
-            a.vmm().state_hash(),
-            b.vmm().state_hash(),
+            a.vmm().state_hash().unwrap(),
+            b.vmm().state_hash().unwrap(),
             "Vmm::state_hash must stay blind to the report channel"
         );
         // ...but the Subject's folded O1 hash differs (it folds observable_digest).
         assert_ne!(
-            a.state_hash(),
-            b.state_hash(),
+            a.state_hash().unwrap(),
+            b.state_hash().unwrap(),
             "CorpusMachine::state_hash must fold the report stream so O1 sees it"
         );
         // And the O1 engine itself (compare_runs over the folded hash) reports

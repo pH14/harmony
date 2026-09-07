@@ -23,6 +23,9 @@ use crate::types::Gpa;
 /// the arch MSR/CPUID exits, and `Hypercall` stay **pending** until the
 /// matching completion is called; resuming `run` with one un-serviced is
 /// [`BackendError::PendingCompletion`](crate::BackendError::PendingCompletion).
+/// Stores are not pending in the trait. Architectures whose backend retains a
+/// userspace store callback until the next entry opt into that classification
+/// through [`Arch::stages_common_completion`](crate::arch::Arch::stages_common_completion).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Exit<A: Arch> {
     /// A cross-arch exit — one concept on every vendor.
@@ -42,14 +45,14 @@ impl<A: Arch> Exit<A> {
     }
 
     /// Whether servicing this exit stages a backend completion (a
-    /// register-write and/or RIP-advance committed on the next entry): every
-    /// read-style / MSR / CPUID / determinism exit calls a `complete_*`.
-    /// Write-style stores, `Idle`, `Shutdown`, and the unmodeled
-    /// `Hypercall` resume with nothing pending. Drives the engine's
-    /// restore-safety bookkeeping (`Vmm::completion_staged`).
+    /// register-write and/or RIP-advance committed on the next entry). This is
+    /// conservative for write-style exits: they have no trait-level pending
+    /// value, but KVM retains the PIO/MMIO callback until the next entry.
+    /// Drives the engine's restore-safety bookkeeping
+    /// (`Vmm::completion_staged`).
     pub fn stages_completion(&self) -> bool {
         match self {
-            Exit::Common(c) => c.stages_completion(),
+            Exit::Common(c) => A::stages_common_completion(c),
             Exit::Arch(e) => e.stages_completion(),
         }
     }
@@ -60,8 +63,9 @@ impl<A: Arch> Exit<A> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CommonExit {
     /// MMIO (on x86 the userspace xAPIC page at `0xFEE0_0000` falls through
-    /// here, R1). `write = Some(v)` is a store (no completion); `None` is a
-    /// load, resolved by `complete_read`.
+    /// here, R1). `write = Some(v)` is a store; `None` is a load, resolved by
+    /// `complete_read`. The architecture classifies whether a store callback
+    /// remains staged on return.
     Mmio {
         /// Guest-physical address of the access.
         gpa: Gpa,
@@ -94,9 +98,8 @@ impl CommonExit {
         }
     }
 
-    /// See [`Exit::stages_completion`]. Of the common exits only an MMIO
-    /// **load** stages one (`Hypercall` is unmodeled above the trait and
-    /// resumes with nothing pending).
+    /// See [`Exit::stages_completion`]. The architecture-specific `Exit` wrapper
+    /// may conservatively add MMIO stores when its backend retains a callback.
     pub fn stages_completion(&self) -> bool {
         match self {
             CommonExit::Mmio { write: None, .. } => true,
@@ -119,7 +122,7 @@ mod completion_tests {
     use super::*;
 
     #[test]
-    fn only_an_mmio_load_stages_a_common_completion() {
+    fn only_an_mmio_load_stages_a_common_completion_by_default() {
         let load = CommonExit::Mmio {
             gpa: Gpa(0x1000),
             size: 4,
@@ -134,6 +137,19 @@ mod completion_tests {
         assert!(!store.stages_completion());
         assert!(!CommonExit::Idle.stages_completion());
         assert!(!CommonExit::Shutdown.stages_completion());
+    }
+
+    #[test]
+    fn x86_mmio_store_uses_the_architecture_specific_staging_rule() {
+        use crate::arch::x86::X86;
+
+        let store = CommonExit::Mmio {
+            gpa: Gpa(0x1000),
+            size: 4,
+            write: Some(7),
+        };
+        assert!(!store.stages_completion());
+        assert!(Exit::<X86>::Common(store).stages_completion());
     }
 }
 

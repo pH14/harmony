@@ -12,6 +12,7 @@
 //! in-memory store; the mmap-backed `materialize` path is the x86-shared
 //! engine machinery already covered elsewhere and is not re-tested here).
 
+use environment::channel::Effect;
 use vm_state::{Arm64VmState, SnapshotRecords, VmState, VmStateError};
 use vmm_backend::{
     Arm64, Arm64Exit, Arm64Injection, Arm64Policy, Arm64VcpuState, Backend, CommonExit, Exit,
@@ -101,7 +102,7 @@ fn arm64_os_debug_lock_accepts_only_the_boot_unlock() {
 fn arm64_interrupt_seams_report_no_fabric() {
     let mut v = vmm(vec![]);
     assert!(!v.has_pending_guest_interrupt().unwrap());
-    let err = v.apply_host_fault(&environment::HostFault::InjectInterrupt { vector: 40 });
+    let err = v.apply_effect(&Effect::InjectInterrupt { vector: 40 });
     assert!(err.is_err(), "no fabric wired: injection must fail loud");
 }
 
@@ -145,8 +146,8 @@ fn arm64_snapshot_round_trip_is_restore_transparent() {
     fresh.restore_snapshot(v.guest_memory(), &decoded).unwrap();
     assert_eq!(fresh.inspect_vcpu(), v.inspect_vcpu());
     assert_eq!(
-        fresh.state_hash(),
-        v.state_hash(),
+        fresh.state_hash().unwrap(),
+        v.state_hash().unwrap(),
         "a restored arm64 VM must hash like a never-restored one"
     );
 
@@ -324,10 +325,10 @@ fn arm64_gic_fabric_arbitrates_and_rides_the_snapshot() {
     // (the board's 64 SPIs ⇒ INTID limit 96): 40 is a legal SPI, 200 is past
     // the distributor bound. (SGIs `0..16` would deliver too — never x86's
     // reserved-vector rule.)
-    v.apply_host_fault(&environment::HostFault::InjectInterrupt { vector: 40 })
+    v.apply_effect(&Effect::InjectInterrupt { vector: 40 })
         .unwrap();
     assert!(
-        v.apply_host_fault(&environment::HostFault::InjectInterrupt { vector: 200 })
+        v.apply_effect(&Effect::InjectInterrupt { vector: 200 })
             .is_err(),
         "past the distributor-bounded identity space"
     );
@@ -354,7 +355,7 @@ fn arm64_gic_fabric_arbitrates_and_rides_the_snapshot() {
     twin_b.wire_gic(twin_gic());
     twin_b.restore_vm_state(&s).unwrap();
     assert!(twin_a.has_pending_guest_interrupt().unwrap());
-    assert_eq!(twin_a.state_hash(), twin_b.state_hash());
+    assert_eq!(twin_a.state_hash().unwrap(), twin_b.state_hash().unwrap());
 
     // Restore into an UNWIRED VM is a loud wiring mismatch, never a silently
     // dropped fabric.
@@ -764,7 +765,7 @@ fn arm64_clockevent_is_level_triggered_and_snapshot_complete() {
         .restore_snapshot(v.guest_memory(), &snapshot)
         .unwrap();
     assert!(restored.has_pending_guest_interrupt().unwrap());
-    assert_eq!(restored.state_hash(), v.state_hash());
+    assert_eq!(restored.state_hash().unwrap(), v.state_hash().unwrap());
 
     // Accept then EOI without ACK. Because the device line remains high,
     // The clockevent PPI immediately becomes pending again.
@@ -994,7 +995,7 @@ fn arm64_state_components_localizes_a_gic_only_divergence() {
     let b = make(Some(40)); // differs only in the GIC pending file
 
     // `state_hash` differs (the GICV chunk folds in the pending state)...
-    assert_ne!(a.state_hash(), b.state_hash());
+    assert_ne!(a.state_hash().unwrap(), b.state_hash().unwrap());
 
     // ...and the `gic` component is exactly what localizes it: it differs, and
     // it is the ONLY differing component (every other label matches).
@@ -1069,8 +1070,8 @@ fn arm64_hvf_retained_classes_are_hash_observable() {
     ] {
         let candidate = make(state);
         assert_ne!(
-            baseline.state_hash(),
-            candidate.state_hash(),
+            baseline.state_hash().unwrap(),
+            candidate.state_hash().unwrap(),
             "{expected} must feed the canonical VCPU hash"
         );
         let candidate_components = candidate.state_components();
@@ -1094,8 +1095,8 @@ fn arm64_hvf_retained_classes_are_hash_observable() {
             .unwrap();
         assert_eq!(restored.inspect_vcpu(), state, "{expected} restore");
         assert_eq!(
-            restored.state_hash(),
-            candidate.state_hash(),
+            restored.state_hash().unwrap(),
+            candidate.state_hash().unwrap(),
             "{expected} must round-trip through the canonical snapshot"
         );
     }
@@ -1115,7 +1116,7 @@ fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
         target
             .restore_snapshot(source.guest_memory(), &snapshot)
             .unwrap();
-        assert_eq!(target.state_hash(), source.state_hash());
+        assert_eq!(target.state_hash().unwrap(), source.state_hash().unwrap());
         assert_eq!(target.save_vm_state().unwrap(), snapshot);
     };
 
@@ -1128,7 +1129,10 @@ fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
         write: Some(b'X'.into()),
     })]);
     assert_eq!(serial.step().unwrap(), Step::Continued);
-    assert_ne!(serial.state_hash(), serial_base.state_hash());
+    assert_ne!(
+        serial.state_hash().unwrap(),
+        serial_base.state_hash().unwrap()
+    );
     restore(&serial, &mut vmm(vec![]));
 
     // GIC state: the same programmed fabric, differing only by one pending
@@ -1139,7 +1143,10 @@ fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
     gic_base.wire_gic(clockevent_gic());
     let mut gic_pending = vmm(vec![]);
     gic_pending.wire_gic(pending_gic);
-    assert_ne!(gic_pending.state_hash(), gic_base.state_hash());
+    assert_ne!(
+        gic_pending.state_hash().unwrap(),
+        gic_base.state_hash().unwrap()
+    );
     let mut gic_target = vmm(vec![]);
     gic_target.wire_gic(clockevent_gic());
     restore(&gic_pending, &mut gic_target);
@@ -1160,7 +1167,10 @@ fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
     // Assigned V-time alone.
     let time_base = timed(0, 7);
     let time_changed = timed(9, 7);
-    assert_ne!(time_changed.state_hash(), time_base.state_hash());
+    assert_ne!(
+        time_changed.state_hash().unwrap(),
+        time_base.state_hash().unwrap()
+    );
     restore(&time_changed, &mut timed(0, 7));
 
     // Entropy stream state alone. Reseeding changes the canonical stream state
@@ -1168,7 +1178,10 @@ fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
     let entropy_base = timed(0, 7);
     let mut entropy_changed = timed(0, 7);
     entropy_changed.reseed_entropy(8).unwrap();
-    assert_ne!(entropy_changed.state_hash(), entropy_base.state_hash());
+    assert_ne!(
+        entropy_changed.state_hash().unwrap(),
+        entropy_base.state_hash().unwrap()
+    );
     restore(&entropy_changed, &mut timed(0, 7));
 }
 
