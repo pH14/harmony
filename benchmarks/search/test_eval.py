@@ -124,7 +124,7 @@ class EvaluationTests(unittest.TestCase):
         original = self.matrix(a)
         self.matrix(b)
         self.assertTrue(eval.compare(a, b)['pairs'][0]['comparable'])
-        for field, key, value in [('identity', 'policies', {'key': 'hinted'}), ('search_request', 'memory_mib', 32)]:
+        for field, key, value in [('identity', 'policies', {'key': 'hinted'}), ('search_request', 'memory_mib', 32), ('search_request', 'frames', 100)]:
             changed = copy.deepcopy(original)
             changed[field][key] = value
             eval.write_json(b/'results.json', [changed])

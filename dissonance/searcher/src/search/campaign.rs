@@ -813,6 +813,10 @@ pub struct CampaignStreamHeader<T> {
     pub resume_actions: usize,
     /// Execution budget requested for the run.
     pub execution_budget: u64,
+    /// Stop selecting jobs after this many admitted emulator frames. The
+    /// deterministic reservation window drains and may overshoot the limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_budget: Option<u64>,
     /// Wall budget in seconds when one was set.
     pub wall_budget_seconds: Option<u64>,
     /// Bounded clean-reset action horizon.
@@ -1058,6 +1062,10 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub origin: CampaignOriginRecord,
     /// Execution budget requested for the run.
     pub execution_budget: u64,
+    /// Stop selecting jobs after this many admitted emulator frames. The
+    /// deterministic reservation window drains and may overshoot the limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_budget: Option<u64>,
     /// Jobs actually executed and admitted, the winning admission's own
     /// drained window included. This is the run's throughput.
     pub executions_completed: u64,
@@ -1941,6 +1949,7 @@ fn stream_header<G: Game>(
         resume_input_sha256: origin.resume_input_sha256.clone(),
         resume_actions: origin.resume_actions,
         execution_budget: config.execution_budget,
+        frame_budget: None,
         wall_budget_seconds: config.wall_budget.map(|budget| budget.as_secs()),
         action_limit: config.action_limit,
         archive_entry_limit: config.archive_entry_limit,
@@ -2156,6 +2165,7 @@ fn build_report<G: Game>(
         schedule_identity: schedule_identity.to_owned(),
         origin,
         execution_budget: header.execution_budget,
+        frame_budget: header.frame_budget,
         executions_completed,
         executions_to_first_victory: counters.executions_to_first_victory,
         wall_budget_seconds: header.wall_budget_seconds,
@@ -2572,17 +2582,40 @@ fn validate_snapshot_root_checkpoint<'a, G: Game + ?Sized>(
 ///
 /// Returns an error when the origin is unusable, a worker fails, emulation or
 /// snapshotting fails, or the stream cannot be written.
-#[allow(clippy::too_many_lines)]
 pub fn run_campaign_checkpointed<G: CampaignInterfaces>(
     game: &G,
     config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
     stream: &mut dyn Write,
-    mut progress: Option<&mut dyn Write>,
+    progress: Option<&mut dyn Write>,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
 {
+    run_campaign_checkpointed_with_frame_budget(game, config, origin, stream, progress, None)
+}
+
+/// Run with an optional deterministic admitted-frame budget. Existing callers
+/// retain their original configuration and stream bytes through the wrapper.
+///
+/// # Errors
+/// Returns campaign errors or rejects a zero frame budget. The reservation
+/// window drains normally, preserving a replayable witness and exact cost.
+#[allow(clippy::too_many_lines)]
+pub fn run_campaign_checkpointed_with_frame_budget<G: CampaignInterfaces>(
+    game: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    stream: &mut dyn Write,
+    mut progress: Option<&mut dyn Write>,
+    frame_budget: Option<u64>,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    if frame_budget == Some(0) {
+        return Err("frame budget must be nonzero".into());
+    }
     if config.workers == 0 {
         return Err("campaign mode requires at least one worker".into());
     }
@@ -2621,7 +2654,8 @@ where
     ) {
         return Err("initial draw state exceeds its deterministic memory reserve".into());
     }
-    let header = stream_header(game, config, &origin_record, draw_table_header);
+    let mut header = stream_header(game, config, &origin_record, draw_table_header);
+    header.frame_budget = frame_budget;
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
 
@@ -2720,6 +2754,12 @@ where
                           worker: u32|
              -> Result<Option<SelectedJob<G>>, Box<dyn Error>> {
                 if *reserved >= config.execution_budget
+                    || frame_budget.is_some_and(|budget| {
+                        counters
+                            .bootstrap_frames
+                            .saturating_add(counters.job_frames)
+                            >= budget
+                    })
                     || stop_reservations_after_victory(
                         config.continue_after_victory,
                         core.victory_input.is_some(),
@@ -3433,6 +3473,9 @@ where
     }
     if header.memory_budget_mib == Some(0) {
         return Err("recorded memory budget must be greater than zero".into());
+    }
+    if header.frame_budget == Some(0) {
+        return Err("recorded frame budget must be nonzero".into());
     }
     let record_lines = lines.collect::<Vec<_>>();
     let mut required_draw_versions = BTreeSet::new();

@@ -26,8 +26,10 @@ uncapped `one_to_six` suffix, so those conditions need explicit paired ablation.
 Exploratory wall timings overlapped development activity and are not publication
 claims. Final comparisons must use pinned builds and controlled host allocation.
 
-Adapter audit remains separate from engine ablations. In particular, inherited
-MM2 coverage ordering and Metroid count-based capability identity need scrutiny;
+Adapter audit remains separate from engine ablations. In particular, the MM2 v18 key removes the inherited rooms-visited reward and the
+progress-aware selector separates location labels from progress. Metroid
+count-based capability identity and ordinary splice donor ordering still need
+separate ablations;
 being hidden behind `ArchiveKey` does not make them unbiased. Source-labelled
 mechanics are allowed; inferred routes, waypoint rewards, curated winning chords,
 per-obstacle weapon advice, and imported solution tapes are not.

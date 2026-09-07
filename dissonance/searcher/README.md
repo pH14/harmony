@@ -91,3 +91,19 @@ frames, final totals, logical memory categories, and monotonic host time. With
 and dispatched replay/suffix action budgets. Those action budgets are requested
 time, not actual emulator frames. Profiling values and clocks never enter
 search decisions or the deterministic campaign stream.
+
+`room_cell_uniform_128_energy_progress_cheapest_count_v1:<thresholds>` is a
+separate experiment that uses `ArchiveKey::progress_cmp` for class preference
+and frontier weighting. Equivalent/incomparable coarsest classes share draws;
+identity still orders maps, never the potentially partial progress relation.
+Within a pooled subtree it chooses a maximal observed descendant as its progress
+representative. Generic tests relabel locations and expose the numeric-label
+bias in the legacy control. This policy changes parent selection; ordinary
+splice donor ranking retains its historical key ordering and remains a separate
+ablation concern for nonlinear workloads.
+
+`run_campaign_checkpointed_with_frame_budget` adds an optional deterministic
+admitted-frame cutoff without changing existing `CampaignConfig` callers. The
+stream and report record that budget only when present. Already reserved jobs
+drain normally; evaluators must score first-victory cost against the threshold,
+not treat a later victory from the drained window as a budgeted success.

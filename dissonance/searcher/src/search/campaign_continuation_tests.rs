@@ -272,7 +272,7 @@ impl Evaluation for TestGame {
 }
 #[test]
 fn continuations_and_count_selection_replay_under_snapshot_pressure() {
-    for workers in [1, 4] {
+    for (workers, semantic) in [(1, false), (4, false), (4, true)] {
         let config = CampaignConfig {
             campaign_seed: 947,
             workers,
@@ -289,10 +289,17 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             suffix: SuffixShape::OneOrTwo,
             mixture: DrawMixture::EnergySpliceContinuation { scale: 6 },
             retention: RetentionPolicy::AdmitAlive,
-            selector: SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
-                entry: 3,
-                groups: vec![],
-            }),
+            selector: if semantic {
+                SelectorPolicy::EnergyProgressCheapestCount(RetireThresholds {
+                    entry: 3,
+                    groups: vec![],
+                })
+            } else {
+                SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
+                    entry: 3,
+                    groups: vec![],
+                })
+            },
             victory_input_path: None,
         };
         let mut bytes = Vec::new();
@@ -325,6 +332,23 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             replay_campaign_checkpointed(&TestGame, &bytes, None, None).unwrap();
         assert_eq!(live, replayed);
         assert_eq!(checkpoint, replay_checkpoint);
+        let mut bounded_stream = Vec::new();
+        let (bounded, bounded_checkpoint) = run_campaign_checkpointed_with_frame_budget(
+            &TestGame,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut bounded_stream,
+            None,
+            Some(128),
+        )
+        .unwrap();
+        assert_eq!(bounded.frame_budget, Some(128));
+        assert!(bounded.frames_emulated >= 128);
+        assert!(bounded.executions_completed < config.execution_budget);
+        assert_eq!(
+            replay_campaign_checkpointed(&TestGame, &bounded_stream, None, None).unwrap(),
+            (bounded, bounded_checkpoint)
+        );
         let tampered = text.replacen("energy_splice_continuation_v1:6", "energy_splice:6", 1);
         assert!(replay_campaign_checkpointed(&TestGame, tampered.as_bytes(), None, None).is_err());
         let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();

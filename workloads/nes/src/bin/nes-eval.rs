@@ -18,7 +18,7 @@ use nes_workload::{
         },
         campaign::{
             CampaignConfig, CampaignOrigin, Game, replay_campaign_checkpointed,
-            run_campaign_checkpointed,
+            run_campaign_checkpointed_with_frame_budget,
         },
         draw::{draw_mixture_from_identifier, suffix_shape_from_identifier},
     },
@@ -47,6 +47,10 @@ fn telemetry_now() -> Instant {
     Instant::now()
 }
 
+fn victory_within_budget(first_victory_frames: Option<u64>, budget: Option<u64>) -> bool {
+    first_victory_frames.is_some_and(|frames| budget.is_none_or(|limit| frames <= limit))
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -60,6 +64,8 @@ struct Request {
     seed: u64,
     workers: u32,
     executions: u64,
+    #[serde(default)]
+    frames: Option<u64>,
     actions: usize,
     memory_mib: usize,
     window: usize,
@@ -207,7 +213,7 @@ where
     }
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "selector":request.selector, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification}),
+        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "selector":request.selector, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification}),
     )?;
     let mut stream = StreamDigest {
         file: if full {
@@ -222,12 +228,13 @@ where
     let preparation_seconds = started.elapsed().as_secs_f64();
     phase(out, "search", started)?;
     let search_started = telemetry_now();
-    let (report, checkpoint) = run_campaign_checkpointed(
+    let (report, checkpoint) = run_campaign_checkpointed_with_frame_budget(
         &game,
         &config,
         &CampaignOrigin::Genesis,
         &mut stream,
         Some(&mut progress),
+        request.frames,
     )?;
     stream.flush()?;
     progress.flush()?;
@@ -271,9 +278,12 @@ where
         }
     }
     let verification_seconds = verify_started.elapsed().as_secs_f64();
+    let solved = victory_within_budget(report.frames_to_first_victory, request.frames);
     write_json(
         &out.join("result.json"),
-        &json!({"format":"nes-eval-result-v1", "status":"complete", "solved":report.victories>0,
+        &json!({"format":"nes-eval-result-v1", "status":"complete", "solved":solved,
+            "victory_observed":report.victories>0,
+            "frame_budget_overshoot":request.frames.map(|limit| report.frames_emulated.saturating_sub(limit)),
             "executions": report.executions_completed, "frames_emulated":report.frames_emulated,
             "frames_to_first_victory":report.frames_to_first_victory, "executions_to_first_victory":report.executions_to_first_victory,
             "preparation_seconds":preparation_seconds, "search_seconds":search_seconds, "executions_per_second":report.executions_completed as f64 / search_seconds,
@@ -281,7 +291,7 @@ where
             "export_seconds":export_seconds, "verification_seconds":verification_seconds,
             "verification":request.verification, "witness":first,
             "stream_sha256":format!("{:x}",stream.digest.finalize()), "stream_bytes_generated":stream.bytes, "stream_retained":full,
-            "stop_reason":if report.victories>0 {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else {"wall_limit"}
+            "stop_reason":if solved {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.frames_emulated >= limit) {"frame_limit"} else {"wall_limit"}
         }),
     )?;
     phase(out, "done", started)
@@ -402,5 +412,18 @@ fn main() -> Result<()> {
             )
         }
         _ => Err("unsupported game".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::victory_within_budget;
+
+    #[test]
+    fn a_victory_in_the_drained_window_does_not_pass_the_frame_gate() {
+        assert!(victory_within_budget(Some(128), Some(128)));
+        assert!(!victory_within_budget(Some(129), Some(128)));
+        assert!(victory_within_budget(Some(129), None));
+        assert!(!victory_within_budget(None, Some(128)));
     }
 }

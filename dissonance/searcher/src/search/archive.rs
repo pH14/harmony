@@ -217,6 +217,9 @@ pub enum SelectorPolicy {
     /// one plus its admitted selections. Cheap members start ahead without
     /// permanently monopolizing a cell's exploration budget.
     EnergyFrontierCheapestCount(RetireThresholds),
+    /// Count-weighted cost selection using the workload's progress relation
+    /// instead of interpreting location identity as progress.
+    EnergyProgressCheapestCount(RetireThresholds),
 }
 
 /// The recorded identifier of a parent selector.
@@ -239,6 +242,10 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
                 threshold_values(scales)
             )
         }
+        SelectorPolicy::EnergyProgressCheapestCount(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_progress_cheapest_count_v1:{}",
+            threshold_values(scales)
+        ),
         SelectorPolicy::EnergyFrontierCheapestCount(scales) => format!(
             "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:{}",
             threshold_values(scales)
@@ -277,6 +284,7 @@ pub fn selector_policy_from_identifier(
     let retire_prefix = format!("{SELECTOR_IDENTIFIER}_retire:");
     let energy_prefix = format!("{SELECTOR_IDENTIFIER}_energy:");
     let frontier_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier:");
+    let progress_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_count_v1:");
     let count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:");
     let cheapest_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest:");
     enum Parsed {
@@ -285,9 +293,12 @@ pub fn selector_policy_from_identifier(
         EnergyFrontier,
         EnergyFrontierCheapest,
         EnergyFrontierCheapestCount,
+        EnergyProgressCheapestCount,
     }
     let (values, selector) = if let Some(values) = identifier.strip_prefix(&retire_prefix) {
         (values, Parsed::Retire)
+    } else if let Some(values) = identifier.strip_prefix(&progress_prefix) {
+        (values, Parsed::EnergyProgressCheapestCount)
     } else if let Some(values) = identifier.strip_prefix(&count_prefix) {
         (values, Parsed::EnergyFrontierCheapestCount)
     } else if let Some(values) = identifier.strip_prefix(&cheapest_prefix) {
@@ -318,6 +329,9 @@ pub fn selector_policy_from_identifier(
         groups: parsed[1..].to_vec(),
     };
     Ok(match selector {
+        Parsed::EnergyProgressCheapestCount => {
+            SelectorPolicy::EnergyProgressCheapestCount(thresholds)
+        }
         Parsed::Retire => SelectorPolicy::Retire(thresholds),
         Parsed::Energy => SelectorPolicy::Energy(thresholds),
         Parsed::EnergyFrontier => SelectorPolicy::EnergyFrontier(thresholds),
@@ -3024,6 +3038,54 @@ where
         self.walk_to_cell_scan(rand, classes_skipped, ignore_streaks)
     }
 
+    fn semantic_progress(&self) -> bool {
+        matches!(
+            self.selector_policy,
+            SelectorPolicy::EnergyProgressCheapestCount(_)
+        )
+    }
+
+    fn class_order(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        ignore_streaks: bool,
+    ) -> Result<Vec<Reverse<K::Group>>, Box<dyn Error>> {
+        let mut classes = self.classes.keys().copied().collect::<Vec<_>>();
+        if !self.semantic_progress() {
+            return Ok(classes);
+        }
+        classes.retain(|class| {
+            let map = if ignore_streaks {
+                &self.active_skip_groups
+            } else {
+                &self.live_skip_groups
+            };
+            map.get(&class.0).is_some_and(|groups| !groups.is_empty())
+        });
+        let maximal = classes
+            .iter()
+            .copied()
+            .filter(|candidate| {
+                !classes
+                    .iter()
+                    .any(|other| K::progress_cmp(other.0, candidate.0) == Ordering::Greater)
+            })
+            .collect::<Vec<_>>();
+        if classes.is_empty() {
+            return Ok(classes);
+        }
+        let count = NonZeroUsize::new(maximal.len())
+            .ok_or("workload progress relation has a dominance cycle")?;
+        // Preserve the old random stream for a unique maximum, including a
+        // conventional totally ordered linear workload.
+        let selected = maximal[if maximal.len() == 1 {
+            0
+        } else {
+            rand.below(count)
+        }];
+        Ok(vec![selected])
+    }
+
     fn walk_to_cell_scan(
         &self,
         rand: &mut RomuDuoJrRand,
@@ -3031,7 +3093,8 @@ where
         ignore_streaks: bool,
     ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
         let skip_depth = 2.min(Self::coarsest_depth());
-        for cell_map in self.classes.values() {
+        for class in self.class_order(rand, ignore_streaks)? {
+            let cell_map = &self.classes[&class];
             let mut cells = Vec::new();
             let mut subclass_live = BTreeMap::<K::Group, bool>::new();
             for members in cell_map.values() {
@@ -3070,7 +3133,16 @@ where
                     let band = key.group(Self::frontier_depth());
                     deepest
                         .entry(key.group(depth))
-                        .and_modify(|frontier| *frontier = (*frontier).max(band))
+                        .and_modify(|frontier| {
+                            let ahead = if self.semantic_progress() {
+                                K::progress_cmp(band, *frontier) == Ordering::Greater
+                            } else {
+                                band > *frontier
+                            };
+                            if ahead {
+                                *frontier = band;
+                            }
+                        })
                         .or_insert(band);
                 }
                 let mut groups = deepest.keys().copied().collect::<Vec<_>>();
@@ -3127,7 +3199,8 @@ where
     ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
         let class_depth = Self::class_depth();
         let cell_depth = Self::cell_depth();
-        for (reverse_class, cells) in &self.classes {
+        for reverse_class in self.class_order(rand, false)? {
+            let cells = &self.classes[&reverse_class];
             let class = reverse_class.0;
             let active_skip = self.active_skip_groups.get(&class).map_or(0, BTreeMap::len);
             let live_skip = self.live_skip_groups.get(&class).map_or(0, BTreeMap::len);
@@ -3230,7 +3303,17 @@ where
                 .live_children
                 .get(level)
                 .and_then(|children| children.get(&(class, current)))
-                .and_then(BTreeSet::last)
+                .and_then(|children| {
+                    if self.semantic_progress() {
+                        children.iter().find(|candidate| {
+                            !children.iter().any(|other| {
+                                K::progress_cmp(*other, **candidate) == Ordering::Greater
+                            })
+                        })
+                    } else {
+                        children.last()
+                    }
+                })
                 .ok_or("live selector hierarchy is missing a pooled group's frontier")?;
         }
         Ok(current)
@@ -3263,7 +3346,8 @@ where
             SelectorPolicy::Energy(scales) => (scales, false),
             SelectorPolicy::EnergyFrontier(scales)
             | SelectorPolicy::EnergyFrontierCheapest(scales)
-            | SelectorPolicy::EnergyFrontierCheapestCount(scales) => (scales, true),
+            | SelectorPolicy::EnergyFrontierCheapestCount(scales)
+            | SelectorPolicy::EnergyProgressCheapestCount(scales) => (scales, true),
             _ => return Ok(rand.below(count)),
         };
         // A key with no pooled depth at this position has no barren counter
@@ -3323,8 +3407,19 @@ where
             }
             let (rank, span) = match (frontier, cells) {
                 (Some(frontier), _) => {
-                    let behind = ranked.partition_point(|band| *band <= frontier[index]);
-                    (ranked.len().saturating_sub(behind), 16)
+                    let ahead = if self.semantic_progress() {
+                        ranked
+                            .iter()
+                            .filter(|band| {
+                                K::progress_cmp(**band, frontier[index]) == Ordering::Greater
+                            })
+                            .take(16)
+                            .count()
+                    } else {
+                        let behind = ranked.partition_point(|band| *band <= frontier[index]);
+                        ranked.len().saturating_sub(behind)
+                    };
+                    (ahead, 16)
                 }
                 (None, Some(cells)) => {
                     let (opened, cost) = cells[index];
@@ -3369,7 +3464,8 @@ where
             | SelectorPolicy::Energy(thresholds)
             | SelectorPolicy::EnergyFrontier(thresholds)
             | SelectorPolicy::EnergyFrontierCheapest(thresholds)
-            | SelectorPolicy::EnergyFrontierCheapestCount(thresholds) => {
+            | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
+            | SelectorPolicy::EnergyProgressCheapestCount(thresholds) => {
                 self.since_retained[id] < thresholds.entry
             }
         }
@@ -3383,7 +3479,8 @@ where
             | SelectorPolicy::Energy(_)
             | SelectorPolicy::EnergyFrontier(_)
             | SelectorPolicy::EnergyFrontierCheapest(_)
-            | SelectorPolicy::EnergyFrontierCheapestCount(_) => true,
+            | SelectorPolicy::EnergyFrontierCheapestCount(_)
+            | SelectorPolicy::EnergyProgressCheapestCount(_) => true,
             SelectorPolicy::Retire(thresholds) => {
                 thresholds
                     .groups
@@ -3439,6 +3536,7 @@ where
             self.selector_policy,
             SelectorPolicy::EnergyFrontierCheapest(_)
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
+                | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             let mut ranked = window
                 .iter()
@@ -3448,6 +3546,7 @@ where
             let count_weighted = matches!(
                 self.selector_policy,
                 SelectorPolicy::EnergyFrontierCheapestCount(_)
+                    | SelectorPolicy::EnergyProgressCheapestCount(_)
             );
             let weights = ranked
                 .iter()
@@ -3688,6 +3787,7 @@ where
                 | SelectorPolicy::EnergyFrontier(_)
                 | SelectorPolicy::EnergyFrontierCheapest(_)
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
+                | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
                 let counter = map.entry(key.group(offset + 1)).or_insert(0);
@@ -3761,7 +3861,8 @@ where
             SelectorPolicy::Retire(_) => true,
             SelectorPolicy::Energy(_) | SelectorPolicy::EnergyFrontier(_) => new_slot_descendant,
             SelectorPolicy::EnergyFrontierCheapest(_)
-            | SelectorPolicy::EnergyFrontierCheapestCount(_) => new_cell_descendant,
+            | SelectorPolicy::EnergyFrontierCheapestCount(_)
+            | SelectorPolicy::EnergyProgressCheapestCount(_) => new_cell_descendant,
             SelectorPolicy::GroupUniform => false,
         };
         if clears_groups {
@@ -3784,7 +3885,8 @@ where
         | SelectorPolicy::Energy(thresholds)
         | SelectorPolicy::EnergyFrontier(thresholds)
         | SelectorPolicy::EnergyFrontierCheapest(thresholds)
-        | SelectorPolicy::EnergyFrontierCheapestCount(thresholds) = &self.selector_policy
+        | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
+        | SelectorPolicy::EnergyProgressCheapestCount(thresholds) = &self.selector_policy
         {
             let entries_over_threshold = u64::try_from(
                 self.since_retained
@@ -6348,5 +6450,99 @@ mod tests {
             "a slower route never displaces a faster one"
         );
         assert_eq!(archive.active_count(), 4);
+    }
+    #[derive(Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct LabelledKey<const CLASSES: bool> {
+        label: u16,
+        progress: u16,
+    }
+
+    impl<const CLASSES: bool> ArchiveKey for LabelledKey<CLASSES> {
+        type Group = [u16; 2];
+        type Lineage = ();
+        fn groups() -> usize {
+            5
+        }
+        fn group(self, depth: usize) -> Self::Group {
+            if depth == 4 && !CLASSES {
+                [0, 0]
+            } else {
+                [self.label, self.progress]
+            }
+        }
+        fn progress_cmp(left: Self::Group, right: Self::Group) -> std::cmp::Ordering {
+            left[1].cmp(&right[1])
+        }
+        fn complete(self, _: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+        fn record(_: &mut Self::Lineage, _: Self) {}
+    }
+
+    #[test]
+    fn semantic_selection_does_not_reward_arbitrary_location_labels() {
+        fn sample<const CLASSES: bool>(labels: [u16; 3], semantic: bool) -> [usize; 3] {
+            let mut archive = Archive::<u8, LabelledKey<CLASSES>, (), ()>::new(|_| 1);
+            for (id, label) in labels.into_iter().enumerate() {
+                archive
+                    .insert(
+                        None,
+                        0,
+                        ArchiveCandidate {
+                            suffix: vec![id as u8],
+                            key: LabelledKey {
+                                label,
+                                progress: if id == 2 { 1 } else { 2 },
+                            },
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .unwrap();
+            }
+            let thresholds = RetireThresholds {
+                entry: 1000,
+                groups: vec![1000; 3],
+            };
+            archive.selector_policy = if semantic {
+                SelectorPolicy::EnergyProgressCheapestCount(thresholds)
+            } else {
+                SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
+            };
+            let mut rand = RomuDuoJrRand::with_seed(802);
+            let mut counts = [0; 3];
+            for _ in 0..12_000 {
+                let (id, draw) = archive.select_parent(&mut rand, 64).unwrap();
+                if draw.path == SelectorPath::GroupWalk {
+                    counts[id] += 1;
+                }
+            }
+            counts
+        }
+        for labels in [[1, 900, 2000], [2000, 1, 900]] {
+            let classes = sample::<true>(labels, true);
+            assert!(
+                classes[0] > 4000 && classes[1] > 4000,
+                "equivalent progress must share classes: {classes:?}"
+            );
+            assert_eq!(
+                classes[2], 0,
+                "a larger label must not displace actual progress"
+            );
+            let bands = sample::<false>(labels, true);
+            assert!(
+                bands[0].abs_diff(bands[1]) < 400,
+                "location labels changed frontier weighting: {bands:?}"
+            );
+            assert!(
+                bands[0] > bands[2] * 2,
+                "declared progress must still influence selection: {bands:?}"
+            );
+        }
+        let legacy = sample::<true>([1, 900, 2000], false);
+        assert!(
+            legacy[2] > 8000,
+            "the control must reproduce the old label bias"
+        );
     }
 }

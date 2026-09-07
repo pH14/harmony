@@ -159,3 +159,12 @@ missing cells and publication leaks. The engine's generic continuation fixture
 requires actual reuse and memory pressure before comparing live/replay results.
 Licensed-ROM qualification runs locally; it is not skipped code presented as a
 passing CI test.
+
+For comparisons across different suffix lengths, set `search.frames` to a
+positive admitted-frame budget as well as an execution ceiling and wall limit.
+Selection stops at the frame threshold and drains the existing reservation
+window. Total work can therefore exceed the threshold; the overshoot is logged.
+A victory first observed beyond the frame budget is preserved and verified as
+evidence but does **not** pass the suite's success gate. The optional frame
+budget is recorded in the deterministic header/report. Omitting it preserves
+historical campaign behavior and byte format.

@@ -25,7 +25,8 @@ pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 /// Largest bounded input horizon accepted by a Mega Man 2 campaign.
 pub const MAX_MM2_ACTIONS: usize = 8_192;
 /// Recorded archive-key and per-location preference policy.
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_rooms_seen_screen_room_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v17";
+pub const KEY_POLICY_IDENTIFIER: &str =
+    "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18";
 /// Recorded same-slot replacement policy.
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 /// Recorded controller hold distribution.
@@ -47,7 +48,6 @@ pub type Mm2Archive = Archive<ButtonChord, Mm2ArchiveKey, Mm2Milestones, Mm2Snap
 pub struct Mm2ArchiveGroup {
     bosses: u8,
     stage: u8,
-    rooms_seen: u8,
     screen: u8,
     room: u8,
     boss_damage: u8,
@@ -67,11 +67,6 @@ pub struct Mm2ArchiveKey {
     pub bosses: u8,
     /// Stage number.
     pub stage: u8,
-    /// Distinct level rooms this lineage has entered within the stage. A
-    /// stage's route can double back to a lower screen index while still
-    /// moving forward, so the count of rooms entered orders progress
-    /// ahead of the screen index.
-    pub rooms_seen: u8,
     /// Screen index within the stage.
     pub screen: u8,
     /// Level room around the player; splits locations that share a screen.
@@ -126,7 +121,6 @@ impl ArchiveKey for Mm2ArchiveKey {
     fn group(self, depth: usize) -> Self::Group {
         let location = Mm2ArchiveGroup {
             stage: self.stage,
-            rooms_seen: self.rooms_seen,
             screen: self.screen,
             room: self.room,
             boss_damage: self.boss_damage,
@@ -161,7 +155,6 @@ impl ArchiveKey for Mm2ArchiveKey {
             3 => Mm2ArchiveGroup {
                 bosses: self.bosses,
                 stage: self.stage,
-                rooms_seen: self.rooms_seen,
                 screen: self.screen,
                 ..Mm2ArchiveGroup::default()
             },
@@ -177,76 +170,22 @@ impl ArchiveKey for Mm2ArchiveKey {
         1
     }
 
-    /// Progress is the stage path and boss damage; where the player stands
-    /// inside one screen says nothing about how far the route has come.
-    /// Within a stage the rooms entered and the path screen are compared
-    /// together: a lineage ahead on one and behind on the other is neither
-    /// ahead nor behind, so a detour through an extra room does not push
-    /// the lineage further along the path off the front.
+    /// Stage and location bytes identify places. Only observed boss clears
+    /// and current boss damage express progress; revisiting more rooms or
+    /// entering a numerically larger screen provides no reward.
     fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
-        (left.bosses, left.stage)
-            .cmp(&(right.bosses, right.stage))
-            .then_with(|| {
-                let left = [
-                    left.rooms_seen,
-                    left.screen,
-                    left.boss_damage,
-                    left.enemy_damage,
-                ];
-                let right = [
-                    right.rooms_seen,
-                    right.screen,
-                    right.boss_damage,
-                    right.enemy_damage,
-                ];
-                let ahead = left.iter().zip(&right).any(|(l, r)| l > r);
-                let behind = left.iter().zip(&right).any(|(l, r)| l < r);
-                match (ahead, behind) {
-                    (true, false) => Ordering::Greater,
-                    (false, true) => Ordering::Less,
-                    _ => Ordering::Equal,
-                }
-            })
+        (left.bosses, left.boss_damage).cmp(&(right.bosses, right.boss_damage))
     }
 
     fn preference_cmp(self, other: Self) -> Ordering {
         self.preference().cmp(&other.preference())
     }
 
-    /// Bit set of level rooms entered since the lineage's stage began.
-    type Lineage = RoomsSeen;
-
-    fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self {
-        let coarsest = Self::groups() - 1;
-        let mut rooms = match parent {
-            Some((key, rooms)) if key.group(coarsest) == self.group(coarsest) => *rooms,
-            _ => RoomsSeen::default(),
-        };
-        rooms.insert(self.room);
-        Self {
-            rooms_seen: rooms.count(),
-            ..self
-        }
+    type Lineage = ();
+    fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+        self
     }
-
-    fn record(lineage: &mut Self::Lineage, key: Self) {
-        lineage.insert(key.room);
-    }
-}
-
-/// Bit set over the 256 possible level room bytes.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct RoomsSeen([u64; 4]);
-
-impl RoomsSeen {
-    fn insert(&mut self, room: u8) {
-        self.0[usize::from(room / 64)] |= 1 << (room % 64);
-    }
-
-    fn count(self) -> u8 {
-        let count: u32 = self.0.iter().map(|word| word.count_ones()).sum();
-        u8::try_from(count).unwrap_or(u8::MAX)
-    }
+    fn record(_lineage: &mut Self::Lineage, _key: Self) {}
 }
 
 impl Mm2ArchiveKey {
@@ -264,7 +203,6 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
         health,
         energy,
         stage: state.stage,
-        rooms_seen: 1,
         screen: state.screen,
         room: state.room,
         boss_damage: state.boss_damage() / BOSS_DAMAGE_BUCKET,
@@ -492,32 +430,33 @@ mod tests {
     }
 
     #[test]
-    fn progress_compares_rooms_and_screen_together() {
-        let group = |rooms_seen, screen| Mm2ArchiveGroup {
-            bosses: 8,
-            stage: 11,
-            rooms_seen,
-            screen,
-            ..Mm2ArchiveGroup::default()
+    fn progress_ignores_stage_and_location_labels() {
+        let first = Mm2ArchiveGroup {
+            stage: 1,
+            screen: 10,
+            room: 4,
+            bosses: 2,
+            boss_damage: 1,
+            ..Default::default()
+        };
+        let elsewhere = Mm2ArchiveGroup {
+            stage: 12,
+            screen: 99,
+            room: 77,
+            ..first
         };
         assert_eq!(
-            Mm2ArchiveKey::progress_cmp(group(14, 41), group(13, 44)),
+            Mm2ArchiveKey::progress_cmp(first, elsewhere),
             Ordering::Equal
         );
         assert_eq!(
-            Mm2ArchiveKey::progress_cmp(group(14, 44), group(13, 41)),
-            Ordering::Greater
-        );
-        assert_eq!(
-            Mm2ArchiveKey::progress_cmp(group(13, 41), group(13, 44)),
-            Ordering::Less
-        );
-        let later_stage = Mm2ArchiveGroup {
-            stage: 12,
-            ..group(1, 1)
-        };
-        assert_eq!(
-            Mm2ArchiveKey::progress_cmp(later_stage, group(14, 44)),
+            Mm2ArchiveKey::progress_cmp(
+                Mm2ArchiveGroup {
+                    boss_damage: 2,
+                    ..first
+                },
+                elsewhere
+            ),
             Ordering::Greater
         );
     }
@@ -531,23 +470,11 @@ mod tests {
     }
 
     #[test]
-    fn a_lineage_counts_distinct_rooms_within_one_stage() {
-        let mut lineage = RoomsSeen::default();
-        let first = archive_key(state(0x40, 28, 0)).complete(None);
-        assert_eq!(first.rooms_seen, 1);
-        Mm2ArchiveKey::record(&mut lineage, first);
-        let mut next_state = state(0x40, 28, 0);
-        next_state.room = 3;
-        next_state.screen = 1;
-        let second = archive_key(next_state).complete(Some((first, &lineage)));
-        assert_eq!(second.rooms_seen, 2);
-        Mm2ArchiveKey::record(&mut lineage, second);
-        let back = archive_key(state(0x40, 28, 0)).complete(Some((second, &lineage)));
-        assert_eq!(back.rooms_seen, 2);
-        let mut other_stage = next_state;
-        other_stage.stage = 7;
-        let reset = archive_key(other_stage).complete(Some((second, &lineage)));
-        assert_eq!(reset.rooms_seen, 1);
+    fn wandering_does_not_change_the_same_endpoint_key() {
+        let first = archive_key(state(0x40, 28, 0));
+        let mut elsewhere = first;
+        elsewhere.room = 99;
+        assert_eq!(first.complete(Some((elsewhere, &()))), first.complete(None));
     }
 
     #[test]

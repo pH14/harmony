@@ -22,7 +22,7 @@ import sys
 import time
 
 SCHEMA = 'harmony-search-eval-v1'
-ALLOWED_SEARCH = {'seed','workers','executions','actions','memory_mib','window','wall_seconds','selector','suffix','mixture','verification'}
+ALLOWED_SEARCH = {'seed','workers','executions','frames','actions','memory_mib','window','wall_seconds','selector','suffix','mixture','verification'}
 
 
 def valid_id(value):
@@ -143,6 +143,7 @@ def expand_suite(suite, selected=None):
             for field in ('seed','workers','memory_mib','executions','actions','window','wall_seconds'):
                 val=request[field]
                 if type(val) is not int or val<0 or (field!='seed' and val==0): raise ValueError('invalid '+field)
+            if request.get('frames') is not None and (type(request['frames']) is not int or request['frames'] <= 0): raise ValueError('invalid frames')
             cell=f'{name}-s{seed}-w{workers}-m{memory}'
             jobs.append({'id':cell,'case':case,'request':request})
     if selected and set(selected)-names: raise ValueError('unknown selected case')
@@ -337,7 +338,7 @@ def compare(base, candidate):
             continue
         if a['identity']['policies'] != b['identity']['policies']:
             raise ValueError('adapter policy changed: ' + cell)
-        for key in ('game', 'level', 'stage', 'ai', 'whole_game', 'seed', 'workers', 'memory_mib', 'window', 'actions', 'executions', 'wall_seconds', 'rom_sha256', 'core_sha256', 'verification'):
+        for key in ('game', 'level', 'stage', 'ai', 'whole_game', 'seed', 'workers', 'memory_mib', 'window', 'actions', 'executions', 'frames', 'wall_seconds', 'rom_sha256', 'core_sha256', 'verification'):
             if a['search_request'].get(key) != b['search_request'].get(key):
                 raise ValueError('comparison changed ' + key + ': ' + cell)
         row = {'cell': cell, 'comparable': True, 'baseline_status': a['status'], 'candidate_status': b['status'],

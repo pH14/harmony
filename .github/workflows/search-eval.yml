@@ -24,6 +24,6 @@ jobs:
       - name: Generic search and deterministic replay
         run: cargo test --manifest-path dissonance/searcher/Cargo.toml --locked
       - name: Workload contracts without licensed ROMs
-        run: cargo test --manifest-path workloads/nes/Cargo.toml --lib --locked
+        run: cargo test --manifest-path workloads/nes/Cargo.toml --lib --bin nes-eval --locked
       - name: Dependency ownership
         run: python3 scripts/check-dependency-boundaries.py
