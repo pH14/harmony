@@ -29,7 +29,8 @@ jobs:
   whole-vm-search-campaign:
     name: Dissonance search · QuickNES guest · Consonance snapshots
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # A cold guest build precedes the 10,000-execution campaign.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       # GitHub-hosted x86 runners draw from both Intel and AMD pools. Keep
@@ -268,7 +269,8 @@ jobs:
   package-backend-acceptance:
     name: NES package native/Consonance backend acceptance
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Leave room for a cold guest build before the two backend checks.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
