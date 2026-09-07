@@ -1,7 +1,5 @@
 # PostgreSQL 14.0–14.3 — CREATE INDEX CONCURRENTLY builds indexes missing rows
 
-**Status: spec only — workload not yet built.**
-
 ## The bug
 
 Commit [`d9d076222f5b`](https://github.com/postgres/postgres/commit/d9d076222f5b) ("VACUUM:
@@ -29,8 +27,7 @@ interaction stated in `e28bb88`. Keep provenance straight if repro details are i
 
 ## The triple
 
-- **Workload**: PostgreSQL 14.3 (pin; reuse the existing Postgres image plumbing from tasks
-  37/38/48/49 with the version swapped). Two concurrent activities: (a) UPDATE churn on a
+- **Workload**: PostgreSQL 14.3 (pin). Two concurrent activities: (a) UPDATE churn on a
   table where the updated column is **not** in the index being built (so updates are HOT), with
   pruning opportunities during the build; (b) a loop of `DROP INDEX` /
   `CREATE INDEX CONCURRENTLY` on another column. Community experience: corruption within a few
@@ -58,3 +55,97 @@ interaction stated in `e28bb88`. Keep provenance straight if repro details are i
 
 Second in build order: it reuses the deterministic-Postgres plumbing wholesale, and its
 "no-fault, pure-timing" character complements the etcd entry's kill-at-Moment character.
+
+## Workload as built
+
+`image/Dockerfile` builds both arms. Its build args select the PostgreSQL
+release and nothing else, so the two images differ in the PostgreSQL sources
+alone: 14.3 by default, 14.4 with `PG_VERSION` and `PG_SHA256` overridden. Both
+come from the official source tarball, verified against the sha256 in
+`case.json`. Source rather than a distro package because the oracle needs
+contrib `amcheck` plus the `pg_amcheck` client, and because 14.3 has no current
+distro build at all. `image/README.md` carries the two build commands.
+
+`initdb` runs at build time, so the cluster system identifier is snapshotted
+into the image and every boot starts from identical on-disk bytes. The cluster
+sits at `/var/lib/postgresql/data` owned by uid 70, seeded with a 20000-row
+table at fillfactor 10, the `churn` procedure, the `amcheck` extension and
+`cic_k_idx`, and is shut down cleanly before the layer is committed. The low
+fillfactor leaves room for HOT versions and spreads the rows over about 2200
+pages, so a build's heap scans take longer than one churn cycle.
+
+`harmony search --package faults` takes the `docker save` tar and reads
+`/etc/harmony/bundle` from its rootfs:
+
+| item | what it runs |
+|---|---|
+| setup | tmpfs on `/tmp`, `/run` and `/dev/shm` at mode 1777; loopback up |
+| node 0 `postgres` | the cluster, as uid 70 |
+| ready | `pg_isready` on the unix socket |
+| hook 1 | HOT-update churn: the seeded `churn` procedure re-updates a small set of rows spread across the table, one short transaction per slice |
+| hook 2 | `DROP INDEX` + `CREATE INDEX CONCURRENTLY` round |
+| hook 3 | `pg_amcheck --heapallindexed`; `@always 2 0` when it reports a heap tuple with no index entry, silent when it could not run (server down, connection lost, no valid index) |
+| hook 4 | `VACUUM`; `@sometimes 25` so a pruned state is a search goal |
+
+The churn updates a column that is not in the index being built, so the updates
+are eligible for HOT and their pruning during a concurrent build is the
+mechanism the 14.3 bug turns on. A row drops out of the index only when it is
+updated and pruned twice: once between the build's heap-scan snapshot and that
+scan reading its page, and again between the validation snapshot and the
+validation scan reading its page. Both scans read a page with
+`heap_page_prune_opt`, and on 14.3 that prune uses a horizon that ignores the
+build's own snapshot. Each scan lasts a few milliseconds, so the churn cycles
+through its row set faster than that and keeps going for longer than a whole
+build. At fillfactor 70 the table fit in about 300 pages, a scan was shorter
+than a churn cycle, and a hand-written overlap of churn, build and check never
+tripped the oracle. Autovacuum is off, which makes hook 4 the only other
+pruning event and puts it under the searcher's control.
+
+The concurrency the bug needs comes from the fault agent spawning hooks without
+waiting, so overlapping hook 1 and hook 2 windows are what a campaign must
+produce. Knobs: `faultlab.churn_rows` (default 20, spread evenly over the
+table), `faultlab.churn_slices` (default 2 transactions per cycle) and
+`faultlab.churn_rounds` (default 1200 cycles) shape the churn. The hooks read
+them from `/proc/cmdline`, so `--knobs` varies them without a rebuild.
+
+The guest kernel is the `faultlab` profile of `nix run .#guest-images`, which
+lands beside the default kernel as `x86_64/bzImage-faultlab`. glibc's dynamic
+loader reads the timestamp counter before `main`, so every PostgreSQL binary
+faults on the default kernel; the profile turns the user counter traps off,
+runs a single processor, and carries the task-park fault.
+
+`case.json` is the machine-readable form of all of this: the pins, the node and
+hook table, the oracle, the run settings and the search budget. `probe.json` is
+the hand-written overlap — hook 1, hook 2, wait, wait, hook 3, wait, wait, at
+500 ms horizons — that must trip the oracle on 14.3 and stay silent on 14.4. It
+is the check that the window is reachable at all, and it runs before any
+campaign.
+
+## Status
+
+`.github/workflows/historical-bugs.yml` runs the case on GitHub-hosted
+`ubuntu-24.04` runners with nested KVM. Three checks:
+
+- **probe** — replay `probe.json` twice on 14.3 and once on 14.4. Both 14.3
+  replays must report the bug; the 14.4 replay must not.
+- **witness** — the same rule for `case.json`'s `witness`, when it has one.
+- **search** — a fresh campaign on 14.3 with the budget in `case.json`, and one
+  on 14.4 as a control. A 14.3 miss fails the job: this bug is expected to be
+  found, so a miss is a regression in the machinery rather than a null result.
+  A 14.4 hit fails it too.
+
+The earlier reproduction in the fault-library work — a campaign that reported
+the corruption at execution 476 with 8 workers at 500 ms horizons — was found
+on an SMP build of the guest kernel. The `faultlab` profile is single-processor
+now, and a schedule found on one build does not replay on the other, so that
+action list is not carried here as a witness. CI rediscovers one, and `witness`
+stays null until a campaign here produces an input that replays.
+
+Hosted runners have stock KVM, not the counter-exiting build. On stock KVM the
+`faultlab` kernel lets user space read the host's timestamp counter directly,
+so the raw host counter reaches guest memory and two runs of one input can end
+on different state hashes. What CI claims is therefore about the oracle and the
+search, not about bit-identical replay: the oracle trips on 14.3, stays silent
+on 14.4, and a campaign finds a tripping input within budget. Each job reports
+whether the state hashes across repeats agreed, as evidence, and does not
+require it.
