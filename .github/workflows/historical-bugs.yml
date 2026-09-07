@@ -268,6 +268,18 @@ jobs:
           cp workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent \
             tools/fault-agent
           file tools/fault-agent | grep -Eiq 'static'
+      - name: Summarize the tools
+        run: |
+          set -euo pipefail
+          {
+            echo "## Tools"
+            echo
+            echo "| binary | sha256 |"
+            echo "|---|---|"
+            for binary in tools/harmony tools/fault-agent; do
+              echo "| ${binary##*/} | $(sha256sum "${binary}" | cut -d' ' -f1) |"
+            done
+          } >>"${GITHUB_STEP_SUMMARY}"
       - uses: actions/upload-artifact@v4
         with:
           name: harmony-tools-${{ github.run_id }}
