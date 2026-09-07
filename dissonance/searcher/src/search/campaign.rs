@@ -32,8 +32,9 @@ use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
     Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, CampaignSpliceTail, Input,
-    ProgressPoint, RetentionPolicy, SelectorAccounting, SelectorDraw, SelectorPath, SelectorPolicy,
-    retention_policy_from_identifier, retention_policy_identifier, selector_policy_identifier,
+    ProgressPoint, ReplacementPolicy, RetentionPolicy, SelectorAccounting, SelectorDraw,
+    SelectorPath, SelectorPolicy, retention_policy_from_identifier, retention_policy_identifier,
+    selector_policy_identifier,
 };
 use crate::search::draw::{
     DrawMixture, EnergyStrategy, MIXTURE_BIASED_HALF_IDENTIFIER, MixtureDraw, MixtureEnergy,
@@ -255,6 +256,11 @@ pub trait Game: Sync {
     fn max_action_limit(&self) -> usize;
     /// Time-accounting function handed to the archive.
     fn action_time_fn(&self) -> fn(&Self::Action) -> u64;
+    /// How a full retention slot decides among equal-preference candidates
+    /// under `run`. The default keeps the cheapest route.
+    fn replacement_policy(&self, _run: &Self::Run) -> ReplacementPolicy {
+        ReplacementPolicy::default()
+    }
     /// Time of the longest single action the target can draw; the suffix
     /// time bound is a multiple of it.
     fn longest_action_time(&self) -> u64;
@@ -1311,6 +1317,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         memory_budget_mib: Option<usize>,
     ) -> Self {
         let mut archive = Archive::new(game.action_time_fn());
+        archive.replacement_policy = game.replacement_policy(run);
         archive.max_entries = archive_entry_limit;
         if let Some(memory_budget_mib) = memory_budget_mib {
             let total = memory_budget_mib.saturating_mul(1024 * 1024);

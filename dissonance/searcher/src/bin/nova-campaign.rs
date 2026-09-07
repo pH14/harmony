@@ -14,7 +14,9 @@ use std::{
 
 use searcher::{
     nova::{
-        archive::{MAX_ARCHIVE_ENTRIES, selector_policy_from_identifier},
+        archive::{
+            MAX_ARCHIVE_ENTRIES, replacement_from_identifier, selector_policy_from_identifier,
+        },
         campaign::{
             NovaCampaignConfig, NovaCampaignOrigin, NovaGame, NovaTerminalPredicate,
             replay_nova_campaign_checkpointed, run_nova_campaign_checkpointed,
@@ -22,7 +24,7 @@ use searcher::{
         target::{NovaInput, NovaLevel, NovaMechanicalState, NovaVideoMetadata},
     },
     search::{
-        archive::{RetentionPolicy, RetireThresholds, SelectorPolicy},
+        archive::{ReplacementPolicy, RetentionPolicy, RetireThresholds, SelectorPolicy},
         campaign::Game,
         draw::{
             DrawMixture, SuffixShape, draw_mixture_from_identifier, suffix_shape_from_identifier,
@@ -51,6 +53,7 @@ struct Args {
     terminal: NovaTerminalPredicate,
     selector: SelectorPolicy,
     fingerprint_bits: u8,
+    replacement: ReplacementPolicy,
 }
 
 struct RenderedMedia {
@@ -85,6 +88,7 @@ impl Args {
         let mut terminal = NovaTerminalPredicate::default();
         let mut selector = default_selector();
         let mut fingerprint_bits = 0_u8;
+        let mut replacement = ReplacementPolicy::default();
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
             if flag == "--marketing-soak" {
@@ -138,6 +142,13 @@ impl Args {
                 "--fingerprint-bits" => {
                     fingerprint_bits = parse_number("fingerprint-bits", value)?;
                 }
+                "--replacement" => {
+                    replacement = replacement_from_identifier(
+                        &value
+                            .into_string()
+                            .map_err(|_| "replacement is not UTF-8")?,
+                    )?;
+                }
                 other => return Err(format!("unknown argument {other:?}").into()),
             }
         }
@@ -159,6 +170,7 @@ impl Args {
             terminal,
             selector,
             fingerprint_bits,
+            replacement,
         })
     }
 }
@@ -214,6 +226,7 @@ fn campaign_config(args: &Args) -> NovaCampaignConfig {
         suffix: args.suffix,
         mixture: args.mixture,
         terminal: args.terminal,
+        replacement: args.replacement,
         victory_input_path: Some(args.output.join("victory-input.json")),
     }
 }

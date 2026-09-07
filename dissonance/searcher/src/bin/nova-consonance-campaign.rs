@@ -260,6 +260,7 @@ mod real {
         let game = NovaGame::new_consonance(&rom, &kernel, &initramfs);
         let config = NovaCampaignConfig {
             terminal: Default::default(),
+            replacement: Default::default(),
             campaign_seed: args.seed,
             workers: args.workers,
             execution_budget: args.executions,

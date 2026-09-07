@@ -19,9 +19,9 @@ use crate::{
         archive::{
             DURATION_IDENTIFIER, MAX_FINGERPRINT_BITS, MAX_NOVA_ACTIONS, NovaArchiveKey,
             NovaArchiveReport, NovaMilestoneInputs, NovaMilestoneTimes, NovaMilestones,
-            NovaProgressWatermark, REPLACEMENT_IDENTIFIER, archive_key, chord_time,
-            key_policy_identifier, merge_milestones, merge_progress_watermark, milestone_key,
-            milestones, sample_chord,
+            NovaProgressWatermark, archive_key, chord_time, key_policy_identifier,
+            merge_milestones, merge_progress_watermark, milestone_key, milestones,
+            replacement_from_identifier, replacement_identifier, sample_chord,
         },
         target::{
             ButtonChord, NovaInput, NovaLevel, NovaObservations, NovaSnapshot, NovaTarget,
@@ -29,7 +29,7 @@ use crate::{
         },
     },
     search::{
-        archive::RetentionPolicy,
+        archive::{ReplacementPolicy, RetentionPolicy},
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
             CampaignConfig, CampaignJobResult, CampaignModeReport, CampaignOrigin,
@@ -298,6 +298,8 @@ impl NovaTerminalPredicate {
 pub struct NovaCampaignRun {
     /// The state this run stops on.
     pub terminal: NovaTerminalPredicate,
+    /// How a full retention slot decides among equal-preference arrivals.
+    pub replacement: ReplacementPolicy,
 }
 
 /// Game-owned campaign evidence.
@@ -411,6 +413,8 @@ pub struct NovaCampaignConfig {
     pub victory_input_path: Option<PathBuf>,
     /// The state this campaign stops on.
     pub terminal: NovaTerminalPredicate,
+    /// How a full retention slot decides among equal-preference arrivals.
+    pub replacement: ReplacementPolicy,
 }
 
 impl NovaCampaignConfig {
@@ -430,6 +434,7 @@ impl NovaCampaignConfig {
             materialize_final_artifacts: self.materialize_final_artifacts,
             run: NovaCampaignRun {
                 terminal: self.terminal,
+                replacement: self.replacement,
             },
             suffix: self.suffix,
             mixture: self.mixture,
@@ -658,7 +663,10 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
             ),
             (KEY_POLICY_FIELD, key_identifier.as_str()),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
-            (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
+            (
+                REPLACEMENT_POLICY_FIELD,
+                replacement_identifier(run.replacement),
+            ),
             (TERMINAL_POLICY_FIELD, run.terminal.identifier()),
         ]
         .into_iter()
@@ -673,7 +681,12 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
     fn resolve_recorded(&self, policies: &GamePolicies) -> Result<NovaCampaignRun, Box<dyn Error>> {
         let terminal =
             NovaTerminalPredicate::from_identifier(recorded(policies, TERMINAL_POLICY_FIELD)?)?;
-        let run = NovaCampaignRun { terminal };
+        let replacement =
+            replacement_from_identifier(recorded(policies, REPLACEMENT_POLICY_FIELD)?)?;
+        let run = NovaCampaignRun {
+            terminal,
+            replacement,
+        };
         let expected = self.policies(&run);
         if policies != &expected {
             for (field, value) in &expected {
@@ -718,6 +731,10 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
 
     fn is_terminal(&self, target: &NovaTarget<M>) -> bool {
         target.is_dead() || target.exit_kind() != ExitKind::Ok
+    }
+
+    fn replacement_policy(&self, run: &NovaCampaignRun) -> ReplacementPolicy {
+        run.replacement
     }
 
     fn is_run_terminal(

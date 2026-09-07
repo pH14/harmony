@@ -123,6 +123,29 @@ pub fn first_depth_ord_disagreement<K: ArchiveKey>(samples: &[K]) -> Option<(K, 
     })
 }
 
+/// How a full retention slot decides between its incumbents and an
+/// equal-preference candidate.
+///
+/// Preference is always the first gate, so a candidate never displaces an
+/// incumbent holding more durable progress. Among equals the archive keeps
+/// the cheapest route, which is right while the incumbent can still be
+/// extended and wrong once it cannot: a cell whose only representative has
+/// gone barren rejects every later arrival as a costlier duplicate, and the
+/// hidden state the key does not name -- pose, momentum, what the level's
+/// actors are doing -- never gets a second sample. The retired variant lets
+/// an arrival take the slot from an incumbent the selector has already
+/// retired as barren, so a dead-end cell keeps sampling fresh arrivals
+/// instead of guarding the one that cannot move.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ReplacementPolicy {
+    /// Equal preference keeps the route with fewer frames in its group.
+    #[default]
+    FewestFrames,
+    /// As above, and an incumbent the selector has retired as barren loses
+    /// its slot to any equal-preference arrival.
+    FewestFramesOrRetired,
+}
+
 /// Compiled ceiling on archive entries. A ceiling is not an allocation:
 /// memory tracks actual retention, and a whole-tree resume inherits the
 /// source population in full. At the ceiling the archive rejects every
@@ -805,6 +828,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     deepest_leaf: Vec<(K, usize)>,
     /// Parent selector this archive selects under.
     pub selector_policy: SelectorPolicy,
+    /// How a full slot decides among equal-preference candidates.
+    pub replacement_policy: ReplacementPolicy,
     /// Pooled barren streak per group, one map per depth `1..groups() - 1`,
     /// finest first.
     group_barren: Vec<BTreeMap<K::Group, u64>>,
@@ -1381,6 +1406,7 @@ where
             lineages: Vec::new(),
             deepest_leaf: Vec::new(),
             selector_policy: SelectorPolicy::GroupUniform,
+            replacement_policy: ReplacementPolicy::default(),
             group_barren: vec![BTreeMap::new(); K::groups().saturating_sub(2)],
             action_time,
             live_progress: None,
@@ -2699,7 +2725,11 @@ where
             });
             worst.filter(|id| match key.preference_cmp(self.entries[*id].key) {
                 Ordering::Greater => true,
-                Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
+                Ordering::Equal => {
+                    candidate_time_in_group < self.time_in_group[*id]
+                        || (self.replacement_policy == ReplacementPolicy::FewestFramesOrRetired
+                            && !self.entry_unexhausted(*id))
+                }
                 Ordering::Less => false,
             })
         } else {
@@ -3813,7 +3843,7 @@ mod tests {
 
     use super::{
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, HISTORY_COMPACTION_MIN_DROPS, Input,
-        InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, RetireThresholds,
+        InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, ReplacementPolicy, RetireThresholds,
         SELECTION_EXHAUSTION_THRESHOLD, SelectorAccounting, SelectorDraw, SelectorPath,
         SelectorPolicy, selector_policy_from_identifier,
     };
@@ -4174,6 +4204,52 @@ mod tests {
         assert_eq!(archive.slots.get(&7), Some(&vec![1]));
         assert_eq!(insert(&mut archive, 3, 1), None);
         assert_eq!(archive.active, vec![false, true]);
+    }
+
+    /// A costlier equal-preference arrival loses to a live incumbent under
+    /// both policies, and takes the slot from a retired one only under the
+    /// retired policy: a dead-end cell then keeps sampling arrivals instead
+    /// of guarding the cheapest one that cannot move.
+    #[test]
+    fn retired_replacement_yields_a_barren_slot_to_an_equal_arrival() {
+        let run = |policy: ReplacementPolicy, retire: bool| {
+            let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+            archive.replacement_policy = policy;
+            archive.selector_policy = SelectorPolicy::Retire(RetireThresholds {
+                entry: 3,
+                groups: Vec::new(),
+            });
+            let candidate = |suffix: Vec<u8>| ArchiveCandidate {
+                suffix,
+                key: PreferredKey {
+                    slot: 7,
+                    quality: 4,
+                },
+                milestones: (),
+            };
+            let incumbent = archive
+                .insert(None, 0, candidate(vec![1]), ())
+                .expect("insert incumbent")
+                .expect("incumbent retained");
+            if retire {
+                archive.since_retained[incumbent] = 3;
+            }
+            // Two actions cost more than one, so this arrival is the costlier route.
+            let arrival = archive
+                .insert(None, 0, candidate(vec![2, 3]), ())
+                .expect("insert arrival");
+            (arrival, archive.active[incumbent])
+        };
+        assert_eq!(run(ReplacementPolicy::FewestFrames, false), (None, true));
+        assert_eq!(run(ReplacementPolicy::FewestFrames, true), (None, true));
+        assert_eq!(
+            run(ReplacementPolicy::FewestFramesOrRetired, false),
+            (None, true)
+        );
+        assert_eq!(
+            run(ReplacementPolicy::FewestFramesOrRetired, true),
+            (Some(1), false)
+        );
     }
 
     fn flat_archive<const DEPTHS: usize>(

@@ -14,8 +14,8 @@ use crate::{
     },
     search::{
         archive::{
-            Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-            SelectorPolicy, entries_by_suffix,
+            Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, ReplacementPolicy,
+            SelectorAccounting, SelectorPolicy, entries_by_suffix,
         },
         rand::RomuDuoJrRand,
     },
@@ -44,8 +44,34 @@ pub fn key_policy_identifier(fingerprint_bits: u8) -> String {
         format!("nova_spatial_16_preference_fingerprint{fingerprint_bits}_v1")
     }
 }
-/// Recorded same-slot replacement policy.
+/// Recorded same-slot replacement policy keeping the cheapest route.
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
+/// Recorded same-slot replacement policy that also lets a retired incumbent
+/// lose its slot.
+pub const REPLACEMENT_OR_RETIRED_IDENTIFIER: &str =
+    "opaque_preference_then_fewest_frames_or_retired";
+
+/// The recorded identifier of a replacement policy.
+#[must_use]
+pub fn replacement_identifier(policy: ReplacementPolicy) -> &'static str {
+    match policy {
+        ReplacementPolicy::FewestFrames => REPLACEMENT_IDENTIFIER,
+        ReplacementPolicy::FewestFramesOrRetired => REPLACEMENT_OR_RETIRED_IDENTIFIER,
+    }
+}
+
+/// The replacement policy a recorded identifier names.
+///
+/// # Errors
+///
+/// Returns an error when the identifier names no compiled policy.
+pub fn replacement_from_identifier(identifier: &str) -> Result<ReplacementPolicy, Box<dyn Error>> {
+    match identifier {
+        REPLACEMENT_IDENTIFIER => Ok(ReplacementPolicy::FewestFrames),
+        REPLACEMENT_OR_RETIRED_IDENTIFIER => Ok(ReplacementPolicy::FewestFramesOrRetired),
+        other => Err(format!("Nova replacement policy {other} is not recognized").into()),
+    }
+}
 /// Recorded controller hold distribution.
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
