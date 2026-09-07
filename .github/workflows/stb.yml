@@ -11,6 +11,7 @@ on:
       - workloads/nes/Cargo.toml
       - workloads/nes/Cargo.lock
       - workloads/nes-machine/**
+      - workloads/nes-protocol/**
       - dissonance/searcher/**
       - dissonance/Cargo.toml
       - dissonance/Cargo.lock
