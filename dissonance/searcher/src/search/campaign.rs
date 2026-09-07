@@ -1387,8 +1387,8 @@ fn verify_selector_annotation(draw: &SelectorDraw) -> Result<(), Box<dyn Error>>
         (SelectorPath::GroupWalk, None) => {
             Err("cell draw is missing its concentration record".into())
         }
-        (SelectorPath::Uniform, Some(_)) => {
-            Err("uniform draw carries a concentration record".into())
+        (SelectorPath::Uniform | SelectorPath::Continuation, Some(_)) => {
+            Err("non-cell draw carries a concentration record".into())
         }
         _ => Ok(()),
     }
@@ -2005,7 +2005,7 @@ struct CampaignCounters {
     skips_per_worker: Vec<u64>,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize)]
 struct LiveCoordinatorProfile {
     enabled: bool,
     receive_wait_ns: u128,
@@ -2339,6 +2339,24 @@ fn replay_splice<G: Game>(
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "K: Serialize + DeserializeOwned")]
 pub struct CampaignProgressRecord<K> {
+    /// Objective workload evidence, independent of the selector's deepest key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<serde_json::Value>,
+    /// Observed milestones may come from different explored branches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub milestones: Option<serde_json::Value>,
+    /// Terminal events admitted so far.
+    #[serde(default)]
+    pub victories: u64,
+    /// Deaths observed across admitted executions.
+    #[serde(default)]
+    pub deaths: u64,
+    /// Monotonic wall time, used for telemetry only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_elapsed_millis: Option<u64>,
+    /// Optional host phase timings and dispatched action budgets; never replay state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator: Option<serde_json::Value>,
     /// Seconds since the Unix epoch when the line was written.
     pub unix_time: u64,
     /// Executions admitted so far.
@@ -2411,6 +2429,75 @@ pub struct CampaignProgressRecord<K> {
     /// Selector groups carrying a live barren counter.
     #[serde(default)]
     pub barren_groups: usize,
+}
+
+fn write_live_progress<G: Game>(
+    core: &CoordinatorCore<G>,
+    counters: &CampaignCounters,
+    coordinator_profile: &LiveCoordinatorProfile,
+    draw_state_memory_bytes: usize,
+    telemetry_started: Instant,
+    sink: &mut dyn Write,
+) -> Result<(), Box<dyn Error>> {
+    let sequence = core.sequence;
+    #[allow(clippy::disallowed_methods)]
+    let unix_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let (deepest_key, cheapest, retained) = core
+        .archive
+        .live_progress()
+        .map(|(key, cheapest, retained)| (Some(key), cheapest, retained))
+        .unwrap_or((None, 0, 0));
+    let line = serde_json::to_string(&CampaignProgressRecord {
+        coordinator: coordinator_profile
+            .enabled
+            .then(|| serde_json::to_value(coordinator_profile))
+            .transpose()?,
+        progress: Some(serde_json::to_value(G::aggregate_progress(&core.evidence))?),
+        milestones: Some(serde_json::to_value(core.aggregate_milestones())?),
+        victories: core.victories,
+        deaths: core.deaths,
+        search_elapsed_millis: Some(telemetry_started)
+            .map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX)),
+        unix_time,
+        // `sequence` is the one-based count returned by admission;
+        // the sidecar must report completed executions, not the
+        // zero-based reservation/admission index.
+        executions: sequence,
+        frames_emulated: counters
+            .bootstrap_frames
+            .saturating_add(counters.job_frames),
+        deepest_key,
+        cheapest_time_in_group: cheapest,
+        retained,
+        active_entries: core.archive.active_count(),
+        resident_snapshots: core.archive.resident_snapshot_count(),
+        resident_snapshot_bytes: core.archive.resident_snapshot_bytes(),
+        history_memory_bytes: core.archive.history_memory_bytes(),
+        draw_state_memory_bytes,
+        entry_metadata_memory_bytes: core.archive.entry_metadata_memory_bytes(),
+        input_index_memory_bytes: core.archive.input_index_memory_bytes(),
+        novelty_memory_bytes: core.archive.novelty_memory_bytes(),
+        barren_memory_bytes: core.archive.barren_memory_bytes(),
+        resident_memory_bytes: core
+            .archive
+            .resident_memory_bytes()
+            .saturating_add(draw_state_memory_bytes),
+        snapshot_evictions: core.archive.snapshot_evictions(),
+        entry_drops: core.archive.entry_drops(),
+        live_entries: core.archive.live_entry_count(),
+        history_compactions: core.archive.history_compactions(),
+        historical_entries_dropped: core.archive.historical_entries_dropped(),
+        input_reconstructions: core.archive.input_reconstructions(),
+        input_index_nodes: core.archive.input_index_nodes(),
+        historical_cells: core.archive.historical_cell_count(),
+        barren_groups: core.archive.barren_group_count(),
+    })?;
+    sink.write_all(line.as_bytes())?;
+    sink.write_all(b"\n")?;
+    sink.flush()?;
+    Ok(())
 }
 
 /// Seed the coordinator from the origin: genesis alone, or genesis plus the
@@ -2546,6 +2633,10 @@ where
         config.memory_budget_mib,
     );
     core.archive.selector_policy = config.selector.clone();
+    core.archive.enable_continuations(matches!(
+        config.mixture,
+        DrawMixture::EnergySpliceContinuation { .. }
+    ));
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = game.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the bootstrap target: {error}").into()
@@ -2577,7 +2668,8 @@ where
     // The wall cutoff is live-schedule input only: it stops issuing new
     // reservations and never enters campaign state.
     #[allow(clippy::disallowed_methods)] // not order-observable: reservation cutoff only.
-    let started = config.wall_budget.map(|_| std::time::Instant::now());
+    let telemetry_started = std::time::Instant::now();
+    let started = config.wall_budget.map(|_| telemetry_started);
 
     let mut reserved = 0_u64;
     let mut coordinator_profile =
@@ -2644,6 +2736,76 @@ where
                 let max_actions = core.max_actions;
                 core.archive.establish_liveness_anchor(max_actions);
                 let mut consecutive_skips = 0_u64;
+                // One fixed slot in four may carry an observed transition.
+                // The complete tail is recorded before old metadata can be
+                // reclaimed; serial replay needs no retained donor snapshot.
+                if reserved.wrapping_add(1).is_multiple_of(4) {
+                    while let Some(continuation) = core.archive.pop_continuation() {
+                        let Some(parent_index) = core.archive.index_of_id(continuation.parent)
+                        else {
+                            continue;
+                        };
+                        if !core.archive.active[parent_index]
+                            || core.archive.entries[parent_index].input_len >= max_actions
+                        {
+                            continue;
+                        }
+                        let mut suffix = continuation.actions;
+                        config
+                            .suffix
+                            .bound_time(&mut suffix, action_time, longest_action_time);
+                        if core.all_prefixes_archived(parent_index, &suffix) {
+                            continue;
+                        }
+                        let (mixture_weight, splice_weight) = (0, u8::MAX);
+                        let mut mutation_seed = rand.next_u64();
+                        while energy_strategy(mutation_seed, mixture_weight, splice_weight)?
+                            != EnergyStrategy::Splice
+                        {
+                            mutation_seed = rand.next_u64();
+                        }
+                        let parent_id = continuation.parent;
+                        let selector = SelectorDraw {
+                            path: SelectorPath::Continuation,
+                            classes_skipped: 0,
+                            counter_reset: false,
+                            concentration: None,
+                        };
+                        let checkpoint = game.draw_checkpoint(draw_state)?;
+                        let draw_table_before = draw_checkpoint_to_wire(game, checkpoint.as_ref())?;
+                        let splice = Some(CampaignSpliceRecord::Tail {
+                            donor_id: continuation.donor,
+                            leaf_id: continuation.leaf,
+                            tail_postcard: Some(postcard::to_allocvec(&suffix)?),
+                        });
+                        *reserved = reserved.saturating_add(1);
+                        core.archive.pin_metadata(parent_id)?;
+                        let (snapshot, replay, snapshot_id) =
+                            core.archive.pin_job_origin(parent_index)?;
+                        let entry = &core.archive.entries[parent_index];
+                        return Ok(Some((
+                            JobSpec {
+                                reservation: 0,
+                                snapshot,
+                                replay,
+                                parent_actions: entry.input_len,
+                                parent_milestones: entry.milestones,
+                                suffix,
+                            },
+                            PendingJob {
+                                snapshot_id,
+                                worker,
+                                parent_id,
+                                mutation_seed,
+                                mixture_weight,
+                                splice_weight,
+                                splice,
+                                selector,
+                                draw_table_before,
+                            },
+                        )));
+                    }
+                }
                 loop {
                     let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
                     let parent_id = core
@@ -2655,7 +2817,8 @@ where
                         DrawMixture::Energy { scale } => {
                             (core.mixture_energy.biased_weight(scale), 0)
                         }
-                        DrawMixture::EnergySplice { scale } => {
+                        DrawMixture::EnergySplice { scale }
+                        | DrawMixture::EnergySpliceContinuation { scale } => {
                             core.mixture_energy.splice_weights(scale)
                         }
                         _ => (default_mixture_weight(), 0),
@@ -2926,8 +3089,9 @@ where
                         new_slot_descendant,
                         new_cell_descendant,
                     );
-                    if let DrawMixture::Energy { .. } | DrawMixture::EnergySplice { .. } =
-                        config.mixture
+                    if let DrawMixture::Energy { .. }
+                    | DrawMixture::EnergySplice { .. }
+                    | DrawMixture::EnergySpliceContinuation { .. } = config.mixture
                     {
                         let strategy = energy_strategy(
                             pending_job.mutation_seed,
@@ -3017,57 +3181,14 @@ where
                         // independent of host speed; the timestamp below is
                         // informational only.
                         if progress_checkpoint_due(sequence) {
-                            #[allow(clippy::disallowed_methods)]
-                            let unix_time = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map_or(0, |since| since.as_secs());
-                            let (deepest_key, cheapest, retained) = core
-                                .archive
-                                .live_progress()
-                                .map(|(key, cheapest, retained)| (Some(key), cheapest, retained))
-                                .unwrap_or((None, 0, 0));
-                            let line = serde_json::to_string(&CampaignProgressRecord {
-                                unix_time,
-                                // `sequence` is the one-based count returned by admission;
-                                // the sidecar must report completed executions, not the
-                                // zero-based reservation/admission index.
-                                executions: sequence,
-                                frames_emulated: counters
-                                    .bootstrap_frames
-                                    .saturating_add(counters.job_frames),
-                                deepest_key,
-                                cheapest_time_in_group: cheapest,
-                                retained,
-                                active_entries: core.archive.active_count(),
-                                resident_snapshots: core.archive.resident_snapshot_count(),
-                                resident_snapshot_bytes: core.archive.resident_snapshot_bytes(),
-                                history_memory_bytes: core.archive.history_memory_bytes(),
+                            write_live_progress(
+                                &core,
+                                &counters,
+                                &coordinator_profile,
                                 draw_state_memory_bytes,
-                                entry_metadata_memory_bytes: core
-                                    .archive
-                                    .entry_metadata_memory_bytes(),
-                                input_index_memory_bytes: core.archive.input_index_memory_bytes(),
-                                novelty_memory_bytes: core.archive.novelty_memory_bytes(),
-                                barren_memory_bytes: core.archive.barren_memory_bytes(),
-                                resident_memory_bytes: core
-                                    .archive
-                                    .resident_memory_bytes()
-                                    .saturating_add(draw_state_memory_bytes),
-                                snapshot_evictions: core.archive.snapshot_evictions(),
-                                entry_drops: core.archive.entry_drops(),
-                                live_entries: core.archive.live_entry_count(),
-                                history_compactions: core.archive.history_compactions(),
-                                historical_entries_dropped: core
-                                    .archive
-                                    .historical_entries_dropped(),
-                                input_reconstructions: core.archive.input_reconstructions(),
-                                input_index_nodes: core.archive.input_index_nodes(),
-                                historical_cells: core.archive.historical_cell_count(),
-                                barren_groups: core.archive.barren_group_count(),
-                            })?;
-                            sink.write_all(line.as_bytes())?;
-                            sink.write_all(b"\n")?;
-                            sink.flush()?;
+                                telemetry_started,
+                                sink,
+                            )?;
                             if coordinator_profile.enabled {
                                 eprintln!(
                                     "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} idle_workers={} queued_specs={} completed_buffered={} job_frames={} replay_jobs={} replay_actions={} replay_time={} suffix_actions={} suffix_time={}",
@@ -3190,6 +3311,16 @@ where
     core.archive.preserve_inactive_snapshots(false)?;
     core.archive.compact_history_for_final_report()?;
     core.finish_curve();
+    if let Some(sink) = progress {
+        write_live_progress(
+            &core,
+            &counters,
+            &coordinator_profile,
+            game.draw_state_memory_bytes(&draw_state),
+            telemetry_started,
+            sink,
+        )?;
+    }
     let stream_sha256 = writer.finish()?;
     counters.draw_state_memory_bytes = game.draw_state_memory_bytes(&draw_state);
     Ok(build_report(
@@ -3467,6 +3598,10 @@ where
     core.record_progress = header.progress_policy.is_some();
     core.bounded_progress_curve = uses_bounded_progress_curve(header.progress_policy.as_deref());
     core.archive.selector_policy = replay_selector.clone();
+    core.archive.enable_continuations(matches!(
+        replay_mixture,
+        DrawMixture::EnergySpliceContinuation { .. }
+    ));
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = game.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
@@ -3592,6 +3727,9 @@ where
                 if worker >= counters.skips_per_worker.len() {
                     return Err("recorded skip names an unknown worker".into());
                 }
+                if skip.selector.path == SelectorPath::Continuation {
+                    return Err("continuations cannot be recorded skips".into());
+                }
                 verify_selector_annotation(&skip.selector)?;
                 core.archive.record_selection(parent_index, &skip.selector);
                 core.archive.maintain_memory_budget()?;
@@ -3608,6 +3746,23 @@ where
                 game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
             }
             CampaignStreamRecord::Job(job) => {
+                if job.selector.path == SelectorPath::Continuation
+                    && (!matches!(replay_mixture, DrawMixture::EnergySpliceContinuation { .. })
+                        || !job.sequence.is_multiple_of(4)
+                        || job.mixture_weight != 0
+                        || job.splice_weight != u8::MAX
+                        || !matches!(
+                            &job.splice,
+                            Some(CampaignSpliceRecord::Tail {
+                                tail_postcard: Some(_),
+                                ..
+                            })
+                        ))
+                {
+                    return Err(
+                        "continuation job lacks its registered schedule or complete tail".into(),
+                    );
+                }
                 let replay_job_slot = replay_job_index;
                 replay_job_index = replay_job_index.saturating_add(1);
                 let parent_index = core
@@ -5053,3 +5208,7 @@ mod tests {
         assert_eq!(round_trip, job);
     }
 }
+
+#[cfg(test)]
+#[path = "campaign_continuation_tests.rs"]
+mod continuation_tests;

@@ -4,6 +4,7 @@
 
 pub mod archive;
 pub mod campaign;
+mod continuation;
 pub mod draw;
 pub mod empirical_steps;
 pub mod parallel;

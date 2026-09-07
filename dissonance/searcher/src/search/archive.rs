@@ -19,7 +19,10 @@ use std::{
     sync::Arc,
 };
 
-use crate::search::rand::RomuDuoJrRand;
+use crate::search::{
+    continuation::{Continuation, ContinuationBank},
+    rand::RomuDuoJrRand,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
@@ -58,6 +61,11 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     /// preference and superseded representatives should stop receiving work.
     fn slot_capacity() -> usize {
         MAX_ENTRIES_PER_KEY
+    }
+    /// Workload progress relation, independent of map identity. Equal may
+    /// represent incomparability; this relation must never order a map.
+    fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
+        left.cmp(&right)
     }
     /// Compare two keys that map to the same depth-0 slot by game-owned state
     /// preference. The archive treats the result as opaque and falls back to
@@ -205,6 +213,10 @@ pub enum SelectorPolicy {
     /// cheapest, flooring at 1. Cheap entries hold the most unspent budget
     /// under any workload clock, so they take most of the cell's draws.
     EnergyFrontierCheapest(RetireThresholds),
+    /// The cost-ranked frontier walk, dividing each member's draw weight by
+    /// one plus its admitted selections. Cheap members start ahead without
+    /// permanently monopolizing a cell's exploration budget.
+    EnergyFrontierCheapestCount(RetireThresholds),
 }
 
 /// The recorded identifier of a parent selector.
@@ -227,6 +239,10 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
                 threshold_values(scales)
             )
         }
+        SelectorPolicy::EnergyFrontierCheapestCount(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:{}",
+            threshold_values(scales)
+        ),
         SelectorPolicy::EnergyFrontierCheapest(scales) => {
             format!(
                 "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest:{}",
@@ -261,15 +277,19 @@ pub fn selector_policy_from_identifier(
     let retire_prefix = format!("{SELECTOR_IDENTIFIER}_retire:");
     let energy_prefix = format!("{SELECTOR_IDENTIFIER}_energy:");
     let frontier_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier:");
+    let count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:");
     let cheapest_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest:");
     enum Parsed {
         Retire,
         Energy,
         EnergyFrontier,
         EnergyFrontierCheapest,
+        EnergyFrontierCheapestCount,
     }
     let (values, selector) = if let Some(values) = identifier.strip_prefix(&retire_prefix) {
         (values, Parsed::Retire)
+    } else if let Some(values) = identifier.strip_prefix(&count_prefix) {
+        (values, Parsed::EnergyFrontierCheapestCount)
     } else if let Some(values) = identifier.strip_prefix(&cheapest_prefix) {
         (values, Parsed::EnergyFrontierCheapest)
     } else if let Some(values) = identifier.strip_prefix(&frontier_prefix) {
@@ -301,6 +321,9 @@ pub fn selector_policy_from_identifier(
         Parsed::Retire => SelectorPolicy::Retire(thresholds),
         Parsed::Energy => SelectorPolicy::Energy(thresholds),
         Parsed::EnergyFrontier => SelectorPolicy::EnergyFrontier(thresholds),
+        Parsed::EnergyFrontierCheapestCount => {
+            SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
+        }
         Parsed::EnergyFrontierCheapest => SelectorPolicy::EnergyFrontierCheapest(thresholds),
     })
 }
@@ -333,6 +356,8 @@ const CELL_NOVELTY_RANK_SCALE: usize = 8;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectorPath {
+    /// A discovered continuation retried from a stronger same-slot state.
+    Continuation,
     /// The one-in-four uniform draw over all active entries.
     Uniform,
     /// The group walk: deepest coarsest class first, one unexhausted group
@@ -370,6 +395,9 @@ pub struct ConcentrationDraw {
 /// Per-campaign accounting for the selector.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SelectorAccounting {
+    /// Admitted attempts at learned continuations, absent in historical policies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_selections: Option<u64>,
     /// Parent selections drawn through the uniform path.
     pub uniform_selections: u64,
     /// Parent selections drawn through the cell path.
@@ -844,6 +872,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     historical_entries_dropped: u64,
     /// Rare full-input reconstructions from the compact prefix structure.
     input_reconstructions: Cell<u64>,
+    continuations: Option<ContinuationBank<K::Group, A>>,
 }
 
 /// Members of one walk class, ascending per selection cell.
@@ -1366,6 +1395,7 @@ where
             history_compactions: 0,
             historical_entries_dropped: 0,
             input_reconstructions: Cell::new(0),
+            continuations: None,
         }
     }
 
@@ -2687,6 +2717,23 @@ where
         if self.active_count >= self.max_entries {
             return Err("archive population limit did not retire an entry".into());
         }
+        if let Some(bank) = &mut self.continuations {
+            if replace.is_some_and(|replaced| {
+                key.preference_cmp(self.entries[replaced].key) == Ordering::Greater
+            }) {
+                bank.improved(key.group(0), self.next_entry_id);
+            }
+            if let Some(parent) = parent_id {
+                let entry = &self.entries[parent];
+                bank.record(
+                    entry.key.group(0),
+                    key.group(0),
+                    entry.id,
+                    self.next_entry_id,
+                    &suffix,
+                );
+            }
+        }
         if let Some(replaced) = replace {
             self.replacement_time_displaced = self.replacement_time_displaced.saturating_add(1);
             self.deactivate(replaced);
@@ -3215,7 +3262,8 @@ where
         let (scales, ranked_by_frontier) = match &self.selector_policy {
             SelectorPolicy::Energy(scales) => (scales, false),
             SelectorPolicy::EnergyFrontier(scales)
-            | SelectorPolicy::EnergyFrontierCheapest(scales) => (scales, true),
+            | SelectorPolicy::EnergyFrontierCheapest(scales)
+            | SelectorPolicy::EnergyFrontierCheapestCount(scales) => (scales, true),
             _ => return Ok(rand.below(count)),
         };
         // A key with no pooled depth at this position has no barren counter
@@ -3320,7 +3368,8 @@ where
             SelectorPolicy::Retire(thresholds)
             | SelectorPolicy::Energy(thresholds)
             | SelectorPolicy::EnergyFrontier(thresholds)
-            | SelectorPolicy::EnergyFrontierCheapest(thresholds) => {
+            | SelectorPolicy::EnergyFrontierCheapest(thresholds)
+            | SelectorPolicy::EnergyFrontierCheapestCount(thresholds) => {
                 self.since_retained[id] < thresholds.entry
             }
         }
@@ -3333,7 +3382,8 @@ where
             SelectorPolicy::GroupUniform
             | SelectorPolicy::Energy(_)
             | SelectorPolicy::EnergyFrontier(_)
-            | SelectorPolicy::EnergyFrontierCheapest(_) => true,
+            | SelectorPolicy::EnergyFrontierCheapest(_)
+            | SelectorPolicy::EnergyFrontierCheapestCount(_) => true,
             SelectorPolicy::Retire(thresholds) => {
                 thresholds
                     .groups
@@ -3388,14 +3438,29 @@ where
         let id = if matches!(
             self.selector_policy,
             SelectorPolicy::EnergyFrontierCheapest(_)
+                | SelectorPolicy::EnergyFrontierCheapestCount(_)
         ) {
             let mut ranked = window
                 .iter()
                 .map(|id| (self.time_in_group[*id], *id))
                 .collect::<Vec<_>>();
             ranked.sort_unstable();
-            let weights = (0..ranked.len())
-                .map(|rank| 256_usize >> (rank / CHEAPEST_RANK_SCALE).min(8))
+            let count_weighted = matches!(
+                self.selector_policy,
+                SelectorPolicy::EnergyFrontierCheapestCount(_)
+            );
+            let weights = ranked
+                .iter()
+                .enumerate()
+                .map(|(rank, (_, id))| {
+                    let halvings = (rank / CHEAPEST_RANK_SCALE).min(8);
+                    if count_weighted {
+                        let draws = usize::try_from(self.selected[*id]).unwrap_or(usize::MAX);
+                        ((65_536_usize >> halvings) / draws.saturating_add(1)).max(1)
+                    } else {
+                        256_usize >> halvings
+                    }
+                })
                 .collect::<Vec<_>>();
             let total =
                 NonZeroUsize::new(weights.iter().sum()).ok_or("cheapest weights sum to zero")?;
@@ -3501,11 +3566,28 @@ where
         self.stored_input_actions
     }
 
+    /// Enable bounded learned transition reuse. Its full capacity is reserved
+    /// against the campaign budget before bootstrap in both live and replay.
+    pub(crate) fn enable_continuations(&mut self, enabled: bool) {
+        self.continuations = enabled.then(ContinuationBank::default);
+    }
+
+    /// Stale parents are deliberately not pinned by speculative work. The
+    /// coordinator checks liveness and duplicates before dispatch.
+    pub(crate) fn pop_continuation(&mut self) -> Option<Continuation<A>> {
+        self.continuations.as_mut()?.pop()
+    }
+
     /// Deterministic conservative bytes charged to compact history/indexes.
     #[must_use]
     pub fn history_memory_bytes(&self) -> usize {
         self.history_memory_bytes
             .saturating_add(self.auxiliary_history_memory_bytes())
+            .saturating_add(if self.continuations.is_some() {
+                ContinuationBank::<K::Group, A>::reserve_bytes()
+            } else {
+                0
+            })
     }
 
     /// Deterministic bytes charged to compact entry metadata, excluding its
@@ -3605,6 +3687,7 @@ where
                 | SelectorPolicy::Energy(_)
                 | SelectorPolicy::EnergyFrontier(_)
                 | SelectorPolicy::EnergyFrontierCheapest(_)
+                | SelectorPolicy::EnergyFrontierCheapestCount(_)
         ) {
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
                 let counter = map.entry(key.group(offset + 1)).or_insert(0);
@@ -3612,6 +3695,13 @@ where
             }
         }
         match draw.path {
+            SelectorPath::Continuation => {
+                let count = self
+                    .selector_accounting
+                    .continuation_selections
+                    .get_or_insert(0);
+                *count = count.saturating_add(1);
+            }
             SelectorPath::Uniform => {
                 self.selector_accounting.uniform_selections = self
                     .selector_accounting
@@ -3670,7 +3760,8 @@ where
         let clears_groups = match self.selector_policy {
             SelectorPolicy::Retire(_) => true,
             SelectorPolicy::Energy(_) | SelectorPolicy::EnergyFrontier(_) => new_slot_descendant,
-            SelectorPolicy::EnergyFrontierCheapest(_) => new_cell_descendant,
+            SelectorPolicy::EnergyFrontierCheapest(_)
+            | SelectorPolicy::EnergyFrontierCheapestCount(_) => new_cell_descendant,
             SelectorPolicy::GroupUniform => false,
         };
         if clears_groups {
@@ -3692,7 +3783,8 @@ where
         if let SelectorPolicy::Retire(thresholds)
         | SelectorPolicy::Energy(thresholds)
         | SelectorPolicy::EnergyFrontier(thresholds)
-        | SelectorPolicy::EnergyFrontierCheapest(thresholds) = &self.selector_policy
+        | SelectorPolicy::EnergyFrontierCheapest(thresholds)
+        | SelectorPolicy::EnergyFrontierCheapestCount(thresholds) = &self.selector_policy
         {
             let entries_over_threshold = u64::try_from(
                 self.since_retained
@@ -5849,6 +5941,43 @@ mod tests {
     }
 
     #[test]
+    fn repeated_draws_release_a_cells_budget_to_untried_members() {
+        let keys: Vec<[u16; 4]> = (0..40).map(|id| [id, 0, 0, 0]).collect();
+        let mut archive = flat_archive::<5>(&keys);
+        let policy = SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
+            entry: 1024,
+            groups: vec![1024, 1024, 1024],
+        });
+        assert_eq!(
+            selector_policy_from_identifier(&super::selector_policy_identifier(&policy), 3)
+                .unwrap(),
+            policy
+        );
+        archive.selector_policy = policy;
+        for id in 0..40 {
+            archive.time_in_group[id] = id as u64;
+        }
+        for id in 0..4 {
+            archive.selected[id] = 1000;
+        }
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e34);
+        let mut repeated = 0;
+        let mut distant = 0;
+        for _ in 0..4096 {
+            let (id, _) = archive
+                .draw_from_cell(&mut rand, (0..40).collect())
+                .unwrap();
+            repeated += usize::from(id < 4);
+            distant += usize::from(id >= 32);
+        }
+        assert!(
+            repeated < 200,
+            "frequently drawn members retained {repeated}/4096 draws"
+        );
+        assert!(distant > 0, "expensive alternatives never received work");
+    }
+
+    #[test]
     fn the_frontier_selector_weights_the_deepest_band_over_a_fresh_shallow_one() {
         // Two bands with zero barrenness everywhere: energy alone would draw
         // them evenly, so the frontier factor must be what separates them.
@@ -6018,6 +6147,7 @@ mod tests {
                     let concentration = draw.concentration.expect("concentration record");
                     assert_eq!(concentration.window_size, 128);
                 }
+                SelectorPath::Continuation => panic!("continuations require explicit dispatch"),
                 SelectorPath::Uniform => {
                     assert!(draw.concentration.is_none());
                 }

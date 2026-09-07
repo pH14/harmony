@@ -52,3 +52,42 @@ Run the core checks with:
 cargo test --manifest-path dissonance/searcher/Cargo.toml
 cargo clippy --manifest-path dissonance/searcher/Cargo.toml --all-targets -- -D warnings
 ```
+
+## Search evaluation policies
+
+The legacy selector identifiers retain their exact behavior. Two opt-in search
+experiments are versioned independently:
+
+- `room_cell_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides
+  each within-cell cost weight by one plus that entry's admitted selections.
+  Cheap members get early attempts, while repeatedly sampled members yield some
+  probability to alternatives. No workload field is added.
+- `energy_splice_continuation_v1:<scale>` retries transitions learned during the
+  current campaign when a strictly preferred state replaces a same-slot holder.
+  At most one in four reservations can do this; empty queues use ordinary energy
+  splice draws. This is continuation replay: applying a previously discovered
+  action tail from a new state and evaluating the resulting state normally.
+  It is distinct from verification replay, which checks a recorded execution.
+
+The continuation bank retains at most 8,192 observed exits, eight destinations
+per source slot, 128 actions per exit, and 1,024 pending attempts. It charges a
+fixed conservative capacity reserve against the logical memory budget before
+bootstrap. Pending attempts do not pin historical snapshots: stale parents are
+skipped. Dispatch records the complete action tail, so later donor reclamation
+cannot change serial replay. Only same-slot `preference_cmp` is consulted;
+preferences are never compared between unrelated locations. A workload that
+reports no preference improvements gets no continuation attempts.
+
+These are experiments, not new defaults. Promote policies based on paired game
+panels, fresh SMB completion, and resource costs through
+[`benchmarks/search`](../../benchmarks/search/README.md). The generic resource
+fixture exercises actual continuation dispatch, snapshot eviction, concurrent
+reservations, exact report/checkpoint replay, and planted recording corruption
+without an emulator or ROM.
+
+Progress sidecars carry objective workload evidence, actual admitted execution
+frames, final totals, logical memory categories, and monotonic host time. With
+`HARMONY_COORDINATOR_PROFILE=1`, they also contain coordinator phase durations
+and dispatched replay/suffix action budgets. Those action budgets are requested
+time, not actual emulator frames. Profiling values and clocks never enter
+search decisions or the deterministic campaign stream.
