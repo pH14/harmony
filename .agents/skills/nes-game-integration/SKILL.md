@@ -49,12 +49,16 @@ Reach a bounded, deterministic gameplay genesis with controller release frames
 where presses are edge-triggered. Verify readiness from observations. Fail
 clearly if setup does not reach it; do not silently continue from a menu.
 
-Build a small probe that accepts recorded chords and emits decoded state and
+Before porting a full campaign adapter, prove ROM loading and a small
+controller/RAM trace. Keep a raw-boot probe path so failed menu setup remains
+diagnosable. The probe accepts recorded chords and emits decoded state and
 only the relevant RAM fields. Ground addresses, bit order, units, and terminal
 conditions in source/disassembly or controlled traces. Test both positive and
 negative examples. In particular:
 
-- Verify left/right, A/B, and hold duration against the emulator's encoding.
+- Verify left/right, A/B, and hold duration through the host mask, backend
+  translation, and game's observed controller bytes. Source-code button
+  constants are not necessarily the masks accepted by `ButtonChord`.
 - Preserve gameplay controls such as weapon menus and missile toggles. Exclude
   a button only for documented semantics, not because it slows the pilot.
 - Distinguish world position, screen position, camera scroll, and transitions.
@@ -127,6 +131,9 @@ game and another existing game, plus a meaningful synthetic invariant test.
 Record executions, frames, elapsed search time, memory, and achieved outcomes.
 Treat a single-game win as provisional. Follow the searcher README's performance
 goals; do not launch an unbounded campaign or materialize huge reports by default.
+The task's compute allowance limits the runs you launch, not the reusable runner's
+capabilities. Keep bounded defaults and expose supported worker, execution,
+horizon, and memory settings; do not hard-code a trial allowance as a game limit.
 
 ## 5. Deliver a library entry with an honest status
 

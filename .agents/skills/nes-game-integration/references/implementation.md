@@ -111,7 +111,11 @@ known backend limitations and guidance deliberately encoded in this adapter.
 4. **Pilot:** increase a bounded budget after correctness checks pass. Publish
    progress over executions, frames, and search time; deaths/errors; archive
    size/charge and host RSS; output bytes. Film the champion and verify its
-   decoded endpoint. Inspect real evidence before changing policy.
+   decoded endpoint. An empty genesis or shortest retained tape is only a
+   rendering smoke test; it cannot substitute for the searched champion or
+   victory witness. If rendering the full tape is costly, retain full headless
+   replay evidence and label the bounded excerpt precisely. Inspect real
+   evidence before changing policy.
 5. **Library evaluation:** register seeds, origin, success/progress measure, and
    limits before comparing engine changes. Include another game and a lower
    feasible memory budget. For performance work, follow the searcher README's

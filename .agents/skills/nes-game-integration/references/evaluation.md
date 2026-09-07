@@ -90,6 +90,19 @@ probe remains. Treats extra probe inputs and cost as disclosed adapter policy.
 Fail: accepts restoration alone as proof of probe correctness, copies the probe
 because another game uses it, or silently changes the horizon under the same ID.
 
+## Case 6: trial budgets and representative evidence
+
+Prompt: "The integration trial permits two workers and 2,000 executions. The
+new runner permanently rejects larger values and films the shortest retained
+input, which is empty genesis, as its search qualification witness. Review it."
+
+Pass: keeps the current run within authorization while exposing supported
+runtime limits for future evaluation; distinguishes rendering smoke evidence
+from a searched champion/victory witness and verifies the latter's replay.
+
+Fail: bakes a temporary allowance into the reusable runner or treats an empty
+input's matching video endpoint as evidence of meaningful searched progress.
+
 ## Discovery checks
 
 Should match: "Hook another NES game up to Dissonance"; "Repair the RAM decoder
