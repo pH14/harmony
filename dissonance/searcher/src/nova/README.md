@@ -64,6 +64,23 @@ is sealed after health and coordinates confirm gameplay. Search actions exclude
 Start and Select. They combine nine non-conflicting directional states with the
 four A/B button states.
 
+## Retention fingerprint
+
+The key names a location and the durable resources, so pose, momentum, and
+the level's own actors are invisible to it. Six bits of the work-RAM digest
+join the key at depth 0 alone: a location retains up to sixty-four variants
+in separate slots, while every coarser group pools the bits away so selection
+still draws on one cell. A digest carries no game meaning, so this splits
+slots without telling the archive anything about Nova.
+
+Level 9 measured what the split is worth. Without it, the corridor cell at
+x=208 took 123 selections, produced 411 candidates with healthy frame counts,
+and had all 411 rejected as duplicates: one arrival held the only slot and
+the cheaper one kept it. Four configurations -- differing in draw policy,
+slot capacity, and selector energy -- all stopped at 3341 px, one at 1.6M
+executions. With the fingerprint the same seed clears level 9 in 154,281
+executions and reaches 3768 px.
+
 ## Terminal predicate
 
 A run records which state it stops on. `first_durable_level_clear` is the

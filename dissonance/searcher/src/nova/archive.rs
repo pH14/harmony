@@ -41,6 +41,11 @@ pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 /// keeps it however badly it is placed. Six bits bound the split at
 /// sixty-four variants per location, and the grouping pools them away above
 /// depth 0 so selection still sees one cell.
+///
+/// Measured on level 9: without the split its corridor cell took 123
+/// selections and had all 411 of its candidates rejected as duplicates, and
+/// four configurations stalled at the same pixel, one of them at 1.6M
+/// executions. With it the same seed clears in 154,281.
 const STATE_FINGERPRINT_MASK: u8 = 0x3f;
 
 /// The parent selector named by a stream, resolved under Nova's group depths.
