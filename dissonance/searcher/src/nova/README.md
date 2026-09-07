@@ -147,43 +147,39 @@ setting held across the run:
 
 Level 3 in isolation clears in 8,596. Entering it with a carried ability and
 extra collectibles is not the difference: the level-2 genesis clears it in
-3,000 once it arrives. The level-1 genesis holds more entries, and takes more
-draws, in the door room than the isolated run took in the whole level (305
-against 52 by 110,000 executions), and never clears it.
+3,000 once it arrives.
 
-The door sits at (2887, 136) on a one-tile platform between two pits and
-needs a fresh Up press while standing there. Replaying the level-1 genesis
-archive at 110,000 executions shows every representative in the door's cells
-falling past the platform: the slot's fewest-frames representative is the
-arrival that flew through, and no one- or two-action suffix from any of
-them lands and presses. The isolated run's clear came from a cell above the
-door with a two-action suffix, a long hold that dropped the player onto the
-platform and then Left+Up; the level-1 genesis holds the same cells and did
-not draw that pair. Each global lever tried on that genesis left level 3
-uncleared: entry retirement 8 and 16 in place of 3 (217,200 and 220,300),
-a frontier rank span of 8 in place of 16 (128,700), 6 fingerprint bits with
-pressured split 64,8 (245,400), and 6 bits split at every slot, which had
-not cleared level 2 by 183,100.
+Level 3's exit is not on its own map. Its map has no exit door; a door at
+its far right enters sub-level 48 (`underground`), whose exit door at tile
+(180, 8) is the clear. The isolated run enters the sub-level at 5,404 and
+crosses it to x cell 199 by 6,690, 1,300 executions. The level-1 genesis
+enters it at 31,431 and by 110,000 has reached x cell 113, with 6.6 times
+the sub-level draws the isolated run needed in total (7,882 against 1,196).
+Where those draws went is visible in the archive: the sub-level's first ten
+rooms hold 107 to 231 retention slots each against 11 to 16 in the
+isolated run. The search filled the rooms behind its frontier ten times as
+densely instead of advancing it, and every lever tried on the level-1
+genesis left the sub-level uncrossed: entry retirement 8 and 16 in place of
+3 (217,200 and 220,300), a frontier rank span of 8 in place of 16
+(128,700), 6 fingerprint bits with pressured split 64,8 (245,400), 6 bits
+split at every slot (level 2 uncleared by 183,100), the settled rule
+(337,900), and the settled rule with entry retirement 8 and 16 (148,800 and
+170,000).
 
-What the level-1 genesis lacks is a representative standing on the platform.
-The settled replacement rule above names one, and against the level panel,
-seed 1, it is the better setting on four levels of five:
+The settled replacement rule above is nonetheless the better setting on
+four levels of five against the level panel, seed 1:
 
 | setting | L1 | L3 | L17 | L33 | L25 |
 | --- | --- | --- | --- | --- | --- |
 | no decay, fewest frames | 5,518 | 8,596 | 2,911 | 2,133 | 180,478 |
 | no decay, settled then fewest frames | 5,368 | 5,837 | 2,599 | 2,948 | 130,136 |
 
-It does not clear level 3 from the level-1 genesis either (uncleared at
-337,900). Replaying that run's archive at 90,000 executions shows why: every
-representative in the door's cells is still in motion, because no arrival
-there has ever landed. The rule can only keep a settled arrival it is
-offered, and the isolated run's clear was a single suffix that landed and
-pressed in one draw; its landing was never a separate candidate. The
-entries above the platform that would land under a short idle hold sit at
-the entry retirement threshold of three barren draws, so the pair the clear
-needs -- a settling hold, then Up -- has three draws to appear at each of
-two stages.
+What makes the whole-game search fill rooms rather than cross them, when
+the same selector crosses the same sub-level in 1,300 executions from a
+level-3 genesis, is the open question. The archive context is the only
+difference the measurements leave: the level-1 genesis carries thousands of
+live entries in two earlier levels and their sub-levels, and its sub-level
+entries sit in two durable-progress classes rather than one.
 
 ## Replay and media capture
 
