@@ -150,14 +150,15 @@ pub enum ReplacementPolicy {
     #[default]
     FewestFrames,
     /// As above until `rejections` arrivals have lost a slot contest to an
-    /// incumbent that has produced no retained child since; the slot then
+    /// incumbent that has never produced a retained child; the slot then
     /// splits by [`ArchiveKey::variant`], and each variant competes for its
     /// own representative under the fewest-frames rule. Pressure is measured
     /// at the slot, from the routes that reach it, so it does not depend on
     /// how often the selector draws the incumbent: a location many routes
     /// reach and none can leave splits whether or not the frontier's draws
-    /// have decayed, and a slot whose representative keeps producing never
-    /// splits and costs nothing. Triggering on the incumbent's own barren
+    /// have decayed. A representative with any retained child is one the
+    /// search has already gone past, so its slot never splits however busy
+    /// it is; only a location nothing has ever left qualifies. Triggering on the incumbent's own barren
     /// draws was measured and inverted the intent, splitting the well-drawn
     /// regions that did not need it while the starved frontier waited.
     FewestFramesOrPressuredSplit {
@@ -2748,7 +2749,9 @@ where
             ReplacementPolicy::FewestFramesOrPressuredSplit { rejections } => {
                 let group = key.group(0);
                 if !self.split_slots.contains(&group)
-                    && slot.iter().any(|id| self.rejections[*id] >= rejections)
+                    && slot
+                        .iter()
+                        .any(|id| self.productive[*id] == 0 && self.rejections[*id] >= rejections)
                 {
                     self.split_slots.insert(group);
                 }
@@ -4295,6 +4298,11 @@ mod tests {
             if pressured {
                 archive.rejections[incumbent] = 64;
             }
+            if policy == (ReplacementPolicy::FewestFramesOrPressuredSplit { rejections: 1 }) {
+                // A representative that has produced is one the search went
+                // past; pressure on it never splits the slot.
+                archive.productive[incumbent] = 1;
+            }
             // Two actions cost more than one, so both arrivals are costlier routes.
             let other_variant = archive
                 .insert(None, 0, candidate(vec![2, 3], 1), ())
@@ -4323,6 +4331,8 @@ mod tests {
         let split = ReplacementPolicy::FewestFramesOrPressuredSplit { rejections: 64 };
         assert_eq!(run(split, false), (None, None, true, 2));
         assert_eq!(run(split, true), (Some(1), None, true, 65));
+        let past = ReplacementPolicy::FewestFramesOrPressuredSplit { rejections: 1 };
+        assert_eq!(run(past, true), (None, None, true, 66));
     }
 
     fn flat_archive<const DEPTHS: usize>(
