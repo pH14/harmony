@@ -47,7 +47,7 @@ pub fn environment::channel::NominalHandler::clone_box(&self) -> alloc::boxed::B
 pub fn environment::channel::NominalHandler::configuration(&self) -> &[u8]
 pub fn environment::channel::NominalHandler::identity(&self) -> &[u8]
 pub fn environment::channel::NominalHandler::reseed(&mut self, u64)
-pub fn environment::channel::NominalHandler::respond(&mut self, &environment::channel::Question) -> core::result::Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+pub fn environment::channel::NominalHandler::respond(&mut self, environment::Moment, &environment::channel::Question) -> core::result::Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
 pub fn environment::channel::NominalHandler::restore_state(&mut self, &[u8]) -> core::result::Result<(), environment::channel::ChannelError>
 pub fn environment::channel::NominalHandler::snapshot_state(&self) -> core::result::Result<alloc::vec::Vec<u8>, environment::channel::ChannelError>
 pub struct environment::channel::Question
@@ -98,7 +98,7 @@ pub fn environment::channel::ServiceHandler::clone_box(&self) -> alloc::boxed::B
 pub fn environment::channel::ServiceHandler::configuration(&self) -> &[u8]
 pub fn environment::channel::ServiceHandler::identity(&self) -> &[u8]
 pub fn environment::channel::ServiceHandler::reseed(&mut self, u64)
-pub fn environment::channel::ServiceHandler::respond(&mut self, &environment::channel::Question) -> core::result::Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+pub fn environment::channel::ServiceHandler::respond(&mut self, environment::Moment, &environment::channel::Question) -> core::result::Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
 pub fn environment::channel::ServiceHandler::restore_state(&mut self, &[u8]) -> core::result::Result<(), environment::channel::ChannelError>
 pub fn environment::channel::ServiceHandler::snapshot_state(&self) -> core::result::Result<alloc::vec::Vec<u8>, environment::channel::ChannelError>
 impl environment::channel::ServiceHandler for alloc::boxed::Box<dyn environment::channel::ServiceHandler>
@@ -106,7 +106,7 @@ pub fn alloc::boxed::Box<dyn environment::channel::ServiceHandler>::clone_box(&s
 pub fn alloc::boxed::Box<dyn environment::channel::ServiceHandler>::configuration(&self) -> &[u8]
 pub fn alloc::boxed::Box<dyn environment::channel::ServiceHandler>::identity(&self) -> &[u8]
 pub fn alloc::boxed::Box<dyn environment::channel::ServiceHandler>::reseed(&mut self, u64)
-pub fn alloc::boxed::Box<dyn environment::channel::ServiceHandler>::respond(&mut self, &environment::channel::Question) -> core::result::Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+pub fn alloc::boxed::Box<dyn environment::channel::ServiceHandler>::respond(&mut self, environment::Moment, &environment::channel::Question) -> core::result::Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
 pub fn alloc::boxed::Box<dyn environment::channel::ServiceHandler>::restore_state(&mut self, &[u8]) -> core::result::Result<(), environment::channel::ChannelError>
 pub fn alloc::boxed::Box<dyn environment::channel::ServiceHandler>::snapshot_state(&self) -> core::result::Result<alloc::vec::Vec<u8>, environment::channel::ChannelError>
 impl environment::channel::ServiceHandler for environment::channel::NominalHandler
@@ -114,7 +114,7 @@ pub fn environment::channel::NominalHandler::clone_box(&self) -> alloc::boxed::B
 pub fn environment::channel::NominalHandler::configuration(&self) -> &[u8]
 pub fn environment::channel::NominalHandler::identity(&self) -> &[u8]
 pub fn environment::channel::NominalHandler::reseed(&mut self, u64)
-pub fn environment::channel::NominalHandler::respond(&mut self, &environment::channel::Question) -> core::result::Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+pub fn environment::channel::NominalHandler::respond(&mut self, environment::Moment, &environment::channel::Question) -> core::result::Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
 pub fn environment::channel::NominalHandler::restore_state(&mut self, &[u8]) -> core::result::Result<(), environment::channel::ChannelError>
 pub fn environment::channel::NominalHandler::snapshot_state(&self) -> core::result::Result<alloc::vec::Vec<u8>, environment::channel::ChannelError>
 pub trait environment::channel::ServiceHandlerFactory

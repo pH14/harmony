@@ -4323,6 +4323,7 @@ mod tests {
 
         fn respond(
             &mut self,
+            _moment: environment::Moment,
             _question: &channel::Question,
         ) -> Result<channel::ServiceResponse, channel::ChannelError> {
             self.calls = self.calls.saturating_add(1);
@@ -4368,6 +4369,7 @@ mod tests {
 
         fn respond(
             &mut self,
+            _moment: environment::Moment,
             _question: &channel::Question,
         ) -> Result<channel::ServiceResponse, channel::ChannelError> {
             Ok(channel::ServiceResponse::Answered(channel::Answer::Data(

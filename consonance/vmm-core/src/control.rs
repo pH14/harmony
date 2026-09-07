@@ -2597,6 +2597,7 @@ mod tests {
         }
         fn respond(
             &mut self,
+            _: environment::Moment,
             _: &environment::channel::Question,
         ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
         {
@@ -2782,6 +2783,7 @@ mod tests {
         }
         fn respond(
             &mut self,
+            _: environment::Moment,
             _: &environment::channel::Question,
         ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
         {
@@ -2974,6 +2976,7 @@ mod tests {
         }
         fn respond(
             &mut self,
+            _: environment::Moment,
             _: &environment::channel::Question,
         ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
         {

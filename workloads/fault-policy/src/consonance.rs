@@ -6,6 +6,7 @@ use crate::{
     RecordedEnv,
 };
 use environment::{
+    Moment,
     channel::{
         Answer as ChannelAnswer, ChannelError, Effect, Question, ServiceHandler, ServiceResponse,
     },
@@ -53,7 +54,11 @@ impl ServiceHandler for Handler {
         }
         .materialize();
     }
-    fn respond(&mut self, question: &Question) -> Result<ServiceResponse, ChannelError> {
+    fn respond(
+        &mut self,
+        _moment: Moment,
+        question: &Question,
+    ) -> Result<ServiceResponse, ChannelError> {
         let payload = question.payload();
         let point = match question.service() {
             BUGGIFY_NAMESPACE if payload.len() == 4 => DecisionPoint::Buggify {
