@@ -1,0 +1,173 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Super Tilt Bro evaluation
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/stb.yml
+      - dissonance/stb-versions.env
+      - dissonance/STB-ARTIFACT-LICENSE.md
+      - dissonance/scripts/build-stb-rom.sh
+      - dissonance/Cargo.toml
+      - dissonance/Cargo.lock
+      - dissonance/machine/**
+      - dissonance/searcher/**
+      - scripts/build-quicknes-core.sh
+      - rust-toolchain.toml
+  schedule:
+    - cron: "45 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stb-evaluation-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  campaign:
+    name: Source build, probe, search and replay (seed ${{ matrix.seed }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        # Register the seed set before observing outcomes. PRs use one seed;
+        # nightly/manual runs exercise the same policy across all three.
+        seed: ${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1,2,3]') }}
+    env:
+      STB_BUILD: dissonance/stb-build
+      STB_ARTIFACT: dissonance/stb-artifact
+      STB_EXECUTIONS: "2000"
+      STB_SEED: ${{ matrix.seed }}
+      STB_WORKERS: "2"
+      HARMONY_STB_BUILD_JOBS: "2"
+      HARMONY_QUICKNES_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install source build and video tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential curl git unzip python3 python3-pil ffmpeg jq
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dissonance -> target
+      - name: Reproduce pinned Super Tilt Bro and QuickNES
+        run: |
+          dissonance/scripts/build-stb-rom.sh "${STB_BUILD}"
+          scripts/build-quicknes-core.sh "${STB_BUILD}/quicknes_libretro.so"
+      - name: Build campaign and correctness probe
+        run: |
+          cargo build --locked --release --manifest-path dissonance/Cargo.toml \
+            --bin stb-probe --bin stb-campaign
+      - name: Verify controls, native opposition and restored continuations
+        run: |
+          mkdir -p "${STB_ARTIFACT}"
+          cp dissonance/STB-ARTIFACT-LICENSE.md "${STB_ARTIFACT}/ARTIFACT-LICENSE.md"
+          cp "${STB_BUILD}/UPSTREAM-LICENSE.txt" "${STB_BUILD}/UPSTREAM-CREDITS.asm" \
+            "${STB_BUILD}/stb-versions.env" "${STB_ARTIFACT}/"
+          HARMONY_QUICKNES_CORE="${STB_BUILD}/quicknes_libretro.so" \
+          HARMONY_STB_CORRECTNESS=1 \
+            dissonance/target/release/stb-probe "${STB_BUILD}/stb.nes" \
+            | tee "${STB_ARTIFACT}/control-snapshot-probe.jsonl"
+          python3 - "${STB_ARTIFACT}/control-snapshot-probe.jsonl" <<'PY'
+          import json
+          import sys
+
+          controls = [json.loads(line.removeprefix("control "))
+                      for line in open(sys.argv[1]) if line.startswith("control ")]
+          assert len(controls) == 6, "missing control traces"
+          rows = {row["name"]: row for row in controls}
+          assert set(rows) == {"noop", "a", "b", "up", "left", "right"}
+          for row in rows.values():
+              assert row["hold"] == 6
+              for state in (row["before"], row["after"]):
+                  assert state["game_state"] == 0 and state["game_mode"] == 0
+                  assert state["ai_level"] == 1 and state["gameplay"] is not None
+          before = rows["noop"]["before"]["gameplay"]
+          after = {name: row["after"]["gameplay"] for name, row in rows.items()}
+          assert all(row["before"]["gameplay"] == before for row in rows.values())
+          assert after["noop"]["player_a_x"] == before["player_a_x"], "neutral input moved player"
+          assert after["noop"]["player_b_x"] != before["player_b_x"], "native AI did not move"
+          assert after["left"]["player_a_x"] < before["player_a_x"] < after["right"]["player_a_x"]
+          assert before["player_a_grounded"] and not after["up"]["player_a_grounded"]
+          assert len({after[name]["player_a_state"] for name in ("noop", "a", "b")}) == 3, "A/B controls aliased"
+          print("normal AI, neutral input, movement, jump and distinct A/B controls verified")
+          PY
+      - name: Search the normal local match and verify recorded replay
+        run: |
+          dissonance/target/release/stb-campaign \
+            --core "${STB_BUILD}/quicknes_libretro.so" \
+            --rom "${STB_BUILD}/stb.nes" \
+            --output "${STB_ARTIFACT}" \
+            --seed "${STB_SEED}" --executions "${STB_EXECUTIONS}" \
+            --workers "${STB_WORKERS}" --action-limit 512 \
+            --fixed-execution-soak
+      - name: Check and describe compact evidence
+        run: |
+          # Correct execution and replay are gates. A win is an outcome, never
+          # a reason to tune policy/seeds or fail an otherwise valid workload.
+          jq -e --argjson budget "${STB_EXECUTIONS}" \
+            --argjson seed "${STB_SEED}" --argjson workers "${STB_WORKERS}" \
+            '.campaign_seed == $seed and .workers == $workers and
+             .execution_budget == $budget and .executions == $budget and
+             .execution_budget_exact == true and .replay_verified == true and
+             .rendered_endpoint_verified == true and .frames_emulated > 0 and
+             .archive_entries > 0 and .champion_input_actions > 0 and
+             .champion_endpoint.game_mode == 0 and .champion_endpoint.ai_level == 1' \
+            "${STB_ARTIFACT}/run-summary.json" >/dev/null
+          cmp "${STB_ARTIFACT}/campaign-report.json" "${STB_ARTIFACT}/replay-report.json"
+          test -s "${STB_ARTIFACT}/witness.mp4"
+          test "$(ffprobe -v error -select_streams a:0 \
+            -show_entries stream=codec_type -of csv=p=0 \
+            "${STB_ARTIFACT}/witness.mp4")" = audio
+          (
+            cd "${STB_ARTIFACT}"
+            sha256sum witness.mp4 run-summary.json progress.jsonl \
+              champion-input.json champion-observation.json render-input.json \
+              render-observation.json video.json campaign-report.json replay-report.json \
+              control-snapshot-probe.jsonl ARTIFACT-LICENSE.md UPSTREAM-LICENSE.txt \
+              UPSTREAM-CREDITS.asm stb-versions.env > SHA256SUMS
+          )
+          {
+            echo "## Super Tilt Bro — native Easy AI"
+            echo
+            echo "Seed ${STB_SEED}; ${STB_EXECUTIONS} executions; ${STB_WORKERS} workers."
+            echo "Campaign report/checkpoint replay and rendered endpoint verified."
+            echo "First reached: $(jq -c '.first_reached' "${STB_ARTIFACT}/run-summary.json")."
+            echo "Milestones: $(jq -c '.milestones' "${STB_ARTIFACT}/run-summary.json")."
+            echo "Frames emulated: $(jq -r '.frames_emulated' "${STB_ARTIFACT}/run-summary.json")."
+            echo "Rendered excerpt: $(jq -r '.render_excerpt' "${STB_ARTIFACT}/run-summary.json"); input frames: $(jq -r '.rendered_input_frames' "${STB_ARTIFACT}/run-summary.json")."
+            echo "The full champion is replayed headlessly. A prefix film does not show its ending."
+          } >>"${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4
+        # Explicit list excludes ROMs, cores, snapshots and raw media. Partial
+        # probes/reports remain available to diagnose a failed qualification.
+        if: always()
+        with:
+          name: stb-seed-${{ matrix.seed }}-${{ github.run_id }}
+          path: |
+            dissonance/stb-artifact/witness.mp4
+            dissonance/stb-artifact/run-summary.json
+            dissonance/stb-artifact/progress.jsonl
+            dissonance/stb-artifact/champion-input.json
+            dissonance/stb-artifact/champion-observation.json
+            dissonance/stb-artifact/render-input.json
+            dissonance/stb-artifact/render-observation.json
+            dissonance/stb-artifact/video.json
+            dissonance/stb-artifact/campaign-report.json
+            dissonance/stb-artifact/replay-report.json
+            dissonance/stb-artifact/control-snapshot-probe.jsonl
+            dissonance/stb-artifact/ARTIFACT-LICENSE.md
+            dissonance/stb-artifact/UPSTREAM-LICENSE.txt
+            dissonance/stb-artifact/UPSTREAM-CREDITS.asm
+            dissonance/stb-artifact/stb-versions.env
+            dissonance/stb-artifact/SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 30

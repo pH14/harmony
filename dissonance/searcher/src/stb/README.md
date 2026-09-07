@@ -28,80 +28,41 @@ combat sequence is used.
 ## Identity and build
 
 The source is pinned to `sgadrat/super-tilt-bro` commit
-`b132fd25add46f816e04be64c434386743b84b8b` (2026-01-31). The selected normal
-emulator image is `tilt_no_network_unrom_(E).nes`, built with `-DNO_NETWORK`
-and `-DMAPPER_UNROM` (mapper 2), SHA-256
+`b132fd25add46f816e04be64c434386743b84b8b` (2026-01-31). The offline emulator
+image is `tilt_no_network_unrom_(E).nes`, built with `-DNO_NETWORK` and
+`-DMAPPER_UNROM` (mapper 2), SHA-256
 `6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3`.
 
-The reproducible source inputs are the following tool revisions (the
-upstream `deps/build-deps.sh` clones moving tips, so it is not sufficient for a
-recorded build):
-
-| Tool | Pinned input | Trial verification |
-| --- | --- | --- |
-| XA fork | `sgadrat/xa65-stb` commit `a75f76dc9aee5b892facecb0436725d368f41102` | `deps/xa65-stb/xa/xa` SHA-256 `14fe3d67ba9e91928eca317823abc991a20ffe9b38511cac40d28fa6262eb6fb` |
-| 6502 GCC | `sgadrat/gcc-6502-bits` release asset `v8.4.1-2/gcc-6502.zip` | Linux x86-64 `prefix/bin/6502-gcc` SHA-256 `60e799f2ba4e2f9d0d77f9c2c5044312a1f42ee3be0f02a9a140269c43580114` |
-| Huffmunch | `bbbradsmith/huffmunch` commit `dfc0804925f6a3a0309440ec5531e966ef8d7f2c` | `deps/huffmunch/huffmunch` SHA-256 `3f20e675f3b9f7efb9662124e60fd3d0ebb3afb8caa8e91f486390e9e0176682` |
-
-The compiler archive is a Linux x86-64 release, so the trial source build ran
-inside an `ubuntu:24.04` container with the source checkout mounted at `/stb`.
-The literal trial command (on a Linux arm64/v8 host, Docker selected its
-linux/amd64 image) was:
+From the repository root on Linux x86-64:
 
 ```sh
-docker run --rm -v /private/tmp/stb-luna-v1-upstream:/stb ubuntu:24.04 \
-  bash -lc 'set -eu
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq >/tmp/apt.log 2>&1
-    apt-get install -y -qq build-essential python3 python3-pil python-is-python3 >>/tmp/apt.log 2>&1
-    cd /stb
-    (cd deps/huffmunch && make clean && make CXX="g++ -Wno-c++11-narrowing")
-    (cd deps/xa65-stb/xa && test -x xa)
-    deps/gcc-6502-bits/prefix/bin/6502-gcc --version | head -n 1
-    XA_BIN=/stb/deps/xa65-stb/xa/xa \
-    CC_BIN=/stb/deps/gcc-6502-bits/prefix/bin/6502-gcc \
-    HUFFMUNCH_BIN=/stb/deps/huffmunch/huffmunch ./build.sh'
+sudo apt-get install --yes build-essential curl git unzip python3 python3-pil ffmpeg jq
+dissonance/scripts/build-stb-rom.sh dissonance/stb-build
+scripts/build-quicknes-core.sh dissonance/stb-build/quicknes_libretro.so
 ```
 
-For a fresh tool checkout, XA was built in the same image with
-`cd /stb/deps/xa65-stb/xa && make clean && make -j2`; the trial then verified
-the resulting executable hash above. An explicit `--platform linux/amd64`
-can be added when the host architecture should not determine Docker's
-selection.
+[`stb-versions.env`](../../../stb-versions.env) pins the game and XA source
+commits, the 6502 GCC release archive and its checksum, and the expected ROM
+checksum. The build fetches those exact inputs and fails if the output ROM
+changes. It selects upstream's `SKIP_RESCUE_IMG=2` option: the offline UNROM
+image is assembled normally, while unused Rainbow rescue compression is
+skipped. Huffmunch is therefore unnecessary for this recipe. No gameplay
+source is patched. Upstream's generic `python` interpreter spelling is bound
+to Python 3 inside the temporary build directory.
 
-The pinned build inputs can be checked out before entering the container with
-these commands (and the compiler release asset downloaded from its exact
-release URL):
-
-```sh
-git clone https://github.com/sgadrat/super-tilt-bro.git /private/tmp/stb-luna-v1-upstream
-git -C /private/tmp/stb-luna-v1-upstream checkout b132fd25add46f816e04be64c434386743b84b8b
-cd /private/tmp/stb-luna-v1-upstream
-git clone https://github.com/sgadrat/xa65-stb.git deps/xa65-stb
-git -C deps/xa65-stb checkout a75f76dc9aee5b892facecb0436725d368f41102
-git clone https://github.com/bbbradsmith/huffmunch.git deps/huffmunch
-git -C deps/huffmunch checkout dfc0804925f6a3a0309440ec5531e966ef8d7f2c
-mkdir -p deps/gcc-6502-bits
-curl -L https://github.com/sgadrat/gcc-6502-bits/releases/download/v8.4.1-2/gcc-6502.zip \
-  -o deps/gcc-6502-bits/gcc-6502.zip
-```
-
-After extracting the release's `prefix/` under `deps/gcc-6502-bits/`, the
-build command from a checkout of the pinned source is:
-
-```sh
-XA_BIN="$PWD/deps/xa65-stb/xa/xa" \
-CC_BIN="$PWD/deps/gcc-6502-bits/prefix/bin/6502-gcc" \
-HUFFMUNCH_BIN="$PWD/deps/huffmunch/huffmunch" \
-./build.sh
-```
-
-The local trial artifact records the source checkout, build log, ROM header,
-and ROM digest under `/private/tmp/stb-luna-v1-artifacts/`. The ROM and core
-are local inputs and are intentionally not committed to this repository.
-The trial uses the pinned QuickNES revision `26bb785c9deddb66a17717b21bb4e328f03ade32`,
-with core SHA-256
+The compiler release is Linux x86-64. On another host use a `linux/amd64`
+container with the repository mounted and the same packages/commands. The
+initial macOS trial used an Ubuntu 24.04 container to build the same ROM and
+a native QuickNES core to execute it. QuickNES revision
+`26bb785c9deddb66a17717b21bb4e328f03ade32` is pinned by the shared core script;
+the core binary digest is measured on each host and included in campaign
+identity. The initial macOS core digest was
 `47cb5d0872e4a293c81de5dc0b5c975bf389514f4fc15075fdba4d172eff83b4`.
+
+Build outputs are ignored under `dissonance/stb-build/`. ROMs and cores are
+local/build inputs; the CI upload includes compact evidence and the
+[artifact notice](../../../STB-ARTIFACT-LICENSE.md), upstream license, and
+in-game credits, without binaries or snapshots.
 
 ## Observation contract
 
@@ -257,14 +218,50 @@ artifacts. The verified champion has 72 actions and ends at frame 3630 with
 `game_state=2`, `game_winner=0`, no phase-invalid gameplay payload, and
 cumulative losses `player_a=4`, `player_b=5`. Its full input is replayed
 headlessly; the witness render is an explicitly bounded 600-input-frame prefix
-plus a 180-frame terminal tail, and its rendered endpoint matches the
+plus a 180-frame neutral input tail, and its rendered endpoint matches the
 headless endpoint. The earlier `pilot-2000/` directory is retained as
 pre-fix evidence and is not the qualified result.
 
-The Dissonance format, build, clippy, test, and dependency checks are covered
-by the standalone workspace commands in `CONTRIBUTING.md`; the ROM, source
-checkout, and QuickNES core remain local artifacts, so CI does not run this
-ROM campaign. Qualification is therefore for the pinned QuickNES backend and
-the declared local-AI mode. This bounded trial does not establish
-many-core, hours-long, alternate-backend, or host-resource-sweep behavior;
-the runner accepts explicit larger limits for later evaluations.
+The Dissonance format, build, clippy, test, and dependency checks use the
+standalone workspace commands in `CONTRIBUTING.md`. The trial establishes the
+pinned direct QuickNES backend and declared local-AI mode; it does not establish
+many-core, hours-long, alternate-backend, or host-resource-sweep behavior.
+
+## Continuous evaluation
+
+[The Super Tilt Bro workflow](../../../../.github/workflows/stb.yml) follows
+Nova's source-build/search/film pattern and additionally gates full recorded
+campaign replay. Relevant pull requests run seed 1; scheduled and manual runs
+use the registered seeds 1, 2, and 3. Each runs 2,000 executions on two workers,
+with ordinary admission, the existing fixed input/key policy, and a 30-minute
+job timeout. The correctness probe checks controls, autonomous opposition,
+and restored continuations before search. The campaign compares live/replayed
+reports and checkpoint bytes and verifies the headless/rendered endpoint.
+
+CI gates execution count, replay consistency, and usable evidence. Victory
+counts and first-win executions are reported without a minimum or fixed target;
+an unsolved run remains useful search evaluation. CI does not change difficulty,
+seed selection, or policy to recover a win. These small runs qualify an adapter
+and expose search behavior; they are not a scalability benchmark.
+
+Artifacts are retained for 30 days: summary and progress, full champion input
+and observation, campaign/replay reports, control probe, the explicitly labeled
+600-frame film prefix (plus neutral tail), and source/credit notices with
+checksums. ROMs, core/compiler binaries, snapshots and raw media are excluded.
+Scheduled runs become active after the workflow reaches the default branch.
+
+To reproduce one CI campaign locally after the source build, from the repository
+root:
+
+```sh
+cargo build --locked --release --manifest-path dissonance/Cargo.toml \
+  --bin stb-probe --bin stb-campaign
+HARMONY_QUICKNES_CORE=dissonance/stb-build/quicknes_libretro.so \
+HARMONY_STB_CORRECTNESS=1 \
+  dissonance/target/release/stb-probe dissonance/stb-build/stb.nes
+dissonance/target/release/stb-campaign \
+  --core dissonance/stb-build/quicknes_libretro.so \
+  --rom dissonance/stb-build/stb.nes --output dissonance/stb-artifact \
+  --seed 1 --executions 2000 --workers 2 --action-limit 512 \
+  --fixed-execution-soak
+```

@@ -11,8 +11,9 @@ search policy, and hardware-backed control remain independently testable.
 - `machine/` defines the snapshot, branch, replay, run, and read interface and
   provides the native QuickNES adapter used by the NES workloads.
 - `searcher/` contains the game-neutral archive, campaign coordinator,
-  selection, mutation, worker scheduling, recording, and replay code. Its SMB
-  and Nova modules supply target-specific observations and policies.
+  selection, mutation, worker scheduling, recording, and replay code. Its SMB,
+  Nova, and Super Tilt Bro modules supply target-specific observations and
+  policies.
 
 The generic search layer sees actions, observations, snapshots, ordered archive
 keys, and opaque policy values. Game addresses, setup sequences, progress
@@ -25,13 +26,15 @@ cargo test --manifest-path dissonance/Cargo.toml
 cargo clippy --manifest-path dissonance/Cargo.toml --all-targets -- -D warnings
 ```
 
-The `smb-*` and `nova-*` binaries run campaigns or replay recorded streams.
+The `smb-*`, `nova-*`, and `stb-*` binaries run campaigns or replay recorded streams.
 They require the workload ROM and the matching QuickNES core. Campaign output
 contains a recorded stream and checkpoint so a completed run can be replayed
 without re-running the search decisions.
 
 `searcher/src/nova/README.md` documents the source-built Nova workload and its
-input and observation map. `machine/README.md` and `searcher/README.md`
+input and observation map. [Super Tilt Bro](searcher/src/stb/README.md) includes
+a pinned source build and PR/nightly campaign qualification.
+`machine/README.md` and `searcher/README.md`
 describe the reusable interfaces.
 
 The repository skill [`nes-game-integration`](../.agents/skills/nes-game-integration/SKILL.md)
