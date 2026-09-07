@@ -575,21 +575,25 @@ where
         return Err(SessionError::Control("settle step is zero".into()).into());
     }
     let mut settled = 0_u64;
-    let mut last = None;
+    let mut last: Option<StopReason> = None;
     loop {
         if let Some((snapshot, at)) = seal(context)? {
             return Ok((snapshot, at, last));
+        }
+        // Every stop is offered a seal before it is judged, so a guest that ran
+        // to quiescence or crashed during the last step still gets its endpoint
+        // sealed; only a second step is refused.
+        if let Some(stop) = &last
+            && !settling_can_advance(stop)
+        {
+            return Err(SessionError::Stop(stop.clone()).into());
         }
         if settled >= max_settle {
             return Err(SessionError::Settle { settled }.into());
         }
         let step = settle_step.min(max_settle - settled);
-        let stop = advance(context, step)?;
+        last = Some(advance(context, step)?);
         settled += step;
-        if !settling_can_advance(&stop) {
-            return Err(SessionError::Stop(stop).into());
-        }
-        last = Some(stop);
     }
 }
 
@@ -1121,7 +1125,7 @@ mod tests {
     }
 
     #[test]
-    fn a_guest_that_cannot_advance_is_reported_rather_than_settled_again() {
+    fn a_guest_that_cannot_advance_is_sealed_once_more_then_reported() {
         for stop in [
             StopReason::Quiescent {
                 vtime: control_proto::Moment(1),
@@ -1143,6 +1147,7 @@ mod tests {
                 "{error}"
             );
             assert_eq!(fixture.runs, [10], "settling stopped after the first run");
+            assert_eq!(fixture.seals, 2, "the endpoint was offered a final seal");
         }
     }
 

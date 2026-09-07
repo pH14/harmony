@@ -30,8 +30,8 @@ uninstalled configuration fails the branch and leaves the session untouched.
 stop. `Session::seal` snapshots the current stopped state, running the guest a
 further settle step whenever the control server cannot seal that point yet, and
 gives up once the caller's total settle allowance is spent. A guest that has
-crashed or gone quiescent advances no further, so it is reported rather than
-settled again.
+crashed or gone quiescent advances no further, so its endpoint is offered one
+last seal and then reported rather than settled again.
 
 `SessionConfig::wall_limit` bounds one run in host time. A guest spinning on a
 frozen virtual clock takes no exit, so it never reaches its virtual-time
