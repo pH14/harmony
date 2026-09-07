@@ -14,6 +14,27 @@ clock page, LSE-only userspace contract, and virtual clock event. Initramfs
 variants launch the minimal, database, container, campaign, game, and exec
 workloads.
 
+## x86 kernel profiles
+
+One patch series and one pinned source build three x86 kernels, selected by
+environment variables on `build-kernel.sh`. Each profile has its own output
+name and its own reviewed counter-opcode baseline, because a configuration
+change moves the counter-read sites.
+
+| Profile | Selector | Output |
+| --- | --- | --- |
+| Default | none | `bzImage` |
+| Instruction sweep negative | `N6_TRAPS_OFF=1` | `bzImage-n6-traps-off` |
+| Fault library | `FAULTLAB_TRAPS_OFF=1` | `bzImage-faultlab` |
+
+The fault-library profile runs stock database binaries, which the default
+kernel cannot: it leaves ring-3 counter reads to the host and builds
+single-processor. `x86-faultlab-config-fragment` records why for each symbol,
+including that the profile is only determinism-grade on a host with the patched
+KVM loaded and is fit for demonstrations elsewhere. It is the only profile that
+enables `CONFIG_HARMONY_PARK`; with the symbol off, that patch adds no bytes to
+the other two.
+
 ## Entry points
 
 ```sh

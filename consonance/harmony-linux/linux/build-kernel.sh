@@ -22,16 +22,25 @@ extract_kernel
 # applies independently and the two arches never collide on patch numbers — the
 # x86 build consumes patches/x86/ only; the arm64 build (build-arm64-kernel.sh)
 # consumes patches/arm64/ (hm-0dst, tribunal F7).
-# Idempotent: an exactly-applied tree passes the reverse dry-run and is
-# skipped; a drifted or partially-patched tree fails loudly (remove the
-# extracted tree under $BUILD_ROOT and rebuild — never a silent divergence).
+# Idempotent: a stamp records each applied patch, and a drifted or
+# partially-patched tree fails loudly (remove the extracted tree under
+# $BUILD_ROOT and rebuild — never a silent divergence).
 for guest_patch in "$LINUX_DIR"/patches/x86/[0-9][0-9][0-9][0-9]-*.patch; do
     patch_name=${guest_patch##*/}
-    if (cd "$KSRC" && patch -p1 -R --dry-run --force <"$guest_patch") >/dev/null 2>&1; then
+    # A stamp records each applied patch: later patches in the series touch
+    # the same lines, so reversing one of them alone does not test cleanly,
+    # and forcing a patch that does not apply writes the hunks that happen
+    # to match and leaves the tree between two series.
+    stamp=$KSRC/.harmony-applied-$patch_name
+    if [ -f "$stamp" ]; then
         echo "== kernel: $patch_name already applied"
-    else
+    elif (cd "$KSRC" && patch -p1 --dry-run --force <"$guest_patch") >/dev/null 2>&1; then
         echo "== kernel: applying $patch_name"
         (cd "$KSRC" && patch -p1 --force <"$guest_patch")
+        touch "$stamp"
+    else
+        echo "FAIL: $patch_name does not apply to $KSRC; delete the tree to re-extract" >&2
+        exit 1
     fi
 done
 
@@ -50,7 +59,8 @@ make -C "$KSRC" O="$KOBJ" ARCH=x86_64 allnoconfig
     "$LINUX_DIR"/kata/common/*.conf \
     "$LINUX_DIR"/kata/x86_64/*.conf \
     "$LINUX_DIR/config-fragment" \
-    ${N6_TRAPS_OFF:+"$LINUX_DIR/x86-n6-traps-off-config-fragment"})
+    ${N6_TRAPS_OFF:+"$LINUX_DIR/x86-n6-traps-off-config-fragment"} \
+    ${FAULTLAB_TRAPS_OFF:+"$LINUX_DIR/x86-faultlab-config-fragment"})
 make -C "$KSRC" O="$KOBJ" ARCH=x86_64 olddefconfig
 
 # merge_config only warns when a fragment symbol cannot take effect; assert the ones
@@ -83,10 +93,14 @@ assert_y 64BIT PRINTK TTY SERIAL_8250 SERIAL_8250_CONSOLE BINFMT_ELF \
     HZ_PERIODIC HZ_100 FUTEX POSIX_TIMERS KERNEL_GZIP X86_IOPL_IOPERM DEVMEM \
     HARMONY_PVCLOCK HARMONY_DEVICE NAMESPACES NET_NS NET UNIX INET SYSCTL \
     NETDEVICES VETH NET_SCHED NET_SCH_NETEM
-if [ -n "${N6_TRAPS_OFF:-}" ]; then
+if [ -n "${N6_TRAPS_OFF:-}" ] || [ -n "${FAULTLAB_TRAPS_OFF:-}" ]; then
     assert_off HARMONY_USER_COUNTER_TRAPS
 else
     assert_y HARMONY_USER_COUNTER_TRAPS
+fi
+if [ -n "${FAULTLAB_TRAPS_OFF:-}" ]; then
+    assert_off SMP RWSEM_SPIN_ON_OWNER MUTEX_SPIN_ON_OWNER
+    assert_y HARMONY_PARK HAVE_HW_BREAKPOINT
 fi
 # (HPET_TIMER is not in this list: it is def_bool y on x86-64 with no prompt;
 # the HPET is excluded at runtime instead — see config-fragment.)
@@ -132,14 +146,25 @@ make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
 # HARMONY_RDTSC_ALLOWLIST / HARMONY_RDRAND_ALLOWLIST select them (default:
 # the box toolchain's lists).
 echo "== kernel: counter-opcode scan (rdtsc/rdtscp + rdrand/rdseed reachability gate)"
+# The fault-library kernel is a single-processor build, so its counter-read
+# sites sit at other offsets than the SMP kernels' and it carries its own
+# reviewed baseline.
+rdtsc_allowlist=$LINUX_DIR/rdtsc-allowlist.txt
+rdrand_allowlist=$LINUX_DIR/rdrand-allowlist.txt
+if [ -n "${FAULTLAB_TRAPS_OFF:-}" ]; then
+    rdtsc_allowlist=$LINUX_DIR/rdtsc-allowlist-faultlab.txt
+    rdrand_allowlist=$LINUX_DIR/rdrand-allowlist-faultlab.txt
+fi
 bash "$LINUX_DIR/scan-counter-opcodes.sh" "$KOBJ/vmlinux" \
-    "${HARMONY_RDTSC_ALLOWLIST:-$LINUX_DIR/rdtsc-allowlist.txt}" \
-    "${HARMONY_RDRAND_ALLOWLIST:-$LINUX_DIR/rdrand-allowlist.txt}"
+    "${HARMONY_RDTSC_ALLOWLIST:-$rdtsc_allowlist}" \
+    "${HARMONY_RDRAND_ALLOWLIST:-$rdrand_allowlist}"
 
 # Publish ONLY after the scan passed.
 kernel_output=bzImage
 if [ -n "${N6_TRAPS_OFF:-}" ]; then
     kernel_output=bzImage-n6-traps-off
+elif [ -n "${FAULTLAB_TRAPS_OFF:-}" ]; then
+    kernel_output=bzImage-faultlab
 fi
 install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/$kernel_output"
 echo "ok: $ART_DIR/$kernel_output"

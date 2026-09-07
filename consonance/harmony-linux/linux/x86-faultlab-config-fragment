@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Fault-library guest kernel: retain the pvclock but let ring-3 read the
+# timestamp counter.
+#
+# The historical database specimens cannot run under CR4.TSD. Go's runtime
+# reads the counter directly (etcd and etcdctl fault on their first
+# `cputicks`), and so does glibc's dynamic loader before `main`, which takes
+# down every PostgreSQL binary. CR4.TSD faults inside the guest before any VM
+# exit can happen, so the host's RDTSC exiting is never reached while it is
+# set.
+#
+# This variant is therefore only deterministic on a host with the patched KVM
+# loaded, where RDTSC exits and the host answers from virtual time. On stock
+# KVM it reads the raw host counter and is fit for smoke tests only.
+#
+# Distinct from x86-n6-traps-off-config-fragment, which carries the same symbol
+# for an unrelated purpose: that kernel is the planted negative that proves a
+# hostile JIT probe can detect a live counter, and its identity stays
+# unambiguous.
+# CONFIG_HARMONY_USER_COUNTER_TRAPS is not set
+#
+# Single processor. The guest has one vCPU, and the host delivers its timer
+# interrupt only at VM exits it services. On an SMP kernel a writer that finds
+# an rwsem reserved for a queued waiter spins until the scheduler tick, and a
+# spinning guest never exits, so the tick never comes and the guest hangs;
+# three processes writing one tmpfs file reach that state. Without SMP there
+# is no optimistic spinning: the writer queues, the guest idles, and the
+# host jumps to the timer.
+# CONFIG_SMP is not set
+#
+# The task park (patches/x86/0006): a workload thread held at a user
+# instruction by a hardware execution breakpoint the kernel owns, for the
+# races no signal-delivered pause can reach. Needs the perf breakpoint
+# framework the Kata base provides.
+CONFIG_HARMONY_PARK=y

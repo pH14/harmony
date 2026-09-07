@@ -23,9 +23,10 @@ diff against a pristine extract. Preserve the explanatory preamble before the
 first diff header.
 
 After an x86 clock-source change, run the counter-opcode scan and update
-`../rdtsc-allowlist.txt` if the deliberate instruction count changes. After any
-kernel patch change, run the image test to regenerate and verify
-`../MANIFEST.sha256`.
+`../rdtsc-allowlist.txt` (and `../rdtsc-allowlist-faultlab.txt`, the
+single-processor fault-library kernel's baseline) if the deliberate
+instruction count changes. After any kernel patch change, run the image test to
+regenerate and verify `../MANIFEST.sha256`.
 
 ## x86 series
 
@@ -36,6 +37,13 @@ kernel patch change, run the image test to regenerate and verify
 - `0002-x86-harmony-character-device.patch` adds `/dev/harmony`, attributed
   event delivery, and deterministic entropy transactions over the existing
   doorbell.
+- `0006-x86-harmony-task-park.patch` adds `CONFIG_HARMONY_PARK` and
+  `/dev/harmony-park`, through which a supervisor holds one thread of a
+  workload at a user instruction on its k-th execution: a per-thread hardware
+  execution breakpoint counted in the kernel, and a sleep taken on the thread's
+  own return to user mode. Only the fault-library kernel enables it; with the
+  symbol off, the system-call entry poll is an empty inline and every other
+  kernel's bytes are unchanged.
 
 The clock source contains two deliberate `rdtsc` instructions. The reviewed
 allowlist records their locations. The x86 build rejects unaccounted counter
