@@ -33,3 +33,8 @@ without re-running the search decisions.
 `searcher/src/nova/README.md` documents the source-built Nova workload and its
 input and observation map. `machine/README.md` and `searcher/README.md`
 describe the reusable interfaces.
+
+The repository skill [`nes-game-integration`](../.agents/skills/nes-game-integration/SKILL.md)
+provides the workflow for adding evaluation games with minimal encoded guidance.
+The [searcher README](searcher/README.md#design-goals) states the cross-workload
+search and performance goals and distinguishes them from current guarantees.
