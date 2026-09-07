@@ -14,12 +14,16 @@ location, the adapter prefers states with more cleared levels, collectibles,
 available levels, carried abilities, health, and puzzle chips, in that order.
 Coarser archive groups represent durable progress and level identity.
 
-The key sorts durable progress, level identity, and position ahead of the
-ability, health, and chip fields, because the archive reads a key's ordering as
-depth and those three fields only pick a slot's representative. Ordering them
-first ranked a fresh state at a level's mouth above a battered one at its end,
-which sent the reported deepest key wandering backwards and pointed splice
-donors at the wrong tails.
+The key sorts the ability, health, and chip fields ahead of level identity and
+position. The archive reads a key's ordering as depth, so this ordering
+disagrees with the declared grouping: the reported deepest key can move
+backwards across a level once a run holds an ability at full health. The
+disagreement is measured rather than accidental. Sorting progress first is the
+tidier contract and searched worse — level 25 at seed 1 cleared in 104,751
+executions under this order and had not cleared by 258,900 under the other,
+because the splice donor gate stops preferring donors that reached a cell
+without taking damage. `first_depth_ord_disagreement` pins the deviation so a
+reorder has to be a deliberate re-measurement.
 
 Reports may record progress reached inside an action. Reproducer selection uses
 action endpoints, where the serialized input identifies the complete state.

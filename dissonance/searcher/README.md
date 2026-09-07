@@ -13,10 +13,13 @@ The archive groups entries at several ordered depths. A workload provides the
 key and any same-location state preference; the generic archive uses only the
 resulting ordering and retains bounded representatives. It also reads the key's
 own `Ord` as depth — the deepest live key a run reports, the donor order inside
-a selection cell, and the splice gate all compare keys directly — so a key sorts
-its progress fields ahead of any field the grouping never reads.
+a selection cell, and the splice gate all compare keys directly — so a field the
+grouping never reads still ranks depth if the key sorts it early.
 `group_depth_cmp` is the ordering a declared grouping implies, and
-`first_depth_ord_disagreement` checks a sample of keys for the mistake. Campaigns reserve jobs
+`first_depth_ord_disagreement` reports where a key's own ordering departs from
+it. Whether a departure helps or hurts is a search question to measure, not a
+defect to assume: Nova sorts resources first on measured evidence, while SMB's
+ordering departs from its grouping in the opposite direction. Campaigns reserve jobs
 in a deterministic admission window, allow physical workers to execute them,
 and process results in recorded admission order. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
