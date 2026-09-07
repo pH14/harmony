@@ -104,6 +104,7 @@ fn decode_io_out_reads_value_via_run_buf() {
         })
     );
     assert_eq!(pending, Pending::None);
+    assert!(decoded_exit_stages_completion(&exit, pending));
 }
 
 #[test]
@@ -135,6 +136,7 @@ fn decode_io_in_arms_pending() {
             size: 2
         }
     );
+    assert!(!decoded_exit_stages_completion(&exit, pending));
 }
 
 #[test]
@@ -201,6 +203,7 @@ fn decode_mmio_store_and_load() {
         })
     );
     assert_eq!(pending, Pending::None);
+    assert!(decoded_exit_stages_completion(&exit, pending));
 
     // load
     let s = SynRun::new();
@@ -222,6 +225,7 @@ fn decode_mmio_store_and_load() {
         })
     );
     assert_eq!(pending, Pending::MmioLoad { len: 4 });
+    assert!(!decoded_exit_stages_completion(&exit, pending));
 }
 
 #[test]
@@ -423,6 +427,24 @@ fn retire_staged_completion_error_clears_one_shot_and_keeps_stage() {
         "an uncertain completion remains conservatively staged"
     );
     assert_eq!(pending, Pending::None);
+}
+
+#[test]
+fn retire_staged_write_completion_without_pending_uses_immediate_entry() {
+    let s = SynRun::new();
+    let mut pending = Pending::None;
+    let mut staged = true;
+    let mut entries = 0;
+    retire_staged_completion(s.page(), &mut pending, &mut staged, || {
+        entries += 1;
+        assert_eq!(s.page().immediate_exit(), 1);
+        Err(std::io::Error::from_raw_os_error(libc::EINTR))
+    })
+    .unwrap();
+    assert_eq!(entries, 1);
+    assert!(!staged);
+    assert_eq!(pending, Pending::None);
+    assert_eq!(s.page().immediate_exit(), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -932,4 +954,49 @@ fn interrupt_fields_round_trip_through_vcpu_events() {
     assert_eq!(back.interrupt_nr, 0x40);
     assert_eq!(back.interrupt_shadow, 1);
     assert_eq!(back, e);
+}
+
+#[test]
+fn restore_sregs_invalidates_translations_and_installs_exact_snapshot() {
+    for cr0 in [0x21, 0x10021, 0x80000021, 0x80010021] {
+        let saved = VcpuSregs {
+            cr0,
+            cr3: 0x1000,
+            cr4: 0x20,
+            ..VcpuSregs::default()
+        };
+        let mut writes = Vec::new();
+        restore_sregs2_with_flush(&saved, |sregs| {
+            writes.push(from_kvm_sregs2(sregs));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(writes.len(), 2);
+        assert_ne!(writes[0].cr0, writes[1].cr0);
+        assert_eq!(writes[0].cr0 ^ writes[1].cr0, 0x10000);
+        let mut transient = writes[0];
+        transient.cr0 = saved.cr0;
+        assert_eq!(
+            transient, saved,
+            "only write protection changes temporarily"
+        );
+        assert_eq!(writes[1], saved, "the final state is the exact snapshot");
+    }
+}
+
+#[test]
+fn restore_sregs_stops_at_either_failed_write() {
+    for failure in [1, 2] {
+        let mut calls = 0;
+        let result = restore_sregs2_with_flush(&VcpuSregs::default(), |_| {
+            calls += 1;
+            if calls == failure {
+                Err(BackendError::Internal("rejected special registers"))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(calls, failure);
+    }
 }

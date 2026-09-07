@@ -101,6 +101,11 @@ exclude_globs = [
 # determinism anchor — `contract/parse.rs` + the §6 `contract/canonical.rs`
 # serializer — has NONE of these: every mutant there is killed by a real test.
 exclude_re = [
+    # Every current X86Exit variant stages completion. Keep the exhaustive
+    # match so new variants require an explicit decision; replacing that
+    # entire match with true is equivalent. completion_staging.rs covers
+    # every variant and kills the false/forwarding/default mutations.
+    "consonance/vmm-backend/src/arch/x86/mod\\.rs:.*replace <impl ArchExit for X86Exit>::stages_completion -> bool with true",
     # (a) `vmm_core::hostassert::probe` — the `cfg(linux)` host-CPU probe (live
     #     CPUID / FXSAVE / sysfs-microcode reads + the comparisons against them).
     #     Exactly like the `kvm` path above: it cannot be value-mutation-tested on a
