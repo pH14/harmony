@@ -59,6 +59,7 @@ workload_support = [
     "workloads/nes-machine",
 ]
 workload_packages = [
+    "workloads/fault-agent",
     "workloads/fault-guest",
     "workloads/fault-sdk",
     "workloads/nes-guest",

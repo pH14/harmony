@@ -213,6 +213,19 @@ jobs:
             cargo deny --manifest-path "$manifest" check --config deny.toml
           done
 
+      # workloads/fault-agent is out-of-workspace (its own manifest). Its
+      # portable bundle, reconcile, and directive logic tests on any host; the
+      # guest transport is cfg-gated to x86-64 Linux, so the cross-target check
+      # compiles the musl guest build without executing it.
+      - name: workloads/fault-agent gates (out-of-workspace manifest)
+        run: |
+          cargo fmt --manifest-path workloads/fault-agent/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path workloads/fault-agent/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --locked --manifest-path workloads/fault-agent/Cargo.toml --all-features
+          cargo deny --manifest-path workloads/fault-agent/Cargo.toml check --config deny.toml licenses
+          rustup target add x86_64-unknown-linux-musl
+          cargo clippy --locked --manifest-path workloads/fault-agent/Cargo.toml --target x86_64-unknown-linux-musl --all-targets -- -D warnings
+
       - name: Replicated workload fixture gates
         run: |
           manifest=workloads/faults/fixtures/replicated-service/Cargo.toml

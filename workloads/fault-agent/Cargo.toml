@@ -1,0 +1,51 @@
+# The harmony in-guest fault agent: the guest half of the standing-fault
+# mechanism. It supervises the workload's node processes, polls the host for the
+# standing faults active at the current `Moment`, and applies the difference
+# against the previous answer as process signals and hook launches.
+#
+# Standalone workspace (like `workloads/nes-guest`): the root Cargo.toml excludes
+# this directory, so the crate declares its own `[workspace]` and carries its own
+# lockfile. It is a guest-resident artifact, so the no-`cfg(target_os)`
+# portability rule is waived; the supervision brain (bundle parsing, fault
+# reconciliation, hook directive parsing, register bookkeeping) is nonetheless
+# target-agnostic so it builds and is unit-tested on the macOS dev host, and only
+# the `/dev/harmony` ioctl, process spawning, and signalling are Linux.
+[package]
+name = "harmony-fault-agent"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+description = "The Harmony in-guest fault agent: standing-fault poll, process supervision, and workload hooks"
+
+# Own workspace root so cargo does not fold this into the repo root workspace.
+[workspace]
+
+[lib]
+name = "harmony_fault_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fault-agent"
+path = "src/main.rs"
+
+# Explicit `version` alongside `path` for `cargo deny`'s wildcard ban, mirroring
+# the other guest crates.
+[dependencies]
+# The guest SDK: assertions, IJON state registers, and `setup_complete`.
+harmony-sdk = { path = "../../consonance/harmony-linux/sdk", version = "0.1.0" }
+# The guest-side hypercall client and the generic opaque service request the
+# standing poll rides.
+hypercall-proto = { path = "../../consonance/hypercall-proto", version = "0.1.0", default-features = false, features = ["guest"] }
+# The fault catalog, the `DecisionClass::Process` target encoding, and the
+# standing-poll answer codec, shared byte-for-byte with the host package.
+fault-policy = { path = "../fault-policy", version = "0.1.0" }
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+
+# Guest-resident Linux glue: the `/dev/harmony` ioctl and process-group
+# signalling. Only referenced under the x86-64 Linux cfg.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+libc = { version = "0.2" }
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
