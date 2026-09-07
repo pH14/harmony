@@ -75,9 +75,14 @@ clear opens. `nova-campaign --terminal` selects one; `--suffix` and
 `--mixture` select the generic draw policies the same way `smb-campaign`
 does.
 
-A whole-game campaign needs `every_level_cleared`. Under the default a clear
-is terminal and is never archived, so the search cannot pass its first
-cleared level however large the execution budget is.
+A whole-game campaign needs `every_level_cleared`. The predicate also decides
+whether a clear freezes the target: under the default `apply` and
+`survives_probe` refuse to emulate past a cleared level, which keeps a
+terminal state from drifting but leaves a post-clear state unable to advance
+at all. Jobs selecting one emulate no frames, rebuild its key, and are
+rejected as duplicates, so no execution budget, selector, or suffix shape can
+move it. `every_level_cleared` lifts the freeze and lets the predicate alone
+decide.
 
 ## Replay and media capture
 
