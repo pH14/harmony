@@ -78,7 +78,7 @@ impl<G: CampaignInterfaces + ?Sized> Rollout<G> for GameRollout<'_, G> {
     }
 
     fn key(&self) -> Result<G::Key, Box<dyn Error>> {
-        self.game.current_key(self.target)
+        self.game.rollout_key(self.target)
     }
 
     fn probe(&mut self, snapshot: &G::Snapshot) -> Result<bool, Box<dyn Error>> {

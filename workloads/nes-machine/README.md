@@ -48,6 +48,10 @@ the publication by SDK names, validates the shared `nes-protocol` codec, and rea
 RAM observations at stopped action boundaries. Game initialization and evaluation
 belong to the adapters in `nes-workload`.
 
+Setup and each action allow 2 seconds of virtual time on x86-64 and 20 seconds
+on arm64. These architecture-specific budgets are passed through the client
+session configuration and included in the execution identity.
+
 Native snapshots preserve their existing serialized emulator format. Consonance
 snapshots use the explicit `consonance-whole-vm-v2` shape owned by
 `consonance-client`: setup base, execution identity, sparse pages, and opaque

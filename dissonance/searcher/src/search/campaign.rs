@@ -545,6 +545,17 @@ pub trait Evaluation: CampaignTypes {
     ///
     /// Returns an error when decoding fails.
     fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>>;
+    /// Decode a worker candidate key before coordinator completion.
+    ///
+    /// Workloads with ancestry-dependent key fields keep their recorded worker
+    /// representation here and fill those fields in `complete_candidate_key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when decoding fails.
+    fn rollout_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>> {
+        self.current_key(target)
+    }
     /// Complete a worker-decoded candidate key against its snapshot. Workers
     /// leave ancestry-dependent fields canonical so result digests stay
     /// independent of them.

@@ -29,7 +29,10 @@ use crate::{
 const RAM: usize = 128 * 1024 * 1024;
 #[cfg(target_arch = "aarch64")]
 const RAM: usize = 128 * 1024 * 1024;
+#[cfg(target_arch = "x86_64")]
 const BOOT_BUDGET: u64 = 2_000_000_000;
+#[cfg(target_arch = "aarch64")]
+const BOOT_BUDGET: u64 = 20_000_000_000;
 const RUN_BUDGET: u64 = BOOT_BUDGET;
 const RAM_GPA_BASE: u64 = consonance_client::session::RAM_GPA_BASE;
 const SEED: u64 = 0x4e4f_5641_5f53_4541;
