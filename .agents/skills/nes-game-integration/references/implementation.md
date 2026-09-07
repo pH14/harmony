@@ -29,10 +29,13 @@ Cargo's current binary/feature discovery before modifying manifests.
 
 Reuse the example's infrastructure, not its addresses, predicates, key order,
 setup shortcuts, or policy names. Define associated types in `CampaignTypes`,
-then implement the four contracts; `Game` is composed automatically. Reuse
-`search::rollout::execute_suffix` for job execution and preserve its
-restore/replay/suffix/probe ordering. Keep game code out of the generic searcher
-and machine drivers. Do not create another coordinator or copy the rollout loop.
+then implement the four contracts; `Game` is composed automatically. Prefer the
+default shared rollout and preserve its restore/replay/suffix/probe ordering.
+Check that it can represent exact event endpoints and non-admissible states;
+if an existing `TargetExecution::execute_job` override is needed for correctness,
+document why rather than weakening the observations to fit the shared loop.
+Keep game code out of the generic searcher and machine drivers, and keep
+scheduling in the existing coordinator.
 The shared CLI package dispatch and backend oracle currently recognize specific
 ROMs; registering a standalone campaign does not automatically add CLI or
 Consonance support. Report those separately.
