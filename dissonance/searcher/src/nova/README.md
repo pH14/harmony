@@ -126,6 +126,45 @@ rejected as duplicates, so no execution budget, selector, or suffix shape can
 move it. `every_level_cleared` lifts the freeze and lets the predicate alone
 decide.
 
+## Whole-game measurements
+
+Seed 1, `every_level_cleared`, the ability-identity key, and the plain
+no-decay selector (`..._energy_frontier_cheapest:3,4096,4096,4096`), one
+setting held across the run:
+
+| genesis | cleared | executions |
+| --- | --- | --- |
+| level 1 | levels 1, 2 | 9,900 and 30,500; level 3 uncleared at 334,500 |
+| level 1, `has_ability` bool key | levels 1, 2 | level 3 uncleared at 516,400 |
+| level 2 | levels 2, 3 | 2,500 and 15,000; level 4 uncleared at 36,400 |
+| level 3 | levels 3, 4, 5 | 8,600, 11,800 (two); level 6 uncleared at 152,900 |
+
+Level 3 in isolation clears in 8,596. Entering it with a carried ability and
+extra collectibles is not the difference: the level-2 genesis clears it in
+3,000 once it arrives. The level-1 genesis holds more entries, and takes more
+draws, in the door room than the isolated run took in the whole level (305
+against 52 by 110,000 executions), and never clears it.
+
+The door sits at (2887, 136) on a one-tile platform between two pits and
+needs a fresh Up press while standing there. Replaying the level-1 genesis
+archive at 110,000 executions shows every representative in the door's cells
+falling past the platform: the slot's fewest-frames representative is the
+arrival that flew through, and no one- or two-action suffix from any of
+them lands and presses. The isolated run's clear came from a cell above the
+door with a two-action suffix, a long hold that dropped the player onto the
+platform and then Left+Up; the level-1 genesis holds the same cells and did
+not draw that pair. Each global lever tried on that genesis left level 3
+uncleared: entry retirement 8 and 16 in place of 3 (217,200 and 220,300),
+a frontier rank span of 8 in place of 16 (128,700), 6 fingerprint bits with
+pressured split 64,8 (245,400), and 6 bits split at every slot, which had
+not cleared level 2 by 183,100.
+
+What the level-1 genesis lacks is a representative standing on the platform,
+and no existing knob names one: the key sees location and resources, not
+whether the arrival has come to rest. A settled-state preference at
+admission, measured against the key rather than any Nova field, is the
+generic lever this points at and is unmeasured.
+
 ## Replay and media capture
 
 `nova-campaign` records and replays the campaign stream in its standard mode.
