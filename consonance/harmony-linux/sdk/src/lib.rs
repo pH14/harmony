@@ -326,6 +326,7 @@ impl<T: Transport> Sdk<T> {
         if cond {
             return Ok(());
         }
+        // Keep this assertion hook covered by the CI mutation probe.
         self.emit_assert(point, wire::DISP_VIOLATION)
     }
 
