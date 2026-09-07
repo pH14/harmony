@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Host-only KVM timeout. SIGUSR1 interrupts the owning thread, and the
-//! backend's cancellation latch prevents EINTR from re-entering the guest.
-//! The guard cannot leave that thread and joins the sender before it exits.
+//! Host-only wall-clock timeout for a guest that stops returning to the host.
+//!
+//! A guest spinning on a frozen virtual clock takes no exit, so it never
+//! reaches its virtual-time deadline and only host time can notice it. SIGUSR1
+//! interrupts the owning thread, and the backend's cancellation latch prevents
+//! EINTR from re-entering the guest. The guard cannot leave that thread and
+//! joins the sender before it exits. SIGUSR1 is reserved process-wide for this
+//! purpose, so every composition that arms a timeout shares this one guard.
 
 use std::sync::{
     Arc,
@@ -10,7 +15,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-pub(super) struct Watchdog {
+pub struct Watchdog {
     done: mpsc::Sender<()>,
     thread: Option<std::thread::JoinHandle<()>>,
     _owner: std::marker::PhantomData<std::rc::Rc<()>>,
@@ -18,7 +23,7 @@ pub(super) struct Watchdog {
 
 impl Watchdog {
     #[cfg(not(miri))]
-    pub(super) fn start(budget: Duration, cancel: Arc<AtomicBool>) -> std::io::Result<Self> {
+    pub fn start(budget: Duration, cancel: Arc<AtomicBool>) -> std::io::Result<Self> {
         install_signal()?;
         // SAFETY: pthread_self returns the calling thread's live identifier.
         // The non-Send guard joins the only user of it before this thread exits.
@@ -211,9 +216,17 @@ mod tests {
             return;
         }
         for mode in ["default", "ignored", "owned"] {
-            assert!(std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "oci::watchdog::tests::installs_for_default_and_ignored_but_rejects_owned_signal"])
-                .env(ENV, mode).status().unwrap().success());
+            assert!(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "watchdog::tests::installs_for_default_and_ignored_but_rejects_owned_signal"
+                    ])
+                    .env(ENV, mode)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
         }
     }
 }

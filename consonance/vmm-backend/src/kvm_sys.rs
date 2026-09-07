@@ -243,14 +243,6 @@ impl KvmBackend {
         })
     }
 
-    /// Host-only cancellation latch for abandoning this VM. Set it before
-    /// interrupting the vCPU thread with a signal. Every entry and EINTR retry
-    /// checks the latch; cancellation never becomes a guest event or advances
-    /// virtual time. A canceled VM must be discarded, not resumed.
-    pub fn cancellation_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
-        std::sync::Arc::clone(&self.cancel_run)
-    }
-
     /// Enable/disable `KVM_MEM_LOG_DIRTY_PAGES` on memslots registered by
     /// **subsequent** [`Backend::map_memory`] calls (task 95 M2.1). Default
     /// **enabled**. Call before mapping guest RAM; already-registered slots are
@@ -1056,5 +1048,12 @@ impl Backend for KvmBackend {
 
     fn capabilities(&self) -> Capabilities<X86Caps> {
         kvm_capabilities()
+    }
+
+    /// Set the latch before interrupting the vCPU thread with a signal: every
+    /// entry and EINTR retry checks it, so cancellation never becomes a guest
+    /// event or advances virtual time.
+    fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        Some(std::sync::Arc::clone(&self.cancel_run))
     }
 }

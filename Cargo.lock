@@ -228,6 +228,7 @@ version = "0.1.0"
 dependencies = [
  "control-proto",
  "environment",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
@@ -427,8 +428,8 @@ name = "harmony-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "consonance-client",
  "faults-workload",
- "libc",
  "nes-workload",
  "oci-support",
  "serde",

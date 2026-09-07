@@ -585,6 +585,15 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.vmm.as_ref()
     }
 
+    /// Mutable access to the live VM for host-side evidence settings a
+    /// composition root chooses before its first run, such as
+    /// [`Vmm::defer_virtual_time_checkpoint_hashes`]. Restores replace the VM,
+    /// so a setting applied here covers only the current one. `None` after a
+    /// fatal error.
+    pub fn vmm_mut(&mut self) -> Option<&mut Vmm<B>> {
+        self.vmm.as_mut()
+    }
+
     /// Complete restore-aware normalized trace for this control session.
     ///
     /// Each branch/replay replacement closes one segment. The current live

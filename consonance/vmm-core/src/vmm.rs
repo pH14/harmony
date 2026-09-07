@@ -2316,6 +2316,14 @@ where
         self.backend.exit_counts()
     }
 
+    /// Host-only cancellation latch; see [`Backend::cancellation_flag`]. A VM
+    /// whose latch has been set must be discarded rather than resumed.
+    ///
+    /// [`Backend::cancellation_flag`]: vmm_backend::Backend::cancellation_flag
+    pub fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        self.backend.cancellation_flag()
+    }
+
     /// The number of exact hypercall-doorbell rings since this VM was created.
     /// This host-only diagnostic counter is not part of state, hashes, or
     /// snapshots; it is narrower than [`Vmm::exit_counts`]'s I/O/MMIO totals.
@@ -4087,14 +4095,6 @@ where
             Some(s) => s.clone(),
             None => self.backend.save().unwrap_or_default(),
         }
-    }
-}
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-impl Vmm<vmm_backend::KvmBackend> {
-    /// Host-only cancellation latch; see `KvmBackend::cancellation_flag`.
-    pub fn kvm_cancellation_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
-        self.backend.cancellation_flag()
     }
 }
 

@@ -155,4 +155,8 @@ impl Backend for PatchedKvmBackend {
     fn capabilities(&self) -> Capabilities<X86Caps> {
         patched_capabilities()
     }
+
+    fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        self.inner.cancellation_flag()
+    }
 }

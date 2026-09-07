@@ -10,8 +10,6 @@
 
 use oci_support::{bundle, cache, image};
 mod runner;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-mod watchdog;
 
 use crate::host::{HostReport, MatrixCell};
 use crate::preflight::GuestArtifacts;

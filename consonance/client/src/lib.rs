@@ -4,6 +4,9 @@
 
 pub mod catalog;
 
+#[cfg(target_os = "linux")]
+pub mod watchdog;
+
 #[cfg(all(feature = "in-process", not(miri)))]
 pub mod session;
 
