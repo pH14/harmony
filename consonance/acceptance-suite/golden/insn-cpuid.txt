@@ -1,3 +1,0 @@
-PAYLOAD insn-cpuid START
-OK cpuid-stable
-PAYLOAD insn-cpuid PASS

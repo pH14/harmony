@@ -5,7 +5,7 @@
 # cgroup-v2/overlayfs/ext4/namespaces/... for tasks 37/38); this overlay is
 # unchanged in intent — it only configures out the nondeterminism Kata's base
 # turns on (SMP, dynticks, KASLR, CPU-freq, HW-RNG, PM timer, ...). Determinism
-# is enforced from below (patched KVM + V-time + the VMM device models); this
+# is enforced from below (stock KVM + assigned V-time + the VMM device models); this
 # overlay governs capability/probe surface only. Comment discipline: every entry
 # says why it is here. Symbols marked "(overrides Kata =y)" flip a value the Kata
 # base sets the other way — build-kernel.sh asserts each survives the merge.
@@ -81,7 +81,7 @@ CONFIG_HZ_100=y
 # the page), so this image boots byte-for-byte as before everywhere else and
 # one image serves as both the page-on and page-off measurement arm. When
 # active it marks the TSC unstable, closing the kernel-timekeeping raw-RDTSC
-# path (the RDTSC trap stays underneath as the backstop for everything else).
+# path; the instruction audit excludes native timestamp reads from the guest surface.
 CONFIG_HARMONY_PVCLOCK=y
 
 # Language-agnostic, unprivileged application transport. The built-in misc
@@ -92,13 +92,13 @@ CONFIG_HARMONY_DEVICE=y
 ## Entropy / randomness
 # No hardware RNG drivers — entropy must come from our hypercall channel.
 # (overrides Kata virtio-extras.conf CONFIG_HW_RANDOM=y / HW_RANDOM_VIRTIO=y;
-# the latter is dropped by olddefconfig once HW_RANDOM is off.) RDRAND is trapped
-# to the seeded stream by the patched backend; the cmdline also passes
+# the latter is dropped by olddefconfig once HW_RANDOM is off.) Hardware RNG feature bits are hidden
+# by the guest CPUID policy; the cmdline also passes
 # random.trust_cpu=off so RDRAND entropy is never credited at boot.
 # CONFIG_HW_RANDOM is not set
 # (CONFIG_RANDOM_TRUST_CPU was removed in kernel 6.2: RDRAND crediting is the
 # random.trust_cpu= boot parameter now — default on, so the boot gate passes
-# random.trust_cpu=off — and RDRAND itself is trapped by the hypervisor.
+# random.trust_cpu=off — and RDRAND is hidden by the guest CPUID policy.
 # Nothing to set at build time in 6.18.)
 
 ## Memory management

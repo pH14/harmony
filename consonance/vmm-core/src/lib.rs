@@ -15,7 +15,7 @@
 //!   that drives the vCPU through [`vmm_backend::Backend::run`] and dispatches the
 //!   returned [`vmm_backend::Exit`], the owned guest RAM, the snapshot/branch
 //!   machinery ([`snapshot`]), the state-hash *framework*, the control transport
-//!   ([`control`]), the corpus adapter ([`corpus`]), the work seam ([`work`]), and
+//!   ([`control`]), assigned virtual time, and
 //!   the V-time/idle wiring. It speaks only `(Gpa, Moment, bytes, hashes)` plus the
 //!   common exit vocabulary, and is **compiler-provably arch-blind**: it holds
 //!   `<B::A as Vendor>::Devices` and reaches everything ISA-specific through the
@@ -23,28 +23,19 @@
 //!   vendor's exit enum.
 //! - **The vendor** ([`vendor::x86`], the sole one today) — the CPU/MSR contract and
 //!   its installed policy, the exit dispatch and dispositions, the boot loaders and
-//!   entry state (Multiboot v1 + the direct 64-bit Linux bzImage protocol), the
+//!   entry state (the direct 64-bit Linux bzImage protocol), the
 //!   interrupt fabric and platform device models (the userspace xAPIC per ruling R1,
 //!   the 8259/PIT/PCI shims, the 8250 UART), the
 //!   VM-exit exit-count-clock event, and the `vm_state` record set.
 //!
 //! An ARM vendor is a sibling module under [`vendor`], not an edit to the engine.
 //!
-//! Most of the crate is **pure logic, unit-testable on macOS** against a scripted
-//! [`vmm_backend::MockBackend`] with no `/dev/kvm`; only the live M1/M2 gates
-//! ([`bringup::boot`] over a real `KvmBackend`) are box-only. The one granted
-//! `unsafe` is the box path's pinned [`vmm::GuestRam`] backing and the call to
-//! the `unsafe` [`vmm_backend::Backend::map_memory`]; under Miri (and wherever
-//! `mmap` is unavailable) `GuestRam` falls back to a `Vec<u8>` so the loader /
-//! event-loop / `state_blob` pointer-and-bounds logic is still exercised.
-//!
-//! Determinism (conventions rule 4) is structural: the contract tables are
-//! sorted, [`vmm::Vmm::state_blob`] is a fixed length-prefixed byte layout over
-//! all observable state, no `HashMap` iteration reaches a hash, no floating
-//! point, and the skeleton introduces no time source (V-time arrives later).
+//! Portable mock tests exercise the run loop, devices, protocols, and snapshots.
+//! Live Linux tests use stock KVM. Miri checks the owned guest-memory mapping seam.
+//! Assigned virtual time and canonical serialization keep host timing out of
+//! guest state and replay hashes.
 
 pub mod control;
-pub mod corpus;
 // Task 81 — the `exec` improvisation's pure sentinel state machine (what bytes to
 // type at the serial shell + how to detect completion/status). Portable and
 // off-record by ruling; the real serial wiring lives in `vmm`/`control`.

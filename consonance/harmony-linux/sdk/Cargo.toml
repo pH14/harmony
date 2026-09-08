@@ -4,7 +4,7 @@
 # in the optional workloads/fault-sdk adapter. It composes with
 # `Client<VmcallTransport>` with zero new transport code.
 #
-# Standalone workspace (like `consonance/acceptance-suite/payloads`): the root Cargo.toml excludes
+# Standalone workspace : the root Cargo.toml excludes
 # `consonance/harmony-linux/`, so this crate declares its own `[workspace]` and carries its own
 # lockfile. It depends on the `consonance` hypercall protocol by path.
 [package]

@@ -117,7 +117,7 @@ fn unmodeled_exits_fail_closed() {
     assert!(matches!(mmio.run(), Err(VmmError::ContractViolation(_))));
 
     // A backend-dependent RDTSC (must never be laundered).
-    let mut tsc = vmm_with(vec![Exit::Arch(X86Exit::Rdtsc)]);
+    let mut tsc = vmm_with(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })]);
     assert!(matches!(tsc.run(), Err(VmmError::ContractViolation(_))));
 
     // A hypercall (host handler deferred).

@@ -222,13 +222,8 @@ fn capabilities_are_honest() {
     let backend = new_backend_or_explain();
     let caps = backend.capabilities();
     assert_eq!(caps.name, "kvm-stock");
-    assert!(!caps.arch.deterministic_tsc, "stock KVM cannot trap RDTSC");
     assert!(
         !caps.deterministic_rng,
         "stock KVM cannot trap RDRAND/RDSEED"
-    );
-    assert!(
-        !caps.arch.enforces_tsc_deadline_msr,
-        "stock KVM swallows 0x6E0"
     );
 }

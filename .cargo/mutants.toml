@@ -60,16 +60,6 @@ exclude_globs = [
     # configuration, identity, and sparse snapshot validation stay in
     # `session.rs`; boot/control calls are exercised by the hardware lanes.
     "consonance/client/src/session/live.rs",
-    # `consonance/acceptance-suite`'s real-VMM registry. It is the
-    # binary's Linux/x86-64 composition root: every function needs a real
-    # `/dev/kvm`, the LOADED patched KVM modules, and built payloads, so the
-    # no-`--ignored` mutation oracle can never execute a line of it and every
-    # mutant is structurally unkillable ("missed"), not a real gap. Its
-    # evidence is the hardware lane (`scripts/box-gates.sh`, the `corpus`
-    # gate). Note it is `cfg(all(target_os = "linux", target_arch =
-    # "x86_64"))`, so a macOS run does not even compile it — the survivors only
-    # appear on the Linux CI runner.
-    "consonance/acceptance-suite/src/realvmm.rs",
     # `vmm_backend::contract` is a TEST HARNESS that happens to live in `src/`.
     # cargo-mutants already ignores everything under `tests/`; this exam is only
     # in the library because downstream crates (and this crate's own box-only
@@ -96,19 +86,10 @@ exclude_globs = [
     # concrete FFI halves are verified by the exact HVF/KVM hardware lanes.
     "consonance/vmm-backend/src/hvf.rs",
     "consonance/vmm-backend/src/arm64_kvm_sys.rs",
-    # The patched backend syscall orchestration cannot run without its patched
-    # `/dev/kvm`, so the portable mutation oracle cannot exercise it.
-    "**/patched_kvm.rs",
 ]
 
-# Structurally-unkillable mutants in `consonance/vmm-core`, by category. The
-# determinism anchor — `contract/parse.rs` + the §6 `contract/canonical.rs`
-# serializer — has NONE of these: every mutant there is killed by a real test.
+# Equivalent mutations in portable logic.
 exclude_re = [
-    # Every current X86Exit variant stages completion. Keep the exhaustive
-    # match so new variants require an explicit decision; replacing that
-    # entire match with true is equivalent. completion_staging.rs covers
-    # every variant and kills the false/forwarding/default mutations.
     "consonance/vmm-backend/src/arch/x86/mod\\.rs:.*replace <impl ArchExit for X86Exit>::stages_completion -> bool with true",
     # The nominal handler has empty configuration and no dynamic state.
     # Empty borrowed/owned slices have the same byte contract; Vec::new() and
@@ -160,14 +141,6 @@ exclude_re = [
     #     `allow-stateful` row in the frozen contract is bidirectional (verified: 14
     #     bidirectional, 0 one-directional), so `&&` ≡ `||` on this contract.
     "replace && with \\|\\| in msr_filter_allow",
-    # (e) `bringup::boot_selected` (task 21) and `bringup::boot_linux_selected`
-    #     (task 30) — the `cfg(linux)` composition roots: each names the concrete
-    #     `KvmBackend`/`PatchedKvmBackend` and opens the `perf_event` counter, so it
-    #     cannot run without bare-metal KVM + perf. The no-`--ignored` mutation
-    #     oracle never runs them (only the `#[ignore]`d box P6 / M1-M2 / live-linux
-    #     tests do); same precedent as the `kvm`/`probe::` paths. The `compose_*`
-    #     helpers and `apply_*` overlays they call are mock-tested and stay gated.
-    "boot(_linux)?_selected",
     # The Apple-Silicon HVF boot roots are the arm64 counterparts of the
     # Linux/KVM composition roots above. They open Hypervisor.framework and
     # cannot be entered by the Ubuntu mutation oracle; portable `compose*`
@@ -177,13 +150,6 @@ exclude_re = [
     # Silicon and cannot be entered by the Ubuntu mutation oracle. The handle
     # itself is exercised by the exact HVF hardware lanes.
     "hvf_exit_handle",
-    # (f) `draw_rng` (task 21): the fail-closed `status != Ok || got != n` guard is
-    #     unreachable for the in-tree infallible `SeededEntropy` with a validated
-    #     `n ∈ 1..=8` count + `n`-byte buffer, so the `||`→`&&` mutant is provably
-    #     equivalent (both operands are always false). The `!=` halves and the
-    #     width-range guard stay mutation-gated (killed by the RNG draw / width
-    #     unit tests); only this one equivalent mutant is excluded.
-    "replace \\|\\| with && in .*draw_rng",
     # The two frozen pvclock ABI flags are distinct single bits (1 and 2), so
     # OR and XOR are identical for this compile-time constant expression.
     "consonance/vtime/src/pvclock\\.rs:85:61: replace \\| with \\^",

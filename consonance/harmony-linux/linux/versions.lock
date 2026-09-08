@@ -109,13 +109,3 @@ FCEUMM_COMMIT=0d610d9a6401697157f693a5407adf450a0e52fb
 FCEUMM_URL=https://github.com/libretro/libretro-fceumm/archive/0d610d9a6401697157f693a5407adf450a0e52fb.tar.gz
 FCEUMM_SHA256=fa4bd76278221ea5416da3085559ea4473c37f305bc96f804c79a3937207f0a1
 FCEUMM_LICENSE=GPL-2.0-or-later
-
-# --- task 57: the deterministic-KVM patch series (sha256 of each patch file) ---
-# The three-patch series in consonance/vmm-backend/kvm-patches/patches/ git-am's
-# clean onto the pinned linux-6.18.35 tag (KERNEL_SHA256 above) and reproduces a
-# kvm.ko/kvm-intel.ko with vermagic 6.18.35-… — see that dir's BUILD.md. 0001-0003
-# are the RDTSC/RDRAND/RDSEED exiting+emulation ABI.
-# Pinned 2026-06-30. Verify with: shasum -a 256 <patch>.
-KVM_PATCH_0001_SHA256=499267ffd42bbf5688efe9827a43f696125cc9b640b7045b300df85883bb38a7
-KVM_PATCH_0002_SHA256=fefa4d8ce76d1af38ed8049914f16a164474cfd132a4739649225441e9bc49d6
-KVM_PATCH_0003_SHA256=db587a6a0cd799597f23232fba100e241a1f91c6a2e45e07ebece71b2b64c02d

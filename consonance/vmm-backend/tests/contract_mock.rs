@@ -4,7 +4,7 @@
 //! ordinary `cargo nextest` lane on macOS and Linux.
 //!
 //! The box-only leg (`tests/contract_kvm.rs`) runs the **identical** exam over
-//! `KvmBackend` and `PatchedKvmBackend`. That is the point of the suite: not
+//! `KvmBackend`. That is the point of the suite: not
 //! that the mock behaves, but that the mock and the live backends behave the
 //! same, so vmm-core can be written against the trait alone.
 #![cfg(all(feature = "contract-tests", feature = "mock"))]
@@ -54,8 +54,6 @@ fn script(scenario: Scenario) -> Vec<Exit<X86>> {
         Scenario::Hypercall => vec![Exit::Common(CommonExit::Hypercall(HypercallFrame {
             args: [0x3150_4348, 0xE000, 0xF000, 0],
         }))],
-        Scenario::Rdtsc => vec![Exit::Arch(X86Exit::Rdtsc)],
-        Scenario::Rdrand => vec![Exit::Arch(X86Exit::Rdrand { width: 8 })],
     };
     let mut exits = head;
     exits.extend(idle_tail());
@@ -101,8 +99,6 @@ const REQUIRED: &[&str] = &[
     "ordering/not_configured",
     "ordering/completion_grid",
     "exactness/dirty_log",
-    "exactness/deterministic_tsc_traps",
-    "exactness/deterministic_rng_traps",
     "fixpoint/save_restore_save",
     "interrupts/one_overwritable_slot",
 ];
@@ -234,10 +230,7 @@ struct LimitedFixture;
 const LIMITED_CAPS: MockCaps = Capabilities {
     name: "mock-limited",
     deterministic_rng: false,
-    arch: X86Caps {
-        deterministic_tsc: false,
-        enforces_tsc_deadline_msr: false,
-    },
+    arch: X86Caps,
 };
 
 impl BackendFixture for LimitedFixture {
@@ -251,7 +244,6 @@ impl BackendFixture for LimitedFixture {
         match scenario {
             // Not trapped, so not claimable — the capability-keyed exam checks
             // exactly this.
-            Scenario::Rdtsc | Scenario::Rdrand => None,
             // Serviced in-kernel by the substrate this fixture models.
             Scenario::Cpuid | Scenario::Hypercall => None,
             _ => {
@@ -299,14 +291,6 @@ fn a_limited_backend_declines_honestly_and_the_declines_are_recorded() {
         Decline {
             exam: "exactness/dirty_log",
             why: DeclineReason::NoDirtyLog,
-        },
-        Decline {
-            exam: "exactness/deterministic_tsc_traps",
-            why: DeclineReason::CapabilityAbsent("deterministic_tsc"),
-        },
-        Decline {
-            exam: "exactness/deterministic_rng_traps",
-            why: DeclineReason::CapabilityAbsent("deterministic_rng"),
         },
         Decline {
             exam: "ordering/completion_grid",

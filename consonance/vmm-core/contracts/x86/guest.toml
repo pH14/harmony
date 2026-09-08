@@ -23,7 +23,7 @@ kernel-sha256 = "f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef23
 cpuid-baseline = "harmony-x86-v1"
 # §6 anti-drift anchor: sha256 of the canonical serialized form (computed by
 # vmm-core's serializer, never hand-written). Re-derive on any body change + version bump.
-contract_hash = "80e29c217f9081afe6d55cf1a0ad73dde29eeb1a771d820963e54c73689b7ac6"
+contract_hash = "e2cf2a502d598e042684a3bd5807aec0095f4fc9f7ee3d4eb538d3372c4a141d"
 # Frozen scalar constants hashed into the canonical form (§6 header records):
 tsc-hz = 2000000000
 crystal-hz = 25000000
@@ -61,7 +61,7 @@ leaf = "0x00000001"
 subleaf = "0x00000000"
 eax = "0x000906ec"
 ebx = "0x00010800"
-ecx = "dyn:osxsave:0x76da3203"
+ecx = "dyn:osxsave:0x36da3203"
 edx = "0x0f8bbb7f"
 
 [[cpuid.entry]]
@@ -140,7 +140,7 @@ edx = "0x00000000"
 leaf = "0x00000007"
 subleaf = "0x00000000"
 eax = "0x00000000"
-ebx = "0x009c27ab"
+ebx = "0x009827ab"
 ecx = "0x00000000"
 edx = "0x20000000"
 
@@ -2630,27 +2630,27 @@ determinism = "intercept"
 
 [[insn.entry]]
 mnemonic = "RDRAND"
-mechanism = "vmx-exit(rdrand-exiting)"
-result = "seeded-prng"
-determinism = "intercept"
+mechanism = "cooperative-hidden"
+result = "out-of-scope"
+determinism = "scope"
 
 [[insn.entry]]
 mnemonic = "RDSEED"
-mechanism = "vmx-exit(rdseed-exiting)"
-result = "seeded-prng"
-determinism = "intercept"
+mechanism = "cooperative-hidden"
+result = "out-of-scope"
+determinism = "scope"
 
 [[insn.entry]]
 mnemonic = "RDTSC"
-mechanism = "vmx-exit(rdtsc-exiting)"
-result = "vclock.tsc"
-determinism = "intercept"
+mechanism = "cooperative-audited"
+result = "out-of-scope"
+determinism = "scope"
 
 [[insn.entry]]
 mnemonic = "RDTSCP"
-mechanism = "vmx-exit(rdtsc-exiting)"
-result = "vclock.tsc+tsc-aux"
-determinism = "intercept"
+mechanism = "cooperative-audited"
+result = "out-of-scope"
+determinism = "scope"
 
 [[insn.entry]]
 mnemonic = "SERIALIZE"

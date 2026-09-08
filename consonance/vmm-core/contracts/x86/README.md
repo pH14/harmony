@@ -15,17 +15,17 @@ uses the advertised instruction set. Hidden, untrappable instructions are
 outside that surface; their physical absence is not assumed. See
 [Determinism](../../../../docs/DETERMINISM.md).
 
-Stock-KVM virtual-time composition additionally hides hardware RNG feature bits
-because that backend cannot trap RDRAND/RDSEED. This is a backend capability
-choice shared by all hosts, not a processor-specific contract.
+The single CPUID policy hides hardware RNG feature bits. The controlled Linux
+guest uses deterministic entropy and paravirtual time; native RNG and timestamp
+instructions are outside the cooperative surface.
 
 ## Changes and compatibility
 
 Policy version 6 removes the host identity and physical-absence assertions from
 the canonical form. It retains guest microcode/CR4 invariants and versions the
 cooperative instruction boundary. The contract hash changes, so snapshots from
-older policy versions are rejected before restore mutates the VM. Guest CPUID
-values, MSR dispositions, and virtual-time durations are unchanged.
+older policy versions are rejected before restore mutates the VM. Hardware RNG bits now live in the shared table instead of a runtime override.
+Production CPUID values, MSR dispositions, and virtual-time durations are unchanged.
 
 Changes to guest semantics require a version bump, regenerated canonical bytes,
 and an updated committed `contract_hash`. Run:

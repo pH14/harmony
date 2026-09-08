@@ -136,12 +136,6 @@ pub vmm_backend::arch::x86::X86Exit::Io::size: u8
 pub vmm_backend::arch::x86::X86Exit::Io::write: core::option::Option<u32>
 pub vmm_backend::arch::x86::X86Exit::Rdmsr
 pub vmm_backend::arch::x86::X86Exit::Rdmsr::index: u32
-pub vmm_backend::arch::x86::X86Exit::Rdrand
-pub vmm_backend::arch::x86::X86Exit::Rdrand::width: u8
-pub vmm_backend::arch::x86::X86Exit::Rdseed
-pub vmm_backend::arch::x86::X86Exit::Rdseed::width: u8
-pub vmm_backend::arch::x86::X86Exit::Rdtsc
-pub vmm_backend::arch::x86::X86Exit::Rdtscp
 pub vmm_backend::arch::x86::X86Exit::Wrmsr
 pub vmm_backend::arch::x86::X86Exit::Wrmsr::index: u32
 pub vmm_backend::arch::x86::X86Exit::Wrmsr::value: u64
@@ -267,8 +261,6 @@ pub type vmm_backend::arch::x86::X86::Policy = vmm_backend::arch::x86::X86Policy
 pub type vmm_backend::arch::x86::X86::VcpuState = vmm_backend::VcpuState
 pub fn vmm_backend::arch::x86::X86::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub struct vmm_backend::arch::x86::X86Caps
-pub vmm_backend::arch::x86::X86Caps::deterministic_tsc: bool
-pub vmm_backend::arch::x86::X86Caps::enforces_tsc_deadline_msr: bool
 impl vmm_backend::arch::ArchCaps for vmm_backend::arch::x86::X86Caps
 pub fn vmm_backend::arch::x86::X86Caps::deterministic_clock(&self) -> bool
 pub struct vmm_backend::arch::x86::X86Policy
@@ -337,8 +329,6 @@ pub vmm_backend::contract::Scenario::Idle
 pub vmm_backend::contract::Scenario::MmioLoad
 pub vmm_backend::contract::Scenario::PortIn
 pub vmm_backend::contract::Scenario::Rdmsr
-pub vmm_backend::contract::Scenario::Rdrand
-pub vmm_backend::contract::Scenario::Rdtsc
 pub vmm_backend::contract::Scenario::Wrmsr
 pub struct vmm_backend::contract::ContractReport
 pub vmm_backend::contract::ContractReport::backend: &'static str
@@ -355,7 +345,6 @@ pub fn vmm_backend::contract::BackendFixture::dirty_pages(&mut self, &mut Self::
 pub fn vmm_backend::contract::BackendFixture::name(&self) -> &'static str
 pub fn vmm_backend::contract::BackendFixture::policy(&self) -> vmm_backend::arch::x86::X86Policy
 pub fn vmm_backend::contract::BackendFixture::spawn(&mut self, vmm_backend::contract::Scenario) -> core::option::Option<Self::B>
-pub fn vmm_backend::contract::capability_keyed_exactness_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
 pub fn vmm_backend::contract::dirty_log_exactness_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
 pub fn vmm_backend::contract::fixpoint_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
 pub fn vmm_backend::contract::interrupt_delivery_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
@@ -428,10 +417,6 @@ pub vmm_backend::ExitReason::Idle
 pub vmm_backend::ExitReason::Io
 pub vmm_backend::ExitReason::Mmio
 pub vmm_backend::ExitReason::Rdmsr
-pub vmm_backend::ExitReason::Rdrand
-pub vmm_backend::ExitReason::Rdseed
-pub vmm_backend::ExitReason::Rdtsc
-pub vmm_backend::ExitReason::Rdtscp
 pub vmm_backend::ExitReason::Shutdown
 pub vmm_backend::ExitReason::Sysreg
 pub vmm_backend::ExitReason::Wrmsr
@@ -458,12 +443,6 @@ pub vmm_backend::X86Exit::Io::size: u8
 pub vmm_backend::X86Exit::Io::write: core::option::Option<u32>
 pub vmm_backend::X86Exit::Rdmsr
 pub vmm_backend::X86Exit::Rdmsr::index: u32
-pub vmm_backend::X86Exit::Rdrand
-pub vmm_backend::X86Exit::Rdrand::width: u8
-pub vmm_backend::X86Exit::Rdseed
-pub vmm_backend::X86Exit::Rdseed::width: u8
-pub vmm_backend::X86Exit::Rdtsc
-pub vmm_backend::X86Exit::Rdtscp
 pub vmm_backend::X86Exit::Wrmsr
 pub vmm_backend::X86Exit::Wrmsr::index: u32
 pub vmm_backend::X86Exit::Wrmsr::value: u64
@@ -613,15 +592,11 @@ pub vmm_backend::ExitCounts::idle: u64
 pub vmm_backend::ExitCounts::io: u64
 pub vmm_backend::ExitCounts::mmio: u64
 pub vmm_backend::ExitCounts::rdmsr: u64
-pub vmm_backend::ExitCounts::rdrand: u64
-pub vmm_backend::ExitCounts::rdseed: u64
-pub vmm_backend::ExitCounts::rdtsc: u64
-pub vmm_backend::ExitCounts::rdtscp: u64
 pub vmm_backend::ExitCounts::shutdown: u64
 pub vmm_backend::ExitCounts::sysreg: u64
 pub vmm_backend::ExitCounts::wrmsr: u64
 impl vmm_backend::ExitCounts
-pub fn vmm_backend::ExitCounts::entries(&self) -> [(vmm_backend::ExitReason, u64); 13]
+pub fn vmm_backend::ExitCounts::entries(&self) -> [(vmm_backend::ExitReason, u64); 9]
 pub fn vmm_backend::ExitCounts::total(&self) -> u64
 pub struct vmm_backend::FakeKvm
 pub vmm_backend::FakeKvm::calls: alloc::vec::Vec<&'static str>
@@ -797,32 +772,6 @@ pub fn vmm_backend::MsrFilter::allow_indices(&self) -> impl core::iter::traits::
 pub struct vmm_backend::MsrRange
 pub vmm_backend::MsrRange::base: u32
 pub vmm_backend::MsrRange::count: u32
-pub struct vmm_backend::PatchedKvmBackend
-impl vmm_backend::PatchedKvmBackend
-pub fn vmm_backend::PatchedKvmBackend::new() -> vmm_backend::Result<vmm_backend::PatchedKvmBackend>
-pub fn vmm_backend::PatchedKvmBackend::read_guest(&self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::set_dirty_log_enabled(&mut self, bool)
-pub fn vmm_backend::PatchedKvmBackend::write_guest(&mut self, vmm_backend::Gpa, &[u8]) -> vmm_backend::Result<()>
-impl vmm_backend::Backend for vmm_backend::PatchedKvmBackend
-pub type vmm_backend::PatchedKvmBackend::A = vmm_backend::arch::x86::X86
-pub fn vmm_backend::PatchedKvmBackend::capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::arch::x86::X86Caps>
-pub fn vmm_backend::PatchedKvmBackend::complete_arch(&mut self, vmm_backend::arch::x86::X86Completion) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::complete_fault(&mut self) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::complete_ok(&mut self) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::drain_dirty_pages(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
-pub fn vmm_backend::PatchedKvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
-pub fn vmm_backend::PatchedKvmBackend::inject(&mut self, vmm_backend::arch::x86::Injection) -> vmm_backend::Result<()>
-pub unsafe fn vmm_backend::PatchedKvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::reset_exit_counts(&mut self)
-pub fn vmm_backend::PatchedKvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::retire_pending_completion(&mut self) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::x86::X86>>
-pub fn vmm_backend::PatchedKvmBackend::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
-pub fn vmm_backend::PatchedKvmBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::set_policy(&mut self, &vmm_backend::arch::x86::X86Policy) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
 pub struct vmm_backend::Segment
 pub vmm_backend::Segment::avl: u8
 pub vmm_backend::Segment::base: u64
@@ -919,8 +868,6 @@ pub type vmm_backend::arch::x86::X86::Policy = vmm_backend::arch::x86::X86Policy
 pub type vmm_backend::arch::x86::X86::VcpuState = vmm_backend::VcpuState
 pub fn vmm_backend::arch::x86::X86::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub struct vmm_backend::X86Caps
-pub vmm_backend::X86Caps::deterministic_tsc: bool
-pub vmm_backend::X86Caps::enforces_tsc_deadline_msr: bool
 impl vmm_backend::arch::ArchCaps for vmm_backend::arch::x86::X86Caps
 pub fn vmm_backend::arch::x86::X86Caps::deterministic_clock(&self) -> bool
 pub struct vmm_backend::X86Policy
@@ -1086,26 +1033,6 @@ pub fn vmm_backend::MockBackend::save(&self) -> vmm_backend::Result<vmm_backend:
 pub fn vmm_backend::MockBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::set_policy(&mut self, &vmm_backend::arch::x86::X86Policy) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
-impl vmm_backend::Backend for vmm_backend::PatchedKvmBackend
-pub type vmm_backend::PatchedKvmBackend::A = vmm_backend::arch::x86::X86
-pub fn vmm_backend::PatchedKvmBackend::capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::arch::x86::X86Caps>
-pub fn vmm_backend::PatchedKvmBackend::complete_arch(&mut self, vmm_backend::arch::x86::X86Completion) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::complete_fault(&mut self) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::complete_ok(&mut self) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::drain_dirty_pages(&mut self) -> vmm_backend::Result<alloc::vec::Vec<u64>>
-pub fn vmm_backend::PatchedKvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
-pub fn vmm_backend::PatchedKvmBackend::inject(&mut self, vmm_backend::arch::x86::Injection) -> vmm_backend::Result<()>
-pub unsafe fn vmm_backend::PatchedKvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::reset_exit_counts(&mut self)
-pub fn vmm_backend::PatchedKvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::retire_pending_completion(&mut self) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::x86::X86>>
-pub fn vmm_backend::PatchedKvmBackend::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
-pub fn vmm_backend::PatchedKvmBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::set_policy(&mut self, &vmm_backend::arch::x86::X86Policy) -> vmm_backend::Result<()>
-pub fn vmm_backend::PatchedKvmBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
 impl<B: vmm_backend::Backend + ?core::marker::Sized> vmm_backend::Backend for alloc::boxed::Box<B>
 pub type alloc::boxed::Box<B>::A = <B as vmm_backend::Backend>::A
 pub fn alloc::boxed::Box<B>::capabilities(&self) -> vmm_backend::Capabilities<<Self::A as vmm_backend::arch::Arch>::Caps>

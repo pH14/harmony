@@ -1,5 +1,0 @@
-PAYLOAD pit-pic-stub START
-OK pic-init
-OK pit-ticks
-OK portb-read
-PAYLOAD pit-pic-stub PASS

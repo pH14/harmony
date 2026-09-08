@@ -91,7 +91,7 @@ pub enum EventKind {
         /// `true` for a store, `false` for a load.
         write: bool,
     },
-    /// A serviced hypercall (`Exit::Hypercall`) on the patched backend: the
+    /// A serviced hypercall (`Exit::Hypercall`) through the backend: the
     /// dispatched service id, opcode, and resulting status.
     Hypercall {
         /// Hypercall service id.
@@ -110,18 +110,7 @@ pub enum EventKind {
         /// `true` for a write, `false` for a read.
         write: bool,
     },
-    /// A `RDTSC`/`RDTSCP` resolved against V-time (patched backend).
-    Tsc {
-        /// The V-time TSC value delivered to the guest.
-        value: u64,
-    },
-    /// A `RDRAND`/`RDSEED` resolved from the seeded entropy stream (patched
-    /// backend).
-    Rng {
-        /// The seeded random word delivered to the guest.
-        value: u64,
-    },
-    /// A `CPUID` exit (patched backend) — the leaf/subleaf queried.
+    /// A `CPUID` exit (userspace emulation) — the leaf/subleaf queried.
     Cpuid {
         /// CPUID leaf (`EAX`).
         leaf: u32,

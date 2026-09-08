@@ -63,8 +63,6 @@ fn event_kind() -> impl Strategy<Value = EventKind> {
                 write,
             }
         }),
-        any::<u64>().prop_map(|value| EventKind::Tsc { value }),
-        any::<u64>().prop_map(|value| EventKind::Rng { value }),
         (any::<u32>(), any::<u32>()).prop_map(|(leaf, subleaf)| EventKind::Cpuid { leaf, subleaf }),
         any::<u8>().prop_map(|vector| EventKind::Inject { vector }),
         proptest::array::uniform32(any::<u8>())

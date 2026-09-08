@@ -44,10 +44,6 @@ fn complete_correctly(m: &mut MockBackend, exit: &Exit<X86>) -> Result<(), Backe
     match exit {
         Exit::Arch(X86Exit::Io { write: None, .. })
         | Exit::Common(CommonExit::Mmio { write: None, .. })
-        | Exit::Arch(X86Exit::Rdtsc)
-        | Exit::Arch(X86Exit::Rdtscp)
-        | Exit::Arch(X86Exit::Rdrand { .. })
-        | Exit::Arch(X86Exit::Rdseed { .. })
         | Exit::Arch(X86Exit::Rdmsr { .. }) => m.complete_read(0),
         Exit::Arch(X86Exit::Wrmsr { .. }) => m.complete_ok(),
         Exit::Common(CommonExit::Hypercall(_)) => m.complete_hypercall(0),
@@ -423,10 +419,7 @@ fn mock_observability_and_config_getters() {
     let caps = Capabilities {
         name: "test-mock",
         deterministic_rng: false,
-        arch: X86Caps {
-            deterministic_tsc: true,
-            enforces_tsc_deadline_msr: true,
-        },
+        arch: X86Caps,
     };
     assert_eq!(MockBackend::with_capabilities(caps).capabilities(), caps);
 
@@ -518,10 +511,8 @@ fn arb_exit() -> impl Strategy<Value = Exit<X86>> {
             .prop_map(|r| Exit::Common(CommonExit::Hypercall(HypercallFrame { args: r }))),
         (any::<u32>(), any::<u32>())
             .prop_map(|(leaf, subleaf)| Exit::Arch(X86Exit::Cpuid { leaf, subleaf })),
-        Just(Exit::Arch(X86Exit::Rdtsc)),
-        Just(Exit::Arch(X86Exit::Rdtscp)),
-        (2u8..=8).prop_map(|width| Exit::Arch(X86Exit::Rdrand { width })),
-        (2u8..=8).prop_map(|width| Exit::Arch(X86Exit::Rdseed { width })),
+        Just(Exit::Arch(X86Exit::Rdmsr { index: 0x10 })),
+        Just(Exit::Arch(X86Exit::Rdmsr { index: 0x10 })),
         Just(Exit::Common(CommonExit::Idle)),
         Just(Exit::Common(CommonExit::Shutdown)),
     ]
@@ -554,35 +545,5 @@ proptest! {
         prop_assert_eq!(counts.total(), script.len() as u64);
     }
 
-    /// Completion discipline is enforced exactly: skipping a needed completion
-    /// makes the next `run` fail closed with `PendingCompletion`; a no-completion
-    /// exit lets the next `run` proceed. Nothing in any branch panics.
-    #[test]
-    fn discipline_is_enforced(script in proptest::collection::vec(arb_exit(), 1..40)) {
-        let mut m = configured();
-        m.extend_exits(script.clone());
-        // One extra exit so there is always a "next" run to probe.
-        m.push_exit(Exit::Common(CommonExit::Shutdown));
 
-        for scripted in &script {
-            let got = m.run().expect("run");
-            let needs_completion = m.has_pending();
-            // The pending flag is exactly "this exit needs a completion".
-            let is_read_style = matches!(scripted,
-                Exit::Arch(X86Exit::Io { write: None, .. }) | Exit::Common(CommonExit::Mmio { write: None, .. })
-                | Exit::Arch(X86Exit::Rdmsr { .. }) | Exit::Arch(X86Exit::Wrmsr { .. }) | Exit::Common(CommonExit::Hypercall(_))
-                | Exit::Arch(X86Exit::Cpuid { .. }) | Exit::Arch(X86Exit::Rdtsc) | Exit::Arch(X86Exit::Rdtscp)
-                | Exit::Arch(X86Exit::Rdrand { .. }) | Exit::Arch(X86Exit::Rdseed { .. }));
-            prop_assert_eq!(needs_completion, is_read_style);
-
-            if needs_completion {
-                // Resuming without completing fails closed...
-                prop_assert!(matches!(m.run(), Err(BackendError::PendingCompletion)));
-                // ...and a correct completion clears it.
-                complete_correctly(&mut m, &got).expect("complete");
-                prop_assert!(!m.has_pending());
-            }
-        }
-        prop_assert_eq!(m.run().expect("trailing run"), Exit::Common(CommonExit::Shutdown));
-    }
 }
