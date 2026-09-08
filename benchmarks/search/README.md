@@ -68,8 +68,10 @@ platform measurements must not be interpreted as zero.
 | `evaluation.json` | Five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
 | `smb-regression.json` | Fresh whole-game SMB at 24 workers and both 256/2048 MiB, five seeds. Every cell must solve within its declared budget. |
 
-Seeds 20260905–20260907 form the development pilot; 20260908–20260909 are
-reserved for validating a selected mechanism. Performance panels have explicit
+Seeds 20260905–20260907 form the development pilot. The dedicated SMB gate adds
+20260908–20260909; those seeds have now been observed in count-policy validation.
+The full evaluation uses a separate, preregistered panel, 20260910–20260914, for
+validating a mechanism selected from the development runs. Performance panels have explicit
 frame, execution and wall ceilings. SMB's dedicated regression panel keeps the
 400,000-execution gate; the broad eight-worker panel allows 600,000 executions
 under an 80-million-frame cap. These are distinct resource conditions.
@@ -85,6 +87,8 @@ origins, seed panel, ROM/core, adapter policies and resource budgets fixed. The
 comparison command rejects mismatches rather than quietly combining them.
 Engine experiments are described in [SYNTHESIS.md](SYNTHESIS.md); prototype claims
 are not accepted merely because a previous single seed succeeded.
+Completed development evidence and its limitations are retained in
+[`results`](results/README.md), including failed seeds.
 
 ## Evidence and resource accounting
 
