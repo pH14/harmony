@@ -20,7 +20,7 @@ action endpoints, where the serialized input identifies the complete state.
 ## Reproducible inputs
 
 `../../nova-versions.env` pins the Nova source revision, archive SHA-256,
-and built ROM SHA-256. `../../../../scripts/build-nova-rom.sh` verifies the
+and built ROM SHA-256. `../../scripts/build-nova-rom.sh` verifies the
 source archive, builds the ROM with cc65, checks its digest, and verifies the
 observed linker symbols against the generated debug symbols. The QuickNES build
 is pinned by the repository's `scripts/build-quicknes-core.sh`.
@@ -53,6 +53,20 @@ is sealed after health and coordinates confirm gameplay. Search actions exclude
 Start and Select. They combine nine non-conflicting directional states with the
 four A/B button states.
 
+## Level and whole-game evaluation
+
+The default level campaign stops on its first new durable clear and allows up
+to 512 actions. `NovaGame::with_whole_game()` disables that intermediate stop,
+allows up to 8,192 actions, and requires all 40 campaign levels to be cleared.
+The common `nes-eval` request selects this mode with `whole_game: true` from
+level 1. Its fixed terminal policy is part of replay identity. Isolated later-
+level fixtures initialize the declared prior-clear bitmap and remain separate
+from fresh whole-game searches.
+
+`NovaLevel` and the operator's `level` parameter are one-based. Decoded
+`started_level` is the game's zero-based selected-level index; the current
+internal map can differ when a level contains submaps.
+
 ## Replay and media capture
 
 `nova-campaign` records and replays the campaign stream in its standard mode.
@@ -71,10 +85,10 @@ CC BY-NC-SA 4.0 with additional upstream restrictions. Published media includes
 sudo apt-get install cc65 ffmpeg
 workloads/nes/scripts/build-nova-rom.sh workloads/nes/build/nova
 scripts/build-quicknes-core.sh workloads/nes/build/nova/quicknes_libretro.so
-cargo run --locked --release --manifest-path dissonance/Cargo.toml \
+cargo run --locked --release --manifest-path workloads/nes/Cargo.toml \
   --bin nova-campaign -- \
   --core workloads/nes/build/nova/quicknes_libretro.so \
   --rom workloads/nes/build/nova/nova.nes \
-  --output dissonance/nova-artifact \
+  --output /tmp/nova-artifact \
   --seed 1 --executions 500000 --workers 4 --action-limit 512
 ```
