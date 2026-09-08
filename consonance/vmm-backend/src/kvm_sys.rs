@@ -168,18 +168,6 @@ impl KvmBackend {
     /// the MSR filter via [`Backend::set_cpuid`]/[`Backend::set_msr_filter`]
     /// before the first run. Stock KVM (no determinism intercepts).
     pub fn new() -> Result<KvmBackend> {
-        Self::build(false)
-    }
-
-    /// Shared constructor for [`KvmBackend::new`] (stock) and `PatchedKvmBackend`
-    /// (`deterministic_intercepts = true`). The patched path opts into
-    /// `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` **before** vCPU creation (the patch
-    /// honors the cap only while `created_vcpus == 0`); default-off leaves stock
-    /// behavior byte-identical, which is why the two are distinct backends rather
-    /// than a runtime mode. The resulting backend surfaces / completes the four
-    /// determinism exits via the shared pure [`crate::kvm`] helpers; nothing
-    /// above the `Backend` trait branches on which constructor ran.
-    pub(crate) fn build(deterministic_intercepts: bool) -> Result<KvmBackend> {
         let kvm = Kvm::new().map_err(kvm_err)?;
         // A staged I/O/MMIO/MSR completion is retired by setting
         // `kvm_run.immediate_exit` and issuing exactly one `KVM_RUN`.  Without
@@ -192,19 +180,6 @@ impl KvmBackend {
             });
         }
         let vm = kvm.create_vm().map_err(kvm_err)?;
-        if deterministic_intercepts {
-            // Opt into RDTSC/RDTSCP/RDRAND/RDSEED → KVM_EXIT_DETERMINISM. MUST
-            // precede create_vcpu. A plain EINVAL here means the patched modules
-            // are not loaded — surface that as a clear Capability error.
-            let mut cap = kvm_enable_cap {
-                cap: KVM_CAP_X86_DETERMINISTIC_INTERCEPTS,
-                ..Default::default()
-            };
-            cap.args[0] = 1;
-            vm.enable_cap(&cap).map_err(|_| BackendError::Capability {
-                cap: "KVM_CAP_X86_DETERMINISTIC_INTERCEPTS (patched KVM not loaded?)",
-            })?;
-        }
         // KVM_IRQCHIP_NONE: we deliberately do NOT call create_irq_chip / split
         // irqchip. The guest LAPIC is the userspace xAPIC (R1).
         let vcpu = vm.create_vcpu(0).map_err(kvm_err)?;
@@ -419,26 +394,6 @@ impl KvmBackend {
         };
         canonicalize_xsave(&mut bytes);
         Ok(bytes)
-    }
-
-    /// Read the guest's `IA32_TSC_AUX` (`0xC000_0103`) via `KVM_GET_MSRS`, for an
-    /// `RDTSCP` determinism completion (its `ECX` is the guest's `TSC_AUX`). This
-    /// reflects guest architectural state (the contract's `allow-stateful`
-    /// `TSC_AUX`, vm_state-echoed — never a host per-core value), so it stays a
-    /// faithful instruction completion, not a contract-policy decision. Host
-    /// `KVM_GET_MSRS` bypasses the guest MSR filter, so it works regardless of
-    /// the installed policy.
-    fn read_tsc_aux(&self) -> Result<u64> {
-        const IA32_TSC_AUX: u32 = 0xC000_0103;
-        let entries = [kvm_msr_entry {
-            index: IA32_TSC_AUX,
-            ..Default::default()
-        }];
-        let mut kmsrs = Msrs::from_entries(&entries)
-            .map_err(|_| BackendError::Internal("MSR list too large"))?;
-        let got = self.vcpu.get_msrs(&mut kmsrs).map_err(kvm_err)?;
-        ensure_full_msr_count(got, 1)?;
-        Ok(kmsrs.as_slice()[0].data)
     }
 
     /// Restore the XSAVE image saved by [`Self::save_xsave`]. The byte length was
@@ -921,18 +876,6 @@ impl Backend for KvmBackend {
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
-        // A pending KVM_EXIT_DETERMINISM (patched backend) completes through the
-        // determinism payload, not the IO/MMIO/MSR data buffers. RDTSCP also
-        // needs the guest's IA32_TSC_AUX → ECX (read here, below the trait, as a
-        // faithful instruction completion); the seeded value itself is computed
-        // above the trait in vmm-core. Stock KVM never sets this pending.
-        if let Pending::Determinism { rdtscp, .. } = self.pending {
-            let aux = if rdtscp { self.read_tsc_aux()? } else { 0 };
-            apply_complete_determinism(self.run_page(), self.pending, value, aux)?;
-            self.pending = Pending::None;
-            self.completion_staged = true;
-            return Ok(());
-        }
         apply_complete_read(self.run_page(), self.pending, value)?;
         self.pending = Pending::None;
         self.completion_staged = true;

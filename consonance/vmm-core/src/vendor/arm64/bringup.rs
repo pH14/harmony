@@ -19,11 +19,10 @@
 use vmm_backend::{Arm64, Backend, Gpa};
 
 use super::board::{PAGE, RAM_BASE, align_up};
-use super::{contract, dtb, entry, hostassert, image_loader};
+use super::{contract, dtb, entry, image_loader};
 use crate::vmm::{GuestRam, Vmm, VmmError};
 
-/// Boot an arm64 `Image`: the host-baseline gate
-/// ([`hostassert::enforce`](super::hostassert::enforce)) **then** [`compose`].
+/// Boot an arm64 `Image` with the shared guest policy via [`compose`].
 /// Takes the `Backend` by value (constructed bare at the composition root),
 /// mirroring x86's `boot`. The one place a concrete `(Arm64KvmBackend, Arm64)`
 /// pair is named is the M4 `boot_selected` (Linux+aarch64-gated).
@@ -33,13 +32,11 @@ pub fn boot<B: Backend<A = Arm64>>(
     bootargs: &str,
     guest_ram_len: usize,
 ) -> Result<Vmm<B>, VmmError> {
-    hostassert::enforce()?;
     compose(backend, image, bootargs, guest_ram_len)
 }
 
-/// Compose a ready [`Vmm`] for an arm64 `Image` boot, **without** the
-/// host-baseline gate (so the composition — including the `unsafe` `map_memory`
-/// seam — is unit-testable with a mock backend on every platform). Order is
+/// Compose a ready [`Vmm`] for an arm64 `Image` boot with a backend supplied
+/// by the caller. This is testable with mocks on every platform. Order is
 /// load-bearing:
 /// policy **before** the first run; map **before** restore; `ram` moves into
 /// the `Vmm` so the mapped pointer stays valid.
@@ -202,7 +199,7 @@ fn layout_fits(
 /// control channel and HVF requires 16-KiB guest mappings on this host.
 ///
 /// # Errors
-/// Returns the host-baseline, HVF construction, image, mapping, state, or GIC
+/// Returns HVF construction, image, mapping, state, or GIC
 /// composition error without falling back to a different execution path.
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
 pub fn boot_hvf(
@@ -211,7 +208,6 @@ pub fn boot_hvf(
     bootargs: &str,
     guest_ram_len: usize,
 ) -> Result<Vmm<vmm_backend::HvfBackend>, VmmError> {
-    hostassert::enforce()?;
     let backend = vmm_backend::HvfBackend::new()?;
     let mut vmm = compose_inner(
         backend,
@@ -249,7 +245,6 @@ pub fn boot_hvf_control(
     bootargs: &str,
     guest_ram_len: usize,
 ) -> Result<Vmm<vmm_backend::HvfBackend>, VmmError> {
-    hostassert::enforce()?;
     let backend = vmm_backend::HvfBackend::new()?;
     let mut vmm = compose_inner(
         backend,
@@ -274,7 +269,7 @@ pub fn boot_hvf_control(
 
 /// **The composition root** (`tasks/112` M4): the one place the concrete
 /// `(Arm64KvmBackend, Arm64)` pair is named — Linux+aarch64-gated, mirroring
-/// x86's `boot_selected`. Constructs the stock KVM/arm64 backend
+/// x86's stock-KVM virtual-time boot. Constructs the stock KVM/arm64 backend
 /// (`KVM_CREATE_VM` → `KVM_CREATE_VCPU` → `KVM_ARM_VCPU_INIT` in
 /// `LiveKvm::new`), boxes it as `Box<dyn Backend<A = Arm64>>`, composes the
 /// same Image + initramfs bytes as the HVF oracle, and wires exit-assigned
@@ -325,7 +320,6 @@ fn boot_selected_inner(
     guest_ram_len: usize,
     map_doorbell: bool,
 ) -> Result<Vmm<Box<dyn Backend<A = Arm64>>>, VmmError> {
-    hostassert::enforce()?;
     let live = vmm_backend::LiveKvm::new()?;
     let backend: Box<dyn Backend<A = Arm64>> = Box::new(vmm_backend::Arm64KvmBackend::new(live));
     let mut vmm = compose_inner(

@@ -32,7 +32,7 @@
 //!
 //! ## Record → replay (the integrator's use case)
 //!
-//! Postgres/Docker workloads are box-only (patched KVM). The path is built so a
+//! Postgres/Docker workloads are box-only (stock KVM). The path is built so a
 //! **box** run attaches an [`NdjsonRecorder`] (captured to a file) and/or a
 //! [`LiveSink`] (live view where the VMM runs), and the captured file replays in
 //! the **Mac** console identically: the console keys every render on `vns`, a

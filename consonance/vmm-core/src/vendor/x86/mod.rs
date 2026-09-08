@@ -2,10 +2,8 @@
 //! The **x86-64 vendor** (`docs/ARCHITECTURE.md`): everything in the
 //! deterministic VMM that names the x86 ISA — the CPU/MSR contract and its
 //! installed policy ([`contract`]), the exit dispatch and dispositions
-//! ([`dispatch`]), the boot loaders and entry state ([`multiboot`],
-//! [`linux_loader`], [`entry`]), the interrupt fabric and platform device models
-//! ([`devices`] + the `lapic` crate), the host-homogeneity probe
-//! ([`hostassert`]), and the
+//! ([`dispatch`]), the boot loaders and entry state ([`linux_loader`], [`entry`]), the interrupt fabric and platform device models
+//! ([`devices`] + the `lapic` crate), and the
 //! `vm_state` record set ([`records`]).
 //!
 //! The engine ([`crate::vmm`]) reaches all of it through [`Vendor`] alone. x86
@@ -15,16 +13,14 @@
 // The x86 **boot composition root** — the one place the concrete
 // `(Backend impl, Arch vendor)` pair is named (R-Backend; the §B composition-root
 // discipline). A *vendor* module, not an engine one: it installs the x86
-// CPU-contract policy, runs the Multiboot v1 / Linux bzImage loaders, and builds
+// CPU-contract policy, runs the Linux bzImage loaders, and builds
 // the x86 entry state.
 pub mod bringup;
 pub mod contract;
 pub mod devices;
 pub mod dispatch;
 pub mod entry;
-pub mod hostassert;
 pub mod linux_loader;
-pub mod multiboot;
 pub mod records;
 
 use control_proto::RegsView;
@@ -73,22 +69,6 @@ impl Vendor for X86 {
             X86Exit::Rdmsr { index } => vmm.dispatch_rdmsr(index),
             X86Exit::Wrmsr { index, value } => vmm.dispatch_wrmsr(index, value),
             X86Exit::Cpuid { leaf, subleaf } => vmm.dispatch_cpuid(leaf, subleaf),
-            // Determinism-complete path: RDTSC/RDTSCP → the V-time guest clock;
-            // RDRAND/RDSEED → the seeded stream. Computed above the trait; the
-            // backend only surfaced + will complete the exit. Unwired (stock KVM /
-            // M1/M2) is a loud contract violation, never a host-derived value.
-            X86Exit::Rdtsc | X86Exit::Rdtscp => {
-                vmm.advance_virtual_time_vtime(
-                    contract::virtual_time_timing().trapped_time_read_vns,
-                )?;
-                vmm.complete_tsc()
-            }
-            X86Exit::Rdrand { width } | X86Exit::Rdseed { width } => {
-                vmm.advance_virtual_time_vtime(
-                    contract::virtual_time_timing().architectural_control_vns,
-                )?;
-                vmm.complete_rng(width)
-            }
         }
     }
 

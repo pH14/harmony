@@ -27,7 +27,6 @@ pub mod devices;
 pub mod dispatch;
 pub mod dtb;
 pub mod entry;
-pub mod hostassert;
 pub mod image_loader;
 pub mod records;
 

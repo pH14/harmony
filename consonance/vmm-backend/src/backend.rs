@@ -7,7 +7,7 @@
 //! which substrate is in use, and nothing above the arch seam may branch on
 //! which ISA is in use**. The trait is **object-safe / dyn-compatible** so the
 //! binary's composition root can hold a `Box<dyn Backend<A = X86>>` and inject
-//! `KvmBackend` vs `PatchedKvmBackend` at `fn main` — no generic methods, no
+//! the platform backend at `fn main` — no generic methods, no
 //! `Self`-by-value returns. The composition root is the one place a concrete
 //! `(Backend impl, Arch vendor)` pair is named.
 //!
@@ -159,7 +159,7 @@ pub trait Backend {
     /// [`NoPendingRead`](crate::BackendError::NoPendingRead) if no read-style
     /// exit is pending. (Stock `KvmBackend` never surfaces the instruction-read
     /// exits, so it completes only IO/MMIO/MSR reads; the instruction-read
-    /// completions exist for `PatchedKvmBackend`/`DirectVmxBackend`.)
+    /// completions exist for a backend with userspace instruction emulation.)
     fn complete_read(&mut self, value: u64) -> Result<()>;
 
     /// The contract's `deny-gp` disposition for a pending MSR exit: inject
@@ -424,11 +424,7 @@ mod tests {
         fn capabilities(&self) -> Capabilities<X86Caps> {
             Capabilities {
                 name: "default-retire-test",
-                deterministic_rng: false,
-                arch: X86Caps {
-                    deterministic_tsc: false,
-                    enforces_tsc_deadline_msr: false,
-                },
+                arch: X86Caps,
             }
         }
     }

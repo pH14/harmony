@@ -14,7 +14,7 @@ pub use state::{
     canonicalize_regs, canonicalize_sregs, canonicalize_xsave,
 };
 
-use crate::arch::{Arch, ArchCaps, ArchExit};
+use crate::arch::{Arch, ArchExit};
 use crate::exit::{CommonExit, ExitReason};
 
 /// The x86-64 vendor (a zero-sized type; `docs/ARCHITECTURE.md`).
@@ -77,21 +77,6 @@ pub enum X86Exit {
         /// CPUID subleaf (`ECX`).
         subleaf: u32,
     },
-    /// `RDTSC`. Backend-dependent (contract §1). **Not surfaced by stock
-    /// `KvmBackend`** — a declared determinism hole, never a runtime trap.
-    Rdtsc,
-    /// `RDTSCP`. Backend-dependent; not surfaced by stock `KvmBackend`.
-    Rdtscp,
-    /// `RDRAND`. Backend-dependent; not surfaced by stock `KvmBackend`.
-    Rdrand {
-        /// Destination width in bytes (2/4/8).
-        width: u8,
-    },
-    /// `RDSEED`. Backend-dependent; not surfaced by stock `KvmBackend`.
-    Rdseed {
-        /// Destination width in bytes (2/4/8).
-        width: u8,
-    },
 }
 
 impl ArchExit for X86Exit {
@@ -101,10 +86,6 @@ impl ArchExit for X86Exit {
             X86Exit::Rdmsr { .. } => ExitReason::Rdmsr,
             X86Exit::Wrmsr { .. } => ExitReason::Wrmsr,
             X86Exit::Cpuid { .. } => ExitReason::Cpuid,
-            X86Exit::Rdtsc => ExitReason::Rdtsc,
-            X86Exit::Rdtscp => ExitReason::Rdtscp,
-            X86Exit::Rdrand { .. } => ExitReason::Rdrand,
-            X86Exit::Rdseed { .. } => ExitReason::Rdseed,
         }
     }
 
@@ -113,11 +94,7 @@ impl ArchExit for X86Exit {
             X86Exit::Io { .. }
             | X86Exit::Rdmsr { .. }
             | X86Exit::Wrmsr { .. }
-            | X86Exit::Cpuid { .. }
-            | X86Exit::Rdtsc
-            | X86Exit::Rdtscp
-            | X86Exit::Rdrand { .. }
-            | X86Exit::Rdseed { .. } => true,
+            | X86Exit::Cpuid { .. } => true,
         }
     }
 }
@@ -133,24 +110,10 @@ pub struct X86Policy {
     pub msr_filter: MsrFilter,
 }
 
-/// The x86 arch capability flags (the per-vendor half of
-/// [`Capabilities`](crate::Capabilities)).
+/// Empty x86 feature payload: the shared capability record remains architecture
+/// typed, while arm64 carries its live in-kernel GIC ownership flag.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct X86Caps {
-    /// Surfaces RDTSC/RDTSCP as exits resolvable to a V-time value (NOT host
-    /// TSC).
-    pub deterministic_tsc: bool,
-    /// Can loudly enforce a `deny-gp` on `IA32_TSC_DEADLINE` (`0x6E0`) writes.
-    /// Moot under R1 (the guest never writes it) but declared honestly: stock
-    /// KVM swallows it in the WRMSR fastpath.
-    pub enforces_tsc_deadline_msr: bool,
-}
-
-impl ArchCaps for X86Caps {
-    fn deterministic_clock(&self) -> bool {
-        self.deterministic_tsc
-    }
-}
+pub struct X86Caps;
 
 /// The x86 arch-payload completions ([`Arch::Completion`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

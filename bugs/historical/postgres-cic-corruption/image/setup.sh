@@ -18,11 +18,6 @@ mount -t tmpfs none /dev/shm
 # create its socket.
 chmod 1777 /tmp /run /dev/shm
 
-# The guest boots the image from a cpio archive that records every file as
-# root, so the cluster loses the uid-70 ownership the image gave it and the
-# postmaster cannot open its own data directory until it is restored.
-chown -R 70:70 /var/lib/postgresql
-
 # The PostgreSQL 14 statistics collector opens a UDP socket on loopback and
 # logs a failure when it cannot; bringing lo up keeps that line off the serial.
 ip link set lo up

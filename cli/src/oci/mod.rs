@@ -248,7 +248,7 @@ fn rootfs_segment_for(
     eprintln!("staging {image} ...");
     let staging = tempfile::tempdir()?;
     let staged = image::stage(image, staging.path())?;
-    let segment = bundle::build_rootfs_segment(&staged.rootfs)?;
+    let segment = bundle::build_rootfs_segment(&staged.rootfs, &staged.owners)?;
     if let (Some(key), Some(dir)) = (&key, &cache_dir) {
         cache::store(dir, key, &segment, &staged.config);
     }

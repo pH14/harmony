@@ -945,7 +945,7 @@ def main() -> int:
     parser.add_argument(
         "--table",
         type=Path,
-        default=Path("consonance/acceptance-suite/instruction-contract.toml"),
+        default=Path("consonance/harmony-linux/scripts/instruction-contract.toml"),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("listing")

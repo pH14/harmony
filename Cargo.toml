@@ -9,10 +9,7 @@ resolver = "2"
 # consonance is their only consumer). The v1 dissonance searcher was removed;
 # its rebuild lives in the standalone `dissonance/` workspace.
 members = ["cli", "consonance/*"]
-# consonance/harmony-linux/ contains standalone Linux-side crates; the acceptance-suite
-# payloads use custom targets/linker flags. Neither belongs to this workspace.
-# dissonance/ is a standalone workspace root by design (the searcher rebuild);
-# it must not share this build graph.
+# consonance/harmony-linux/ contains standalone Linux-side crates.
 exclude = [
   "consonance/harmony-linux",
   "dissonance",

@@ -124,6 +124,11 @@ environment.
 Raw backend logs and substrate-private exit counts do not need to match. Only
 normalized guest-visible transitions have portable meaning.
 
+Guest policy is shared across physical hosts within an architecture. Boot does
+not select a per-processor contract or require a pinned model, stepping, or
+microcode revision. Backend capabilities and the admitted instruction surface
+still bound where a composition can execute.
+
 Cross-host replay within one ISA adds the assumption that two qualified
 implementations agree on the admitted architectural subset after Harmony's
 normalization and canonicalization. Hardware qualification tests specific CPU

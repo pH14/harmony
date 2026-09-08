@@ -9,7 +9,7 @@
 //! returns a [`LinuxImage`] describing the 64-bit entry, the `boot_params`
 //! ("zero page") GPA, the identity page-table root (`CR3`), the boot GDT, and the
 //! loaded ranges. [`crate::vendor::x86::entry::long_mode_entry`] turns those into the
-//! architectural long-mode entry state; [`crate::bringup::boot_linux`] composes
+//! architectural long-mode entry state; the Linux composition root composes
 //! the two over a backend.
 //!
 //! This is a **trust boundary** (conventions rule 4): the `image` and `initramfs`
@@ -444,6 +444,7 @@ fn write_at(
 /// setup_data before reusing low RAM, mixes these bytes into its CRNG and credits
 /// them with random.trust_bootloader=on (the pinned kernel's default).
 /// The caller supplies bytes from the VM's seeded entropy stream, never the host.
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
 pub(crate) fn write_rng_seed(mem: &mut [u8], seed: &[u8; 64]) -> Result<(), LinuxLoadError> {
     const RNG_GPA: u64 = 0x9000;
     let error = LinuxLoadError::RamTooSmall {
