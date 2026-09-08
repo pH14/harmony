@@ -179,10 +179,6 @@ pub(crate) fn normalize_virtual_time_exit_x86(exit: &Exit<X86>) -> (NormalizedEv
                 X86Exit::Rdmsr { .. } => 1,
                 X86Exit::Wrmsr { .. } => 2,
                 X86Exit::Cpuid { .. } => 3,
-                X86Exit::Rdtsc => 4,
-                X86Exit::Rdtscp => 5,
-                X86Exit::Rdrand { .. } => 6,
-                X86Exit::Rdseed { .. } => 7,
             }];
             let class = match arch {
                 X86Exit::Io { port, size, write } => {
@@ -209,11 +205,6 @@ pub(crate) fn normalize_virtual_time_exit_x86(exit: &Exit<X86>) -> (NormalizedEv
                 X86Exit::Cpuid { leaf, subleaf } => {
                     payload.extend_from_slice(&leaf.to_le_bytes());
                     payload.extend_from_slice(&subleaf.to_le_bytes());
-                    NormalizedEventClass::ArchitecturalControl
-                }
-                X86Exit::Rdtsc | X86Exit::Rdtscp => NormalizedEventClass::TimeRead,
-                X86Exit::Rdrand { width } | X86Exit::Rdseed { width } => {
-                    payload.push(*width);
                     NormalizedEventClass::ArchitecturalControl
                 }
             };
@@ -668,43 +659,8 @@ impl<B: Backend<A = X86>> Vmm<B> {
         Ok(Step::Continued)
     }
 
-    /// Complete a pending `RDTSC`/`RDTSCP` with the **V-time** TSC,
-    /// [`VtimeWiring::guest_clock`] (`VClock::guest_ticks(work)` + `IA32_TSC_ADJUST`) — never
-    /// a host TSC, and identical to what `RDMSR(IA32_TSC)` returns. `work` is read
-    /// from the host counter at this exit; the backend writes the value to EDX:EAX
-    /// (and, for RDTSCP, the guest's `IA32_TSC_AUX` to ECX, which the backend
-    /// supplies from guest state). Fails closed if V-time is unwired (stock KVM /
-    /// M1/M2 never surface these exits, so reaching here without wiring is a contract
-    /// bug).
-    pub(crate) fn complete_tsc(&mut self) -> Result<Step, VmmError> {
-        let tsc = {
-            let Some(vt) = self.vtime.as_mut() else {
-                return Err(VmmError::ContractViolation(
-                    "RDTSC/RDTSCP surfaced but V-time is not wired (stock backend?) — refusing to \
-                     supply a host TSC"
-                        .to_string(),
-                ));
-            };
-            vt.guest_clock()
-        };
-        self.backend.complete_read(tsc)?;
-        // A V-time intercept: `assigned_clock` is now the exact current work, so
-        // a snapshot here would be exact (see `save_vtime`).
-        // This synchronized boundary is an RDTSC/RDTSCP COUNTER READ specifically —
-        // the only exit the pvclock registration handshake may complete on (r17;
-        // the §3.1/r8 wire contract promises the guest reads the counter after the
-        // doorbell). The other V-time intercepts (TSC MSR, RDRAND) and synchronized
-        // points (deadline, idle warp) leave this false.
-        self.tsc_read_intercept = true;
-        Ok(Step::Continued)
-    }
-
-    /// Service an `emulate-vtime` `RDMSR` (`IA32_TSC` 0x10 → the guest-visible
-    /// V-time TSC, the **same** value the RDTSC instruction returns; `IA32_TSC_ADJUST`
-    /// 0x3b → the stored adjust). Fails closed if V-time is unwired (stock KVM /
-    /// M1/M2 never surface these), or if an unexpected index is routed here. Both are
-    /// V-time MSR intercepts, so each records its deterministic work as the hash
-    /// anchor (like [`complete_tsc`](Self::complete_tsc)).
+    /// Read the assigned virtual-time TSC or its guest offset. Reject access
+    /// before virtual-time wiring, or an unexpected MSR index.
     pub(crate) fn rdmsr_vtime(&mut self, index: u32) -> Result<Step, VmmError> {
         let value = {
             let Some(vt) = self.vtime.as_mut() else {
@@ -768,39 +724,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
         }
         self.backend.complete_ok()?;
         // A V-time MSR intercept: `assigned_clock` is the exact current work.
-        Ok(Step::Continued)
-    }
-
-    /// Complete a pending `RDRAND`/`RDSEED` with `width` bytes from the **seeded**
-    /// entropy stream (the same one the `Entropy` hypercall uses) — never the host
-    /// RNG. The backend masks to `width` and sets CF (deterministic success).
-    /// Fails closed if V-time/RNG is unwired.
-    ///
-    /// An RNG exit is a **V-time intercept** (one of the four determinism-cap traps),
-    /// so it records its deterministic work as the hash anchor — exactly like
-    /// [`complete_tsc`](Self::complete_tsc) and the TSC-MSR paths. Without this, if an
-    /// RNG exit were the last intercept before a checkpoint, the `VTIM` hash would use
-    /// a stale (prior-intercept) work value, so two states that burned different
-    /// exit counts before the same seeded draw would collide — a false determinism
-    /// MATCH that then diverges on the next TSC read.
-    pub(crate) fn complete_rng(&mut self, width: u8) -> Result<Step, VmmError> {
-        let value = {
-            let Some(vt) = self.vtime.as_mut() else {
-                return Err(VmmError::ContractViolation(
-                    "RDRAND/RDSEED surfaced but the seeded entropy stream is not wired (stock \
-                     backend?) — refusing to supply host RNG"
-                        .to_string(),
-                ));
-            };
-            vt.draw_rng(width)?
-        };
-        self.backend.complete_read(value)?;
-        // A V-time intercept: the V-time is exact (`assigned_clock` is current).
-        // Independently, the seeded draw advanced the stream but `complete_read` only
-        // STAGES the reg-write/RIP-advance for the next `KVM_RUN`, so this is an unsafe
-        // *entropy* snapshot boundary until the next `step` re-enters and commits it
-        // (see `save_vtime`, which fails on the RNG flag even though V-time is exact).
-        self.rng_completion_staged = true;
         Ok(Step::Continued)
     }
 

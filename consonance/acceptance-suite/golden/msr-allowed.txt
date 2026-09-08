@@ -1,4 +1,0 @@
-PAYLOAD msr-allowed START
-OK msr-roundtrip
-OK msr-fixed-reported
-PAYLOAD msr-allowed PASS

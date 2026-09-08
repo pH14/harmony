@@ -15,7 +15,7 @@
 #   make -C consonance/harmony-linux/linux kernel        # bzImage WITH CONFIG_HARMONY_DEVICE=y
 #   consonance/harmony-linux/linux/build-bridge-image.sh
 #
-# Run (box-only — needs patched KVM + a leased core):
+# Run (box-only — needs stock KVM):
 #   taskset -c <leased-core> campaign-runner box --kernel bzImage \
 #       --initramfs initramfs-bridge.cpio.gz --ready-marker BRIDGE_DONE \
 #       --seeds 4 --runs 2 --deadline-delta 20000000

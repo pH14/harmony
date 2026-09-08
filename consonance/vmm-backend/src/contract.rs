@@ -66,12 +66,6 @@ pub enum Scenario {
     Cpuid,
     /// The guest's first exit is the hypercall transport.
     Hypercall,
-    /// The guest's first exit is `RDTSC` — only a backend advertising a
-    /// deterministic timestamp counter can produce it.
-    Rdtsc,
-    /// The guest's first exit is `RDRAND` — only a backend advertising
-    /// deterministic RNG can produce it.
-    Rdrand,
 }
 
 /// What kind of completion a pending exit is waiting for. The ordering exam
@@ -455,81 +449,6 @@ pub fn dirty_log_exactness_exam<F: BackendFixture>(fx: &mut F, report: &mut Cont
     report.ran("exactness/dirty_log");
 }
 
-/// **exactness, capability-keyed** — a backend that advertises a determinism
-/// capability must actually surface the corresponding guest reads as exits.
-///
-/// The flag chooses the exam; it is not itself the thing under test. A backend
-/// that does not advertise the capability lands in
-/// [`ContractReport::declined`] with [`DeclineReason::CapabilityAbsent`] — an
-/// honest, recorded "no", never a silent pass.
-pub fn capability_keyed_exactness_exam<F: BackendFixture>(fx: &mut F, report: &mut ContractReport) {
-    // The capability flags are read from a backend, so spawn one to ask.
-    let Some(probe) = fx.spawn(Scenario::Idle) else {
-        report.decline(
-            "exactness/capability_keyed",
-            DeclineReason::ScenarioUnavailable(Scenario::Idle),
-        );
-        return;
-    };
-    let caps = probe.capabilities();
-    drop(probe);
-
-    // Deterministic timestamp counter -> the guest's clock reads must exit.
-    if caps.arch.deterministic_tsc {
-        let mut b = fx
-            .spawn(Scenario::Rdtsc)
-            .expect("a backend advertising deterministic_tsc must be able to trap RDTSC");
-        b.set_policy(&fx.policy()).expect("set_policy");
-        let exit = b.run().expect("run to RDTSC");
-        assert_eq!(
-            exit,
-            Exit::Arch(X86Exit::Rdtsc),
-            "deterministic_tsc is advertised, so the guest's clock read must surface as an \
-             exit the VMM resolves to V-time"
-        );
-        b.complete_read(0x1234).expect("resolve the clock read");
-        report.ran("exactness/deterministic_tsc_traps");
-    } else {
-        report.decline(
-            "exactness/deterministic_tsc_traps",
-            DeclineReason::CapabilityAbsent("deterministic_tsc"),
-        );
-        // The honest-decline path: it must not surface the exit it cannot trap.
-        assert!(
-            fx.spawn(Scenario::Rdtsc).is_none(),
-            "a backend that does not advertise deterministic_tsc must not claim it can trap \
-             the guest's clock reads"
-        );
-    }
-
-    // Deterministic RNG -> the guest's hardware-RNG reads must exit.
-    if caps.deterministic_rng {
-        let mut b = fx
-            .spawn(Scenario::Rdrand)
-            .expect("a backend advertising deterministic_rng must be able to trap RDRAND");
-        b.set_policy(&fx.policy()).expect("set_policy");
-        match b.run().expect("run to RDRAND") {
-            Exit::Arch(X86Exit::Rdrand { .. }) => {}
-            other => panic!(
-                "deterministic_rng is advertised, so the guest's RNG read must surface as an \
-                 exit resolvable to the seeded stream; got {other:?}"
-            ),
-        }
-        b.complete_read(0xABCD).expect("resolve the RNG read");
-        report.ran("exactness/deterministic_rng_traps");
-    } else {
-        report.decline(
-            "exactness/deterministic_rng_traps",
-            DeclineReason::CapabilityAbsent("deterministic_rng"),
-        );
-        assert!(
-            fx.spawn(Scenario::Rdrand).is_none(),
-            "a backend that does not advertise deterministic_rng must not claim it can trap \
-             the guest's RNG reads"
-        );
-    }
-}
-
 // ---------------------------------------------------------------------------
 // fixpoint
 // ---------------------------------------------------------------------------
@@ -657,7 +576,6 @@ pub fn run_all<F: BackendFixture>(fx: &mut F) -> ContractReport {
     let mut report = ContractReport::new(fx.name());
     ordering_exam(fx, &mut report);
     dirty_log_exactness_exam(fx, &mut report);
-    capability_keyed_exactness_exam(fx, &mut report);
     fixpoint_exam(fx, &mut report);
     interrupt_delivery_exam(fx, &mut report);
     report

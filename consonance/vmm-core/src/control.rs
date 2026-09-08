@@ -164,7 +164,7 @@ pub fn host_minor_faults() -> Option<u64> {
 
 /// Boots a fresh, equivalently-composed VM — the restore target for `Memcpy`,
 /// `Remap` fallback, and every failed `InPlace` attempt. On the box
-/// this re-runs the composition root (`boot_linux_selected`): same RAM size,
+/// this re-runs the composition root (the Linux virtual-time boot helper): same RAM size,
 /// same wiring (V-time + xAPIC + legacy), same contract — the boot-loaded guest
 /// image is immediately overwritten by the restore, so the factory's seed is
 /// irrelevant. In the portable gates it builds a fresh scripted
@@ -2721,7 +2721,7 @@ mod tests {
         work: u64,
         seed: u64,
     ) -> Vmm<MockBackend> {
-        let mut exits_with_sync = vec![Exit::Arch(X86Exit::Rdtsc)];
+        let mut exits_with_sync = vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })];
         exits_with_sync.extend(exits);
         m.extend_exits(exits_with_sync);
         m.set_policy(&X86Policy {
@@ -2939,7 +2939,7 @@ mod tests {
     /// pages. The compact generic `server` fixture intentionally has only
     /// 16 KiB, below `REQ_GPA`; this fixture mirrors its composition at 128 KiB.
     fn payload_server() -> ControlServer<MockBackend> {
-        let mut backend = MockBackend::with_exits([Exit::Arch(X86Exit::Rdtsc)]);
+        let mut backend = MockBackend::with_exits([Exit::Arch(X86Exit::Rdmsr { index: 0x10 })]);
         backend
             .set_policy(&X86Policy {
                 cpuid: vmm_backend::CpuidModel::default(),
@@ -3766,7 +3766,10 @@ mod tests {
     )]
     fn branch_remap_and_memcpy_agree_bit_for_bit() {
         let mut s = server_with_remap(
-            vec![Exit::Arch(X86Exit::Rdtsc), Exit::Common(CommonExit::Idle)],
+            vec![
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+                Exit::Common(CommonExit::Idle),
+            ],
             false,
         );
         hello(&mut s);
@@ -5161,7 +5164,7 @@ mod tests {
     fn branch_reseeds_and_replay_does_not() {
         // Fork VMs take one RDTSC (to a synchronized point) then halt.
         let mut s = server(vec![
-            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
             Exit::Common(CommonExit::Idle),
         ]);
         hello(&mut s);
@@ -5190,43 +5193,6 @@ mod tests {
         assert_eq!(h1, h1_again, "same seed ⇒ same branched state");
         assert_ne!(h1, h2, "distinct seeds ⇒ divergent futures");
         assert_ne!(h1, h_base, "a branch is not the verbatim replay");
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
-    )]
-    fn branch_run_hash_is_deterministic_per_seed_end_to_end() {
-        // The portable determinism shape of the box gate: branch(s, seed) →
-        // run → hash, twice per seed, over fork VMs that draw entropy (RDRAND)
-        // so the seed actually reaches the run.
-        let fork_script = vec![
-            Exit::Arch(X86Exit::Rdtsc),
-            Exit::Arch(X86Exit::Rdrand { width: 8 }),
-            Exit::Arch(X86Exit::Rdrand { width: 8 }),
-            Exit::Common(CommonExit::Idle),
-        ];
-        let mut s = server(fork_script);
-        hello(&mut s);
-        let base = snap(&mut s);
-        let mut run_hash = |seed: u64| -> (StopReason, [u8; 32]) {
-            s.handle(&Request::Branch {
-                snap: base,
-                env: seeded_env(seed),
-            })
-            .unwrap()
-            .unwrap();
-            let stop = run_all(&mut s);
-            (stop, hash(&mut s))
-        };
-        let (stop_a1, h_a1) = run_hash(0xAAAA);
-        let (stop_b1, h_b1) = run_hash(0xBBBB);
-        let (stop_a2, h_a2) = run_hash(0xAAAA);
-        assert_eq!(stop_a1, stop_a2, "same seed ⇒ same stop");
-        assert_eq!(h_a1, h_a2, "same seed ⇒ bit-identical terminal hash");
-        assert_eq!(stop_a1, stop_b1, "stop kind is seed-independent here");
-        assert_ne!(h_a1, h_b1, "distinct seeds diverge");
     }
 
     #[test]
@@ -5382,7 +5348,7 @@ mod tests {
         // recoverable RestoreFailed and letting a client run from unvouched state.
         let build = || -> Vmm<RestoreFailBackend> {
             let mut m = MockBackend::with_exits(vec![
-                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
                 Exit::Common(CommonExit::Idle),
             ]);
             m.set_policy(&X86Policy {
@@ -5500,7 +5466,7 @@ mod tests {
     /// wired, a distinctive RAM image loaded, and a script of `exit_count`
     /// clock-advancing exits followed by a terminal halt.
     fn enforce_vmm(exit_count: usize, image: [u8; RAM], seed: u64) -> Vmm<MockBackend> {
-        let mut exits = vec![Exit::Arch(X86Exit::Rdtsc); exit_count];
+        let mut exits = vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 }); exit_count];
         exits.push(Exit::Common(CommonExit::Idle));
         let mut m = MockBackend::with_exits(exits);
         m.set_policy(&X86Policy {
@@ -5662,7 +5628,7 @@ mod tests {
                 size: 4,
                 write: Some(n as u32),
             }),
-            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
             Exit::Common(CommonExit::Idle),
         ]);
         mb.set_policy(&X86Policy {
@@ -5748,8 +5714,8 @@ mod tests {
                 size: 4,
                 write: Some(n as u32),
             }),
-            Exit::Arch(X86Exit::Rdtsc),
-            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
             Exit::Common(CommonExit::Idle),
         ]);
         mb.set_policy(&X86Policy {
@@ -5829,8 +5795,8 @@ mod tests {
                 size: 4,
                 write: Some(n as u32),
             }),
-            Exit::Arch(X86Exit::Rdtsc),
-            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
             Exit::Common(CommonExit::Idle),
         ]);
         mb.set_policy(&X86Policy {
@@ -5866,72 +5832,6 @@ mod tests {
         match s.handle(&Request::Snapshot).unwrap() {
             Ok(Reply::Snapshot { .. }) => {}
             other => panic!("seal failed with a staged reseed mishandled: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn snapshot_point_defers_past_an_rng_boundary_to_the_next_clean_seal() {
-        // Round-4 P1: the first V-time-synchronized exit after `setup_complete` is
-        // an RDRAND — synchronized, but with a STAGED RNG completion, so
-        // `save_vm_state` fails closed there. The deferred snapshot point must NOT
-        // surface at that RNG boundary (gating on exact time alone did, and
-        // cleared `pending_snapshot` before the failed seal → the point was LOST);
-        // it must defer to the next CLEAN synchronized boundary (the RDTSC), where a
-        // seal succeeds. Exits: doorbell(setup_complete) → RDRAND (unsealable) →
-        // RDTSC (clean) → HLT.
-        const REQ_GPA: usize = 0xE000;
-
-        let setup_id: u32 = 4 << 24;
-        let mut frame = [0u8; 4096];
-        let n = hypercall_proto::encode_request(
-            hypercall_proto::ServiceId::Event,
-            1,
-            1,
-            &setup_id.to_le_bytes(),
-            &mut frame,
-        )
-        .unwrap();
-
-        let mut mb = MockBackend::with_exits(vec![
-            Exit::Arch(X86Exit::Io {
-                port: 0x0CA1,
-                size: 4,
-                write: Some(n as u32),
-            }),
-            Exit::Arch(X86Exit::Rdrand { width: 8 }), // synchronized BUT rng_completion_staged
-            Exit::Arch(X86Exit::Rdtsc),               // the next clean, sealable boundary
-            Exit::Common(CommonExit::Idle),
-        ]);
-        mb.set_policy(&X86Policy {
-            cpuid: vmm_backend::CpuidModel::default(),
-            msr_filter: vmm_backend::MsrFilter::default(),
-        })
-        .unwrap();
-        let mut live = Vmm::new(mb, GuestRam::new(BIG_RAM).unwrap());
-        live.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 9).unwrap());
-        live.wire_snapshot_hashing();
-        let mut ram = vec![0u8; BIG_RAM];
-        ram[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
-        live.restore_guest_memory(&ram).unwrap();
-
-        let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
-        let mut s = with_test_service(ControlServer::new(live, factory));
-        hello(&mut s);
-
-        // The point surfaces (only at the clean RDTSC — never at the RDRAND, which
-        // `save_vm_state` would reject), so the eager seal SUCCEEDS.
-        assert!(
-            matches!(
-                run_seeking_snapshot(&mut s),
-                StopReason::SnapshotPoint { .. }
-            ),
-            "the deferred point surfaced at a sealable boundary"
-        );
-        match s.handle(&Request::Snapshot).unwrap() {
-            Ok(Reply::Snapshot { .. }) => {}
-            other => panic!(
-                "seal failed — the point surfaced at an unsealable (RNG) boundary: {other:?}"
-            ),
         }
     }
 
@@ -6070,7 +5970,10 @@ mod tests {
         assert!(
             matches!(
                 run_with(
-                    vec![Exit::Arch(X86Exit::Rdtsc), Exit::Common(CommonExit::Idle)],
+                    vec![
+                        Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+                        Exit::Common(CommonExit::Idle)
+                    ],
                     &setup,
                     StopMask::NONE
                 ),
@@ -6081,7 +5984,10 @@ mod tests {
         assert!(
             matches!(
                 run_with(
-                    vec![Exit::Arch(X86Exit::Rdtsc), Exit::Common(CommonExit::Idle)],
+                    vec![
+                        Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+                        Exit::Common(CommonExit::Idle)
+                    ],
                     &setup,
                     StopMask::NONE.arm(control_proto::class_bit::SNAPSHOT_POINT)
                 ),
@@ -6255,7 +6161,7 @@ mod tests {
     /// V-time landing (no arrival armed, so `run()` returns the scripted RDTSC).
     fn rdtsc_then_hlt_vmm(rdtsc_work: u64) -> Vmm<MockBackend> {
         let mut m = MockBackend::with_exits(vec![
-            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
             Exit::Common(CommonExit::Idle),
         ]);
         m.set_policy(&X86Policy {
@@ -6772,7 +6678,8 @@ mod tests {
                 self.inner.extend_exits([Exit::Common(CommonExit::Idle)]);
             } else {
                 self.exits_left -= 1;
-                self.inner.extend_exits([Exit::Arch(X86Exit::Rdtsc)]);
+                self.inner
+                    .extend_exits([Exit::Arch(X86Exit::Rdmsr { index: 0x10 })]);
             }
             self.inner.run()
         }
@@ -7791,7 +7698,7 @@ mod tests {
         // A reseed staged beyond the trajectory is the same loud
         // ScheduleUnsatisfiable class as a crossed fault (the task spec's gate).
         let mut s = server(vec![
-            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
             Exit::Common(CommonExit::Idle),
         ]);
         hello(&mut s);
@@ -7948,12 +7855,12 @@ mod tests {
             write: Some(n as u32),
         });
         let mut mb = MockBackend::with_exits(vec![
-            Exit::Arch(X86Exit::Rdtsc), // pre-stepped clock boundary
-            serial(b'a'),               // console bytes — never in the SDK count
-            ring.clone(),               // SDK event, position 0 → sealable stop #1
-            Exit::Arch(X86Exit::Rdtsc), // commits ring #1 before its deferred seal
-            ring,                       // SDK event, position 1 → sealable stop #2
-            serial(b'b'),               // console bytes after both seals
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }), // pre-stepped clock boundary
+            serial(b'a'),                               // console bytes — never in the SDK count
+            ring.clone(),                               // SDK event, position 0 → sealable stop #1
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }), // commits ring #1 before its deferred seal
+            ring,                                       // SDK event, position 1 → sealable stop #2
+            serial(b'b'),                               // console bytes after both seals
             Exit::Common(CommonExit::Idle),
         ]);
         mb.set_policy(&X86Policy {
@@ -8415,8 +8322,8 @@ mod tests {
         // handshake (a second RDTSC) — which is what stamps the page (r8 ruling).
         let mut live = compose(
             vec![
-                Exit::Arch(X86Exit::Rdtsc),
-                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
                 Exit::Common(CommonExit::Idle),
             ],
             100,
@@ -8443,7 +8350,10 @@ mod tests {
 
         let factory = Box::new(move || {
             Ok(compose(
-                vec![Exit::Arch(X86Exit::Rdtsc), Exit::Common(CommonExit::Idle)],
+                vec![
+                    Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+                    Exit::Common(CommonExit::Idle),
+                ],
                 9_999,
             ))
         });
@@ -8481,7 +8391,7 @@ mod tests {
         const REQ_GPA: usize = 0xE000;
         const PV_GPA: u64 = 0x4000;
         let mut mb = MockBackend::with_exits(vec![
-            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
             Exit::Common(CommonExit::Idle),
         ]);
         mb.set_policy(&X86Policy {

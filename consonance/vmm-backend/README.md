@@ -13,8 +13,6 @@ an ISA-specific exit enum.
 - `MockBackend` and `MockArm64Backend` provide scripted, deterministic
   backends for portable tests behind the `mock` feature.
 - `KvmBackend` is the stock Linux x86-64 KVM implementation.
-- `PatchedKvmBackend` is the Linux x86-64 backend that uses the optional
-  deterministic-intercept KVM patch series.
 - `Arm64KvmBackend` and `HvfBackend` implement the arm64 KVM and macOS
   Hypervisor.framework paths where their platform APIs are available.
 

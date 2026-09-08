@@ -44,10 +44,8 @@ pub trait Arch {
     /// The interrupt identity the IRQ seam speaks (x86: the 8-bit vector; ARM
     /// later: a GIC INTID, which exceeds 8 bits).
     type IntId: Copy + fmt::Debug + PartialEq;
-    /// The arch capability flags (x86: `deterministic_tsc`,
-    /// `enforces_tsc_deadline_msr`). The *concepts* recur per-arch; the names
-    /// don't — [`ArchCaps`] maps them to the engine's neutral questions.
-    type Caps: ArchCaps;
+    /// Architecture-specific runtime features (arm64: in-kernel GIC ownership).
+    type Caps: Copy + fmt::Debug + PartialEq;
     /// The arch-payload completions — completions whose payload shape is
     /// per-ISA (x86: the CPUID result quad). The neutral read/ok/fault/
     /// hypercall completions stay monomorphic methods on
@@ -74,11 +72,4 @@ pub trait ArchExit: Clone + fmt::Debug + PartialEq {
     /// the engine's restore-safety bookkeeping
     /// (`Vmm::completion_staged`).
     fn stages_completion(&self) -> bool;
-}
-
-/// The engine's neutral questions over a vendor's arch-named capability flags.
-pub trait ArchCaps: Copy + fmt::Debug + PartialEq {
-    /// Deterministic guest clock: reads of the guest's clock resolve to V-time
-    /// (x86: `deterministic_tsc`).
-    fn deterministic_clock(&self) -> bool;
 }

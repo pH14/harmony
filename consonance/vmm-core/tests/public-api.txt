@@ -50,18 +50,6 @@ pub fn vmm_core::control::host_minor_faults() -> core::option::Option<u64>
 pub fn vmm_core::control::server_caps() -> control_proto::types::Caps
 pub type vmm_core::control::RemapVmmFactory<B> = alloc::boxed::Box<dyn core::ops::function::FnMut(snapshot_store::mapping::Mapping) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>>
 pub type vmm_core::control::VmmFactory<B> = alloc::boxed::Box<dyn core::ops::function::FnMut() -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>>
-pub mod vmm_core::corpus
-pub struct vmm_core::corpus::CorpusMachine<B: vmm_backend::backend::Backend<Avmm_core::vendor::Vendor>>
-impl<B: vmm_backend::backend::Backend<Avmm_core::vendor::Vendor>> vmm_core::corpus::CorpusMachine<B>
-pub fn vmm_core::corpus::CorpusMachine<B>::new(vmm_core::vmm::Vmm<B>) -> Self
-pub fn vmm_core::corpus::CorpusMachine<B>::run_error(&self) -> core::option::Option<&str>
-pub fn vmm_core::corpus::CorpusMachine<B>::vmm(&self) -> &vmm_core::vmm::Vmm<B>
-impl<B: vmm_backend::backend::Backend<Avmm_core::vendor::Vendor>> unison::Subject for vmm_core::corpus::CorpusMachine<B>
-pub fn vmm_core::corpus::CorpusMachine<B>::observable_digest(&self) -> [u8; 32]
-pub fn vmm_core::corpus::CorpusMachine<B>::run_to(&mut self, u64) -> core::result::Result<unison::RunOutcome, unison::SubjectError>
-pub fn vmm_core::corpus::CorpusMachine<B>::state_hash(&self) -> core::result::Result<[u8; 32], unison::SubjectError>
-pub fn vmm_core::corpus::CorpusMachine<B>::work(&self) -> u64
-pub fn vmm_core::corpus::observable_digest_of(&[u32], &[u8]) -> [u8; 32]
 pub mod vmm_core::exec
 pub struct vmm_core::exec::ExecOutcome
 pub vmm_core::exec::ExecOutcome::ok: bool
@@ -329,13 +317,6 @@ pub mod vmm_core::vendor::arm64::entry
 pub const vmm_core::vendor::arm64::entry::PSTATE_EL1H_DAIF: u64
 pub fn vmm_core::vendor::arm64::entry::apply_entry(&mut vmm_backend::arch::arm64::state::Arm64VcpuState, &vmm_backend::arch::arm64::state::Arm64VcpuState)
 pub fn vmm_core::vendor::arm64::entry::boot_entry(u64, u64) -> vmm_backend::arch::arm64::state::Arm64VcpuState
-pub mod vmm_core::vendor::arm64::hostassert
-pub struct vmm_core::vendor::arm64::hostassert::Outcome
-pub vmm_core::vendor::arm64::hostassert::Outcome::actual: alloc::string::String
-pub vmm_core::vendor::arm64::hostassert::Outcome::expected: alloc::string::String
-pub vmm_core::vendor::arm64::hostassert::Outcome::key: alloc::string::String
-pub vmm_core::vendor::arm64::hostassert::Outcome::pass: bool
-pub fn vmm_core::vendor::arm64::hostassert::report() -> alloc::vec::Vec<vmm_core::vendor::arm64::hostassert::Outcome>
 pub mod vmm_core::vendor::arm64::image_loader
 pub enum vmm_core::vendor::arm64::image_loader::ImageLoadError
 pub vmm_core::vendor::arm64::image_loader::ImageLoadError::BadMagic
@@ -380,22 +361,8 @@ pub fn vmm_core::vendor::arm64::compare_arm64_architecture(&vmm_core::vendor::ar
 pub fn vmm_core::vendor::arm64::compare_gic_architecture(&gicv3::state::GicState, &gicv3::state::GicState) -> core::result::Result<(), vmm_core::vendor::arm64::GicArchitectureDifference>
 pub mod vmm_core::vendor::x86
 pub mod vmm_core::vendor::x86::bringup
-pub enum vmm_core::vendor::x86::bringup::BackendKind
-pub vmm_core::vendor::x86::bringup::BackendKind::Patched
-pub vmm_core::vendor::x86::bringup::BackendKind::Stock
-pub enum vmm_core::vendor::x86::bringup::ImageKind
-pub vmm_core::vendor::x86::bringup::ImageKind::Linux
-pub vmm_core::vendor::x86::bringup::ImageKind::Multiboot
-impl vmm_core::vendor::x86::bringup::ImageKind
-pub fn vmm_core::vendor::x86::bringup::ImageKind::detect(&[u8]) -> core::option::Option<vmm_core::vendor::x86::bringup::ImageKind>
-pub fn vmm_core::vendor::x86::bringup::boot<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>(B, &[u8], usize) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
-pub fn vmm_core::vendor::x86::bringup::boot_linux<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>(B, &[u8], &[u8], usize, &str) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
-pub fn vmm_core::vendor::x86::bringup::boot_linux_patched_with_dirty_log(&[u8], &[u8], usize, &str, u64, bool) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
-pub fn vmm_core::vendor::x86::bringup::boot_linux_selected(vmm_core::vendor::x86::bringup::BackendKind, &[u8], &[u8], usize, &str, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time(&[u8], &[u8], usize, &str, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time_cancellable(&[u8], &[u8], usize, &str, u64) -> core::result::Result<vmm_core::vmm::Vmm<vmm_backend::kvm_sys::KvmBackend>, vmm_core::vmm::VmmError>
-pub fn vmm_core::vendor::x86::bringup::boot_patched_corpus(&[u8], usize, u64) -> core::result::Result<vmm_core::corpus::CorpusMachine<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
-pub fn vmm_core::vendor::x86::bringup::boot_selected(vmm_core::vendor::x86::bringup::BackendKind, &[u8], usize, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::x86::bringup::compose_restore_target<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>(B, snapshot_store::mapping::Mapping, bool) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::x86::bringup::compose_stock_virtual_time_restore_target(snapshot_store::mapping::Mapping, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
 pub mod vmm_core::vendor::x86::contract
@@ -411,7 +378,6 @@ pub const vmm_core::vendor::x86::contract::MSR_EXIT_REASON_UNKNOWN: u64
 pub const vmm_core::vendor::x86::contract::USER_SPACE_MSR_MASK: u64
 pub fn vmm_core::vendor::x86::contract::contract_hash() -> [u8; 32]
 pub fn vmm_core::vendor::x86::contract::cpuid_model() -> vmm_backend::arch::x86::config::CpuidModel
-pub fn vmm_core::vendor::x86::contract::cpuid_model_hw_rng_hidden() -> vmm_backend::arch::x86::config::CpuidModel
 pub fn vmm_core::vendor::x86::contract::msr_filter_allow() -> vmm_backend::arch::x86::config::MsrFilter
 pub fn vmm_core::vendor::x86::contract::rdmsr_disposition(u32) -> vmm_core::vendor::x86::contract::MsrDisposition
 pub fn vmm_core::vendor::x86::contract::resolve_cpuid(vmm_backend::arch::x86::config::CpuidEntry, u64, u64) -> vmm_backend::arch::x86::config::CpuidEntry
@@ -446,17 +412,7 @@ pub struct vmm_core::vendor::x86::dispatch::X86Devices
 pub struct vmm_core::vendor::x86::dispatch::X86RestorePrep
 pub fn vmm_core::vendor::x86::dispatch::contract_vclock_config() -> vtime::clock::VClockConfig
 pub mod vmm_core::vendor::x86::entry
-pub const vmm_core::vendor::x86::entry::BOOT_INFO_GPA: u32
 pub fn vmm_core::vendor::x86::entry::long_mode_entry(u64, u64, u64, u64) -> vmm_backend::arch::x86::state::VcpuState
-pub fn vmm_core::vendor::x86::entry::protected_mode_entry(u32, u32) -> vmm_backend::arch::x86::state::VcpuState
-pub fn vmm_core::vendor::x86::entry::write_boot_info(&mut [u8]) -> core::result::Result<u32, vmm_core::vendor::x86::multiboot::LoadError>
-pub mod vmm_core::vendor::x86::hostassert
-pub struct vmm_core::vendor::x86::hostassert::Outcome
-pub vmm_core::vendor::x86::hostassert::Outcome::actual: alloc::string::String
-pub vmm_core::vendor::x86::hostassert::Outcome::expected: alloc::string::String
-pub vmm_core::vendor::x86::hostassert::Outcome::key: alloc::string::String
-pub vmm_core::vendor::x86::hostassert::Outcome::pass: bool
-pub fn vmm_core::vendor::x86::hostassert::report() -> alloc::vec::Vec<vmm_core::vendor::x86::hostassert::Outcome>
 pub mod vmm_core::vendor::x86::linux_loader
 pub enum vmm_core::vendor::x86::linux_loader::LinuxLoadError
 pub vmm_core::vendor::x86::linux_loader::LinuxLoadError::CmdlineTooLong
@@ -576,32 +532,6 @@ pub const vmm_core::vendor::x86::linux_loader::PML4_GPA: u64
 pub const vmm_core::vendor::x86::linux_loader::SETUP_HEADER_OFFSET: usize
 pub fn vmm_core::vendor::x86::linux_loader::load(&[u8], &[u8], u64, &str, &mut [u8]) -> core::result::Result<vmm_core::vendor::x86::linux_loader::LinuxImage, vmm_core::vendor::x86::linux_loader::LinuxLoadError>
 pub fn vmm_core::vendor::x86::linux_loader::parse_setup_header(&[u8]) -> core::result::Result<vmm_core::vendor::x86::linux_loader::SetupHeader, vmm_core::vendor::x86::linux_loader::LinuxLoadError>
-pub mod vmm_core::vendor::x86::multiboot
-pub enum vmm_core::vendor::x86::multiboot::LoadError
-pub vmm_core::vendor::x86::multiboot::LoadError::BadAddressFields
-pub vmm_core::vendor::x86::multiboot::LoadError::BadChecksum
-pub vmm_core::vendor::x86::multiboot::LoadError::ImageTooSmall
-pub vmm_core::vendor::x86::multiboot::LoadError::NoAddressOverride
-pub vmm_core::vendor::x86::multiboot::LoadError::NoHeader
-pub vmm_core::vendor::x86::multiboot::LoadError::OutOfRange(u64, u64)
-pub struct vmm_core::vendor::x86::multiboot::LoadedImage
-pub vmm_core::vendor::x86::multiboot::LoadedImage::bss_end_addr: u32
-pub vmm_core::vendor::x86::multiboot::LoadedImage::entry_addr: u32
-pub vmm_core::vendor::x86::multiboot::LoadedImage::load_addr: u32
-pub vmm_core::vendor::x86::multiboot::LoadedImage::load_end_addr: u32
-pub struct vmm_core::vendor::x86::multiboot::MultibootHeader
-pub vmm_core::vendor::x86::multiboot::MultibootHeader::bss_end_addr: u32
-pub vmm_core::vendor::x86::multiboot::MultibootHeader::entry_addr: u32
-pub vmm_core::vendor::x86::multiboot::MultibootHeader::header_addr: u32
-pub vmm_core::vendor::x86::multiboot::MultibootHeader::header_file_offset: u32
-pub vmm_core::vendor::x86::multiboot::MultibootHeader::load_addr: u32
-pub vmm_core::vendor::x86::multiboot::MultibootHeader::load_end_addr: u32
-pub const vmm_core::vendor::x86::multiboot::MULTIBOOT_BOOTLOADER_MAGIC: u32
-pub const vmm_core::vendor::x86::multiboot::MULTIBOOT_HEADER_MAGIC: u32
-pub const vmm_core::vendor::x86::multiboot::MULTIBOOT_SEARCH_LEN: usize
-pub const vmm_core::vendor::x86::multiboot::PAYLOAD_LOAD_GPA: u32
-pub fn vmm_core::vendor::x86::multiboot::load(&[u8], &mut [u8]) -> core::result::Result<vmm_core::vendor::x86::multiboot::LoadedImage, vmm_core::vendor::x86::multiboot::LoadError>
-pub fn vmm_core::vendor::x86::multiboot::parse_header(&[u8]) -> core::result::Result<vmm_core::vendor::x86::multiboot::MultibootHeader, vmm_core::vendor::x86::multiboot::LoadError>
 pub mod vmm_core::vendor::x86::records
 pub struct vmm_core::vendor::x86::X86Devices
 pub fn vmm_core::vendor::x86::contract_vclock_config() -> vtime::clock::VClockConfig
@@ -871,7 +801,6 @@ pub enum vmm_core::vmm::VmmError
 pub vmm_core::vmm::VmmError::Backend(vmm_backend::error::BackendError)
 pub vmm_core::vmm::VmmError::Channel(environment::channel::ChannelError)
 pub vmm_core::vmm::VmmError::ContractViolation(alloc::string::String)
-pub vmm_core::vmm::VmmError::HostAssert(alloc::string::String)
 pub vmm_core::vmm::VmmError::Snapshot(vmm_core::snapshot::SnapshotError)
 pub vmm_core::vmm::VmmError::VendorBoot(alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync + 'static)>)
 pub vmm_core::vmm::VmmError::Vtime(vtime::error::VtimeError)

@@ -1,5 +1,5 @@
 # harmony-linux entry points. Linux images build only on Linux; the portable
-# acceptance payloads live under consonance/acceptance-suite (R-L4).
+# Instruction audit tables live under scripts/.
 
 UNAME_S := $(shell uname -s)
 

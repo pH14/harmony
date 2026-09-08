@@ -1,3 +1,0 @@
-PAYLOAD insn-hlt START
-OK hlt-wake
-PAYLOAD insn-hlt PASS

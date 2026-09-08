@@ -23,7 +23,7 @@ pub use state::{
 };
 pub(crate) use state::{canonicalize_core_regs, has_noncanonical_core_regs};
 
-use crate::arch::{Arch, ArchCaps, ArchExit};
+use crate::arch::{Arch, ArchExit};
 use crate::exit::ExitReason;
 
 /// The arm64 vendor (a zero-sized type; see `docs/ARCHITECTURE.md`).
@@ -145,8 +145,7 @@ pub enum Arm64Injection {
 /// completeness.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Arm64Policy {
-    /// The frozen synthetic ID-register model (the det-N1 analogue of
-    /// `det-cfl-v1`), installed config-time via KVM's writable-ID-register
+    /// The shared guest-visible ID-register model, installed config-time via KVM's writable-ID-register
     /// surface (`KVM_SET_ONE_REG` on the ID regs before the first `KVM_RUN`) —
     /// reachable on stock KVM.
     pub id_regs: IdRegModel,
@@ -180,10 +179,7 @@ pub struct SysregTrapPolicy {
     pub trapped: std::collections::BTreeSet<u32>,
 }
 
-/// The arm64 arch capability flags (the per-vendor half of
-/// [`Capabilities`](crate::Capabilities)). The *concepts* mirror x86's
-/// (`deterministic_tsc` / `enforces_tsc_deadline_msr`); the names are arm64's
-/// own registers.
+/// The arm64 runtime feature payload: ownership of the guest interrupt controller.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Arm64Caps {
     /// The backend owns an in-kernel GICv3 whose guest MMIO and ICC system
@@ -193,23 +189,6 @@ pub struct Arm64Caps {
     /// backend carries the controller's canonical migration state in its vCPU
     /// snapshot. `false` means interrupt state is userspace-owned or absent.
     pub in_kernel_gic: bool,
-    /// Guest reads of the virtual counter resolve to V-time — on arm64 via the
-    /// paravirt virtual-time clock page (`consonance/vtime/README.md`: no
-    /// `CNTVCT` trap exists on reachable silicon, so closure is contract-level,
-    /// never interception). `TODO(AA-5)`: validated on silicon; **honestly
-    /// `false` for the stock backend.**
-    pub deterministic_cntvct: bool,
-    /// Can loudly enforce the contract's disposition on the guest's EL1
-    /// virtual-timer compare sysregs (`CNTV_CVAL_EL0`/`CNTV_TVAL_EL0`) — the
-    /// arm64 analogue of x86's `IA32_TSC_DEADLINE` enforcement.
-    /// `TODO(patched-abi)`: stock KVM services the virtual timer in-kernel.
-    pub enforces_cntv_cval: bool,
-}
-
-impl ArchCaps for Arm64Caps {
-    fn deterministic_clock(&self) -> bool {
-        self.deterministic_cntvct
-    }
 }
 
 /// The arm64 arch-payload completions ([`Arch::Completion`]). **Uninhabited in
@@ -254,21 +233,5 @@ mod tests {
         // 1020..1024 are special INTIDs, not SPIs.
         assert!(!GicIntId(1020).is_spi());
         assert_eq!(GicIntId::SPURIOUS, GicIntId(1023));
-    }
-
-    #[test]
-    fn arm64_caps_answer_the_neutral_clock_question() {
-        let stock = Arm64Caps {
-            in_kernel_gic: false,
-            deterministic_cntvct: false,
-            enforces_cntv_cval: false,
-        };
-        assert!(!stock.deterministic_clock());
-        let det = Arm64Caps {
-            in_kernel_gic: false,
-            deterministic_cntvct: true,
-            enforces_cntv_cval: false,
-        };
-        assert!(det.deterministic_clock());
     }
 }
