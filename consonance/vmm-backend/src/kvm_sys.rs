@@ -147,6 +147,10 @@ pub struct KvmBackend {
     /// second IRQ is never dropped. Distinct from `pending` (the read/Wrmsr
     /// completion the last exit awaits); an in-flight injection never blocks a run.
     pending_irq: Option<u8>,
+    /// Whether `kvm_run.ready_for_interrupt_injection` describes the vCPU's
+    /// current state. KVM refreshes it only when `KVM_RUN` returns, and a
+    /// restore rewrites the registers it is derived from.
+    readiness_current: bool,
     /// Vectors for which `KVM_INTERRUPT` has actually been issued (accepted into
     /// the guest) since the last [`Backend::take_accepted_interrupt`] drain, in
     /// acceptance order. The VMM reads this to complete its userspace-LAPIC
@@ -237,6 +241,7 @@ impl KvmBackend {
             pending: Pending::None,
             completion_staged: false,
             pending_irq: None,
+            readiness_current: true,
             accepted_irq: VecDeque::new(),
             counts: ExitCounts::default(),
             cancel_run: std::sync::Arc::default(),
@@ -314,7 +319,7 @@ impl KvmBackend {
             // and we re-enter here, now injectable. The decision + window-flag
             // write is the pure [`plan_irq_entry`]; only the KVM_INTERRUPT ioctl is
             // the box-only syscall.
-            match plan_irq_entry(self.run_page(), self.pending_irq) {
+            match plan_irq_entry(self.run_page(), self.pending_irq, self.readiness_current) {
                 IrqEntry::Queue(vector) => {
                     // SAFETY (raw ioctl seam): `KVM_INTERRUPT` queues `vector` on
                     // the owned vCPU; `kvm_interrupt` is valid for the call.
@@ -341,6 +346,7 @@ impl KvmBackend {
             // This happens before decoding the newly returned exit, including
             // control exits that this loop consumes internally.
             self.completion_staged = false;
+            self.readiness_current = true;
             match decode_exit(self.run_page())? {
                 Some((exit, pending)) => {
                     self.counts.bump(exit.reason());
@@ -1034,7 +1040,8 @@ impl Backend for KvmBackend {
         // interrupt after restore that a freshly composed target would not.
         self.pending_irq = None;
         self.accepted_irq.clear();
-        let _ = plan_irq_entry(self.run_page(), None);
+        self.readiness_current = false;
+        let _ = plan_irq_entry(self.run_page(), None, false);
         Ok(())
     }
 

@@ -899,8 +899,23 @@ fn plan_irq_entry_queues_when_ready() {
     let s = SynRun::new();
     s.set_ready(true);
     s.set_request_window(true); // a stale request that must be cleared
-    assert_eq!(plan_irq_entry(s.page(), Some(0x40)), IrqEntry::Queue(0x40));
+    assert_eq!(
+        plan_irq_entry(s.page(), Some(0x40), true),
+        IrqEntry::Queue(0x40)
+    );
     assert_eq!(s.request_window(), 0, "window request cleared when queuing");
+}
+
+#[test]
+fn plan_irq_entry_requests_window_when_readiness_is_stale() {
+    // A restore rewrites RFLAGS and the interrupt shadow without KVM refreshing
+    // the ready byte, so a byte from before it cannot justify queuing.
+    let s = SynRun::new();
+    s.set_ready(true);
+    assert_eq!(plan_irq_entry(s.page(), Some(0x40), false), IrqEntry::Run);
+    assert_eq!(s.request_window(), 1, "window armed until the next exit");
+    assert_eq!(plan_irq_entry(s.page(), None, false), IrqEntry::Run);
+    assert_eq!(s.request_window(), 0);
 }
 
 #[test]
@@ -909,7 +924,7 @@ fn plan_irq_entry_requests_window_when_not_ready() {
     // (the vector stays pending; the caller retries on KVM_EXIT_IRQ_WINDOW_OPEN).
     let s = SynRun::new();
     s.set_ready(false);
-    assert_eq!(plan_irq_entry(s.page(), Some(0x40)), IrqEntry::Run);
+    assert_eq!(plan_irq_entry(s.page(), Some(0x40), true), IrqEntry::Run);
     assert_eq!(s.request_window(), 1, "window armed when not injectable");
 }
 
@@ -920,14 +935,14 @@ fn plan_irq_entry_clears_window_when_nothing_pending() {
     let s = SynRun::new();
     s.set_ready(true);
     s.set_request_window(true);
-    assert_eq!(plan_irq_entry(s.page(), None), IrqEntry::Run);
+    assert_eq!(plan_irq_entry(s.page(), None, true), IrqEntry::Run);
     assert_eq!(s.request_window(), 0, "stale window request cleared");
 
     // Even when the guest is not ready, no pending vector ⇒ no window request.
     let s = SynRun::new();
     s.set_ready(false);
     s.set_request_window(true);
-    assert_eq!(plan_irq_entry(s.page(), None), IrqEntry::Run);
+    assert_eq!(plan_irq_entry(s.page(), None, true), IrqEntry::Run);
     assert_eq!(s.request_window(), 0);
 }
 
