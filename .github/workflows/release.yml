@@ -1,7 +1,7 @@
 # Release artifacts for the brew tap (pH14/homebrew-harmony): per-platform
 # `harmony` binaries plus per-ISA guest artifact tarballs (kernel + initramfs).
 # Runs on version tags. The tap formula pins these assets by sha256.
-name: release
+name: Release / Harmony
 on:
   push:
     tags: ["v*"]

@@ -17,6 +17,15 @@ spec.loader.exec_module(eval)
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_aggregate_keeps_outcomes_when_throughput_is_unavailable(self):
+        items = [{'case':'nova', 'status':'complete', 'result':{'solved':False, 'frames_per_second':rate}}
+                 for rate in (None, 100.0, float('inf'))]
+        row = eval.aggregates(items)[0]
+        self.assertEqual(row['valid_trials'], 3)
+        self.assertEqual(row['throughput_trials'], 1)
+        self.assertEqual(row['median_search_frames_per_second'], 100.0)
+        self.assertIsNone(eval.aggregates(items[:1])[0]['median_search_frames_per_second'])
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)

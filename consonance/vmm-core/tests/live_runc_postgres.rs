@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only **Postgres-via-real-`runc`** gates (`#[cfg(target_os = "linux")]` **and
-//! `#[ignore]`**, on `ssh <det-box>` with the LOADED patched KVM modules,
-//! CPU-pinned per `.github/workflows/box.yml`). Task 48 — **the money-shot**: the actual
+//! `#[ignore]`**, on `ssh <qualified-host>` with the LOADED patched KVM modules,
+//! CPU-pinned per `docs/HARDWARE-TESTING.md`). Task 48 — **the money-shot**: the actual
 //! `runc` binary (the real Go container runtime, *not* the task-38
 //! `unshare`/`chroot`/`setpriv` shim) launches the official postgres OCI container,
 //! the task-42 `gen_random_uuid()`/`clock_timestamp()` workload runs against it, and
@@ -185,8 +185,8 @@ fn require_artifact(name: &str) -> Vec<u8> {
 fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
-        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
-         patched KVM modules, CPU-pinned per .github/workflows/box.yml."
+        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <qualified-host>` with the LOADED \
+         patched KVM modules, CPU-pinned per docs/HARDWARE-TESTING.md."
     );
 }
 
@@ -209,7 +209,7 @@ fn require_host_baseline() {
     assert!(
         all,
         "host CPU is not the det-cfl-v1 baseline — boot_linux cannot run the frozen contract here. \
-         Run on the determinism box (i9-9900K) per .github/workflows/box.yml."
+         Run on the determinism box (i9-9900K) per docs/HARDWARE-TESTING.md."
     );
 }
 
@@ -527,7 +527,7 @@ fn assert_went_through_runc(tag: &str, out: &BootOutcome) {
 /// guest powers off cleanly within budget.
 #[test]
 #[ignore = "box-only live gate (LOADED patched KVM + built Docker image + det-cfl-v1 host); \
-            run on `ssh <det-box>` with `-- --ignored --nocapture`"]
+            run on `ssh <qualified-host>` with `-- --ignored --nocapture`"]
 fn r1_runc_postgres_runs_and_streams_patched() {
     require_kvm();
     require_host_baseline();

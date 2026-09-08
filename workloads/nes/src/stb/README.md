@@ -182,10 +182,11 @@ separate logical frame count.
 
 ## Continuous evaluation
 
-[The Super Tilt Bro workflow](../../../../.github/workflows/stb.yml) follows
-Nova's source-build/search/film pattern and additionally gates full recorded
-campaign replay. Relevant pull requests run seed 1 against all three AI levels;
-scheduled and manual runs cross all three levels with registered seeds 1, 2,
+[Search evaluation checks](../../../../.github/workflows/search-eval.yml) run
+seed 1 against all three AI levels on relevant PRs and main changes.
+[The NES benchmark](../../../../.github/workflows/nova-nightly.yml) follows
+Nova's source-build/search/film pattern and gates full recorded campaign replay;
+scheduled and manually selected STB runs cross all three levels with registered seeds 1, 2,
 and 3. Easy and Fair run exact 2,000-execution soaks. Hard searches up to
 20,000 executions and stops after finding a victory (then drains outstanding
 worker reservations). Every cell uses two workers, ordinary admission, the

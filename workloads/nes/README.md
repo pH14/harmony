@@ -36,7 +36,7 @@ that experiment does not provide SMB acceptance evidence.
 | SMB/Consonance | `nes-backend-oracle` supports the path; no repository CI VM result is claimed here. | Linux/KVM, a capable NES base image, pinned core, and a caller-supplied licensed SMB ROM. |
 | Mega Man 2/native | All eight independent stage origins pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
 | Metroid/native | New-game origin passes local full-campaign replay qualification through `nes-eval`; this is not an ending claim. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Metroid ROM. |
-| Super Tilt Bro/native | `.github/workflows/stb.yml` builds the pinned ROM, probes controls/restoration, evaluates Easy/Fair/Hard AI and verifies replay/full-champion video; Hard must win within its execution ceiling. | Host QuickNES core and the pinned source-built offline UNROM game. |
+| Super Tilt Bro/native | `search-eval.yml` (bounded checks) and `nova-nightly.yml` (nightly NES benchmark) build the pinned ROM, probes controls/restoration, evaluates Easy/Fair/Hard AI and verifies replay/full-champion video; Hard must win within its execution ceiling. | Host QuickNES core and the pinned source-built offline UNROM game. |
 
 On Linux/KVM, the shared oracle is invoked as:
 

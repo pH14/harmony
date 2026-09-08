@@ -5,8 +5,8 @@
 //! `KvmBackend` and `PatchedKvmBackend`.
 //!
 //! `#[cfg(all(target_os = "linux", target_arch = "x86_64"))]` + `#[ignore]`, so
-//! CI **compiles** it on every push and never runs it; the hardware lane
-//! (`.github/workflows/box.yml` → `scripts/box-gates.sh`) executes it. On a host
+//! CI **compiles** it on every push and never runs it. Run it manually per
+//! `docs/HARDWARE-TESTING.md`. On a host
 //! without `/dev/kvm` these panic with what is missing and where to run them —
 //! never a silent pass.
 //!

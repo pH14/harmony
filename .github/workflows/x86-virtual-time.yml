@@ -1,17 +1,29 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: x86-virtual-time
+name: Acceptance / Consonance x86
 
-# This dispatch-only x86 VM-exit-count V-time evidence lane uses GitHub-hosted
-# runners. Standard x86-64 Linux runners expose /dev/kvm through nested
-# virtualization, and replicas sample the pool's Intel and AMD hardware draws.
-# Every result is uploaded because the runner is unreachable after the job ends.
+# Hosted-runner x86 acceptance; each replica preserves its own evidence.
 on:
-  # A dispatch re-rolls the runner hardware draw; the x2-intel-hunt job needs
-  # many draws because the pool serves Intel rarely.
-  workflow_dispatch:
+  pull_request:
+    paths:
+      - consonance/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .github/workflows/x86-virtual-time.yml
+  push:
+    branches: [main]
+    paths:
+      - consonance/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .github/workflows/x86-virtual-time.yml
+  schedule:
+    - cron: "13 3 * * *"
+  workflow_dispatch: {}
 
 concurrency:
-  group: x86-virtual-time-${{ github.ref }}
+  group: x86-virtual-time-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

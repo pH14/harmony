@@ -22,8 +22,8 @@
 //! `env` is a genesis-complete `Seeded` reproducer, so the whole trajectory is
 //! recoverable from genesis.
 //!
-//! Run on `ssh <det-box>` with the LOADED patched KVM modules + the built Postgres
-//! image, CPU-pinned per `.github/workflows/box.yml` (lease a core via `box-window.sh`;
+//! Run on `ssh <qualified-host>` with the LOADED patched KVM modules + the built Postgres
+//! image, CPU-pinned per `docs/HARDWARE-TESTING.md` (reserve an idle core on the qualified host;
 //! never touch another lease's cores or its patched-KVM window). ALWAYS revert KVM
 //! to stock **1396736** + verify after any patched run.
 //! ```text
@@ -92,8 +92,8 @@ fn require_artifact(name: &str) -> Vec<u8> {
 fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
-        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
-         patched KVM modules, CPU-pinned per .github/workflows/box.yml."
+        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <qualified-host>` with the LOADED \
+         patched KVM modules, CPU-pinned per docs/HARDWARE-TESTING.md."
     );
 }
 
@@ -249,7 +249,7 @@ struct Observation {
 
 #[test]
 #[ignore = "box-only moment-address gate (LOADED patched KVM + built Postgres image + \
-            det-cfl-v1 host); run per .github/workflows/box.yml"]
+            det-cfl-v1 host); run per docs/HARDWARE-TESTING.md"]
 fn moment_address_materializes_identically_twice() {
     require_kvm();
     require_host_baseline();

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only **Postgres-in-Docker** gates (`#[cfg(target_os = "linux")]` **and
-//! `#[ignore]`**, on `ssh <det-box>` with the LOADED patched KVM modules,
-//! CPU-pinned per `.github/workflows/box.yml`). Task 38 — consonance workload stream,
+//! `#[ignore]`**, on `ssh <qualified-host>` with the LOADED patched KVM modules,
+//! CPU-pinned per `docs/HARDWARE-TESTING.md`). Task 38 — consonance workload stream,
 //! step 3 of 3, the credibility money-shot: an off-the-shelf `docker run
 //! --network none postgres` runs **deterministically** in the guest.
 //!
@@ -183,8 +183,8 @@ fn require_artifact(name: &str) -> Vec<u8> {
 fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
-        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
-         patched KVM modules, CPU-pinned per .github/workflows/box.yml."
+        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <qualified-host>` with the LOADED \
+         patched KVM modules, CPU-pinned per docs/HARDWARE-TESTING.md."
     );
 }
 
@@ -207,7 +207,7 @@ fn require_host_baseline() {
     assert!(
         all,
         "host CPU is not the det-cfl-v1 baseline — boot_linux cannot run the frozen contract here. \
-         Run on the determinism box (i9-9900K) per .github/workflows/box.yml."
+         Run on the determinism box (i9-9900K) per docs/HARDWARE-TESTING.md."
     );
 }
 
@@ -497,7 +497,7 @@ fn assert_uuid_time_shape(tag: &str, out: &BootOutcome) -> String {
 /// stdout/stderr reach `ttyS0`), and powers off cleanly within budget.
 #[test]
 #[ignore = "box-only live gate (LOADED patched KVM + built Docker image + det-cfl-v1 host); \
-            run on `ssh <det-box>` with `-- --ignored --nocapture`"]
+            run on `ssh <qualified-host>` with `-- --ignored --nocapture`"]
 fn p1_docker_postgres_runs_and_streams_patched() {
     require_kvm();
     require_host_baseline();

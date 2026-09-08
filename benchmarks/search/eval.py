@@ -325,12 +325,15 @@ def aggregates(results):
     for key, items in sorted(groups.items(), key=lambda x: str(x[0])):
         valid = [x for x in items if x['status'] in {'complete', 'regression'} and x.get('result')]
         solved = [x for x in valid if x['result']['solved']]
+        rates = [x['result'].get('frames_per_second') for x in valid]
+        rates = [r for r in rates if isinstance(r, (int, float)) and not isinstance(r, bool) and math.isfinite(r)]
         rows.append({'case': key[0], 'workers': key[1], 'memory_mib': key[2], 'trials': len(items),
                      'valid_trials': len(valid), 'errors': len(items) - len(valid), 'solved': len(solved),
                      'solve_fraction_of_valid': len(solved) / len(valid) if valid else None,
                      'solve_fraction_wilson95': solve_interval(len(solved), len(valid)),
                      'median_frames_to_victory_among_successes': statistics.median([x['result']['frames_to_first_victory'] for x in solved]) if solved else None,
-                     'median_search_frames_per_second': statistics.median([x['result']['frames_per_second'] for x in valid]) if valid else None})
+                     'throughput_trials': len(rates),
+                     'median_search_frames_per_second': statistics.median(rates) if rates else None})
     return rows
 
 

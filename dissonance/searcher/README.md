@@ -129,6 +129,9 @@ search decisions or the deterministic campaign stream.
 separate experiment that uses `ArchiveKey::progress_cmp` for class preference
 and frontier weighting. Equivalent/incomparable coarsest classes share draws;
 identity still orders maps, never the potentially partial progress relation.
+Each selection draws one maximal eligible class; it does not fall through to
+other classes when that class yields no cell. Semantic frontier rank saturates
+at 16, matching the weighting span, rather than counting the entire tail.
 Within a pooled subtree it chooses a maximal observed descendant as its progress
 representative. Generic tests relabel locations and expose the numeric-label
 bias in the legacy control. This policy changes parent selection; ordinary

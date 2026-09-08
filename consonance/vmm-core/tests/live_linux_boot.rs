@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only live Linux boot gates (`#[cfg(target_os = "linux")]` **and
-//! `#[ignore]`**, on `ssh <det-box>`, CPU-pinned per `.github/workflows/box.yml`).
+//! `#[ignore]`**, on `ssh <qualified-host>`, CPU-pinned per `docs/HARDWARE-TESTING.md`).
 //!
 //! **Phase A — Linux runs in consonance (THE milestone).**
 //! [`a_linux_boots_to_userspace_stock`] boots the committed `consonance/harmony-linux/linux/bzImage` +
@@ -136,8 +136,8 @@ fn require_artifact(name: &str) -> Vec<u8> {
 fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
-        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` (Intel VMX, perf_event), \
-         CPU-pinned per .github/workflows/box.yml."
+        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <qualified-host>` (Intel VMX, perf_event), \
+         CPU-pinned per docs/HARDWARE-TESTING.md."
     );
 }
 
@@ -160,7 +160,7 @@ fn require_host_baseline() {
     assert!(
         all,
         "host CPU is not the det-cfl-v1 baseline — boot_linux cannot run the frozen contract here. \
-         Run on the determinism box (i9-9900K) per .github/workflows/box.yml."
+         Run on the determinism box (i9-9900K) per docs/HARDWARE-TESTING.md."
     );
 }
 
@@ -279,7 +279,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> bool {
 /// interrupt path, so a regression in either is localized to the gate that owns it.
 #[test]
 #[ignore = "box-only live gate (real KVM + built guest image + det-cfl-v1 host); run on \
-            `ssh <det-box>` with `-- --ignored --nocapture`"]
+            `ssh <qualified-host>` with `-- --ignored --nocapture`"]
 fn a_linux_boots_to_userspace_stock() {
     require_kvm();
     require_host_baseline();
@@ -406,7 +406,7 @@ fn gate3_linux_guest_ready_and_clean_poweroff() {
 /// task 34 / `README.md`.
 #[test]
 #[ignore = "box-only determinism gate (LOADED patched KVM + built guest image + det-cfl-v1 host); \
-            run on `ssh <det-box>` with `-- --ignored --nocapture`"]
+            run on `ssh <qualified-host>` with `-- --ignored --nocapture`"]
 fn c_linux_boot_deterministic_twice_patched() {
     require_kvm();
     require_host_baseline();

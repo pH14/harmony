@@ -1,4 +1,4 @@
-name: Search evaluation contracts
+name: Checks / Search evaluation
 on:
   pull_request:
     paths:
@@ -10,6 +10,7 @@ on:
       - dissonance/Cargo.*
       - rust-toolchain.toml
       - scripts/build-quicknes-core.sh
+      - .github/actions/stb-evaluation/**
       - .github/workflows/search-eval.yml
   push:
     branches: [main]
@@ -22,12 +23,19 @@ on:
       - dissonance/Cargo.*
       - rust-toolchain.toml
       - scripts/build-quicknes-core.sh
+      - .github/actions/stb-evaluation/**
+      - .github/workflows/search-eval.yml
   workflow_dispatch:
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash
+
 jobs:
   portable:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
@@ -73,7 +81,7 @@ jobs:
             --assets /tmp/search-eval-assets/inventory.json \
             --binary /tmp/search-eval-build/nes-eval \
             --build-info /tmp/search-eval-build/build-info.json \
-            --out /tmp/search-eval-runs --jobs 2 --cpus 4 --memory-capacity-mib 3072
+            --out /tmp/search-eval-runs --jobs 2 --cpus 4 --memory-capacity-mib 3072 --finish-seconds 60
       - name: Export compact evidence
         if: always()
         run: python3 benchmarks/search/eval.py export /tmp/search-eval-runs --out /tmp/search-eval-public
@@ -84,3 +92,32 @@ jobs:
           path: /tmp/search-eval-public
           if-no-files-found: warn
           retention-days: 30
+
+  stb-contract:
+    name: Source build, probe, search and replay (${{ matrix.ai.name }}, seed ${{ matrix.seed }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        ai:
+          - { name: easy, level: 1, executions: 2000, require_victory: false }
+          - { name: fair, level: 2, executions: 2000, require_victory: false }
+          - { name: hard, level: 3, executions: 20000, require_victory: true }
+        # Bounded qualification uses one registered seed on every trigger.
+        seed: [1]
+    env:
+      STB_BUILD: workloads/nes/build/stb
+      STB_ARTIFACT: workloads/nes/build/stb-artifact
+      STB_EXECUTIONS: ${{ matrix.ai.executions }}
+      STB_REQUIRE_VICTORY: ${{ matrix.ai.require_victory }}
+      STB_SEED: ${{ matrix.seed }}
+      STB_AI: ${{ matrix.ai.name }}
+      STB_AI_LEVEL: ${{ matrix.ai.level }}
+      STB_WORKERS: "2"
+      HARMONY_STB_BUILD_JOBS: "2"
+      HARMONY_QUICKNES_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/stb-evaluation

@@ -1,10 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Nova 500K adventure
+name: Benchmarks / NES
 
 on:
   schedule:
     - cron: "30 6 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      game:
+        description: Game to evaluate
+        type: choice
+        options: [all, nova, stb]
+        default: all
 
 permissions:
   contents: read
@@ -13,9 +19,14 @@ concurrency:
   group: nova-benchmark-${{ github.ref }}
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   level-panel:
-    name: ${{ matrix.title }} — independent search and film
+    if: github.event_name != 'workflow_dispatch' || inputs.game != 'stb'
+    name: ${{ matrix.title }} — Nova level evaluation
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -111,6 +122,7 @@ jobs:
             echo "Video with music: $(jq -c '.video' "${NOVA_ARTIFACT}/run-summary.json")."
           } >>"${GITHUB_STEP_SUMMARY}"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: nova-${{ matrix.slug }}-${{ github.run_id }}
           path: |
@@ -126,7 +138,8 @@ jobs:
           retention-days: 30
 
   nova:
-    name: Search Nova headlessly and film the champion
+    if: github.event_name != 'workflow_dispatch' || inputs.game != 'stb'
+    name: Nova full adventure
     runs-on: ubuntu-latest
     timeout-minutes: 330
     env:
@@ -202,6 +215,7 @@ jobs:
             echo "Audio PCM SHA-256: $(jq -r '.audio_pcm_sha256' "${NOVA_ARTIFACT}/run-summary.json")."
           } >>"${GITHUB_STEP_SUMMARY}"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: nova-500k-adventure-${{ github.run_id }}
           path: |
@@ -215,3 +229,49 @@ jobs:
             dissonance/nova-artifact/SHA256SUMS
           if-no-files-found: error
           retention-days: 30
+
+  stb:
+    if: github.event_name != 'workflow_dispatch' || inputs.game != 'nova'
+    name: Source build, probe, search and replay (${{ matrix.ai.name }}, seed ${{ matrix.seed }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        ai:
+          - { name: easy, level: 1, executions: 2000, require_victory: false }
+          - { name: fair, level: 2, executions: 2000, require_victory: false }
+          - { name: hard, level: 3, executions: 20000, require_victory: true }
+        # Nightly and manual benchmarks use the full registered seed set.
+        seed: [1, 2, 3]
+    env:
+      STB_BUILD: workloads/nes/build/stb
+      STB_ARTIFACT: workloads/nes/build/stb-artifact
+      STB_EXECUTIONS: ${{ matrix.ai.executions }}
+      STB_REQUIRE_VICTORY: ${{ matrix.ai.require_victory }}
+      STB_SEED: ${{ matrix.seed }}
+      STB_AI: ${{ matrix.ai.name }}
+      STB_AI_LEVEL: ${{ matrix.ai.level }}
+      STB_WORKERS: "2"
+      HARMONY_STB_BUILD_JOBS: "2"
+      HARMONY_QUICKNES_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/stb-evaluation
+
+  report:
+    name: report
+    needs: [level-panel, nova, stb]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/benchmark-report.cjs`)({github, context, core});

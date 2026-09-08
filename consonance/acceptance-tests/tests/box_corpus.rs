@@ -145,7 +145,7 @@ fn require_box() {
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on the patched determinism box with the \
          patched KVM modules loaded (consonance/vmm-backend/kvm-patches/BUILD.md), CPU-pinned per \
-         .github/workflows/box.yml."
+         docs/HARDWARE-TESTING.md."
     );
 }
 
