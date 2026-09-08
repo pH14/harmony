@@ -95,13 +95,9 @@ fn pending_for(exit: &Exit<X86>) -> Pending {
     }
 }
 
-/// Default capabilities of a fresh mock: fully deterministic (it is a controlled
-/// in-process model). Override with [`MockBackend::with_capabilities`] to test
-/// vmm-core's "refuse to claim determinism" path against a backend that reports
-/// a hole.
+/// Default mock identity and empty x86 runtime feature payload.
 const MOCK_CAPS: MockCaps = Capabilities {
     name: "mock",
-
     arch: crate::arch::x86::X86Caps,
 };
 

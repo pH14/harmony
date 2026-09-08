@@ -218,7 +218,7 @@ fn msr_filter_is_loud() {
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored"]
-fn capabilities_are_honest() {
+fn capabilities_report_the_stock_backend_name() {
     let backend = new_backend_or_explain();
     let caps = backend.capabilities();
     assert_eq!(caps.name, "kvm-stock");

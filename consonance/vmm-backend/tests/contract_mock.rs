@@ -218,18 +218,13 @@ impl Backend for NoDeadlineBackend {
     }
 }
 
-/// A fixture shaped like stock KVM: no dirty log, no determinism capabilities,
-/// and no way to surface a hypercall or CPUID exit.
-/// Everything it cannot do, it must decline **in the report** — and the
-/// capability-keyed exams additionally require that it does not *claim* to trap
-/// what it cannot trap.
+/// A fixture shaped like stock KVM: no dirty log or userspace hypercall/CPUID exits.
+/// Unsupported scenarios are recorded as declined in the exam report.
 struct LimitedFixture;
 
-/// The limited fixture's honest capability set: it traps neither the clock nor
-/// the hardware RNG.
+/// Identity and x86 runtime feature payload for the limited fixture.
 const LIMITED_CAPS: MockCaps = Capabilities {
     name: "mock-limited",
-
     arch: X86Caps,
 };
 

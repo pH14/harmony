@@ -418,7 +418,6 @@ fn mock_observability_and_config_getters() {
     // with_capabilities overrides the reported caps.
     let caps = Capabilities {
         name: "test-mock",
-
         arch: X86Caps,
     };
     assert_eq!(MockBackend::with_capabilities(caps).capabilities(), caps);
