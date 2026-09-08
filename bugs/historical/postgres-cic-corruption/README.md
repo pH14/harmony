@@ -158,8 +158,9 @@ The earlier reproduction in the fault-library work — a campaign that reported
 the corruption at execution 476 with 8 workers at 500 ms horizons — was found
 on a differently built guest kernel under the counter-exiting KVM, and a
 schedule found on one build does not replay on another, so that action list is
-not carried here as a witness. CI rediscovers one, and `witness` stays null
-until a campaign here produces an input that replays.
+not carried here as a witness. `witness.json` is the input the search job
+found on a hosted runner (run 34223876479: seed 1, 4 workers, execution 221 of
+224, 38 s of wall time), replayed from a fresh session before it was recorded.
 
 Hosted runners have stock KVM, not the counter-exiting build. On stock KVM the
 `faultlab` kernel lets user space read the host's timestamp counter directly,
