@@ -79,6 +79,22 @@ to 5,172,804 frames (+173.8%). The other workload policies retain their default
 progress ordering and reproduce their prior frame costs. Semantic progress is
 an explicit exploration experiment, not the general recommended selector.
 
+[`keycount-continuation-005.json`](keycount-continuation-005.json) completes
+the pilot matrix. Relative to continuation alone, retained-key weighting raises
+median frame cost by 12.6% on SMB, 57.4% on Metal Man, 72.5% on Nova level 1,
+and 27.4% on STB Hard. Metroid stays at the same item/capacity plateau and
+observes 60/61/63 map cells. Whole-game Nova reaches seven clears on all seeds.
+The record also compares directly with entry counts: key history recovers that
+variant’s one six-clear Nova trial, but still does not beat continuation alone
+as the general candidate.
+
+The full candidate registration is
+[`candidate-registration-005.json`](../candidate-registration-005.json).
+It selects continuation replay with the original parent selector before any
+completed full-panel outcome was observed, using five seeds disjoint from all
+pilot and SMB reference validation seeds. The full comparison retains every
+registered origin, budget and failure; no retuning from validation outcomes.
+
 ## Qualified SMB reference
 
 [`smb-reference-005.json`](smb-reference-005.json) records four development
