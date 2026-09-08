@@ -56,6 +56,7 @@ def render(runs, out):
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     from matplotlib.ticker import MaxNLocator
+    from matplotlib.lines import Line2D
     plt.rcParams.update({'font.size': 10, 'axes.spines.top': False, 'axes.spines.right': False,
                          'axes.grid': True, 'grid.alpha': .18, 'svg.fonttype': 'none'})
     colors = plt.get_cmap('tab10').colors
@@ -93,14 +94,14 @@ def render(runs, out):
     axes[0].invert_yaxis()
     axes[0].set_xlim(-.05, 1.05)
     for axis, title in zip(axes, ('Verified solve fraction (Wilson 95%)', 'Search emulator kframes/s',
-                                 'OS peak process RSS (MiB)', 'Sampled peak disk (MiB)')):
+                                 'OS peak process RSS (MiB)', 'Sampled peak output disk (MiB)')):
         axis.set_title(title)
         axis.xaxis.set_major_locator(MaxNLocator(4))
     axes[0].legend(loc='upper center', bbox_to_anchor=(.5, -.05))
     fig.suptitle('Fixed workload and resource panels · points are individual seeds', y=1.02)
     fig.tight_layout()
     save(fig, 'panels', 'Solve fractions use valid runs; infrastructure errors remain in the underlying results. '
-         'Resource dots show every available seed measurement; bars show medians. RSS and logical memory are distinct.')
+         'Resource dots show every available seed measurement; bars show medians. RSS and logical memory are distinct. Disk covers the cell output directory, excluding shared assets/builds and runtime files elsewhere.')
 
     for case, workers, memory in groups:
         name = f'{case}-w{workers}-m{memory}'
@@ -133,7 +134,7 @@ def render(runs, out):
                   ('Emulator work over search time', 'Search seconds', 'Admitted frames'),
                   ('Logical search memory', 'Search seconds', 'MiB charged'),
                   ('Process group RSS · all phases', 'Elapsed seconds', 'MiB sampled'),
-                  ('Disk footprint · all phases', 'Elapsed seconds', 'MiB logical, sampled'),
+                  ('Output disk footprint · all phases', 'Elapsed seconds', 'MiB logical, sampled'),
                   ('Remembered novelty cells', 'Emulator frames', 'Cells in the live novelty ledger')]
         for axis, (title, xlabel, ylabel) in zip(axes.flat, titles):
             axis.set(title=title, xlabel=xlabel, ylabel=ylabel)
@@ -160,14 +161,19 @@ def render(runs, out):
                 axis.xaxis.set_major_locator(MaxNLocator(4))
             for axis in list(axes.flat)[len(metrics):]:
                 axis.set_visible(False)
-            fig.suptitle(f'{case} · reported observations, not an inferred scalar score')
-            fig.tight_layout()
+            fig.suptitle(f'{case} · reported observations, not an inferred scalar score', y=1.05)
+            fig.legend([Line2D([0], [0], color=colors[i % len(colors)]) for i in range(len(panels))],
+                       [label for label, _, _ in panels], loc='upper center',
+                       bbox_to_anchor=(.5, 1.01), ncol=min(3, len(panels)), fontsize=9)
+            fig.tight_layout(rect=(0, 0, 1, .95))
             save(fig, name + '-observations', 'These are the workload’s named report fields. Map labels and coordinates '
                  'are observations, not evidence of distance to a solution. Aggregate milestones may combine branches.')
 
     provenance = [{'label': label, 'results_sha256': evaluation.digest(path / 'results.json'),
                    'matrix_sha256': evaluation.digest(path / 'matrix.json')} for label, path in runs]
-    evaluation.write_json(out / 'inputs.json', {'runs': provenance, 'matplotlib': matplotlib.__version__})
+    evaluation.write_json(out / 'inputs.json', {'runs': provenance, 'matplotlib': matplotlib.__version__,
+                      'plot_script_sha256': evaluation.digest(Path(__file__)),
+                      'evaluation_script_sha256': evaluation.digest(Path(evaluation.__file__))})
     content = ''.join(f'<section><a href="{name}.svg"><img src="{name}.png" alt="{html.escape(name)}"></a>'
                       f'<p>{html.escape(caption)}</p></section>' for name, caption in figures)
     (out / 'index.html').write_text('<!doctype html><html lang="en"><meta charset="utf-8">'
