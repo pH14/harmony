@@ -1,10 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Nova 500K adventure
+name: Benchmarks / NES
 
 on:
   schedule:
     - cron: "30 6 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      game:
+        description: Game to evaluate
+        type: choice
+        options: [all, nova, stb]
+        default: all
 
 permissions:
   contents: read
@@ -13,9 +19,14 @@ concurrency:
   group: nova-benchmark-${{ github.ref }}
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   level-panel:
-    name: ${{ matrix.title }} — independent search and film
+    if: github.event_name != 'workflow_dispatch' || inputs.game != 'stb'
+    name: ${{ matrix.title }} — Nova level evaluation
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -111,6 +122,7 @@ jobs:
             echo "Video with music: $(jq -c '.video' "${NOVA_ARTIFACT}/run-summary.json")."
           } >>"${GITHUB_STEP_SUMMARY}"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: nova-${{ matrix.slug }}-${{ github.run_id }}
           path: |
@@ -122,11 +134,12 @@ jobs:
             dissonance/nova-level-artifact/video.json
             dissonance/nova-level-artifact/ARTIFACT-LICENSE.md
             dissonance/nova-level-artifact/SHA256SUMS
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
 
   nova:
-    name: Search Nova headlessly and film the champion
+    if: github.event_name != 'workflow_dispatch' || inputs.game != 'stb'
+    name: Nova full adventure
     runs-on: ubuntu-latest
     timeout-minutes: 330
     env:
@@ -202,6 +215,7 @@ jobs:
             echo "Audio PCM SHA-256: $(jq -r '.audio_pcm_sha256' "${NOVA_ARTIFACT}/run-summary.json")."
           } >>"${GITHUB_STEP_SUMMARY}"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: nova-500k-adventure-${{ github.run_id }}
           path: |
@@ -213,5 +227,211 @@ jobs:
             dissonance/nova-artifact/video.json
             dissonance/nova-artifact/ARTIFACT-LICENSE.md
             dissonance/nova-artifact/SHA256SUMS
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
+
+  stb:
+    if: github.event_name != 'workflow_dispatch' || inputs.game != 'nova'
+    name: Source build, probe, search and replay (${{ matrix.ai.name }}, seed ${{ matrix.seed }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        ai:
+          - { name: easy, level: 1, executions: 2000, require_victory: false }
+          - { name: fair, level: 2, executions: 2000, require_victory: false }
+          - { name: hard, level: 3, executions: 20000, require_victory: true }
+        # Register the seed set before observing outcomes. PRs use one seed;
+        # nightly/manual runs exercise the same policy across all three.
+        seed: ${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1,2,3]') }}
+    env:
+      STB_BUILD: workloads/nes/build/stb
+      STB_ARTIFACT: workloads/nes/build/stb-artifact
+      STB_EXECUTIONS: ${{ matrix.ai.executions }}
+      STB_REQUIRE_VICTORY: ${{ matrix.ai.require_victory }}
+      STB_SEED: ${{ matrix.seed }}
+      STB_AI: ${{ matrix.ai.name }}
+      STB_AI_LEVEL: ${{ matrix.ai.level }}
+      STB_WORKERS: "2"
+      HARMONY_STB_BUILD_JOBS: "2"
+      HARMONY_QUICKNES_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install source build and video tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential curl git unzip python3 python3-pil ffmpeg jq
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: workloads/nes -> target
+      - name: Reproduce pinned Super Tilt Bro and QuickNES
+        run: |
+          workloads/nes/scripts/build-stb-rom.sh "${STB_BUILD}"
+          scripts/build-quicknes-core.sh "${STB_BUILD}/quicknes_libretro.so"
+      - name: Build campaign and correctness probe
+        run: |
+          cargo build --locked --release --manifest-path workloads/nes/Cargo.toml \
+            --bin stb-probe --bin stb-campaign
+      - name: Verify controls, native opposition and restored continuations
+        run: |
+          mkdir -p "${STB_ARTIFACT}"
+          cp workloads/nes/STB-ARTIFACT-LICENSE.md "${STB_ARTIFACT}/ARTIFACT-LICENSE.md"
+          cp "${STB_BUILD}/UPSTREAM-LICENSE.txt" "${STB_BUILD}/UPSTREAM-CREDITS.asm" \
+            "${STB_BUILD}/stb-versions.env" "${STB_ARTIFACT}/"
+          HARMONY_QUICKNES_CORE="${STB_BUILD}/quicknes_libretro.so" \
+          HARMONY_STB_CORRECTNESS=1 HARMONY_STB_AI="${STB_AI}" \
+            workloads/nes/target/release/stb-probe "${STB_BUILD}/stb.nes" \
+            | tee "${STB_ARTIFACT}/control-snapshot-probe.jsonl"
+          python3 - "${STB_ARTIFACT}/control-snapshot-probe.jsonl" "${STB_AI_LEVEL}" <<'PY'
+          import json
+          import sys
+
+          controls = [json.loads(line.removeprefix("control "))
+                      for line in open(sys.argv[1]) if line.startswith("control ")]
+          assert len(controls) == 6, "missing control traces"
+          rows = {row["name"]: row for row in controls}
+          assert set(rows) == {"noop", "a", "b", "up", "left", "right"}
+          for row in rows.values():
+              assert row["hold"] == 6
+              for state in (row["before"], row["after"]):
+                  assert state["game_state"] == 0 and state["game_mode"] == 0
+                  assert state["ai_level"] == int(sys.argv[2]) and state["gameplay"] is not None
+          before = rows["noop"]["before"]["gameplay"]
+          after = {name: row["after"]["gameplay"] for name, row in rows.items()}
+          assert all(row["before"]["gameplay"] == before for row in rows.values())
+          assert after["noop"]["player_a_x"] == before["player_a_x"], "neutral input moved player"
+          assert after["noop"]["player_b_x"] != before["player_b_x"], "native AI did not move"
+          assert after["left"]["player_a_x"] < before["player_a_x"] < after["right"]["player_a_x"]
+          assert before["player_a_grounded"] and not after["up"]["player_a_grounded"]
+          assert len({after[name]["player_a_state"] for name in ("noop", "a", "b")}) == 3, "A/B controls aliased"
+          print("normal AI, neutral input, movement, jump and distinct A/B controls verified")
+          PY
+      - name: Search the normal local match and verify recorded replay
+        run: |
+          stop_flags=()
+          if [[ "${STB_REQUIRE_VICTORY}" != true ]]; then
+            stop_flags+=(--fixed-execution-soak)
+          fi
+          workloads/nes/target/release/stb-campaign \
+            --core "${STB_BUILD}/quicknes_libretro.so" \
+            --rom "${STB_BUILD}/stb.nes" \
+            --output "${STB_ARTIFACT}" \
+            --ai "${STB_AI}" --seed "${STB_SEED}" --executions "${STB_EXECUTIONS}" \
+            --workers "${STB_WORKERS}" --action-limit 512 \
+            "${stop_flags[@]}"
+      - name: Check and describe compact evidence
+        run: |
+          # The binary's exit status gates actual replay/render equality.
+          # Hard is a completion regression: stop after a win, or fail if the
+          # fixed ceiling is exhausted. Easy/Fair retain exact-budget soaks.
+          # Keep seeds and search policy fixed; do not retry a losing campaign.
+          jq -e --argjson budget "${STB_EXECUTIONS}" \
+            --argjson seed "${STB_SEED}" --argjson workers "${STB_WORKERS}" \
+            --argjson ai "${STB_AI_LEVEL}" \
+            '.campaign_seed == $seed and .workers == $workers and
+             .execution_budget == $budget and .executions > 0 and .executions <= $budget and
+             .execution_budget_exact == (.executions == .execution_budget) and .replay_verified == true and
+             .rendered_endpoint_verified == true and .frames_emulated > 0 and
+             .archive_entries > 0 and .champion_input_actions > 0 and
+             .champion_endpoint.game_mode == 0 and .champion_endpoint.ai_level == $ai and .ai_level == $ai and .render_excerpt == false' \
+            "${STB_ARTIFACT}/run-summary.json" >/dev/null
+          cmp "${STB_ARTIFACT}/campaign-report.json" "${STB_ARTIFACT}/replay-report.json"
+          cmp "${STB_ARTIFACT}/champion-input.json" "${STB_ARTIFACT}/render-input.json"
+          cmp "${STB_ARTIFACT}/champion-observation.json" "${STB_ARTIFACT}/render-observation.json"
+          python3 - "${STB_ARTIFACT}" "${STB_REQUIRE_VICTORY}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          artifact = Path(sys.argv[1])
+          summary = json.loads((artifact / "run-summary.json").read_text())
+          champion = json.loads((artifact / "champion-observation.json").read_text())
+          tape = json.loads((artifact / "champion-input.json").read_text())
+          if sys.argv[2] == "true":
+              assert summary["victories"] > 0, "required Hard AI victory was not found within the execution ceiling"
+              assert summary["mode"] == "qualified_campaign"
+              assert 0 < summary["first_reached"]["first_victory"] <= summary["executions"]
+          else:
+              assert summary["mode"] == "direct_quicknes_fixed_execution_soak"
+              assert summary["execution_budget_exact"], "fixed-execution soak stopped early"
+          assert champion["frame_count"] == sum(action["hold_frames"] for action in tape["actions"]), "recorded tape and endpoint frames disagree"
+          assert champion["decoded"] == summary["champion_endpoint"]
+          assert summary["rendered_input_frames"] == champion["frame_count"]
+          assert summary["video"]["frames"] == champion["frame_count"] + summary["render_tail_frames"]
+          assert summary["match_completed"] == champion["terminal"]
+          if summary["victories"] > 0:
+              assert champion["terminal"] and champion["decoded"]["game_state"] == 2
+              assert champion["decoded"]["game_winner"] == 0, "claimed victory tape did not win"
+              assert champion["player_b_ko_count"] == 5, "terminal loss evidence disagrees with the declared match"
+          PY
+          test -s "${STB_ARTIFACT}/witness.mp4"
+          test "$(ffprobe -v error -count_frames -select_streams v:0 \
+            -show_entries stream=nb_read_frames -of csv=p=0 \
+            "${STB_ARTIFACT}/witness.mp4")" = \
+            "$(jq -r '.video.frames' "${STB_ARTIFACT}/run-summary.json")"
+          test "$(ffprobe -v error -select_streams a:0 \
+            -show_entries stream=codec_type -of csv=p=0 \
+            "${STB_ARTIFACT}/witness.mp4")" = audio
+          (
+            cd "${STB_ARTIFACT}"
+            sha256sum witness.mp4 run-summary.json progress.jsonl \
+              champion-input.json champion-observation.json render-input.json \
+              render-observation.json video.json campaign-report.json replay-report.json \
+              control-snapshot-probe.jsonl ARTIFACT-LICENSE.md UPSTREAM-LICENSE.txt \
+              UPSTREAM-CREDITS.asm stb-versions.env > SHA256SUMS
+          )
+          {
+            echo "## Super Tilt Bro — native ${STB_AI} AI"
+            echo
+            echo "Seed ${STB_SEED}; $(jq -r '.executions' "${STB_ARTIFACT}/run-summary.json")/${STB_EXECUTIONS} executions; ${STB_WORKERS} workers."
+            echo "Victory required: ${STB_REQUIRE_VICTORY}."
+            echo "Campaign report/checkpoint replay and rendered endpoint verified."
+            echo "First reached: $(jq -c '.first_reached' "${STB_ARTIFACT}/run-summary.json")."
+            echo "Milestones: $(jq -c '.milestones' "${STB_ARTIFACT}/run-summary.json")."
+            echo "Frames emulated: $(jq -r '.frames_emulated' "${STB_ARTIFACT}/run-summary.json")."
+            echo "Rendered excerpt: $(jq -r '.render_excerpt' "${STB_ARTIFACT}/run-summary.json"); input frames: $(jq -r '.rendered_input_frames' "${STB_ARTIFACT}/run-summary.json")."
+            echo "The film contains the full champion plus 180 neutral frames. Match complete: $(jq -r '.match_completed' "${STB_ARTIFACT}/run-summary.json")."
+          } >>"${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4
+        # Explicit list excludes ROMs, cores, snapshots and raw media. Partial
+        # probes/reports remain available to diagnose a failed qualification.
+        if: always()
+        with:
+          name: stb-${{ matrix.ai.name }}-seed-${{ matrix.seed }}-${{ github.run_id }}
+          path: |
+            workloads/nes/build/stb-artifact/witness.mp4
+            workloads/nes/build/stb-artifact/run-summary.json
+            workloads/nes/build/stb-artifact/progress.jsonl
+            workloads/nes/build/stb-artifact/champion-input.json
+            workloads/nes/build/stb-artifact/champion-observation.json
+            workloads/nes/build/stb-artifact/render-input.json
+            workloads/nes/build/stb-artifact/render-observation.json
+            workloads/nes/build/stb-artifact/video.json
+            workloads/nes/build/stb-artifact/campaign-report.json
+            workloads/nes/build/stb-artifact/replay-report.json
+            workloads/nes/build/stb-artifact/control-snapshot-probe.jsonl
+            workloads/nes/build/stb-artifact/ARTIFACT-LICENSE.md
+            workloads/nes/build/stb-artifact/UPSTREAM-LICENSE.txt
+            workloads/nes/build/stb-artifact/UPSTREAM-CREDITS.asm
+            workloads/nes/build/stb-artifact/stb-versions.env
+            workloads/nes/build/stb-artifact/SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 30
+
+  report:
+    name: report
+    needs: [level-panel, nova, stb]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await require('./.github/scripts/benchmark-report.cjs')({github, context, core});

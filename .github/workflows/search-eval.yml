@@ -1,4 +1,4 @@
-name: Search evaluation contracts
+name: Checks / Search evaluation
 on:
   pull_request:
     paths:
