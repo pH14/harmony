@@ -1,0 +1,33 @@
+{
+  "format": "harmony-search-build-provenance-v1",
+  "method": "Extract git archive of each revision into a new directory, then run benchmarks/search/eval.py source_identity on that tree. Its source_tree_sha256 and file count exactly match the corresponding immutable build-info.json. Embedded revision fields remain null because builds ran from source-only copies. This separate mapping does not rewrite the original evidence.",
+  "builds": [
+    {
+      "build": "experimental-003",
+      "revision": "e70ed5a44ff694c28e843960ee03b6bee92fbecd",
+      "source_tree_sha256": "0fae93cf9ddde15ff90312418c2179299424f9a056ca4bd67842bc885f45a9b1",
+      "source_files": 250,
+      "binary_sha256": "f1061f840c21bcf83d62f250fcc76ac78c9cc851c08a99e869db50610413406e",
+      "source_archive_sha256": "cf64e8efc2f4fc55a7e6901c8058154a2e42c982725ac0211febe84161cc2955",
+      "source_archive_location": "ms02:/root/harmony-search-eval/builds/experimental-003/source.tar.gz"
+    },
+    {
+      "build": "experimental-004",
+      "revision": "366f9d65f888bddccd70868918955c8787fac474",
+      "source_tree_sha256": "98e2f81fac3350b759ace508442163aefeece5bfaf5366ff0942a5f83e7ac35e",
+      "source_files": 252,
+      "binary_sha256": "9e58a434323bae98a1d59f148b94274ea931686070eb8848f62cc290a547bf32",
+      "source_archive_sha256": "58e78f2234e0afd12d146d5adc099813260d7c81fdfda7c7b4af4a6b658c4fb7",
+      "source_archive_location": "ms02:/root/harmony-search-eval/builds/experimental-004/source.tar.gz"
+    },
+    {
+      "build": "experimental-005",
+      "revision": "02463caeaf156c2228e91fdbc0ad18dc406d050a",
+      "source_tree_sha256": "ee9d36fd1fd808820220cde6998bbf3be740b3e7f2f5426c1eb84d7d0d58351a",
+      "source_files": 254,
+      "binary_sha256": "18c2df002b88860f1574c1870b7c584226aabffeb15fc55040534d66cff0dfbc",
+      "source_archive_sha256": "4741fe45514417a5a26d0123f2f0107bad87b7434bd794b98c48367a2ae789ed",
+      "source_archive_location": "ms02:/root/harmony-search-eval/builds/experimental-005/source.tar.gz"
+    }
+  ]
+}
