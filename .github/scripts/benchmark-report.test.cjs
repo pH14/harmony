@@ -19,5 +19,14 @@ test('reports failed matrix cases and links evidence without trusting names as H
 test('missing artifacts are explicit even when every case fails before upload', async () => {
   const text=[];const summary=new Proxy({}, {get:(_,method)=>method === 'then' ? undefined : (...args)=>{if(method==='addRaw')text.push(args[0]);return summary;}});
   await report({github:{rest:{actions:{}},paginate:async()=>[]},context:{repo:{},runId:1},core:{summary}});
-  assert.match(text.join(''),/No artifacts were published/);
+  assert.match(text.join(''),/No artifacts are available/);
+});
+
+test('expired evidence is reported as unavailable', async () => {
+  const text=[]; const lists=[];
+  const summary=new Proxy({}, {get:(_,method)=>method === 'then' ? undefined : (...args)=>{if(method==='addRaw')text.push(args[0]);if(method==='addList')lists.push(args[0]);return summary;}});
+  const github={rest:{actions:{listJobsForWorkflowRun:'jobs',listWorkflowRunArtifacts:'artifacts'}},paginate:async method=>method==='jobs'?[]:[{id:1,name:'expired',expired:true}]};
+  await report({github,context:{repo:{},runId:1},core:{summary}});
+  assert.deepEqual(lists,[[]]);
+  assert.match(text.join(''),/No artifacts are available/);
 });

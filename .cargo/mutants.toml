@@ -65,7 +65,7 @@ exclude_globs = [
     # `/dev/kvm`, the LOADED patched KVM modules, and built payloads, so the
     # no-`--ignored` mutation oracle can never execute a line of it and every
     # mutant is structurally unkillable ("missed"), not a real gap. Its
-    # evidence is the hardware lane (`scripts/box-gates.sh`, the `corpus`
+    # evidence is the hardware lane (manual hardware qualification per `docs/HARDWARE-TESTING.md`, the `corpus`
     # gate). Note it is `cfg(all(target_os = "linux", target_arch =
     # "x86_64"))`, so a macOS run does not even compile it — the survivors only
     # appear on the Linux CI runner.

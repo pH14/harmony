@@ -24,7 +24,7 @@
 //! - **(d)** — every `[GATE-D]` line is a number for `consonance/snapshot-store/README.md`:
 //!   base-seal vs derive-seal wall time, and memcpy vs remap branch wall time.
 //!
-//! Run (per `docs/HARDWARE-TESTING.md` — lease a core via `box-window.sh`; serialize
+//! Run (per `docs/HARDWARE-TESTING.md` — reserve an idle core on the qualified host; serialize
 //! with other frontier gates):
 //!
 //! ```sh

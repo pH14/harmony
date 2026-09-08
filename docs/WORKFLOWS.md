@@ -26,15 +26,12 @@ the downstream report collects links to those outputs.
 
 Use fail-fast: false on case matrices so one failure does not cancel other
 cases. Matrices share the owner's hosted-runner concurrency allowance with other
-workflows. Manual NES dispatch can select a game or all implemented games.
+workflows. Optional manual selectors narrow a multi-game suite; a Nova-only checkout
+runs Nova for both all and nova.
 ROM-dependent games stay in the local evaluation harness. New historical cases
 join the existing suite once implemented; documentation alone is not a runnable
 case. Known-bug replay and fixed-version checks stay inside that suite.
 
-The search-evaluation and multi-game workflow changes live with the NES suite
-in PR #268. Historical bug changes live with their implementation in PR #269.
-The base cleanup PR #272 keeps the runnable Nova cases until #268 lands; Git may
-require reconciling their overlapping nova-nightly.yml edits to retain all jobs.
 Hardware qualification runs separately from public self-hosted CI.
 
 ## Credentials
