@@ -136,7 +136,7 @@ vmlinux:dmar_disable_qi+0xa8
 vmlinux:dmar_disable_qi+0xc4
 
 # do_syscall_64 # [entry] kstack offset
-vmlinux:do_syscall_64+0x1bd
+vmlinux:do_syscall_64+0x1d1
 
 # ecmd_submit_sync # [iommu]
 vmlinux:ecmd_submit_sync+0x60
