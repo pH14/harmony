@@ -2831,6 +2831,14 @@ mod tests {
 
     /// [`server`] whose live VM's mock has **dirty tracking armed** (task 95
     /// M2.1), so a second seal can derive from the first.
+    #[test]
+    fn vmm_mut_reaches_the_live_vm() {
+        let mut s = server(Vec::new());
+        let shared = s.vmm().expect("live VM") as *const Vmm<MockBackend>;
+        let exclusive = s.vmm_mut().expect("live VM") as *mut Vmm<MockBackend> as *const _;
+        assert!(std::ptr::eq(shared, exclusive));
+    }
+
     fn server_tracked() -> ControlServer<MockBackend> {
         let mut m = MockBackend::new();
         m.enable_dirty_tracking();

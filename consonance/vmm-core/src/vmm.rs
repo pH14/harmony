@@ -4427,6 +4427,18 @@ mod tests {
 
     /// A configured MockBackend (so `run`/`step` pass the `NotConfigured` gate)
     /// pre-loaded with `exits`.
+    #[test]
+    fn cancellation_flag_is_the_backend_latch() {
+        let latch = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let backend = configured_mock(Vec::new()).with_cancellation_flag(latch.clone());
+        let vmm = Vmm::new(backend, GuestRam::new(0x1000).unwrap());
+        let reported = vmm.cancellation_flag().expect("mock reports its latch");
+        assert!(std::sync::Arc::ptr_eq(&reported, &latch));
+
+        let unbounded = Vmm::new(configured_mock(Vec::new()), GuestRam::new(0x1000).unwrap());
+        assert!(unbounded.cancellation_flag().is_none());
+    }
+
     fn configured_mock(exits: Vec<Exit<X86>>) -> MockBackend {
         let mut m = MockBackend::with_exits(exits);
         m.set_policy(&X86Policy {
