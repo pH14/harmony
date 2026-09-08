@@ -66,6 +66,10 @@ It can increase worker-result RSS, which is outside the logical archive budget.
 The request and native identity record the choice; omission means one and keeps
 older evaluation binaries usable. Compare one versus two at the same logical
 window and work budget, and check stream hashes as well as memory and throughput.
+The pilot and full native evaluation use a two-reservation window and two result
+slots after the isolated 18-pair execution comparison reproduced every stream.
+The dedicated SMB regression panel retains its original one-reservation profile
+as a separate stress condition.
 
 ## Registered panels
 
