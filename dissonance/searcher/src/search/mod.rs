@@ -10,4 +10,5 @@ pub mod empirical_steps;
 mod key_counts;
 pub mod parallel;
 pub mod rand;
+mod resource_coverage;
 pub mod rollout;

@@ -92,3 +92,9 @@ Metroid supplies health/missiles and MM2 health/total weapon energy; other
 workloads keep ordinary retention. This bounded research policy leaves the
 controller vocabulary and selector unchanged. Its identity is recorded in
 streams and evaluation provenance.
+
+The separate `resource_coverage_2_v1` option keeps up to two states maximizing
+joint resource-threshold coverage, allowing a useful intermediate tradeoff to
+survive. It uses the same axes and archive budget. Total weapon energy remains
+a scalar proxy; it does not encode weapon-specific future requirements. Both
+policies require matched fresh-search evaluation before promotion.

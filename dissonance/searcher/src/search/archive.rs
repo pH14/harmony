@@ -104,6 +104,8 @@ pub enum SlotRetentionPolicy {
     /// At most two representatives: the best under each resource-axis order.
     /// Intermediate tradeoffs can still be lost; this is not a full Pareto front.
     ResourceExtremes2,
+    /// At most two representatives maximizing covered integer resource thresholds.
+    ResourceCoverage2,
 }
 
 impl SlotRetentionPolicy {
@@ -113,6 +115,7 @@ impl SlotRetentionPolicy {
         match self {
             Self::Representative => None,
             Self::ResourceExtremes2 => Some("resource_extremes_2_v1"),
+            Self::ResourceCoverage2 => Some("resource_coverage_2_v1"),
         }
     }
 
@@ -124,6 +127,7 @@ impl SlotRetentionPolicy {
         match identifier {
             None => Ok(Self::Representative),
             Some("resource_extremes_2_v1") => Ok(Self::ResourceExtremes2),
+            Some("resource_coverage_2_v1") => Ok(Self::ResourceCoverage2),
             Some(value) => Err(format!("unknown slot retention policy {value}").into()),
         }
     }
@@ -2885,7 +2889,7 @@ where
             Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
             Ordering::Less => false,
         });
-        let replacements = if self.slot_retention == SlotRetentionPolicy::ResourceExtremes2
+        let replacements = if self.slot_retention != SlotRetentionPolicy::Representative
             && key.retention_resources().is_some()
             && slot
                 .iter()
@@ -2918,13 +2922,49 @@ where
                     Reverse(stable),
                 )
             };
-            let best = [0, 1].map(|axis| {
-                slot.iter()
+            let best = if self.slot_retention == SlotRetentionPolicy::ResourceCoverage2 {
+                let points: Vec<_> = slot
+                    .iter()
                     .copied()
                     .chain(std::iter::once(new_id))
-                    .max_by_key(|id| resource_order(*id, axis))
-                    .expect("candidate makes nonempty competition")
-            });
+                    .map(|id| {
+                        let (resources, cost, stable_id) = if id == new_id {
+                            (
+                                key.retention_resources()
+                                    .expect("candidate resources checked"),
+                                candidate_time_in_group,
+                                self.next_entry_id,
+                            )
+                        } else {
+                            (
+                                self.entries[id]
+                                    .key
+                                    .retention_resources()
+                                    .expect("incumbent resources checked"),
+                                self.time_in_group[id],
+                                self.entries[id].id,
+                            )
+                        };
+                        super::resource_coverage::Point {
+                            index: id,
+                            resources,
+                            cost,
+                            stable_id,
+                        }
+                    })
+                    .collect();
+                super::resource_coverage::best(&points)
+            } else {
+                [0, 1]
+                    .map(|axis| {
+                        slot.iter()
+                            .copied()
+                            .chain(std::iter::once(new_id))
+                            .max_by_key(|id| resource_order(*id, axis))
+                            .expect("candidate makes nonempty competition")
+                    })
+                    .to_vec()
+            };
             if best.contains(&new_id) {
                 if slot.iter().any(|id| best.contains(id)) {
                     self.retention_diagnostics.alternative_admissions += 1;
@@ -4736,29 +4776,34 @@ mod tests {
     }
 
     #[test]
-    fn resource_extremes_fall_back_when_a_competitor_has_no_resources() {
-        let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
-        archive.slot_retention = SlotRetentionPolicy::ResourceExtremes2;
-        for quality in [0, 4] {
-            assert!(
-                archive
-                    .insert(
-                        None,
-                        u64::from(quality),
-                        ArchiveCandidate {
-                            suffix: vec![quality],
-                            key: PreferredKey { slot: 7, quality },
-                            milestones: (),
-                        },
-                        ()
-                    )
-                    .unwrap()
-                    .is_some()
-            );
+    fn resource_policies_fall_back_when_a_competitor_has_no_resources() {
+        for policy in [
+            SlotRetentionPolicy::ResourceExtremes2,
+            SlotRetentionPolicy::ResourceCoverage2,
+        ] {
+            let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+            archive.slot_retention = policy;
+            for quality in [0, 4] {
+                assert!(
+                    archive
+                        .insert(
+                            None,
+                            u64::from(quality),
+                            ArchiveCandidate {
+                                suffix: vec![quality],
+                                key: PreferredKey { slot: 7, quality },
+                                milestones: (),
+                            },
+                            ()
+                        )
+                        .unwrap()
+                        .is_some()
+                );
+            }
+            assert_eq!(archive.active_count(), 1);
+            assert_eq!(archive.entries[archive.slots[&7][0]].key.quality, 4);
+            assert_eq!(archive.retention_diagnostics.resource_decisions, 0);
         }
-        assert_eq!(archive.active_count(), 1);
-        assert_eq!(archive.entries[archive.slots[&7][0]].key.quality, 4);
-        assert_eq!(archive.retention_diagnostics.resource_decisions, 0);
     }
 
     #[test]

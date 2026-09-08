@@ -190,6 +190,17 @@ ordinary archive byte budget and selector. Unsupported keys use their ordinary
 rule. The stream header records the policy; omission replays the legacy rule.
 This is an experimental mechanism, not a default or a behavioral dominance claim.
 
+`resource_coverage_2_v1` is a separate two-representative experiment. It chooses
+the subset covering the most nonnegative integer threshold pairs under the
+two resource axes, including zero thresholds. Unlike coordinate extremes,
+it can retain intermediate tradeoffs. At each competition it considers only
+the current representatives and candidate; it is not globally optimal over
+discarded history. Equal coverage prefers fewer representatives, then sorted
+within-group cost/stable-id pairs. Exact integer arithmetic covers the entire
+u64 axis range. Missing axes use ordinary retention. The same memory budget,
+parent selector, continuation behavior and recorded replay rules apply; the
+resource coverage proxy does not prove behavioral dominance or task success.
+
 Retention lifecycle diagnostics reuse existing selector exposure vectors and add
 only fixed counters, reported by `retention_diagnostic_memory_bytes`. Existing
 vectors remain covered by archive metadata charging. Measured process RSS also

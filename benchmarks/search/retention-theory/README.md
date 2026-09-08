@@ -110,3 +110,39 @@ each release build at 20m. If these pass, register a small three-arm development
 comparison (legacy, extremes, coverage) with unchanged work and memory. If the
 proxy does not improve useful retention or fresh attainment, reject it without
 expanding run length merely to seek a success.
+
+R02 implementation checkpoint: 124 generic unit tests and one interface test
+pass, including coverage retention under pressure with actual continuations and
+exact report/checkpoint replay. All 117 NES library tests pass. Strict generic
+Clippy initially found an iterator style issue and an inherited test idiom;
+both were corrected and Clippy plus the generic suite pass. No unsafe code changed.
+
+### Q02: actual-ROM coverage and compatibility
+
+Use the R02 frozen build and B01's exact conditions/seed, first with no optional
+retention. Require both B01 stream hashes to match. Run MM2 under both optional
+policies and SMB under coverage, 5,000 jobs each, full replay, the same 240+60s
+per-cell bound. Require actual alternative admissions on the MM2 candidate;
+SMB must retain legacy bytes because it supplies no resource axes. An empty
+alternative count is compatibility evidence only, not mechanism qualification.
+Only after passing Q02 may C01 begin.
+
+### C01: fresh MM2 coverage transfer development
+
+After Q02, use untouched development seed 20261101 in two fresh chains: legacy
+and coverage, same frozen binary and existing chain driver, no imported input.
+Order: Metal, Heat, Air, Wood, Bubble, Quick, Flash, Crash, Wily 1–3, then verify
+Wily 4 entry with all eight weapon bits. Every carried prefix comes exclusively
+from that chain and is replayed twice. Fixed operator stage order is declared;
+this is not unrestricted whole-game planning.
+
+Each stage: four workers, 8 GiB logical memory, 1M jobs/120M admitted frames,
+4096 actions, window/result slots 2/2, energy-splice:6, legacy frontier-cheapest
+selector, at most 1,200 seconds plus 120s finishing. Chain hard limit 5,400s,
+outer process-group bound 5,460s. Place legacy on 0–3 and coverage on 8–11.
+The question is whether threshold coverage improves fresh chained attainment
+or the cost of reaching common milestones. Record all failed stages and prefix
+work. If the candidate fails earlier, investigate that stage without restarting
+the chain under the same identity. If both fail at the same bottleneck, inspect
+retention/exposure evidence before increasing work. A lone deep result cannot
+qualify the breakthrough; repeated fresh validation remains a separate gate.

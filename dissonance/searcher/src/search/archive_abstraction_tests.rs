@@ -246,6 +246,47 @@ fn resource_extremes_lose_a_monotone_threshold_exit() {
 }
 
 #[test]
+fn threshold_coverage_preserves_the_middle_exit_at_the_same_capacity() {
+    let resources = [[10, 0], [5, 5], [0, 10]];
+    let model = Model {
+        labels: vec![0; 4],
+        edges: resources
+            .iter()
+            .enumerate()
+            .map(|(s, r)| [edge(3, u8::from(r[0] >= 3 && r[1] >= 3)), edge(s, 0)])
+            .chain(std::iter::once([edge(3, 0); 2]))
+            .collect(),
+    };
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let mut archive = ToyArchive::new(|_| 1);
+        archive.slot_retention = SlotRetentionPolicy::ResourceCoverage2;
+        for state in order {
+            offer(
+                &mut archive,
+                state,
+                Key {
+                    slot: 0,
+                    resources: resources[state],
+                },
+                1,
+            );
+        }
+        assert_eq!(archive.active_count(), 2);
+        assert!(
+            retained_can_reach(&archive, &model, 1),
+            "admission order {order:?}"
+        );
+    }
+}
+
+#[test]
 fn equal_endpoints_do_not_hide_interior_events_or_actual_cost() {
     let mut model = Model {
         labels: vec![0; 3],
