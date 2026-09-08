@@ -8,7 +8,7 @@
 use super::image::{self, RuntimeConfig};
 use std::path::{Path, PathBuf};
 
-const FORMAT: &str = "v1";
+const FORMAT: &str = "v2";
 
 pub fn dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("HARMONY_CACHE_DIR") {
@@ -77,9 +77,9 @@ mod tests {
             cmd: vec!["postgres".into()],
             ..RuntimeConfig::default()
         };
-        assert!(load(&cache, "k-v1").is_none());
-        store(&cache, "k-v1", b"segment-bytes", &config);
-        let (segment, loaded) = load(&cache, "k-v1").unwrap();
+        assert!(load(&cache, "k-v2").is_none());
+        store(&cache, "k-v2", b"segment-bytes", &config);
+        let (segment, loaded) = load(&cache, "k-v2").unwrap();
         assert_eq!(segment, b"segment-bytes");
         assert_eq!(loaded.cmd, ["postgres"]);
         // No stray temp files left behind.

@@ -10,7 +10,7 @@
 //! fallback gives up.
 
 use super::cpio::{CpioError, Writer};
-use super::image::RuntimeConfig;
+use super::image::{Ownership, RuntimeConfig};
 use serde_json::json;
 use std::process::Command;
 
@@ -199,13 +199,17 @@ fn init() -> String {
 }
 
 /// Assemble the gzip-compressed rootfs initramfs segment: the unpacked image
-/// tree under `harmony-oci/rootfs`. A pure function of the tree, so it is
+/// tree under `harmony-oci/rootfs`, each entry owned by whoever the image's
+/// layers said. A pure function of the tree and its owners, so it is
 /// cacheable by image identity.
-pub fn build_rootfs_segment(rootfs: &std::path::Path) -> Result<Vec<u8>, BundleError> {
+pub fn build_rootfs_segment(
+    rootfs: &std::path::Path,
+    owners: &Ownership,
+) -> Result<Vec<u8>, BundleError> {
     let mut w = Writer::new();
     w.dir("harmony-oci", 0o755);
     w.dir("harmony-oci/rootfs", 0o755);
-    w.tree(rootfs, "harmony-oci/rootfs")?;
+    w.tree_owned(rootfs, "harmony-oci/rootfs", &|path| owners.owner_of(path))?;
     gzip(&w.finish())
 }
 
@@ -384,13 +388,14 @@ mod tests {
     fn segments_are_gzip_members_and_reproducible() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("hello"), b"payload").unwrap();
-        let rootfs = build_rootfs_segment(dir.path()).unwrap();
+        let owners = Ownership::default();
+        let rootfs = build_rootfs_segment(dir.path(), &owners).unwrap();
         let control = build_control_segment(&config(), &[]).unwrap();
         for segment in [&rootfs, &control] {
             assert_eq!(&segment[..2], &[0x1f, 0x8b]);
             assert!(segment.len() > 64);
         }
-        assert_eq!(rootfs, build_rootfs_segment(dir.path()).unwrap());
+        assert_eq!(rootfs, build_rootfs_segment(dir.path(), &owners).unwrap());
         assert_eq!(control, build_control_segment(&config(), &[]).unwrap());
     }
 }

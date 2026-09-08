@@ -10,6 +10,7 @@
 use std::{error::Error, path::Path};
 
 use guest_image::Writer;
+use oci_support::image::Ownership;
 
 use crate::bundle::FaultVocabulary;
 
@@ -35,10 +36,18 @@ pub struct Prepared {
 pub fn prepare_oci(image: &str, base: &[u8], agent: &[u8]) -> Result<Prepared, Box<dyn Error>> {
     let staging = tempfile::tempdir()?;
     let staged = oci_support::image::stage(image, staging.path())?;
-    prepare_rootfs(&staged.rootfs, base, agent)
+    prepare_rootfs(&staged.rootfs, &staged.owners, base, agent)
 }
 
-fn prepare_rootfs(rootfs: &Path, base: &[u8], agent: &[u8]) -> Result<Prepared, Box<dyn Error>> {
+/// Assemble the guest initramfs from a staged rootfs. `owners` is the owner
+/// each rootfs entry gets in the guest: a node that drops privileges to the
+/// image's service account can only open what that account owns.
+fn prepare_rootfs(
+    rootfs: &Path,
+    owners: &Ownership,
+    base: &[u8],
+    agent: &[u8],
+) -> Result<Prepared, Box<dyn Error>> {
     if base.is_empty() || agent.is_empty() {
         return Err("fault search requires a guest base image and a static fault agent".into());
     }
@@ -50,7 +59,7 @@ fn prepare_rootfs(rootfs: &Path, base: &[u8], agent: &[u8]) -> Result<Prepared, 
     let bundle = String::from_utf8(std::fs::read(document)?)?;
     let vocabulary = FaultVocabulary::parse(&bundle)?;
     let mut image = base.to_vec();
-    image.extend(oci_support::bundle::build_rootfs_segment(&root)?);
+    image.extend(oci_support::bundle::build_rootfs_segment(&root, owners)?);
     let mut overlay = Writer::new();
     for directory in ["harmony-oci/rootfs/opt", "harmony-oci/rootfs/opt/harmony"] {
         overlay.dir(directory, 0o755);
@@ -145,15 +154,16 @@ ready /usr/bin/etcdctl endpoint health
     fn preparation_pins_the_bundle_alphabet_and_the_agent_bytes() {
         let root = tempfile::tempdir().unwrap();
         image(root.path());
-        let first = prepare_rootfs(root.path(), b"base", b"agent-v1").unwrap();
-        let repeated = prepare_rootfs(root.path(), b"base", b"agent-v1").unwrap();
+        let owners = Ownership::default();
+        let first = prepare_rootfs(root.path(), &owners, b"base", b"agent-v1").unwrap();
+        let repeated = prepare_rootfs(root.path(), &owners, b"base", b"agent-v1").unwrap();
         assert_eq!(first.vocabulary.nodes(), 1);
         assert_eq!(first.vocabulary.hooks(), [1, 2]);
         assert_eq!(first.bundle, BUNDLE);
         assert_eq!(first.initramfs, repeated.initramfs);
         assert_ne!(
             first.initramfs,
-            prepare_rootfs(root.path(), b"base", b"agent-v2")
+            prepare_rootfs(root.path(), &owners, b"base", b"agent-v2")
                 .unwrap()
                 .initramfs
         );
@@ -165,7 +175,7 @@ ready /usr/bin/etcdctl endpoint health
         let external = tempfile::NamedTempFile::new().unwrap();
         std::fs::create_dir_all(root.path().join("etc/harmony")).unwrap();
         std::os::unix::fs::symlink(external.path(), root.path().join(BUNDLE_PATH)).unwrap();
-        let error = prepare_rootfs(root.path(), b"base", b"agent")
+        let error = prepare_rootfs(root.path(), &Ownership::default(), b"base", b"agent")
             .err()
             .unwrap();
         assert!(error.to_string().contains("inside the staged image"));
@@ -217,9 +227,10 @@ ready /usr/bin/etcdctl endpoint health
         image(root.path());
         let base_root = tempfile::tempdir().unwrap();
         std::fs::write(base_root.path().join("init"), b"GUEST_READY\n").unwrap();
-        let base = oci_support::bundle::build_rootfs_segment(base_root.path()).unwrap();
-        let oci_segment = oci_support::bundle::build_rootfs_segment(root.path()).unwrap();
-        let prepared = prepare_rootfs(root.path(), &base, b"fault-agent").unwrap();
+        let owners = Ownership::default();
+        let base = oci_support::bundle::build_rootfs_segment(base_root.path(), &owners).unwrap();
+        let oci_segment = oci_support::bundle::build_rootfs_segment(root.path(), &owners).unwrap();
+        let prepared = prepare_rootfs(root.path(), &owners, &base, b"fault-agent").unwrap();
 
         assert!(base.starts_with(&[0x1f, 0x8b]));
         assert!(oci_segment.starts_with(&[0x1f, 0x8b]));
@@ -241,5 +252,80 @@ ready /usr/bin/etcdctl endpoint health
                 .windows(b"fault-agent".len())
                 .any(|window| window == b"fault-agent")
         );
+    }
+
+    /// One `newc` entry: its name, `(uid, gid)`, and the offset of the next.
+    fn cpio_entry(bytes: &[u8], at: usize) -> (String, (u32, u32), usize) {
+        let field = |i: usize| {
+            let text = std::str::from_utf8(&bytes[at + 6 + 8 * i..at + 6 + 8 * (i + 1)]).unwrap();
+            u32::from_str_radix(text, 16).unwrap()
+        };
+        assert_eq!(&bytes[at..at + 6], b"070701");
+        let (uid, gid, filesize, namesize) = (field(2), field(3), field(6), field(11));
+        let name_at = at + 110;
+        let name = std::str::from_utf8(&bytes[name_at..name_at + namesize as usize - 1])
+            .unwrap()
+            .to_string();
+        let data_at = (name_at + namesize as usize).next_multiple_of(4);
+        let next = (data_at + filesize as usize).next_multiple_of(4);
+        (name, (uid, gid), next)
+    }
+
+    /// A node that drops to the image's service account can only open data
+    /// that account owns in the guest, so the owner the image recorded has to
+    /// survive into the initramfs even though the staged tree on the host
+    /// belongs to whoever ran the staging.
+    #[test]
+    fn assembled_initramfs_keeps_the_owner_the_image_gave_each_entry() {
+        let root = tempfile::tempdir().unwrap();
+        image(root.path());
+        let data = Path::new("var/lib/postgresql/data");
+        std::fs::create_dir_all(root.path().join(data)).unwrap();
+        std::fs::write(
+            root.path().join(data).join("postgresql.conf"),
+            b"port = 5432\n",
+        )
+        .unwrap();
+        let mut owners = Ownership::default();
+        let postgres = guest_image::Owner { uid: 70, gid: 70 };
+        owners.record(Path::new("var/lib/postgresql"), postgres);
+        owners.record(data, postgres);
+        owners.record(&data.join("postgresql.conf"), postgres);
+        let base =
+            oci_support::bundle::build_rootfs_segment(root.path(), &Ownership::default()).unwrap();
+        let prepared = prepare_rootfs(root.path(), &owners, &base, b"fault-agent").unwrap();
+
+        let oci_segment = oci_support::bundle::build_rootfs_segment(root.path(), &owners).unwrap();
+        assert_eq!(
+            &prepared.initramfs[base.len()..base.len() + oci_segment.len()],
+            &oci_segment[..]
+        );
+        let mut gzip = std::process::Command::new("gzip")
+            .arg("-dc")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(gzip.stdin.as_mut().unwrap(), &oci_segment).unwrap();
+        drop(gzip.stdin.take());
+        let archive = gzip.wait_with_output().unwrap().stdout;
+        let mut seen = std::collections::BTreeMap::new();
+        let mut at = 0;
+        loop {
+            let (name, owner, next) = cpio_entry(&archive, at);
+            if name == "TRAILER!!!" {
+                break;
+            }
+            seen.insert(name, owner);
+            at = next;
+        }
+        assert_eq!(seen["harmony-oci/rootfs/var/lib/postgresql"], (70, 70));
+        assert_eq!(seen["harmony-oci/rootfs/var/lib/postgresql/data"], (70, 70));
+        assert_eq!(
+            seen["harmony-oci/rootfs/var/lib/postgresql/data/postgresql.conf"],
+            (70, 70)
+        );
+        assert_eq!(seen["harmony-oci/rootfs/var/lib"], (0, 0));
+        assert_eq!(seen["harmony-oci/rootfs/etc/harmony/bundle"], (0, 0));
     }
 }
