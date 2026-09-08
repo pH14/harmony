@@ -40,6 +40,23 @@ Whole-game Nova reached 5, 6, and 7 cleared-level flags in these short runs. Thi
 confirms execution continues through intermediate clears, without claiming all
 40 levels are solved. Throughput trials do not require whole-game completion.
 
+## Continuation replay with current workload policies
+
+[`continuation-005.json`](continuation-005.json) repeats the complete three-seed
+development pilot with the MM2 v18 key and identical two-window/two-slot
+execution settings in both arms. Metal Man clears on every seed in both arms;
+continuations reduce each seed’s frame cost, and the median falls from
+2,108,987 to 1,325,844 frames (37.1%). Nova level 1’s median improves by 26.9%,
+with one seed regressing. SMB and STB Hard retain all three passes; STB’s median
+frame cost rises by 7.3%, so the gain is not uniform across games.
+
+Metroid retains the same one-item, missile-capacity-10 plateau. Observed map
+cells are 58/60/60 for the control and 62/56/62 with continuation replay. Whole-
+game Nova remains at seven cleared flags on all seeds. The evidence includes
+actual continuation dispatch counts; SMB dispatches none because its policy
+reports no strict same-slot preference improvements. These are development
+results; the full candidate comparison uses a separate seed panel.
+
 ## Qualified SMB reference
 
 [`smb-reference-005.json`](smb-reference-005.json) records four development
