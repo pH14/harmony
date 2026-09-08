@@ -37,6 +37,16 @@ regenerate and verify `../MANIFEST.sha256`.
 - `0002-x86-harmony-character-device.patch` adds `/dev/harmony`, attributed
   event delivery, and deterministic entropy transactions over the existing
   doorbell.
+- `0003-x86-harmony-N6-user-counter-trap-switch.patch` adds the default-on
+  `CONFIG_HARMONY_USER_COUNTER_TRAPS`, which applies `PR_TSC_SIGSEGV` at exec
+  and refuses a later `PR_TSC_ENABLE`. Turning it off for one kernel makes
+  ring-3 counter confinement testable on its own.
+- `0004-x86-harmony-syscall-tick.patch` rings the virtual-time tick at every
+  context switch and idle-poll iteration, so an armed clock event comes due
+  even after the runnable task blocks and the sole vCPU enters idle polling.
+- `0005-x86-harmony-early-boot-entropy.patch` recognizes the `harmony_pvclock`
+  token in `boot_command_line` before `SETUP_RNG_SEED` is credited, keeping a
+  native counter read out of the first CRNG key.
 - `0006-x86-harmony-task-park.patch` adds `CONFIG_HARMONY_PARK` and
   `/dev/harmony-park`, through which a supervisor holds one thread of a
   workload at a user instruction on its k-th execution: a per-thread hardware

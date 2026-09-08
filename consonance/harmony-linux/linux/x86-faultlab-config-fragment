@@ -26,6 +26,11 @@
 # three processes writing one tmpfs file reach that state. Without SMP there
 # is no optimistic spinning: the writer queues, the guest idles, and the
 # host jumps to the timer.
+#
+# config-fragment keeps SMP=y for the other kernels because the cpuset
+# cgroup-v2 controller needs it and k3s/kubelet hard-require that controller.
+# This profile can give it up: it runs its workloads in a chroot from the
+# initramfs, with no container runtime and no cgroup controllers.
 # CONFIG_SMP is not set
 #
 # The task park (patches/x86/0006): a workload thread held at a user

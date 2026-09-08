@@ -31,8 +31,12 @@
 # BASELINE: captured from the box build of linux-6.18.35 under the x86 harmony
 # patch series 0001-0006 as the fault-library single-processor kernel
 # (x86-faultlab-config-fragment), reviewed against the extracted source. The
-# function set is the SMP build's minus check_tsc_warp, which only an SMP
-# kernel compiles. Offsets are relative to the containing function, so a different
+# function set differs from the SMP build's: check_tsc_warp, entropy_timer,
+# quick_pit_calibrate, random_init and try_to_generate_entropy are absent, and
+# native_calibrate_cpu_early and random_get_entropy are present, because a
+# single-processor build compiles a different set and inlines differently. The
+# per-function blocks below are the authority on which sites are reviewed.
+# Offsets are relative to the containing function, so a different
 # compiler version shifts them — and so does the patch series itself, because
 # the pvclock guards inline into these very functions and can move a read
 # between functions by flipping an inlining decision. Such a drift fails the
