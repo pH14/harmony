@@ -6,6 +6,9 @@ Keep evidence from each frozen panel immutable. The compact records here contain
 seed-level comparisons, registered manifests, source/executable/core/ROM hashes,
 host allocation, and hashes of the complete allowlisted exports. Private ROMs,
 emulator cores, snapshots, and full campaign streams are not checked in.
+Disk figures describe the per-cell output directory, excluding shared assets,
+build bundles, and private runtime temporary files outside it. Process I/O
+measurements are separate; the figures are not total filesystem occupancy.
 [`build-provenance.json`](build-provenance.json) maps frozen builds 003–005 to
 Git commits by exact source-hash equality against freshly extracted Git trees.
 Build 005 is `02463cae`; later evidence and documentation commits do not change

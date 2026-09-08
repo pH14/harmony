@@ -85,7 +85,9 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(tail.read(), {'frames_emulated': 24})
         self.assertEqual(tail.read(), {'frames_emulated': 24})
 
-    def fake_run(self, body, require_solved=False, finish=1, disk=1):
+    def fake_run(self, body, require_solved=False, finish=30, disk=1):
+        # Ordinary fixtures test exit semantics, not interpreter startup latency.
+        # The watchdog contract supplies its own short deadline explicitly.
         binary = self.root / 'fake-eval'
         binary.write_text('#!/usr/bin/env python3\nimport json,sys,time\nfrom pathlib import Path\np=Path(sys.argv[2]);p.mkdir()\n' + body)
         binary.chmod(0o755)

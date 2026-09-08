@@ -160,9 +160,15 @@ limit, then drains admitted work and verifies evidence.
 - **Memory:** sampled process-group RSS by phase, OS maximum process RSS, logical
   archive/snapshot/index/history/draw-state charges, evictions and compactions.
   OS RSS and logical charges answer different questions and are both retained.
-- **Disk:** sampled current/peak and final logical and allocated bytes, categorized
-  by stream, checkpoints, media, telemetry and reports/logs. The final footprint
-  includes the summary. Sampling can miss short-lived peaks.
+- **Output disk:** sampled current/peak and final logical and allocated bytes
+  inside the cell output directory, categorized by stream, checkpoints, media,
+  telemetry and reports/logs. The final footprint includes the summary. Shared
+  assets/build bundles and runtime files elsewhere are excluded. In particular,
+  QuickNES creates and unlinks private temporary core copies while their mappings
+  remain live. These output metrics are not total process or host filesystem
+  occupancy. Process I/O is logged separately; sampling can miss short-lived peaks.
+  Broader runtime-file accounting is tracked in
+  [#274](https://github.com/pH14/harmony/issues/274).
 - **I/O and CPU:** sampled `/proc` read/write bytes, CPU seconds and OS block
   operation/context-switch counts. The final sampled byte totals are lower bounds
   if a process exits between samples; block operations are not byte counts.
