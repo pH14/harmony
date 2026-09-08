@@ -1,4 +1,4 @@
-name: nightly
+name: Checks / Memory safety
 
 # Nightly Miri validation for crates containing `unsafe`. The jobs are also
 # manually dispatchable. Timeouts include headroom for hosted-runner variance.

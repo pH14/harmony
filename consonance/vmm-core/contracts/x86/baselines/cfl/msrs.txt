@@ -1,5 +1,5 @@
 # Foreman read-only MSR capture from the determinism box (Intel i9-9900K, kernel 6.12.90),
-# via `ssh <det-box> 'sudo rdmsr ...'` (msr module). Used to derive the microcode-fingerprint
+# via `ssh <qualified-host> 'sudo rdmsr ...'` (msr module). Used to derive the microcode-fingerprint
 # MSR rows of the det-cfl-v1 re-baseline (esp. IA32_ARCH_CAPABILITIES 0x10a).
 
 # 0x10a IA32_ARCH_CAPABILITIES — rdmsr -a (all 16 logical CPUs), identical = homogeneous:

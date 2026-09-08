@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Nova inside Consonance experiment
+name: Acceptance / Workload backends
 
 on:
   workflow_dispatch: {}
@@ -13,6 +13,20 @@ on:
       - scripts/build-quicknes-core.sh
       - Cargo.toml
       - Cargo.lock
+
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/nova-consonance-experiment.yml
+      - consonance/**
+      - workloads/**
+      - dissonance/**
+      - cli/**
+      - scripts/build-quicknes-core.sh
+      - Cargo.toml
+      - Cargo.lock
+  schedule:
+    - cron: "17 4 * * *"
 
 permissions:
   contents: read

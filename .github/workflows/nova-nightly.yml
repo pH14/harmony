@@ -1,10 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Nova 500K adventure
+name: Benchmarks / NES
 
 on:
   schedule:
     - cron: "30 6 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      game:
+        description: Game to evaluate
+        type: choice
+        options: [all, nova]
+        default: all
 
 permissions:
   contents: read
@@ -15,7 +21,7 @@ concurrency:
 
 jobs:
   level-panel:
-    name: ${{ matrix.title }} — independent search and film
+    name: ${{ matrix.title }} — Nova level evaluation
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -111,6 +117,7 @@ jobs:
             echo "Video with music: $(jq -c '.video' "${NOVA_ARTIFACT}/run-summary.json")."
           } >>"${GITHUB_STEP_SUMMARY}"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: nova-${{ matrix.slug }}-${{ github.run_id }}
           path: |
@@ -122,11 +129,11 @@ jobs:
             dissonance/nova-level-artifact/video.json
             dissonance/nova-level-artifact/ARTIFACT-LICENSE.md
             dissonance/nova-level-artifact/SHA256SUMS
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
 
   nova:
-    name: Search Nova headlessly and film the champion
+    name: Nova full adventure
     runs-on: ubuntu-latest
     timeout-minutes: 330
     env:
@@ -202,6 +209,7 @@ jobs:
             echo "Audio PCM SHA-256: $(jq -r '.audio_pcm_sha256' "${NOVA_ARTIFACT}/run-summary.json")."
           } >>"${GITHUB_STEP_SUMMARY}"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: nova-500k-adventure-${{ github.run_id }}
           path: |
@@ -213,5 +221,21 @@ jobs:
             dissonance/nova-artifact/video.json
             dissonance/nova-artifact/ARTIFACT-LICENSE.md
             dissonance/nova-artifact/SHA256SUMS
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
+
+  report:
+    name: report
+    needs: [level-panel, nova]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await require('./.github/scripts/benchmark-report.cjs')({github, context, core});
