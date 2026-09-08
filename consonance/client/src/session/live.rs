@@ -10,7 +10,10 @@ use control_proto::{
     ControlError, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
     class_bit,
 };
-use environment::input_spec::{InputSpec, ServiceConfig, ServiceFactory};
+use environment::{
+    channel::Effect,
+    input_spec::{InputSpec, ServiceConfig, ServiceFactory},
+};
 use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, RestoreMode, VmmFactory, server_caps};
 use vmm_core::vmm::Vmm;
@@ -262,21 +265,22 @@ impl Session {
         self.client.transport_mut().set_service_factory(factory);
     }
 
-    /// Branch from a held snapshot under a package's service configuration and
-    /// ordered payload records.
+    /// Branch from a held snapshot under a package's service configuration,
+    /// ordered payload records, and the host-plane effects to apply during the
+    /// run that follows, each at the virtual moment it is recorded against.
     ///
-    /// The installed service factory builds the handler before the live VM
-    /// changes, so a configuration whose implementation is not installed fails
-    /// the branch and leaves the session untouched.
+    /// The installed service factory builds the handler and the control server
+    /// checks every effect before the live VM changes, so a configuration whose
+    /// implementation is not installed — or an effect the machine cannot apply
+    /// at the moment given — fails the branch and leaves the session untouched.
     pub fn branch_with_service(
         &mut self,
         snapshot: SnapId,
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
+        effects: Vec<(u64, Effect)>,
     ) -> Result<(), Box<dyn Error>> {
-        let mut spec = InputSpec::seeded(self.config.seed);
-        spec.set_config(config);
-        spec.set_payloads(Some(payloads));
+        let spec = service_branch_spec(self.config.seed, config, payloads, effects)?;
         branch_spec(&mut self.client, snapshot, &spec)
     }
 

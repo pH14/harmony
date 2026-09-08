@@ -10,6 +10,10 @@
 use std::{error::Error, fmt, sync::Arc, time::Duration};
 
 use control_proto::{Reply, SnapId, StopReason};
+use environment::{
+    channel::Effect,
+    input_spec::{InputSpec, ServiceConfig},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -568,6 +572,41 @@ fn guarded_run_plan(
     // otherwise wait forever on the first guest that stops taking exits.
     let cancel = cancel.ok_or(SessionError::Unboundable)?;
     Ok(Some((limit, cancel)))
+}
+
+/// Build the input specification one service branch records: the branch seed,
+/// the package's service configuration, its ordered payload records, and the
+/// host-plane effects the branch stages for the run that follows it. This pure
+/// wire-shape policy stays here so it is testable without a VM or Linux linker.
+///
+/// The recorded form holds one effect per moment, so two effects sharing a
+/// moment are reported rather than silently collapsed into the later one.
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )),
+    allow(dead_code)
+)]
+fn service_branch_spec(
+    seed: u64,
+    config: ServiceConfig,
+    payloads: Vec<Vec<u8>>,
+    effects: Vec<(u64, Effect)>,
+) -> Result<InputSpec, Box<dyn Error>> {
+    let mut spec = InputSpec::seeded(seed);
+    spec.set_config(config);
+    spec.set_payloads(Some(payloads));
+    for (at, effect) in effects {
+        if spec.effects().contains_key(&at) {
+            return Err(
+                SessionError::Control(format!("two branch effects share moment {at}")).into(),
+            );
+        }
+        spec.record_effect(at, effect);
+    }
+    Ok(spec)
 }
 
 /// Whether running the guest further can move it off a point the control
@@ -1204,6 +1243,67 @@ mod tests {
         let mut fixture = SettleFixture::new(u64::MAX);
         assert!(settle(&mut fixture, 0, 100).is_err());
         assert_eq!(fixture.seals, 0);
+    }
+
+    fn service_config(identity: &[u8]) -> ServiceConfig {
+        ServiceConfig {
+            identity: identity.to_vec(),
+            configuration: b"configuration".to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_service_branch_records_its_configuration_payloads_and_effects() {
+        let spec = service_branch_spec(
+            7,
+            service_config(b"package"),
+            vec![b"first".to_vec(), b"second".to_vec()],
+            vec![
+                (900, Effect::InjectInterrupt { vector: 33 }),
+                (100, Effect::InjectInterrupt { vector: 32 }),
+            ],
+        )
+        .expect("distinct moments");
+        assert_eq!(spec.seed(), 7);
+        assert_eq!(spec.config(), &service_config(b"package"));
+        assert_eq!(
+            spec.payloads(),
+            Some([b"first".to_vec(), b"second".to_vec()].as_slice()),
+        );
+        assert_eq!(
+            spec.effects().iter().collect::<Vec<_>>(),
+            [
+                (&100, &Effect::InjectInterrupt { vector: 32 }),
+                (&900, &Effect::InjectInterrupt { vector: 33 }),
+            ],
+            "effects reach the branch in moment order whatever order they were given in",
+        );
+    }
+
+    #[test]
+    fn two_branch_effects_at_one_moment_are_reported_rather_than_dropped() {
+        let error = service_branch_spec(
+            0,
+            service_config(b"package"),
+            Vec::new(),
+            vec![
+                (100, Effect::InjectInterrupt { vector: 32 }),
+                (100, Effect::InjectInterrupt { vector: 33 }),
+            ],
+        )
+        .expect_err("one moment carries one effect");
+        assert!(
+            error.to_string().contains("share moment 100"),
+            "unexpected error: {error}",
+        );
+    }
+
+    #[test]
+    fn a_service_branch_without_effects_records_an_empty_schedule() {
+        let spec = service_branch_spec(0, service_config(b"package"), Vec::new(), Vec::new())
+            .expect("no effects");
+        assert!(spec.effects().is_empty());
+        assert_eq!(spec.payloads(), Some([].as_slice()));
     }
 
     #[test]
