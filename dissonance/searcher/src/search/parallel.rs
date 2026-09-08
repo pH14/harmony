@@ -14,6 +14,7 @@ pub(crate) struct ResultSlots {
 
 impl ResultSlots {
     pub(crate) fn new(workers: u32, limit: usize) -> Self {
+        assert!(workers > 0, "result slots require at least one worker");
         assert!((1..=2).contains(&limit));
         Self {
             outstanding: vec![0; workers as usize],
