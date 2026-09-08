@@ -16,8 +16,11 @@ immutable; later commits are not retroactively attributed to that measured build
 
 ## Historical depth audit
 
-[`progress-audit-007.json`](progress-audit-007.json) corrects the scope of the
-005 comparison: historical deep-search reach was **not qualified**. Seventeen
+[`progress-audit-010.json`](progress-audit-010.json) corrects the scope of the
+005 comparison: historical deep-search reach was **not qualified**. It supersedes
+the route timestamps in the immutable 007 audit, which included genesis setup.
+The corrected probe separates route frames, setup frames, and physical work.
+Seventeen
 retained tapes replay twice with the current decoder: ten panel champions,
 six historical Metroid inputs, and the Mega Man 2 power-on prefix reaching Wily
 4 with all eight weapons. Historical Metroid champions reach Kraid's area with
@@ -33,6 +36,59 @@ all parent selections, mutation seeds, work, and admission decisions match build
 Both the full campaign and each named discovery witness replay successfully.
 The Ridley bit correction is independently covered by positive/negative decoder
 tests; the matched small run does not exercise a boss defeat.
+
+## Longer Metroid development comparison
+
+[`metroid-long-horizon-008.json`](metroid-long-horizon-008.json) records all six
+completed 3-million-execution runs, with 4 workers, 8 GiB, 4,096 actions,
+`one_to_six`, `alphabet_only`, and reused seeds 3/4/5. Only the selector differs
+between these two new arms. This restores much of the historical depth under
+longer budgets; it is not an exact replay of the historical algorithm, which
+also had a different improvement-replay queue.
+
+| Named discovery across search branches | Control | Semantic selector |
+| --- | ---: | ---: |
+| Morph Ball, Bombs, energy tank, Brinstar, Norfair (each) | 3/3 | 3/3 |
+| Long Beam | 0/3 | 3/3 |
+| Ice Beam | 1/3 | 0/3 |
+| Kraid's area | 0/3 | 3/3 |
+| Ridley's area | 3/3 | 1/3 |
+| Kraid defeated | 0/3 | 0/3 |
+| Ridley defeated | 0/3 | 0/3 |
+| Tourian / ending (each) | 0/3 | 0/3 |
+
+Control finds Bombs at 0.95–1.12 million executions and Ridley's area at
+1.49–1.62 million. The semantic selector finds Long Beam at 1.12–1.76 million,
+Bombs at 2.14–2.85 million, and Kraid's area at 2.21–2.94 million. These changes
+would be hidden by a 500,000-execution cutoff or a combined item count. They
+show a tradeoff in explored capabilities, not a universal default promotion.
+Named discoveries never feed selection or archive rewards.
+
+All first-discovery and champion inputs replay twice on the original frozen
+binary, and all 53 tapes replay twice again on corrected build 010. These are
+individual witnesses, not one trajectory containing the search-wide union.
+Build 008 predates Mother Brain/escape reporting: those fields are unavailable
+across its branches, even though the corrected trajectory replays record them.
+Its original replay-origin timestamps include setup work; the corrected
+trajectory evidence supersedes those coordinates without rewriting the run.
+
+Each run admits 363–382 million emulated frames. Reported search throughput is
+100,250–119,311 admitted frames/s; control peak RSS is 3,542–3,871 MiB and
+semantic peak RSS is 4,273–5,382 MiB. Peak cell output disk is 96.3–98.2 MiB.
+The record retains every seed's logical memory, I/O, phase timing, source and
+binary identities, CPU allocation, and censored outcome. The six searches ran
+concurrently on disjoint but heterogeneous CPU sets, with development work
+overlapping; throughput differences between arms are descriptive, not causal
+selector performance claims. CPU allocations remained fixed throughout each run.
+
+[`qualification-final-010.json`](qualification-final-010.json) separately
+qualifies the changed shared witness-reporting path across all five games and
+whole-game Nova. All six small campaigns pass full campaign/report/checkpoint
+replay and twice-repeated witnesses. Their 500-execution budgets do not require
+or establish solves. The corrected 5,000-job Metroid qualification is recorded
+in the historical audit above. The shareable HTML/figure/data bundle is bound
+by [`progress-publication-010.json`](progress-publication-010.json), including
+its archive checksum and the hashes of these compact records.
 
 ## Fresh full validation
 

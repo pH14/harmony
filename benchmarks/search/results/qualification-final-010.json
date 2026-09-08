@@ -1,0 +1,939 @@
+{
+  "cells": [
+    {
+      "build": {
+        "attestation": "supplied",
+        "binary_sha256": "e3b68f03690944d00a02929e291efc6c14c07b755431fd2db1407f74341232dc",
+        "source": {
+          "binary_sha256": "e3b68f03690944d00a02929e291efc6c14c07b755431fd2db1407f74341232dc",
+          "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+          "dirty": null,
+          "files": 275,
+          "format": "harmony-search-build-v1",
+          "locked": true,
+          "profile": "release",
+          "revision": null,
+          "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+          "rustflags": "",
+          "source_tree_sha256": "2d4e51d0d5664ae03fc91bef13ff3c4dcc1b20e527611180608894104c11cf05"
+        }
+      },
+      "case": "metroid-full",
+      "cell": "metroid-full-s1-w2-m512",
+      "final_disk": {
+        "allocated_bytes": 30482432,
+        "categories": {
+          "checkpoint": 30150753,
+          "reports_and_logs": 27943,
+          "stream": 238840,
+          "telemetry": 22981
+        },
+        "logical_bytes": 30440517
+      },
+      "identity": {
+        "actions": 8192,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 500,
+        "format": "nes-eval-identity-v1",
+        "frames": null,
+        "game": "metroid",
+        "level": null,
+        "memory_mib": 512,
+        "mixture": "energy_splice:6",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v4;sha256=a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+          "key_policy": "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_ending_v2"
+        },
+        "result_slots": 1,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 1,
+        "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+        "source_tree_sha256": "2d4e51d0d5664ae03fc91bef13ff3c4dcc1b20e527611180608894104c11cf05",
+        "stage": null,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "campaign",
+        "wall_seconds": 120,
+        "whole_game": false,
+        "window": 1,
+        "workers": 2
+      },
+      "max_process_rss_bytes": 43618304,
+      "result": {
+        "executions": 500,
+        "executions_per_second": 379.2761036763184,
+        "executions_to_first_victory": null,
+        "export_seconds": 0.034337896,
+        "format": "nes-eval-result-v1",
+        "frame_budget_overshoot": null,
+        "frames_emulated": 73051,
+        "frames_per_second": 55412.997299317474,
+        "frames_to_first_victory": null,
+        "milestone_witnesses": {
+          "brinstar": {
+            "input_sha256": "343285767e1a33a4357c70a8822633f1a1c458856767b7849762bf6a9b804dcb",
+            "replay": {
+              "dead": false,
+              "diagnostics": {
+                "coverage_bitmap_bytes": 32768,
+                "map_cells_observed": 1,
+                "named_progress": {
+                  "first_seen": {
+                    "bombs": null,
+                    "brinstar": {
+                      "execution": 0,
+                      "route_action_end_frame": 0
+                    },
+                    "ending": null,
+                    "energy_tank": null,
+                    "escape_started": null,
+                    "high_jump": null,
+                    "ice_beam": null,
+                    "kraid_area": null,
+                    "kraid_defeated": null,
+                    "long_beam": null,
+                    "missile_capacity": null,
+                    "morph_ball": null,
+                    "mother_brain_defeated": null,
+                    "norfair": null,
+                    "ridley_area": null,
+                    "ridley_defeated": null,
+                    "screw_attack": null,
+                    "tourian": null,
+                    "varia_suit": null,
+                    "wave_beam": null
+                  },
+                  "format": "metroid-named-progress-v2",
+                  "max_energy_tanks": 0,
+                  "max_missile_capacity": 0
+                },
+                "observation_filter": "live gameplay observations supplied to this accumulator"
+              },
+              "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+              "milestones": {
+                "areas": 1,
+                "gained": false,
+                "items": 0,
+                "tanks": 0
+              },
+              "snapshot_sha256": "c1328700c86ed6626a131fe8d3a1e80967525e1ade1bbb3043b443d61df06e25",
+              "victory": false
+            }
+          },
+          "morph_ball": {
+            "input_sha256": "8af4a9ced600bafa628f12af4598eca3d28ea1f41a57720b5e20e3810dd28c6e",
+            "replay": {
+              "dead": false,
+              "diagnostics": {
+                "coverage_bitmap_bytes": 32768,
+                "map_cells_observed": 2,
+                "named_progress": {
+                  "first_seen": {
+                    "bombs": null,
+                    "brinstar": {
+                      "execution": 0,
+                      "route_action_end_frame": 0
+                    },
+                    "ending": null,
+                    "energy_tank": null,
+                    "escape_started": null,
+                    "high_jump": null,
+                    "ice_beam": null,
+                    "kraid_area": null,
+                    "kraid_defeated": null,
+                    "long_beam": null,
+                    "missile_capacity": null,
+                    "morph_ball": {
+                      "execution": 19,
+                      "route_action_end_frame": 646
+                    },
+                    "mother_brain_defeated": null,
+                    "norfair": null,
+                    "ridley_area": null,
+                    "ridley_defeated": null,
+                    "screw_attack": null,
+                    "tourian": null,
+                    "varia_suit": null,
+                    "wave_beam": null
+                  },
+                  "format": "metroid-named-progress-v2",
+                  "max_energy_tanks": 0,
+                  "max_missile_capacity": 0
+                },
+                "observation_filter": "live gameplay observations supplied to this accumulator"
+              },
+              "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+              "milestones": {
+                "areas": 1,
+                "gained": true,
+                "items": 1,
+                "tanks": 0
+              },
+              "snapshot_sha256": "12441d27e9eb432358ec0d2ba894e80f34266a24a147e632766a122b6d205070",
+              "victory": false
+            }
+          }
+        },
+        "milestones": {
+          "areas": 1,
+          "gained": true,
+          "items": 1,
+          "tanks": 0
+        },
+        "preparation_seconds": 0.001165679,
+        "progress": {
+          "items": 1,
+          "missile_capacity": 0
+        },
+        "search_seconds": 1.318300824,
+        "solved": false,
+        "status": "complete",
+        "stop_reason": "execution_limit",
+        "stream_bytes_generated": 238840,
+        "stream_retained": true,
+        "stream_sha256": "ff837e77c1639bd4e8d7baa91c14895250099dea05da338f218dcff9c5dc333c",
+        "verification": "campaign",
+        "verification_seconds": 1.9164207370000002,
+        "victory_observed": false,
+        "witness": {
+          "dead": false,
+          "diagnostics": {
+            "coverage_bitmap_bytes": 32768,
+            "map_cells_observed": 2,
+            "named_progress": {
+              "first_seen": {
+                "bombs": null,
+                "brinstar": {
+                  "execution": 0,
+                  "route_action_end_frame": 0
+                },
+                "ending": null,
+                "energy_tank": null,
+                "escape_started": null,
+                "high_jump": null,
+                "ice_beam": null,
+                "kraid_area": null,
+                "kraid_defeated": null,
+                "long_beam": null,
+                "missile_capacity": null,
+                "morph_ball": {
+                  "execution": 19,
+                  "route_action_end_frame": 646
+                },
+                "mother_brain_defeated": null,
+                "norfair": null,
+                "ridley_area": null,
+                "ridley_defeated": null,
+                "screw_attack": null,
+                "tourian": null,
+                "varia_suit": null,
+                "wave_beam": null
+              },
+              "format": "metroid-named-progress-v2",
+              "max_energy_tanks": 0,
+              "max_missile_capacity": 0
+            },
+            "observation_filter": "live gameplay observations supplied to this accumulator"
+          },
+          "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+          "milestones": {
+            "areas": 1,
+            "gained": true,
+            "items": 1,
+            "tanks": 0
+          },
+          "snapshot_sha256": "12441d27e9eb432358ec0d2ba894e80f34266a24a147e632766a122b6d205070",
+          "victory": false
+        }
+      },
+      "search_request": {
+        "actions": 8192,
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 500,
+        "game": "metroid",
+        "memory_mib": 512,
+        "mixture": "energy_splice:6",
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 1,
+        "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "campaign",
+        "wall_seconds": 120,
+        "window": 1,
+        "workers": 2
+      },
+      "status": "complete"
+    },
+    {
+      "build": {
+        "attestation": "supplied",
+        "binary_sha256": "e3b68f03690944d00a02929e291efc6c14c07b755431fd2db1407f74341232dc",
+        "source": {
+          "binary_sha256": "e3b68f03690944d00a02929e291efc6c14c07b755431fd2db1407f74341232dc",
+          "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+          "dirty": null,
+          "files": 275,
+          "format": "harmony-search-build-v1",
+          "locked": true,
+          "profile": "release",
+          "revision": null,
+          "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+          "rustflags": "",
+          "source_tree_sha256": "2d4e51d0d5664ae03fc91bef13ff3c4dcc1b20e527611180608894104c11cf05"
+        }
+      },
+      "case": "mm2-metal",
+      "cell": "mm2-metal-s1-w2-m512",
+      "final_disk": {
+        "allocated_bytes": 13225984,
+        "categories": {
+          "checkpoint": 12929271,
+          "reports_and_logs": 22803,
+          "stream": 226221,
+          "telemetry": 14688
+        },
+        "logical_bytes": 13192983
+      },
+      "identity": {
+        "actions": 8192,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 500,
+        "format": "nes-eval-identity-v1",
+        "frames": null,
+        "game": "mm2",
+        "level": null,
+        "memory_mib": 512,
+        "mixture": "energy_splice:6",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_start_taps_no_select_v2",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:6:prefix-sha256=ad8eeacb2139d12f5bba3b2e13b10bb4cc1208da0b16c35e1af428abf54cc86d;result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256=a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+          "key_policy": "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_first_boss_defeated"
+        },
+        "result_slots": 1,
+        "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+        "seed": 1,
+        "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+        "source_tree_sha256": "2d4e51d0d5664ae03fc91bef13ff3c4dcc1b20e527611180608894104c11cf05",
+        "stage": 6,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "campaign",
+        "wall_seconds": 120,
+        "whole_game": false,
+        "window": 1,
+        "workers": 2
+      },
+      "max_process_rss_bytes": 31592448,
+      "result": {
+        "executions": 500,
+        "executions_per_second": 473.5600822037793,
+        "executions_to_first_victory": null,
+        "export_seconds": 0.012752437,
+        "format": "nes-eval-result-v1",
+        "frame_budget_overshoot": null,
+        "frames_emulated": 58425,
+        "frames_per_second": 55335.495605511605,
+        "frames_to_first_victory": null,
+        "milestone_witnesses": {},
+        "milestones": {
+          "defeated_boss": false,
+          "max_screen": 3,
+          "reached_boss": false
+        },
+        "preparation_seconds": 0.00112901,
+        "progress": {
+          "boss_damage": 0,
+          "bosses": 0,
+          "enemy_damage": 0,
+          "room": 2,
+          "screen": 3,
+          "stage": 6,
+          "x": 105,
+          "y": 116
+        },
+        "search_seconds": 1.055832235,
+        "solved": false,
+        "status": "complete",
+        "stop_reason": "execution_limit",
+        "stream_bytes_generated": 226221,
+        "stream_retained": true,
+        "stream_sha256": "c95111c10b3a9dbfd7b3777b40c47b8e60895e2756ee8d8ad0b6d173f673e5f7",
+        "verification": "campaign",
+        "verification_seconds": 1.4014953989999999,
+        "victory_observed": false,
+        "witness": {
+          "dead": false,
+          "diagnostics": null,
+          "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+          "milestones": {
+            "defeated_boss": false,
+            "max_screen": 3,
+            "reached_boss": false
+          },
+          "snapshot_sha256": "08851b07f8d78a98bfa4584c65395cf659075e40f365ac2310d02f724de87784",
+          "victory": false
+        }
+      },
+      "search_request": {
+        "actions": 8192,
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 500,
+        "game": "mm2",
+        "memory_mib": 512,
+        "mixture": "energy_splice:6",
+        "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+        "seed": 1,
+        "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+        "stage": 6,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "campaign",
+        "wall_seconds": 120,
+        "window": 1,
+        "workers": 2
+      },
+      "status": "complete"
+    },
+    {
+      "build": {
+        "attestation": "supplied",
+        "binary_sha256": "e3b68f03690944d00a02929e291efc6c14c07b755431fd2db1407f74341232dc",
+        "source": {
+          "binary_sha256": "e3b68f03690944d00a02929e291efc6c14c07b755431fd2db1407f74341232dc",
+          "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+          "dirty": null,
+          "files": 275,
+          "format": "harmony-search-build-v1",
+          "locked": true,
+          "profile": "release",
+          "revision": null,
+          "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+          "rustflags": "",
+          "source_tree_sha256": "2d4e51d0d5664ae03fc91bef13ff3c4dcc1b20e527611180608894104c11cf05"
+        }
+      },
+      "case": "nova-full",
+      "cell": "nova-full-s1-w2-m512",
+      "final_disk": {
+        "allocated_bytes": 17944576,
+        "categories": {
+          "checkpoint": 17636862,
+          "reports_and_logs": 25597,
+          "stream": 237491,
+          "telemetry": 14458
+        },
+        "logical_bytes": 17914408
+      },
+      "identity": {
+        "actions": 8192,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 500,
+        "format": "nes-eval-identity-v1",
+        "frames": null,
+        "game": "nova",
+        "level": 1,
+        "memory_mib": 512,
+        "mixture": "energy_splice:6",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_no_start_select_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=nova-level-prefix-v1:1;result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v3;sha256=a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+          "key_policy": "nova_spatial_16_preference_v1",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "every_level_cleared"
+        },
+        "result_slots": 1,
+        "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+        "seed": 1,
+        "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+        "source_tree_sha256": "2d4e51d0d5664ae03fc91bef13ff3c4dcc1b20e527611180608894104c11cf05",
+        "stage": null,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "campaign",
+        "wall_seconds": 120,
+        "whole_game": true,
+        "window": 1,
+        "workers": 2
+      },
+      "max_process_rss_bytes": 24125440,
+      "result": {
+        "executions": 500,
+        "executions_per_second": 448.53597807417634,
+        "executions_to_first_victory": null,
+        "export_seconds": 0.022158103,
+        "format": "nes-eval-result-v1",
+        "frame_budget_overshoot": null,
+        "frames_emulated": 80586,
+        "frames_per_second": 72291.44065817115,
+        "frames_to_first_victory": null,
+        "milestone_witnesses": {},
+        "milestones": {
+          "acquired_ability": true,
+          "available": 1,
+          "cleared": 0,
+          "collectibles": 0
+        },
+        "preparation_seconds": 0.001423693,
+        "progress": {
+          "available": 1,
+          "cleared": 0,
+          "collectibles": 0,
+          "level": 49,
+          "started_level": 0,
+          "x": 1213,
+          "y": 104
+        },
+        "search_seconds": 1.114737779,
+        "solved": false,
+        "status": "complete",
+        "stop_reason": "execution_limit",
+        "stream_bytes_generated": 237491,
+        "stream_retained": true,
+        "stream_sha256": "b4d0348359285cbcaa8074fca901cb5a15cd7fa52aa9cd79e85f15136e44d45c",
+        "verification": "campaign",
+        "verification_seconds": 1.812390671,
+        "victory_observed": false,
+        "witness": {
+          "dead": false,
+          "diagnostics": null,
+          "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+          "milestones": {
+            "acquired_ability": false,
+            "available": 1,
+            "cleared": 0,
+            "collectibles": 0
+          },
+          "snapshot_sha256": "e4c6f6947a891eed865fbc023e8fd6fe0e959035cdbe5d73b309ac449f7b446d",
+          "victory": false
+        }
+      },
+      "search_request": {
+        "actions": 8192,
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 500,
+        "game": "nova",
+        "level": 1,
+        "memory_mib": 512,
+        "mixture": "energy_splice:6",
+        "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+        "seed": 1,
+        "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "campaign",
+        "wall_seconds": 120,
+        "whole_game": true,
+        "window": 1,
+        "workers": 2
+      },
+      "status": "complete"
+    },
+    {
+      "build": {
+        "attestation": "supplied",
+        "binary_sha256": "e3b68f03690944d00a02929e291efc6c14c07b755431fd2db1407f74341232dc",
+        "source": {
+          "binary_sha256": "e3b68f03690944d00a02929e291efc6c14c07b755431fd2db1407f74341232dc",
+          "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+          "dirty": null,
+          "files": 275,
+          "format": "harmony-search-build-v1",
+          "locked": true,
+          "profile": "release",
+          "revision": null,
+          "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+          "rustflags": "",
+          "source_tree_sha256": "2d4e51d0d5664ae03fc91bef13ff3c4dcc1b20e527611180608894104c11cf05"
+        }
+      },
+      "case": "nova-level-1",
+      "cell": "nova-level-1-s1-w2-m512",
+      "final_disk": {
+        "allocated_bytes": 17948672,
+        "categories": {
+          "checkpoint": 17636862,
+          "reports_and_logs": 25550,
+          "stream": 237496,
+          "telemetry": 17400
+        },
+        "logical_bytes": 17917308
+      },
+      "identity": {
+        "actions": 512,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 500,
+        "format": "nes-eval-identity-v1",
+        "frames": null,
+        "game": "nova",
+        "level": 1,
+        "memory_mib": 512,
+        "mixture": "energy_splice:6",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_no_start_select_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=nova-level-prefix-v1:1;result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v3;sha256=a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+          "key_policy": "nova_spatial_16_preference_v1",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "first_durable_level_clear"
+        },
+        "result_slots": 1,
+        "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+        "seed": 1,
+        "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+        "source_tree_sha256": "2d4e51d0d5664ae03fc91bef13ff3c4dcc1b20e527611180608894104c11cf05",
+        "stage": null,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "campaign",
+        "wall_seconds": 120,
+        "whole_game": false,
+        "window": 1,
+        "workers": 2
+      },
+      "max_process_rss_bytes": 24125440,
+      "result": {
+        "executions": 500,
+        "executions_per_second": 391.5448652228063,
+        "executions_to_first_victory": null,
+        "export_seconds": 0.023360211,
+        "format": "nes-eval-result-v1",
+        "frame_budget_overshoot": null,
+        "frames_emulated": 80586,
+        "frames_per_second": 63106.06901769014,
+        "frames_to_first_victory": null,
+        "milestone_witnesses": {},
+        "milestones": {
+          "acquired_ability": true,
+          "available": 1,
+          "cleared": 0,
+          "collectibles": 0
+        },
+        "preparation_seconds": 0.001382552,
+        "progress": {
+          "available": 1,
+          "cleared": 0,
+          "collectibles": 0,
+          "level": 49,
+          "started_level": 0,
+          "x": 1213,
+          "y": 104
+        },
+        "search_seconds": 1.276992867,
+        "solved": false,
+        "status": "complete",
+        "stop_reason": "execution_limit",
+        "stream_bytes_generated": 237496,
+        "stream_retained": true,
+        "stream_sha256": "1c0b072bc92943ceb316d94c70db080988c03f0a44292e9fcb9d41291400dbc6",
+        "verification": "campaign",
+        "verification_seconds": 1.965160312,
+        "victory_observed": false,
+        "witness": {
+          "dead": false,
+          "diagnostics": null,
+          "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+          "milestones": {
+            "acquired_ability": false,
+            "available": 1,
+            "cleared": 0,
+            "collectibles": 0
+          },
+          "snapshot_sha256": "e4c6f6947a891eed865fbc023e8fd6fe0e959035cdbe5d73b309ac449f7b446d",
+          "victory": false
+        }
+      },
+      "search_request": {
+        "actions": 512,
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 500,
+        "game": "nova",
+        "level": 1,
+        "memory_mib": 512,
+        "mixture": "energy_splice:6",
+        "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+        "seed": 1,
+        "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "campaign",
+        "wall_seconds": 120,
+        "window": 1,
+        "workers": 2
+      },
+      "status": "complete"
+    },
+    {
+      "build": {
+        "attestation": "supplied",
+        "binary_sha256": "e3b68f03690944d00a02929e291efc6c14c07b755431fd2db1407f74341232dc",
+        "source": {
+          "binary_sha256": "e3b68f03690944d00a02929e291efc6c14c07b755431fd2db1407f74341232dc",
+          "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+          "dirty": null,
+          "files": 275,
+          "format": "harmony-search-build-v1",
+          "locked": true,
+          "profile": "release",
+          "revision": null,
+          "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+          "rustflags": "",
+          "source_tree_sha256": "2d4e51d0d5664ae03fc91bef13ff3c4dcc1b20e527611180608894104c11cf05"
+        }
+      },
+      "case": "smb-full",
+      "cell": "smb-full-s1-w2-m512",
+      "final_disk": {
+        "allocated_bytes": 63725568,
+        "categories": {
+          "checkpoint": 63340153,
+          "reports_and_logs": 25109,
+          "stream": 315879,
+          "telemetry": 17210
+        },
+        "logical_bytes": 63698351
+      },
+      "identity": {
+        "actions": 8192,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 500,
+        "format": "nes-eval-identity-v1",
+        "frames": null,
+        "game": "smb",
+        "level": null,
+        "memory_mib": 512,
+        "mixture": "energy_splice:6",
+        "policies": {
+          "chord_policy": "chord_draw_recorded_53:all,0,128,3,1,64,1024",
+          "controller_vocabulary": "nes_pressable_36",
+          "duration_policy": "stratified",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;result_digest=postcard-1.1.3-sha256-hex-v2;sha256=a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+          "key_policy": "frozen_area_span_screen_x_16_clock_100_band_4_player_x_cells_no_engine_state",
+          "replacement_policy": "fewest_frames_in_level",
+          "terminal_policy": "game_victory"
+        },
+        "result_slots": 1,
+        "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
+        "seed": 1,
+        "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+        "source_tree_sha256": "2d4e51d0d5664ae03fc91bef13ff3c4dcc1b20e527611180608894104c11cf05",
+        "stage": null,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "campaign",
+        "wall_seconds": 120,
+        "whole_game": false,
+        "window": 1,
+        "workers": 2
+      },
+      "max_process_rss_bytes": 60207104,
+      "result": {
+        "executions": 500,
+        "executions_per_second": 333.4567643554001,
+        "executions_to_first_victory": null,
+        "export_seconds": 0.051959631,
+        "format": "nes-eval-result-v1",
+        "frame_budget_overshoot": null,
+        "frames_emulated": 74387,
+        "frames_per_second": 49609.69666021029,
+        "frames_to_first_victory": null,
+        "milestone_witnesses": {},
+        "milestones": {
+          "max_1_1_scroll_bucket": 128,
+          "reached_1_1_flag": false,
+          "reached_1_2": false,
+          "reached_onward": false
+        },
+        "preparation_seconds": 0.001059711,
+        "progress": {
+          "level": 0,
+          "progress": 128,
+          "world": 0
+        },
+        "search_seconds": 1.4994447659999999,
+        "solved": false,
+        "status": "complete",
+        "stop_reason": "execution_limit",
+        "stream_bytes_generated": 315879,
+        "stream_retained": true,
+        "stream_sha256": "3dc7db4e1478b940e1b29096d20bd8702f272b318b76f029df0505729cf860c6",
+        "verification": "campaign",
+        "verification_seconds": 2.205404349,
+        "victory_observed": false,
+        "witness": {
+          "dead": false,
+          "diagnostics": null,
+          "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+          "milestones": {
+            "max_1_1_scroll_bucket": 128,
+            "reached_1_1_flag": false,
+            "reached_1_2": false,
+            "reached_onward": false
+          },
+          "snapshot_sha256": "cb6fb4b45debc3b8f4e321daeccb99e26b4d784949cae734466e96831c9948e3",
+          "victory": false
+        }
+      },
+      "search_request": {
+        "actions": 8192,
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 500,
+        "game": "smb",
+        "memory_mib": 512,
+        "mixture": "energy_splice:6",
+        "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
+        "seed": 1,
+        "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "campaign",
+        "wall_seconds": 120,
+        "window": 1,
+        "workers": 2
+      },
+      "status": "complete"
+    },
+    {
+      "build": {
+        "attestation": "supplied",
+        "binary_sha256": "e3b68f03690944d00a02929e291efc6c14c07b755431fd2db1407f74341232dc",
+        "source": {
+          "binary_sha256": "e3b68f03690944d00a02929e291efc6c14c07b755431fd2db1407f74341232dc",
+          "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+          "dirty": null,
+          "files": 275,
+          "format": "harmony-search-build-v1",
+          "locked": true,
+          "profile": "release",
+          "revision": null,
+          "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+          "rustflags": "",
+          "source_tree_sha256": "2d4e51d0d5664ae03fc91bef13ff3c4dcc1b20e527611180608894104c11cf05"
+        }
+      },
+      "case": "stb-hard",
+      "cell": "stb-hard-s1-w2-m512",
+      "final_disk": {
+        "allocated_bytes": 41709568,
+        "categories": {
+          "checkpoint": 41394454,
+          "reports_and_logs": 22042,
+          "stream": 242360,
+          "telemetry": 16264
+        },
+        "logical_bytes": 41675120
+      },
+      "identity": {
+        "actions": 512,
+        "ai": "hard",
+        "backend": "native",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 500,
+        "format": "nes-eval-identity-v1",
+        "frames": null,
+        "game": "stb",
+        "level": null,
+        "memory_mib": 512,
+        "mixture": "energy_splice:6",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_no_start_select_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;source=sgadrat/super-tilt-bro@b132fd25add46f816e04be64c434386743b84b8b;rom=tilt_no_network_unrom_E;mode=local;stocks=4;ai=3;stage=0;genesis=stb-local-ai-v1;result_digest=stb-semantic-postcard-1.1.3-sha256-hex-v4;sha256=a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+          "key_policy": "stb_local_ai_spatial_16_preference_v3",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "local_match_gameover_player_a_win_v2"
+        },
+        "result_slots": 1,
+        "rom_sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3",
+        "seed": 1,
+        "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+        "source_tree_sha256": "2d4e51d0d5664ae03fc91bef13ff3c4dcc1b20e527611180608894104c11cf05",
+        "stage": null,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "campaign",
+        "wall_seconds": 120,
+        "whole_game": false,
+        "window": 1,
+        "workers": 2
+      },
+      "max_process_rss_bytes": 33697792,
+      "result": {
+        "executions": 500,
+        "executions_per_second": 409.7737893624318,
+        "executions_to_first_victory": null,
+        "export_seconds": 0.039349792,
+        "format": "nes-eval-result-v1",
+        "frame_budget_overshoot": null,
+        "frames_emulated": 83148,
+        "frames_per_second": 68143.74207581495,
+        "frames_to_first_victory": null,
+        "milestone_witnesses": {},
+        "milestones": {
+          "defeat": false,
+          "opponent_damage": 10,
+          "opponent_kos": 2,
+          "player_a_kos": 4,
+          "victory": false
+        },
+        "preparation_seconds": 0.001691312,
+        "progress": {
+          "opponent_damage": 10,
+          "opponent_kos": 2
+        },
+        "search_seconds": 1.220185412,
+        "solved": false,
+        "status": "complete",
+        "stop_reason": "execution_limit",
+        "stream_bytes_generated": 242360,
+        "stream_retained": true,
+        "stream_sha256": "dd04f9779c0427c47d0398a82fcc3c578f33e7b82598cd5194ecd5339f5fd958",
+        "verification": "campaign",
+        "verification_seconds": 1.906214716,
+        "victory_observed": false,
+        "witness": {
+          "dead": false,
+          "diagnostics": null,
+          "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+          "milestones": {
+            "defeat": false,
+            "opponent_damage": 0,
+            "opponent_kos": 2,
+            "player_a_kos": 2,
+            "victory": false
+          },
+          "snapshot_sha256": "f51f431adc866dd98055eba28a89f17d289e3c779af9c21bb6e438588756bc0b",
+          "victory": false
+        }
+      },
+      "search_request": {
+        "actions": 512,
+        "ai": "hard",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 500,
+        "game": "stb",
+        "memory_mib": 512,
+        "mixture": "energy_splice:6",
+        "rom_sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3",
+        "seed": 1,
+        "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "campaign",
+        "wall_seconds": 120,
+        "window": 1,
+        "workers": 2
+      },
+      "status": "complete"
+    }
+  ],
+  "format": "harmony-search-qualification-v1",
+  "scope": "Small final-build replay qualification of all five games plus whole-game Nova. All full campaign/report/checkpoint replays and twice-repeated witnesses pass. A 500-execution limit does not require or establish a solve. Timings overlap development runs and are not throughput qualification.",
+  "source_commit": "8a9dcbbe6d75291093aeb3e11035a4f5e738621c"
+}
