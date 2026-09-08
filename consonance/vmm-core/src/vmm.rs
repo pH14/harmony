@@ -149,15 +149,6 @@ pub enum VmmError {
     /// backend-dependent RDTSC/RDRAND, or an MSR access with no V-time backing).
     #[error("contract violation: {0}")]
     ContractViolation(String),
-    /// The physical host fails one or more x86 CPU contract host-homogeneity
-    /// assertions (family/model/stepping, microcode, MXCSR-mask, MAXPHYADDR,
-    /// RTM-disabled, or a variance-instruction absence). `boot` refuses to install
-    /// the frozen policy or enter the guest on such a host — same-seed runs on a
-    /// CPU outside the determinism domain would diverge in native instruction/FPU
-    /// behavior while claiming the frozen contract. The string lists every failed
-    /// assertion (expected vs. observed).
-    #[error("host-baseline assertion failed: {0}")]
-    HostAssert(String),
     /// A V-time clock config was rejected (e.g. on snapshot restore). Never a
     /// panic — the malformed config is surfaced.
     #[error("v-time error: {0}")]
@@ -4271,7 +4262,7 @@ mod tests {
     #[test]
     fn lookup_cpuid_exact_leaf_only_and_default() {
         // Exact (leaf, subleaf) match returns the frozen entry (leaf-1 EAX =
-        // det-cfl-v1 family/model/stepping 06_9e_0c).
+        // guest family/model/stepping 06_9e_0c).
         let l1 = lookup_cpuid(1, 0);
         assert_eq!(l1.leaf, 1);
         assert_eq!(l1.eax, 0x0009_06ec);
@@ -7766,21 +7757,30 @@ mod tests {
         let mut a = full_vmm(nonzero_state(), mutate_exits(), 500, 0xABCD);
         step_n(&mut a, 6);
         let mut s = a.save_vm_state().unwrap();
-        s.contract_hash = [0xFFu8; 32]; // a different ratified contract
+        // The retired version-5 host-pinned policy must be rejected just like
+        // any unknown policy, before restore changes guest state.
+        let version_5_hash = [
+            0x01, 0xb0, 0x21, 0x4b, 0x93, 0x87, 0xe2, 0x05, 0xe4, 0xc3, 0xdd, 0x41, 0x87, 0x80,
+            0xbb, 0xe1, 0x5c, 0x77, 0xf1, 0x71, 0x25, 0x91, 0x20, 0xc2, 0xf7, 0x90, 0x2a, 0xe3,
+            0x88, 0x58, 0xff, 0x63,
+        ];
+        for rejected_hash in [version_5_hash, [0xFFu8; 32]] {
+            s.contract_hash = rejected_hash;
 
-        let mut b = full_vmm(nonzero_state(), vec![], 100, 0xABCD);
-        let before = b.state_hash().unwrap();
-        assert!(matches!(
-            b.restore_vm_state(&s),
-            Err(VmmError::Snapshot(
-                crate::snapshot::SnapshotError::ContractMismatch
-            ))
-        ));
-        assert_eq!(
-            b.state_hash().unwrap(),
-            before,
-            "a rejected snapshot leaves the VM fully intact (atomic)"
-        );
+            let mut b = full_vmm(nonzero_state(), vec![], 100, 0xABCD);
+            let before = b.state_hash().unwrap();
+            assert!(matches!(
+                b.restore_vm_state(&s),
+                Err(VmmError::Snapshot(
+                    crate::snapshot::SnapshotError::ContractMismatch
+                ))
+            ));
+            assert_eq!(
+                b.state_hash().unwrap(),
+                before,
+                "a rejected snapshot leaves the VM fully intact (atomic)"
+            );
+        }
     }
 
     #[test]

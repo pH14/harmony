@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! A tiny, total TOML-subset reader for `consonance/vmm-core/contracts/x86/intel.toml` and the
+//! A tiny, total TOML-subset reader for `consonance/vmm-core/contracts/x86/guest.toml` and the
 //! typed [`Contract`] it produces.
 //!
 //! The contract artifact is **trusted, compile-time-embedded** data (`include_str!`
@@ -19,20 +19,14 @@
 use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
-// Vendor axis (Deliverable 1 — a vendor column on the one frozen contract).
+// Guest-visible vendor identity validation.
 // ---------------------------------------------------------------------------
 
-/// The x86 vendor a contract file is a column for. Both Intel and AMD are the
-/// **same `Arch`** (x86-64, `docs/ARCHITECTURE.md`); the vendor is a first-class
-/// axis *inside* `vendor/x86/contract/`, not a second `Arch`. The `GenuineIntel`
-/// column (`consonance/vmm-core/contracts/x86/intel.toml`, `det-cfl-v1`) is current truth; the
-/// `AuthenticAMD` column (`consonance/vmm-core/contracts/x86/amd-draft.toml`, `det-zenN-v1`)
-/// is a draft, `verify-on-silicon` pending AE-4.
+/// Vendor string advertised by a guest model. This is not the physical host's
+/// vendor and is never used to select host-specific policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum VendorId {
-    /// Intel — the ratified, live-enforced column.
     GenuineIntel,
-    /// AMD — the draft column, wired into no live enforcement path.
     AuthenticAMD,
 }
 
@@ -65,13 +59,13 @@ impl VendorId {
 
 /// A refusal from the vendor-axis loader ([`Contract::load`]). Trusted embedded
 /// contract data never trips these at runtime; they exist so a *mismatched* axis
-/// (loading the AMD draft under the Intel axis, or an artifact whose declared
+/// (a requested guest vendor disagrees with the file, or an artifact whose declared
 /// vendor disagrees with its own CPUID leaf-0 string) is a loud, testable refusal
 /// rather than a silently-wrong policy.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub(crate) enum ContractError {
     /// The `[contract] vendor` header disagrees with the axis the file was loaded
-    /// under (e.g. the AuthenticAMD draft loaded under the GenuineIntel axis).
+    /// under (e.g. AuthenticAMD guest data loaded as GenuineIntel).
     #[error("contract vendor mismatch: file declares {found}, loaded under {expected}")]
     VendorMismatch {
         expected: &'static str,
@@ -124,6 +118,7 @@ impl TomlValue {
             _ => 0,
         }
     }
+    #[cfg(test)]
     fn as_bool(&self) -> bool {
         matches!(self, TomlValue::Bool(true))
     }
@@ -273,11 +268,6 @@ pub(crate) struct CpuidRow {
     pub ebx: RegField,
     pub ecx: RegField,
     pub edx: RegField,
-    /// The `verify-on-silicon` qualifier (Deliverable 3). `None` for Intel rows
-    /// (implicitly `verified = det-cfl-v1`, the frozen baseline); `Some(
-    /// "on-silicon-pending-AE4")` for every AMD enforcement row. Part of the
-    /// hashed canonical form, so a row silently losing its marker is hash-breaking.
-    pub verified: Option<String>,
 }
 
 /// The set of MSR indices a row names.
@@ -310,14 +300,6 @@ pub(crate) struct MsrRow {
     pub read_param: Option<String>,
     pub write: String,
     pub write_param: Option<String>,
-    /// The `verify-on-silicon` qualifier (Deliverable 3) — see [`CpuidRow::verified`].
-    pub verified: Option<String>,
-    /// The per-generation PMU marker (Deliverable 4): `Some("legacy-perfmon")` for
-    /// the `PERF_CTL`/`PERF_CTR` core pairs, `Some("zen4+")` for the PerfMonV2
-    /// global control/status MSRs. The loader parses both and resolves neither —
-    /// which set is live for a given part is an AE-0 decision, not an AMD constant.
-    /// `None` for every non-PMU row. Part of the hashed canonical form.
-    pub applies_when: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -356,22 +338,10 @@ pub(crate) struct MmioRow {
     pub write_param: Option<String>,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct HostAssert {
-    pub family_model_stepping: String,
-    pub host_microcode_rev: String,
-    pub guest_ucode_rev: String,
-    pub mxcsr_mask: String,
-    pub maxphyaddr_min: i64,
-    pub rtm_disabled: bool,
-    pub cr4_force_reserved: Vec<String>,
-    pub host_absent: Vec<String>,
-}
-
 /// The fully-typed contract: every normative table the §6 canonical form covers.
 #[derive(Clone, Debug)]
 pub(crate) struct Contract {
-    /// The vendor axis this file is a column for (Deliverable 1). Parsed from the
+    /// The guest-visible vendor identity. Parsed from the
     /// `[contract] vendor` header (default [`VendorId::GenuineIntel`] when absent,
     /// for the Intel-flavoured synthetic test fixtures). **Not** emitted into the
     /// hashed canonical form — the zero-drift grammar (Deliverable 6): adding
@@ -415,32 +385,8 @@ pub(crate) struct Contract {
     pub mmio_default_write: String,
     pub mmio_default_write_param: Option<String>,
     pub mmio: Vec<MmioRow>,
-    pub host_assert: HostAssert,
-    /// Section-level `transfers-unchanged-pending-AE4` markers (Deliverable 2,
-    /// veto point 5): the shared-ISA surface the AMD draft carries **by marker**
-    /// rather than by hand-copying 3000 near-duplicate rows (never fork the one
-    /// reproducer). Keyed by section name (`cpuid-standard`, `insn`, `timer`, `cmos`,
-    /// `mmio`, `host-assert`) → the transfer disposition (`unchanged-pending-AE4`, or
-    /// `on-silicon-pending-AE4` for the per-silicon host-assert block). The
-    /// canonicalizer records each marker in place of the section's rows; empty for the
-    /// Intel column, which materializes every row.
-    ///
-    /// Note: the shared **MSR** surface is *not* a section marker here — it is an
-    /// **explicit allowlist** ([`Contract::msr_shared`]), because the MSR index space
-    /// has vendor-specific addresses (e.g. `IA32_ARCH_CAPABILITIES` `0x10a`,
-    /// `IA32_TSX_CTRL` `0x122` are Intel-specific), so a bare numeric range would
-    /// over-claim non-portable rows. CPUID standard leaves stay a bounded marker
-    /// because the standard-leaf space is a *shared enumeration* (leaf N is parallel
-    /// on both vendors), not vendor-specific numeric addresses.
-    pub transfers: BTreeMap<String, String>,
-    /// The explicit **shared architectural MSR allowlist** — the genuinely
-    /// cross-vendor MSRs (identical guest semantics on Intel and AMD) the AMD draft
-    /// carries as `transfers-unchanged-pending-AE4`, encoded as an allowlist rather
-    /// than a numeric range so a future AE-4 consumer cannot inherit Intel-specific
-    /// MSRs. Empty for the Intel column. Canonicalized as `msr-shared <idx>
-    /// unchanged-pending-AE4` records, and kept disjoint from the materialized [`msr`]
-    /// rows. (`msr` = [`Contract::msr`].)
-    pub msr_shared: Vec<IndexSpec>,
+    pub guest_ucode_rev: String,
+    pub cr4_force_reserved: Vec<String>,
 }
 
 /// Parse `"0x...."`/decimal text into a `u32` (trusted contract token).
@@ -494,15 +440,6 @@ fn index_spec_of(e: &BTreeMap<String, TomlValue>) -> IndexSpec {
     } else {
         IndexSpec::Single(hex32(e["index"].as_str()))
     }
-}
-
-/// Read an optional string-valued key from a row's key map (`None` when absent or
-/// empty). Used for the AMD `verified` / `applies-when` qualifiers, which Intel
-/// rows omit.
-fn opt_str(e: &BTreeMap<String, TomlValue>, key: &str) -> Option<String> {
-    e.get(key)
-        .map(|v| v.as_str().to_string())
-        .filter(|s| !s.is_empty())
 }
 
 /// Pull the read/write disposition tokens + optional formula params from a row's
@@ -586,7 +523,7 @@ impl Contract {
         let empty = BTreeMap::new();
         let c = raw.singletons.get("contract").unwrap_or(&empty);
         let mmio = raw.singletons.get("mmio").unwrap_or(&empty);
-        let ha = raw.singletons.get("host-assert").unwrap_or(&empty);
+        let guest = raw.singletons.get("guest").unwrap_or(&empty);
 
         let cpuid = raw
             .arrays
@@ -677,33 +614,9 @@ impl Contract {
             .and_then(VendorId::from_token)
             .unwrap_or(VendorId::GenuineIntel);
 
-        // Section-level transfer markers (Deliverable 2). The `[transfers]` singleton
-        // maps a section name to its transfer disposition.
-        let transfers = raw
-            .singletons
-            .get("transfers")
-            .map(|m| {
-                m.iter()
-                    .map(|(k, v)| (k.clone(), v.as_str().to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // The explicit shared architectural MSR allowlist (`[[msr-shared.entry]]`),
-        // each an index-only row (no disposition — the disposition transfers, pending
-        // AE-4). An allowlist, never a numeric range, so it cannot inherit
-        // vendor-specific MSRs.
-        let msr_shared = raw
-            .arrays
-            .get("msr-shared.entry")
-            .map(|rows| rows.iter().map(index_spec_of).collect())
-            .unwrap_or_default();
-
         Contract {
             vendor,
             vendor_declared,
-            transfers,
-            msr_shared,
             version: c.get("version").map(TomlValue::as_int).unwrap_or_default(),
             kernel_tag: c
                 .get("kernel-tag")
@@ -781,40 +694,14 @@ impl Contract {
                 .get("default-write-param")
                 .map(|v| v.as_str().to_string()),
             mmio: mmio_rows,
-            host_assert: HostAssert {
-                family_model_stepping: ha
-                    .get("family-model-stepping")
-                    .map(|v| v.as_str().to_string())
-                    .unwrap_or_default(),
-                host_microcode_rev: ha
-                    .get("host-microcode-rev")
-                    .map(|v| v.as_str().to_string())
-                    .unwrap_or_default(),
-                guest_ucode_rev: ha
-                    .get("guest-ucode-rev")
-                    .map(|v| v.as_str().to_string())
-                    .unwrap_or_default(),
-                mxcsr_mask: ha
-                    .get("mxcsr-mask")
-                    .map(|v| v.as_str().to_string())
-                    .unwrap_or_default(),
-                maxphyaddr_min: ha
-                    .get("maxphyaddr-min")
-                    .map(TomlValue::as_int)
-                    .unwrap_or_default(),
-                rtm_disabled: ha
-                    .get("rtm-disabled")
-                    .map(TomlValue::as_bool)
-                    .unwrap_or_default(),
-                cr4_force_reserved: ha
-                    .get("cr4-force-reserved")
-                    .map(|v| v.as_arr().to_vec())
-                    .unwrap_or_default(),
-                host_absent: ha
-                    .get("host-absent")
-                    .map(|v| v.as_arr().to_vec())
-                    .unwrap_or_default(),
-            },
+            guest_ucode_rev: guest
+                .get("ucode-rev")
+                .map(|v| v.as_str().to_string())
+                .unwrap_or_default(),
+            cr4_force_reserved: guest
+                .get("cr4-force-reserved")
+                .map(|v| v.as_arr().to_vec())
+                .unwrap_or_default(),
         }
     }
 
@@ -835,7 +722,6 @@ impl Contract {
             ebx: reg_field(e["ebx"].as_str()),
             ecx: reg_field(e["ecx"].as_str()),
             edx: reg_field(e["edx"].as_str()),
-            verified: opt_str(e, "verified"),
         }
     }
 
@@ -848,8 +734,6 @@ impl Contract {
             read_param,
             write,
             write_param,
-            verified: opt_str(e, "verified"),
-            applies_when: opt_str(e, "applies-when"),
         }
     }
 
@@ -1215,9 +1099,7 @@ read-param = \"vclock.tsc\"\n\
 write = \"emulate-vtime\"\n\
 write-param = \"vclock.tsc.write\"\n\
 \n\
-[host-assert]\n\
-maxphyaddr-min = 46\n\
-rtm-disabled = true\n\
+[guest]\n\
 cr4-force-reserved = [\"PKE\", \"PKS\"]\n";
 
     #[test]
@@ -1228,10 +1110,8 @@ cr4-force-reserved = [\"PKE\", \"PKS\"]\n";
         assert_eq!(c.cpuid_baseline, "test-baseline");
         assert_eq!(c.tsc_hz, 2_000_000_000);
         assert_eq!(c.mxcsr_mask, "0x0000ffff");
-        assert_eq!(c.host_assert.maxphyaddr_min, 46);
-        assert!(c.host_assert.rtm_disabled);
         assert_eq!(
-            c.host_assert.cr4_force_reserved,
+            c.cr4_force_reserved,
             vec!["PKE".to_string(), "PKS".to_string()]
         );
 

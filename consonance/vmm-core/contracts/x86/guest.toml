@@ -15,18 +15,15 @@
 #   * insn mirrors markdown §4; timer/cmos/mmio mirror §5.
 
 [contract]
-version = 5
-# vendor axis (the Intel column on the one frozen contract; see the README beside
-# this file, and amd-draft.toml for the AMD draft column). Header metadata only —
-# the zero-drift grammar keeps this file's canonical bytes and contract_hash
-# byte-identical: the serializer never emits `vendor`.
+version = 6
+# Guest-visible vendor identity; this does not restrict the physical host.
 vendor = "GenuineIntel"
 kernel-tag = "v6.18.35"
 kernel-sha256 = "f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236"
-cpuid-baseline = "det-cfl-v1"
+cpuid-baseline = "harmony-x86-v1"
 # §6 anti-drift anchor: sha256 of the canonical serialized form (computed by
 # vmm-core's serializer, never hand-written). Re-derive on any body change + version bump.
-contract_hash = "01b0214b9387e205e4c3dd418780bbe15c77f171259120c2f7902ae38858ff63"
+contract_hash = "80e29c217f9081afe6d55cf1a0ad73dde29eeb1a771d820963e54c73689b7ac6"
 # Frozen scalar constants hashed into the canonical form (§6 header records):
 tsc-hz = 2000000000
 crystal-hz = 25000000
@@ -2550,7 +2547,8 @@ write = "deny-gp"
 
 [insn]
 # §4 instruction dispositions. Canonical: insn <MNEMONIC> <mechanism> <result> <determinism-class>.
-# determinism in {arch, fault-absent, intercept, invisible, scope} per §1.1.
+# Hidden native instructions are outside the cooperative guest instruction surface.
+# CPUID masking does not guarantee a fault on every physical CPU.
 
 [[insn.entry]]
 mnemonic = "CPUID"
@@ -2578,9 +2576,9 @@ determinism = "intercept"
 
 [[insn.entry]]
 mnemonic = "HRESET"
-mechanism = "fault-absent"
-result = "ud"
-determinism = "fault-absent"
+mechanism = "cooperative-hidden"
+result = "out-of-scope"
+determinism = "scope"
 
 [[insn.entry]]
 mnemonic = "INVEPT"
@@ -2608,15 +2606,15 @@ determinism = "intercept"
 
 [[insn.entry]]
 mnemonic = "PCONFIG"
-mechanism = "fault-absent"
-result = "ud"
-determinism = "fault-absent"
+mechanism = "cooperative-hidden"
+result = "out-of-scope"
+determinism = "scope"
 
 [[insn.entry]]
 mnemonic = "RDPID"
-mechanism = "fault-absent"
-result = "ud"
-determinism = "fault-absent"
+mechanism = "cooperative-hidden"
+result = "out-of-scope"
+determinism = "scope"
 
 [[insn.entry]]
 mnemonic = "RDPKRU"
@@ -2656,33 +2654,33 @@ determinism = "intercept"
 
 [[insn.entry]]
 mnemonic = "SERIALIZE"
-mechanism = "fault-absent"
-result = "ud"
-determinism = "fault-absent"
+mechanism = "cooperative-hidden"
+result = "out-of-scope"
+determinism = "scope"
 
 [[insn.entry]]
 mnemonic = "SHA"
-mechanism = "fault-absent"
-result = "ud"
-determinism = "fault-absent"
+mechanism = "cooperative-hidden"
+result = "out-of-scope"
+determinism = "scope"
 
 [[insn.entry]]
 mnemonic = "TPAUSE"
-mechanism = "fault-absent"
-result = "ud"
-determinism = "fault-absent"
+mechanism = "cooperative-hidden"
+result = "out-of-scope"
+determinism = "scope"
 
 [[insn.entry]]
 mnemonic = "UMONITOR"
-mechanism = "fault-absent"
-result = "ud"
-determinism = "fault-absent"
+mechanism = "cooperative-hidden"
+result = "out-of-scope"
+determinism = "scope"
 
 [[insn.entry]]
 mnemonic = "UMWAIT"
-mechanism = "fault-absent"
-result = "ud"
-determinism = "fault-absent"
+mechanism = "cooperative-hidden"
+result = "out-of-scope"
+determinism = "scope"
 
 # VMCALL row = the VMCALL *instruction*'s disposition under the determinism backend
 # (patched/direct-VMX): it VM-exits unconditionally and is dispatched to the hypercall handler.
@@ -2760,21 +2758,21 @@ determinism = "intercept"
 
 [[insn.entry]]
 mnemonic = "XABORT"
-mechanism = "fault-absent"
-result = "ud"
-determinism = "fault-absent"
+mechanism = "cooperative-hidden"
+result = "out-of-scope"
+determinism = "scope"
 
 [[insn.entry]]
 mnemonic = "XBEGIN"
-mechanism = "fault-absent"
-result = "ud"
-determinism = "fault-absent"
+mechanism = "cooperative-hidden"
+result = "out-of-scope"
+determinism = "scope"
 
 [[insn.entry]]
 mnemonic = "XEND"
-mechanism = "fault-absent"
-result = "ud"
-determinism = "fault-absent"
+mechanism = "cooperative-hidden"
+result = "out-of-scope"
+determinism = "scope"
 
 [[insn.entry]]
 mnemonic = "XGETBV0"
@@ -2832,28 +2830,13 @@ determinism = "intercept"
 
 [[insn.entry]]
 mnemonic = "XTEST"
-mechanism = "fault-absent"
-result = "ud"
-determinism = "fault-absent"
+mechanism = "cooperative-hidden"
+result = "out-of-scope"
+determinism = "scope"
 
-[host-assert]
-# §1.1/§1.2 host-homogeneity assertions vmm-core checks at VM start (hashed); refuse on mismatch.
-family-model-stepping = "06_9e_0c"
-# host-microcode-rev: the PHYSICAL host microcode revision, fleet-pinned and deployment-set
-# (the det-cfl-v1 box: i9-9900K, kernel-recorded microcode 0xf8). DISTINCT from the guest-visible
-# BIOS_SIGN_ID (guest-ucode-rev, MSR 0x8b = 0x0000000100000000). Changing the pinned host rev = version bump.
-host-microcode-rev = "0x00000000000000f8"
-guest-ucode-rev = "0x0000000100000000"
-mxcsr-mask = "0x0000ffff"
-maxphyaddr-min = 39
-# rtm-disabled: on det-cfl-v1, RTM/HLE are PHYSICALLY ABSENT (CPUID.7.0:EBX[4,11]=0, IA32_TSX_CTRL
-# #GPs), so XBEGIN/XEND/XTEST/XABORT #UD natively — no host pin is installed or needed. The probe's
-# `rtm-disabled` check is satisfied by physical absence (XBEGIN #UDs); the key name is retained.
-rtm-disabled = true
-# cr4-force-reserved: bits vmm-core keeps reserved in the guest CR4 so the listed
-# features are unreachable (PKE: RDPKRU/WRPKRU #UD; PKS: IA32_PKRS unreachable). §4 RDPKRU row.
+[guest]
+ucode-rev = "0x0000000100000000"
 cr4-force-reserved = ["PKE", "PKS"]
-host-absent = ["HRESET", "PCONFIG", "RDPID", "SERIALIZE", "SHA", "TPAUSE", "UMONITOR", "UMWAIT"]
 
 [timer]
 # §5 time-source surface. Canonical: timer <device> <read> <write>, fixed order.

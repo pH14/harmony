@@ -8,7 +8,7 @@
 //! **inside** a vendor submodule is that architecture's own: the CPU contract
 //! and its installed policy, the exit dispatch and dispositions, the boot
 //! loaders and entry state, the interrupt fabric and platform device models, the
-//! host-homogeneity probe, the exit-count-clock event, and the state records.
+//! the exit-count-clock event, and the state records.
 //!
 //! [`Vendor`] is how the engine reaches the vendor half without naming it: the
 //! engine's [`Vmm`] holds `<B::A as Vendor>::Devices` and dispatches arch exits

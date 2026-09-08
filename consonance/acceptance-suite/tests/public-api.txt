@@ -4,9 +4,9 @@ pub acceptance_suite::CorpusKind::FuzzSeed
 pub acceptance_suite::CorpusKind::Micro
 pub acceptance_suite::CorpusKind::Workload
 pub enum acceptance_suite::HostId
-pub acceptance_suite::HostId::DetCflV1
-pub acceptance_suite::HostId::Msr1
+pub acceptance_suite::HostId::Arm64Kvm
 pub acceptance_suite::HostId::Portable
+pub acceptance_suite::HostId::X86Kvm
 impl acceptance_suite::HostId
 pub fn acceptance_suite::HostId::from_token(&str) -> core::option::Option<acceptance_suite::HostId>
 pub fn acceptance_suite::HostId::to_token(self) -> &'static str

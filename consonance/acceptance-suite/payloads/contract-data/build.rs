@@ -124,7 +124,7 @@ fn msr_indices(b: &Block) -> Vec<(u32, u32)> {
 
 fn main() {
     let manifest = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let contract = Path::new(&manifest).join("../../../vmm-core/contracts/x86/intel.toml");
+    let contract = Path::new(&manifest).join("../../../vmm-core/contracts/x86/guest.toml");
     let text = fs::read_to_string(&contract)
         .unwrap_or_else(|e| panic!("read {}: {e}", contract.display()));
     println!("cargo:rerun-if-changed={}", contract.display());
@@ -233,7 +233,7 @@ fn main() {
     }
 
     let out = format!(
-        "// @generated from consonance/vmm-core/contracts/x86/intel.toml by build.rs — do not edit.\n\
+        "// @generated from consonance/vmm-core/contracts/x86/guest.toml by build.rs — do not edit.\n\
          /// Contract `version` this table was generated from.\n\
          pub const CONTRACT_VERSION: u32 = {version};\n\
          /// Frozen TSC frequency (Hz).\n\

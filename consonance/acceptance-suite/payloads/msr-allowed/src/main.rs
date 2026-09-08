@@ -1,4 +1,4 @@
-//! `msr-allowed`: the allowed MSR set from `consonance/vmm-core/contracts/x86/intel.toml` (via
+//! `msr-allowed`: the allowed MSR set from `consonance/vmm-core/contracts/x86/guest.toml` (via
 //! `contract-data`). Two dispositions are exercised:
 //!
 //! * **allow-stateful** — **every** allow-stateful index in the contract

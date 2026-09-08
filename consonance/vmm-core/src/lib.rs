@@ -25,7 +25,7 @@
 //!   its installed policy, the exit dispatch and dispositions, the boot loaders and
 //!   entry state (Multiboot v1 + the direct 64-bit Linux bzImage protocol), the
 //!   interrupt fabric and platform device models (the userspace xAPIC per ruling R1,
-//!   the 8259/PIT/PCI shims, the 8250 UART), the host-homogeneity probe, the
+//!   the 8259/PIT/PCI shims, the 8250 UART), the
 //!   VM-exit exit-count-clock event, and the `vm_state` record set.
 //!
 //! An ARM vendor is a sibling module under [`vendor`], not an edit to the engine.

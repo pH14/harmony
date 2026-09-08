@@ -1,5 +1,5 @@
 //! Conformance tables for the instruction-sweep payloads (task 18), generated
-//! at build time from `consonance/vmm-core/contracts/x86/intel.toml` so every expected value
+//! at build time from `consonance/vmm-core/contracts/x86/guest.toml` so every expected value
 //! traces to the committed contract — a contract bump surfaces as a payload /
 //! golden diff rather than silent drift. Shared verbatim between the bare-metal
 //! sweep payloads (`no_std`) and host-side tests, like `compute-core`.
@@ -207,7 +207,7 @@ pub fn roundtrip_value(index: u32) -> MsrRoundtrip {
 mod tests {
     use super::*;
 
-    /// Spot-check the generated CPUID model against known frozen `det-cfl-v1`
+    /// Spot-check the generated CPUID model against the shared guest-policy
     /// values (gate 3: expected values trace to the contract, not hand-entered).
     #[test]
     fn cpuid_model_matches_contract() {
@@ -280,7 +280,7 @@ mod tests {
     fn contract_allow_stateful_indices() -> std::collections::BTreeSet<u32> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../../vmm-core/contracts/x86/intel.toml"
+            "/../../../vmm-core/contracts/x86/guest.toml"
         );
         let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
         let hex = |s: &str| {
@@ -381,7 +381,7 @@ mod tests {
     /// Gate 2 support (legality, mechanized): the write value [`roundtrip_value`]
     /// picks for every swept MSR is architecturally legal for that index, so a box
     /// round-trip failure is a real contract problem, never a `#GP` from an illegal
-    /// probe value. `MAXPHYADDR=39` on `det-cfl-v1` (CPUID 0x80000008 EAX low byte).
+    /// probe value. `MAXPHYADDR=39` on `x86-kvm` (CPUID 0x80000008 EAX low byte).
     #[test]
     fn roundtrip_values_are_legal() {
         const MAXPHYADDR: u32 = 39;

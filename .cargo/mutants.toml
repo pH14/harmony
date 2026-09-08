@@ -115,17 +115,6 @@ exclude_re = [
     # vec![] construct the same empty state. Its tests pin these empty values.
     "consonance/environment/src/channel\\.rs:.*replace <impl ServiceHandler for NominalHandler>::configuration -> &\\[u8\\] with Vec::leak\\(Vec::new\\(\\)\\)$",
     "consonance/environment/src/channel\\.rs:.*replace <impl ServiceHandler for NominalHandler>::snapshot_state -> Result<Vec<u8>, ChannelError> with Ok\\(vec!\\[\\]\\)$",
-    # (a) `vmm_core::hostassert::probe` — the `cfg(linux)` host-CPU probe (live
-    #     CPUID / FXSAVE / sysfs-microcode reads + the comparisons against them).
-    #     Exactly like the `kvm` path above: it cannot be value-mutation-tested on a
-    #     non-baseline CI runner (the box is an i9-9900K, not the frozen SKX
-    #     baseline, so every assertion already fails and flipping one cannot change
-    #     the refuse-verdict). Verified instead by its (non-`#[ignore]`d)
-    #     pure-decoder unit tests, the `report()` smoke test, and the box
-    #     `host_assert_report`. enforce()/report()/verdict() (cross-platform) stay
-    #     in the gate. (Matches both `… in probe::evaluate` statement mutants and
-    #     `replace probe::fmt_hex -> …` function-return mutants.)
-    "probe::",
     # The non-Linux/Miri fallback for the out-of-band minor-fault profiler is
     # cfg-excluded from the Linux mutation oracle, so replacing its `None` with
     # a sentinel `Some` cannot affect that build. Linux exercises the real

@@ -29,7 +29,7 @@ unison = { path = "../unison", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 # Manifest format. `toml` is OUTSIDE the conventions rule-5 whitelist; requested
 # ask-by-comment in the PR. Rationale: the manifest is a reviewable golden-style
-# artifact alongside consonance/vmm-core/contracts/x86/intel.toml, and acceptance corpus names
+# artifact alongside consonance/vmm-core/contracts/x86/guest.toml, and acceptance corpus names
 # it consonance/acceptance-suite/corpus-manifest.toml. (The fallback, had the integrator declined the
 # dep, was a JSON manifest parsed with the whitelisted serde_json.)
 toml = "0.8"

@@ -13,7 +13,7 @@
 //!
 //! # Environment (everything box-specific, in one place)
 //!
-//! - **Host**: the determinism box (`ssh hetzner`), det-cfl-v1 CPU, LOADED
+//! - **Host**: the determinism box (`ssh hetzner`), x86-kvm CPU, LOADED
 //!   patched KVM modules (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), perf_event;
 //!   CPU-pinned per `.github/workflows/box.yml`:
 //!   `taskset -c 2 cargo test -p vmm-core --release --test live_pvclock -- --ignored --test-threads=1`
@@ -75,24 +75,6 @@ fn require_kvm() {
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on the determinism box with the \
          LOADED patched KVM modules, CPU-pinned per .github/workflows/box.yml."
-    );
-}
-
-fn require_host_baseline() {
-    let report = vmm_core::vendor::x86::hostassert::report();
-    let mut all = true;
-    for o in &report {
-        if !o.pass {
-            eprintln!(
-                "[host-assert] FAIL {}: expected {}, observed {}",
-                o.key, o.expected, o.actual
-            );
-        }
-        all &= o.pass;
-    }
-    assert!(
-        all,
-        "host CPU is not the det-cfl-v1 baseline — run on the determinism box."
     );
 }
 
@@ -216,7 +198,7 @@ fn boot(kernel: &[u8], initramfs: &[u8], seed: u64, page_on: bool) -> DynVmm {
         &cmdline,
         seed,
     )
-    .expect("patched Linux boot — needs the LOADED patched KVM + perf + det-cfl-v1 host");
+    .expect("patched Linux boot — needs the LOADED patched KVM + perf + x86-kvm host");
     if page_on {
         vmm.enable_pvclock();
     }
@@ -290,10 +272,9 @@ fn sample_at_sync(vmm: &mut DynVmm) -> (vmm_backend::ExitCounts, u64) {
 /// sane monotonic time that tracks the trap oracle, and the guest still
 /// reaches `GUEST_READY` + clean poweroff.
 #[test]
-#[ignore = "box-only: needs /dev/kvm (patched), perf_event, det-cfl-v1, and the pvclock kernel build (see the Environment section)"]
+#[ignore = "box-only: needs /dev/kvm (patched), perf_event, x86-kvm, and the pvclock kernel build (see the Environment section)"]
 fn g0_smoke_boot_registers_and_reads_sane_time() {
     require_kvm();
-    require_host_baseline();
     let kernel = pvclock_kernel();
     let initramfs = minimal_initramfs();
 
@@ -495,7 +476,6 @@ fn g1_arm(kernel: &[u8], initramfs: &[u8], seals: u64, v0: u64, dv: u64) -> (Vec
 #[ignore = "box-only (see g0); run g0 first — smoke-fire-once"]
 fn g1_same_seed_state_hash_bit_identical_page_on() {
     require_kvm();
-    require_host_baseline();
     let kernel = pvclock_kernel();
     let initramfs = pg_initramfs();
     // Defaults sized to the pinned Postgres artifact's ~0.46 virtual-second
@@ -547,7 +527,6 @@ fn g1_same_seed_state_hash_bit_identical_page_on() {
 #[ignore = "box-only (see g0); run g0 first — smoke-fire-once"]
 fn g2_page_matches_trap_oracle_at_refresh_moments() {
     require_kvm();
-    require_host_baseline();
     let kernel = pvclock_kernel();
     let initramfs = minimal_initramfs();
 
@@ -685,7 +664,6 @@ fn perf_arm(kernel: &[u8], initramfs: &[u8], page_on: bool) -> PerfArm {
 #[ignore = "box-only (see g0); run g0 first — smoke-fire-once"]
 fn n4_perf_rdtsc_exit_rate_page_off_vs_page_on() {
     require_kvm();
-    require_host_baseline();
     let kernel = pvclock_kernel();
     let initramfs = minimal_initramfs();
 
@@ -740,7 +718,6 @@ fn n4_perf_rdtsc_exit_rate_page_off_vs_page_on() {
 #[ignore = "box-only (see g0); long — run after g0/g1; needs initramfs-postgres.cpio.gz"]
 fn n4_perf_postgres_window_page_off_vs_page_on() {
     require_kvm();
-    require_host_baseline();
     let kernel = pvclock_kernel();
     let initramfs = pg_initramfs();
     // Optional early cap on the workload window, in V-time ns. Default: the WHOLE

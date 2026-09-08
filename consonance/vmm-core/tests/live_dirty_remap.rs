@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! **Task-95 M2 box gates (a0)/(a)/(b) + the (d) numbers** — `#![cfg(target_os =
 //! "linux")]` **and `#[ignore]`**: needs real + LOADED patched KVM, the
-//! det-cfl-v1 host, and the built Postgres image. Gate (c) — nothing regresses —
+//! x86-kvm host, and the built Postgres image. Gate (c) — nothing regresses —
 //! keeps the 2 GiB production guest shape and campaign-runner
 //! `live_materialization.rs` coverage unchanged alongside this file.
 //!
@@ -121,24 +121,6 @@ fn require_kvm() {
     );
 }
 
-fn require_host_baseline() {
-    let report = vmm_core::vendor::x86::hostassert::report();
-    let mut all = true;
-    for o in &report {
-        if !o.pass {
-            eprintln!(
-                "[host-assert] FAIL {}: expected {}, observed {}",
-                o.key, o.expected, o.actual
-            );
-        }
-        all &= o.pass;
-    }
-    assert!(
-        all,
-        "host CPU is not the det-cfl-v1 baseline — run on the determinism box."
-    );
-}
-
 fn cmdline() -> String {
     std::env::var("BOOT_CMDLINE").unwrap_or_else(|_| DEFAULT_CMDLINE.to_string())
 }
@@ -199,7 +181,7 @@ fn guest_images() -> (Vec<u8>, Vec<u8>) {
 /// (enabled)** — the production composition.
 fn boot_pg(kernel: &[u8], initramfs: &[u8], seed: u64) -> DynVmm {
     boot_linux_patched_with_dirty_log(kernel, initramfs, GUEST_RAM_LEN, &cmdline(), seed, true)
-        .expect("patched Linux boot — needs the LOADED patched KVM + perf + det-cfl-v1 host")
+        .expect("patched Linux boot — needs the LOADED patched KVM + perf + x86-kvm host")
 }
 
 /// The **same shared composition** with dirty logging disabled (`flags: 0`) —
@@ -354,11 +336,10 @@ fn capture_arm(
 /// Gate (a0): dirty logging enabled vs `flags: 0`, same seed, **no seal taken**
 /// → bit-identical `state_hash` at the same V-time stop.
 #[test]
-#[ignore = "box-only task-95 gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); \
+#[ignore = "box-only task-95 gate (LOADED patched KVM + built Postgres image + x86-kvm host); \
             run per .github/workflows/box.yml"]
 fn a0_dirty_logging_is_guest_inert() {
     require_kvm();
-    require_host_baseline();
     let (kernel, initramfs) = guest_images();
     let deadline = env_u64("DR_RUN_VNS", 20_000_000);
 
@@ -394,11 +375,10 @@ fn a0_dirty_logging_is_guest_inert() {
 /// byte-identical (via replay + whole-state hash), with the derive path
 /// **proven engaged** (chain_len 2) and the (d) seal-cost numbers printed.
 #[test]
-#[ignore = "box-only task-95 gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); \
+#[ignore = "box-only task-95 gate (LOADED patched KVM + built Postgres image + x86-kvm host); \
             run per .github/workflows/box.yml"]
 fn a_harvested_derive_matches_full_scan_capture() {
     require_kvm();
-    require_host_baseline();
     let (kernel, initramfs) = guest_images();
 
     let (chains_t, vts_t, durs_t, h_t) = capture_arm(&kernel, &initramfs, true);
@@ -438,11 +418,10 @@ fn a_harvested_derive_matches_full_scan_capture() {
 /// identical stop + `state_hash`, with the remap arm proven mapping-backed,
 /// plus the (d) restore-cost numbers.
 #[test]
-#[ignore = "box-only task-95 gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); \
+#[ignore = "box-only task-95 gate (LOADED patched KVM + built Postgres image + x86-kvm host); \
             run per .github/workflows/box.yml"]
 fn b_remap_and_memcpy_restores_agree() {
     require_kvm();
-    require_host_baseline();
     let (kernel, initramfs) = guest_images();
 
     let live = boot_pg(&kernel, &initramfs, BASE_SEED);

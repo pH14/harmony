@@ -8,7 +8,7 @@ name: box
 # no registered runner does not skip — GitHub leaves it queued (for about a
 # day), and with `cancel-in-progress: false` on the repo-wide concurrency
 # group below, that phantom job wedges the whole hardware lane behind it.
-# That is why the x86 lane (`det-cfl-v1`, the retired determinism box) was
+# That is why the x86 lane (`x86-64`, the retired determinism box) was
 # REMOVED with its machine in 2026-08 rather than left as a drop-in: this
 # commit's parent has the full job and `scripts/box-gates.sh`, its packaged
 # suite, when a successor box exists.
@@ -21,18 +21,9 @@ name: box
 #
 # ## The label scheme
 #
-# The first three labels are CAPABILITIES (self-hosted, has KVM, this
-# architecture); the fourth is the CHIP BASELINE IDENTITY. A gate that depends
-# on a specific chip names that chip; a gate that merely needs KVM does not.
-# This is what stops a determinism gate from scheduling onto the wrong silicon
-# and reporting a green that means nothing.
-#
-#   [self-hosted, kvm, arm64,  msr1]         the arm64 box (live)
-#
-# Adding a box means registering a runner with the matching labels, adding a
-# job here, and adding its `HostId` variant in
-# consonance/acceptance-suite/src/manifest.rs — the acceptance matrix's host
-# axis and these labels name the same hosts.
+# Runner labels describe capabilities: self-hosted, KVM, and architecture.
+# Jobs do not require a particular CPU model or a named machine. Host identity
+# may be recorded in qualification output, but it does not select guest policy.
 
 on:
   workflow_dispatch:
@@ -58,8 +49,8 @@ jobs:
   # states plainly what is still missing. It reports what it DID, and names what
   # it did not: an unbuilt suite must never read as a passing one.
   arm64-cpu-qualification:
-    name: arm64 CPU qualification (msr1)
-    runs-on: [self-hosted, kvm, arm64, msr1]
+    name: arm64 CPU qualification
+    runs-on: [self-hosted, kvm, arm64]
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
