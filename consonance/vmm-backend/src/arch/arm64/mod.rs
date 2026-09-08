@@ -145,8 +145,7 @@ pub enum Arm64Injection {
 /// completeness.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Arm64Policy {
-    /// The frozen synthetic ID-register model (the det-N1 analogue of
-    /// `det-cfl-v1`), installed config-time via KVM's writable-ID-register
+    /// The shared guest-visible ID-register model, installed config-time via KVM's writable-ID-register
     /// surface (`KVM_SET_ONE_REG` on the ID regs before the first `KVM_RUN`) —
     /// reachable on stock KVM.
     pub id_regs: IdRegModel,

@@ -33,7 +33,7 @@ use crate::io::outl;
 
 /// The conformance report-channel I/O port (corpus box-integration). Mirrors
 /// `vmm_core::devices::REPORT_PORT`; documented in `docs/ARCHITECTURE.md` and
-/// `consonance/vmm-core/contracts/x86/intel.toml` `[ports]`. Adjacent to but distinct from the
+/// `consonance/vmm-core/contracts/x86/guest.toml` `[ports]`. Adjacent to but distinct from the
 /// `0x0CA1` hypercall doorbell.
 pub const REPORT_PORT: u16 = 0x0CA2;
 

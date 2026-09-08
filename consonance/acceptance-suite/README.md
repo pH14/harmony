@@ -19,6 +19,12 @@ cargo run -p acceptance-suite -- run --manifest <manifest>
 make -C consonance/acceptance-suite test-payloads
 ```
 
+Manifest host classes are `portable` (toy registry), `x86-kvm` (Linux x86-64
+with the cell's required KVM capabilities), and `arm64-kvm` (reserved; no corpus
+registry yet). `--host` uses the same tokens. These replace the old CPU/box names;
+existing manifests must update their host tokens. No class pins a CPU model,
+stepping, or microcode revision.
+
 The payload gate runs every image twice under QEMU TCG and compares its payload
 output byte-for-byte. The hardware-backed corpus gate is driven by the separate
 `acceptance-tests` composition crate and uses the same payloads, manifest, and

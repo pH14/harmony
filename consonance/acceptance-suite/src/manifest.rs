@@ -46,18 +46,16 @@ pub struct CorpusItem {
 
 /// A host the acceptance matrix can run a cell on. Closed by design: an
 /// unrecognized token is a loud parse error rather than a cell that silently
-/// never runs. Adding a box means adding a variant here **and** a runner label
-/// in `.github/workflows/box.yml`.
+/// never runs. Host classes describe an architecture and backend, never a CPU model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostId {
     /// Any developer machine or hosted CI runner: no `/dev/kvm`, no pinned
     /// core, no chip baseline. The toy registry serves these cells.
     Portable,
-    /// The x86 determinism box — the `det-cfl-v1` chip baseline
-    /// (`consonance/vmm-core/contracts/x86/README.md`), patched KVM, pinned cores.
-    DetCflV1,
-    /// The arm64 box.
-    Msr1,
+    /// Any Linux x86-64 host with the KVM capabilities required by the cell.
+    X86Kvm,
+    /// A Linux arm64 KVM host.
+    Arm64Kvm,
 }
 
 impl HostId {
@@ -65,8 +63,8 @@ impl HostId {
     pub fn to_token(self) -> &'static str {
         match self {
             HostId::Portable => "portable",
-            HostId::DetCflV1 => "det-cfl-v1",
-            HostId::Msr1 => "msr1",
+            HostId::X86Kvm => "x86-kvm",
+            HostId::Arm64Kvm => "arm64-kvm",
         }
     }
 
@@ -75,8 +73,8 @@ impl HostId {
     pub fn from_token(s: &str) -> Option<HostId> {
         match s {
             "portable" => Some(HostId::Portable),
-            "det-cfl-v1" => Some(HostId::DetCflV1),
-            "msr1" => Some(HostId::Msr1),
+            "x86-kvm" => Some(HostId::X86Kvm),
+            "arm64-kvm" => Some(HostId::Arm64Kvm),
             _ => None,
         }
     }

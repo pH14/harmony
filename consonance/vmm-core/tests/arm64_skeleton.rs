@@ -1185,7 +1185,7 @@ fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
     restore(&entropy_changed, &mut timed(0, 7));
 }
 
-/// M3 — the full boot composition: `boot` runs the host-baseline gate then
+/// M3 — the full boot composition: `boot` installs the shared guest policy then
 /// loads an Image + DTB and sets the entry state, all mock-backed.
 #[test]
 fn arm64_boot_composes_a_ready_vmm() {

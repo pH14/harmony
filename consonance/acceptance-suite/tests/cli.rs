@@ -453,7 +453,7 @@ fn a_hardware_host_is_refused_loudly_rather_than_run_on_the_toy_registry() {
     // host's name. On a build with no real-VMM registry the request must be an
     // operational error (exit 1); on one that has it, the missing payloads /
     // absent patched KVM make it exit 1 too. Either way: never a false green.
-    let (code, _) = run(&["run", "--manifest", REAL_MANIFEST, "--host", "det-cfl-v1"]);
+    let (code, _) = run(&["run", "--manifest", REAL_MANIFEST, "--host", "x86-kvm"]);
     assert_eq!(
         code, 1,
         "a hardware host on a machine that cannot serve it is an operational error"
@@ -486,7 +486,7 @@ name = \"elsewhere\"
 kind = \"micro\"
 source = \"2\"
 oracles = [\"determinism\"]
-hosts = [\"det-cfl-v1\"]
+hosts = [\"x86-kvm\"]
 virt = \"l1\"
 ",
     );
@@ -513,7 +513,7 @@ name = \"alpha\"
 kind = \"micro\"
 source = \"1\"
 oracles = [\"determinism\"]
-hosts = [\"det-cfl-v2\"]
+hosts = [\"unknown-host\"]
 ",
     );
     // A typo'd host must be loud: silently, it would be a cell that no run ever

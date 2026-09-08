@@ -4,8 +4,7 @@
 //! installed policy ([`contract`]), the exit dispatch and dispositions
 //! ([`dispatch`]), the boot loaders and entry state ([`multiboot`],
 //! [`linux_loader`], [`entry`]), the interrupt fabric and platform device models
-//! ([`devices`] + the `lapic` crate), the host-homogeneity probe
-//! ([`hostassert`]), and the
+//! ([`devices`] + the `lapic` crate), and the
 //! `vm_state` record set ([`records`]).
 //!
 //! The engine ([`crate::vmm`]) reaches all of it through [`Vendor`] alone. x86
@@ -22,7 +21,6 @@ pub mod contract;
 pub mod devices;
 pub mod dispatch;
 pub mod entry;
-pub mod hostassert;
 pub mod linux_loader;
 pub mod multiboot;
 pub mod records;

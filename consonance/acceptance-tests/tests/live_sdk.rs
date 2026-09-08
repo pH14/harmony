@@ -21,7 +21,7 @@
 //! synchronized mid-run point to seal at (see the NOTE below gate B).
 //!
 //! Box-only: needs the LOADED patched `/dev/kvm`, and the
-//! `det-cfl-v1` host; `#[ignore]`d so a plain `cargo nextest` shows it not-run.
+//! `x86-kvm` host; `#[ignore]`d so a plain `cargo nextest` shows it not-run.
 //! Run CPU-pinned per `.github/workflows/box.yml`, reverting KVM to stock afterwards:
 //!   `cargo test -p acceptance-tests --release --test live_sdk -- --ignored --nocapture`
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -87,27 +87,9 @@ fn require_kvm() {
     );
 }
 
-fn require_host_baseline() {
-    let report = vmm_core::vendor::x86::hostassert::report();
-    let mut all = true;
-    for o in &report {
-        if !o.pass {
-            eprintln!(
-                "[host-assert] FAIL {}: expected {}, observed {}",
-                o.key, o.expected, o.actual
-            );
-        }
-        all &= o.pass;
-    }
-    assert!(
-        all,
-        "host CPU is not the det-cfl-v1 baseline — run on the determinism box."
-    );
-}
-
 fn boot_demo(payload: &[u8], seed: u64) -> vmm_core::vmm::Vmm<Box<dyn Backend<A = X86>>> {
     let mut vmm = boot_selected(BackendKind::Patched, payload, GUEST_RAM_LEN, seed).expect(
-        "boot_selected(Patched, sdk-demo) — needs the LOADED patched KVM + perf + det-cfl-v1 host",
+        "boot_selected(Patched, sdk-demo) — needs the LOADED patched KVM + perf + x86-kvm host",
     );
     vmm.wire_snapshot_hashing();
     vmm
@@ -223,10 +205,9 @@ fn hex(d: &[u8; 32]) -> String {
 /// GATE A — determinism: same seed twice ⇒ byte-identical event stream + equal
 /// `state_hash`.
 #[test]
-#[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host"]
+#[ignore = "box-only: needs the LOADED patched KVM + perf + x86-kvm host"]
 fn box_gate_a_sdk_run_is_deterministic() {
     require_kvm();
-    require_host_baseline();
 
     let once = |seed: u64| -> (SdkEvents, [u8; 32]) {
         let mut s = server(seed);
@@ -266,10 +247,9 @@ fn box_gate_a_sdk_run_is_deterministic() {
 /// GATE B — the Bug path: buggify-gated always-violation ⇒ `StopReason::Assertion`,
 /// reproduced N/N by `branch(genesis, bug.env)`.
 #[test]
-#[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host"]
+#[ignore = "box-only: needs the LOADED patched KVM + perf + x86-kvm host"]
 fn box_gate_b_buggify_violation_replays_n_of_n() {
     require_kvm();
-    require_host_baseline();
     const N: usize = 8;
 
     let mut s = server(SEED);
@@ -326,10 +306,9 @@ fn box_gate_b_buggify_violation_replays_n_of_n() {
 /// appears in the event stream. (The `link::Catalog` fold that turns this into the
 /// never-fired report is proven portably in the host-side event-catalog fold.)
 #[test]
-#[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host"]
+#[ignore = "box-only: needs the LOADED patched KVM + perf + x86-kvm host"]
 fn box_gate_c_never_fired_detection() {
     require_kvm();
-    require_host_baseline();
 
     let mut s = server(SEED);
     hello(&mut s);

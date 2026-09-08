@@ -25,8 +25,8 @@ fn kind() -> impl Strategy<Value = CorpusKind> {
 fn host() -> impl Strategy<Value = HostId> {
     prop_oneof![
         Just(HostId::Portable),
-        Just(HostId::DetCflV1),
-        Just(HostId::Msr1),
+        Just(HostId::X86Kvm),
+        Just(HostId::Arm64Kvm),
     ]
 }
 
@@ -97,7 +97,7 @@ fn field_order_is_fixed_and_readable() {
         source: "consonance/acceptance-suite/payloads/tsc.bin".to_string(),
         oracles: vec![OracleKind::Determinism, OracleKind::Conformance],
         golden: Some("consonance/acceptance-suite/golden/tsc.digest".to_string()),
-        hosts: vec![HostId::Portable, HostId::DetCflV1],
+        hosts: vec![HostId::Portable, HostId::X86Kvm],
         virt: VirtLevel::L1,
     }];
     let text = to_manifest(&items);
@@ -110,7 +110,7 @@ fn field_order_is_fixed_and_readable() {
     assert!(pos("golden") < pos("hosts"));
     assert!(pos("hosts") < pos("virt"));
     assert!(text.contains("\"portable\""));
-    assert!(text.contains("\"det-cfl-v1\""));
+    assert!(text.contains("\"x86-kvm\""));
     assert!(text.contains("virt = \"l1\""));
     assert!(text.contains("\"determinism\""));
     assert!(text.contains("\"conformance\""));

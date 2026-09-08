@@ -13,7 +13,7 @@
 #                "seed_sensitivity:pure"  (O3, seed-pure payload)
 #   golden   = path to the committed digest; required iff "conformance" is listed.
 #   hosts    = which hosts can execute this cell:
-#                "portable" | "det-cfl-v1" | "msr1"   (default: ["portable"])
+#                "portable" | "x86-kvm" | "arm64-kvm"   (default: ["portable"])
 #   virt     = "l1" (guest on bare metal) | "l2" (nested)   (default: "l1")
 #
 # A row IS one cell of the acceptance matrix (docs/TESTING.md):

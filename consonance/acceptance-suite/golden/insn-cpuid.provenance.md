@@ -21,21 +21,5 @@ digest is captured by the patched-KVM corpus test and is not edited manually.
 | Seed | `0x0028_C0FF_EE5E_EDC0` |
 | Guest RAM | 256 MiB |
 
-The host baseline inputs are retained in
-`../../vmm-core/contracts/x86/baselines/cfl/`. The digest includes CPUID cells
-that KVM derives from guest `CR4` and `XCR0`, so it qualifies this host and
-backend composition rather than the TOML alone.
-
-## Capture command
-
-Run on the qualified host with the matching patched KVM modules loaded:
-
-```sh
-DETCORPUS_BLESS=1 taskset -c 2 \
-  cargo test -p acceptance-tests --test box_corpus \
-  c1_corpus_o1_o2_on_the_patched_backend -- --ignored --nocapture
-```
-
-The test validates the capture shape before replacing the digest. Inspect the
-payload, contract, and digest changes together. The corpus manifest is
-`../corpus-manifest.toml`.
+The original host captures and contract are preserved in Git history before
+the hardware-baseline cleanup. These are capture provenance, not host requirements.

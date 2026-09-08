@@ -60,8 +60,8 @@ enum Cmd {
         #[arg(long)]
         item: Option<String>,
         /// Which host's cells to run: `portable` (any machine, the toy
-        /// registry), `det-cfl-v1` (the x86 determinism box), or `msr1` (the
-        /// arm64 box). Cells that do not list this host are reported as unrun.
+        /// registry), `x86-kvm` (Linux x86-64 KVM), or `arm64-kvm` (Linux
+        /// arm64 KVM). Cells that do not list this host are reported as unrun.
         #[arg(long, default_value = "portable")]
         host: String,
         /// Primary seed (O1/O2, and seed_a for O3).
@@ -139,17 +139,17 @@ fn run_cell<G: Fn(&str) -> Option<String> + Copy>(
             read_golden,
         )?),
         #[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "real-vmm"))]
-        HostId::DetCflV1 => realvmm::run_cell(item, cfg, read_golden),
+        HostId::X86Kvm => realvmm::run_cell(item, cfg, read_golden),
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64", feature = "real-vmm")))]
-        HostId::DetCflV1 => Err(format!(
-            "cell {:?} needs host det-cfl-v1, but this binary has no real-VMM registry \
+        HostId::X86Kvm => Err(format!(
+            "cell {:?} needs host x86-kvm, but this binary has no real-VMM registry \
              (build it on Linux/x86-64 with --features real-vmm). Refusing to run it on the \
              toy registry and report the result under a hardware host's name.",
             item.name
         )
         .into()),
-        HostId::Msr1 => Err(format!(
-            "cell {:?} needs host msr1; the arm64 registry does not exist yet \
+        HostId::Arm64Kvm => Err(format!(
+            "cell {:?} needs host arm64-kvm; the arm64 registry does not exist yet \
              (docs/TESTING.md — CPU qualification comes first)",
             item.name
         )
@@ -264,7 +264,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             limit,
         } => {
             let host = HostId::from_token(&host).ok_or_else(|| {
-                format!("unknown --host {host:?}; expected one of: portable, det-cfl-v1, msr1")
+                format!("unknown --host {host:?}; expected one of: portable, x86-kvm, arm64-kvm")
             })?;
             // A zero limit verifies nothing (compare_runs compares 0 checkpoints,
             // every run halts after 0 work), so it could only ever be vacuously

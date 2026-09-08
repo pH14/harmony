@@ -1,6 +1,6 @@
-contract-version=5
+contract-version=6
 kernel-tag=v6.18.35
-cpuid-baseline=det-cfl-v1
+cpuid-baseline=harmony-x86-v1
 tsc-hz=2000000000
 crystal-hz=25000000
 bus-hz=100000000
@@ -1115,24 +1115,24 @@ insn CPUID vmx-exit(cpuid-unconditional) frozen-model-s2 intercept
 insn FXRSTOR permit-native arch-state arch
 insn FXSAVE permit-native arch-state+mxcsr-pin arch
 insn HLT vmx-exit(hlt-exiting) idle-skip-s3 intercept
-insn HRESET fault-absent ud fault-absent
+insn HRESET cooperative-hidden out-of-scope scope
 insn INVEPT vmx-exit(vmx-instr-unconditional) ud intercept
 insn INVVPID vmx-exit(vmx-instr-unconditional) ud intercept
 insn MONITOR vmx-exit(monitor-exiting) ud intercept
 insn MWAIT vmx-exit(mwait-exiting) ud intercept
-insn PCONFIG fault-absent ud fault-absent
-insn RDPID fault-absent ud fault-absent
+insn PCONFIG cooperative-hidden out-of-scope scope
+insn RDPID cooperative-hidden out-of-scope scope
 insn RDPKRU cr4-pin(pke=0) ud intercept
 insn RDPMC vmx-exit(rdpmc-exiting) gp intercept
 insn RDRAND vmx-exit(rdrand-exiting) seeded-prng intercept
 insn RDSEED vmx-exit(rdseed-exiting) seeded-prng intercept
 insn RDTSC vmx-exit(rdtsc-exiting) vclock.tsc intercept
 insn RDTSCP vmx-exit(rdtsc-exiting) vclock.tsc+tsc-aux intercept
-insn SERIALIZE fault-absent ud fault-absent
-insn SHA fault-absent ud fault-absent
-insn TPAUSE fault-absent ud fault-absent
-insn UMONITOR fault-absent ud fault-absent
-insn UMWAIT fault-absent ud fault-absent
+insn SERIALIZE cooperative-hidden out-of-scope scope
+insn SHA cooperative-hidden out-of-scope scope
+insn TPAUSE cooperative-hidden out-of-scope scope
+insn UMONITOR cooperative-hidden out-of-scope scope
+insn UMWAIT cooperative-hidden out-of-scope scope
 insn VMCALL vmx-exit(vmcall-unconditional) hypercall-dispatch intercept
 insn VMCLEAR vmx-exit(vmx-instr-unconditional) ud intercept
 insn VMLAUNCH vmx-exit(vmx-instr-unconditional) ud intercept
@@ -1144,9 +1144,9 @@ insn VMWRITE vmx-exit(vmx-instr-unconditional) ud intercept
 insn VMXOFF vmx-exit(vmx-instr-unconditional) ud intercept
 insn VMXON vmx-exit(vmx-instr-unconditional) ud intercept
 insn WRPKRU cr4-pin(pke=0) ud intercept
-insn XABORT fault-absent ud fault-absent
-insn XBEGIN fault-absent ud fault-absent
-insn XEND fault-absent ud fault-absent
+insn XABORT cooperative-hidden out-of-scope scope
+insn XBEGIN cooperative-hidden out-of-scope scope
+insn XEND cooperative-hidden out-of-scope scope
 insn XGETBV0 permit-native xcr0 arch
 insn XGETBV1 native-uninterceptable xinuse-out-of-scope scope
 insn XRSTOR permit-native arch-state arch
@@ -1156,7 +1156,7 @@ insn XSAVEC native-uninterceptable out-of-scope scope
 insn XSAVEOPT native-uninterceptable out-of-scope scope
 insn XSAVES native-uninterceptable out-of-scope scope
 insn XSETBV vmx-exit(xsetbv-unconditional) xcr0-menu{1,3,7}-else-gp intercept
-insn XTEST fault-absent ud fault-absent
+insn XTEST cooperative-hidden out-of-scope scope
 timer pit-ch0 emulate-timerqueue:pit.ch0 emulate-timerqueue:pit.ch0
 timer pit-ch1 emulate-device:pit.ch1 emulate-device:pit.ch1
 timer pit-ch2 emulate-device:pit.ch2 emulate-device:pit.ch2
@@ -1345,18 +1345,5 @@ cmos idx:0x7c allow-fixed:0000000000000000 deny-ignore-write
 cmos idx:0x7d allow-fixed:0000000000000000 deny-ignore-write
 cmos idx:0x7e allow-fixed:0000000000000000 deny-ignore-write
 cmos idx:0x7f allow-fixed:0000000000000000 deny-ignore-write
-host-assert family-model-stepping 06_9e_0c
-host-assert host-microcode-rev 0x00000000000000f8
-host-assert guest-ucode-rev 0x0000000100000000
-host-assert mxcsr-mask 0x0000ffff
-host-assert maxphyaddr-min 39
-host-assert rtm-disabled true
-host-assert cr4-force-reserved [PKE, PKS]
-host-assert host-absent HRESET
-host-assert host-absent PCONFIG
-host-assert host-absent RDPID
-host-assert host-absent SERIALIZE
-host-assert host-absent SHA
-host-assert host-absent TPAUSE
-host-assert host-absent UMONITOR
-host-assert host-absent UMWAIT
+guest ucode-rev 0x0000000100000000
+guest cr4-force-reserved [PKE, PKS]

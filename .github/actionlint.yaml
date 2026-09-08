@@ -7,10 +7,8 @@
 # unknown-label errors. It is also the authoritative list of hardware runner
 # labels.
 #
-# The first labels are CAPABILITIES; the last is the CHIP BASELINE IDENTITY.
+# Labels describe backend capabilities and architecture.
 self-hosted-runner:
   labels:
     - kvm          # the runner exposes a usable /dev/kvm
     - x86_64       # architecture
-    - det-cfl-v1   # chip baseline for the x86 CPU contract
-    - msr1         # chip baseline: the arm64 box
