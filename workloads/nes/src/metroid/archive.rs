@@ -26,7 +26,7 @@ pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const MAX_METROID_ACTIONS: usize = 8_192;
 /// Recorded archive-key and per-location preference policy.
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_v7";
+    "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8";
 /// Recorded same-slot replacement policy.
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 

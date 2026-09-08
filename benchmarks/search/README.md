@@ -259,3 +259,37 @@ A victory first observed beyond the frame budget is preserved and verified as
 evidence but does **not** pass the suite's success gate. The optional frame
 budget is recorded in the deterministic header/report. Omitting it preserves
 historical campaign behavior and byte format.
+
+## Deep progress and historical comparisons
+
+A fast independent-stage panel is not a substitute for preserving demonstrated
+whole-game reach. The 005 Mega Man panel starts each Robot Master stage separately;
+the earlier Wily 4 result chained searched victories and carried the resulting
+weapons. Replay of that retained chain verifies current runtime compatibility,
+not fresh-search recovery. The deep chained search regression remains an explicit
+qualification gap.
+
+Metroid reports now expose named equipment, area entry, and boss defeat separately,
+with independent first-discovery tapes and a separate champion/victory trajectory.
+The HTML export includes these fields and links to verified tapes. Older missing
+observations display as unavailable. Resource figures, budgets, stop reasons, and
+failures remain in every row; milestone timings are censored at each run's budget.
+
+`metroid-long-horizon.json` and `metroid-long-horizon-semantic.json` register a
+**development diagnostic** using historical seeds 3, 4, and 5: four workers,
+8 GiB logical archive, 3 million executions, 400 million admitted frames, 4096
+actions, `one_to_six`, and alphabet draws. Both arms use the same current adapter
+and executable. Only the parent selector differs. These restore the earlier
+work/memory scale and isolate semantic frontier weighting without count weighting.
+They do not reproduce the historical improvement-replay implementation, exact
+reservation schedule, platform, or action stream. These reused seeds are not
+fresh validation evidence. The earlier 005 Metroid panel used 500,000 executions,
+2 GiB, eight workers, a capped suffix, and energy splice; it cannot establish
+preservation of the earlier 3-million-execution results.
+
+Run either manifest with the ordinary `eval.py run` command and private asset
+inventory. Preserve the registered manifest and build identity before dispatch.
+Publish solve status **and named milestones**, including runs with no further
+discovery. Compare admitted work for search quality; use matched CPU types and
+isolated runs for claims about throughput. The historical audit and independently
+replayed evidence are recorded in `results/progress-audit-007.json`.

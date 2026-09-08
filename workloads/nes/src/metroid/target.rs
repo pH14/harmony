@@ -11,6 +11,7 @@ use std::{error::Error, path::Path};
 use machine::{Machine, MachineError, SnapId, StopConditions, nes, quicknes::QuickNesMachine};
 use serde::{Deserialize, Serialize};
 
+use super::progress::BossDefeats;
 use crate::target::{ExitKind, Target};
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
@@ -91,9 +92,11 @@ const MISSILES: usize = 0x879;
 const MISSILE_CAPACITY: usize = 0x87a;
 /// Kraid's status; bit 0 is set once Kraid is defeated.
 const KRAID_STATUS: usize = 0x87b;
-/// Ridley's status; bit 0 is set once Ridley is defeated.
+/// Ridley's status; bit 1 is set once Ridley is defeated. Bank07.asm LDD75
+/// stores (InArea & 0x0f) >> 1: Kraid = 1, Ridley = 2.
 const RIDLEY_STATUS: usize = 0x87c;
-const BOSS_DEFEATED_BIT: u8 = 1;
+const KRAID_DEFEATED_BIT: u8 = 1;
+const RIDLEY_DEFEATED_BIT: u8 = 2;
 /// Non-zero while the ending plays.
 const ENDING: usize = 0x883;
 /// Energy tanks collected.
@@ -141,7 +144,7 @@ pub struct MetroidMechanicalState {
 }
 
 impl MetroidMechanicalState {
-    /// Number of equipment items obtained. Which item each bit names does
+    /// Legacy progress count: equipment bits plus defeated bosses. Item identity does
     /// not matter to the search; the count orders progress.
     #[must_use]
     pub fn items(self) -> u8 {
@@ -215,9 +218,16 @@ pub fn decode_state(wram: &[u8], cartridge: &[u8]) -> Result<MetroidMechanicalSt
         missiles: read_byte(cartridge, MISSILES)?,
         missile_capacity: read_byte(cartridge, MISSILE_CAPACITY)?,
         energy_tanks: read_byte(cartridge, ENERGY_TANKS)?,
-        bosses: (read_byte(cartridge, KRAID_STATUS)? & BOSS_DEFEATED_BIT)
-            + (read_byte(cartridge, RIDLEY_STATUS)? & BOSS_DEFEATED_BIT),
+        bosses: u8::from(read_byte(cartridge, KRAID_STATUS)? & KRAID_DEFEATED_BIT != 0)
+            + u8::from(read_byte(cartridge, RIDLEY_STATUS)? & RIDLEY_DEFEATED_BIT != 0),
         ending: read_byte(cartridge, ENDING)? != 0,
+    })
+}
+
+fn decode_boss_defeats(cartridge: &[u8]) -> Result<BossDefeats, MachineError> {
+    Ok(BossDefeats {
+        kraid: read_byte(cartridge, KRAID_STATUS)? & KRAID_DEFEATED_BIT != 0,
+        ridley: read_byte(cartridge, RIDLEY_STATUS)? & RIDLEY_DEFEATED_BIT != 0,
     })
 }
 
@@ -248,6 +258,11 @@ pub struct MetroidObservations {
     pub frame_count: u64,
     /// Decoded mechanical state.
     pub decoded: MetroidMechanicalState,
+    /// Named boss flags for reporting. Never consulted by archive policy.
+    pub boss_defeats: BossDefeats,
+    /// Tourian's Mother Brain state machine ($98), reporting-only. Other banks
+    /// may reuse this byte; interpretation must require Tourian gameplay.
+    pub mother_brain_status: u8,
     /// Sorted work-RAM indices changed since the prior emitted event.
     pub changed_indices: Vec<u16>,
     /// Whether Samus is dead at this event.
@@ -398,6 +413,8 @@ impl MetroidTarget {
         let observation = MetroidObservations {
             frame_count: 0,
             decoded: state,
+            boss_defeats: decode_boss_defeats(&cartridge)?,
+            mother_brain_status: read_byte(&wram, 0x98)?,
             changed_indices: Vec::new(),
             dead: false,
             log_line: "frame=0 changed=[]".to_owned(),
@@ -479,6 +496,7 @@ impl MetroidTarget {
         state: MetroidMechanicalState,
         wram: &[u8; WRAM_SIZE],
         prior_wram: &[u8; WRAM_SIZE],
+        boss_defeats: BossDefeats,
     ) -> MetroidObservations {
         let changed_indices = wram
             .iter()
@@ -493,6 +511,8 @@ impl MetroidTarget {
         MetroidObservations {
             frame_count,
             decoded: state,
+            boss_defeats,
+            mother_brain_status: wram[0x98],
             changed_indices: changed_indices.clone(),
             dead: state.is_dead(),
             log_line: format!("frame={frame_count} changed={changed_indices:?}"),
@@ -538,9 +558,13 @@ impl Target for MetroidTarget {
             self.failed = true;
             return;
         };
-        // Cartridge work RAM changes only when Samus collects something, so
-        // one read after the action covers every frame it produced.
+        // Cartridge RAM is sampled at the action endpoint. Its values describe
+        // that endpoint, not the exact pickup frame within a held chord.
         let Ok(cartridge) = self.cartridge() else {
+            self.failed = true;
+            return;
+        };
+        let Ok(boss_defeats) = decode_boss_defeats(&cartridge) else {
             self.failed = true;
             return;
         };
@@ -558,7 +582,13 @@ impl Target for MetroidTarget {
             let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
                 || state.is_dead() != prior_state.is_dead();
             if boundary || offset + 1 == frames.len() {
-                observations.push(self.make_observation(frame_count, state, wram, &prior_wram));
+                observations.push(self.make_observation(
+                    frame_count,
+                    state,
+                    wram,
+                    &prior_wram,
+                    boss_defeats,
+                ));
                 prior_wram = *wram;
             }
             died |= state.is_dead();

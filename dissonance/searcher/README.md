@@ -51,7 +51,9 @@ through a function bounded only by `TargetExecution`.
 
 Workloads can expose bounded observation counters through `Reporting::diagnostics`.
 The engine places them only in the live progress sidecar. They never influence
-selection, admission, deterministic reports, or replay. Workloads must document
+selection, admission, or deterministic reports. Witness evaluators may collect
+the same observations through `Reporting::merge_witness_diagnostics`, whose
+contract excludes champion selection and input publication. Workloads must document
 their scope and bound their memory; these observer allocations are reflected in
 RSS rather than the archive's logical memory budget.
 
@@ -143,3 +145,13 @@ admitted-frame cutoff without changing existing `CampaignConfig` callers. The
 stream and report record that budget only when present. Already reserved jobs
 drain normally; evaluators must score first-victory cost against the threshold,
 not treat a later victory from the drained window as a budgeted success.
+
+`room_cell_uniform_128_energy_progress_cheapest_v1:<thresholds>` isolates semantic
+progress weighting from entry-count weighting. It uses the same progress walk
+and cheapest-cell preference as the count variant, with the original per-entry
+weights. This recovers the location-neutral frontier behavior of the historical
+Metroid Pareto experiment: within an inventory class, its declared progress
+relation considers map cells equal, so no map cell can dominate another. It is
+not the full historical cross-location preference/Pareto implementation, and
+it does not restore the prototype's improvement-replay queues. Its separate
+identifier permits an ablation without changing any existing selector's behavior.

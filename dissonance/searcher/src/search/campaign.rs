@@ -286,6 +286,15 @@ pub trait Reporting: CampaignTypes {
     fn diagnostics(_evidence: &Self::Evidence) -> Option<serde_json::Value> {
         None
     }
+    /// Accumulate observation-only diagnostics during witness replay. Unlike
+    /// admission evidence, this hook must not select champions or publish inputs.
+    /// `sequence` counts replayed actions from one, not search executions.
+    fn merge_witness_diagnostics(
+        _evidence: &mut Self::Evidence,
+        _observations: &[Self::Observations],
+        _sequence: u64,
+    ) {
+    }
     /// Stream format identifier written as the first line of every stream.
     fn stream_format(&self) -> &'static str;
     /// Format tag of the snapshot checkpoint file.

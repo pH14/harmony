@@ -21,6 +21,7 @@ use crate::{
             merge_milestones, merge_progress_watermark, milestone_key, milestones,
             progress_watermark, sample_chord,
         },
+        progress::NamedProgress,
         target::{
             ButtonChord, MetroidInput, MetroidObservations, MetroidSnapshot, MetroidTarget,
             power_on_walk, preference_tuple,
@@ -41,9 +42,9 @@ use crate::{
 };
 
 /// Stream format written by Metroid campaigns.
-pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v1";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v3";
 /// Snapshot checkpoint format written by Metroid campaigns.
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v1";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v3";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -69,6 +70,7 @@ pub struct MetroidGame {
     prefix: Vec<ButtonChord>,
     identity: String,
     champion_input_path: Option<PathBuf>,
+    milestone_input_dir: Option<PathBuf>,
 }
 
 impl MetroidGame {
@@ -96,7 +98,7 @@ impl MetroidGame {
             "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;\
              genesis=metroid-new-game-v1:prefix-sha256={:x};\
              image=cartridge-ram-declared-v1;\
-             result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}",
+             result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v3;sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
             machine::quicknes::QUICKNES_BUILD,
             machine::quicknes::QUICKNES_OPTIONS,
@@ -109,6 +111,7 @@ impl MetroidGame {
             prefix,
             identity,
             champion_input_path: None,
+            milestone_input_dir: None,
         }
     }
 
@@ -118,6 +121,34 @@ impl MetroidGame {
     pub fn with_champion_input_path(mut self, path: PathBuf) -> Self {
         self.champion_input_path = Some(path);
         self
+    }
+
+    /// Export one searched witness per named discovery. This reporting path
+    /// never supplies inputs back to the searcher.
+    #[must_use]
+    pub fn with_milestone_input_dir(mut self, directory: PathBuf) -> Self {
+        self.milestone_input_dir = Some(directory);
+        self
+    }
+
+    fn publish_milestones(
+        &self,
+        names: &[&str],
+        input: &MetroidInput,
+    ) -> Result<(), Box<dyn Error>> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        if let Some(directory) = &self.milestone_input_dir {
+            std::fs::create_dir_all(directory)?;
+            for name in names {
+                let path = directory.join(format!("{name}.json"));
+                let temporary = path.with_extension("json.tmp");
+                std::fs::write(&temporary, serde_json::to_vec(input)?)?;
+                std::fs::rename(temporary, path)?;
+            }
+        }
+        Ok(())
     }
 
     fn publish_champion(&self, input: &MetroidInput) -> Result<(), Box<dyn Error>> {
@@ -148,6 +179,7 @@ pub struct MetroidCampaignRun;
 #[derive(Clone, Default)]
 pub struct MetroidCampaignEvidence {
     observed_map: MapCoverage,
+    named_progress: NamedProgress,
     aggregate: MetroidMilestones,
     watermark: MetroidProgressWatermark,
     first_reached: MetroidMilestoneTimes,
@@ -437,8 +469,27 @@ impl Reporting for MetroidGame {
         Some(serde_json::json!({
             "map_cells_observed": evidence.observed_map.count(),
             "coverage_bitmap_bytes": 32768,
+            "named_progress": evidence.named_progress,
             "scope": "this run's live gameplay observations; union across explored branches"
         }))
+    }
+    fn merge_witness_diagnostics(
+        evidence: &mut MetroidCampaignEvidence,
+        observations: &[MetroidObservations],
+        sequence: u64,
+    ) {
+        let action_end = observations.last().map_or(0, |obs| obs.frame_count);
+        for observation in observations {
+            evidence
+                .named_progress
+                .observe(observation, sequence, action_end);
+            let state = observation.decoded;
+            if !observation.dead && state.in_play() {
+                evidence
+                    .observed_map
+                    .observe(state.area, state.map_x, state.map_y);
+            }
+        }
     }
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
@@ -746,6 +797,9 @@ impl Evaluation for MetroidGame {
         evidence
             .observed_map
             .observe(state.area, state.map_x, state.map_y);
+        evidence
+            .named_progress
+            .observe(&target.observe(), 0, target.frames_clocked());
         evidence.genesis_area.get_or_insert(state.area);
         Ok(())
     }
@@ -783,7 +837,14 @@ impl Evaluation for MetroidGame {
         F: FnOnce() -> Result<MetroidInput, Box<dyn Error>>,
     {
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
+        let mut discoveries = Vec::new();
+        let action_end_frame = action.observations.last().map_or(0, |obs| obs.frame_count);
         for observation in &action.observations {
+            discoveries.extend(evidence.named_progress.observe(
+                observation,
+                sequence,
+                action_end_frame,
+            ));
             let state = observation.decoded;
             if !observation.dead && state.in_play() {
                 evidence
@@ -799,8 +860,12 @@ impl Evaluation for MetroidGame {
             || (action.milestones.gained && evidence.first_inputs.first_gain.is_none());
         let champion = action_champion_key(&action.observations)
             .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
-        if first_input_needed || champion.is_some() {
+        if first_input_needed
+            || champion.is_some()
+            || (!discoveries.is_empty() && self.milestone_input_dir.is_some())
+        {
             let input = input()?;
+            self.publish_milestones(&discoveries, &input)?;
             update_first_inputs(
                 &mut evidence.first_reached,
                 &mut evidence.first_inputs,

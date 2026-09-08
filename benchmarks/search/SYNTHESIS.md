@@ -86,3 +86,29 @@ cells and investigate generic causes, including the empty-bank capacity cost
 tracked in [#275](https://github.com/pH14/harmony/issues/275), on newly registered
 validation seeds. Full evidence and resource measurements are in
 [`results`](results/README.md).
+
+## Correction: preservation of historical depth was not established
+
+The 005 panel is a breadth/throughput evaluation, not evidence that the deepest
+historical searches were preserved. A retained Mega Man 2 power-on tape replays
+to Wily 4 with all eight Robot Master weapons under the current runtime. The
+panel exercised only independent Robot Master stages. A fresh chained run is
+still required to test the searcher's ability to recover that depth.
+
+Metroid's 005 budget was one sixth of the earlier 3-million-execution work budget,
+with one quarter of its 8 GiB archive allocation, different worker/suffix/mixture
+settings, and no historical Pareto selector or improvement-replay queue. Replaying
+all ten 005 champion tapes shows Morph Ball, 10 missile capacity, no energy tank,
+and Brinstar/Norfair. Retained historical champions additionally show Bombs,
+Long Beam or Ice Beam, an energy tank, and Kraid-area entry. Historical aggregate
+records include Ridley-area entry, but the retained champion tapes do not prove
+that branch. No recovered Metroid tape verifies a boss defeat. Item counts alone had
+also obscured the distinction between Long Beam and Ice Beam.
+
+The new semantic-only selector isolates the location-neutral part of the old
+Metroid Pareto behavior without importing cross-location resource preferences or
+adding count weighting. It is an opt-in diagnostic, not a recovered copy of the
+entire historical algorithm. The long-horizon manifests retain this distinction.
+The independent Ridley flag decoder correction is versioned v8; the named-report
+schema does not contribute rewards or route hints. See the progress audit for
+source hashes, replay evidence, and the exact limits of the comparison.

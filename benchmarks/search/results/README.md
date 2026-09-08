@@ -14,6 +14,26 @@ Git commits by exact source-hash equality against freshly extracted Git trees.
 Build 005 is `02463cae`. Its executable and original source-copy metadata remain
 immutable; later commits are not retroactively attributed to that measured build.
 
+## Historical depth audit
+
+[`progress-audit-007.json`](progress-audit-007.json) corrects the scope of the
+005 comparison: historical deep-search reach was **not qualified**. Seventeen
+retained tapes replay twice with the current decoder: ten panel champions,
+six historical Metroid inputs, and the Mega Man 2 power-on prefix reaching Wily
+4 with all eight weapons. Historical Metroid champions reach Kraid's area with
+Bombs and another beam; the ten panel champions reach Norfair with Morph Ball.
+Ridley-area entry remains supported by old aggregate records, not a recovered
+champion tape. No recovered Metroid tape verifies a boss defeat.
+
+The audit separates unknown old fields from unobserved new milestones, inventory
+from boss counts, missile capacity from energy tanks, and branch unions from
+individual trajectories. It also records a 5,000-job reporting qualification:
+all parent selections, mutation seeds, work, and admission decisions match build
+005; only the declared policy/observation versions and result digests differ.
+Both the full campaign and each named discovery witness replay successfully.
+The Ridley bit correction is independently covered by positive/negative decoder
+tests; the matched small run does not exercise a boss defeat.
+
 ## Fresh full validation
 
 [`full-validation-005.json`](full-validation-005.json) retains all 190 cells in

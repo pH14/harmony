@@ -130,6 +130,8 @@ fn phase(out: &Path, name: &str, started: Instant) -> Result<()> {
 fn replay_witness<G: Game>(game: &G, run: &G::Run, input: &Input<G::Action>) -> Result<Value> {
     let mut target = game.new_target()?;
     let mut aggregate = G::Milestones::default();
+    let mut evidence = G::Evidence::default();
+    game.merge_snapshot_root_evidence(&mut evidence, &target)?;
     let mut victory = false;
     let mut dead = false;
     let mut failed = false;
@@ -152,6 +154,7 @@ fn replay_witness<G: Game>(game: &G, run: &G::Run, input: &Input<G::Action>) -> 
         let [last] = result.actions.as_slice() else {
             return Err("witness did not execute its next action".into());
         };
+        G::merge_witness_diagnostics(&mut evidence, &last.observations, i as u64 + 1);
         aggregate = last.milestones;
         victory = last.victory;
         dead = last.dead;
@@ -162,7 +165,9 @@ fn replay_witness<G: Game>(game: &G, run: &G::Run, input: &Input<G::Action>) -> 
     }
     let endpoint = game.snapshot(&mut target)?;
     Ok(
-        json!({"victory": victory, "dead": dead, "milestones": aggregate, "snapshot_sha256": format!("{:x}", Sha256::digest(postcard::to_allocvec(&endpoint)?))}),
+        json!({"victory": victory, "dead": dead, "milestones": aggregate,
+            "diagnostics": G::diagnostics(&evidence),
+            "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one", "snapshot_sha256": format!("{:x}", Sha256::digest(postcard::to_allocvec(&endpoint)?))}),
     )
 }
 
@@ -291,6 +296,35 @@ where
             return Err("campaign replay report/checkpoint differs".into());
         }
     }
+    let mut milestone_witnesses = serde_json::Map::new();
+    let milestone_directory = out.join("milestone-inputs");
+    if milestone_directory.is_dir() {
+        let mut paths: Vec<_> = fs::read_dir(&milestone_directory)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<io::Result<_>>()?;
+        paths.sort();
+        for path in paths {
+            let bytes = fs::read(&path)?;
+            let input: Input<G::Action> = serde_json::from_slice(&bytes)?;
+            let replay = replay_witness(&game, &run, &input)?;
+            if replay != replay_witness(&game, &run, &input)? {
+                return Err("milestone witness replay is nondeterministic".into());
+            }
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or("invalid milestone name")?;
+            if replay["diagnostics"]["named_progress"]["first_seen"][name].is_null() {
+                return Err(format!("milestone witness did not reproduce {name}").into());
+            }
+            milestone_witnesses.insert(
+                name.into(),
+                json!({
+                    "input_sha256": format!("{:x}", Sha256::digest(&bytes)), "replay": replay
+                }),
+            );
+        }
+    }
     let verification_seconds = verify_started.elapsed().as_secs_f64();
     let solved = victory_within_budget(report.frames_to_first_victory, request.frames);
     write_json(
@@ -303,7 +337,7 @@ where
             "preparation_seconds":preparation_seconds, "search_seconds":search_seconds, "executions_per_second":report.executions_completed as f64 / search_seconds,
             "progress":value["archive"]["progress_watermark"], "milestones":value["archive"]["milestones"], "frames_per_second": report.frames_emulated as f64 / search_seconds,
             "export_seconds":export_seconds, "verification_seconds":verification_seconds,
-            "verification":request.verification, "witness":first,
+            "verification":request.verification, "witness":first, "milestone_witnesses":milestone_witnesses,
             "stream_sha256":format!("{:x}",stream.digest.finalize()), "stream_bytes_generated":stream.bytes, "stream_retained":full,
             "stop_reason":if solved {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.frames_emulated >= limit) {"frame_limit"} else {"wall_limit"}
         }),
@@ -404,7 +438,7 @@ fn main() -> Result<()> {
             started,
         ),
         "metroid" => evaluate(
-            MetroidGame::new(&rom, p, h),
+            MetroidGame::new(&rom, p, h).with_milestone_input_dir(out.join("milestone-inputs")),
             MetroidCampaignRun,
             &request,
             &out,

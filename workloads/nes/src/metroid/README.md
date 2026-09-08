@@ -27,9 +27,11 @@ trajectory achieved their union. The inherited count representation and
 lexicographic resource preference are policy tradeoffs, not true capability
 or resource dominance.
 
-The primary progress watermark records equipment count and missile capacity.
-The `milestones.tanks` field combines missile tanks (capacity divided by five)
-and energy tanks, so it can improve while the primary watermark stays fixed.
+The legacy primary progress watermark records equipment bit count **plus boss
+defeats**, and missile capacity.
+The `milestones.tanks` field combines missile capacity divided by five
+and energy tanks (boss capacity bonuses also inflate that legacy field), so it
+can improve while the primary watermark stays fixed.
 `milestones.areas` is an area bitset, not a count: decimal 3 has two area bits
 set. Inspect the individual fields and the verified witness before calling a
 run stalled or combining observations into one trajectory.
@@ -46,3 +48,60 @@ Use the common [local evaluation runner](../../../../benchmarks/search/README.md
 for paired search comparisons and full small-campaign replay. `metroid-campaign`
 also exposes the native experiment command. The source lineage is documented in
 [the synthesis record](../../../../benchmarks/search/SYNTHESIS.md).
+
+## Named milestone evaluation
+
+`workload_diagnostics.named_progress` reports Morph Ball, Bombs, Long Beam,
+High Jump, Screw Attack, Varia Suit, Wave Beam, and Ice Beam independently;
+Brinstar, Norfair, Kraid's area, Ridley's area, and Tourian independently; and
+Kraid defeated, Ridley defeated, Mother Brain defeated, escape started, and
+the ending independently. Mother Brain initialization is not defeat; its $98
+state machine is interpreted only in Tourian gameplay. Area entry never
+implies boss defeat. Equipment is a union of observed gear bits, so beams lost
+or replaced later remain recorded. `max_missile_capacity` and `max_energy_tanks`
+are separate maxima, not a combined pickup score. Capacity is not a pickup
+count: a boss defeat grants 75 additional missiles of capacity.
+
+Every named milestone has a `first_seen` entry. Null means not observed within
+this run's scope and budget. `execution` is the first admitted execution that
+observed it; `route_action_end_frame` is the action endpoint on that discovered
+input, **not** cumulative emulator work. Cartridge RAM is read after a held
+controller action, so this is not an exact within-action pickup timestamp.
+The finite vocabulary bounds observer memory and the number of saved tapes.
+These fields are reporting-only: they do not change keys, rewards, input draws,
+champion ordering, or continuation scheduling.
+
+The common runner saves each first-discovery input under `milestone-inputs/`
+and replays it on two independent targets, checking both the named milestone
+and the deterministic endpoint. Its main champion/victory witness separately
+reports one trajectory's named progress. Do not call a union over search branches
+one successful playthrough. Discovery-tape verification is charged to the
+verification phase; the bounded export cost during discovery is part of search.
+The live observer includes only observations admitted in this run, not a restored
+archive's complete history. Missing fields in older reports mean **unavailable**,
+not zero. A retained champion replay cannot establish everything an older search
+explored or prove that no other branch defeated a boss.
+
+The names and boss flags follow
+[`Metroid_Defines.asm`](https://github.com/nmikstas/metroid-disassembly/blob/4270d57f9468daebdeea485686e31e26218a780c/Source_Files/Metroid_Defines.asm),
+with the defeat write in `Bank07.asm` at `LDD75`: `(InArea & 0x0f) >> 1`
+stores 1 at $687B for Kraid and 2 at $687C for Ridley. The previous decoder
+incorrectly tested bit 0 for both bosses. Correcting the count is versioned as
+key policy v8; named boss observation bytes require stream/checkpoint/result
+digest v3 (v2 introduced named Kraid/Ridley flags; v3 adds Mother Brain state).
+Existing v7 results and the v2 reporting measurements remain immutable. The unrelated legacy combined
+capacity score remains explicit rather than silently redefining past policies.
+
+Retrospective replay, without submitting an existing solution to search:
+
+```sh
+cargo build --release --manifest-path workloads/nes/Cargo.toml --bin nes-progress
+workloads/nes/target/release/nes-progress metroid CORE ROM searched-input.json > progress.json
+```
+
+The tool starts from ordinary new-game genesis, records named discoveries,
+repeats the replay, and includes ROM/core/input hashes. In its replay report,
+`first_seen.execution` counts tape actions, not historical search executions.
+For Mega Man 2, `nes-progress mm2 CORE ROM searched-power-on-prefix.json wily4`
+checks that the retained tape still reaches that stage through the current
+runtime; it is a compatibility fixture, not a fresh search result.

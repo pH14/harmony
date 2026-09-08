@@ -334,6 +334,19 @@ def aggregates(results):
                      'median_frames_to_victory_among_successes': statistics.median([x['result']['frames_to_first_victory'] for x in solved]) if solved else None,
                      'throughput_trials': len(rates),
                      'median_search_frames_per_second': statistics.median(rates) if rates else None})
+        known = [named_progress(item) for item in valid if named_progress(item) is not None]
+        if known:
+            rows[-1]['metroid_milestones'] = {
+                name: {
+                    'observed': sum(value['first_seen'].get(name) is not None for value in known),
+                    'reported_trials': sum(name in value['first_seen'] for value in known),
+                    'unavailable_trials': len(valid) - sum(name in value['first_seen'] for value in known),
+                    'median_first_execution_among_observed': statistics.median([
+                        value['first_seen'][name]['execution'] for value in known
+                        if value['first_seen'].get(name) is not None])
+                        if any(value['first_seen'].get(name) is not None for value in known) else None,
+                } for name in METROID_MILESTONES
+            }
     return rows
 
 
@@ -382,6 +395,73 @@ def compare(base, candidate):
             'baseline': aggregates(list(left.values())), 'candidate': aggregates(list(right.values()))}
 
 
+METROID_MILESTONES = {
+    'morph_ball': 'Morph Ball', 'bombs': 'Bombs', 'long_beam': 'Long Beam',
+    'high_jump': 'High Jump', 'screw_attack': 'Screw Attack', 'varia_suit': 'Varia Suit',
+    'wave_beam': 'Wave Beam', 'ice_beam': 'Ice Beam', 'brinstar': 'Brinstar',
+    'norfair': 'Norfair', 'kraid_area': "Kraid's area", 'ridley_area': "Ridley's area",
+    'tourian': 'Tourian', 'kraid_defeated': 'Kraid defeated', 'ridley_defeated': 'Ridley defeated',
+    'mother_brain_defeated': 'Mother Brain defeated', 'escape_started': 'Escape started',
+    'ending': 'Ending', 'missile_capacity': 'Missile capacity gained', 'energy_tank': 'Energy tank gained',
+}
+
+
+def named_progress(item, witness=False):
+    result = item.get('result') or {}
+    diagnostics = ((result.get('witness') or {}).get('diagnostics') if witness else
+                   item.get('last_progress', {}).get('workload_diagnostics')) or {}
+    value = diagnostics.get('named_progress') or {}
+    return value if value.get('format') == 'metroid-named-progress-v1' else None
+
+
+def metroid_html(results):
+    items = [item for item in results if item.get('search_request', {}).get('game') == 'metroid']
+    if not items:
+        return ''
+    rows = []
+    for item in items:
+        progress = named_progress(item)
+        witnessed = named_progress(item, witness=True)
+        cell = html.escape(item['cell'])
+        def names(value, keys):
+            if value is None: return 'unavailable (older reporting schema)'
+            observed = ', '.join(html.escape(METROID_MILESTONES[key]) for key in keys
+                                if value['first_seen'].get(key) is not None) or 'none observed'
+            unknown = ', '.join(html.escape(METROID_MILESTONES[key]) for key in keys if key not in value['first_seen'])
+            return observed + ('; not recorded: ' + unknown if unknown else '')
+        gear = list(METROID_MILESTONES)[:8]
+        areas = list(METROID_MILESTONES)[8:13]
+        bosses = ['kraid_defeated', 'ridley_defeated', 'mother_brain_defeated', 'escape_started', 'ending']
+        for scope, value in [('Search branches', progress), ('Champion/victory replay', witnessed)]:
+            rows.append('<tr>' + ''.join('<td>' + text + '</td>' for text in [
+                cell, scope, names(value, gear), names(value, areas), names(value, bosses),
+                html.escape(str(value['max_missile_capacity'])) if value else 'unavailable',
+                html.escape(str(value['max_energy_tanks'])) if value else 'unavailable']) + '</tr>')
+    discoveries = []
+    for item in items:
+        progress = named_progress(item)
+        if progress is None: continue
+        proofs = (item.get('result') or {}).get('milestone_witnesses', {})
+        cell = html.escape(item['cell'])
+        for key, label in METROID_MILESTONES.items():
+            stamp = progress['first_seen'].get(key)
+            if stamp is None: continue
+            link = (f'<a href="{cell}/campaign/milestone-inputs/{key}.json">verified input</a>'
+                    if key in proofs else 'origin' if stamp['execution'] == 0 else 'no verified input')
+            discoveries.append(f'<li>{cell}: {html.escape(label)} — execution {stamp["execution"]:,}; '
+                               f'route action ends at frame {stamp["route_action_end_frame"]:,}; {link}</li>')
+    return ('<h2>Metroid milestones</h2><p>Each milestone is an observation, not a prescribed route or reward. '
+            'Search rows are unions across branches; replay rows describe one trajectory. Area entry does not imply '
+            'boss defeat. Capacity includes boss bonuses and is not a count of missile pickups. '
+            'Not observed means absent from captured observations up to the recorded stop; unavailable means the schema did not record it.</p>'
+            '<div class="scroll"><table><thead><tr><th>Cell</th><th>Scope</th><th>Equipment</th><th>Areas entered</th>'
+            '<th>Bosses / ending</th><th>Missile capacity</th><th>Energy tanks</th></tr></thead><tbody>'
+            + ''.join(rows) + '</tbody></table></div><details><summary>First discoveries and replay evidence</summary>'
+            '<p>Execution is admitted search work. Route frame is an action endpoint on the discovered input, '
+            'not cumulative emulated work or an exact pickup frame. Inputs are independently replayed twice.</p><ul>'
+            + ''.join(discoveries) + '</ul></details>')
+
+
 def report_html(results, title):
     def number(value):
         return 'unavailable' if value is None else f'{value:,.1f}' if isinstance(value, float) else f'{value:,}'
@@ -400,7 +480,7 @@ def report_html(results, title):
 <h1>''' + html.escape(title) + '''</h1><p>Fresh search runs with frozen workload policies. Independent stage and level fixtures are separate from whole-game completion. Missing victories are censored at the recorded budget; failures remain visible.</p>
 <p>Frames include admitted emulator work and replay/probes inside search. Throughput excludes witness verification and external export. Peak RSS is the operating system's process maximum; disk peaks sample the cell output directory. Shared assets/builds and temporary files outside that directory are excluded. See each summary for phase measurements, process-group RSS, logical archive memory, I/O and provenance.</p>
 <div class="scroll"><table><thead><tr><th>Cell</th><th>Status</th><th>Solved</th><th>Frames to victory</th><th>Total frames</th><th>Frames/s</th><th>Search s</th><th>RSS bytes</th><th>Output disk bytes</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
-<h2>Seed panels</h2><p>Wilson 95% intervals describe uncertainty in solve fractions. Time-to-victory medians include successes only and are not estimates for censored runs. Three-seed pilots are exploratory.</p><ul>''' + panels + '''</ul><p><a href="results.json">Results JSON</a> · <a href="suite.json">Frozen matrix</a> · <a href="matrix.json">Build and host</a> · <a href="checksums.json">SHA-256 manifest</a></p></html>'''
+''' + metroid_html(results) + '''<h2>Seed panels</h2><p>Wilson 95% intervals describe uncertainty in solve fractions. Time-to-victory medians include successes only and are not estimates for censored runs. Three-seed pilots are exploratory.</p><ul>''' + panels + '''</ul><p><a href="results.json">Results JSON</a> · <a href="suite.json">Frozen matrix</a> · <a href="matrix.json">Build and host</a> · <a href="checksums.json">SHA-256 manifest</a></p></html>'''
 
 
 def export(matrix, out):
@@ -418,6 +498,13 @@ def export(matrix, out):
                 raise ValueError('export refuses symlinks: ' + str(relative))
             if source.is_file():
                 sources.append((source, relative))
+    for item in results:
+        for name in METROID_MILESTONES:
+            relative = Path(item['cell']) / 'campaign' / 'milestone-inputs' / (name + '.json')
+            source = matrix / relative
+            if source.resolve() != matrix.resolve() / relative:
+                raise ValueError('export refuses symlinks: ' + str(relative))
+            if source.is_file(): sources.append((source, relative))
     for name in ('results.json', 'suite.json', 'matrix.json'):
         source = matrix / name
         if source.resolve() != matrix.resolve() / name:

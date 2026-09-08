@@ -224,6 +224,9 @@ pub enum SelectorPolicy {
     /// Count weighting backed by bounded retention-key history, surviving
     /// entry replacement and metadata compaction.
     EnergyFrontierCheapestKeyCount(RetireThresholds),
+    /// Cost selection using semantic progress without entry-count weighting.
+    /// Equal-progress locations share frontier rank regardless of map identity.
+    EnergyProgressCheapest(RetireThresholds),
 }
 
 /// The recorded identifier of a parent selector.
@@ -248,6 +251,10 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
         }
         SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => format!(
             "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:{}",
+            threshold_values(scales)
+        ),
+        SelectorPolicy::EnergyProgressCheapest(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_progress_cheapest_v1:{}",
             threshold_values(scales)
         ),
         SelectorPolicy::EnergyProgressCheapestCount(scales) => format!(
@@ -293,6 +300,7 @@ pub fn selector_policy_from_identifier(
     let energy_prefix = format!("{SELECTOR_IDENTIFIER}_energy:");
     let frontier_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier:");
     let key_count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:");
+    let semantic_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_v1:");
     let progress_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_count_v1:");
     let count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:");
     let cheapest_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest:");
@@ -302,6 +310,7 @@ pub fn selector_policy_from_identifier(
         EnergyFrontier,
         EnergyFrontierCheapest,
         EnergyFrontierCheapestCount,
+        EnergyProgressCheapest,
         EnergyProgressCheapestCount,
         EnergyFrontierCheapestKeyCount,
     }
@@ -309,6 +318,8 @@ pub fn selector_policy_from_identifier(
         (values, Parsed::Retire)
     } else if let Some(values) = identifier.strip_prefix(&key_count_prefix) {
         (values, Parsed::EnergyFrontierCheapestKeyCount)
+    } else if let Some(values) = identifier.strip_prefix(&semantic_prefix) {
+        (values, Parsed::EnergyProgressCheapest)
     } else if let Some(values) = identifier.strip_prefix(&progress_prefix) {
         (values, Parsed::EnergyProgressCheapestCount)
     } else if let Some(values) = identifier.strip_prefix(&count_prefix) {
@@ -344,6 +355,7 @@ pub fn selector_policy_from_identifier(
         Parsed::EnergyFrontierCheapestKeyCount => {
             SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
         }
+        Parsed::EnergyProgressCheapest => SelectorPolicy::EnergyProgressCheapest(thresholds),
         Parsed::EnergyProgressCheapestCount => {
             SelectorPolicy::EnergyProgressCheapestCount(thresholds)
         }
@@ -3083,7 +3095,8 @@ where
     fn semantic_progress(&self) -> bool {
         matches!(
             self.selector_policy,
-            SelectorPolicy::EnergyProgressCheapestCount(_)
+            SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressCheapestCount(_)
         )
     }
 
@@ -3390,6 +3403,7 @@ where
             | SelectorPolicy::EnergyFrontierCheapest(scales)
             | SelectorPolicy::EnergyFrontierCheapestCount(scales)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales)
+            | SelectorPolicy::EnergyProgressCheapest(scales)
             | SelectorPolicy::EnergyProgressCheapestCount(scales) => (scales, true),
             _ => return Ok(rand.below(count)),
         };
@@ -3509,6 +3523,7 @@ where
             | SelectorPolicy::EnergyFrontierCheapest(thresholds)
             | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
+            | SelectorPolicy::EnergyProgressCheapest(thresholds)
             | SelectorPolicy::EnergyProgressCheapestCount(thresholds) => {
                 self.since_retained[id] < thresholds.entry
             }
@@ -3525,6 +3540,7 @@ where
             | SelectorPolicy::EnergyFrontierCheapest(_)
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
+            | SelectorPolicy::EnergyProgressCheapest(_)
             | SelectorPolicy::EnergyProgressCheapestCount(_) => true,
             SelectorPolicy::Retire(thresholds) => {
                 thresholds
@@ -3582,6 +3598,7 @@ where
             SelectorPolicy::EnergyFrontierCheapest(_)
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
+                | SelectorPolicy::EnergyProgressCheapest(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             let mut ranked = window
@@ -3851,6 +3868,7 @@ where
                 | SelectorPolicy::EnergyFrontierCheapest(_)
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
+                | SelectorPolicy::EnergyProgressCheapest(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
@@ -3927,6 +3945,7 @@ where
             SelectorPolicy::EnergyFrontierCheapest(_)
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
+            | SelectorPolicy::EnergyProgressCheapest(_)
             | SelectorPolicy::EnergyProgressCheapestCount(_) => new_cell_descendant,
             SelectorPolicy::GroupUniform => false,
         };
@@ -3961,6 +3980,7 @@ where
         | SelectorPolicy::EnergyFrontierCheapest(thresholds)
         | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
         | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
+        | SelectorPolicy::EnergyProgressCheapest(thresholds)
         | SelectorPolicy::EnergyProgressCheapestCount(thresholds) = &self.selector_policy
         {
             let entries_over_threshold = u64::try_from(
@@ -6599,7 +6619,11 @@ mod tests {
 
     #[test]
     fn semantic_selection_does_not_reward_arbitrary_location_labels() {
-        fn sample<const CLASSES: bool>(labels: [u16; 3], semantic: bool) -> [usize; 3] {
+        fn sample<const CLASSES: bool>(
+            labels: [u16; 3],
+            semantic: bool,
+            counts: bool,
+        ) -> [usize; 3] {
             let mut archive = Archive::<u8, LabelledKey<CLASSES>, (), ()>::new(|_| 1);
             for (id, label) in labels.into_iter().enumerate() {
                 archive
@@ -6622,7 +6646,9 @@ mod tests {
                 entry: 1000,
                 groups: vec![1000; 3],
             };
-            archive.selector_policy = if semantic {
+            archive.selector_policy = if semantic && !counts {
+                SelectorPolicy::EnergyProgressCheapest(thresholds)
+            } else if semantic {
                 SelectorPolicy::EnergyProgressCheapestCount(thresholds)
             } else {
                 SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
@@ -6638,7 +6664,7 @@ mod tests {
             counts
         }
         for labels in [[1, 900, 2000], [2000, 1, 900]] {
-            let classes = sample::<true>(labels, true);
+            let classes = sample::<true>(labels, true, true);
             assert!(
                 classes[0] > 4000 && classes[1] > 4000,
                 "equivalent progress must share classes: {classes:?}"
@@ -6647,7 +6673,7 @@ mod tests {
                 classes[2], 0,
                 "a larger label must not displace actual progress"
             );
-            let bands = sample::<false>(labels, true);
+            let bands = sample::<false>(labels, true, true);
             assert!(
                 bands[0].abs_diff(bands[1]) < 400,
                 "location labels changed frontier weighting: {bands:?}"
@@ -6657,10 +6683,30 @@ mod tests {
                 "declared progress must still influence selection: {bands:?}"
             );
         }
-        let legacy = sample::<true>([1, 900, 2000], false);
+        let legacy = sample::<true>([1, 900, 2000], false, true);
         assert!(
             legacy[2] > 8000,
             "the control must reproduce the old label bias"
+        );
+        for labels in [[10, 90, 200], [200, 10, 90]] {
+            let draws = sample::<false>(labels, true, false);
+            assert!(
+                draws[0] > draws[2] && draws[1] > draws[2],
+                "semantic-only {draws:?}"
+            );
+            assert!(
+                draws[0].abs_diff(draws[1]) < 400,
+                "equal progress {draws:?}"
+            );
+        }
+        let policy = SelectorPolicy::EnergyProgressCheapest(RetireThresholds {
+            entry: 3,
+            groups: vec![6, 12, 2],
+        });
+        assert_eq!(
+            selector_policy_from_identifier(&super::selector_policy_identifier(&policy), 3)
+                .unwrap(),
+            policy
         );
     }
 }

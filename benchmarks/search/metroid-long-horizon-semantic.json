@@ -1,0 +1,36 @@
+{
+  "format": "harmony-search-eval-v1",
+  "id": "metroid-long-horizon-semantic-development-v1",
+  "seeds": [
+    3,
+    4,
+    5
+  ],
+  "workers": [
+    4
+  ],
+  "memory_mib": [
+    8192
+  ],
+  "search": {
+    "executions": 3000000,
+    "actions": 4096,
+    "window": 2,
+    "result_slots": 2,
+    "wall_seconds": 7200,
+    "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+    "suffix": "one_to_six",
+    "mixture": "alphabet_only",
+    "verification": "witness",
+    "frames": 400000000
+  },
+  "cases": [
+    {
+      "id": "metroid-full",
+      "game": "metroid",
+      "origin": "power-on new-game genesis",
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "search": {}
+    }
+  ]
+}

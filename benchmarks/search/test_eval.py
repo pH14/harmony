@@ -26,6 +26,54 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(row['median_search_frames_per_second'], 100.0)
         self.assertIsNone(eval.aggregates(items[:1])[0]['median_search_frames_per_second'])
 
+    def test_named_progress_distinguishes_missing_unreached_and_replayed(self):
+        item = {'cell':'metroid-s1', 'search_request':{'game':'metroid'}, 'last_progress':{}, 'result':{}}
+        self.assertIsNone(eval.named_progress(item))
+        self.assertIn('older reporting schema', eval.metroid_html([item]))
+        progress = {'format':'metroid-named-progress-v1', 'first_seen':{
+            name:None for name in eval.METROID_MILESTONES}, 'max_missile_capacity':10, 'max_energy_tanks':1}
+        progress['first_seen']['kraid_area'] = {'execution':42, 'route_action_end_frame':500}
+        item['last_progress']['workload_diagnostics'] = {'named_progress':progress}
+        replay = copy.deepcopy(progress)
+        replay['first_seen']['kraid_area'] = None
+        item['result']['witness'] = {'diagnostics':{'named_progress':replay}}
+        text = eval.metroid_html([item])
+        self.assertIn('execution 42', text)
+        self.assertIn('none observed', text)
+        self.assertIsNone(eval.named_progress(item, witness=True)['first_seen']['kraid_area'])
+        self.assertIsNone(eval.named_progress(item)['first_seen']['kraid_defeated'])
+        item.update(case='metroid',status='complete')
+        item['result'].update(solved=False)
+        missing = copy.deepcopy(item)
+        missing['last_progress'] = {}
+        row = eval.aggregates([item, missing])[0]['metroid_milestones']
+        self.assertEqual(row['kraid_area']['observed'], 1)
+        self.assertEqual(row['kraid_area']['reported_trials'], 1)
+        self.assertEqual(row['kraid_area']['unavailable_trials'], 1)
+        self.assertEqual(row['kraid_defeated']['observed'], 0)
+        self.assertIsNone(row['kraid_defeated']['median_first_execution_among_observed'])
+        del progress['first_seen']['mother_brain_defeated']
+        row = eval.aggregates([item])[0]['metroid_milestones']['mother_brain_defeated']
+        self.assertEqual(row['reported_trials'], 0)
+        self.assertEqual(row['unavailable_trials'], 1)
+        self.assertIn('not recorded: Mother Brain defeated', eval.metroid_html([item]))
+
+
+
+    def test_export_includes_only_named_milestone_tapes_and_rejects_symlinks(self):
+        matrix = self.root/'matrix'
+        item = self.matrix(matrix)
+        directory = matrix/item['cell']/'campaign/milestone-inputs'
+        directory.mkdir()
+        (directory/'bombs.json').write_text('{"actions":[]}')
+        (directory/'private.nes').write_bytes(b'private sentinel')
+        eval.export(matrix, self.root/'public')
+        self.assertTrue((self.root/'public'/item['cell']/'campaign/milestone-inputs/bombs.json').is_file())
+        self.assertFalse(any(p.suffix == '.nes' for p in (self.root/'public').rglob('*')))
+        (directory/'bombs.json').unlink()
+        (directory/'bombs.json').symlink_to(directory/'private.nes')
+        with self.assertRaises(ValueError): eval.export(matrix, self.root/'other')
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
