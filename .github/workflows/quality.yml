@@ -56,6 +56,8 @@ jobs:
         run: node --test .github/scripts/benchmark-report.test.cjs
       - name: Historical-bug oracle checks
         run: .github/scripts/historical-oracle.test.sh
+      - name: Kernel patch-series checks
+        run: bash consonance/harmony-linux/linux/test-patch-series.sh
       - name: Install stable toolchain
         run: |
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
