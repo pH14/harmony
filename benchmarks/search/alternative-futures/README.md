@@ -200,3 +200,115 @@ C02 refinement before launch: replay every generated next-stage bridge twice
 before searching the next stage, and count those physical prefix/setup frames.
 The first corrected fresh Metal result supplies this diagnostic naturally;
 C02 will start from ordinary power-on and reuse no C01 gameplay input.
+
+### R01 — bounded resource extremes, first candidate family
+
+Preserve at most two representatives per slot: best under resource axis 0 then
+1, and best under axis 1 then 0, with existing route cost and stable id breaking
+ties. Metroid exposes health/missiles; MM2 exposes health/total weapon energy.
+This is a deliberately small retention mechanism, not a claim that resource
+ordering proves behavioral dominance or that two extremes preserve all tradeoffs.
+Unsupported workloads retain their existing representative rule. Parent selector,
+continuation mixture, suffix vocabulary, workers, total memory and work stay fixed.
+The policy is separately recorded as `resource_extremes_2_v1`; omission preserves
+historical behavior. More retained states consume the same archive byte budget.
+
+First run focused extremes and full replay/pressure fixtures (10m watchdog),
+then small actual-ROM campaign/checkpoint replay at 5k jobs for Metroid and MM2
+(5m/cell), requiring actual alternative admissions. Run a 100k legacy control
+against the frozen stream to detect unintended changes. On success, paired
+Metroid development uses 500k jobs/70M frames, 4 workers/8 GiB and 20m/cell,
+seeds 3/4/5, alphabet-only and semantic selection. Measure common milestones,
+map coverage and work plus retention/exposure. A local retention win without
+fresh improvement qualifies further depth testing, not default promotion.
+A fresh regression with reduced exposure motivates separate selection diagnosis;
+no automatic archive-size or budget increase.
+
+R01 first focused compilation failed on missing test imports; no experiment
+ran from that build. Corrected imports and made the audit skip competitions
+where both endpoints survive. The focused retry passed both tests, including
+actual alternative admission, replacement, eviction, continuation dispatch,
+and exact campaign/report/checkpoint replay.
+
+R01 actual-ROM qualification: both 5k campaigns reproduced full reports and
+checkpoints. MM2 had 50 alternative admissions; Metroid had zero because seed 3
+had not acquired missiles. The latter is compatibility evidence only. The
+cross-workload generic mechanism is exercised by MM2 plus the synthetic
+pressure/continuation fixture, so proceed to the registered bounded Metroid
+pair and explicitly measure the first real alternative activity there. Do not
+claim the 5k Metroid run exercised resource tradeoffs. The 100k legacy stream
+from resource-005 matches frozen B00 exactly. Its 116s on E-cores is not directly
+comparable with the earlier 97s on P-cores; attainment comparisons use admitted
+work and paired placements, with wall throughput descriptive only.
+
+Add a reporting-only final census of cached active endpoints for subsequent
+builds: equipment/weapon union, capacity maxima, retained map coverage, and
+missing-snapshot count. It scans once after workers join, retains no snapshots,
+uses a temporary 32 KiB Metroid bitmap, and is explicitly a lower bound if
+payloads were evicted. It is separate from the observed-anywhere accumulator
+and independently verified single-trajectory witness. Qualification: generic
+and NES library checks (10m), then unchanged-stream compatibility before use.
+
+Resource-005 development pair seed 3 started after qualification, control on
+CPUs 4–7 and candidate on 12–15. Both run the same attested binary; resource
+policy is the only search change. Resource-006 adds the final census and clearer
+chain cost/status labels (including avoiding a redundant final bridge replay);
+its NES library 117 tests, generic 115 + 1 interface tests, evaluator 1 test,
+Python runner 22 tests, and dependency check passed. No unsafe code changed.
+
+P02 per-pair reanalysis is retained in `results/p02-per-pair.json`. Discarded
+representatives do not uniformly win: several survivors have better exit rates
+per actual emulated frame. Paired identical allowances stop early on death,
+so actual frame totals differ. These finite counterexamples disprove universal
+behavioral dominance, but they do not prove an equal-cost global search gain.
+
+Inspection against main confirms `in_window_ever` is an existing selector vector,
+not newly allocated by the audit. The observer reuses it and adds only fixed
+counters. Resource-008's new diagnostic-memory field mistakenly includes that
+existing vector capacity; this is conservative overreporting, not extra memory
+or a search change. Correct the field to fixed observer storage at the next
+source checkpoint. The 2.5 MiB workload action-reservoir bound remains explicit.
+A preparation script syntax error made resource-007 a duplicate of 006; it has
+no experimental role. Resource-008's full source bundle was frozen and verified
+against its build hash before new manifests were generated.
+
+### C03 — fresh chained MM2 retention transfer
+
+C02 has cleared all eight Robot Masters from its own fresh inputs and verified
+every bridge twice. MM2's small resource-extremes campaign already exercised
+50 alternative admissions and exact full replay; Metroid seed 3 was mixed.
+Run one fresh resource-008 chain on the same development seed 20261001 and
+identical stage order, selector, energy-splice vocabulary, 4 workers/8 GiB,
+1M executions/120M admitted frames, 20m per stage and 90m total. Start on CPUs
+0–3 after D01 completes; C02 uses 8–11. Compare attainment and admitted/prefix
+work, not unmatched core-class throughput. No C02 input enters C03. A deeper
+or cheaper chain qualifies repeated development; a failure identifies a
+transfer regression and is retained. Neither a lone successful chain nor a
+replayed historical tape qualifies the validation threshold.
+
+D01 anchor completed: 3M jobs / 382,101,298 frames, observed 155 map cells,
+Bombs, Long Beam, energy tank and Kraid area, no boss. First named milestones
+and work match the frozen semantic seed-3 control. Audit census over 8,161,836
+eligible same-slot competitions found 0 equipment and 0 capacity collisions,
+686,536 resource tradeoffs; no incumbent snapshots were missing. Of 946,740
+removed representatives, 245,849 (25.97%) had never been selected. This narrows
+identity collisions as an explanation for this seed, not for all future states.
+Independent witness replays preserve the attained capabilities on one route.
+Compact provenance and evidence are in `results/d01-anchor.json`.
+
+At the next implementation checkpoint, make optional resource retention fall
+back to ordinary retention if any competitor lacks resource axes. This guards
+the generic optional-key boundary without changing Metroid/MM2 (always present)
+or other current workloads (always absent). Qualify the mixed-availability
+fixture plus the generic and NES contracts under 10m watchdogs before commit.
+
+Resource checkpoint: 116 generic unit tests plus 1 interface test, 117 NES
+library tests plus 1 evaluator test, 22 Python runner tests, dependency boundaries,
+and diff whitespace checks pass. The optional-policy generic fixture exercised
+real alternatives, replacement, eviction, continuations and exact replay. The
+actual-ROM resource-008 small streams and legacy 100k stream exactly match the
+previously qualified counterparts. The mechanism remains experimental: early
+Metroid seed 3 is mixed; seed 4 misses the control energy tank and covers 79
+versus 82 map cells. C03 reaches the end of Heat in about 52M stage-search frames
+versus C02's 105M, with different fresh prefixes from their own Metal searches;
+that is an end-to-end chain comparison, not an isolated same-start Heat effect.

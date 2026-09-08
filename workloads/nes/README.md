@@ -86,3 +86,9 @@ all 40 cleared-level flags, continues execution through intermediate clears, and
 permits an 8,192-action horizon. The default remains the isolated-level workload.
 Whole-game runs must begin at level 1; isolated level setups are never scored as
 whole-game completion.
+
+`nes-eval` optionally accepts `slot_retention: "resource_extremes_2_v1"`.
+Metroid supplies health/missiles and MM2 health/total weapon energy; other
+workloads keep ordinary retention. This bounded research policy leaves the
+controller vocabulary and selector unchanged. Its identity is recorded in
+streams and evaluation provenance.

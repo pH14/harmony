@@ -181,3 +181,17 @@ materialization never changes deterministic reconstruction counters. The
 constant-size `retention_diagnostics` sidecar census counts removal before
 window exposure, selection, and productive extension. It is not replay state.
 The evaluator flushes/disables campaign sampling before verification replay.
+
+The opt-in `resource_extremes_2_v1` slot policy keeps at most two resource
+extremes supplied by `ArchiveKey::retention_resources`, breaking ties by
+existing group cost and stable entry id. It preserves the best point under
+each axis ordering, not every Pareto point. Retained alternatives share the
+ordinary archive byte budget and selector. Unsupported keys use their ordinary
+rule. The stream header records the policy; omission replays the legacy rule.
+This is an experimental mechanism, not a default or a behavioral dominance claim.
+
+Retention lifecycle diagnostics reuse existing selector exposure vectors and add
+only fixed counters, reported by `retention_diagnostic_memory_bytes`. Existing
+vectors remain covered by archive metadata charging. Measured process RSS also
+includes workload-owned audit storage. The final census reads only cached
+active endpoints; missing payloads are counted and never reconstructed.

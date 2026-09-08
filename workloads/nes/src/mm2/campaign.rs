@@ -452,6 +452,29 @@ impl CampaignTypes for Mm2Game {
 }
 
 impl Reporting for Mm2Game {
+    fn retained_diagnostics<'a>(
+        snapshots: impl Iterator<Item = Option<&'a Mm2Snapshot>>,
+    ) -> Option<serde_json::Value> {
+        let (mut active, mut missing) = (0_u64, 0_u64);
+        let (mut weapons, mut stage, mut screen) = (0, 0, 0);
+        for snapshot in snapshots {
+            active += 1;
+            let Some(snapshot) = snapshot else {
+                missing += 1;
+                continue;
+            };
+            let state = snapshot.state();
+            weapons |= state.weapons_obtained;
+            stage = stage.max(state.stage);
+            screen = screen.max(state.screen);
+        }
+        Some(serde_json::json!({
+            "scope": "union/maxima over cached active endpoints; not one trajectory; lower bounds when snapshots are missing",
+            "active_entries": active, "missing_snapshots": missing,
+            "weapons_union": weapons, "max_stage": stage, "max_screen": screen
+        }))
+    }
+
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }

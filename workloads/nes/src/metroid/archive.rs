@@ -151,6 +151,10 @@ impl ArchiveKey for MetroidArchiveKey {
         1
     }
 
+    fn retention_resources(self) -> Option<[u64; 2]> {
+        Some([u64::from(self.health), u64::from(self.missiles)])
+    }
+
     fn preference_cmp(self, other: Self) -> Ordering {
         self.preference().cmp(&other.preference())
     }

@@ -177,6 +177,10 @@ impl ArchiveKey for Mm2ArchiveKey {
         (left.bosses, left.boss_damage).cmp(&(right.bosses, right.boss_damage))
     }
 
+    fn retention_resources(self) -> Option<[u64; 2]> {
+        Some([u64::from(self.health), u64::from(self.energy)])
+    }
+
     fn preference_cmp(self, other: Self) -> Ordering {
         self.preference().cmp(&other.preference())
     }

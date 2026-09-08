@@ -504,6 +504,34 @@ impl Reporting for MetroidGame {
         Ok(())
     }
 
+    fn retained_diagnostics<'a>(
+        snapshots: impl Iterator<Item = Option<&'a MetroidSnapshot>>,
+    ) -> Option<serde_json::Value> {
+        let (mut active, mut missing) = (0_u64, 0_u64);
+        let (mut equipment, mut bosses, mut missiles, mut tanks) = (0, 0, 0, 0);
+        let mut maps = MapCoverage::default();
+        for snapshot in snapshots {
+            active += 1;
+            let Some(snapshot) = snapshot else {
+                missing += 1;
+                continue;
+            };
+            let state = snapshot.state();
+            equipment |= state.equipment;
+            bosses = bosses.max(state.bosses);
+            missiles = missiles.max(state.missile_capacity);
+            tanks = tanks.max(state.energy_tanks);
+            maps.observe(state.area, state.map_x, state.map_y);
+        }
+        Some(serde_json::json!({
+            "scope": "union/maxima over cached active endpoints; not one trajectory; lower bounds when snapshots are missing",
+            "active_entries": active, "missing_snapshots": missing,
+            "equipment_union": equipment, "max_bosses": bosses,
+            "max_missile_capacity": missiles, "max_energy_tanks": tanks,
+            "map_cells_retained_cached": maps.count(), "temporary_bitmap_bytes": 32768
+        }))
+    }
+
     fn diagnostics(evidence: &MetroidCampaignEvidence) -> Option<serde_json::Value> {
         Some(serde_json::json!({
             "map_cells_observed": evidence.observed_map.count(),

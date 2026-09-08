@@ -48,6 +48,7 @@ pub(crate) struct RetentionAudit {
     strata: [&'static str; STRATA],
     seen: [u64; STRATA],
     missing_snapshot: u64,
+    retained_both: u64,
     oversized_input: u64,
     input_reconstructions: u64,
     diagnostic_action_capacity_bytes: usize,
@@ -76,6 +77,7 @@ impl RetentionAudit {
             ],
             seen: [0; STRATA],
             missing_snapshot: 0,
+            retained_both: 0,
             oversized_input: 0,
             input_reconstructions: 0,
             diagnostic_action_capacity_bytes: STRATA
@@ -94,6 +96,10 @@ impl RetentionAudit {
         event: &RetentionObservation<'_, ButtonChord, MetroidArchiveKey, MetroidSnapshot>,
     ) -> Result<(), Box<dyn Error>> {
         if self.finished {
+            return Ok(());
+        }
+        if event.candidate_admitted && !event.replaces {
+            self.retained_both += 1;
             return Ok(());
         }
         let Some(incumbent) = event.incumbent.1 else {

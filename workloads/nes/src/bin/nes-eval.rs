@@ -62,6 +62,8 @@ struct Request {
     #[serde(default)]
     retention_audit: bool,
     #[serde(default)]
+    slot_retention: Option<String>,
+    #[serde(default)]
     mm2_chain: bool,
     #[serde(default)]
     prefix_input: Option<PathBuf>,
@@ -239,7 +241,7 @@ where
     };
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "selector":request.selector, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification, "retention_audit":request.retention_audit,"mm2_chain":request.mm2_chain,"prefix_sha256":request.prefix_sha256}),
+        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "selector":request.selector, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification, "retention_audit":request.retention_audit,"slot_retention":request.slot_retention,"mm2_chain":request.mm2_chain,"prefix_sha256":request.prefix_sha256}),
     )?;
     let mut stream = StreamDigest {
         file: if full {
@@ -263,6 +265,9 @@ where
         CampaignExecutionOptions {
             frame_budget: request.frames,
             result_buffering,
+            slot_retention: nes_workload::search::archive::SlotRetentionPolicy::from_identifier(
+                request.slot_retention.as_deref(),
+            )?,
         },
     )?;
     stream.flush()?;
@@ -467,6 +472,9 @@ fn main() -> Result<()> {
             };
             let outcome = evaluate(&game, Mm2CampaignRun, &request, &out, started);
             let mut chain_setup = json!({"format":"mm2-chain-stage-cost-v1", "new_target_setup_frames":game.setup_frame_count(), "stage":stage.name(), "prefix_sha256":request.prefix_sha256, "scope":"freshness established by enclosing chain manifest, not by this stage tool"});
+            if request.mm2_chain {
+                write_json(&out.join("chain-cost.json"), &chain_setup)?;
+            }
             if outcome.is_ok() && request.mm2_chain && out.join("victory-input.json").is_file() {
                 let victory: Mm2Input =
                     serde_json::from_slice(&fs::read(out.join("victory-input.json"))?)?;
@@ -496,7 +504,6 @@ fn main() -> Result<()> {
                 write_json(&out.join("next-prefix.json"), &Mm2Input { actions: next })?;
                 chain_setup["new_target_setup_frames"] = json!(game.setup_frame_count());
                 chain_setup["award_transition_physical_frames"] = json!(transition_frames);
-                chain_setup["setup_endpoint"] = serde_json::to_value(target.mechanical_state())?;
             }
             if request.mm2_chain {
                 write_json(&out.join("chain-cost.json"), &chain_setup)?;
