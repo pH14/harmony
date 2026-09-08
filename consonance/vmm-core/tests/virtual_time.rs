@@ -86,7 +86,7 @@ fn classify(
                 payload,
             ))
         }
-        Exit::Arch(X86Exit::Rdtsc) => {
+        Exit::Arch(X86Exit::Rdmsr { index: 0x10 }) => {
             backend.complete_read(0)?;
             Ok(ClassifiedExit::time_read(b"rdtsc".to_vec()))
         }
@@ -202,11 +202,11 @@ proptest! {
 #[test]
 fn dedicated_mask_wfi_simultaneous_and_reassertion_workload() {
     let exits = vec![
-        mmio(1),                        // vns 5: masked-at-deadline
-        Exit::Arch(X86Exit::Rdtsc),     // vns 7: simultaneous pair
-        Exit::Arch(X86Exit::Rdtsc),     // vns 9: first assertion while masked
-        mmio(2),                        // vns 14: unmask + reassertion
-        Exit::Common(CommonExit::Idle), // vns 14: WFI with already-due deadline
+        mmio(1),                                    // vns 5: masked-at-deadline
+        Exit::Arch(X86Exit::Rdmsr { index: 0x10 }), // vns 7: simultaneous pair
+        Exit::Arch(X86Exit::Rdmsr { index: 0x10 }), // vns 9: first assertion while masked
+        mmio(2),                                    // vns 14: unmask + reassertion
+        Exit::Common(CommonExit::Idle),             // vns 14: WFI with already-due deadline
         Exit::Common(CommonExit::Shutdown),
     ];
     let mut loop_ = configured_loop(exits, 2);

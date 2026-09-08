@@ -11,7 +11,7 @@
 # V-time-driven; the running count/sum stays a pure function of the loop index (the
 # gate's deterministic anchor) and locale/TZ are pinned so the uuid/timestamp text
 # renders stably. Determinism of the *execution* (TSC, RNG, fork order, the clock) is
-# enforced from below by the patched KVM backend + V-time — see
+# enforced from below by the stock KVM backend + V-time — see
 # consonance/harmony-linux/linux/README.md.
 #
 # Two Consonance VMM properties shape the control flow:

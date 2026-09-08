@@ -75,17 +75,11 @@ fn pending_for(exit: &Exit<Arm64>) -> Pending {
     }
 }
 
-/// Default capabilities of a fresh arm64 mock: fully deterministic (it is a
-/// controlled in-process model). Override with
-/// [`MockArm64Backend::with_capabilities`] to test the "refuse to claim
-/// determinism" path (the stock arm64 backend reports everything `false`).
+/// Default arm64 mock identity with userspace-owned interrupt state.
 const MOCK_ARM64_CAPS: MockArm64Caps = Capabilities {
     name: "mock-arm64",
-    deterministic_rng: true,
     arch: crate::arch::arm64::Arm64Caps {
         in_kernel_gic: false,
-        deterministic_cntvct: true,
-        enforces_cntv_cval: true,
     },
 };
 
@@ -492,11 +486,8 @@ mod tests {
     fn with_capabilities_preserves_the_supplied_capability_record() {
         let caps = Capabilities {
             name: "arm64-test",
-            deterministic_rng: false,
             arch: crate::arch::arm64::Arm64Caps {
                 in_kernel_gic: true,
-                deterministic_cntvct: false,
-                enforces_cntv_cval: false,
             },
         };
         let mock = MockArm64Backend::with_capabilities(caps);

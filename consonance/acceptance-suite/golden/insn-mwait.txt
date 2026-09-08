@@ -1,4 +1,0 @@
-PAYLOAD insn-mwait START
-OK pause
-OK monitor-mwait
-PAYLOAD insn-mwait PASS

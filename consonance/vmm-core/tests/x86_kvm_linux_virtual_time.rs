@@ -19,7 +19,7 @@
 //!
 //! These need real KVM and the built guest image, so they are `#[ignore]`d;
 //! the x86-virtual-time workflow runs them on GitHub-hosted runners with the
-//! cache-restored image. No det-cfl-v1 host baseline is required: the
+//! cache-restored image. No physical CPU identity is required: the
 //! virtual_time determinism claim is defined over the exit stream plus the
 //! frozen contract, not host homogeneity — heterogeneous runners are the point.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]

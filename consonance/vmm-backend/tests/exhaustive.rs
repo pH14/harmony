@@ -20,10 +20,6 @@ fn classify(exit: &Exit<X86>) -> ExitReason {
         Exit::Arch(X86Exit::Wrmsr { .. }) => ExitReason::Wrmsr,
         Exit::Common(CommonExit::Hypercall(_)) => ExitReason::Hypercall,
         Exit::Arch(X86Exit::Cpuid { .. }) => ExitReason::Cpuid,
-        Exit::Arch(X86Exit::Rdtsc) => ExitReason::Rdtsc,
-        Exit::Arch(X86Exit::Rdtscp) => ExitReason::Rdtscp,
-        Exit::Arch(X86Exit::Rdrand { .. }) => ExitReason::Rdrand,
-        Exit::Arch(X86Exit::Rdseed { .. }) => ExitReason::Rdseed,
         Exit::Common(CommonExit::Idle) => ExitReason::Idle,
         Exit::Common(CommonExit::Shutdown) => ExitReason::Shutdown,
     }
@@ -43,7 +39,7 @@ fn classify_arm64(exit: &Exit<Arm64>) -> ExitReason {
 
 /// One value of every `Exit<X86>` variant — the closed set the x86 contract
 /// enumerates, in `ExitCounts` field order (the pre-arm64 roster prefix).
-fn one_of_each() -> [Exit<X86>; 12] {
+fn one_of_each() -> [Exit<X86>; 8] {
     [
         Exit::Arch(X86Exit::Io {
             port: 0x80,
@@ -65,10 +61,6 @@ fn one_of_each() -> [Exit<X86>; 12] {
             leaf: 1,
             subleaf: 0,
         }),
-        Exit::Arch(X86Exit::Rdtsc),
-        Exit::Arch(X86Exit::Rdtscp),
-        Exit::Arch(X86Exit::Rdrand { width: 8 }),
-        Exit::Arch(X86Exit::Rdseed { width: 8 }),
         Exit::Common(CommonExit::Idle),
         Exit::Common(CommonExit::Shutdown),
     ]
@@ -97,14 +89,14 @@ fn classify_agrees_with_reason_for_every_variant() {
 #[test]
 fn exit_counts_entries_cover_every_reason_once() {
     let entries = ExitCounts::default().entries();
-    assert_eq!(entries.len(), 13);
+    assert_eq!(entries.len(), 9);
 
     let mut reasons: Vec<ExitReason> = entries.iter().map(|(r, _)| *r).collect();
     reasons.sort();
     reasons.dedup();
     assert_eq!(
         reasons.len(),
-        13,
+        9,
         "every ExitReason must appear exactly once"
     );
 

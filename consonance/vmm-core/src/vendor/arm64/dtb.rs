@@ -3,7 +3,7 @@
 //! M3), plus a reader used only to prove the writer's output round-trips.
 //!
 //! Hand-rolled — no vetted FDT crate — to match the x86 hand-built-boot-struct
-//! precedent (`entry::write_boot_info`, the ACPI/`boot_params` writers) and stay
+//! precedent (the ACPI/`boot_params` writers) and stay
 //! inside the dependency whitelist (judgment call #2; a vetted `vm-fdt`-style
 //! crate is an ask-by-comment if the foreman prefers). The DTB describes the
 //! [`board`](super::board) memory map: the CPU (`psci` enable-method), memory,

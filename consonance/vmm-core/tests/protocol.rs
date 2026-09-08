@@ -42,7 +42,7 @@ const SEED: u64 = 0xBA5E;
 /// boundary — the same shape the box composition roots produce.
 fn vmm_at_sync(exits: Vec<Exit<X86>>, _work: u64) -> Vmm<MockBackend> {
     let mut m = MockBackend::new();
-    let mut scripted = vec![Exit::Arch(X86Exit::Rdtsc)];
+    let mut scripted = vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })];
     scripted.extend(exits);
     m.extend_exits(scripted);
     m.set_policy(&X86Policy {
@@ -148,7 +148,7 @@ fn scripted_run() -> Vec<Exit<X86>> {
             size: 1,
             write: Some(u32::from(b'A')),
         }),
-        Exit::Arch(X86Exit::Rdtsc),
+        Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
         Exit::Arch(X86Exit::Io {
             port: 0x3F8,
             size: 1,

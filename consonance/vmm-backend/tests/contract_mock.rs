@@ -4,7 +4,7 @@
 //! ordinary `cargo nextest` lane on macOS and Linux.
 //!
 //! The box-only leg (`tests/contract_kvm.rs`) runs the **identical** exam over
-//! `KvmBackend` and `PatchedKvmBackend`. That is the point of the suite: not
+//! `KvmBackend`. That is the point of the suite: not
 //! that the mock behaves, but that the mock and the live backends behave the
 //! same, so vmm-core can be written against the trait alone.
 #![cfg(all(feature = "contract-tests", feature = "mock"))]
@@ -54,8 +54,6 @@ fn script(scenario: Scenario) -> Vec<Exit<X86>> {
         Scenario::Hypercall => vec![Exit::Common(CommonExit::Hypercall(HypercallFrame {
             args: [0x3150_4348, 0xE000, 0xF000, 0],
         }))],
-        Scenario::Rdtsc => vec![Exit::Arch(X86Exit::Rdtsc)],
-        Scenario::Rdrand => vec![Exit::Arch(X86Exit::Rdrand { width: 8 })],
     };
     let mut exits = head;
     exits.extend(idle_tail());
@@ -101,8 +99,6 @@ const REQUIRED: &[&str] = &[
     "ordering/not_configured",
     "ordering/completion_grid",
     "exactness/dirty_log",
-    "exactness/deterministic_tsc_traps",
-    "exactness/deterministic_rng_traps",
     "fixpoint/save_restore_save",
     "interrupts/one_overwritable_slot",
 ];
@@ -222,22 +218,14 @@ impl Backend for NoDeadlineBackend {
     }
 }
 
-/// A fixture shaped like stock KVM: no dirty log, no determinism capabilities,
-/// and no way to surface a hypercall or CPUID exit.
-/// Everything it cannot do, it must decline **in the report** — and the
-/// capability-keyed exams additionally require that it does not *claim* to trap
-/// what it cannot trap.
+/// A fixture shaped like stock KVM: no dirty log or userspace hypercall/CPUID exits.
+/// Unsupported scenarios are recorded as declined in the exam report.
 struct LimitedFixture;
 
-/// The limited fixture's honest capability set: it traps neither the clock nor
-/// the hardware RNG.
+/// Identity and x86 runtime feature payload for the limited fixture.
 const LIMITED_CAPS: MockCaps = Capabilities {
     name: "mock-limited",
-    deterministic_rng: false,
-    arch: X86Caps {
-        deterministic_tsc: false,
-        enforces_tsc_deadline_msr: false,
-    },
+    arch: X86Caps,
 };
 
 impl BackendFixture for LimitedFixture {
@@ -249,10 +237,7 @@ impl BackendFixture for LimitedFixture {
 
     fn spawn(&mut self, scenario: Scenario) -> Option<NoDeadlineBackend> {
         match scenario {
-            // Not trapped, so not claimable — the capability-keyed exam checks
-            // exactly this.
-            Scenario::Rdtsc | Scenario::Rdrand => None,
-            // Serviced in-kernel by the substrate this fixture models.
+            // Stock KVM handles CPUID and VMCALL in-kernel.
             Scenario::Cpuid | Scenario::Hypercall => None,
             _ => {
                 let mut b = MockBackend::with_capabilities(LIMITED_CAPS);
@@ -299,14 +284,6 @@ fn a_limited_backend_declines_honestly_and_the_declines_are_recorded() {
         Decline {
             exam: "exactness/dirty_log",
             why: DeclineReason::NoDirtyLog,
-        },
-        Decline {
-            exam: "exactness/deterministic_tsc_traps",
-            why: DeclineReason::CapabilityAbsent("deterministic_tsc"),
-        },
-        Decline {
-            exam: "exactness/deterministic_rng_traps",
-            why: DeclineReason::CapabilityAbsent("deterministic_rng"),
         },
         Decline {
             exam: "ordering/completion_grid",

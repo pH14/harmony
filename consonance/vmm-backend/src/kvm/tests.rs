@@ -563,12 +563,9 @@ fn validate_restore_shape_keys_and_xsave_len() {
 }
 
 #[test]
-fn kvm_capabilities_are_honestly_false() {
+fn kvm_capabilities_report_the_stock_backend_name() {
     let c = kvm_capabilities();
     assert_eq!(c.name, "kvm-stock");
-    assert!(!c.arch.deterministic_tsc);
-    assert!(!c.deterministic_rng);
-    assert!(!c.arch.enforces_tsc_deadline_msr);
 }
 
 #[test]
@@ -725,143 +722,6 @@ fn xsave_bytes_round_trip_and_length_check() {
     assert!(matches!(
         xsave_from_bytes(&[0u8; 100]),
         Err(BackendError::InvalidState)
-    ));
-}
-
-// ---------------------------------------------------------------------------
-// KVM_EXIT_DETERMINISM decode / complete (the patched-backend surface). Driven
-// by a synthetic `kvm_run` whose determinism payload is written by raw offset,
-// exactly as the patched kernel would — so the box CI (`nextest`) and Miri
-// exercise the decode + completion with no `/dev/kvm`.
-// ---------------------------------------------------------------------------
-
-impl SynRun {
-    fn set_u32(&self, off: usize, v: u32) {
-        for (i, b) in v.to_le_bytes().iter().enumerate() {
-            self.set_byte(off + i, *b);
-        }
-    }
-    fn u64(&self, off: usize) -> u64 {
-        let mut b = [0u8; 8];
-        for (i, slot) in b.iter_mut().enumerate() {
-            *slot = self.byte(off + i);
-        }
-        u64::from_le_bytes(b)
-    }
-}
-
-/// Stage a determinism exit with the given `insn` kind and result `width`.
-fn det_run(insn: u32, width: u32) -> SynRun {
-    let s = SynRun::new();
-    set_reason(&s, KVM_EXIT_DETERMINISM);
-    s.set_u32(DET_INSN, insn);
-    s.set_u32(DET_WIDTH, width);
-    s
-}
-
-#[test]
-fn decode_determinism_maps_each_insn() {
-    // RDTSC / RDTSCP: 64-bit EDX:EAX, no width surfaced; RDTSCP carries aux.
-    let (exit, pending) = decode_exit(det_run(KVM_DETERMINISM_RDTSC, 8).page())
-        .unwrap()
-        .unwrap();
-    assert_eq!(exit, Exit::Arch(X86Exit::Rdtsc));
-    assert_eq!(
-        pending,
-        Pending::Determinism {
-            rdtscp: false,
-            rng: false
-        }
-    );
-
-    let (exit, pending) = decode_exit(det_run(KVM_DETERMINISM_RDTSCP, 8).page())
-        .unwrap()
-        .unwrap();
-    assert_eq!(exit, Exit::Arch(X86Exit::Rdtscp));
-    assert_eq!(
-        pending,
-        Pending::Determinism {
-            rdtscp: true,
-            rng: false
-        }
-    );
-
-    // RDRAND / RDSEED: the destination width (2/4/8) is surfaced to the VMM.
-    let (exit, pending) = decode_exit(det_run(KVM_DETERMINISM_RDRAND, 4).page())
-        .unwrap()
-        .unwrap();
-    assert_eq!(exit, Exit::Arch(X86Exit::Rdrand { width: 4 }));
-    assert_eq!(
-        pending,
-        Pending::Determinism {
-            rdtscp: false,
-            rng: true
-        }
-    );
-
-    let (exit, pending) = decode_exit(det_run(KVM_DETERMINISM_RDSEED, 2).page())
-        .unwrap()
-        .unwrap();
-    assert_eq!(exit, Exit::Arch(X86Exit::Rdseed { width: 2 }));
-    assert_eq!(
-        pending,
-        Pending::Determinism {
-            rdtscp: false,
-            rng: true
-        }
-    );
-}
-
-#[test]
-fn decode_determinism_unknown_insn_fails_closed() {
-    let err = decode_exit(det_run(99, 8).page()).unwrap_err();
-    assert!(matches!(err, BackendError::Internal(_)));
-}
-
-#[test]
-fn complete_determinism_tsc_writes_value_only() {
-    let s = det_run(KVM_DETERMINISM_RDTSC, 8);
-    let (_exit, pending) = decode_exit(s.page()).unwrap().unwrap();
-    apply_complete_determinism(s.page(), pending, 0x1122_3344_5566_7788, 0).unwrap();
-    assert_eq!(s.u64(DET_VALUE), 0x1122_3344_5566_7788);
-    // No CF flag for a TSC completion (CF is RNG-only).
-    assert_eq!(s.byte(DET_FLAGS), 0);
-}
-
-#[test]
-fn complete_determinism_rdtscp_writes_value_and_aux() {
-    let s = det_run(KVM_DETERMINISM_RDTSCP, 8);
-    let (_exit, pending) = decode_exit(s.page()).unwrap().unwrap();
-    apply_complete_determinism(s.page(), pending, 0xDEAD_BEEF, 0x00C0_FFEE).unwrap();
-    assert_eq!(s.u64(DET_VALUE), 0xDEAD_BEEF);
-    assert_eq!(s.u64(DET_AUX), 0x00C0_FFEE); // IA32_TSC_AUX → ECX
-    assert_eq!(s.byte(DET_FLAGS), 0);
-}
-
-#[test]
-fn complete_determinism_rng_writes_value_and_sets_cf() {
-    let s = det_run(KVM_DETERMINISM_RDRAND, 8);
-    let (_exit, pending) = decode_exit(s.page()).unwrap().unwrap();
-    // aux is irrelevant for RNG (no rdtscp); it must NOT be written.
-    apply_complete_determinism(s.page(), pending, 0x0102_0304_0506_0708, 0xBAD).unwrap();
-    assert_eq!(s.u64(DET_VALUE), 0x0102_0304_0506_0708);
-    assert_eq!(s.byte(DET_FLAGS), KVM_DETERMINISM_FLAG_CF);
-    assert_eq!(s.u64(DET_AUX), 0); // aux untouched for an RNG draw
-}
-
-#[test]
-fn complete_determinism_without_pending_is_no_pending_read() {
-    let s = det_run(KVM_DETERMINISM_RDTSC, 8);
-    assert!(matches!(
-        apply_complete_determinism(s.page(), Pending::None, 1, 0),
-        Err(BackendError::NoPendingRead)
-    ));
-    // A non-determinism read-style completion must not satisfy a determinism
-    // pending either: apply_complete_read rejects it.
-    let (_exit, pending) = decode_exit(s.page()).unwrap().unwrap();
-    assert!(matches!(
-        apply_complete_read(s.page(), pending, 1),
-        Err(BackendError::NoPendingRead)
     ));
 }
 
