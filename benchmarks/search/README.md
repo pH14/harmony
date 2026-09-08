@@ -131,8 +131,13 @@ the choice before any completed full-panel outcome was observed. Run it with
 the same runner allocation as `evaluation.json`, changing only the output
 directory, then compare the complete matrices.
 
-Completed development evidence and its limitations are retained in
-[`results`](results/README.md), including failed seeds.
+The completed 190-cell fresh comparison and development evidence are retained
+in [`results`](results/README.md), including failed seeds and resource costs.
+Both full arms solve 65/95 cells, with different successes; continuation replay
+remains an explicit experiment. The qualified native execution profile and
+SMB reference are the recommended adoption results. These seed panels are now
+observed regression references; register new unseen seeds before another
+promotion decision.
 
 ## Evidence and resource accounting
 

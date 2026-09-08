@@ -11,8 +11,70 @@ build bundles, and private runtime temporary files outside it. Process I/O
 measurements are separate; the figures are not total filesystem occupancy.
 [`build-provenance.json`](build-provenance.json) maps frozen builds 003–005 to
 Git commits by exact source-hash equality against freshly extracted Git trees.
-Build 005 is `02463cae`; later evidence and documentation commits do not change
-its executable. The original source-copy build metadata remains immutable.
+Build 005 is `02463cae`. Its executable and original source-copy metadata remain
+immutable; later commits are not retroactively attributed to that measured build.
+
+## Fresh full validation
+
+[`full-validation-005.json`](full-validation-005.json) retains all 190 cells in
+the two preregistered 95-cell panels, using seeds 20260920–20260924. There are no
+infrastructure errors. Every claimed victory has a twice-replayed native
+witness. Both arms solve 65 cells, but the successes differ: continuations gain
+Nova level 9 seed 20260924 and level 25 seed 20260922, while losing SMB seed
+20260923 and Crash Man seed 20260920. These heterogeneous cells are not
+interchangeable trials of one task.
+
+| Origin | Control solves | Continuation solves | Control median victory frames | Continuation median victory frames |
+| --- | ---: | ---: | ---: | ---: |
+| metroid-full | 0/5 | 0/5 | — | — |
+| mm2-air | 5/5 | 5/5 | 10,025,392 | 6,697,837 |
+| mm2-bubble | 5/5 | 5/5 | 3,495,044 | 2,459,496 |
+| mm2-crash | 5/5 | 4/5 | 30,620,944 | 3,181,997 |
+| mm2-flash | 5/5 | 5/5 | 2,547,399 | 1,585,123 |
+| mm2-heat | 0/5 | 0/5 | — | — |
+| mm2-metal | 5/5 | 5/5 | 2,383,463 | 2,073,583 |
+| mm2-quick | 5/5 | 5/5 | 3,010,345 | 3,553,894 |
+| mm2-wood | 0/5 | 0/5 | — | — |
+| nova-full | 0/5 | 0/5 | — | — |
+| nova-level-1 | 5/5 | 5/5 | 384,482 | 607,444 |
+| nova-level-17 | 5/5 | 5/5 | 333,563 | 515,894 |
+| nova-level-25 | 0/5 | 1/5 | — | 4,798,059 |
+| nova-level-33 | 5/5 | 5/5 | 317,384 | 362,082 |
+| nova-level-9 | 0/5 | 1/5 | — | 2,898,142 |
+| smb-full | 5/5 | 4/5 | 42,340,665 | 39,256,001 |
+| stb-easy | 5/5 | 5/5 | 57,016 | 53,389 |
+| stb-fair | 5/5 | 5/5 | 516,467 | 358,408 |
+| stb-hard | 5/5 | 5/5 | 934,147 | 810,191 |
+
+Victory-cost medians include successes only. In particular, Crash Man's much
+lower conditional median does not erase its lost pass, and SMB's medians use
+different successful seed sets. The record includes paired ratios restricted to
+seeds solved in both arms, gained/lost solves, stop reasons, resource summaries,
+and every seed's observations. A single new Nova fixture success is not a
+qualified reliable recipe. Prior clear flags in later-level Nova fixtures are
+setup state, not levels solved during that search.
+
+Metroid remains at one item, missile capacity 10 and two combined tanks in both
+arms. At the last observation at or below 50 million frames, median observed
+map coverage is 60 cells in both arms. Whole-game Nova remains at seven cleared
+flags on every seed; Heat Man and Wood Man remain unsolved. These plateaus are
+retained as future searcher challenges, without adding route hints to adapters.
+
+The full panels run three concurrent eight-worker jobs. Only 40/95 pairs have
+the same recorded CPU allocation; use their admitted frame costs for search
+quality, and the isolated experiment below for precise throughput claims.
+Per-seed frames/s, executions/s, OS RSS, logical memory, output disk, I/O and
+phase times remain available. Peak process RSS across the full panels is at
+most 2,701 MiB; the largest cell output footprint is under 12 MiB. These output
+figures exclude shared assets/builds and runtime files elsewhere.
+
+Adopt the qualified two-result native execution profile and retain the
+count-weighted SMB reference below. Keep continuation replay and the other
+selection policies as explicit experiments: the fresh-panel tradeoffs do not
+support a universal default promotion. The zero-dispatch SMB regression is
+tracked in [#275](https://github.com/pH14/harmony/issues/275). These seeds are now
+observed reference cases for regression time series; future promotion decisions
+need a newly registered unseen seed panel.
 
 ## Bounded physical overlap
 
@@ -34,10 +96,13 @@ and the same executable. These are short throughput trials, bounded to at most
 
 The largest paired increase in OS peak RSS was 3.83 MiB. This native result does
 not establish the cost of buffering whole-VM snapshots; the generic API retains
-one result per worker by default. The two-slot option passed full native campaign
-replay qualification at all 19 origins, plus generic stream/checkpoint equality
-under memory pressure and frame caps. Quality panels use the qualified overlap
-configuration for both control and candidate.
+one result per worker by default. [`qualification-005.json`](qualification-005.json)
+records full native campaign replay qualification at all 19 origins under the
+two-slot profile, with ceilings of 500 executions and 50,000 frames. These small
+runs verify full campaign/report/checkpoint replay plus two fresh witness
+replays; they do not require each game to be solved. Generic fixtures separately
+verify stream/checkpoint equality under memory pressure and frame caps. Quality
+panels use the qualified overlap configuration for both control and candidate.
 
 Whole-game Nova reached 5, 6, and 7 cleared-level flags in these short runs. This
 confirms execution continues through intermediate clears, without claiming all

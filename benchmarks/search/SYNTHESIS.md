@@ -67,3 +67,22 @@ is the frozen candidate. Their five seeds, 20260920–20260924, are disjoint fro
 all development and SMB reference validation seeds. Candidate choice is fixed
 before examining any completed full-panel outcome. Retain all full-panel
 failures and do not retune the candidate from those validation results.
+
+## Validation outcome
+
+The frozen comparison completed all 190 cells without infrastructure errors.
+Both arms solve 65/95: continuations gain one seed each on Nova levels 9 and 25,
+but lose one SMB and one Crash Man pass. Several Mega Man stages and all STB
+difficulties improve at the median; Quick Man and the previously easy Nova
+fixtures cost more. Conditional victory medians must be read with solve counts.
+Metroid and whole-game Nova remain unsolved at their registered budgets.
+
+The general adoption is bounded physical overlap in the qualified native
+profile, which preserves all 18 paired search streams while improving frames/s
+by 32–42%. The separate count-weighted fresh SMB reference passes all five
+validation seeds. Continuation replay, entry/key counts, and semantic progress
+remain named experiments rather than universal defaults. Preserve the failed
+cells and investigate generic causes, including the empty-bank capacity cost
+tracked in [#275](https://github.com/pH14/harmony/issues/275), on newly registered
+validation seeds. Full evidence and resource measurements are in
+[`results`](results/README.md).
