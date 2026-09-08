@@ -114,8 +114,7 @@ else
     assert_y HARMONY_USER_COUNTER_TRAPS
 fi
 if [ -n "${FAULTLAB_TRAPS_OFF:-}" ]; then
-    assert_off SMP RWSEM_SPIN_ON_OWNER MUTEX_SPIN_ON_OWNER
-    assert_y HARMONY_PARK HAVE_HW_BREAKPOINT
+    assert_y SMP HARMONY_PARK HAVE_HW_BREAKPOINT
 fi
 # (HPET_TIMER is not in this list: it is def_bool y on x86-64 with no prompt;
 # the HPET is excluded at runtime instead — see config-fragment.)
@@ -163,9 +162,9 @@ make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
 echo "== kernel: counter-opcode scan (rdtsc/rdtscp + rdrand/rdseed reachability gate)"
 rdtsc_allowlist=${HARMONY_RDTSC_ALLOWLIST:-$LINUX_DIR/rdtsc-allowlist.txt}
 rdrand_allowlist=${HARMONY_RDRAND_ALLOWLIST:-$LINUX_DIR/rdrand-allowlist.txt}
-# The fault-library kernel is a single-processor build, so its counter-read
-# sites sit at other offsets than the SMP kernels' and it carries its own
-# reviewed baseline. That baseline belongs to the profile, so it wins over an
+# The fault-library kernel carries the task park's system-call poll, so its
+# counter-read sites sit at other offsets than the other kernels' and it
+# carries its own reviewed baseline. That baseline belongs to the profile, so it wins over an
 # environment selection, which names a list captured from another
 # configuration and would scan this kernel against the wrong function set.
 if [ -n "${FAULTLAB_TRAPS_OFF:-}" ]; then

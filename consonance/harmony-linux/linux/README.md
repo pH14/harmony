@@ -33,8 +33,8 @@ choose the per-toolchain baseline for the default kernel; a profile that
 carries its own baseline scans against that one regardless.
 
 The fault-library profile runs stock database binaries, which the default
-kernel cannot: it leaves ring-3 counter reads to the host and builds
-single-processor. `x86-faultlab-config-fragment` records why for each symbol,
+kernel cannot: it leaves ring-3 counter reads to the host.
+`x86-faultlab-config-fragment` records why for each symbol,
 including that the profile is only determinism-grade on a host with the patched
 KVM loaded and is fit for demonstrations elsewhere. It is the only profile that
 enables `CONFIG_HARMONY_PARK`; with the symbol off, that patch adds no bytes to

@@ -24,7 +24,7 @@ first diff header.
 
 After an x86 clock-source change, run the counter-opcode scan and update
 `../rdtsc-allowlist.txt` (and `../rdtsc-allowlist-faultlab.txt`, the
-single-processor fault-library kernel's baseline) if the deliberate
+fault-library kernel's baseline) if the deliberate
 instruction count changes. After any kernel patch change, run the image test to
 regenerate and verify `../MANIFEST.sha256`.
 

@@ -117,8 +117,8 @@ them from `/proc/cmdline`, so `--knobs` varies them without a rebuild.
 The guest kernel is the `faultlab` profile of `nix run .#guest-images`, which
 lands beside the default kernel as `x86_64/bzImage-faultlab`. glibc's dynamic
 loader reads the timestamp counter before `main`, so every PostgreSQL binary
-faults on the default kernel; the profile turns the user counter traps off,
-runs a single processor, and carries the task-park fault. The same build writes
+faults on the default kernel; the profile turns the user counter traps off
+and carries the task-park fault. The same build writes
 `x86_64/initramfs.cpio.gz`, the package-neutral base image `--base-initramfs`
 names; preparation appends the workload rootfs and the fault agent to it.
 
@@ -144,10 +144,10 @@ campaign.
 
 The earlier reproduction in the fault-library work — a campaign that reported
 the corruption at execution 476 with 8 workers at 500 ms horizons — was found
-on an SMP build of the guest kernel. The `faultlab` profile is single-processor
-now, and a schedule found on one build does not replay on the other, so that
-action list is not carried here as a witness. CI rediscovers one, and `witness`
-stays null until a campaign here produces an input that replays.
+on a differently built guest kernel under the counter-exiting KVM, and a
+schedule found on one build does not replay on another, so that action list is
+not carried here as a witness. CI rediscovers one, and `witness` stays null
+until a campaign here produces an input that replays.
 
 Hosted runners have stock KVM, not the counter-exiting build. On stock KVM the
 `faultlab` kernel lets user space read the host's timestamp counter directly,
