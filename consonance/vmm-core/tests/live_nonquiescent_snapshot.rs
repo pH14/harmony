@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only **non-quiescent snapshot** gates (task 41 — `#[cfg(target_os = "linux")]`
-//! **and `#[ignore]`**, on `ssh <det-box>` with the LOADED patched KVM modules,
-//! CPU-pinned per `.github/workflows/box.yml`, reverted to stock after). The substrate
+//! **and `#[ignore]`**, on `ssh <qualified-host>` with the LOADED patched KVM modules,
+//! CPU-pinned per `docs/HARDWARE-TESTING.md`, reverted to stock after). The substrate
 //! unlock: make a **running, interrupt-driven** guest (Postgres + the LAPIC timer)
 //! snapshottable **mid-execution**, where task 40 measured **0 of 8392** snapshottable
 //! because task 39's codec dropped the in-flight CPU event/interrupt state.
@@ -123,8 +123,8 @@ fn require_artifact(name: &str) -> Vec<u8> {
 fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
-        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
-         patched KVM modules, CPU-pinned per .github/workflows/box.yml (taskset -c 4)."
+        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <qualified-host>` with the LOADED \
+         patched KVM modules, CPU-pinned per docs/HARDWARE-TESTING.md (taskset -c 4)."
     );
 }
 
@@ -146,7 +146,7 @@ fn require_host_baseline() {
     assert!(
         all,
         "host CPU is not the det-cfl-v1 baseline — the frozen contract cannot run here. Run on the \
-         determinism box (i9-9900K) per .github/workflows/box.yml."
+         determinism box (i9-9900K) per docs/HARDWARE-TESTING.md."
     );
 }
 
@@ -560,7 +560,7 @@ fn env_usize(key: &str, default: usize) -> usize {
 
 #[test]
 #[ignore = "box-only non-quiescent snapshot gate (LOADED patched KVM + built Postgres image + \
-            det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored --nocapture`"]
+            det-cfl-v1 host); run on `ssh <qualified-host>` with `-- --ignored --nocapture`"]
 fn gate1_nonquiescent_point_is_snapshottable() {
     require_kvm();
     require_host_baseline();
@@ -634,7 +634,7 @@ fn gate1_nonquiescent_point_is_snapshottable() {
 
 #[test]
 #[ignore = "box-only non-quiescent snapshot gate (LOADED patched KVM + built Postgres image + \
-            det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored --nocapture`"]
+            det-cfl-v1 host); run on `ssh <qualified-host>` with `-- --ignored --nocapture`"]
 fn gate2_mid_postgres_roundtrip_is_deterministic() {
     require_kvm();
     require_host_baseline();
@@ -804,7 +804,7 @@ fn gate2_mid_postgres_roundtrip_is_deterministic() {
 
 #[test]
 #[ignore = "box-only non-quiescent branching gate (LOADED patched KVM + built Postgres image + \
-            det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored --nocapture`"]
+            det-cfl-v1 host); run on `ssh <qualified-host>` with `-- --ignored --nocapture`"]
 fn gate3_branching_from_a_mid_postgres_snapshot() {
     require_kvm();
     require_host_baseline();

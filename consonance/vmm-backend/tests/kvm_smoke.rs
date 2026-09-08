@@ -5,11 +5,10 @@
 //! `cargo test … --all-features`) **compile but do not run** them — a Cargo
 //! feature would be flipped on by `--all-features` and trip the fail-fast on a
 //! Mac/CI host. Run explicitly on the determinism box, **CPU-pinned** per
-//! `.github/workflows/box.yml` (core 1 is spare; 2/4 are measurement, 5–7 the CI
-//! runner, 0 the OS):
+//! `docs/HARDWARE-TESTING.md`; choose an idle core on the qualified host:
 //!
 //! ```sh
-//! ssh <det-box> 'taskset -c 1 cargo test -p vmm-backend --test kvm_smoke -- --ignored --test-threads=1'
+//! ssh <qualified-host> 'taskset -c 1 cargo test -p vmm-backend --test kvm_smoke -- --ignored --test-threads=1'
 //! ```
 //!
 //! **Fail-fast, never skip:** on a host without `/dev/kvm`/VMX/Intel these panic
@@ -55,7 +54,7 @@ fn new_backend_or_explain() -> KvmBackend {
     if !std::path::Path::new("/dev/kvm").exists() {
         panic!(
             "/dev/kvm missing — these live tests need bare-metal Intel x86-64 with VMX. \
-             Run on the determinism box: ssh <det-box> 'taskset -c 1 cargo test -p vmm-backend \
+             Run on the determinism box: ssh <qualified-host> 'taskset -c 1 cargo test -p vmm-backend \
              --test kvm_smoke -- --ignored --test-threads=1'"
         );
     }

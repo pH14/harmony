@@ -46,14 +46,14 @@ pub struct CorpusItem {
 
 /// A host the acceptance matrix can run a cell on. Closed by design: an
 /// unrecognized token is a loud parse error rather than a cell that silently
-/// never runs. Adding a box means adding a variant here **and** a runner label
-/// in `.github/workflows/box.yml`.
+/// never runs. Adding a host class means adding a variant here and documenting its
+/// qualification requirements in `docs/HARDWARE-TESTING.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostId {
     /// Any developer machine or hosted CI runner: no `/dev/kvm`, no pinned
     /// core, no chip baseline. The toy registry serves these cells.
     Portable,
-    /// The x86 determinism box — the `det-cfl-v1` chip baseline
+    /// A host matching the frozen `det-cfl-v1` chip baseline
     /// (`consonance/vmm-core/contracts/x86/README.md`), patched KVM, pinned cores.
     DetCflV1,
     /// The arm64 box.

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Fast local fast-feedback before the self-hosted runner does the full pass.
+# Fast local feedback before GitHub-hosted CI does the full pass.
 # Installed by scripts/install-quality-tools.sh via `git config core.hooksPath
 # .githooks`. This is a convenience, NOT the gate of record (that is the
-# self-hosted runner / .github/workflows/quality.yml) — it runs the *fast*
+# GitHub-hosted runner / .github/workflows/quality.yml) — it runs the *fast*
 # cross-platform gates so a developer gets early signal:
 #
 #   fmt -> clippy (-D warnings) -> nextest

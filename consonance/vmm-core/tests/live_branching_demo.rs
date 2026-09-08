@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only **single-node branching demo** (`#[cfg(target_os = "linux")]` **and
-//! `#[ignore]`**, on `ssh <det-box>` with the LOADED patched KVM modules, CPU-pinned
-//! per `.github/workflows/box.yml`). Task 40 — the dissonance "join point": where the
+//! `#[ignore]`**, on `ssh <qualified-host>` with the LOADED patched KVM modules, CPU-pinned
+//! per `docs/HARDWARE-TESTING.md`). Task 40 — the dissonance "join point": where the
 //! live snapshot/branch substrate (task 39) meets the bare-Postgres workload (task
 //! 37) to show *the multiverse from one snapshot*.
 //!
@@ -175,8 +175,8 @@ fn require_artifact(name: &str) -> Vec<u8> {
 fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
-        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
-         patched KVM modules, CPU-pinned per .github/workflows/box.yml (taskset -c 4)."
+        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <qualified-host>` with the LOADED \
+         patched KVM modules, CPU-pinned per docs/HARDWARE-TESTING.md (taskset -c 4)."
     );
 }
 
@@ -199,7 +199,7 @@ fn require_host_baseline() {
     assert!(
         all,
         "host CPU is not the det-cfl-v1 baseline — the frozen contract cannot run here. Run on the \
-         determinism box (i9-9900K) per .github/workflows/box.yml."
+         determinism box (i9-9900K) per docs/HARDWARE-TESTING.md."
     );
 }
 
@@ -626,7 +626,7 @@ fn scan_snapshot_points() {
 
 #[test]
 #[ignore = "box-only branching demo (LOADED patched KVM + built Postgres image + det-cfl-v1 host); \
-            run on `ssh <det-box>` with `-- --ignored --nocapture`"]
+            run on `ssh <qualified-host>` with `-- --ignored --nocapture`"]
 fn branching_demo_reproducibility_and_divergence() {
     require_kvm();
     require_host_baseline();

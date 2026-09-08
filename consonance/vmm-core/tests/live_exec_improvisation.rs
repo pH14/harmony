@@ -38,8 +38,8 @@
 //! (gate 3 + gate-2 determinism) against a shell-less image, set `EXEC_TAINT_ONLY=1`
 //! — which the run announces does **not** satisfy gate 2.
 //!
-//! Run on `ssh <det-box>` with the LOADED patched KVM modules + a built image,
-//! CPU-pinned per `.github/workflows/box.yml` (lease a core via `box-window.sh`; never
+//! Run on `ssh <qualified-host>` with the LOADED patched KVM modules + a built image,
+//! CPU-pinned per `docs/HARDWARE-TESTING.md` (lease a core via `box-window.sh`; never
 //! touch another lease's cores or its patched-KVM window). ALWAYS revert KVM to
 //! stock **1396736** + verify after any patched run.
 //! ```text
@@ -110,8 +110,8 @@ fn require_artifact(name: &str) -> Vec<u8> {
 fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
-        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
-         patched KVM modules, CPU-pinned per .github/workflows/box.yml."
+        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <qualified-host>` with the LOADED \
+         patched KVM modules, CPU-pinned per docs/HARDWARE-TESTING.md."
     );
 }
 
@@ -264,7 +264,7 @@ fn replay_to_late<B: Backend<A = X86>>(
 
 #[test]
 #[ignore = "box-only improvisation gate (LOADED patched KVM + built image + det-cfl-v1 host); \
-            run per .github/workflows/box.yml"]
+            run per docs/HARDWARE-TESTING.md"]
 fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
     require_kvm();
     require_host_baseline();
@@ -479,7 +479,7 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
 /// the full test's job) — it is deliberately the cheapest faithful channel probe.
 #[test]
 #[ignore = "box-only smoke probe of the exec serial channel (exec-capable image); \
-            run per .github/workflows/box.yml before the full gate"]
+            run per docs/HARDWARE-TESTING.md before the full gate"]
 fn smoke_exec_channel_boots_injects_and_scrapes_a_sentinel() {
     require_kvm();
     require_host_baseline();
