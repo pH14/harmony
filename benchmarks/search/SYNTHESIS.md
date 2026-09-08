@@ -49,3 +49,21 @@ tests that specific lifetime problem with a bounded history. It does not ban
 backward movement, encode a castle loop, or add any state to a game adapter.
 Its effect must be measured separately from ordinary entry counts at both memory
 budgets and on games whose same-slot replacements improve resources.
+
+## Full-panel candidate registration
+
+After all five development pilots completed, select learned continuation replay
+with the original parent selector for the full 19-origin comparison. Both arms
+use the qualified two-reservation/two-result execution profile. Continuation
+alone preserves every baseline pass, reduces Metal Man costs on all three
+seeds, and improves Nova level 1 at the median, with a modest STB regression.
+Adding entry counts or retained-key counts worsens several companion-game costs;
+semantic progress increases Metroid coverage at matched work but substantially
+increases Metal Man cost. They remain named experiments. The independent,
+qualified 24-worker SMB reference keeps its count-weighted recipe.
+
+`evaluation.json` is the main-mechanism control; `evaluation-continuation.json`
+is the frozen candidate. Their five seeds, 20260920–20260924, are disjoint from
+all development and SMB reference validation seeds. Candidate choice is fixed
+before examining any completed full-panel outcome. Retain all full-panel
+failures and do not retune the candidate from those validation results.

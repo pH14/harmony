@@ -1,0 +1,26 @@
+{
+  "format": "harmony-search-candidate-registration-v1",
+  "registered_at_utc": "2026-09-08T02:45:14.465666+00:00",
+  "source_revision": "02463caeaf156c2228e91fdbc0ad18dc406d050a",
+  "source_tree_sha256": "ee9d36fd1fd808820220cde6998bbf3be740b3e7f2f5426c1eb84d7d0d58351a",
+  "binary_sha256": "18c2df002b88860f1574c1870b7c584226aabffeb15fc55040534d66cff0dfbc",
+  "development_runs": [
+    "pilot-main-005",
+    "pilot-continuation-005",
+    "pilot-count-continuation-005",
+    "pilot-progress-continuation-005",
+    "pilot-keycount-continuation-005"
+  ],
+  "control_manifest": "evaluation.json",
+  "candidate_manifest": "evaluation-continuation.json",
+  "validation_seeds": [
+    20260920,
+    20260921,
+    20260922,
+    20260923,
+    20260924
+  ],
+  "selection": "Continuation replay with original parent selection; keep qualified physical buffering in both arms. Other selection mechanisms remain separate experiments.",
+  "validation_rule": "No candidate retuning from completed validation outcomes; preserve all registered cells, failures, budgets and workload policies.",
+  "completed_control_outcomes_at_registration": 0
+}

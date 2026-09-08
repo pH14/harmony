@@ -93,7 +93,8 @@ as a separate stress condition.
 | `qualification.json` | Six small cases: all five games plus whole-game Nova configuration. Full stream/checkpoint replay and twice-repeated witness replay; 500 executions per case. |
 | `ci.json` | Source-built Nova (level and whole-game origins) and STB through the common runner, with full small-campaign replay and a frame cap. No licensed commercial ROM is used. |
 | `pilot.json` | Three exploratory seeds on SMB, Nova level 1 and whole game, Metal Man, Metroid new game and STB Hard. |
-| `evaluation.json` | Five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
+| `evaluation-continuation.json` | Frozen candidate for the full panel: learned continuation replay with the original parent selector. Selected from the completed pilots before any full-panel outcome was observed. |
+| `evaluation.json` | Main-mechanism control: five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
 | `smb-reference.json` | Practical fresh whole-game SMB recipe: 24 workers, 2,048 MiB, count weighting, two-reservation window/two result slots, 600,000 executions and 120 million frames. Five fresh validation seeds; every cell must solve. |
 | `smb-regression.json` | Fresh whole-game SMB at 24 workers and both 256/2048 MiB, five seeds. Every cell must solve within its declared budget. |
 | `throughput.json` | Short isolated 24-worker runs across all five games, three seeds, a two-reservation window and 512 MiB. Copy it and change only `result_slots` from 1 to 2 to measure physical overlap. Whole-game completion is not required in this work-limited panel. |
@@ -124,6 +125,12 @@ origins, seed panel, ROM/core, adapter policies and resource budgets fixed. The
 comparison command rejects mismatches rather than quietly combining them.
 Engine experiments are described in [SYNTHESIS.md](SYNTHESIS.md); prototype claims
 are not accepted merely because a previous single seed succeeded.
+The full candidate is frozen in `evaluation-continuation.json`;
+[`candidate-registration-005.json`](candidate-registration-005.json) records
+the choice before any completed full-panel outcome was observed. Run it with
+the same runner allocation as `evaluation.json`, changing only the output
+directory, then compare the complete matrices.
+
 Completed development evidence and its limitations are retained in
 [`results`](results/README.md), including failed seeds.
 
