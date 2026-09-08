@@ -74,6 +74,14 @@ another item or missile-capacity tier. At termination the counts are 75/83/75,
 but those runs also performed more frames, so the matched-work comparison is
 the stronger evidence. These are three development seeds and sampled counts.
 
+A supplemental review in [`metroid-diagnostics-005.json`](metroid-diagnostics-005.json)
+also records a verified three-tank witness on semantic seed 20260906, versus
+two tanks in the other pilot runs. The combined missile/energy-tank milestone
+improves even though the primary equipment/missile-capacity watermark does not.
+That third tank is already observed below 50 million frames. Area values in
+these reports are bitsets. This interpretation does not change the frozen
+full-panel candidate.
+
 Metal Man still clears on every seed, but its median cost rises from 1,889,540
 to 5,172,804 frames (+173.8%). The other workload policies retain their default
 progress ordering and reproduce their prior frame costs. Semantic progress is

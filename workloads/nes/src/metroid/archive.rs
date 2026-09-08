@@ -197,7 +197,7 @@ pub fn archive_key(state: MetroidMechanicalState) -> MetroidArchiveKey {
 pub struct MetroidMilestones {
     /// Greatest equipment item count reached.
     pub items: u8,
-    /// Greatest missile tank count reached.
+    /// Greatest combined count of missile and energy tanks reached.
     pub tanks: u8,
     /// Areas entered, one bit per area.
     pub areas: u8,
