@@ -1,0 +1,631 @@
+{
+  "format": "p02-numeric-endpoints-v1",
+  "scope": "numeric diagnostic endpoints only; no ROM or gameplay inputs",
+  "audit_sha256": "cae156018d08bbe61364442f936224528bbf7a151b7319a2209cc8c6a0d48b46",
+  "pairs": [
+    {
+      "pair": 0,
+      "execution": 414040,
+      "discarded": {
+        "health": 1266,
+        "missiles": 0,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 1,
+        "area": 16,
+        "map_x": 20,
+        "map_y": 7,
+        "x": 142,
+        "y": 225,
+        "pose": 4,
+        "door": 0
+      },
+      "survivor": {
+        "health": 664,
+        "missiles": 2,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 1,
+        "area": 16,
+        "map_x": 20,
+        "map_y": 7,
+        "x": 130,
+        "y": 228,
+        "pose": 3,
+        "door": 0
+      },
+      "incumbent_exposure": {
+        "selected": 1,
+        "productive": 0
+      },
+      "incumbent_in_window": true
+    },
+    {
+      "pair": 1,
+      "execution": 437887,
+      "discarded": {
+        "health": 72,
+        "missiles": 1,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 5,
+        "energy_tanks": 0,
+        "area": 17,
+        "map_x": 22,
+        "map_y": 13,
+        "x": 194,
+        "y": 128,
+        "pose": 1,
+        "door": 0
+      },
+      "survivor": {
+        "health": 22,
+        "missiles": 5,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 5,
+        "energy_tanks": 0,
+        "area": 17,
+        "map_x": 22,
+        "map_y": 13,
+        "x": 196,
+        "y": 135,
+        "pose": 1,
+        "door": 0
+      },
+      "incumbent_exposure": {
+        "selected": 1,
+        "productive": 0
+      },
+      "incumbent_in_window": false
+    },
+    {
+      "pair": 2,
+      "execution": 290923,
+      "discarded": {
+        "health": 142,
+        "missiles": 0,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 21,
+        "map_y": 11,
+        "x": 73,
+        "y": 193,
+        "pose": 0,
+        "door": 0
+      },
+      "survivor": {
+        "health": 32,
+        "missiles": 8,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 21,
+        "map_y": 11,
+        "x": 64,
+        "y": 193,
+        "pose": 1,
+        "door": 0
+      },
+      "incumbent_exposure": {
+        "selected": 1,
+        "productive": 1
+      },
+      "incumbent_in_window": true
+    },
+    {
+      "pair": 3,
+      "execution": 298341,
+      "discarded": {
+        "health": 142,
+        "missiles": 1,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 17,
+        "map_x": 22,
+        "map_y": 13,
+        "x": 116,
+        "y": 113,
+        "pose": 1,
+        "door": 0
+      },
+      "survivor": {
+        "health": 72,
+        "missiles": 5,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 17,
+        "map_x": 22,
+        "map_y": 13,
+        "x": 116,
+        "y": 113,
+        "pose": 1,
+        "door": 0
+      },
+      "incumbent_exposure": {
+        "selected": 2,
+        "productive": 1
+      },
+      "incumbent_in_window": true
+    },
+    {
+      "pair": 4,
+      "execution": 252677,
+      "discarded": {
+        "health": 142,
+        "missiles": 2,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 21,
+        "map_y": 11,
+        "x": 18,
+        "y": 198,
+        "pose": 3,
+        "door": 0
+      },
+      "survivor": {
+        "health": 32,
+        "missiles": 5,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 21,
+        "map_y": 11,
+        "x": 28,
+        "y": 200,
+        "pose": 3,
+        "door": 0
+      },
+      "incumbent_exposure": {
+        "selected": 0,
+        "productive": 0
+      },
+      "incumbent_in_window": false
+    },
+    {
+      "pair": 5,
+      "execution": 414113,
+      "discarded": {
+        "health": 111,
+        "missiles": 0,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 1,
+        "area": 16,
+        "map_x": 15,
+        "map_y": 11,
+        "x": 155,
+        "y": 193,
+        "pose": 1,
+        "door": 0
+      },
+      "survivor": {
+        "health": 61,
+        "missiles": 2,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 1,
+        "area": 16,
+        "map_x": 15,
+        "map_y": 11,
+        "x": 144,
+        "y": 193,
+        "pose": 1,
+        "door": 0
+      },
+      "incumbent_exposure": {
+        "selected": 4,
+        "productive": 1
+      },
+      "incumbent_in_window": true
+    },
+    {
+      "pair": 6,
+      "execution": 303644,
+      "discarded": {
+        "health": 112,
+        "missiles": 6,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 21,
+        "map_y": 11,
+        "x": 79,
+        "y": 115,
+        "pose": 1,
+        "door": 0
+      },
+      "survivor": {
+        "health": 32,
+        "missiles": 8,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 21,
+        "map_y": 11,
+        "x": 76,
+        "y": 122,
+        "pose": 1,
+        "door": 0
+      },
+      "incumbent_exposure": {
+        "selected": 6,
+        "productive": 3
+      },
+      "incumbent_in_window": true
+    },
+    {
+      "pair": 7,
+      "execution": 344926,
+      "discarded": {
+        "health": 72,
+        "missiles": 5,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 17,
+        "map_x": 22,
+        "map_y": 14,
+        "x": 228,
+        "y": 113,
+        "pose": 1,
+        "door": 0
+      },
+      "survivor": {
+        "health": 32,
+        "missiles": 6,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 17,
+        "map_x": 22,
+        "map_y": 14,
+        "x": 228,
+        "y": 113,
+        "pose": 0,
+        "door": 0
+      },
+      "incumbent_exposure": {
+        "selected": 1,
+        "productive": 0
+      },
+      "incumbent_in_window": true
+    },
+    {
+      "pair": 8,
+      "execution": 251966,
+      "discarded": {
+        "health": 62,
+        "missiles": 2,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 17,
+        "map_y": 11,
+        "x": 166,
+        "y": 193,
+        "pose": 1,
+        "door": 0
+      },
+      "survivor": {
+        "health": 32,
+        "missiles": 8,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 17,
+        "map_y": 11,
+        "x": 170,
+        "y": 193,
+        "pose": 1,
+        "door": 0
+      },
+      "incumbent_exposure": {
+        "selected": 0,
+        "productive": 0
+      },
+      "incumbent_in_window": false
+    },
+    {
+      "pair": 9,
+      "execution": 233725,
+      "discarded": {
+        "health": 142,
+        "missiles": 0,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 21,
+        "map_y": 11,
+        "x": 27,
+        "y": 84,
+        "pose": 2,
+        "door": 0
+      },
+      "survivor": {
+        "health": 32,
+        "missiles": 1,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 21,
+        "map_y": 11,
+        "x": 19,
+        "y": 92,
+        "pose": 2,
+        "door": 0
+      },
+      "incumbent_exposure": {
+        "selected": 2,
+        "productive": 0
+      },
+      "incumbent_in_window": true
+    },
+    {
+      "pair": 10,
+      "execution": 267000,
+      "discarded": {
+        "health": 142,
+        "missiles": 2,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 17,
+        "map_x": 22,
+        "map_y": 14,
+        "x": 241,
+        "y": 113,
+        "pose": 5,
+        "door": 131
+      },
+      "survivor": {
+        "health": 72,
+        "missiles": 5,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 17,
+        "map_x": 22,
+        "map_y": 14,
+        "x": 240,
+        "y": 112,
+        "pose": 5,
+        "door": 131
+      },
+      "incumbent_exposure": {
+        "selected": 0,
+        "productive": 0
+      },
+      "incumbent_in_window": false
+    },
+    {
+      "pair": 11,
+      "execution": 258630,
+      "discarded": {
+        "health": 58,
+        "missiles": 1,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 17,
+        "map_x": 23,
+        "map_y": 14,
+        "x": 134,
+        "y": 225,
+        "pose": 1,
+        "door": 0
+      },
+      "survivor": {
+        "health": 44,
+        "missiles": 5,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 17,
+        "map_x": 23,
+        "map_y": 14,
+        "x": 129,
+        "y": 225,
+        "pose": 1,
+        "door": 0
+      },
+      "incumbent_exposure": {
+        "selected": 3,
+        "productive": 0
+      },
+      "incumbent_in_window": true
+    },
+    {
+      "pair": 12,
+      "execution": 151014,
+      "discarded": {
+        "health": 72,
+        "missiles": 0,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 5,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 22,
+        "map_y": 11,
+        "x": 28,
+        "y": 113,
+        "pose": 1,
+        "door": 0
+      },
+      "survivor": {
+        "health": 22,
+        "missiles": 5,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 5,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 22,
+        "map_y": 11,
+        "x": 30,
+        "y": 113,
+        "pose": 0,
+        "door": 0
+      },
+      "incumbent_exposure": {
+        "selected": 1,
+        "productive": 0
+      },
+      "incumbent_in_window": true
+    },
+    {
+      "pair": 13,
+      "execution": 349473,
+      "discarded": {
+        "health": 62,
+        "missiles": 0,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 18,
+        "map_y": 11,
+        "x": 245,
+        "y": 123,
+        "pose": 1,
+        "door": 0
+      },
+      "survivor": {
+        "health": 32,
+        "missiles": 4,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 18,
+        "map_y": 11,
+        "x": 255,
+        "y": 126,
+        "pose": 1,
+        "door": 0
+      },
+      "incumbent_exposure": {
+        "selected": 6,
+        "productive": 1
+      },
+      "incumbent_in_window": true
+    },
+    {
+      "pair": 14,
+      "execution": 288844,
+      "discarded": {
+        "health": 142,
+        "missiles": 0,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 17,
+        "map_x": 22,
+        "map_y": 14,
+        "x": 211,
+        "y": 106,
+        "pose": 1,
+        "door": 0
+      },
+      "survivor": {
+        "health": 72,
+        "missiles": 5,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 17,
+        "map_x": 22,
+        "map_y": 14,
+        "x": 210,
+        "y": 97,
+        "pose": 1,
+        "door": 0
+      },
+      "incumbent_exposure": {
+        "selected": 0,
+        "productive": 0
+      },
+      "incumbent_in_window": false
+    },
+    {
+      "pair": 15,
+      "execution": 257556,
+      "discarded": {
+        "health": 62,
+        "missiles": 0,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 17,
+        "map_y": 11,
+        "x": 107,
+        "y": 193,
+        "pose": 1,
+        "door": 0
+      },
+      "survivor": {
+        "health": 32,
+        "missiles": 8,
+        "equipment": 16,
+        "bosses": 0,
+        "missile_capacity": 10,
+        "energy_tanks": 0,
+        "area": 16,
+        "map_x": 17,
+        "map_y": 11,
+        "x": 107,
+        "y": 193,
+        "pose": 1,
+        "door": 0
+      },
+      "incumbent_exposure": {
+        "selected": 3,
+        "productive": 0
+      },
+      "incumbent_in_window": true
+    }
+  ]
+}

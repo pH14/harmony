@@ -123,9 +123,16 @@ Use the R02 frozen build and B01's exact conditions/seed, first with no optional
 retention. Require both B01 stream hashes to match. Run MM2 under both optional
 policies and SMB under coverage, 5,000 jobs each, full replay, the same 240+60s
 per-cell bound. Require actual alternative admissions on the MM2 candidate;
-SMB must retain legacy bytes because it supplies no resource axes. An empty
+SMB must retain legacy decisions because it supplies no resource axes. An empty
 alternative count is compatibility evidence only, not mechanism qualification.
 Only after passing Q02 may C01 begin.
+
+Qualification correction: an explicitly requested policy necessarily changes
+the stream header's `slot_retention` tag even on unsupported workloads. The
+initial Q02 driver incorrectly expected the entire SMB coverage hash to match.
+Its recheck mode instead requires exactly that one header difference and
+byte-identical remaining records. This corrects the acceptance test without
+rerunning completed campaigns or relaxing any decision/replay comparison.
 
 ### C01: fresh MM2 coverage transfer development
 
@@ -146,3 +153,85 @@ work. If the candidate fails earlier, investigate that stage without restarting
 the chain under the same identity. If both fail at the same bottleneck, inspect
 retention/exposure evidence before increasing work. A lone deep result cannot
 qualify the breakthrough; repeated fresh validation remains a separate gate.
+
+23:10 UTC checkpoint: Q02 passed, including actual MM2 alternatives and SMB
+byte-identical records after its explicit policy-header difference. The original
+driver failed its incorrect full-hash assertion after all five cells completed;
+the corrected checker qualified those same outputs without rerunning search.
+Coverage and extremes make the same decisions in this small MM2 case, so it
+does not establish an advantage of the new objective. Both fresh C01 chains
+cleared Metal and replayed their bridges twice: legacy 6,786,404 frames/43,624
+jobs, coverage 5,260,416 frames/30,149 jobs. This is one development comparison.
+
+The theory phase is complete within one hour: seven executable abstraction
+fixtures cover both favorable and adverse cases, including a reverse example
+where coverage forgets a later useful complement and extremes retain it. A
+finite seed-panel fixture also shows the production selector losing one-attempt
+goal discovery probability after retaining an additional distinct future. The
+candidate is a testable resource surrogate, not a universal dominance rule.
+
+### A01: distinguish coverage from a second resource representative
+
+Existing C01 first-stage searches share ordinary power-on genesis, while their
+Heat prefixes differ. Run one additional fresh Metal stage on development seed
+20261101 under `resource_extremes_2_v1`, using the same frozen candidate binary,
+4 workers/8 GiB, 1M jobs/120M frames, 4096 actions, identical vocabulary,
+selector, window and result slots. Limit this diagnostic to 600s search plus
+120s finish, 750s process-tree hard limit. A timeout is censored and cannot be
+treated as a matched-work loss. Compare victory work and input hashes with the
+two completed C01 Metal stages. Matching coverage would attribute that Metal
+improvement to their shared behavior, not the coverage objective.
+
+For this one bounded ablation, temporarily allow a third campaign on little
+cores 4–7 while C01 uses 0–3 and 8–11. Total logical archive allocation is at
+most 24 GiB; no compilation or other new CPU-heavy work runs concurrently.
+The dedicated host has 54 GiB RAM. All timing remains descriptive. Run this
+new job in a systemd control group with a hard memory/runtime limit so child
+sessions cannot outlive the driver. Return to two campaigns when it completes.
+
+A01 passed: extremes exactly matches coverage's 30,149 jobs, 5,260,416 frames,
+victory input and next-stage prefix. Deterministic campaign reports differ only
+in policy, requested wall limit and stream hash. Therefore the Metal saving
+over legacy does not validate the new coverage objective.
+
+### A02: same-start Heat diagnostic at 100k jobs
+
+Continue from A01's own discovered, exported Metal victory under extremes;
+its prefix hash exactly matches C01 coverage's Heat prefix. This is a diagnostic
+continuation, not a fresh validation chain. Use that fixed origin, seed 20261101,
+4 workers/8 GiB and all C01 vocabulary/selector/window settings, with 100,000
+jobs and 20M frames, 600s plus 120s finish, a 750s systemd process-tree bound,
+on little cores 4–7. Allow the same temporary third-campaign allocation as A01.
+
+Compare the completed diagnostic with C01 coverage's recorded 100k progress
+boundary (or the nearest strictly earlier common boundary if that record is
+absent). Execution/frame ceilings must not be treated as equal if a wall stop
+occurs first. The question is whether the new objective actually changes
+retention and common-origin progress, beyond the shared two-state mechanism.
+Do not infer whole-chain improvement from this diagnostic. No old solution
+input or hand-authored gameplay enters either origin.
+
+P02 retrospective check: the single-state threshold-volume preference has only
+3 strict agreements with the better observed living-exit rate per actual frame
+among 15 non-tied pairs (one additional pair is tied).
+Only 3/16 pairs share exact pixel position and 12/16 share raw pose. This does
+not support treating resource volume alone as a predictor of these local exits;
+the data contain no boss gains and do not test selecting two states. Numeric
+endpoints were extracted from the frozen audit with its matching SHA-256, with
+no ROM bytes or gameplay inputs transferred. Keep this adverse association
+beside any favorable fresh result.
+
+Reproduce the numeric analysis with `python3 analyze_p02.py`. Fifteen pairs
+have at least one distinguishing local-exit or survival probe. An 8-pixel
+position partition would separate 9 of those pairs; raw pose separates 4;
+their combination separates 11 and leaves 4 merged. This identifies a concrete
+candidate abstraction refinement, but does not measure its archive growth or
+prove fresh-search improvement. The current production key and all experiments
+remain unchanged. Metroid emulator qualification still requires the pending
+asset-transfer approval.
+
+Review of the finite checker found a shortest-witness corner case when a later
+cost difference was encountered before an already-shorter state-label difference.
+Checking successor labels when visiting each edge fixes it; the new regression
+and all eight abstraction fixtures pass. This changes test scaffolding only,
+not the frozen candidate executable.

@@ -1,0 +1,405 @@
+{
+  "format": "p02-refinement-analysis-v1",
+  "audit_sha256": "cae156018d08bbe61364442f936224528bbf7a151b7319a2209cc8c6a0d48b46",
+  "outcomes_sha256": "c79df7524bbb28d0dc3ebc8a86f7028b60380469f5df03a29f4b66cd137bc945",
+  "pairs": 16,
+  "strict_volume_preference_agreements": 3,
+  "volume_or_rate_ties": 1,
+  "discarded_exit_rate_wins": 7,
+  "volume_prefers_discarded": 5,
+  "pairs_with_distinguishing_probes": 15,
+  "refinements": {
+    "split_by_8_pixel_position": {
+      "pairs_split": 9,
+      "distinguishable_pairs_split": 9,
+      "distinguishable_pairs_still_merged": 6
+    },
+    "split_by_raw_pose": {
+      "pairs_split": 4,
+      "distinguishable_pairs_split": 4,
+      "distinguishable_pairs_still_merged": 11
+    },
+    "split_by_8_pixel_or_raw_pose": {
+      "pairs_split": 11,
+      "distinguishable_pairs_split": 11,
+      "distinguishable_pairs_still_merged": 4
+    }
+  },
+  "limitations": [
+    "Retrospective, selected 16-pair sample; not independent fresh searches.",
+    "Shared suffix trials are correlated; no significance test or confidence claim.",
+    "Point volume association does not evaluate two-representative retention.",
+    "Splitting a sampled pair avoids their direct competition; it does not establish future equivalence, memory cost, or campaign improvement.",
+    "These local-exit probes contain no boss gains and do not identify the importance of resource thresholds for bosses."
+  ],
+  "rows": [
+    {
+      "pair": 0,
+      "execution": 414040,
+      "discarded_resources": [
+        1266,
+        0
+      ],
+      "survivor_resources": [
+        664,
+        2
+      ],
+      "discarded_thresholds": 1267,
+      "survivor_thresholds": 1995,
+      "volume_prefers_discarded": false,
+      "observed_exit_rate_prefers_discarded": true,
+      "volume_or_rate_tie": false,
+      "strict_preference_agreement": false,
+      "same_exact_position": false,
+      "split_by_8_pixel_position": true,
+      "split_by_raw_pose": true,
+      "split_by_8_pixel_or_raw_pose": true,
+      "probe_disagreements": 33
+    },
+    {
+      "pair": 1,
+      "execution": 437887,
+      "discarded_resources": [
+        72,
+        1
+      ],
+      "survivor_resources": [
+        22,
+        5
+      ],
+      "discarded_thresholds": 146,
+      "survivor_thresholds": 138,
+      "volume_prefers_discarded": true,
+      "observed_exit_rate_prefers_discarded": false,
+      "volume_or_rate_tie": false,
+      "strict_preference_agreement": false,
+      "same_exact_position": false,
+      "split_by_8_pixel_position": false,
+      "split_by_raw_pose": false,
+      "split_by_8_pixel_or_raw_pose": false,
+      "probe_disagreements": 8
+    },
+    {
+      "pair": 2,
+      "execution": 290923,
+      "discarded_resources": [
+        142,
+        0
+      ],
+      "survivor_resources": [
+        32,
+        8
+      ],
+      "discarded_thresholds": 143,
+      "survivor_thresholds": 297,
+      "volume_prefers_discarded": false,
+      "observed_exit_rate_prefers_discarded": true,
+      "volume_or_rate_tie": false,
+      "strict_preference_agreement": false,
+      "same_exact_position": false,
+      "split_by_8_pixel_position": true,
+      "split_by_raw_pose": true,
+      "split_by_8_pixel_or_raw_pose": true,
+      "probe_disagreements": 48
+    },
+    {
+      "pair": 3,
+      "execution": 298341,
+      "discarded_resources": [
+        142,
+        1
+      ],
+      "survivor_resources": [
+        72,
+        5
+      ],
+      "discarded_thresholds": 286,
+      "survivor_thresholds": 438,
+      "volume_prefers_discarded": false,
+      "observed_exit_rate_prefers_discarded": true,
+      "volume_or_rate_tie": false,
+      "strict_preference_agreement": false,
+      "same_exact_position": true,
+      "split_by_8_pixel_position": false,
+      "split_by_raw_pose": false,
+      "split_by_8_pixel_or_raw_pose": false,
+      "probe_disagreements": 10
+    },
+    {
+      "pair": 4,
+      "execution": 252677,
+      "discarded_resources": [
+        142,
+        2
+      ],
+      "survivor_resources": [
+        32,
+        5
+      ],
+      "discarded_thresholds": 429,
+      "survivor_thresholds": 198,
+      "volume_prefers_discarded": true,
+      "observed_exit_rate_prefers_discarded": false,
+      "volume_or_rate_tie": false,
+      "strict_preference_agreement": false,
+      "same_exact_position": false,
+      "split_by_8_pixel_position": true,
+      "split_by_raw_pose": false,
+      "split_by_8_pixel_or_raw_pose": true,
+      "probe_disagreements": 47
+    },
+    {
+      "pair": 5,
+      "execution": 414113,
+      "discarded_resources": [
+        111,
+        0
+      ],
+      "survivor_resources": [
+        61,
+        2
+      ],
+      "discarded_thresholds": 112,
+      "survivor_thresholds": 186,
+      "volume_prefers_discarded": false,
+      "observed_exit_rate_prefers_discarded": true,
+      "volume_or_rate_tie": false,
+      "strict_preference_agreement": false,
+      "same_exact_position": false,
+      "split_by_8_pixel_position": true,
+      "split_by_raw_pose": false,
+      "split_by_8_pixel_or_raw_pose": true,
+      "probe_disagreements": 52
+    },
+    {
+      "pair": 6,
+      "execution": 303644,
+      "discarded_resources": [
+        112,
+        6
+      ],
+      "survivor_resources": [
+        32,
+        8
+      ],
+      "discarded_thresholds": 791,
+      "survivor_thresholds": 297,
+      "volume_prefers_discarded": true,
+      "observed_exit_rate_prefers_discarded": false,
+      "volume_or_rate_tie": false,
+      "strict_preference_agreement": false,
+      "same_exact_position": false,
+      "split_by_8_pixel_position": true,
+      "split_by_raw_pose": false,
+      "split_by_8_pixel_or_raw_pose": true,
+      "probe_disagreements": 33
+    },
+    {
+      "pair": 7,
+      "execution": 344926,
+      "discarded_resources": [
+        72,
+        5
+      ],
+      "survivor_resources": [
+        32,
+        6
+      ],
+      "discarded_thresholds": 438,
+      "survivor_thresholds": 231,
+      "volume_prefers_discarded": true,
+      "observed_exit_rate_prefers_discarded": false,
+      "volume_or_rate_tie": false,
+      "strict_preference_agreement": false,
+      "same_exact_position": true,
+      "split_by_8_pixel_position": false,
+      "split_by_raw_pose": true,
+      "split_by_8_pixel_or_raw_pose": true,
+      "probe_disagreements": 12
+    },
+    {
+      "pair": 8,
+      "execution": 251966,
+      "discarded_resources": [
+        62,
+        2
+      ],
+      "survivor_resources": [
+        32,
+        8
+      ],
+      "discarded_thresholds": 189,
+      "survivor_thresholds": 297,
+      "volume_prefers_discarded": false,
+      "observed_exit_rate_prefers_discarded": true,
+      "volume_or_rate_tie": false,
+      "strict_preference_agreement": false,
+      "same_exact_position": false,
+      "split_by_8_pixel_position": true,
+      "split_by_raw_pose": false,
+      "split_by_8_pixel_or_raw_pose": true,
+      "probe_disagreements": 25
+    },
+    {
+      "pair": 9,
+      "execution": 233725,
+      "discarded_resources": [
+        142,
+        0
+      ],
+      "survivor_resources": [
+        32,
+        1
+      ],
+      "discarded_thresholds": 143,
+      "survivor_thresholds": 66,
+      "volume_prefers_discarded": true,
+      "observed_exit_rate_prefers_discarded": false,
+      "volume_or_rate_tie": false,
+      "strict_preference_agreement": false,
+      "same_exact_position": false,
+      "split_by_8_pixel_position": true,
+      "split_by_raw_pose": false,
+      "split_by_8_pixel_or_raw_pose": true,
+      "probe_disagreements": 29
+    },
+    {
+      "pair": 10,
+      "execution": 267000,
+      "discarded_resources": [
+        142,
+        2
+      ],
+      "survivor_resources": [
+        72,
+        5
+      ],
+      "discarded_thresholds": 429,
+      "survivor_thresholds": 438,
+      "volume_prefers_discarded": false,
+      "observed_exit_rate_prefers_discarded": false,
+      "volume_or_rate_tie": false,
+      "strict_preference_agreement": true,
+      "same_exact_position": false,
+      "split_by_8_pixel_position": false,
+      "split_by_raw_pose": false,
+      "split_by_8_pixel_or_raw_pose": false,
+      "probe_disagreements": 5
+    },
+    {
+      "pair": 11,
+      "execution": 258630,
+      "discarded_resources": [
+        58,
+        1
+      ],
+      "survivor_resources": [
+        44,
+        5
+      ],
+      "discarded_thresholds": 118,
+      "survivor_thresholds": 270,
+      "volume_prefers_discarded": false,
+      "observed_exit_rate_prefers_discarded": false,
+      "volume_or_rate_tie": true,
+      "strict_preference_agreement": false,
+      "same_exact_position": false,
+      "split_by_8_pixel_position": false,
+      "split_by_raw_pose": false,
+      "split_by_8_pixel_or_raw_pose": false,
+      "probe_disagreements": 0
+    },
+    {
+      "pair": 12,
+      "execution": 151014,
+      "discarded_resources": [
+        72,
+        0
+      ],
+      "survivor_resources": [
+        22,
+        5
+      ],
+      "discarded_thresholds": 73,
+      "survivor_thresholds": 138,
+      "volume_prefers_discarded": false,
+      "observed_exit_rate_prefers_discarded": false,
+      "volume_or_rate_tie": false,
+      "strict_preference_agreement": true,
+      "same_exact_position": false,
+      "split_by_8_pixel_position": false,
+      "split_by_raw_pose": true,
+      "split_by_8_pixel_or_raw_pose": true,
+      "probe_disagreements": 8
+    },
+    {
+      "pair": 13,
+      "execution": 349473,
+      "discarded_resources": [
+        62,
+        0
+      ],
+      "survivor_resources": [
+        32,
+        4
+      ],
+      "discarded_thresholds": 63,
+      "survivor_thresholds": 165,
+      "volume_prefers_discarded": false,
+      "observed_exit_rate_prefers_discarded": true,
+      "volume_or_rate_tie": false,
+      "strict_preference_agreement": false,
+      "same_exact_position": false,
+      "split_by_8_pixel_position": true,
+      "split_by_raw_pose": false,
+      "split_by_8_pixel_or_raw_pose": true,
+      "probe_disagreements": 38
+    },
+    {
+      "pair": 14,
+      "execution": 288844,
+      "discarded_resources": [
+        142,
+        0
+      ],
+      "survivor_resources": [
+        72,
+        5
+      ],
+      "discarded_thresholds": 143,
+      "survivor_thresholds": 438,
+      "volume_prefers_discarded": false,
+      "observed_exit_rate_prefers_discarded": false,
+      "volume_or_rate_tie": false,
+      "strict_preference_agreement": true,
+      "same_exact_position": false,
+      "split_by_8_pixel_position": true,
+      "split_by_raw_pose": false,
+      "split_by_8_pixel_or_raw_pose": true,
+      "probe_disagreements": 4
+    },
+    {
+      "pair": 15,
+      "execution": 257556,
+      "discarded_resources": [
+        62,
+        0
+      ],
+      "survivor_resources": [
+        32,
+        8
+      ],
+      "discarded_thresholds": 63,
+      "survivor_thresholds": 297,
+      "volume_prefers_discarded": false,
+      "observed_exit_rate_prefers_discarded": true,
+      "volume_or_rate_tie": false,
+      "strict_preference_agreement": false,
+      "same_exact_position": true,
+      "split_by_8_pixel_position": false,
+      "split_by_raw_pose": false,
+      "split_by_8_pixel_or_raw_pose": false,
+      "probe_disagreements": 16
+    }
+  ]
+}

@@ -88,6 +88,23 @@ This excludes unknown future outcomes, adaptive probes, unequal snapshot cost,
 and histories whose value depends on later archive combinations. Optimizing
 the probe suite is not a guarantee about unseen game progress.
 
+The implemented R02 resource proxy is the discrete two-dimensional hypervolume
+subset problem with an inclusive zero origin. This connection is established
+in the [two-dimensional subset-selection literature](https://eden.dei.uc.pt/~paquete/HSSP/).
+The [multi-objective archiving review](https://arxiv.org/abs/2303.09685) also
+distinguishes storing good solutions from using the archive to drive search.
+R02 solves only the tiny current competition exactly; it does not claim a new
+hypervolume algorithm, streaming limit optimality, or a bound on NES discovery.
+
+An executable reverse counterexample makes that limitation concrete. In arrival
+order A=(0,10), B=(4,3), C=(10,0), D=(4,10), R02 retains A,B over C because
+their threshold union is 27, versus 26 for B,C and 21 for A,C. D then dominates
+both survivors, leaving coverage 55. The forgotten C would complement D to
+cover 61. Coordinate extremes preserve C and therefore preserve an exit needing
+resource 0 >= 10, while R02 loses it. Neither heuristic uniformly preserves
+useful futures, even in these monotone resource worlds. The formal tests check
+both directions; the candidate was not evaluated only on a world favoring it.
+
 Even with known outcomes, finite search probability need not be monotone in
 retained states. Under independent uniform parent draws, one state with success
 probability p per attempt gives `1-(1-p)^B` success after B attempts. Adding a

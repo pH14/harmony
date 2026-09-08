@@ -32,7 +32,9 @@ impl Model {
                 let (l, r) = (self.edges[left][action], self.edges[right][action]);
                 let mut suffix = prefix.clone();
                 suffix.push(u8::try_from(action).unwrap());
-                if (l.cost, l.events) != (r.cost, r.events) {
+                if (l.cost, l.events, self.labels[l.next])
+                    != (r.cost, r.events, self.labels[r.next])
+                {
                     return Some(suffix);
                 }
                 queue.push_back((l.next, r.next, suffix));
@@ -322,5 +324,106 @@ fn product_search_finds_late_distinctions_and_terminates_on_equivalent_cycles() 
                 model.distinguish(left, right).is_none()
             );
         }
+    }
+}
+
+#[test]
+fn a_short_label_difference_precedes_a_longer_cost_difference() {
+    let model = Model {
+        labels: vec![0, 0, 0, 0, 0, 1],
+        edges: vec![
+            [edge(2, 0), edge(4, 0)],
+            [edge(3, 0), edge(5, 0)],
+            [edge(2, 0); 2],
+            [Edge {
+                next: 3,
+                cost: 2,
+                events: 0,
+            }; 2],
+            [edge(4, 0); 2],
+            [edge(5, 0); 2],
+        ],
+    };
+    assert_eq!(model.distinguish(0, 1), Some(vec![1]));
+}
+
+#[test]
+fn retaining_an_extra_future_can_reduce_one_attempt_goal_discovery() {
+    // The second state supplies a distinct possible resource threshold but
+    // does not help goal 1. Both archives retain the state reaching goal 1.
+    let model = Model {
+        labels: vec![0; 3],
+        edges: vec![
+            [edge(2, 1), edge(0, 0)],
+            [edge(2, 2), edge(1, 0)],
+            [edge(2, 0); 2],
+        ],
+    };
+    let mut one = ToyArchive::new(|_| 1);
+    let mut two = ToyArchive::new(|_| 1);
+    two.slot_retention = SlotRetentionPolicy::ResourceCoverage2;
+    let good = Key {
+        slot: 0,
+        resources: [10, 1],
+    };
+    offer(&mut one, 0, good, 1).unwrap();
+    offer(&mut two, 0, good, 1).unwrap();
+    offer(
+        &mut two,
+        1,
+        Key {
+            slot: 0,
+            resources: [1, 10],
+        },
+        1,
+    )
+    .unwrap();
+    assert!(retained_can_reach(&two, &model, 1));
+    assert!(retained_can_reach(&two, &model, 2));
+    assert!(!retained_can_reach(&one, &model, 2));
+    let mut successes = [0; 2];
+    // Exhaust this declared finite seed panel with the production selector.
+    // Each draw is the first attempt: no result counters are admitted.
+    for seed in 0..1024 {
+        for (arm, archive) in [&mut one, &mut two].into_iter().enumerate() {
+            let (id, _) = archive
+                .select_parent(&mut RomuDuoJrRand::with_seed(seed), 8)
+                .unwrap();
+            let state = *archive.entries[id].snapshot.as_deref().unwrap();
+            successes[arm] += usize::from(model.edges[state][0].events & 1 != 0);
+        }
+    }
+    assert_eq!(successes[0], 1024);
+    assert!(
+        successes[1] > 0 && successes[1] < successes[0],
+        "{successes:?}"
+    );
+}
+
+#[test]
+fn local_coverage_optimum_can_forget_a_later_useful_complement() {
+    // A,B cover 27 thresholds; B,C cover 26 and A,C cover 21. Therefore
+    // coverage discards C without a tie. Later D dominates A and B; D,C
+    // would cover 61 thresholds, but only D (55) remains available.
+    let resources = [[0, 10], [4, 3], [10, 0], [4, 10]];
+    let model = Model {
+        labels: vec![0; 5],
+        edges: resources
+            .iter()
+            .enumerate()
+            .map(|(s, r)| [edge(4, u8::from(r[0] >= 10)), edge(s, 0)])
+            .chain(std::iter::once([edge(4, 0); 2]))
+            .collect(),
+    };
+    for (policy, expected_reach) in [
+        (SlotRetentionPolicy::ResourceCoverage2, false),
+        (SlotRetentionPolicy::ResourceExtremes2, true),
+    ] {
+        let mut archive = ToyArchive::new(|_| 1);
+        archive.slot_retention = policy;
+        for (state, resources) in resources.into_iter().enumerate() {
+            offer(&mut archive, state, Key { slot: 0, resources }, 1);
+        }
+        assert_eq!(retained_can_reach(&archive, &model, 1), expected_reach);
     }
 }
