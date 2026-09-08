@@ -177,7 +177,7 @@ def run_one(job,request,args,cpus,build,host):
     campaign=root/'campaign'
     command=[str(args.binary),str(root/'request.private.json'),str(campaign)]
     if cpus: command=['taskset','-c',','.join(map(str,cpus)),*command]
-    started=time.monotonic(); peak_rss=peak_disk=peak_allocated=0; last_frames=0;last_time=0.; last_phase=None
+    started=time.monotonic(); peak_rss=None;peak_disk=peak_allocated=0; last_frames=0;last_time=0.; last_phase=None
     phase_peaks = {}
     timed_out=False;disk_exceeded=False
     with (root/'stdout.log').open('wb') as stdout,(root/'stderr.log').open('wb') as stderr,(root/'resources.jsonl').open('w') as telemetry:
@@ -194,8 +194,12 @@ def run_one(job,request,args,cpus,build,host):
                 delta=elapsed-last_time
                 sample={'elapsed_seconds':elapsed,'phase':stage,**current,'disk':disk,'executions':progress.get('executions',0),'frames_emulated':frames,'interval_frames_per_second':max(0,frames-last_frames)/delta if delta>0 and stage=='search' and last_phase=='search' else None,'search':progress}
                 telemetry.write(json.dumps(sample,separators=(',',':'),allow_nan=False)+'\n');telemetry.flush()
-                peak_rss=max(peak_rss,current['rss_bytes'] or 0);peak_disk=max(peak_disk,disk['logical_bytes']);peak_allocated=max(peak_allocated,disk['allocated_bytes'])
-                phase_peaks[stage] = max(phase_peaks.get(stage, 0), current['rss_bytes'] or 0)
+                if current['rss_bytes'] is not None:
+                    peak_rss=max(peak_rss or 0,current['rss_bytes'])
+                    phase_peaks[stage] = max(phase_peaks.get(stage) or 0, current['rss_bytes'])
+                else:
+                    phase_peaks.setdefault(stage, None)
+                peak_disk=max(peak_disk,disk['logical_bytes']);peak_allocated=max(peak_allocated,disk['allocated_bytes'])
                 last_frames=frames;last_time=elapsed;last_phase=stage
                 pid,status,usage=os.wait4(process.pid,os.WNOHANG)
                 if pid:

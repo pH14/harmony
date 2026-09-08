@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('search_eval', Path(__file__).with_name('eval.py'))
 eval = importlib.util.module_from_spec(spec)
@@ -86,6 +87,15 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(result['exit_code'], 9)
         self.assertEqual(result['last_progress']['frames_emulated'], 123)
         self.assertIsNone(result['result'])
+
+    def test_unavailable_rss_samples_stay_unavailable_in_summaries(self):
+        with patch.object(eval.ProcessMetrics, 'sample', return_value={
+                'rss_bytes': None, 'read_bytes': None, 'write_bytes': None}):
+            result = self.fake_run('sys.exit(9)\n')
+        self.assertIsNone(result['peak_process_tree_rss_bytes_sampled'])
+        self.assertEqual(result['rss_by_phase_bytes_sampled'], {'preparation': None})
+        self.assertIsNone(result['io_bytes_last_sample']['read_bytes'])
+        self.assertGreater(result['max_process_rss_bytes'], 0)
 
     def test_watchdog_kills_only_the_run_and_retains_timeout(self):
         result = self.fake_run('(p/"progress.jsonl").write_text(\'{"executions":1}\\n\')\ntime.sleep(30)\n', finish=.1)
