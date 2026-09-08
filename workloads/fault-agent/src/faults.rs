@@ -46,13 +46,23 @@ impl NodeFaults {
     }
 }
 
+/// One open `Fault::RunHook` window. Two windows for one hook that touch
+/// are told apart by their starts, so each of them launches the hook.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct HookWindow {
+    /// The hook id.
+    pub id: u32,
+    /// The window's inclusive V-time start.
+    pub start: u64,
+}
+
 /// Every process fault in force at one `Moment`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ActiveFaults {
     /// Sorted by node id; one entry per node named by at least one fault.
     nodes: Vec<(u16, NodeFaults)>,
-    /// Sorted, deduplicated hook ids.
-    hooks: Vec<u32>,
+    /// Sorted by hook id then start, deduplicated.
+    hooks: Vec<HookWindow>,
 }
 
 impl ActiveFaults {
@@ -62,12 +72,14 @@ impl ActiveFaults {
         Self::default()
     }
 
-    /// Record one decoded fault against a node.
-    pub fn insert(&mut self, node: u16, fault: &Fault) {
+    /// Record one decoded fault against a node, from a window opening at
+    /// `start`.
+    pub fn insert(&mut self, node: u16, fault: &Fault, start: u64) {
         match fault {
             Fault::RunHook(id) => {
-                if let Err(at) = self.hooks.binary_search(id) {
-                    self.hooks.insert(at, *id);
+                let window = HookWindow { id: *id, start };
+                if let Err(at) = self.hooks.binary_search(&window) {
+                    self.hooks.insert(at, window);
                 }
                 return;
             }
@@ -100,19 +112,20 @@ impl ActiveFaults {
         }
     }
 
-    /// Build the set from a standing-poll answer's `(class, target)` pairs.
+    /// Build the set from a standing-poll answer's `(class, target, start)`
+    /// entries.
     ///
     /// Entries of another class and targets that do not decode are skipped: the
     /// answer is untrusted input, and an entry the guest cannot interpret is
     /// the host's to apply, not a reason to stop supervising.
-    pub fn from_entries<'a>(entries: impl Iterator<Item = (u16, &'a [u8])>) -> Self {
+    pub fn from_entries<'a>(entries: impl Iterator<Item = (u16, &'a [u8], u64)>) -> Self {
         let mut active = Self::new();
-        for (class, target) in entries {
+        for (class, target, start) in entries {
             if class != DecisionClass::Process.as_u16() {
                 continue;
             }
             if let Some((node, fault)) = decode_process_target(target) {
-                active.insert(node, &fault);
+                active.insert(node, &fault, start);
             }
         }
         active
@@ -128,9 +141,9 @@ impl ActiveFaults {
             .unwrap_or_default()
     }
 
-    /// The hook ids whose windows are open, ascending.
+    /// The open hook windows, by hook id then start.
     #[must_use]
-    pub fn hooks(&self) -> &[u32] {
+    pub fn hooks(&self) -> &[HookWindow] {
         &self.hooks
     }
 }
@@ -154,7 +167,7 @@ mod tests {
             (process, target(0, &Fault::RunHook(9))),
             (process, target(0, &Fault::RunHook(2))),
         ];
-        let active = ActiveFaults::from_entries(entries.iter().map(|(c, t)| (*c, t.as_slice())));
+        let active = ActiveFaults::from_entries(entries.iter().map(|(c, t)| (*c, t.as_slice(), 0)));
         assert_eq!(
             active.node(0),
             NodeFaults {
@@ -175,22 +188,22 @@ mod tests {
         assert!(!active.node(2).any());
         // Hooks are ascending regardless of answer order, and hook faults do
         // not mark their node as faulted.
-        assert_eq!(active.hooks(), [2, 9]);
+        assert_eq!(hook_ids(&active), [2, 9]);
     }
 
     #[test]
     fn other_classes_and_undecodable_targets_are_skipped() {
         let process = DecisionClass::Process.as_u16();
         let good = target(3, &Fault::ProcKill);
-        let entries: Vec<(u16, &[u8])> = vec![
+        let entries: Vec<(u16, &[u8], u64)> = vec![
             // A class the guest does not apply, carrying bytes that would
             // decode as a kill if the class were ignored.
-            (DecisionClass::BlockIo.as_u16(), good.as_slice()),
+            (DecisionClass::BlockIo.as_u16(), good.as_slice(), 0),
             // Truncated, empty, and trailing-byte targets.
-            (process, &good[..1]),
-            (process, &[]),
-            (process, b"\x00\x00\x0b\xff\xff"),
-            (process, good.as_slice()),
+            (process, &good[..1], 0),
+            (process, &[], 0),
+            (process, b"\x00\x00\x0b\xff\xff", 0),
+            (process, good.as_slice(), 0),
         ];
         let active = ActiveFaults::from_entries(entries.into_iter());
         assert!(active.node(3).kill);
@@ -207,7 +220,7 @@ mod tests {
             hold: Span(2_000_000),
         };
         let entries = [(process, target(1, &park))];
-        let active = ActiveFaults::from_entries(entries.iter().map(|(c, t)| (*c, t.as_slice())));
+        let active = ActiveFaults::from_entries(entries.iter().map(|(c, t)| (*c, t.as_slice(), 0)));
         assert_eq!(
             active.node(1).park,
             Some(Park {
@@ -225,17 +238,37 @@ mod tests {
     fn a_repeated_fault_is_idempotent() {
         let mut active = ActiveFaults::new();
         for _ in 0..3 {
-            active.insert(7, &Fault::ProcKill);
-            active.insert(7, &Fault::RunHook(1));
+            active.insert(7, &Fault::ProcKill, 0);
+            active.insert(7, &Fault::RunHook(1), 0);
         }
         assert!(active.node(7).kill);
-        assert_eq!(active.hooks(), [1]);
+        assert_eq!(hook_ids(&active), [1]);
+    }
+
+    #[test]
+    fn touching_windows_for_one_hook_are_distinct() {
+        let mut active = ActiveFaults::new();
+        active.insert(0, &Fault::RunHook(2), 500);
+        active.insert(0, &Fault::RunHook(2), 0);
+        active.insert(0, &Fault::RunHook(1), 500);
+        assert_eq!(
+            active.hooks(),
+            [
+                HookWindow { id: 1, start: 500 },
+                HookWindow { id: 2, start: 0 },
+                HookWindow { id: 2, start: 500 },
+            ]
+        );
     }
 
     #[test]
     fn faults_of_other_classes_are_ignored_when_inserted_directly() {
         let mut active = ActiveFaults::new();
-        active.insert(0, &Fault::BuggifyFire);
+        active.insert(0, &Fault::BuggifyFire, 0);
         assert_eq!(active, ActiveFaults::new());
+    }
+
+    fn hook_ids(active: &ActiveFaults) -> Vec<u32> {
+        active.hooks().iter().map(|window| window.id).collect()
     }
 }

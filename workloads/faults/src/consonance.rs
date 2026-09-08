@@ -346,6 +346,13 @@ impl FaultTarget {
         self.observation.is_bug()
     }
 
+    /// Whether an action failed on the host side, which leaves every later
+    /// action unapplied.
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        self.failed
+    }
+
     /// Horizons this handle has run.
     #[must_use]
     pub fn horizons_clocked(&self) -> u64 {

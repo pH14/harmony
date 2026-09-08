@@ -36,7 +36,7 @@ fn process(node: u16, fault: &Fault, window: (u64, u64)) -> (u16, Vec<u8>, u64, 
 
 fn decode(body: &[u8]) -> ActiveFaults {
     let (_moment, entries) = parse_standing(body).expect("well-formed answer");
-    ActiveFaults::from_entries(entries.map(|entry| (entry.class, entry.target)))
+    ActiveFaults::from_entries(entries.map(|entry| (entry.class, entry.target, entry.start)))
 }
 
 #[test]
@@ -84,6 +84,19 @@ fn a_campaign_of_answers_drives_the_expected_signals() {
     assert_eq!(counters.restarts, 1);
     assert_eq!(counters.unexpected_deaths, 0);
     assert_eq!(supervisor.alive_bitmap(), 0b11);
+}
+
+#[test]
+fn a_hook_window_touching_the_previous_one_launches_the_hook_again() {
+    let mut supervisor = Supervisor::new(1);
+    let first = answer(20, &[process(0, &Fault::RunHook(1), (15, 40))]);
+    assert_eq!(supervisor.tick(&decode(&first), &[]), [Action::RunHook(1)]);
+    // The next poll lands inside the following window for the same hook, with
+    // no poll having seen the boundary between the two.
+    let second = answer(45, &[process(0, &Fault::RunHook(1), (40, 65))]);
+    assert_eq!(supervisor.tick(&decode(&second), &[]), [Action::RunHook(1)]);
+    assert!(supervisor.tick(&decode(&second), &[]).is_empty());
+    assert_eq!(supervisor.counters().hooks_started, 2);
 }
 
 #[test]

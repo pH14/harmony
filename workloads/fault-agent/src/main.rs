@@ -311,7 +311,7 @@ mod real {
         let (_moment, entries) = fault_policy::parse_standing(&buf[..len])
             .map_err(|error| format!("standing answer: {error}"))?;
         Ok(ActiveFaults::from_entries(
-            entries.map(|entry| (entry.class, entry.target)),
+            entries.map(|entry| (entry.class, entry.target, entry.start)),
         ))
     }
 

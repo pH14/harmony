@@ -109,7 +109,7 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
         }
         (Package::Faults, Backend::Consonance) => {
             let faults = faults_options(&args)?;
-            let replay = read_replay(args.replay.as_deref())?;
+            let replay = read_replay(args.replay.as_deref(), faults.horizon_nanos())?;
             run_faults_consonance(
                 &args.input,
                 args.kernel,
@@ -125,16 +125,29 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The recorded action list `--replay` names, when it names one.
+/// The recorded action list `--replay` names, when it names one. A record that
+/// states its horizon must match the run's, or the replay would time its
+/// faults differently from the recording.
 fn read_replay(
     path: Option<&std::path::Path>,
+    horizon_nanos: u64,
 ) -> Result<Option<Vec<faults_workload::FaultAction>>, Box<dyn Error>> {
-    match path {
-        Some(path) => Ok(Some(faults_workload::parse_recorded_input(
-            &std::fs::read_to_string(path)?,
-        )?)),
-        None => Ok(None),
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let recorded = faults_workload::parse_recorded_input(&std::fs::read_to_string(path)?)?;
+    if let Some(recorded_horizon) = recorded.horizon_nanos
+        && recorded_horizon != horizon_nanos
+    {
+        return Err(format!(
+            "{} was recorded with {} ms action windows; pass --horizon-ms {}",
+            path.display(),
+            recorded_horizon / 1_000_000,
+            recorded_horizon / 1_000_000
+        )
+        .into());
     }
+    Ok(Some(recorded.actions))
 }
 
 /// The fault package's own run bounds, read from the shared flags plus the
@@ -419,9 +432,35 @@ mod tests {
             serde_json::to_string(&actions).expect("serialize"),
         )
         .expect("write");
-        assert_eq!(read_replay(Some(file.path())).expect("read"), Some(actions));
-        assert_eq!(read_replay(None).expect("read"), None);
-        assert!(read_replay(Some(std::path::Path::new("missing-replay.json"))).is_err());
+        assert_eq!(
+            read_replay(Some(file.path()), 500_000_000).expect("read"),
+            Some(actions.clone())
+        );
+        assert_eq!(read_replay(None, 500_000_000).expect("read"), None);
+        assert!(
+            read_replay(
+                Some(std::path::Path::new("missing-replay.json")),
+                500_000_000
+            )
+            .is_err()
+        );
+
+        // A record that states its horizon replays only under that horizon.
+        std::fs::write(
+            file.path(),
+            serde_json::json!({ "actions": actions, "horizon_nanos": 250_000_000_u64 }).to_string(),
+        )
+        .expect("write");
+        assert_eq!(
+            read_replay(Some(file.path()), 250_000_000).expect("read"),
+            Some(actions)
+        );
+        let mismatch = read_replay(Some(file.path()), 500_000_000)
+            .expect_err("a recorded horizon the run does not match is refused");
+        assert!(
+            mismatch.to_string().contains("--horizon-ms 250"),
+            "{mismatch}"
+        );
     }
 
     #[test]

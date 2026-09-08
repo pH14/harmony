@@ -20,6 +20,9 @@ nothing else.
 | `RunHook` | launch the hook once | nothing: hooks are not awaited |
 | `ProcPark` | arm the park on the node's group | disarm it; a hold in progress finishes |
 
+A window is identified by its target and its start, so two `RunHook` windows
+for one hook that touch launch it twice even when no poll falls in between.
+
 A node that exits while no fault names it is an unexpected death: the agent
 counts it and starts the node again on the next tick.
 

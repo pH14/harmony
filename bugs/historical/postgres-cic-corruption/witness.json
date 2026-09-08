@@ -1,4 +1,5 @@
 {
+  "horizon_nanos": 500000000,
   "actions": [
     {
       "Restart": 0

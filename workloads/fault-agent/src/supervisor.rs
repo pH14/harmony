@@ -178,9 +178,9 @@ impl Supervisor {
             }
         }
 
-        for &id in active.hooks() {
-            if self.previous.hooks().binary_search(&id).is_err() {
-                actions.push(Action::RunHook(id));
+        for window in active.hooks() {
+            if self.previous.hooks().binary_search(window).is_err() {
+                actions.push(Action::RunHook(window.id));
                 self.counters.hooks_started += 1;
             }
         }
@@ -263,7 +263,7 @@ mod tests {
     fn active(faults: &[(u16, Fault)]) -> ActiveFaults {
         let mut set = ActiveFaults::new();
         for (node, fault) in faults {
-            set.insert(*node, fault);
+            set.insert(*node, fault, 0);
         }
         set
     }
@@ -403,6 +403,21 @@ mod tests {
         // Reopening a closed window launches it again.
         assert_eq!(sup.tick(&two, &[]), [Action::RunHook(1)]);
         assert_eq!(sup.counters().hooks_started, 4);
+    }
+
+    #[test]
+    fn a_touching_window_for_the_same_hook_launches_it_again() {
+        let mut sup = Supervisor::new(1);
+        let mut first = ActiveFaults::new();
+        first.insert(0, &Fault::RunHook(2), 0);
+        assert_eq!(sup.tick(&first, &[]), [Action::RunHook(2)]);
+        // No poll saw the gap between the windows: the first closed and the
+        // next opened between two ticks.
+        let mut second = ActiveFaults::new();
+        second.insert(0, &Fault::RunHook(2), 500);
+        assert_eq!(sup.tick(&second, &[]), [Action::RunHook(2)]);
+        assert_eq!(sup.tick(&second, &[]), []);
+        assert_eq!(sup.counters().hooks_started, 2);
     }
 
     #[test]

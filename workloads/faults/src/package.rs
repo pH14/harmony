@@ -238,7 +238,22 @@ pub struct Artifacts {
 #[serde(untagged)]
 enum RecordedInput {
     Actions(Vec<FaultAction>),
-    Report { actions: Vec<FaultAction> },
+    Report {
+        actions: Vec<FaultAction>,
+        horizon_nanos: Option<u64>,
+    },
+}
+
+/// A recorded action list and the window length it was recorded under, when
+/// the record says.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecordedActions {
+    /// The action list, in execution order.
+    pub actions: Vec<FaultAction>,
+    /// Virtual nanoseconds each action window spanned when the list was
+    /// recorded. A replay under another horizon times its faults differently,
+    /// so a run must not take the list without the horizon.
+    pub horizon_nanos: Option<u64>,
 }
 
 /// Read a recorded action list from a bug report or a bare action array.
@@ -246,14 +261,21 @@ enum RecordedInput {
 /// # Errors
 ///
 /// Returns an error when the text is neither shape or names no actions.
-pub fn parse_recorded_input(text: &str) -> Result<Vec<FaultAction>, Box<dyn Error>> {
-    let actions = match serde_json::from_str::<RecordedInput>(text)? {
-        RecordedInput::Actions(actions) | RecordedInput::Report { actions } => actions,
+pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error>> {
+    let (actions, horizon_nanos) = match serde_json::from_str::<RecordedInput>(text)? {
+        RecordedInput::Actions(actions) => (actions, None),
+        RecordedInput::Report {
+            actions,
+            horizon_nanos,
+        } => (actions, horizon_nanos),
     };
     if actions.is_empty() {
         return Err("the recorded input names no actions".into());
     }
-    Ok(actions)
+    Ok(RecordedActions {
+        actions,
+        horizon_nanos,
+    })
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -487,6 +509,16 @@ mod live {
         for action in actions {
             target.apply(*action);
         }
+        // A host-side failure leaves the rest of the list unapplied, so the
+        // endpoint is no verdict on the recorded actions.
+        if target.failed() {
+            return Err(format!(
+                "the replay failed after {} of {} actions",
+                target.horizons_clocked(),
+                actions.len()
+            )
+            .into());
+        }
         let observation = target.observation();
         let summary = ReplaySummary {
             run: 1,
@@ -590,9 +622,30 @@ mod tests {
     fn a_recorded_input_reads_as_a_bug_report_or_a_bare_action_list() {
         let actions = vec![FaultAction::Hook(1), FaultAction::Kill(0)];
         let bare = serde_json::to_string(&actions).expect("serialize");
-        assert_eq!(parse_recorded_input(&bare).expect("bare"), actions);
+        assert_eq!(
+            parse_recorded_input(&bare).expect("bare"),
+            RecordedActions {
+                actions: actions.clone(),
+                horizon_nanos: None,
+            }
+        );
         let report = serde_json::json!({ "bug": 1, "actions": actions }).to_string();
-        assert_eq!(parse_recorded_input(&report).expect("report"), actions);
+        assert_eq!(
+            parse_recorded_input(&report).expect("report").actions,
+            actions
+        );
+        let timed = serde_json::json!({
+            "bug": 1,
+            "actions": actions,
+            "horizon_nanos": 250_000_000_u64,
+        })
+        .to_string();
+        assert_eq!(
+            parse_recorded_input(&timed)
+                .expect("timed report")
+                .horizon_nanos,
+            Some(250_000_000)
+        );
         assert!(parse_recorded_input("[]").is_err());
         assert!(parse_recorded_input("{}").is_err());
     }
