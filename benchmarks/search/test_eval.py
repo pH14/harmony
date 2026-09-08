@@ -177,6 +177,7 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(result['exit_code'], 9)
         self.assertEqual(result['last_progress']['frames_emulated'], 123)
         self.assertIsNone(result['result'])
+        self.assertTrue(result['runner']['coordinator_profile'])
 
     def test_unavailable_rss_samples_stay_unavailable_in_summaries(self):
         with patch.object(eval.ProcessMetrics, 'sample', return_value={

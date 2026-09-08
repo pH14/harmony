@@ -415,6 +415,8 @@ pub struct SelectorDraw {
     /// Path this draw took.
     pub path: SelectorPath,
     /// Fully exhausted classes skipped before this draw found its cell.
+    /// Semantic selectors inspect one sampled class; legacy walks may inspect
+    /// several. Counts describe each policy's traversal, not a shared work unit.
     pub classes_skipped: u64,
     /// Whether this draw found every active entry exhausted and reset the
     /// exhaustion counters.
@@ -3827,7 +3829,7 @@ where
         self.group_barren.iter().map(BTreeMap::len).sum()
     }
 
-    /// A retry under the alphabet-continuation policy is a use for cache
+    /// A retry under a separately accounted continuation policy is a use for cache
     /// maintenance, but is not an ordinary exploration draw or barren attempt.
     pub(crate) fn record_isolated_continuation(&mut self, id: usize) {
         self.referenced[id] = true;

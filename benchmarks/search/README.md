@@ -71,7 +71,10 @@ reservations, not OS memory enforcement. Keep other heavy processes off the
 host for publishable timing comparisons. CPU affinity, host model, concurrent
 job limit, budgets, executable, core, ROM, adapter and mechanism identities are
 retained in every matrix. Native resource sampling uses Linux `/proc`; missing
-platform measurements must not be interpreted as zero.
+platform measurements must not be interpreted as zero. Coordinator profiling is
+enabled for benchmark cells and recorded in both the matrix runner metadata and
+each cell summary. Older summaries omit that field; their runner source must be
+checked before assuming a profiling setting.
 
 `search.result_slots` optionally permits one (the default) or two unadmitted
 result-bearing jobs per physical executor. With two slots, an executor can run
@@ -94,6 +97,7 @@ as a separate stress condition.
 | `ci.json` | Source-built Nova (level and whole-game origins) and STB through the common runner, with full small-campaign replay and a frame cap. No licensed commercial ROM is used. |
 | `pilot.json` | Three exploratory seeds on SMB, Nova level 1 and whole game, Metal Man, Metroid new game and STB Hard. |
 | `alphabet-control.json`, `alphabet-continuation.json` | The same development pilot origins and budgets, comparing alphabet-only mutation with separately accounted quarter-share continuation replay. These exploratory panels do not require every case to solve. |
+| `continuation-accounting-control.json`, `continuation-accounting-isolated.json` | The same development sample comparing original energy-splice continuation accounting with v2, which keeps triggered outcomes separate from ordinary exploration and mutation energy. |
 | `metroid-long-horizon-semantic.json`, `metroid-long-horizon-continuation.json` | Three reused development seeds at 3 million executions, 4 workers and 8 GiB; semantic parent selection with alphabet-only mutation versus the new continuation policy. |
 | `throughput-checkpoint.json` | The 18-cell throughput panel with the adopted two-result-slot profile, for an isolated comparison of unchanged policies before and after implementation changes. |
 | `evaluation-continuation.json` | Frozen candidate for the full panel: learned continuation replay with the original parent selector. Selected from the completed pilots before any full-panel outcome was observed. |

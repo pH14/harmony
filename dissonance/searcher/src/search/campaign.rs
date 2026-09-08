@@ -1287,6 +1287,34 @@ fn uses_bounded_progress_curve(policy: Option<&str>) -> bool {
     policy == Some(CAMPAIGN_PROGRESS_POLICY)
 }
 
+/// Triggered retries in the isolated policies do not tune ordinary mutation.
+fn record_mixture_outcome(
+    energy: &mut MixtureEnergy,
+    mixture: DrawMixture,
+    path: SelectorPath,
+    mutation_seed: u64,
+    mixture_weight: u8,
+    splice_weight: u8,
+    new_slot: bool,
+) -> Result<(), Box<dyn Error>> {
+    if mixture.isolates_continuations() && path == SelectorPath::Continuation {
+        return Ok(());
+    }
+    if matches!(
+        mixture,
+        DrawMixture::Energy { .. }
+            | DrawMixture::EnergySplice { .. }
+            | DrawMixture::EnergySpliceContinuation { .. }
+            | DrawMixture::EnergySpliceContinuationIsolated { .. }
+    ) {
+        energy.record_outcome(
+            energy_strategy(mutation_seed, mixture_weight, splice_weight)?,
+            new_slot,
+        );
+    }
+    Ok(())
+}
+
 fn stop_reservations_after_victory(continue_after_victory: bool, victory_found: bool) -> bool {
     victory_found && !continue_after_victory
 }
@@ -2930,7 +2958,8 @@ where
                             (core.mixture_energy.biased_weight(scale), 0)
                         }
                         DrawMixture::EnergySplice { scale }
-                        | DrawMixture::EnergySpliceContinuation { scale } => {
+                        | DrawMixture::EnergySpliceContinuation { scale }
+                        | DrawMixture::EnergySpliceContinuationIsolated { scale } => {
                             core.mixture_energy.splice_weights(scale)
                         }
                         _ => (default_mixture_weight(), 0),
@@ -3179,7 +3208,7 @@ where
                         .archive
                         .index_of_id(pending_job.parent_id)
                         .ok_or("completed job parent is no longer resident")?;
-                    let isolated_continuation = config.mixture == DrawMixture::AlphabetContinuation
+                    let isolated_continuation = config.mixture.isolates_continuations()
                         && pending_job.selector.path == SelectorPath::Continuation;
                     if isolated_continuation {
                         core.archive.record_isolated_continuation(parent_index);
@@ -3202,18 +3231,15 @@ where
                             new_cell_descendant,
                         );
                     }
-                    if let DrawMixture::Energy { .. }
-                    | DrawMixture::EnergySplice { .. }
-                    | DrawMixture::EnergySpliceContinuation { .. } = config.mixture
-                    {
-                        let strategy = energy_strategy(
-                            pending_job.mutation_seed,
-                            pending_job.mixture_weight,
-                            pending_job.splice_weight,
-                        )?;
-                        core.mixture_energy
-                            .record_outcome(strategy, new_slot_descendant);
-                    }
+                    record_mixture_outcome(
+                        &mut core.mixture_energy,
+                        config.mixture,
+                        pending_job.selector.path,
+                        pending_job.mutation_seed,
+                        pending_job.mixture_weight,
+                        pending_job.splice_weight,
+                        new_slot_descendant,
+                    )?;
                     if victories_before == 0
                         && let (Some(path), Some(input)) =
                             (&config.victory_input_path, &core.victory_input)
@@ -3981,7 +4007,7 @@ where
                 }
                 game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector)?;
-                if replay_mixture == DrawMixture::AlphabetContinuation
+                if replay_mixture.isolates_continuations()
                     && job.selector.path == SelectorPath::Continuation
                 {
                     core.archive.record_isolated_continuation(parent_index);

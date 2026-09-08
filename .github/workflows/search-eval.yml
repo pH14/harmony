@@ -75,6 +75,14 @@ jobs:
           PY
       - name: Build an identified evaluation executable
         run: python3 benchmarks/search/eval.py build --out /tmp/search-eval-build --jobs 2
+      - name: Cartridge RAM survives real-core snapshots
+        env:
+          HARMONY_QUICKNES_CORE: /tmp/search-eval-assets/quicknes_libretro.so
+          HARMONY_NOVA_ROM: /tmp/search-eval-assets/nova/nova.nes
+        run: >-
+          cargo test --locked --manifest-path workloads/nes-machine/Cargo.toml
+          --target-dir /tmp/search-eval-build/target --test cartridge_ram
+          -- --ignored --exact declared_cartridge_ram_survives_real_core_restore
       - name: Run the common harness and verify full campaign replay
         run: |
           python3 benchmarks/search/eval.py run benchmarks/search/ci.json \

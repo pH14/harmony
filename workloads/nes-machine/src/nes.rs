@@ -288,6 +288,24 @@ mod tests {
     }
 
     #[test]
+    fn cartridge_ram_declaration_only_sets_the_battery_flag() {
+        for flags in 0..=u8::MAX {
+            let mut rom: Vec<_> = (0..64_u8).collect();
+            rom[..4].copy_from_slice(b"NES\x1a");
+            rom[6] = flags;
+            let mut expected = rom.clone();
+            expected[6] |= 2;
+            let declared = super::with_cartridge_ram(&rom).unwrap();
+            assert_eq!(declared, expected);
+            assert_eq!(rom[6], flags, "the supplied ROM must remain unchanged");
+            assert_eq!(super::with_cartridge_ram(&declared).unwrap(), declared);
+        }
+        for bad in [&[][..], &b"NES\x1a"[..], &[0_u8; 16][..]] {
+            assert!(super::with_cartridge_ram(bad).is_err());
+        }
+    }
+
+    #[test]
     fn chord_duration_is_total_and_bounded() {
         assert_eq!(ButtonChord::new(0x81, 0).hold_frames, 1);
         assert_eq!(ButtonChord::new(0x81, u8::MAX).hold_frames, MAX_HOLD_FRAMES);

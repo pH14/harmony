@@ -69,8 +69,8 @@ utilities; artifact redistribution terms are recorded in
 
 [Super Tilt Bro](src/stb/README.md) has a separate pinned recipe in
 `scripts/build-stb-rom.sh`, `stb-versions.env`, and `STB-ARTIFACT-LICENSE.md`.
-The [NES integration skill](../../.agents/skills/nes-game-integration/SKILL.md)
-describes how to add workloads with minimal game guidance.
+New workloads use the execution, observation, input, and qualification contracts
+described above, with minimal game guidance.
 
 ## Local evaluation matrix
 

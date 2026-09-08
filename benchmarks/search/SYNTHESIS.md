@@ -137,3 +137,10 @@ will improve. Its ordinary draws match alphabet-only for the same mutation seed,
 while generic tests require actual continuation dispatch, separate accounting,
 bounded reservations, and exact replay under snapshot pressure. The panels must
 measure resource costs and quality before any default change.
+
+The energy-splice comparison also mixed triggered outcomes into ordinary splice
+energy. `energy_splice_continuation_v2:<scale>` separates that accounting while
+preserving the v1 identifier. Existing v1 outcome tables measure the combined
+mechanism; they remain valid observations but do not isolate triggered replay
+from its effect on ordinary mutation weights. The new panels compare v1 and v2
+directly rather than relabeling old records.

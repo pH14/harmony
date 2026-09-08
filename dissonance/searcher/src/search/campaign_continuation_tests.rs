@@ -276,15 +276,72 @@ impl Evaluation for TestGame {
     }
 }
 #[test]
+fn isolated_continuation_admission_does_not_tune_the_next_ordinary_splice_draw() {
+    let seed = (0..512)
+        .find(|seed| energy_strategy(*seed, 0, 255).unwrap() == EnergyStrategy::Splice)
+        .unwrap();
+    let mut energy = MixtureEnergy::default();
+    energy.record_outcome(EnergyStrategy::Splice, false);
+    let before = energy.splice_weights(1);
+    let isolated = DrawMixture::EnergySpliceContinuationIsolated { scale: 1 };
+    for productive in [false, true] {
+        record_mixture_outcome(
+            &mut energy,
+            isolated,
+            SelectorPath::Continuation,
+            seed,
+            0,
+            255,
+            productive,
+        )
+        .unwrap();
+        assert_eq!(energy.splice_weights(1), before);
+    }
+    let mut legacy = energy;
+    record_mixture_outcome(
+        &mut legacy,
+        DrawMixture::EnergySpliceContinuation { scale: 1 },
+        SelectorPath::Continuation,
+        seed,
+        0,
+        255,
+        false,
+    )
+    .unwrap();
+    assert_ne!(
+        legacy.splice_weights(1),
+        before,
+        "the legacy identifier keeps its old coupling"
+    );
+    record_mixture_outcome(
+        &mut energy,
+        isolated,
+        SelectorPath::GroupWalk,
+        seed,
+        0,
+        255,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        energy.splice_weights(1),
+        legacy.splice_weights(1),
+        "ordinary splice outcomes must still tune the mixture"
+    );
+}
+
+#[test]
 fn continuations_and_count_selection_replay_under_snapshot_pressure() {
-    for (workers, semantic, persistent, alphabet) in [
-        (1, false, false, false),
-        (4, false, false, false),
-        (4, true, false, false),
-        (4, false, true, false),
-        (1, false, false, true),
-        (4, false, false, true),
-        (4, false, true, true),
+    for (workers, semantic, persistent, mode) in [
+        (1, false, false, 0),
+        (4, false, false, 0),
+        (4, true, false, 0),
+        (4, false, true, 0),
+        (1, false, false, 1),
+        (4, false, false, 1),
+        (4, false, true, 1),
+        (1, false, false, 2),
+        (4, false, false, 2),
     ] {
         let config = CampaignConfig {
             campaign_seed: 947,
@@ -300,10 +357,10 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             materialize_final_artifacts: true,
             run: (),
             suffix: SuffixShape::OneOrTwo,
-            mixture: if alphabet {
-                DrawMixture::AlphabetContinuation
-            } else {
-                DrawMixture::EnergySpliceContinuation { scale: 6 }
+            mixture: match mode {
+                1 => DrawMixture::AlphabetContinuation,
+                2 => DrawMixture::EnergySpliceContinuationIsolated { scale: 6 },
+                _ => DrawMixture::EnergySpliceContinuation { scale: 6 },
             },
             retention: RetentionPolicy::AdmitAlive,
             selector: if persistent {

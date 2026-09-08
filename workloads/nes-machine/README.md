@@ -66,3 +66,14 @@ execution copy, preserving the original ROM identity. QuickNES's declared
 cartridge RAM is initialized to `0xff` before gameplay, matching its undeclared
 RAM initialization and preventing allocator contents from entering power-on
 state. The same checked FFI path runs through the Miri loopback tests.
+
+The source-built search CI also writes a pattern across declared cartridge RAM,
+captures a real QuickNES snapshot, clobbers RAM, and restores it in both the same
+core and an independent instance. Run this qualification locally with
+`HARMONY_QUICKNES_CORE` and `HARMONY_NOVA_ROM` pointing at the pinned core and
+source-built Nova image:
+
+```sh
+cargo test --locked --manifest-path workloads/nes-machine/Cargo.toml \
+  --test cartridge_ram -- --ignored
+```

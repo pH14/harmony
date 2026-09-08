@@ -96,6 +96,13 @@ use independent versioned identifiers:
   without adding a workload preference tier. The older energy-splice continuation
   identifier preserves its original combined accounting and mutation behavior.
 
+`energy_splice_continuation_v2:<scale>` applies the same separate accounting
+with ordinary energy-splice mutation. Its continuation outcomes neither reward
+nor penalize the ordinary splice strategy. Version 1 had credited those outcomes
+to splice energy, so its existing comparisons describe that combined mechanism;
+they do not isolate the effect of triggered replay. The v2 identifier enables a
+paired test of the separation while preserving recorded v1 behavior.
+
 The continuation bank retains at most 8,192 observed exits, eight destinations
 per source slot, 128 actions per exit, and 1,024 pending attempts. It charges a
 fixed conservative capacity reserve against the logical memory budget before
