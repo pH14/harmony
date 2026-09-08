@@ -101,7 +101,7 @@ fn pending_for(exit: &Exit<X86>) -> Pending {
 /// a hole.
 const MOCK_CAPS: MockCaps = Capabilities {
     name: "mock",
-    deterministic_rng: true,
+
     arch: crate::arch::x86::X86Caps,
 };
 

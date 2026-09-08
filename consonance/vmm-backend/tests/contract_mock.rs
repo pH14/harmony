@@ -229,7 +229,7 @@ struct LimitedFixture;
 /// the hardware RNG.
 const LIMITED_CAPS: MockCaps = Capabilities {
     name: "mock-limited",
-    deterministic_rng: false,
+
     arch: X86Caps,
 };
 
@@ -242,9 +242,7 @@ impl BackendFixture for LimitedFixture {
 
     fn spawn(&mut self, scenario: Scenario) -> Option<NoDeadlineBackend> {
         match scenario {
-            // Not trapped, so not claimable — the capability-keyed exam checks
-            // exactly this.
-            // Serviced in-kernel by the substrate this fixture models.
+            // Stock KVM handles CPUID and VMCALL in-kernel.
             Scenario::Cpuid | Scenario::Hypercall => None,
             _ => {
                 let mut b = MockBackend::with_capabilities(LIMITED_CAPS);

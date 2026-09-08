@@ -574,7 +574,7 @@ pub(crate) fn validate_restore_shape(
 pub(crate) fn kvm_capabilities() -> Capabilities<X86Caps> {
     Capabilities {
         name: "kvm-stock",
-        deterministic_rng: false,
+
         arch: X86Caps,
     }
 }

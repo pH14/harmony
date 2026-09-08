@@ -2,12 +2,11 @@
 //! The engine/vendor seam (`docs/ARCHITECTURE.md`): everything in this crate
 //! **outside** this module is the arch-neutral **engine** — the run-loop
 //! skeleton, guest RAM, the snapshot engine, the state-hash *framework*
-//! (canonical chunk list → hash), the control server, the corpus adapter, the
-//! work seam, and the V-time/idle wiring — and speaks only
+//! (canonical chunk list → hash), the control server, and the V-time/idle wiring — and speaks only
 //! `(Gpa, Moment, bytes, hashes)` plus the common exit vocabulary. Everything
 //! **inside** a vendor submodule is that architecture's own: the CPU contract
 //! and its installed policy, the exit dispatch and dispositions, the boot
-//! loaders and entry state, the interrupt fabric and platform device models, the
+//! loaders and entry state, the interrupt fabric and platform device models,
 //! the exit-count-clock event, and the state records.
 //!
 //! [`Vendor`] is how the engine reaches the vendor half without naming it: the

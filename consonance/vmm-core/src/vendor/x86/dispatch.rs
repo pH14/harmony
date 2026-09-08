@@ -659,12 +659,8 @@ impl<B: Backend<A = X86>> Vmm<B> {
         Ok(Step::Continued)
     }
 
-    /// Service an `emulate-vtime` `RDMSR` (`IA32_TSC` 0x10 → the guest-visible
-    /// V-time TSC, the **same** value the RDTSC instruction returns; `IA32_TSC_ADJUST`
-    /// 0x3b → the stored adjust). Fails closed if V-time is unwired (stock KVM /
-    /// M1/M2 never surface these), or if an unexpected index is routed here. Both are
-    /// V-time MSR intercepts, so each records its deterministic work as the hash
-    /// anchor (like [`complete_tsc`](Self::complete_tsc)).
+    /// Read the assigned virtual-time TSC or its guest offset. Reject access
+    /// before virtual-time wiring, or an unexpected MSR index.
     pub(crate) fn rdmsr_vtime(&mut self, index: u32) -> Result<Step, VmmError> {
         let value = {
             let Some(vt) = self.vtime.as_mut() else {

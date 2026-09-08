@@ -1602,11 +1602,9 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         // AA-gated. Every field honestly false.
         Capabilities {
             name: "kvm-arm64-vgicv3",
-            deterministic_rng: false,
+
             arch: crate::arch::arm64::Arm64Caps {
                 in_kernel_gic: true,
-                deterministic_cntvct: false,
-                enforces_cntv_cval: false,
             },
         }
     }
@@ -2989,10 +2987,7 @@ mod tests {
 
         let caps = b.capabilities();
         assert_eq!(caps.name, "kvm-arm64-vgicv3");
-        assert!(!caps.deterministic_rng);
         assert!(caps.arch.in_kernel_gic);
-        assert!(!caps.arch.deterministic_cntvct);
-        assert!(!caps.arch.enforces_cntv_cval);
     }
 
     #[test]

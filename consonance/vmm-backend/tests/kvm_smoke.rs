@@ -222,8 +222,4 @@ fn capabilities_are_honest() {
     let backend = new_backend_or_explain();
     let caps = backend.capabilities();
     assert_eq!(caps.name, "kvm-stock");
-    assert!(
-        !caps.deterministic_rng,
-        "stock KVM cannot trap RDRAND/RDSEED"
-    );
 }

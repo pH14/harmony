@@ -925,7 +925,6 @@ dependencies = [
  "snapshot-store",
  "tempfile",
  "thiserror",
- "unison",
  "vm-state",
  "vmm-backend",
  "vtime",

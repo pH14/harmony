@@ -37,13 +37,6 @@ sha2 = "0.10"
 # Page-aligned, pinned host backing for `GuestRam` (rule-5 whitelist). Only used
 # off-Miri; under Miri `GuestRam` falls back to a `Vec<u8>` (see src/vmm.rs).
 memmap2 = "0.9"
-# Rule-2 sibling exception (corpus bridge, task 28): the VMM-backed
-# `corpus::CorpusMachine` lives above the trait in vmm-core (the frontier glue
-# the dissonance ruling places here), so it implements `unison::Machine`
-# directly. `unison` is the generic divergence bisector this composes — it is a
-# library dependency because the bridge is reusable by composition tests.
-# Pinned `version` alongside `path` for `cargo deny`'s wildcard ban.
-unison = { path = "../unison", version = "0.1.0" }
 # Rule-2 sibling exception (task 30, Linux boot): the userspace xAPIC register
 # file + V-time timer (ruling R1) lives above the `Backend` trait — vmm-core
 # routes the guest's `0xFEE0_0000` MMIO into it and drives its timer off V-time.

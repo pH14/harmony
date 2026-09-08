@@ -164,19 +164,11 @@ pub struct HypercallFrame {
     pub args: [u64; 4],
 }
 
-/// What this backend can honestly provide. The unison report reads this to
-/// **refuse to claim determinism** for a payload that needs a capability the
-/// backend lacks. Stock `KvmBackend` reports every determinism field `false`;
-/// a backend with userspace instruction emulation raise them. `C` is the vendor's
-/// arch-named flag set ([`Arch::Caps`]); the engine reads it only through the
-/// neutral [`ArchCaps`](crate::arch::ArchCaps) questions.
+/// Backend identity and the architecture-specific features used by the runtime.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Capabilities<C> {
     /// Human-readable backend name for the report (e.g. `"kvm-stock"`).
     pub name: &'static str,
-    /// Surfaces the guest's hardware-RNG reads as exits resolvable to a seeded
-    /// stream (NOT the host RNG). x86: `RDRAND`/`RDSEED`.
-    pub deterministic_rng: bool,
     /// The vendor's arch-named capability flags.
     pub arch: C,
 }

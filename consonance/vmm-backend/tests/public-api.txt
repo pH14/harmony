@@ -23,11 +23,7 @@ pub type vmm_backend::arch::arm64::Arm64::Policy = vmm_backend::arch::arm64::Arm
 pub type vmm_backend::arch::arm64::Arm64::VcpuState = vmm_backend::Arm64VcpuState
 pub fn vmm_backend::arch::arm64::Arm64::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub struct vmm_backend::arch::arm64::Arm64Caps
-pub vmm_backend::arch::arm64::Arm64Caps::deterministic_cntvct: bool
-pub vmm_backend::arch::arm64::Arm64Caps::enforces_cntv_cval: bool
 pub vmm_backend::arch::arm64::Arm64Caps::in_kernel_gic: bool
-impl vmm_backend::arch::ArchCaps for vmm_backend::arch::arm64::Arm64Caps
-pub fn vmm_backend::arch::arm64::Arm64Caps::deterministic_clock(&self) -> bool
 pub struct vmm_backend::arch::arm64::Arm64CoreRegs
 pub vmm_backend::arch::arm64::Arm64CoreRegs::elr_el1: u64
 pub vmm_backend::arch::arm64::Arm64CoreRegs::pc: u64
@@ -261,8 +257,6 @@ pub type vmm_backend::arch::x86::X86::Policy = vmm_backend::arch::x86::X86Policy
 pub type vmm_backend::arch::x86::X86::VcpuState = vmm_backend::VcpuState
 pub fn vmm_backend::arch::x86::X86::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub struct vmm_backend::arch::x86::X86Caps
-impl vmm_backend::arch::ArchCaps for vmm_backend::arch::x86::X86Caps
-pub fn vmm_backend::arch::x86::X86Caps::deterministic_clock(&self) -> bool
 pub struct vmm_backend::arch::x86::X86Policy
 pub vmm_backend::arch::x86::X86Policy::cpuid: vmm_backend::CpuidModel
 pub vmm_backend::arch::x86::X86Policy::msr_filter: vmm_backend::MsrFilter
@@ -270,7 +264,7 @@ pub fn vmm_backend::arch::x86::canonicalize_regs(&mut vmm_backend::VcpuRegs)
 pub fn vmm_backend::arch::x86::canonicalize_sregs(&mut vmm_backend::VcpuSregs)
 pub fn vmm_backend::arch::x86::canonicalize_xsave(&mut [u8])
 pub trait vmm_backend::arch::Arch
-pub type vmm_backend::arch::Arch::Caps: vmm_backend::arch::ArchCaps
+pub type vmm_backend::arch::Arch::Caps: core::marker::Copy + core::fmt::Debug + core::cmp::PartialEq
 pub type vmm_backend::arch::Arch::Completion: core::fmt::Debug
 pub type vmm_backend::arch::Arch::Exit: vmm_backend::arch::ArchExit
 pub type vmm_backend::arch::Arch::Injection: core::marker::Copy + core::fmt::Debug + core::cmp::PartialEq
@@ -296,12 +290,6 @@ pub type vmm_backend::arch::x86::X86::IntId = u8
 pub type vmm_backend::arch::x86::X86::Policy = vmm_backend::arch::x86::X86Policy
 pub type vmm_backend::arch::x86::X86::VcpuState = vmm_backend::VcpuState
 pub fn vmm_backend::arch::x86::X86::stages_common_completion(&vmm_backend::CommonExit) -> bool
-pub trait vmm_backend::arch::ArchCaps: core::marker::Copy + core::fmt::Debug + core::cmp::PartialEq
-pub fn vmm_backend::arch::ArchCaps::deterministic_clock(&self) -> bool
-impl vmm_backend::arch::ArchCaps for vmm_backend::arch::arm64::Arm64Caps
-pub fn vmm_backend::arch::arm64::Arm64Caps::deterministic_clock(&self) -> bool
-impl vmm_backend::arch::ArchCaps for vmm_backend::arch::x86::X86Caps
-pub fn vmm_backend::arch::x86::X86Caps::deterministic_clock(&self) -> bool
 pub trait vmm_backend::arch::ArchExit: core::clone::Clone + core::fmt::Debug + core::cmp::PartialEq
 pub fn vmm_backend::arch::ArchExit::reason(&self) -> vmm_backend::ExitReason
 pub fn vmm_backend::arch::ArchExit::stages_completion(&self) -> bool
@@ -460,11 +448,7 @@ pub type vmm_backend::arch::arm64::Arm64::Policy = vmm_backend::arch::arm64::Arm
 pub type vmm_backend::arch::arm64::Arm64::VcpuState = vmm_backend::Arm64VcpuState
 pub fn vmm_backend::arch::arm64::Arm64::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub struct vmm_backend::Arm64Caps
-pub vmm_backend::Arm64Caps::deterministic_cntvct: bool
-pub vmm_backend::Arm64Caps::enforces_cntv_cval: bool
 pub vmm_backend::Arm64Caps::in_kernel_gic: bool
-impl vmm_backend::arch::ArchCaps for vmm_backend::arch::arm64::Arm64Caps
-pub fn vmm_backend::arch::arm64::Arm64Caps::deterministic_clock(&self) -> bool
 pub struct vmm_backend::Arm64CoreRegs
 pub vmm_backend::Arm64CoreRegs::elr_el1: u64
 pub vmm_backend::Arm64CoreRegs::pc: u64
@@ -565,7 +549,6 @@ impl core::default::Default for vmm_backend::Arm64VtimerState
 pub fn vmm_backend::Arm64VtimerState::default() -> Self
 pub struct vmm_backend::Capabilities<C>
 pub vmm_backend::Capabilities::arch: C
-pub vmm_backend::Capabilities::deterministic_rng: bool
 pub vmm_backend::Capabilities::name: &'static str
 pub struct vmm_backend::CpuidEntry
 pub vmm_backend::CpuidEntry::eax: u32
@@ -868,15 +851,13 @@ pub type vmm_backend::arch::x86::X86::Policy = vmm_backend::arch::x86::X86Policy
 pub type vmm_backend::arch::x86::X86::VcpuState = vmm_backend::VcpuState
 pub fn vmm_backend::arch::x86::X86::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub struct vmm_backend::X86Caps
-impl vmm_backend::arch::ArchCaps for vmm_backend::arch::x86::X86Caps
-pub fn vmm_backend::arch::x86::X86Caps::deterministic_clock(&self) -> bool
 pub struct vmm_backend::X86Policy
 pub vmm_backend::X86Policy::cpuid: vmm_backend::CpuidModel
 pub vmm_backend::X86Policy::msr_filter: vmm_backend::MsrFilter
 pub const vmm_backend::ARM64_GIC_BITMAP_WORDS: usize
 pub const vmm_backend::ARM64_GIC_PRIORITY_BYTES: usize
 pub trait vmm_backend::Arch
-pub type vmm_backend::Arch::Caps: vmm_backend::arch::ArchCaps
+pub type vmm_backend::Arch::Caps: core::marker::Copy + core::fmt::Debug + core::cmp::PartialEq
 pub type vmm_backend::Arch::Completion: core::fmt::Debug
 pub type vmm_backend::Arch::Exit: vmm_backend::arch::ArchExit
 pub type vmm_backend::Arch::Injection: core::marker::Copy + core::fmt::Debug + core::cmp::PartialEq
@@ -902,12 +883,6 @@ pub type vmm_backend::arch::x86::X86::IntId = u8
 pub type vmm_backend::arch::x86::X86::Policy = vmm_backend::arch::x86::X86Policy
 pub type vmm_backend::arch::x86::X86::VcpuState = vmm_backend::VcpuState
 pub fn vmm_backend::arch::x86::X86::stages_common_completion(&vmm_backend::CommonExit) -> bool
-pub trait vmm_backend::ArchCaps: core::marker::Copy + core::fmt::Debug + core::cmp::PartialEq
-pub fn vmm_backend::ArchCaps::deterministic_clock(&self) -> bool
-impl vmm_backend::arch::ArchCaps for vmm_backend::arch::arm64::Arm64Caps
-pub fn vmm_backend::arch::arm64::Arm64Caps::deterministic_clock(&self) -> bool
-impl vmm_backend::arch::ArchCaps for vmm_backend::arch::x86::X86Caps
-pub fn vmm_backend::arch::x86::X86Caps::deterministic_clock(&self) -> bool
 pub trait vmm_backend::ArchExit: core::clone::Clone + core::fmt::Debug + core::cmp::PartialEq
 pub fn vmm_backend::ArchExit::reason(&self) -> vmm_backend::ExitReason
 pub fn vmm_backend::ArchExit::stages_completion(&self) -> bool

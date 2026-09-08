@@ -671,10 +671,8 @@ where
     pub(crate) deferred_virtual_time_checkpoints: bool,
     /// `true` when the **last serviced exit staged *any* backend completion** (an
     /// IO/MMIO read or write, an `Rdmsr`/`Wrmsr`, or a `Cpuid`) whose register-write/RIP-advance is only
-    /// committed on the **next** `KVM_RUN`. Superset of [`Self::rng_completion_staged`]
-    /// (which is the *non-idempotent* RNG subset). A snapshot may be *saved* at such a
-    /// boundary for non-RNG exits (restore re-executes the instruction idempotently),
-    /// but a snapshot must **not be restored into a backend that has one staged**: the
+    /// committed on the **next** `KVM_RUN`. A snapshot must not be restored into
+    /// a backend that still has a completion staged: the
     /// pending completion lives in the backend's `kvm_run`, survives `Backend::restore`,
     /// and would commit the *old* exit's reg-write/RIP-advance on the next run — so
     /// [`Vmm::restore_vm_state`] requires a fresh/committed backend. Set after each
@@ -1267,21 +1265,9 @@ where
     /// the clock at `snap.vns`, re-apply the guest clock offset, and restore the
     /// entropy stream position.
     ///
-    /// **Fails closed at an RNG mid-exit boundary** (`rng_completion_staged`),
-    /// symmetric with [`Vmm::save_vtime`]: a seeded RDRAND/RDSEED completion is
-    /// staged in the backend (not yet committed) and is **not** undone by a V-time
-    /// restore, so rewinding the entropy stream here would let that stale completion
-    /// commit against the restored stream on the next run — shifted draws. The flag
-    /// is **not** cleared here (that would falsely declare the backend clean while
-    /// its staged completion is still pending); it is cleared only by the next
-    /// `step`'s re-entry, which actually commits the completion, or by the full
-    /// backend/`vm_state` restore (task-08) that discards it. So restore only at a
-    /// clean boundary (item 3: at a clean boundary a restore-then-`save_vtime`
-    /// succeeds, because the flag was already clear — nothing to clear).
-    ///
     /// # Errors
-    /// [`VmmError::ContractViolation`] if V-time is unwired, at an RNG mid-exit
-    /// boundary, or if the entropy blob is rejected; [`VmmError::Vtime`] on a
+    /// [`VmmError::ContractViolation`] if V-time is unwired or the entropy blob
+    /// is rejected; [`VmmError::Vtime`] on a
     /// clock error. **Atomic:** every fallible step
     /// that can reject an untrusted `snap` (the clock-config rebuild and the
     /// entropy-blob validation) runs **before** any live state is mutated, so a bad
@@ -1370,16 +1356,8 @@ where
     /// slot is re-derived from the restored LAPIC / UART on the restored VM's first
     /// service — so there is no separate injection plan to serialize.
     ///
-    /// **Two boundary guards remain** (they are about V-time/RNG *exactness*, not about
-    /// the machine being idle). `save_vm_state` **fails closed** (a) at an RNG mid-exit
-    /// boundary (`rng_completion_staged`: a seeded RDRAND/RDSEED draw advanced the
-    /// stream but its completion is only staged, not committed — restoring there would
-    /// re-draw), and (b), when V-time is wired, at a non-`clock_boundary` point (the
-    /// exact V-time the restored TSC resumes from is known only at a V-time intercept).
-    /// These are the same guards [`Vmm::save_vtime`] enforces, and are the deliberate
-    /// "staged completion is defined out" choice — a non-idempotent staged completion is
-    /// excluded by snapshotting only at a clean, synchronized boundary, of which an
-    /// interrupt-driven guest has many (every RDTSC the workload takes).
+    /// Capture requires no pending SDK stop. Assigned virtual time is exact at
+    /// every serviced exit; backend completions are retired before restoring.
     ///
     /// **The pvclock page is sealed VERBATIM (task 110 §1.1, amended at r4).** A
     /// seal does not touch guest RAM at all: the clock page rides the memory
@@ -1476,13 +1454,12 @@ where
     /// — the `contract_hash` check, the device-blob decode, the LAPIC coherence
     /// check, the clock rebuild, and the entropy-blob validation — runs **before**
     /// any live state is mutated, so a bad snapshot leaves the VM fully intact rather
-    /// than half-restored. Refuses at an RNG mid-exit boundary (symmetric with
-    /// [`Vmm::restore_vtime`]).
+    /// than half-restored. Backend completions must be retired before restore.
     ///
     /// # Errors
     /// [`VmmError::Snapshot`] for a contract mismatch / malformed device blob /
-    /// rejected LAPIC; [`VmmError::ContractViolation`] at an RNG mid-exit boundary,
-    /// a V-time wiring/rate mismatch, or a rejected entropy blob;
+    /// rejected LAPIC; [`VmmError::ContractViolation`] for a pending backend
+    /// completion, a V-time wiring/rate mismatch, or a rejected entropy blob;
     /// [`VmmError::Backend`]/[`VmmError::Vtime`] from the backend/clock/counter;
     /// post-commit trace failures are classified as `Backend` so callers must
     /// discard the partially restored VM.
@@ -2417,7 +2394,7 @@ where
     /// the page's current stable frame must publish **exactly** the values the
     /// RDTSC-trap oracle would return at the current deterministic anchor —
     /// `vns == VClock::vns(anchor)`, `guest_clock == VtimeWiring::guest_clock(anchor)`
-    /// (the same function `complete_tsc` completes with), `guest_clock_hz ==`
+    /// (also used for the guest TSC MSR), `guest_clock_hz ==`
     /// the wired config's. A no-op `Ok` when nothing is registered.
     ///
     /// # Errors
@@ -2643,22 +2620,8 @@ where
     /// value stream advances exactly at the deterministic clock-advance
     /// boundaries.
     ///
-    /// **The handshake (r8 ruling, sharpened r17).** A registration recorded at
-    /// the doorbell `OUT` is *pending* ([`PvclockChannel::armed`] `== false`) — no
-    /// stamp. It becomes active at the **first RDTSC/RDTSCP counter read**
-    /// after the `OUT` — the specific exit the §3.1 wire contract promises the guest
-    /// performs — where `assigned_clock` is a fresh, deterministic anchor, so the
-    /// first stamp is canonical from it, never from a stale or PIO boundary.
-    /// Other synchronized boundaries
-    /// do NOT complete the handshake: a TSC MSR read/write, an RDRAND/RDSEED draw, a
-    /// deadline landing, or an idle-warp restore is `clock_boundary` too, but
-    /// arming off one would publish the page on an exit the contract does not
-    /// promise. [`tsc_read_intercept`](Self::tsc_read_intercept) — cleared before
-    /// every entry, set `true` **only** by the RDTSC/RDTSCP completion — is exactly
-    /// the "did this step end on the promised counter read" signal the handshake
-    /// needs. A pending registration at any other exit stamps nothing (the page
-    /// keeps its pre-registration bytes — deterministic, and out of contract for a
-    /// guest that never does the counter read).
+    /// A pending registration is armed and stamped canonically at the next
+    /// serviced-exit refresh. Later refreshes advance the live seqlock epoch.
     fn pvclock_refresh(&mut self) -> Result<(), VmmError> {
         let Some(pv) = self.pvclock.as_ref() else {
             return Ok(());
@@ -2667,16 +2630,7 @@ where
             return Ok(()); // nothing registered
         }
         if !pv.armed {
-            // Pending registration: arm ONLY at the RDTSC/RDTSCP handshake
-            // intercept (r17). The wire contract (§3.1, r8) promises the guest
-            // publishes its GPA over the doorbell and then does a COUNTER READ, so
-            // only that read completes the handshake. Every other synchronized
-            // boundary — a TSC MSR, an RDRAND/RDSEED draw, a deadline landing, an
-            // idle-warp restore — is `clock_boundary` too, but must NOT stamp or
-            // publish the pending page (an RDRAND draw or timer boundary would
-            // publish the clock where the contract says only the counter read may).
-            // The handshake: promote to armed and lay down the first (canonical)
-            // stamp from this fresh, deterministic anchor.
+            // Publish the first stamp from the assigned virtual-time clock.
             self.pvclock.as_mut().expect("checked above").armed = true;
             return self.pvclock_stamp(StampKind::Canonical);
         }
@@ -6428,7 +6382,7 @@ mod tests {
     fn configured_stock_mock(exits: Vec<Exit<X86>>) -> MockBackend {
         let mut m = MockBackend::with_capabilities(vmm_backend::Capabilities {
             name: "mock-stock",
-            deterministic_rng: false,
+
             arch: X86Caps,
         });
         m.extend_exits(exits);

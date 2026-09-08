@@ -98,7 +98,7 @@ pub use arch::x86::{
     CpuidEntry, CpuidModel, DebugRegs, DescriptorTable, Injection, MsrFilter, MsrRange, Segment,
     VcpuEvents, VcpuRegs, VcpuSregs, VcpuState, X86, X86Caps, X86Completion, X86Exit, X86Policy,
 };
-pub use arch::{Arch, ArchCaps, ArchExit};
+pub use arch::{Arch, ArchExit};
 pub use backend::Backend;
 pub use error::{BackendError, Result};
 pub use exit::{Capabilities, CommonExit, Exit, ExitCounts, ExitReason, HypercallFrame};

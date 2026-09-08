@@ -14,7 +14,7 @@ pub use state::{
     canonicalize_regs, canonicalize_sregs, canonicalize_xsave,
 };
 
-use crate::arch::{Arch, ArchCaps, ArchExit};
+use crate::arch::{Arch, ArchExit};
 use crate::exit::{CommonExit, ExitReason};
 
 /// The x86-64 vendor (a zero-sized type; `docs/ARCHITECTURE.md`).
@@ -110,16 +110,10 @@ pub struct X86Policy {
     pub msr_filter: MsrFilter,
 }
 
-/// The x86 arch capability flags (the per-vendor half of
-/// [`Capabilities`](crate::Capabilities)).
+/// Empty x86 feature payload: the shared capability record remains architecture
+/// typed, while arm64 carries its live in-kernel GIC ownership flag.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct X86Caps;
-
-impl ArchCaps for X86Caps {
-    fn deterministic_clock(&self) -> bool {
-        false
-    }
-}
 
 /// The x86 arch-payload completions ([`Arch::Completion`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
