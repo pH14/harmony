@@ -85,7 +85,9 @@ as a separate stress condition.
 
 Seeds 20260905–20260907 form the development pilot. The dedicated SMB gate adds
 20260908–20260909; those seeds have now been observed in count-policy validation.
-The full evaluation uses a separate, preregistered panel, 20260910–20260914, for
+The practical SMB reference validates on 20260910–20260914. Before any broad
+evaluation cell ran, its seeds were moved to the separate, preregistered panel
+20260920–20260924, preserving unobserved trials for
 validating a mechanism selected from the development runs. Performance panels have explicit
 frame, execution and wall ceilings. SMB's dedicated regression panel keeps the
 400,000-execution gate; the broad eight-worker panel allows 600,000 executions
