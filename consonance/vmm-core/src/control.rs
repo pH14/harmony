@@ -255,7 +255,7 @@ pub enum ServeError {
     Protocol(#[from] control_proto::ProtocolError),
     /// The substrate failed mid-verb (a step error, a failed fresh-VM boot, a
     /// backend save failure). The VM's state can no longer be vouched for.
-    #[error("substrate failure")]
+    #[error("substrate failure: {0}")]
     Vmm(#[from] VmmError),
     /// The snapshot store / codec hit an invariant failure (not a caller error
     /// — those answer `ControlError` replies).

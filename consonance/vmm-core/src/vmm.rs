@@ -130,7 +130,7 @@ enum SdkEventAction {
 #[derive(Debug, thiserror::Error)]
 pub enum VmmError {
     /// A `Backend` operation failed.
-    #[error("backend error")]
+    #[error("backend error: {0}")]
     Backend(#[from] vmm_backend::BackendError),
     /// A **vendor's boot stage** rejected the image: a malformed header, an image
     /// that does not fit the guest RAM, a bad entry state (x86: the Multiboot v1
