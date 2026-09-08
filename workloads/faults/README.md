@@ -39,7 +39,7 @@ time ([`target`](src/target.rs)):
 | `Restart(node)` | the node is killed and comes back inside the horizon |
 | `Hook(id)` | the agent runs that hook once |
 | `Park(node, addr, hits, hold)` | guest threads are held at an execution place |
-| `Interrupt(vector)` | a host-plane interrupt is staged at the window start |
+| `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's seal when settling carried it past that start |
 
 Every action but `Interrupt` becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the agent's

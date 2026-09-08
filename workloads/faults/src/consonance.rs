@@ -228,13 +228,25 @@ struct Config {
     horizon_nanos: u64,
 }
 
+/// One resident prefix endpoint.
+#[derive(Clone, Copy, Debug)]
+struct Cached {
+    snap: SnapId,
+    /// The moment the endpoint sealed at. Settling can carry it past the
+    /// window boundary, so it is the floor of anything staged on a branch
+    /// from this endpoint.
+    moment: u64,
+    /// The use stamp that orders eviction.
+    stamp: u64,
+}
+
 struct Live {
     key: [u8; 32],
     session: Session,
     setup: SnapId,
     windows: ActionWindows,
-    /// Cached prefix endpoints with the use stamp that orders eviction.
-    snapshots: BTreeMap<Vec<FaultAction>, (SnapId, u64)>,
+    /// Resident prefix endpoints.
+    snapshots: BTreeMap<Vec<FaultAction>, Cached>,
     uses: u64,
     /// Action horizons this session ran in the guest. A restored cache entry
     /// does not count, so the number distinguishes guest execution from
@@ -409,8 +421,8 @@ impl FaultTarget {
     pub fn restore(&mut self, snapshot: &FaultSnapshot) -> Result<(), Box<dyn Error>> {
         let rebuilt = with_live(&self.config, |live| {
             match live.ensure_prefix(&snapshot.actions)? {
-                Ok(snap) => {
-                    live.replay(snap)?;
+                Ok(cached) => {
+                    live.replay(cached.snap)?;
                     Ok(None)
                 }
                 Err(observation) => Ok(Some(observation)),
@@ -536,7 +548,14 @@ impl Live {
         // passed, and seals it.
         let (setup, root_seal) = session.setup_handle();
         let mut snapshots = BTreeMap::new();
-        snapshots.insert(Vec::new(), (setup, 0));
+        snapshots.insert(
+            Vec::new(),
+            Cached {
+                snap: setup,
+                moment: root_seal,
+                stamp: 0,
+            },
+        );
         Ok(Self {
             key: config.key,
             session,
@@ -570,49 +589,60 @@ impl Live {
             .map_err(|error| format!("replay: {error}"))
     }
 
-    /// The cached snapshot of `actions`, if any, marked as just used.
-    fn cached(&mut self, actions: &[FaultAction]) -> Option<SnapId> {
+    /// The cached endpoint of `actions`, if any, marked as just used.
+    fn cached(&mut self, actions: &[FaultAction]) -> Option<Cached> {
         self.uses = self.uses.saturating_add(1);
         let uses = self.uses;
-        self.snapshots.get_mut(actions).map(|(snap, stamp)| {
-            *stamp = uses;
-            *snap
+        self.snapshots.get_mut(actions).map(|cached| {
+            cached.stamp = uses;
+            *cached
         })
     }
 
-    /// Cache the snapshot of `actions`, evicting the least recently used
-    /// prefix once the cache is full. The setup point is never evicted.
-    fn remember(&mut self, actions: Vec<FaultAction>, snap: SnapId) -> Result<(), String> {
+    /// Cache the endpoint of `actions` sealed at `moment`, evicting the least
+    /// recently used prefix once the cache is full. The setup point is never
+    /// evicted.
+    fn remember(
+        &mut self,
+        actions: Vec<FaultAction>,
+        snap: SnapId,
+        moment: u64,
+    ) -> Result<Cached, String> {
         self.uses = self.uses.saturating_add(1);
-        self.snapshots.insert(actions, (snap, self.uses));
+        let cached = Cached {
+            snap,
+            moment,
+            stamp: self.uses,
+        };
+        self.snapshots.insert(actions, cached);
         while self.snapshots.len() > SNAPSHOT_CACHE_LIMIT.saturating_add(1) {
             let Some(victim) = self
                 .snapshots
                 .iter()
                 .filter(|(prefix, _)| !prefix.is_empty())
-                .min_by_key(|(_, (_, stamp))| *stamp)
+                .min_by_key(|(_, cached)| cached.stamp)
                 .map(|(prefix, _)| prefix.clone())
             else {
                 break;
             };
-            if let Some((snap, _)) = self.snapshots.remove(&victim) {
+            if let Some(victim) = self.snapshots.remove(&victim) {
                 self.session
-                    .drop_snapshot(snap)
+                    .drop_snapshot(victim.snap)
                     .map_err(|error| format!("drop snapshot: {error}"))?;
             }
         }
-        Ok(())
+        Ok(cached)
     }
 
     /// Rebuild every uncached endpoint on the way to `actions`, returning the
-    /// snapshot of the last one, or the observation of the first endpoint
-    /// that no longer stops at its horizon.
+    /// last one, or the observation of the first endpoint that no longer
+    /// stops at its horizon.
     fn ensure_prefix(
         &mut self,
         actions: &[FaultAction],
-    ) -> Result<Result<SnapId, FaultObservations>, String> {
-        if let Some(snap) = self.cached(actions) {
-            return Ok(Ok(snap));
+    ) -> Result<Result<Cached, FaultObservations>, String> {
+        if let Some(cached) = self.cached(actions) {
+            return Ok(Ok(cached));
         }
         let start = (0..actions.len())
             .rev()
@@ -629,12 +659,11 @@ impl Live {
             // reconcile, and that shifts the guest's timing enough for a
             // rebuilt endpoint to differ from the one first observed.
             self.branch(last, &actions[..=index])?;
-            let (observation, snap) = self.run_action(index)?;
-            let Some(snap) = snap else {
+            let (observation, sealed) = self.run_action(index)?;
+            let Some((snap, moment)) = sealed else {
                 return Ok(Err(observation));
             };
-            last = snap;
-            self.remember(actions[..=index].to_vec(), last)?;
+            last = self.remember(actions[..=index].to_vec(), snap, moment)?;
         }
         Ok(Ok(last))
     }
@@ -648,8 +677,8 @@ impl Live {
     ) -> Result<FaultObservations, String> {
         let mut next = prefix.to_vec();
         next.push(action);
-        if let Some(snap) = self.cached(&next) {
-            self.replay(snap)?;
+        if let Some(cached) = self.cached(&next) {
+            self.replay(cached.snap)?;
             return self.observe(FaultStop::Deadline);
         }
         let parent = match self.ensure_prefix(prefix)? {
@@ -666,9 +695,9 @@ impl Live {
             }
         };
         self.branch(parent, &next)?;
-        let (observation, snap) = self.run_action(prefix.len())?;
-        if let Some(snap) = snap {
-            self.remember(next, snap)?;
+        let (observation, sealed) = self.run_action(prefix.len())?;
+        if let Some((snap, moment)) = sealed {
+            self.remember(next, snap, moment)?;
         }
         Ok(observation)
     }
@@ -676,19 +705,25 @@ impl Live {
     /// Restore `parent` under the whole input's standing-fault list and the
     /// host-plane perturbation its last action stages. Windows already behind
     /// the parent's seal are inert, so one branch carries the entire input.
-    fn branch(&mut self, parent: SnapId, actions: &[FaultAction]) -> Result<(), String> {
+    fn branch(&mut self, parent: Cached, actions: &[FaultAction]) -> Result<(), String> {
         let config = branch_config(self.windows, actions)
             .map_err(|error| format!("branch configuration: {error}"))?;
-        let effects = self.staged_effects(actions)?;
+        let effects = self.staged_effects(actions, parent.moment)?;
         self.session
-            .branch_with_service(parent, config, Vec::new(), effects)
+            .branch_with_service(parent.snap, config, Vec::new(), effects)
             .map_err(|error| format!("branch: {error}"))
     }
 
     /// The host-plane effect the input's last action stages, if any. Every
-    /// earlier action's effect applied on the way to `parent` and its moment
-    /// lies behind that seal, so only the last one is staged again.
-    fn staged_effects(&self, actions: &[FaultAction]) -> Result<Vec<(u64, Effect)>, String> {
+    /// earlier action's effect applied on the way to the parent and its moment
+    /// lies behind that seal, so only the last one is staged again. It is
+    /// staged at its window start, or at `floor` when settling sealed the
+    /// parent past that start: a branch refuses any effect behind its seal.
+    fn staged_effects(
+        &self,
+        actions: &[FaultAction],
+        floor: u64,
+    ) -> Result<Vec<(u64, Effect)>, String> {
         let Some(index) = actions.len().checked_sub(1) else {
             return Ok(Vec::new());
         };
@@ -699,14 +734,18 @@ impl Live {
             .map_err(|error| format!("staged host fault: {error}"))?;
         let effect = fault_policy::consonance::effect(&fault)
             .map_err(|error| format!("staged host fault: {error}"))?;
-        Ok(vec![(perturb.at, effect)])
+        Ok(vec![(perturb.at.max(floor), effect)])
     }
 
-    /// Run the action at `index` to its horizon and seal the endpoint. An
-    /// endpoint the session cannot seal is run a little further and retried;
-    /// one that never seals is observed with no snapshot, so the search never
-    /// branches from it.
-    fn run_action(&mut self, index: usize) -> Result<(FaultObservations, Option<SnapId>), String> {
+    /// Run the action at `index` to its horizon and seal the endpoint,
+    /// reporting the snapshot and the moment it sealed at. An endpoint the
+    /// session cannot seal is run a little further and retried; one that
+    /// never seals is observed with no snapshot, so the search never branches
+    /// from it.
+    fn run_action(
+        &mut self,
+        index: usize,
+    ) -> Result<(FaultObservations, Option<(SnapId, u64)>), String> {
         let deadline = self.windows.deadline(index);
         self.horizons_run = self.horizons_run.saturating_add(1);
         let stop = match self.session.run_until(deadline) {
@@ -730,12 +769,12 @@ impl Live {
                 // A point that sealed without settling keeps the stop the run
                 // reported; settling ran the guest further, so where it left
                 // the guest is what the endpoint is judged on.
-                Ok((sealed, _at, settled)) => {
+                Ok((sealed, at, settled)) => {
                     if let Some(settled) = &settled {
                         stop = FaultStop::from_stop_reason(settled);
                     }
                     if stop.is_continuable() {
-                        snap = Some(sealed);
+                        snap = Some((sealed, at));
                     }
                 }
                 Err(error) => match error.downcast_ref::<SessionError>() {
