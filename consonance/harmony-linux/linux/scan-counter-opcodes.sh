@@ -621,10 +621,12 @@ if unarmed "$RNG_ALLOWLIST"; then
     exit 1
 fi
 
-if ! scan_sites "$FOUND" "$ALLOWLIST"; then
-    exit 1
-fi
-if ! scan_sites "$RNG_FOUND" "$RNG_ALLOWLIST" hwrng; then
+# Both classes are compared before the build fails, so one kernel build shows
+# every drifted baseline instead of one class per build.
+site_scan_failed=0
+scan_sites "$FOUND" "$ALLOWLIST" || site_scan_failed=1
+scan_sites "$RNG_FOUND" "$RNG_ALLOWLIST" hwrng || site_scan_failed=1
+if [ "$site_scan_failed" -ne 0 ]; then
     exit 1
 fi
 
