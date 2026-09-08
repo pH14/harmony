@@ -39,6 +39,9 @@ pub struct Session {
     image_identity: [u8; 32],
     config: SessionConfig,
     snapshot_times: BTreeMap<SnapId, u64>,
+    /// Set once a run exceeds the wall-clock bound. The VM was canceled, so no
+    /// later request may enter it.
+    abandoned: bool,
 }
 
 impl std::fmt::Debug for Session {
@@ -50,6 +53,7 @@ impl std::fmt::Debug for Session {
             .field("image_identity", &self.image_identity)
             .field("config", &self.config)
             .field("snapshot_times", &self.snapshot_times.len())
+            .field("abandoned", &self.abandoned)
             .finish_non_exhaustive()
     }
 }
@@ -120,11 +124,15 @@ impl Session {
 
         let genesis = snapshot_handle(&mut client, "genesis snapshot")?;
         branch_payload(&mut client, genesis.id, setup_payloads, config.seed)?;
+        // A setup run that exceeds the bound fails construction outright, so
+        // the session this returns has never been abandoned.
+        let mut abandoned = false;
         let setup_stop = run_to_snapshot(
             &mut client,
             genesis.at,
             config.run_budget,
             config.wall_limit,
+            &mut abandoned,
         )?;
         let setup = snapshot_handle(&mut client, "setup snapshot")?;
         if setup_stop != setup.at {
@@ -140,6 +148,7 @@ impl Session {
             image_identity,
             config,
             snapshot_times: BTreeMap::from([(genesis.id, genesis.at), (setup.id, setup.at)]),
+            abandoned,
         })
     }
 
@@ -272,8 +281,8 @@ impl Session {
     }
 
     /// Run from the current state until virtual time reaches `deadline`, or
-    /// until the guest stops earlier: an SDK assertion, a crash, quiescence, or
-    /// the control server's own run bound.
+    /// until the guest stops earlier on an SDK assertion, a crash, or
+    /// quiescence.
     pub fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
         let request = Request::Run {
             until: StopConditions {
@@ -372,7 +381,12 @@ impl Session {
 
     /// Issue one control request with the session's host wall-clock bound armed.
     fn drive(&mut self, request: &Request) -> Result<Reply, Box<dyn Error>> {
-        drive_guarded(&mut self.client, self.config.wall_limit, request)
+        drive_guarded(
+            &mut self.client,
+            self.config.wall_limit,
+            &mut self.abandoned,
+            request,
+        )
     }
 
     /// Replay a held snapshot without staging any payloads.
@@ -429,6 +443,7 @@ impl Session {
             floor,
             self.config.run_budget,
             self.config.wall_limit,
+            &mut self.abandoned,
         )
     }
 
@@ -498,6 +513,7 @@ impl Session {
                 snapshot.at,
                 self.config.run_budget,
                 self.config.wall_limit,
+                &mut self.abandoned,
             )?;
             let target = snapshot_handle(&mut self.client, "action snapshot")?;
             temporary_handles.push(target.id);
@@ -728,30 +744,31 @@ fn branch_spec(client: &mut Server, snap: SnapId, spec: &InputSpec) -> Result<()
 /// `wall_limit` of host time inside the run without taking an exit.
 ///
 /// The bound is measured against the host clock on purpose: a guest that stalls
-/// advances no virtual time, so nothing else can notice it. Once the latch
-/// fires the VM is unusable, so the request's own reply is discarded in favor
-/// of [`SessionError::Hung`]. A backend that cannot be interrupted mid-run
-/// carries no latch, and the request runs unguarded.
+/// advances no virtual time, so nothing else can notice it. Once the guard
+/// expires the VM is unusable, so the request's own reply is discarded in favor
+/// of [`SessionError::Hung`] and `abandoned` is set, which turns every later
+/// request into [`SessionError::Abandoned`]. A request that returns first
+/// claims the run and keeps its reply.
 fn drive_guarded(
     client: &mut Server,
     wall_limit: Option<Duration>,
+    abandoned: &mut bool,
     request: &Request,
 ) -> Result<Reply, Box<dyn Error>> {
-    let cancel = wall_limit
-        .and_then(|_| client.transport().vmm())
-        .and_then(Vmm::cancellation_flag);
-    let (Some(limit), Some(cancel)) = (wall_limit, cancel) else {
+    let cancel = client.transport().vmm().and_then(Vmm::cancellation_flag);
+    let Some((limit, cancel)) = guarded_run_plan(*abandoned, wall_limit, cancel)? else {
         return client
             .request(request)
             .map_err(|error| SessionError::Control(error.to_string()).into());
     };
-    let latch = std::sync::Arc::clone(&cancel);
     let watchdog = Watchdog::start(limit, cancel).map_err(|error| {
         SessionError::Control(format!("cannot arm the wall-clock bound: {error}"))
     })?;
     let reply = client.request(request);
+    let claimed = watchdog.claim();
     drop(watchdog);
-    if latch.load(std::sync::atomic::Ordering::Acquire) {
+    if !claimed {
+        *abandoned = true;
         return Err(SessionError::Hung(limit).into());
     }
     reply.map_err(|error| SessionError::Control(error.to_string()).into())
@@ -770,6 +787,7 @@ fn run_to_snapshot(
     floor: u64,
     run_budget: u64,
     wall_limit: Option<Duration>,
+    abandoned: &mut bool,
 ) -> Result<u64, Box<dyn Error>> {
     let deadline = floor
         .checked_add(run_budget)
@@ -781,8 +799,8 @@ fn run_to_snapshot(
         },
         resolve: None,
     };
-    let reply =
-        drive_guarded(client, wall_limit, &request).map_err(|error| with_console(client, error))?;
+    let reply = drive_guarded(client, wall_limit, abandoned, &request)
+        .map_err(|error| with_console(client, error))?;
     match reply {
         Reply::Stop(StopReason::SnapshotPoint { vtime }) => Ok(vtime.0),
         Reply::Stop(stop) => Err(with_console(client, SessionError::Stop(stop).into())),

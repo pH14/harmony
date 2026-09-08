@@ -513,6 +513,15 @@ pub enum SessionError {
     /// resumed and the caller reports the run rather than retrying it.
     #[error("guest ran for more than {0:?} of host time without exiting")]
     Hung(Duration),
+    /// A previous run exceeded the wall-clock limit, so the VM was canceled
+    /// and cannot be entered again. Reported by every later request instead of
+    /// a fresh [`SessionError::Hung`] for a run that never happened.
+    #[error("session was abandoned after a guest hang and cannot run again")]
+    Abandoned,
+    /// The configuration carries a wall-clock limit, but the backend cannot be
+    /// interrupted mid-run, so no run on it can be bounded.
+    #[error("backend cannot be interrupted mid-run, so its runs cannot be wall-clock bounded")]
+    Unboundable,
     /// The guest never reached a snapshot-eligible point within the caller's
     /// settle allowance.
     #[error("guest reached no snapshot-eligible point within {settled} ns of settling")]
@@ -520,6 +529,43 @@ pub enum SessionError {
         /// Virtual time spent settling before the attempt was abandoned.
         settled: u64,
     },
+}
+
+/// The backend's host-only latch: set to take a run away from a guest that has
+/// stopped returning to the host.
+type CancelLatch = Arc<std::sync::atomic::AtomicBool>;
+
+/// One armed host wall-clock bound: how much host time the run may spend, and
+/// the latch that ends it.
+type GuardedRun = (Duration, CancelLatch);
+
+/// Decide how one control request runs under the session's host wall-clock
+/// bound. `None` runs the request unguarded; `Some` carries the bound to arm
+/// and the backend latch to arm it against. This pure policy stays here so it
+/// is testable without a VM or Linux linker.
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )),
+    allow(dead_code)
+)]
+fn guarded_run_plan(
+    abandoned: bool,
+    wall_limit: Option<Duration>,
+    cancel: Option<CancelLatch>,
+) -> Result<Option<GuardedRun>, Box<dyn Error>> {
+    if abandoned {
+        return Err(SessionError::Abandoned.into());
+    }
+    let Some(limit) = wall_limit else {
+        return Ok(None);
+    };
+    // Reported rather than ignored: a caller that asked for the bound would
+    // otherwise wait forever on the first guest that stops taking exits.
+    let cancel = cancel.ok_or(SessionError::Unboundable)?;
+    Ok(Some((limit, cancel)))
 }
 
 /// Whether running the guest further can move it off a point the control
@@ -1178,6 +1224,61 @@ mod tests {
             .expect("the field is serialized");
         let decoded: SessionConfig = serde_json::from_value(value).expect("deserialize");
         assert_eq!(decoded, SessionConfig::default());
+    }
+
+    #[test]
+    fn an_unbounded_session_runs_every_request_unguarded() {
+        let latch = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        assert!(
+            guarded_run_plan(false, None, Some(latch))
+                .unwrap()
+                .is_none()
+        );
+        assert!(guarded_run_plan(false, None, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_bounded_session_arms_the_backend_latch() {
+        let latch = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let limit = Duration::from_secs(30);
+        let (armed, armed_latch) = guarded_run_plan(false, Some(limit), Some(Arc::clone(&latch)))
+            .expect("a latched backend can be bounded")
+            .expect("the bound is armed");
+        assert_eq!(armed, limit);
+        assert!(Arc::ptr_eq(&armed_latch, &latch));
+    }
+
+    #[test]
+    fn a_backend_without_a_latch_reports_the_bound_it_cannot_honor() {
+        let error = guarded_run_plan(false, Some(Duration::from_secs(30)), None)
+            .expect_err("an unbounded backend cannot take a bound");
+        assert!(
+            matches!(
+                error.downcast_ref::<SessionError>(),
+                Some(SessionError::Unboundable)
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_abandoned_session_reports_the_hang_it_already_had() {
+        let latch = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        for (wall_limit, cancel) in [
+            (Some(Duration::from_secs(30)), Some(Arc::clone(&latch))),
+            (None, None),
+        ] {
+            let error = guarded_run_plan(true, wall_limit, cancel)
+                .expect_err("an abandoned session runs nothing");
+            assert!(
+                matches!(
+                    error.downcast_ref::<SessionError>(),
+                    Some(SessionError::Abandoned)
+                ),
+                "{error}"
+            );
+            assert!(error.to_string().contains("abandoned"), "{error}");
+        }
     }
 
     #[test]

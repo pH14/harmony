@@ -37,10 +37,15 @@ last seal and then reported rather than settled again.
 frozen virtual clock takes no exit, so it never reaches its virtual-time
 deadline and only the host clock notices it; past the bound the run is
 abandoned through the backend's cancellation latch and reported as
-`SessionError::Hung`. The limit is a host resource bound, so it is deliberately
-outside the session identity and the image identity. The `watchdog` module owns
-the mechanism — it reserves SIGUSR1 process-wide, so every composition that
-arms a host bound shares this one guard.
+`SessionError::Hung`. A canceled VM cannot be entered again, so every later
+request on that session reports `SessionError::Abandoned`. A backend with no
+cancellation latch can honor no such bound and reports
+`SessionError::Unboundable` on the first run rather than running unbounded. The
+limit is a host resource bound, so it is deliberately outside the session
+identity and the image identity. The `watchdog` module owns the mechanism — it
+reserves SIGUSR1 process-wide, so every composition that arms a host bound
+shares this one guard. A request that returns just before the bound expires
+claims the run and keeps its reply.
 
 `SparseSnapshot` is the explicit `consonance-whole-vm-v2` archive shape used
 by adapters that need page and sidecar sharing across related checkpoints.
