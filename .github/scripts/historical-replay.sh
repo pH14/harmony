@@ -16,6 +16,10 @@ input=$2
 : "${CASE_ID:?}" "${HORIZON_MS:?}" "${RAM_MIB:?}"
 : "${VULNERABLE_VERSION:?}" "${CONTROL_VERSION:?}"
 
+# The knobs reach the workload on the guest command line, so a replay only
+# reproduces a search's conditions when it boots with the same ones.
+knobs=${KNOBS:-}
+
 # Two repeats on the arm that is supposed to fire, so a single lucky run cannot
 # carry the claim; one on the control, which only has to stay silent.
 vulnerable_repeats=${VULNERABLE_REPEATS:-2}
@@ -23,7 +27,8 @@ control_repeats=${CONTROL_REPEATS:-1}
 
 harmony=${PWD}/tools/harmony
 agent=${PWD}/tools/fault-agent
-kernel=${PWD}/kernel/bzImage-faultlab
+kernel=${PWD}/guest/bzImage-faultlab
+base_initramfs=${PWD}/guest/initramfs.cpio.gz
 chmod +x "${harmony}" "${agent}"
 test -f "${input}"
 
@@ -43,12 +48,15 @@ replay_arm() {
     local status=0
     timeout -k 30 1800 "${harmony}" search --package faults \
         "oci-images/pgcic-${version}.oci" \
+        --backend consonance \
         --kernel "${kernel}" \
+        --base-initramfs "${base_initramfs}" \
         --fault-agent "${agent}" \
         --replay "${input}" \
         --repeat "${repeats}" \
         --horizon-ms "${HORIZON_MS}" \
         --ram-mib "${RAM_MIB}" \
+        --knobs "${knobs}" \
         --out "${out}" >"${console}" 2>&1 || status=$?
     tail -n 40 "${console}" || true
 

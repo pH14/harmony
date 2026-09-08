@@ -56,9 +56,8 @@ the host-plane effect its last action stages, runs to the action's horizon
 deadline, and seals the endpoint. An endpoint the session cannot seal within
 its settle allowance has no successor and the search records it as dead; one
 whose guest stopped for good while settling is recorded with that stop. A
-bounded
-LRU keeps recent prefixes resident and rebuilds evicted ones from their longest
-cached ancestor.
+bounded LRU keeps recent prefixes resident and rebuilds evicted ones from their
+longest cached ancestor.
 
 [`campaign`](src/campaign.rs) implements the game-neutral campaign interface
 over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
@@ -68,10 +67,12 @@ hook-completion count.
 ## Running it
 
 ```
-harmony search --package faults IMAGE.oci --kernel vmlinux --backend consonance \
+harmony search --package faults IMAGE.oci --backend consonance \
+    --kernel vmlinux --base-initramfs initramfs.cpio.gz \
     --fault-agent fault-agent --seed 1 --workers 8 --executions 100000 \
     --actions 12 --horizon-ms 500 --ram-mib 1024 --out run/
-harmony search --package faults IMAGE.oci --kernel vmlinux --backend consonance \
+harmony search --package faults IMAGE.oci --backend consonance \
+    --kernel vmlinux --base-initramfs initramfs.cpio.gz \
     --fault-agent fault-agent --replay run/bug-1.json --repeat 10 --out confirm/
 ```
 

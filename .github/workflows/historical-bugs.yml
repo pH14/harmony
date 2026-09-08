@@ -119,8 +119,8 @@ jobs:
             ' "${CASE_DIR}/case.json"
           } >>"${GITHUB_STEP_SUMMARY}"
 
-  kernel:
-    name: Build the faultlab guest kernel
+  guest:
+    name: Build the faultlab kernel and the base initramfs
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -132,37 +132,44 @@ jobs:
         with:
           path: nix-guest-output
           key: guest-faultlab-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/**') }}
-      - name: Build the guest kernels
+      - name: Build the guest images
         if: steps.guest-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           mkdir -p nix-guest-output
           nix run .#guest-images -- --output "${PWD}/nix-guest-output"
-      - name: Verify the faultlab kernel is present
+      # The manifest covers every artifact the builder produced, so a restored
+      # cache is checked against the same bytes a fresh build is.
+      - name: Verify the locked guest artifacts
         run: |
           set -euo pipefail
+          (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
           test -s nix-guest-output/x86_64/bzImage-faultlab
-          sha256sum nix-guest-output/x86_64/bzImage-faultlab
+          test -s nix-guest-output/x86_64/initramfs.cpio.gz
       - name: Save successful guest build
         if: steps.guest-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: nix-guest-output
           key: ${{ steps.guest-cache.outputs.cache-primary-key }}
-      - name: Summarize the kernel
+      - name: Summarize the guest artifacts
         run: |
           set -euo pipefail
           {
-            echo "## Guest kernel"
+            echo "## Guest artifacts"
             echo
             echo "| artifact | sha256 |"
             echo "|---|---|"
-            echo "| bzImage-faultlab | $(sha256sum nix-guest-output/x86_64/bzImage-faultlab | cut -d' ' -f1) |"
+            for artifact in bzImage-faultlab initramfs.cpio.gz; do
+              echo "| ${artifact} | $(sha256sum "nix-guest-output/x86_64/${artifact}" | cut -d' ' -f1) |"
+            done
           } >>"${GITHUB_STEP_SUMMARY}"
       - uses: actions/upload-artifact@v4
         with:
-          name: guest-kernel-${{ github.run_id }}
-          path: nix-guest-output/x86_64/bzImage-faultlab
+          name: guest-images-${{ github.run_id }}
+          path: |
+            nix-guest-output/x86_64/bzImage-faultlab
+            nix-guest-output/x86_64/initramfs.cpio.gz
           if-no-files-found: error
           retention-days: 1
 
@@ -289,15 +296,15 @@ jobs:
 
   probe:
     name: Probe replay · the window is reachable
-    needs: [manifest, kernel, images, tools]
+    needs: [manifest, guest, images, tools]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: guest-kernel-${{ github.run_id }}
-          path: kernel
+          name: guest-images-${{ github.run_id }}
+          path: guest
       - uses: actions/download-artifact@v4
         with:
           name: oci-images-${{ github.run_id }}
@@ -321,6 +328,7 @@ jobs:
           RAM_MIB: ${{ needs.manifest.outputs.ram_mib }}
           VULNERABLE_VERSION: ${{ needs.manifest.outputs.vulnerable_version }}
           CONTROL_VERSION: ${{ needs.manifest.outputs.control_version }}
+          KNOBS: ${{ needs.manifest.outputs.knobs }}
         run: .github/scripts/historical-replay.sh probe "${CASE_DIR}/probe.json"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -332,7 +340,7 @@ jobs:
 
   witness:
     name: Witness replay · the committed input still reproduces
-    needs: [manifest, kernel, images, tools]
+    needs: [manifest, guest, images, tools]
     if: needs.manifest.outputs.witness != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -340,8 +348,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: guest-kernel-${{ github.run_id }}
-          path: kernel
+          name: guest-images-${{ github.run_id }}
+          path: guest
       - uses: actions/download-artifact@v4
         with:
           name: oci-images-${{ github.run_id }}
@@ -365,6 +373,7 @@ jobs:
           RAM_MIB: ${{ needs.manifest.outputs.ram_mib }}
           VULNERABLE_VERSION: ${{ needs.manifest.outputs.vulnerable_version }}
           CONTROL_VERSION: ${{ needs.manifest.outputs.control_version }}
+          KNOBS: ${{ needs.manifest.outputs.knobs }}
           WITNESS: ${{ needs.manifest.outputs.witness }}
         run: .github/scripts/historical-replay.sh witness "${WITNESS}"
       - uses: actions/upload-artifact@v4
@@ -377,7 +386,7 @@ jobs:
 
   search:
     name: Search campaign
-    needs: [manifest, kernel, images, tools]
+    needs: [manifest, guest, images, tools]
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     # The wall cap in case.json bounds the campaign; the rest is image staging,
@@ -391,8 +400,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: guest-kernel-${{ github.run_id }}
-          path: kernel
+          name: guest-images-${{ github.run_id }}
+          path: guest
       - uses: actions/download-artifact@v4
         with:
           name: oci-images-${{ github.run_id }}

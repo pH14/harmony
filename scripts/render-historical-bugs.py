@@ -109,12 +109,16 @@ def replay_command(case: dict) -> str:
         return "—"
     version = case.get("arms", {}).get("vulnerable", {}).get("version", "?")
     run = case.get("run", {})
+    knobs = " ".join(f"{key}={value}" for key, value in run.get("knobs", {}).items())
     return (
         f"`harmony search --package faults IMAGE-{version}.oci "
+        f"--backend consonance "
         f"--kernel bzImage-{case.get('kernel_profile', '?')} "
+        f"--base-initramfs initramfs.cpio.gz "
         f"--fault-agent fault-agent --replay {target} --repeat 2 "
         f"--horizon-ms {run.get('horizon_ms', '?')} "
-        f"--ram-mib {run.get('ram_mib', '?')} --out OUT`"
+        f"--ram-mib {run.get('ram_mib', '?')} "
+        f"--knobs \"{knobs}\" --out OUT`"
     )
 
 

@@ -118,7 +118,9 @@ The guest kernel is the `faultlab` profile of `nix run .#guest-images`, which
 lands beside the default kernel as `x86_64/bzImage-faultlab`. glibc's dynamic
 loader reads the timestamp counter before `main`, so every PostgreSQL binary
 faults on the default kernel; the profile turns the user counter traps off,
-runs a single processor, and carries the task-park fault.
+runs a single processor, and carries the task-park fault. The same build writes
+`x86_64/initramfs.cpio.gz`, the package-neutral base image `--base-initramfs`
+names; preparation appends the workload rootfs and the fault agent to it.
 
 `case.json` is the machine-readable form of all of this: the pins, the node and
 hook table, the oracle, the run settings and the search budget. `probe.json` is

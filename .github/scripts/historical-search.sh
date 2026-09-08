@@ -20,7 +20,8 @@ esac
 
 harmony=${PWD}/tools/harmony
 agent=${PWD}/tools/fault-agent
-kernel=${PWD}/kernel/bzImage-faultlab
+kernel=${PWD}/guest/bzImage-faultlab
+base_initramfs=${PWD}/guest/initramfs.cpio.gz
 chmod +x "${harmony}" "${agent}"
 
 mkdir -p reports
@@ -34,9 +35,10 @@ status=0
 timeout -k 60 "$(( (WALL_MINUTES + 20) * 60 ))" \
     "${harmony}" search --package faults \
     "oci-images/pgcic-${PG_VERSION}.oci" \
-    --kernel "${kernel}" \
-    --fault-agent "${agent}" \
     --backend consonance \
+    --kernel "${kernel}" \
+    --base-initramfs "${base_initramfs}" \
+    --fault-agent "${agent}" \
     --seed "${SEED}" \
     --workers "${WORKERS}" \
     --executions "${EXECUTIONS}" \
