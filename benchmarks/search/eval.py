@@ -22,7 +22,7 @@ import sys
 import time
 
 SCHEMA = 'harmony-search-eval-v1'
-ALLOWED_SEARCH = {'seed','workers','executions','frames','actions','memory_mib','window','wall_seconds','selector','suffix','mixture','verification'}
+ALLOWED_SEARCH = {'seed','workers','executions','frames','actions','memory_mib','window','result_slots','wall_seconds','selector','suffix','mixture','verification'}
 
 
 def valid_id(value):
@@ -144,6 +144,7 @@ def expand_suite(suite, selected=None):
                 val=request[field]
                 if type(val) is not int or val<0 or (field!='seed' and val==0): raise ValueError('invalid '+field)
             if request.get('frames') is not None and (type(request['frames']) is not int or request['frames'] <= 0): raise ValueError('invalid frames')
+            if type(request.get('result_slots',1)) is not int or request.get('result_slots',1) not in (1, 2): raise ValueError('result_slots must be 1 or 2')
             cell=f'{name}-s{seed}-w{workers}-m{memory}'
             jobs.append({'id':cell,'case':case,'request':request})
     if selected and set(selected)-names: raise ValueError('unknown selected case')
@@ -363,11 +364,15 @@ def compare(base, candidate):
             r = value['result'] or {}
             progress = value.get('last_progress', {})
             row[label] = {'solved': r.get('solved'), 'frames_to_victory': r.get('frames_to_first_victory'),
+                          'result_slots': value['search_request'].get('result_slots', 1),
+                          'stream_sha256': r.get('stream_sha256'),
                           'frames': r.get('frames_emulated', progress.get('frames_emulated')),
                           'search_seconds': r.get('search_seconds'), 'frames_per_second': r.get('frames_per_second'),
                           'peak_rss': value.get('max_process_rss_bytes'), 'peak_disk': value.get('peak_disk_logical_bytes_sampled'),
                           'progress': r.get('progress', progress.get('progress')),
                           'workload_diagnostics': progress.get('workload_diagnostics')}
+        hashes = [row[label]['stream_sha256'] for label in ('baseline', 'candidate')]
+        row['same_recorded_search'] = hashes[0] == hashes[1] if all(hashes) else None
         rows.append(row)
     return {'format': 'harmony-search-comparison-v1', 'pairs': rows,
             'timing_note': 'Matching recorded allocation does not establish host isolation. Concurrent jobs may share physical cores and finish at different times; use admitted frame cost for search quality and isolated runs for precise throughput claims.',

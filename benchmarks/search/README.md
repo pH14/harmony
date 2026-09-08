@@ -58,6 +58,15 @@ job limit, budgets, executable, core, ROM, adapter and mechanism identities are
 retained in every matrix. Native resource sampling uses Linux `/proc`; missing
 platform measurements must not be interpreted as zero.
 
+`search.result_slots` optionally permits one (the default) or two unadmitted
+result-bearing jobs per physical executor. With two slots, an executor can run
+another already-reserved job while its earlier result awaits ordered admission.
+This is a bounded execution experiment, independent of the logical `window`.
+It can increase worker-result RSS, which is outside the logical archive budget.
+The request and native identity record the choice; omission means one and keeps
+older evaluation binaries usable. Compare one versus two at the same logical
+window and work budget, and check stream hashes as well as memory and throughput.
+
 ## Registered panels
 
 | Manifest | Purpose |

@@ -43,6 +43,15 @@ class EvaluationTests(unittest.TestCase):
         with self.assertRaises(ValueError): eval.expand_suite(self.suite, ['missing'])
         self.assertEqual(len(eval.expand_suite(self.suite)), 1)
 
+    def test_result_buffering_is_explicit_bounded_and_legacy_optional(self):
+        self.assertNotIn('result_slots', eval.expand_suite(self.suite)[0]['request'])
+        for invalid in [0, 3, True, 1.5]:
+            bad = copy.deepcopy(self.suite)
+            bad['search']['result_slots'] = invalid
+            with self.assertRaises(ValueError): eval.expand_suite(bad)
+        self.suite['search']['result_slots'] = 2
+        self.assertEqual(eval.expand_suite(self.suite)[0]['request']['result_slots'], 2)
+
     def test_asset_hashes_are_checked_against_inventory_and_suite(self):
         rom = self.root / 'private.nes'
         core = self.root / 'private.so'
@@ -168,6 +177,20 @@ class EvaluationTests(unittest.TestCase):
         self.assertTrue(pair['same_host'])
         self.assertTrue(pair['same_runner_configuration'])
         self.assertFalse(pair['timing_environment_matches'])
+
+    def test_physical_buffer_comparison_reports_identical_recorded_search(self):
+        a, b = self.root/'a', self.root/'b'
+        original = self.matrix(a)
+        self.matrix(b)
+        for path, slots in ((a, 1), (b, 2)):
+            changed = copy.deepcopy(original)
+            changed['search_request']['result_slots'] = slots
+            changed['result']['stream_sha256'] = 'a' * 64
+            eval.write_json(path/'results.json', [changed])
+        pair = eval.compare(a, b)['pairs'][0]
+        self.assertTrue(pair['same_recorded_search'])
+        self.assertEqual(pair['baseline']['result_slots'], 1)
+        self.assertEqual(pair['candidate']['result_slots'], 2)
 
     def test_export_refuses_symlinks(self):
         private, public = self.root/'private', self.root/'public'

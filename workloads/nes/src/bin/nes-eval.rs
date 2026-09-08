@@ -17,8 +17,8 @@ use nes_workload::{
             selector_policy_from_identifier,
         },
         campaign::{
-            CampaignConfig, CampaignOrigin, Game, replay_campaign_checkpointed,
-            run_campaign_checkpointed_with_frame_budget,
+            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, Game, ResultBuffering,
+            replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
         },
         draw::{draw_mixture_from_identifier, suffix_shape_from_identifier},
     },
@@ -51,6 +51,10 @@ fn victory_within_budget(first_victory_frames: Option<u64>, budget: Option<u64>)
     first_victory_frames.is_some_and(|frames| budget.is_none_or(|limit| frames <= limit))
 }
 
+fn default_result_slots() -> usize {
+    1
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -69,6 +73,8 @@ struct Request {
     actions: usize,
     memory_mib: usize,
     window: usize,
+    #[serde(default = "default_result_slots")]
+    result_slots: usize,
     wall_seconds: u64,
     selector: String,
     suffix: String,
@@ -211,9 +217,14 @@ where
     if request.actions > game.max_action_limit() {
         return Err("actions exceed the adapter limit".into());
     }
+    let result_buffering = match request.result_slots {
+        1 => ResultBuffering::OnePerWorker,
+        2 => ResultBuffering::TwoPerWorker,
+        _ => return Err("result_slots must be 1 or 2".into()),
+    };
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "selector":request.selector, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification}),
+        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "selector":request.selector, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification}),
     )?;
     let mut stream = StreamDigest {
         file: if full {
@@ -228,13 +239,16 @@ where
     let preparation_seconds = started.elapsed().as_secs_f64();
     phase(out, "search", started)?;
     let search_started = telemetry_now();
-    let (report, checkpoint) = run_campaign_checkpointed_with_frame_budget(
+    let (report, checkpoint) = run_campaign_checkpointed_with_options(
         &game,
         &config,
         &CampaignOrigin::Genesis,
         &mut stream,
         Some(&mut progress),
-        request.frames,
+        CampaignExecutionOptions {
+            frame_budget: request.frames,
+            result_buffering,
+        },
     )?;
     stream.flush()?;
     progress.flush()?;

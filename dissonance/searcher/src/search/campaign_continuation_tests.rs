@@ -326,6 +326,24 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             None,
         )
         .unwrap();
+        let mut buffered_bytes = Vec::new();
+        let buffered = run_campaign_checkpointed_with_options(
+            &TestGame,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut buffered_bytes,
+            None,
+            CampaignExecutionOptions {
+                frame_budget: None,
+                result_buffering: ResultBuffering::TwoPerWorker,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            buffered_bytes, bytes,
+            "physical overlap changed search order"
+        );
+        assert_eq!(buffered, (live.clone(), checkpoint.clone()));
         let text = std::str::from_utf8(&bytes).unwrap();
         if workers == 1 {
             let mut with_sidecar = Vec::new();
@@ -397,6 +415,24 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         assert_eq!(bounded.frame_budget, Some(128));
         assert!(bounded.frames_emulated >= 128);
         assert!(bounded.executions_completed < config.execution_budget);
+        let mut bounded_buffered_bytes = Vec::new();
+        let bounded_buffered = run_campaign_checkpointed_with_options(
+            &TestGame,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut bounded_buffered_bytes,
+            None,
+            CampaignExecutionOptions {
+                frame_budget: Some(128),
+                result_buffering: ResultBuffering::TwoPerWorker,
+            },
+        )
+        .unwrap();
+        assert_eq!(bounded_buffered_bytes, bounded_stream);
+        assert_eq!(
+            bounded_buffered,
+            (bounded.clone(), bounded_checkpoint.clone())
+        );
         assert_eq!(
             replay_campaign_checkpointed(&TestGame, &bounded_stream, None, None).unwrap(),
             (bounded, bounded_checkpoint)

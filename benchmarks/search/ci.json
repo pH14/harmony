@@ -13,7 +13,8 @@
   "search": {
     "executions": 500,
     "actions": 8192,
-    "window": 1,
+    "window": 2,
+    "result_slots": 2,
     "wall_seconds": 120,
     "selector": "room_cell_uniform_128_energy_progress_cheapest_count_v1:3,6,12,2",
     "suffix": "one_to_six_within_3_longest_actions_full_hold",

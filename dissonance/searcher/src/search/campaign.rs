@@ -44,7 +44,7 @@ use crate::search::draw::{
 /// Longest stored tail one splice draw appends, bounding a single job.
 pub const SPLICE_ACTION_CAP: usize = 128;
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
-use crate::search::parallel::with_worker_pool;
+use crate::search::parallel::{ResultSlots, with_worker_pool};
 use crate::search::rand::RomuDuoJrRand;
 
 /// A campaign's finished report and its whole-tree snapshot checkpoint.
@@ -75,12 +75,40 @@ const ORIGIN_GENESIS: &str = "genesis";
 const ORIGIN_SNAPSHOT_ROOT: &str = "snapshot_root";
 const ORIGIN_ARCHIVE: &str = "archive";
 
-/// Result-bearing jobs allowed per physical executor. A worker receives its
-/// next reservation only after the coordinator admits its previous result,
-/// bounding unadmitted whole-VM snapshots to one job per worker. This changes
-/// only physical overlap: logical worker identity, selection, and admission
-/// remain coordinator-owned.
-const RESULT_JOBS_PER_PHYSICAL_WORKER: usize = 1;
+/// Bounded physical overlap, independent of logical reservation/admission order.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum ResultBuffering {
+    /// Keep at most one unadmitted result-bearing job per physical worker.
+    /// This is the default, including for whole-VM snapshots.
+    #[default]
+    OnePerWorker,
+    /// Let each physical worker execute a second already-reserved job while
+    /// its first result awaits ordered admission. This may double worker-result
+    /// memory; it does not enlarge the logical reservation window.
+    TwoPerWorker,
+}
+
+impl ResultBuffering {
+    const fn capacity(self) -> usize {
+        match self {
+            Self::OnePerWorker => 1,
+            Self::TwoPerWorker => 2,
+        }
+    }
+}
+
+/// Optional execution controls. Buffering changes host memory and timing only;
+/// callers record that choice in benchmark provenance, outside deterministic
+/// campaign bytes. A wall-time stop can still change with execution speed.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CampaignExecutionOptions {
+    /// Stop reserving at this admitted emulator-frame count, then drain.
+    pub frame_budget: Option<u64>,
+    /// Cap running plus completed-but-unadmitted jobs for each executor.
+    /// Worker results are outside the archive's logical memory budget and must
+    /// be included in the caller's host capacity planning and RSS measurements.
+    pub result_buffering: ResultBuffering,
+}
 
 /// Reservations held ahead of ordered admission per logical worker when the
 /// run does not set its own.
@@ -1227,10 +1255,6 @@ fn resident_memory_is_within_budget(bytes: usize, memory_budget_mib: Option<usiz
     memory_budget_mib.is_none_or(|budget_mib| bytes <= budget_mib.saturating_mul(1024 * 1024))
 }
 
-fn worker_queue_is_idle(queued: usize) -> bool {
-    queued == 0
-}
-
 fn retained_archive_indexes<G: Game>(
     core: &CoordinatorCore<G>,
     decisions: &[CampaignAdmissionDecision],
@@ -2293,8 +2317,8 @@ struct CompletedJob<G: Game + ?Sized> {
     result_sha256: String,
 }
 
-fn completed_results_within_bound(completed: usize, workers: usize) -> bool {
-    completed <= workers.saturating_mul(RESULT_JOBS_PER_PHYSICAL_WORKER)
+fn completed_results_within_bound(completed: usize, workers: usize, per_worker: usize) -> bool {
+    completed <= workers.saturating_mul(per_worker)
 }
 
 fn replay_splice<G: Game>(
@@ -2610,18 +2634,50 @@ where
 /// # Errors
 /// Returns campaign errors or rejects a zero frame budget. The reservation
 /// window drains normally, preserving a replayable witness and exact cost.
-#[allow(clippy::too_many_lines)]
 pub fn run_campaign_checkpointed_with_frame_budget<G: CampaignInterfaces>(
     game: &G,
     config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
     stream: &mut dyn Write,
-    mut progress: Option<&mut dyn Write>,
+    progress: Option<&mut dyn Write>,
     frame_budget: Option<u64>,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
 {
+    run_campaign_checkpointed_with_options(
+        game,
+        config,
+        origin,
+        stream,
+        progress,
+        CampaignExecutionOptions {
+            frame_budget,
+            ..CampaignExecutionOptions::default()
+        },
+    )
+}
+
+/// Run with explicit frame and physical result-buffering controls. Logical
+/// selection, admission, snapshot pins and recorded bytes do not depend on the
+/// physical buffering choice. Existing entry points keep one result per worker.
+///
+/// # Errors
+/// Returns campaign errors or rejects an invalid frame budget/configuration.
+#[allow(clippy::too_many_lines)]
+pub fn run_campaign_checkpointed_with_options<G: CampaignInterfaces>(
+    game: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    stream: &mut dyn Write,
+    mut progress: Option<&mut dyn Write>,
+    options: CampaignExecutionOptions,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    let frame_budget = options.frame_budget;
+    let result_limit = options.result_buffering.capacity();
     if frame_budget == Some(0) {
         return Err("frame budget must be nonzero".into());
     }
@@ -3031,22 +3087,17 @@ where
                 queued_specs.push_back(spec);
             }
             let mut physical_queued = vec![0_usize; workers];
-            'prefill: for _ in 0..RESULT_JOBS_PER_PHYSICAL_WORKER {
-                for worker in 0..config.workers {
-                    let Some(spec) = queued_specs.pop_front() else {
-                        break 'prefill;
-                    };
-                    pool.send(worker, spec)?;
-                    physical_queued[usize::try_from(worker)?] =
-                        physical_queued[usize::try_from(worker)?].saturating_add(1);
-                }
+            let mut result_slots = ResultSlots::new(config.workers, result_limit);
+            while !queued_specs.is_empty() {
+                let Some(worker) = result_slots.reserve() else {
+                    break;
+                };
+                let spec = queued_specs
+                    .pop_front()
+                    .ok_or("campaign prefill lost queued job")?;
+                pool.send(worker, spec)?;
+                physical_queued[usize::try_from(worker)?] += 1;
             }
-            let mut idle_workers = physical_queued
-                .iter()
-                .enumerate()
-                .filter_map(|(worker, queued)| (*queued == 0).then_some(worker))
-                .map(u32::try_from)
-                .collect::<Result<VecDeque<_>, _>>()?;
 
             let mut next_admission = 0_usize;
             while !pending.is_empty() || !completed.is_empty() {
@@ -3094,10 +3145,8 @@ where
                     {
                         return Err("campaign worker completed one reservation twice".into());
                     }
-                    if !completed_results_within_bound(completed.len(), workers) {
-                        return Err(
-                            "campaign buffered more than one result-bearing job per worker".into(),
-                        );
+                    if !completed_results_within_bound(completed.len(), workers, result_limit) {
+                        return Err("campaign exceeded its bounded result-bearing jobs".into());
                     }
                     ready_reply = pool.try_receive()?;
                 }
@@ -3215,16 +3264,7 @@ where
                     if victories_before == 0 && core.victories > 0 {
                         counters.note_first_victory(sequence);
                     }
-                    if !worker_queue_is_idle(
-                        *physical_queued
-                            .get(usize::try_from(physical_worker)?)
-                            .ok_or("admitted result names an unknown physical worker")?,
-                    ) {
-                        return Err(
-                            "admitted result's physical worker still has queued work".into()
-                        );
-                    }
-                    idle_workers.push_back(physical_worker);
+                    result_slots.admit(physical_worker)?;
                     if let Some(sink) = progress.as_deref_mut() {
                         // Count-based boundaries keep sidecar presence
                         // independent of host speed; the timestamp below is
@@ -3240,7 +3280,7 @@ where
                             )?;
                             if coordinator_profile.enabled {
                                 eprintln!(
-                                    "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} idle_workers={} queued_specs={} completed_buffered={} job_frames={} replay_jobs={} replay_actions={} replay_time={} suffix_actions={} suffix_time={}",
+                                    "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} available_result_slots={} queued_specs={} completed_buffered={} job_frames={} replay_jobs={} replay_actions={} replay_time={} suffix_actions={} suffix_time={}",
                                     coordinator_profile.receive_wait_ns,
                                     coordinator_profile.admission_ns,
                                     coordinator_profile.bookkeeping_ns,
@@ -3270,7 +3310,7 @@ where
                                     core.archive.history_compactions(),
                                     core.archive.historical_entries_dropped(),
                                     core.archive.input_reconstructions(),
-                                    idle_workers.len(),
+                                    result_slots.available(),
                                     queued_specs.len(),
                                     completed.len(),
                                     counters.job_frames,
@@ -3316,7 +3356,7 @@ where
                     // pipeline full while preserving logical reservation and
                     // admission order.
                     while !queued_specs.is_empty() {
-                        let Some(worker) = idle_workers.pop_front() else {
+                        let Some(worker) = result_slots.reserve() else {
                             break;
                         };
                         let spec = queued_specs
@@ -3329,7 +3369,7 @@ where
                     }
                 }
                 while !queued_specs.is_empty() {
-                    let Some(worker) = idle_workers.pop_front() else {
+                    let Some(worker) = result_slots.reserve() else {
                         break;
                     };
                     let spec = queued_specs
@@ -4037,7 +4077,7 @@ mod tests {
         replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
         schedule_policy_identifier, schedule_policy_is_legacy, schedule_policy_is_supported,
         schedule_policy_predates_budget_maintenance, schedule_policy_window,
-        stop_reservations_after_victory, uses_bounded_progress_curve, worker_queue_is_idle,
+        stop_reservations_after_victory, uses_bounded_progress_curve,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
@@ -4906,11 +4946,7 @@ mod tests {
     }
 
     #[test]
-    fn admission_bookkeeping_helpers_preserve_idle_and_retained_meaning() {
-        assert!(worker_queue_is_idle(0));
-        assert!(!worker_queue_is_idle(1));
-        assert!(!worker_queue_is_idle(usize::MAX));
-
+    fn admission_bookkeeping_helpers_preserve_retained_meaning() {
         let (game, run, mut core, mut target) = test_core();
         let action = TestAction::new(0x01, 4);
         target.apply(&action);
@@ -5122,11 +5158,13 @@ mod tests {
     }
 
     #[test]
-    fn unadmitted_result_jobs_are_bounded_to_one_per_physical_worker() {
-        assert!(completed_results_within_bound(0, 0));
-        assert!(completed_results_within_bound(4, 4));
-        assert!(!completed_results_within_bound(5, 4));
-        assert!(!completed_results_within_bound(1, 0));
+    fn unadmitted_result_jobs_obey_the_explicit_physical_bound() {
+        for limit in [1, 2] {
+            assert!(completed_results_within_bound(0, 0, limit));
+            assert!(completed_results_within_bound(4 * limit, 4, limit));
+            assert!(!completed_results_within_bound(4 * limit + 1, 4, limit));
+            assert!(!completed_results_within_bound(1, 0, limit));
+        }
     }
 
     #[test]

@@ -21,6 +21,17 @@ and serial replay release these pins at the same recorded boundary, independent
 of worker completion timing. Budgeted streams before schedule version 3 are
 rejected because they used different snapshot accounting.
 
+Physical executors default to at most one running or completed-but-unadmitted
+job each. `run_campaign_checkpointed_with_options` can explicitly allow two
+through `ResultBuffering::TwoPerWorker`. Credits return only at ordered
+admission, so a fast worker cannot accumulate unbounded completed snapshots.
+This overlaps already-reserved work; it does not change the logical window,
+selection order, snapshot pins, or deterministic campaign bytes. The default
+remains appropriate for large whole-VM results. Additional worker-result
+memory is outside the archive's logical budget and must be measured in host RSS.
+Benchmark callers record this physical execution choice in their run identity.
+A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
+
 ## Workload boundary
 
 `searcher` is independently buildable. Workload packages implement its typed
