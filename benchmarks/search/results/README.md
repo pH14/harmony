@@ -46,6 +46,11 @@ regressed, including a frame-capped failure at 256 MiB. The two memory condition
 reuse the same five seeds and are not ten independent seed trials. These results
 show a panel gain but do not qualify a recipe that solves every required cell.
 
+[`smb-keycount-004.json`](smb-keycount-004.json) compares the same entry-count
+panel with count history retained by archive key. Key history solved 3/5 at
+256 MiB and 4/5 at 2,048 MiB, versus entry counts’ 4/5 at each. The extra
+mechanism does not displace the simpler selector on this evidence.
+
 ## Development panel 002
 
 [`development-002.json`](development-002.json) records two controlled ablations

@@ -79,6 +79,7 @@ as a separate stress condition.
 | `ci.json` | Source-built Nova (level and whole-game origins) and STB through the common runner, with full small-campaign replay and a frame cap. No licensed commercial ROM is used. |
 | `pilot.json` | Three exploratory seeds on SMB, Nova level 1 and whole game, Metal Man, Metroid new game and STB Hard. |
 | `evaluation.json` | Five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
+| `smb-reference.json` | Practical fresh whole-game SMB recipe: 24 workers, 2,048 MiB, count weighting, two-reservation window/two result slots, 600,000 executions and 120 million frames. Five fresh validation seeds; every cell must solve. |
 | `smb-regression.json` | Fresh whole-game SMB at 24 workers and both 256/2048 MiB, five seeds. Every cell must solve within its declared budget. |
 | `throughput.json` | Short isolated 24-worker runs across all five games, three seeds, a two-reservation window and 512 MiB. Copy it and change only `result_slots` from 1 to 2 to measure physical overlap. Whole-game completion is not required in this work-limited panel. |
 
@@ -88,7 +89,11 @@ The full evaluation uses a separate, preregistered panel, 20260910–20260914, f
 validating a mechanism selected from the development runs. Performance panels have explicit
 frame, execution and wall ceilings. SMB's dedicated regression panel keeps the
 400,000-execution gate; the broad eight-worker panel allows 600,000 executions
-under an 80-million-frame cap. These are distinct resource conditions.
+under an 80-million-frame cap. The practical SMB reference allows 600,000
+executions and 120 million frames at 24 workers. It solved all four development
+seeds (including seed 1) in 122–167 seconds, with witnesses verified; the separate
+five-seed validation is registered before those results are observed. These are
+distinct resource conditions.
 
 All manifests specify exact ROM hashes and normal menu origins. MM2 is currently
 an independent-stage panel; it does not claim full-game evaluation. Metroid

@@ -37,6 +37,12 @@ Source-labelled
 mechanics are allowed; inferred routes, waypoint rewards, curated winning chords,
 per-obstacle weapon advice, and imported solution tapes are not.
 
+The remaining ordering audit is tracked in
+[#270](https://github.com/pH14/harmony/issues/270), and the independent Metroid
+capability/resource-retention ablation in
+[#271](https://github.com/pH14/harmony/issues/271). Neither is silently folded
+into the current fixed-policy search comparison.
+
 The historical SMB ledger also notes that entry-local sampling counts disappear
 when the memory budget drops an entry. The versioned retention-key count cache
 tests that specific lifetime problem with a bounded history. It does not ban
