@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: x86-virtual-time
+name: Acceptance / Consonance x86
 
 # This dispatch-only x86 VM-exit-count V-time evidence lane uses GitHub-hosted
 # runners. Standard x86-64 Linux runners expose /dev/kvm through nested

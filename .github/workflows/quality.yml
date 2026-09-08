@@ -1,4 +1,4 @@
-name: quality
+name: Checks / Quality
 
 # Enforcement runs on GITHUB-HOSTED runners (ubuntu-latest). harmony is a public
 # repo, so standard Linux runners are free with unlimited minutes — the reason these

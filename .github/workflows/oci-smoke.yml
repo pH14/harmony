@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: oci-smoke
+name: Acceptance / OCI
 
 # End-to-end `harmony oci run` on a GitHub-hosted x86-64 runner: standard
 # Linux runners expose /dev/kvm through nested virtualization, a proven
