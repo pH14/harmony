@@ -4302,6 +4302,10 @@ where
 }
 
 #[cfg(test)]
+#[path = "archive_abstraction_tests.rs"]
+mod abstraction_tests;
+
+#[cfg(test)]
 mod tests {
     use std::cmp::Ordering;
 

@@ -195,3 +195,11 @@ only fixed counters, reported by `retention_diagnostic_memory_bytes`. Existing
 vectors remain covered by archive metadata charging. Measured process RSS also
 includes workload-owned audit storage. The final census reads only cached
 active endpoints; missing payloads are counted and never reconstructed.
+
+The abstraction fixtures in `src/search/archive_abstraction_tests.rs` use exact
+finite transition systems with the production admission rules. They distinguish
+lost continuation events from endpoint equality, show capability aliasing and
+the limits of coordinate-extreme retention, and check stable partition
+refinement against exhaustive product-graph equivalence. These are finite
+counterexamples, not correctness proofs for workload keys. The assumptions and
+research predictions are in [`retention theory`](../../benchmarks/search/retention-theory/theory.md).

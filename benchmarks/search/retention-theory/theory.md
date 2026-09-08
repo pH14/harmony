@@ -1,0 +1,124 @@
+# What archive retention can and cannot guarantee
+
+This is a research contract, not a proof of the NES searcher. The finite models
+are executable in `dissonance/searcher/src/search/archive_abstraction_tests.rs`.
+They use the production archive admission rules, while their transition systems
+are deliberately small and completely enumerated.
+
+## Define the claim before choosing a heuristic
+
+Let a deterministic state include the emulator, adapter caches, pending input,
+and remaining task budget. An action may be a held controller chord. Its
+transition emits `(next_state, actual_cost, task_events, terminal_status)`;
+events inside a held action count. The archive maps states to cells through
+`phi`. A cell representative is a restart state, not a proof that the other
+states in the cell are interchangeable.
+
+A sufficient condition for replacing `s` by `r` without changing any allowed
+task trace is an equivalence relation `~` satisfying:
+
+* initial task labels and remaining budgets agree;
+* for every allowed action, costs, events, and terminal status agree;
+* successor states are again related.
+
+Induction on suffix length establishes equality of every finite allowed trace.
+The base case compares initial labels. The induction step uses the matching
+transition output and applies the hypothesis to related successors. This gives
+reachability preservation, not equality of search streams or finite-budget
+discovery probabilities. Different prefix costs must be included in remaining
+budget; the actual searcher's within-group cost alone does not establish that.
+
+For one-way replacement, a cost-respecting simulation can suffice: every
+original continuation must have a matching, no-more-expensive continuation
+from the replacement. Matching the same action sequence is a strong sufficient
+condition, not a necessary condition for task reachability. Resource ordering
+is neither of these relations unless transition monotonicity is separately
+established. More health does not imply the same velocity, enemy phase, door
+state, or response to the next button press.
+
+This follows the distinctions in [state abstraction theory](https://thomasjwalsh.net/pub/aima06Towards.pdf)
+and [bisimulation metrics](https://arxiv.org/abs/1207.4114). We do not import an
+MDP approximation bound without checking its reward, horizon and transition
+assumptions against held actions and emulator resets.
+
+## Counterexamples are cheaper than claims of equivalence
+
+For a finite deterministic model, explore the product graph `(s,r)`. An edge
+whose cost/event/terminal output differs supplies a distinguishing suffix.
+If the reachable product graph is exhausted without a difference, equivalence
+holds for that finite model and action vocabulary. It does not hold for the
+NES merely because the model passed. Partition refinement repeatedly splits
+cells by output and successor-cell signatures until stable. It is an exact
+finite analogue of the refinement direction, inspired by
+[CEGAR](https://www.cs.cmu.edu/~emc/papers/Conference%20Papers/Counterexample-guided%20Abstraction%20Refinement.pdf).
+
+On NES states, a replayed distinguishing suffix is a valid counterexample to
+the particular equivalence claim. A finite set of matching sampled suffixes
+is only distribution-specific evidence. With zero mismatches in `n` independent
+draws from a fixed suffix distribution, the one-sided 95% upper bound on that
+distribution's mismatch probability is `1 - 0.05^(1/n)`. At n=100 it is about
+2.95%. Shared samples across pairs, adaptive choice of states, and multiple
+claims need separate treatment. Rare decisive suffixes can remain invisible.
+
+## A Pareto front is a resource statement
+
+One slot can contain resource vectors `(10,0)`, `(5,5)`, `(0,10)`. All three are
+nondominated. If an exit needs at least three of both resources, only the middle
+state succeeds. Keeping the two coordinate extremes loses the exit even when
+resources are genuinely monotone in the transition system. This is a stricter
+counterexample than a hidden-physics alias: two extremes do not preserve all
+monotone threshold tasks. A full resource front still cannot establish
+behavioral equivalence when unrepresented state differs.
+
+[MOME](https://arxiv.org/abs/2202.03057) motivates bounded local Pareto sets, but
+does not make the production two-extreme heuristic a task-preservation theorem.
+Its usefulness here requires evidence under the same total archive memory.
+
+## Coverage and discovery probability are different objectives
+
+For a frozen probe suite, let `C_s` be the set of useful outcomes exposed by
+state s, and let outcome weights be nonnegative and fixed. Then
+
+`F(R) = sum_j w_j * 1[j belongs to union(C_s for s in R)]`
+
+is monotone submodular. Under a cardinality limit K, greedy marginal coverage
+has the usual `1 - 1/e` guarantee relative to that frozen coverage objective
+([Nemhauser, Wolsey and Fisher](https://link.springer.com/article/10.1007/BF01588971)).
+This excludes unknown future outcomes, adaptive probes, unequal snapshot cost,
+and histories whose value depends on later archive combinations. Optimizing
+the probe suite is not a guarantee about unseen game progress.
+
+Even with known outcomes, finite search probability need not be monotone in
+retained states. Under independent uniform parent draws, one state with success
+probability p per attempt gives `1-(1-p)^B` success after B attempts. Adding a
+second state with zero success probability changes this to `1-(1-p/2)^B`, which
+is strictly smaller for p>0, B>0. More reachable futures can therefore help the
+coverage objective while hurting a specific finite-budget target. The real
+selector is hierarchical and adaptive, so these numbers are an explanatory
+model, not fitted predictions for Metroid.
+
+The production selector has a one-quarter uniform-active-entry branch. If an
+entry stays active for L reservations, with at most N active entries at every
+one, its chance of never being selected is at most `(1-1/(4*N))^L`, under the
+ideal random-draw model. This says little when N is large and retention lifetime
+is short. It also excludes removed, exhausted, or horizon-ineligible entries;
+deterministic seeded execution alone supplies no probabilistic guarantee.
+Do not mistake a positive asymptotic probability for adequate finite exposure.
+
+## Predictions that decide the next experiment
+
+1. Identity refinement should first reduce replayed continuation disagreements
+   on held-out suffixes for states split by that refinement. If it only grows
+   cell count without separating useful futures, do not spend a long run on it.
+2. Resource retention should preserve additional useful continuations before a
+   fresh campaign is expected to benefit. Test the middle of fronts as well as
+   coordinate extremes; report useful futures lost by either choice.
+3. If useful alternatives survive but get fewer attempts per unit work, test
+   allocation separately. Measure active lifetime, actual selection exposure,
+   reconstruction cost and useful suffix yield, not only total entries.
+4. Qualify an end-to-end candidate with matched work/memory and fresh seeds.
+   Progress from hand-selected diagnostic starts is explanatory evidence only.
+
+The intended loop is: claim, assumptions, smallest counterexample, distinguishing
+probe, mechanism-specific prediction, bounded experiment, then fresh validation.
+The theory pass ends after two hours even if no useful guarantee was found.
