@@ -25,8 +25,11 @@ pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 /// Largest bounded input horizon accepted by a Metroid campaign.
 pub const MAX_METROID_ACTIONS: usize = 8_192;
 /// Recorded archive-key and per-location preference policy.
-pub const KEY_POLICY_IDENTIFIER: &str =
-    "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8";
+pub const KEY_POLICY_IDENTIFIER: &str = if cfg!(feature = "metroid-refined-archive") {
+    "metroid_items_tanks_spatial_8_raw_pose_selection_32_legacy_progress_v9"
+} else {
+    "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8"
+};
 /// Recorded same-slot replacement policy.
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
@@ -71,11 +74,11 @@ pub struct MetroidArchiveKey {
     pub map_x: u8,
     /// Map row.
     pub map_y: u8,
-    /// Samus's horizontal 16-pixel bucket within the screen.
+    /// Samus's horizontal retention bucket (16 pixels in v8, 8 in v9).
     pub x: u8,
-    /// Samus's vertical 16-pixel bucket within the screen.
+    /// Samus's vertical retention bucket (16 pixels in v8, 8 in v9).
     pub y: u8,
-    /// Whether Samus is grounded, airborne, or in another pose. A ledge
+    /// Posture in v8, raw pose in experimental v9. A ledge
     /// reachable only from a jump shares its pixels with the ground below.
     pub posture: u8,
     /// Door transition state; a door is the only route between many rooms
@@ -100,7 +103,7 @@ impl ArchiveKey for MetroidArchiveKey {
         (left.items, left.tanks).cmp(&(right.items, right.tanks))
     }
 
-    /// Depth 0 is one 16-pixel location, depth 1 one 32-pixel selection
+    /// Depth 0 is one retention location, depth 1 one 32-pixel selection
     /// cell, depth 2 a 128-pixel region of a screen, depth 3 the map cell,
     /// and depth 4 the items and tanks held. Posture and the door state
     /// split locations and selection cells only. Resource fields never
@@ -120,13 +123,22 @@ impl ArchiveKey for MetroidArchiveKey {
         match depth {
             0 => location,
             1 => MetroidArchiveGroup {
-                x: self.x / 2,
-                y: self.y / 2,
+                x: self.x / (32 / POSITION_BUCKET),
+                y: self.y / (32 / POSITION_BUCKET),
+                posture: if cfg!(feature = "metroid-refined-archive") {
+                    MetroidMechanicalState {
+                        pose: self.posture,
+                        ..MetroidMechanicalState::default()
+                    }
+                    .posture()
+                } else {
+                    self.posture
+                },
                 ..location
             },
             2 => MetroidArchiveGroup {
-                x: self.x / 8,
-                y: self.y / 8,
+                x: self.x / (128 / POSITION_BUCKET),
+                y: self.y / (128 / POSITION_BUCKET),
                 posture: 0,
                 door: 0,
                 ..location
@@ -175,7 +187,11 @@ impl MetroidArchiveKey {
 }
 
 /// Samus's position per key bucket, in pixels.
-const POSITION_BUCKET: u8 = 16;
+const POSITION_BUCKET: u8 = if cfg!(feature = "metroid-refined-archive") {
+    8
+} else {
+    16
+};
 
 /// Build the opaque archive key from a decoded state.
 #[must_use]
@@ -189,7 +205,11 @@ pub fn archive_key(state: MetroidMechanicalState) -> MetroidArchiveKey {
         map_y: state.map_y,
         x: state.x / POSITION_BUCKET,
         y: state.y / POSITION_BUCKET,
-        posture: state.posture(),
+        posture: if cfg!(feature = "metroid-refined-archive") {
+            state.pose
+        } else {
+            state.posture()
+        },
         door: state.door,
         health,
         missiles,
@@ -446,5 +466,60 @@ mod tests {
     fn milestones_are_relative_to_genesis_holdings() {
         assert!(!milestones(state(0, 300, 0b1), 1, 0).gained);
         assert!(milestones(state(0, 300, 0b11), 1, 0).gained);
+    }
+
+    #[test]
+    fn refinement_only_splits_retention_identity() {
+        let mut a = state(100, 300, 0);
+        a.pose = 0;
+        let mut b = a;
+        b.x = 108;
+        let (a_key, b_key) = (archive_key(a), archive_key(b));
+        assert_eq!(
+            a_key.group(0) == b_key.group(0),
+            !cfg!(feature = "metroid-refined-archive")
+        );
+        for depth in 1..MetroidArchiveKey::groups() {
+            assert_eq!(a_key.group(depth), b_key.group(depth));
+        }
+        b.x = a.x;
+        b.pose = 1;
+        let b_key = archive_key(b);
+        assert_eq!(
+            a_key.group(0) == b_key.group(0),
+            !cfg!(feature = "metroid-refined-archive")
+        );
+        for depth in 1..MetroidArchiveKey::groups() {
+            assert_eq!(a_key.group(depth), b_key.group(depth));
+        }
+        assert_eq!(a_key.preference_cmp(b_key), Ordering::Equal);
+        assert_eq!(a_key.retention_resources(), b_key.retention_resources());
+        assert_eq!(MetroidArchiveKey::slot_capacity(), 1);
+    }
+
+    #[test]
+    fn every_pixel_and_pose_keeps_the_existing_selection_cells() {
+        // Every coordinate/pose marginal against the independent old 32/128
+        // pixel cell definition. The mapping is coordinate-separable.
+        for coordinate in 0..=u8::MAX {
+            for pose in 0..=u8::MAX {
+                for (x, y) in [(coordinate, 197), (107, coordinate)] {
+                    let mut s = state(x, 300, 0);
+                    s.y = y;
+                    s.pose = pose;
+                    let key = archive_key(s);
+                    let cell = key.group(1);
+                    assert_eq!(
+                        (cell.x, cell.y, cell.posture),
+                        (x / 32, y / 32, s.posture())
+                    );
+                    let region = key.group(2);
+                    assert_eq!(
+                        (region.x, region.y, region.posture, region.door),
+                        (x / 128, y / 128, 0, 0)
+                    );
+                }
+            }
+        }
     }
 }

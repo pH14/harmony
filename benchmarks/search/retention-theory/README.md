@@ -235,3 +235,85 @@ cost difference was encountered before an already-shorter state-label difference
 Checking successor labels when visiting each edge fixes it; the new regression
 and all eight abstraction fixtures pass. This changes test scaffolding only,
 not the frozen candidate executable.
+
+C01 ended at Heat's registered 20-minute wall limit in both arms: coverage
+reached screen 18 at 61,226,275 stage frames; legacy reached screen 16 at
+43,239,627. Neither reached or defeated the boss. The unequal actual work and
+different fresh prefixes prevent interpreting this as a matched-work Heat gain.
+Both final trajectory witnesses replayed. No chain was restarted or extended.
+
+A02 completed its 100,000 jobs: extremes reached screen 8 at 13,072,670 frames.
+At the exact 100k boundary, coverage's identical-start trace had reached screen
+16 at 12,528,426 frames. Coverage first logged screen 16 by 11,794,043 frames.
+Extremes reached screen 8 earlier than coverage (6.36M versus 8.88M frames),
+so the difference is later escape from that bottleneck, not uniformly faster
+progress. Coverage retained 7,931 active entries/195MB logical memory versus
+4,498/107MB; both used the same 8 GiB limit, with no pressure claim implied.
+
+### A03: repeat the same-start result at a fixed frame budget
+
+Freeze the A01 discovered Heat prefix and candidate build. Compare coverage
+and extremes on new development seeds 20261102 and 20261103, 4 workers/8 GiB,
+100k jobs and 12M admitted frames, 600s search plus 120s finishing per cell.
+Use a 1,500s process-tree limit and 22 GiB hard RSS limit for the two sequential
+paired panels. The original 20261101 diagnostic is re-scored from its existing
+trace; no search is repeated for that seed. Score the greatest logged screen
+whose admitted-frame counter is at most 12M. This is a conservative bound,
+not an exact first-arrival frame, and excludes drained-window overshoot.
+
+Seed 20261102: extremes on 0–3, coverage on 8–11. Swap placements for 20261103.
+Keep one paired panel running at a time; all other msr1 experiments have ended.
+This is repeated development from a fixed discovered start, not fresh chained
+validation. Primary decision: only if coverage beats extremes in logged screen
+attainment on at least two of the three seeds at this fixed budget does the
+proxy qualify for more expensive depth experiments. Otherwise retain the
+negative result and return to abstraction/exposure diagnosis. No default
+promotion follows from this small diagnostic panel.
+
+### K01: separate retention identity from selection geography
+
+The P02 analysis qualifies a second implementation family: finer Metroid
+retention identity, independently of resource coverage. The opt-in Cargo feature
+`metroid-refined-archive` uses 8-pixel positions and raw pose at depth 0. All
+coarser groups, resource preferences and per-slot capacity remain the legacy
+ones. A distinct v9 policy identifier prevents cross-policy stream replay;
+the default build keeps v8 field layout and values. This compile-time choice
+keeps the historical key type unchanged while freezing two explicit executables.
+
+First verify the exact partition refinement and all pixel/pose marginal mappings
+without an emulator (10m watchdog). Then build immutable default and feature
+variants (20m each), recording Cargo features in the build attestation. With
+the Metroid ROM available, run a 5k full-replay feature qualification and a
+100k default run whose stream matches the frozen baseline. Only then compare
+fresh development seed 3 under default/refined identity at 500k jobs/70M frames,
+4 workers/8 GiB, semantic/alphabet-only controls and 30m per cell. This is a
+key-only ablation: neither optional resource retention policy is enabled.
+More retained cells without better useful progress fails the gate; inspect
+memory/exposure before any longer run. These are development seeds and cannot
+qualify the breakthrough panel. Metroid ROM transfer remains pending approval.
+
+A03 failed its preregistered escalation gate. At the fixed work ceilings,
+the screen-attainment pairs (coverage, extremes) were (16,8), (8,8), (6,7)
+for seeds 20261101–20261103. The two new extremes cells hit 100k jobs at
+11.92M and 11.73M frames; coverage hit the 12M frame ceiling first. Thus
+coverage does not win consistently even with slightly more actual frames in
+those two cells. Do not run longer coverage chains or promote this policy.
+The single-seed improvement remains a useful counterexample to universal
+coordinate-extreme superiority, not a qualified search improvement.
+
+K01 offline qualification passed: both default and feature builds pass all
+119 NES library tests. The compiled default key merges all 16 numeric P02
+pairs; the feature key separates 11, with every coarser group unchanged in
+both outputs. Strict Clippy passes for the feature library and key-audit tool.
+The coordinate/pose contract explicitly checks both independent coordinate
+marginals so swapped-axis errors cannot hide in diagonal-only fixtures.
+
+### Q03: freeze the prepared key-refinement executables
+
+Build default and `metroid-refined-archive` variants from the same committed
+source, sequentially against the owned target cache; 20m bound per build.
+Then run B01's SMB and MM2 qualification cells through each executable, 5k
+jobs, full replay, 240+60s per cell. All four streams must match B01 because
+the new feature changes only Metroid. This completes the available cross-game
+compatibility checks before asking for the still-required Metroid asset.
+It cannot substitute for a Metroid replay or fresh-search result.

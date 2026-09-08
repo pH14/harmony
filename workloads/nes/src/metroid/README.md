@@ -124,3 +124,20 @@ memory. `metroid-retention-probe` reconstructs each pair and applies the same
 sampled suffixes to both sides. It reports physical probe/prefix frames, gains,
 survival, and living map exits separately. These diagnostic starts never count
 as fresh validation; differing endpoints alone are not useful-future evidence.
+
+The opt-in Cargo feature `metroid-refined-archive` builds a separate experimental
+v9 key policy. It uses 8-pixel retention positions and raw pose, while preserving
+the existing 32-pixel selection cells, 128-pixel regions, map groups, progress
+ordering, resource preference and one representative per retention slot. The
+default build retains v8 semantics and serialization. Streams record distinct
+key-policy identifiers and reject replay under the other build's policy.
+The key's serialized field layout is unchanged; the recorded policy identifies
+the position/pose interpretation. Archive imports already re-derive keys from
+reconstructed states rather than copying the old key identity.
+
+This is an abstraction experiment, not a validated improvement. The frozen
+numeric continuation probes predict that it separates 11 of 15 sampled pairs
+with distinguishing local exits or survival outcomes. More slots consume the
+same archive byte budget, and retained alternatives may still receive too little
+work. Actual-ROM replay and matched fresh search must qualify it before use.
+See the [research ledger](../../../../benchmarks/search/retention-theory/README.md).

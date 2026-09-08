@@ -17,6 +17,8 @@ sha2 = "=0.10.9"
 
 [features]
 consonance = ["machine/consonance"]
+# Experimental Metroid retention refinement; the default preserves v8 keys.
+metroid-refined-archive = []
 
 [[bin]]
 name = "nova-consonance-campaign"
