@@ -141,11 +141,12 @@ exclude_re = [
     #     `allow-stateful` row in the frozen contract is bidirectional (verified: 14
     #     bidirectional, 0 one-directional), so `&&` ≡ `||` on this contract.
     "replace && with \\|\\| in msr_filter_allow",
-    # Linux ARM64's KVM constructor is cfg-excluded from the x86 CI oracle.
+    # Linux ARM64's KVM constructor and its two wrappers are cfg-excluded
+    # from the x86 CI oracle.
     # Its portable compose helpers remain mutation-tested; exclude only this
-    # hardware entrypoint, which the retired boot_selected regex also covered.
-    "consonance/vmm-core/src/vendor/arm64/bringup\\.rs:.* in boot_selected_inner$",
-    "consonance/vmm-core/src/vendor/arm64/bringup\\.rs:.*replace boot_selected_inner ->",
+    # hardware entrypoints, which the retired boot_selected regex also covered.
+    "consonance/vmm-core/src/vendor/arm64/bringup\\.rs:.* in boot_selected(_control|_inner)?$",
+    "consonance/vmm-core/src/vendor/arm64/bringup\\.rs:.*replace boot_selected(_control|_inner)? ->",
     # The Apple-Silicon HVF boot roots are the arm64 counterparts of the
     # Linux/KVM composition roots above. They open Hypervisor.framework and
     # cannot be entered by the Ubuntu mutation oracle; portable `compose*`
