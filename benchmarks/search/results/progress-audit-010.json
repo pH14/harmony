@@ -1,0 +1,1647 @@
+{
+  "conclusion": "Historical deep-search reach was not qualified by the 005 panel. Retained tapes demonstrate current runtime compatibility, not rediscovery by search.",
+  "format": "harmony-search-progress-audit-v2",
+  "historical_conditions": {
+    "actions": 4096,
+    "executions": 3000000,
+    "improvement_replay": "prototype quarter-share tiered queue; not the bounded continuation bank in 005",
+    "memory_mib": 8192,
+    "metroid_latest_runs": [
+      "met25",
+      "met26",
+      "met27"
+    ],
+    "metroid_source_revision": "9e52034e",
+    "mixture": "alphabet_only",
+    "mm2_scope": "searched stage victories chained in operator-specified order; retained power-on prefix reaches Wily 4",
+    "selector": "EnergyParetoCheapest",
+    "suffix": "one_to_six",
+    "workers": 4
+  },
+  "historical_summaries": [
+    {
+      "aggregate_scope": "final retained cells and legacy campaign milestone union; not one trajectory",
+      "areas_recorded_in_retained_cells": {
+        "brinstar": 94,
+        "kraid_area": 53,
+        "norfair": 51,
+        "ridley_area": 37
+      },
+      "boss_defeats_across_all_branches": null,
+      "executions": 3000000,
+      "legacy_milestones": {
+        "areas": 23,
+        "gained": true,
+        "items": 3,
+        "tanks": 5
+      },
+      "named_equipment_across_all_branches": null,
+      "run": "met18",
+      "seed": 3,
+      "summary_sha256": "927b1844f76225ca2292d026c65c5c715852dcffc00336415a82275007c8e8ac"
+    },
+    {
+      "aggregate_scope": "final retained cells and legacy campaign milestone union; not one trajectory",
+      "areas_recorded_in_retained_cells": {
+        "brinstar": 94,
+        "kraid_area": 68,
+        "norfair": 51,
+        "ridley_area": 37
+      },
+      "boss_defeats_across_all_branches": null,
+      "executions": 6000000,
+      "legacy_milestones": {
+        "areas": 23,
+        "gained": true,
+        "items": 3,
+        "tanks": 6
+      },
+      "named_equipment_across_all_branches": null,
+      "run": "met19",
+      "seed": 3,
+      "summary_sha256": "733388a37fafa63d3bdb8604316b0b346174d4c49a9728220d36d9c1f379b55e"
+    },
+    {
+      "aggregate_scope": "final retained cells and legacy campaign milestone union; not one trajectory",
+      "areas_recorded_in_retained_cells": {
+        "brinstar": 94,
+        "kraid_area": 40,
+        "norfair": 27
+      },
+      "boss_defeats_across_all_branches": null,
+      "executions": 3000000,
+      "legacy_milestones": {
+        "areas": 7,
+        "gained": true,
+        "items": 3,
+        "tanks": 5
+      },
+      "named_equipment_across_all_branches": null,
+      "run": "met25",
+      "seed": 3,
+      "summary_sha256": "fe2280d0b33b17dc9744097e50032657e82c227f68d14d26c0f54aa97a1d7894"
+    },
+    {
+      "aggregate_scope": "final retained cells and legacy campaign milestone union; not one trajectory",
+      "areas_recorded_in_retained_cells": {
+        "brinstar": 82,
+        "norfair": 27
+      },
+      "boss_defeats_across_all_branches": null,
+      "executions": 3000000,
+      "legacy_milestones": {
+        "areas": 3,
+        "gained": true,
+        "items": 2,
+        "tanks": 3
+      },
+      "named_equipment_across_all_branches": null,
+      "run": "met26",
+      "seed": 4,
+      "summary_sha256": "672817a65673a176385f82438ea0eac64e5b82da0710b72be5591fbf7593c3f0"
+    },
+    {
+      "aggregate_scope": "final retained cells and legacy campaign milestone union; not one trajectory",
+      "areas_recorded_in_retained_cells": {
+        "brinstar": 95,
+        "kraid_area": 61,
+        "norfair": 52,
+        "ridley_area": 10
+      },
+      "boss_defeats_across_all_branches": null,
+      "executions": 3000000,
+      "legacy_milestones": {
+        "areas": 23,
+        "gained": true,
+        "items": 3,
+        "tanks": 5
+      },
+      "named_equipment_across_all_branches": null,
+      "run": "met27",
+      "seed": 5,
+      "summary_sha256": "d1ba3c91f6eabe4d9901c9bca35ae273595c062420df813725e87477938da42b"
+    }
+  ],
+  "immutable_prior_panel": "full-validation-005.json",
+  "measurement_caveats": [
+    "Historical names are reconstructed from retained input replay. Unretained branches cannot be reconstructed from scalar counts.",
+    "A replay stamp execution counts actions in that tape, not historical search executions; route_action_end_frame is not cumulative emulator work.",
+    "Old Ridley defeat count used the wrong bit. No recovered Metroid tape verifies a boss defeat; the old aggregate cannot prove absence across every branch.",
+    "Met27 champion replay has Ice Beam, not Long Beam. Historical scalar item counts cannot distinguish them.",
+    "Old retained-map-cell counts and current cumulative observed-map-cell counters have different scopes.",
+    "Wily 4 tape is a replay compatibility fixture, never a supplied seed for fresh search.",
+    "Registered 008 diagnostic uses reused historical seeds and differs from the historical replay machinery; it is not fresh validation.",
+    "Named-progress v2 latches transient Tourian defeat/escape states without adding search observations. Old v1 reports lacking these fields remain unavailable.",
+    "All 17 retained tapes were rerun twice with the corrected probe, rather than adjusting old timestamps arithmetically. Serialized snapshot hashes change with the new observation schema.",
+    "The live union and every witness are separate scopes. Route frames exclude genesis setup; physical frames and setup are explicitly reported by the probe."
+  ],
+  "panel_005_conditions": {
+    "metroid_actions": 8192,
+    "metroid_executions": 500000,
+    "metroid_frames": 60000000,
+    "metroid_memory_mib": 2048,
+    "metroid_mixture_arms": [
+      "energy_splice:6",
+      "energy_splice_continuation_v1:6"
+    ],
+    "metroid_suffix": "one_to_six_within_3_longest_actions_full_hold",
+    "metroid_workers": 8,
+    "mm2_scope": "eight independently started Robot Master stages; no fresh chained Wily qualification",
+    "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2"
+  },
+  "reporting_qualification": {
+    "checks": [
+      "117 NES library tests",
+      "1 nes-eval binary test",
+      "22 Python runner contracts",
+      "NES all-target clippy",
+      "dependency boundaries"
+    ],
+    "executions": 5000,
+    "frames_emulated": 703272,
+    "origin_route_frame": 0,
+    "parity": {
+      "admitted_executions": 5000,
+      "all_other_recorded_fields_equal": true,
+      "control_binary_sha256": "18c2df002b88860f1574c1870b7c584226aabffeb15fc55040534d66cff0dfbc",
+      "control_stream_sha256": "ee39bc4700263568caed03625b812731b9737aa001aaa45f2ee542c67d8805d0",
+      "differing_fields": {
+        "emulator_backend": 1,
+        "format": 1,
+        "key_policy": 1,
+        "result_sha256": 5000
+      },
+      "format": "harmony-search-reporting-parity-v1",
+      "records": 5012,
+      "reporting_build": {
+        "binary_sha256": "e3b68f03690944d00a02929e291efc6c14c07b755431fd2db1407f74341232dc",
+        "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+        "dirty": null,
+        "files": 275,
+        "format": "harmony-search-build-v1",
+        "locked": true,
+        "profile": "release",
+        "revision": null,
+        "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+        "rustflags": "",
+        "source_tree_sha256": "2d4e51d0d5664ae03fc91bef13ff3c4dcc1b20e527611180608894104c11cf05"
+      },
+      "reporting_stream_sha256": "4eb869c4ffc40c8c8fafcb46e2be280a7c40d6ae39ac6cd3484915f2d3e697a1",
+      "scope": "Every stream field compared; this small run exercises no boss defeat. Resource timings overlap six active searches and are not throughput qualification."
+    },
+    "status": "complete",
+    "summary_sha256": "102d7b45ccd16e58b8d62ee9b7e6923a28bccd285fd5850426cac7bb4c0a37aa",
+    "verification": "campaign",
+    "verified_named_tapes": {
+      "brinstar": "b5cd724c661a8b453052bb5522ea7481f84900fce9b6811df06ddbdbefa789b6",
+      "morph_ball": "c5e752c3b5b9226dc452109337f543947bba1e44550793cc4c7e34e9d59dc3b3"
+    }
+  },
+  "source": {
+    "dirty": false,
+    "files": 275,
+    "revision": "8a9dcbbe6d75291093aeb3e11035a4f5e738621c",
+    "source_tree_sha256": "2d4e51d0d5664ae03fc91bef13ff3c4dcc1b20e527611180608894104c11cf05"
+  },
+  "source_disassembly": {
+    "repository": "https://github.com/nmikstas/metroid-disassembly",
+    "revision": "4270d57f9468daebdeea485686e31e26218a780c"
+  },
+  "supersedes": {
+    "fields": "Retrospective route timestamps included 929 setup frames; witness origin timestamp also included setup. Use this v2 extraction for route coordinates. Item/area attainment and mechanical endpoints are unchanged.",
+    "record": "progress-audit-007.json",
+    "sha256": "57222dc641ca300f1bbb315acf6b0d7451e68eb48d53f46cce9139c0061d61fc"
+  },
+  "verified_replays": [
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "68909b4a26689dfa2b2f479d2bad17eb3f2b11559de1fa9f7a6e05bf58eab215",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "met18-champion",
+      "input_file": "met18-champion.json",
+      "input_sha256": "82a3943706496ffc715ae8af6bac9a5c0946d9126654cb2b1cc0a920d407f549",
+      "result": {
+        "endpoint": {
+          "area": 18,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 1,
+          "equipment": 21,
+          "health": 260,
+          "map_x": 7,
+          "map_y": 27,
+          "missile_capacity": 25,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 1,
+          "x": 180,
+          "y": 141
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": {
+              "execution": 1942,
+              "route_action_end_frame": 66320
+            },
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": {
+              "execution": 1642,
+              "route_action_end_frame": 55289
+            },
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": null,
+            "kraid_area": {
+              "execution": 3331,
+              "route_action_end_frame": 115004
+            },
+            "kraid_defeated": null,
+            "long_beam": {
+              "execution": 1386,
+              "route_action_end_frame": 46304
+            },
+            "missile_capacity": {
+              "execution": 417,
+              "route_action_end_frame": 14375
+            },
+            "morph_ball": {
+              "execution": 10,
+              "route_action_end_frame": 437
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 489,
+              "route_action_end_frame": 17091
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 1,
+          "max_missile_capacity": 25
+        },
+        "observed_map_cells": {
+          "brinstar": 74,
+          "kraid_area": 21,
+          "norfair": 17,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 123133,
+        "route_frames": 122204,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "c4bfbe2b0e909abc487271b8fd6810597bd29fa26b95358ce44c0b258641f5b6"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "21ec58a6e8038afff67e775c61be50209680c30a8f09334e2cdbb770e6997f0b",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "met19-champion",
+      "input_file": "met19-champion.json",
+      "input_sha256": "0eda930059fccc7853380449570acf6e9464bf8a7bc35320c9e2f6d47d9e66c8",
+      "result": {
+        "endpoint": {
+          "area": 18,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 1,
+          "equipment": 21,
+          "health": 511,
+          "map_x": 9,
+          "map_y": 21,
+          "missile_capacity": 30,
+          "missiles": 2,
+          "mode": 3,
+          "pose": 1,
+          "x": 103,
+          "y": 65
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": {
+              "execution": 1942,
+              "route_action_end_frame": 66320
+            },
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": {
+              "execution": 1642,
+              "route_action_end_frame": 55289
+            },
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": null,
+            "kraid_area": {
+              "execution": 3331,
+              "route_action_end_frame": 115004
+            },
+            "kraid_defeated": null,
+            "long_beam": {
+              "execution": 1386,
+              "route_action_end_frame": 46304
+            },
+            "missile_capacity": {
+              "execution": 417,
+              "route_action_end_frame": 14375
+            },
+            "morph_ball": {
+              "execution": 10,
+              "route_action_end_frame": 437
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 489,
+              "route_action_end_frame": 17091
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 1,
+          "max_missile_capacity": 30
+        },
+        "observed_map_cells": {
+          "brinstar": 74,
+          "kraid_area": 39,
+          "norfair": 17,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 140435,
+        "route_frames": 139506,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "76bbbfdf11ccdfe88f3b1bb26f3c7ad056abd9b8dbc2f3e409b7ae363bcf3720"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "5048c1077b74788ae610b070755f6c6d5295f5fad683b7c04d0a06f49d11d644",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "met25-champion",
+      "input_file": "met25-champion.json",
+      "input_sha256": "352f2678e2f495235592f3b5f2e56999af1e87ca12de5d61e80eed5254d63eb2",
+      "result": {
+        "endpoint": {
+          "area": 18,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 1,
+          "equipment": 21,
+          "health": 219,
+          "map_x": 2,
+          "map_y": 27,
+          "missile_capacity": 20,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 1,
+          "x": 110,
+          "y": 113
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": {
+              "execution": 2256,
+              "route_action_end_frame": 76852
+            },
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": {
+              "execution": 1138,
+              "route_action_end_frame": 37716
+            },
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": null,
+            "kraid_area": {
+              "execution": 2717,
+              "route_action_end_frame": 93981
+            },
+            "kraid_defeated": null,
+            "long_beam": {
+              "execution": 1582,
+              "route_action_end_frame": 54048
+            },
+            "missile_capacity": {
+              "execution": 417,
+              "route_action_end_frame": 14375
+            },
+            "morph_ball": {
+              "execution": 10,
+              "route_action_end_frame": 437
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 489,
+              "route_action_end_frame": 17091
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 1,
+          "max_missile_capacity": 20
+        },
+        "observed_map_cells": {
+          "brinstar": 70,
+          "kraid_area": 19,
+          "norfair": 7,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 103937,
+        "route_frames": 103008,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "a550a7af83365ffc46c455a135e431ccbf33035565be8456103e2a200c36d94b"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "343a953a838f02b52e9eb4277f7024823b9b170e346f11bde80c809d82a2840f",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "met26-champion",
+      "input_file": "met26-champion.json",
+      "input_sha256": "3be581f0f0d72896493cb05549e196d3299d2dd6bf119d525c036598a269c871",
+      "result": {
+        "endpoint": {
+          "area": 16,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 1,
+          "equipment": 20,
+          "health": 9984,
+          "map_x": 13,
+          "map_y": 11,
+          "missile_capacity": 10,
+          "missiles": 4,
+          "mode": 3,
+          "pose": 6,
+          "x": 81,
+          "y": 99
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": null,
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": {
+              "execution": 1161,
+              "route_action_end_frame": 39142
+            },
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": null,
+            "kraid_area": null,
+            "kraid_defeated": null,
+            "long_beam": {
+              "execution": 1858,
+              "route_action_end_frame": 61392
+            },
+            "missile_capacity": {
+              "execution": 432,
+              "route_action_end_frame": 15465
+            },
+            "morph_ball": {
+              "execution": 19,
+              "route_action_end_frame": 615
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 503,
+              "route_action_end_frame": 18122
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 1,
+          "max_missile_capacity": 10
+        },
+        "observed_map_cells": {
+          "brinstar": 60,
+          "kraid_area": 0,
+          "norfair": 7,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 68061,
+        "route_frames": 67132,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "c1d82c5608dbac43d448f21d17b24eb639b8afb9ccb8e4cd3ae26853ead190f8"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "16666901155cb73a14d8f53bfe4bfd28b0ac90902b5b0992da3021197bc35361",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "met27-champion",
+      "input_file": "met27-champion.json",
+      "input_sha256": "60d8a45dc39f98775243f910365b3fcc222eeceb423cb9a5916caecef30b2bc8",
+      "result": {
+        "endpoint": {
+          "area": 18,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 1,
+          "equipment": 145,
+          "health": 9862,
+          "map_x": 8,
+          "map_y": 29,
+          "missile_capacity": 20,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 3,
+          "x": 67,
+          "y": 161
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": {
+              "execution": 1490,
+              "route_action_end_frame": 50264
+            },
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": {
+              "execution": 1248,
+              "route_action_end_frame": 42184
+            },
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": {
+              "execution": 1868,
+              "route_action_end_frame": 65957
+            },
+            "kraid_area": {
+              "execution": 3258,
+              "route_action_end_frame": 116021
+            },
+            "kraid_defeated": null,
+            "long_beam": null,
+            "missile_capacity": {
+              "execution": 406,
+              "route_action_end_frame": 13910
+            },
+            "morph_ball": {
+              "execution": 16,
+              "route_action_end_frame": 703
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 492,
+              "route_action_end_frame": 17311
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 1,
+          "max_missile_capacity": 20
+        },
+        "observed_map_cells": {
+          "brinstar": 68,
+          "kraid_area": 26,
+          "norfair": 17,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 128402,
+        "route_frames": 127473,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "f5e5d3ddbbfb4dbb8fef0c9abf73fcf231282fd0d8a444f7b0b4571703477561"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "3a628a84a9a27dea6a89aab576b3dbeca12717749b22b28efe7ab4265f063850",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "met18-bombs",
+      "input_file": "met18-bombs.json",
+      "input_sha256": "69abb27c4c38264d434d415d42e9bf313d49c4f33742a0bcac5889b12fb1e0c7",
+      "result": {
+        "endpoint": {
+          "area": 16,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 1,
+          "equipment": 21,
+          "health": 40,
+          "map_x": 25,
+          "map_y": 5,
+          "missile_capacity": 10,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 4,
+          "x": 116,
+          "y": 49
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": {
+              "execution": 1942,
+              "route_action_end_frame": 66320
+            },
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": {
+              "execution": 1642,
+              "route_action_end_frame": 55289
+            },
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": null,
+            "kraid_area": null,
+            "kraid_defeated": null,
+            "long_beam": {
+              "execution": 1386,
+              "route_action_end_frame": 46304
+            },
+            "missile_capacity": {
+              "execution": 417,
+              "route_action_end_frame": 14375
+            },
+            "morph_ball": {
+              "execution": 10,
+              "route_action_end_frame": 437
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 489,
+              "route_action_end_frame": 17091
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 1,
+          "max_missile_capacity": 10
+        },
+        "observed_map_cells": {
+          "brinstar": 68,
+          "kraid_area": 0,
+          "norfair": 7,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 67448,
+        "route_frames": 66519,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "4bfba1fba06e2cd6208e8f0643e2bc73e420e81ce9563c54614bde5fd8721945"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "0349e14ed3a44b1dcc32d17622a92fce4455048a7065070c092106e80f45f7b8",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "continuation-metroid-full-s20260923-w8-m2048",
+      "input_file": "continuation-metroid-full-s20260923-w8-m2048.json",
+      "input_sha256": "a258159306d63938b99f7cbc7adaef15607aadb71edd252b478ed44313891c9f",
+      "result": {
+        "endpoint": {
+          "area": 17,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 417,
+          "map_x": 26,
+          "map_y": 15,
+          "missile_capacity": 10,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 1,
+          "x": 164,
+          "y": 113
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": null,
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": null,
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": null,
+            "kraid_area": null,
+            "kraid_defeated": null,
+            "long_beam": null,
+            "missile_capacity": {
+              "execution": 371,
+              "route_action_end_frame": 12201
+            },
+            "morph_ball": {
+              "execution": 13,
+              "route_action_end_frame": 607
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 425,
+              "route_action_end_frame": 14744
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 0,
+          "max_missile_capacity": 10
+        },
+        "observed_map_cells": {
+          "brinstar": 33,
+          "kraid_area": 0,
+          "norfair": 20,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 29843,
+        "route_frames": 28914,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "ea7196d5ddf270df5c85163598fe79bbb6b2c468370a45b8b685a1e8a0e32a5e"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "c65dd6c55b8fca15e4ac1548d20b77976830513f9191d9efaa46ee525537ec9e",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "continuation-metroid-full-s20260922-w8-m2048",
+      "input_file": "continuation-metroid-full-s20260922-w8-m2048.json",
+      "input_sha256": "937a8a227d410c5d254f680170ee6b854f9ecd5fba08b77fddffd5b7e321c323",
+      "result": {
+        "endpoint": {
+          "area": 16,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 389,
+          "map_x": 16,
+          "map_y": 11,
+          "missile_capacity": 10,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 2,
+          "x": 99,
+          "y": 100
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": null,
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": null,
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": null,
+            "kraid_area": null,
+            "kraid_defeated": null,
+            "long_beam": null,
+            "missile_capacity": {
+              "execution": 405,
+              "route_action_end_frame": 14090
+            },
+            "morph_ball": {
+              "execution": 16,
+              "route_action_end_frame": 708
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 471,
+              "route_action_end_frame": 16815
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 0,
+          "max_missile_capacity": 10
+        },
+        "observed_map_cells": {
+          "brinstar": 34,
+          "kraid_area": 0,
+          "norfair": 7,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 28286,
+        "route_frames": 27357,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "953fe2c326e00f4935e3e9f5c6ad7b5c3a0b0020aeecf3d7e3fdf3119daade5a"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "7f0840aaf1c29585872a8d7eb0c5b7fbb5469610d3314a255c3281cdb7aa7917",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "continuation-metroid-full-s20260924-w8-m2048",
+      "input_file": "continuation-metroid-full-s20260924-w8-m2048.json",
+      "input_sha256": "57540c074ee6a1fbdc2ed7eeecab6ff1dae671689eb614e3e40a40199be8b49e",
+      "result": {
+        "endpoint": {
+          "area": 17,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 430,
+          "map_x": 26,
+          "map_y": 15,
+          "missile_capacity": 10,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 1,
+          "x": 199,
+          "y": 113
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": null,
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": null,
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": null,
+            "kraid_area": null,
+            "kraid_defeated": null,
+            "long_beam": null,
+            "missile_capacity": {
+              "execution": 414,
+              "route_action_end_frame": 13199
+            },
+            "morph_ball": {
+              "execution": 20,
+              "route_action_end_frame": 983
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 473,
+              "route_action_end_frame": 15598
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 0,
+          "max_missile_capacity": 10
+        },
+        "observed_map_cells": {
+          "brinstar": 33,
+          "kraid_area": 0,
+          "norfair": 22,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 30361,
+        "route_frames": 29432,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "fbb07296187399eb247677f8e5bb8886839e05082220e9d45565013a26b85a23"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "6fc1095a0614614e8800ce55105e1b7cd0522f25cf1c7a45de64cbb7072872fd",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "continuation-metroid-full-s20260920-w8-m2048",
+      "input_file": "continuation-metroid-full-s20260920-w8-m2048.json",
+      "input_sha256": "137522f5abc36b77f5a675e1de61197f0b3d0c7bca73f575770729c0793fccd6",
+      "result": {
+        "endpoint": {
+          "area": 17,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 9922,
+          "map_x": 30,
+          "map_y": 15,
+          "missile_capacity": 10,
+          "missiles": 2,
+          "mode": 3,
+          "pose": 1,
+          "x": 210,
+          "y": 8
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": null,
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": null,
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": null,
+            "kraid_area": null,
+            "kraid_defeated": null,
+            "long_beam": null,
+            "missile_capacity": {
+              "execution": 422,
+              "route_action_end_frame": 15362
+            },
+            "morph_ball": {
+              "execution": 19,
+              "route_action_end_frame": 983
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 475,
+              "route_action_end_frame": 17465
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 0,
+          "max_missile_capacity": 10
+        },
+        "observed_map_cells": {
+          "brinstar": 33,
+          "kraid_area": 0,
+          "norfair": 18,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 28731,
+        "route_frames": 27802,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "55bd1fee718c63575685f61c3a368ed5552bca4a93b75ef9e57f7eadad10297e"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "02c21168802f8703a2f98752a378d34b838b20384f31d3bbf20376b62802d227",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "continuation-metroid-full-s20260921-w8-m2048",
+      "input_file": "continuation-metroid-full-s20260921-w8-m2048.json",
+      "input_sha256": "1fac3891588183117622549630e568aaa3df929c077e65a9e151fa89c185469b",
+      "result": {
+        "endpoint": {
+          "area": 17,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 9910,
+          "map_x": 30,
+          "map_y": 14,
+          "missile_capacity": 10,
+          "missiles": 2,
+          "mode": 3,
+          "pose": 1,
+          "x": 97,
+          "y": 147
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": null,
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": null,
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": null,
+            "kraid_area": null,
+            "kraid_defeated": null,
+            "long_beam": null,
+            "missile_capacity": {
+              "execution": 395,
+              "route_action_end_frame": 11484
+            },
+            "morph_ball": {
+              "execution": 7,
+              "route_action_end_frame": 571
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 483,
+              "route_action_end_frame": 14011
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 0,
+          "max_missile_capacity": 10
+        },
+        "observed_map_cells": {
+          "brinstar": 33,
+          "kraid_area": 0,
+          "norfair": 16,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 25248,
+        "route_frames": 24319,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "4164024b7ea2033f4415a517cdf81f0108d0df4a72b647971398a299ce7c3faf"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "b7d1cbcf1c6c645d6a76c623f158c32fd41e455bc6ff42caff56f37e11756274",
+      "format": "nes-progress-replay-v2",
+      "game": "mm2",
+      "id": "mm2-wily4-prefix",
+      "input_file": "mm2-wily4-prefix.json",
+      "input_sha256": "341537467113fa3eea71da63b831d567fb565cc3c2b7163f6fc782d7b44f6192",
+      "result": {
+        "endpoint": {
+          "boss_health": 0,
+          "boss_phase": 0,
+          "camera_state": 0,
+          "enemy_damage": 0,
+          "equipped_energy": 0,
+          "health": 28,
+          "lives": 4,
+          "menu": 255,
+          "platforms": 0,
+          "player_state": 3,
+          "room": 22,
+          "screen": 22,
+          "stage": 11,
+          "weapon": 0,
+          "weapon_energy": 141,
+          "weapons_obtained": 255,
+          "x": 128,
+          "y": 180
+        },
+        "origin": "retained searched power-on tape, followed by ordinary stage setup",
+        "scope": "replay compatibility and stage reach; not a fresh search result",
+        "setup_frames_after_tape": 1616,
+        "snapshot_sha256": "07b70f7058baeab5c5830d7fd4e329413a18bcd794cf3326b0db794aa43cb4b1",
+        "stage": "wily4"
+      },
+      "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "c414bd2194709119801042bce1d4d815abda92010b942d78ff121dda600ecd8e",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "baseline-metroid-full-s20260923-w8-m2048",
+      "input_file": "baseline-metroid-full-s20260923-w8-m2048.json",
+      "input_sha256": "edf006c44a2e29cb514c04b22b3103527fbfad57dbaa565d46f9a8e73c7a4495",
+      "result": {
+        "endpoint": {
+          "area": 17,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 9913,
+          "map_x": 30,
+          "map_y": 15,
+          "missile_capacity": 10,
+          "missiles": 2,
+          "mode": 3,
+          "pose": 2,
+          "x": 206,
+          "y": 8
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": null,
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": null,
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": null,
+            "kraid_area": null,
+            "kraid_defeated": null,
+            "long_beam": null,
+            "missile_capacity": {
+              "execution": 358,
+              "route_action_end_frame": 12428
+            },
+            "morph_ball": {
+              "execution": 16,
+              "route_action_end_frame": 805
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 422,
+              "route_action_end_frame": 15129
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 0,
+          "max_missile_capacity": 10
+        },
+        "observed_map_cells": {
+          "brinstar": 33,
+          "kraid_area": 0,
+          "norfair": 17,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 25226,
+        "route_frames": 24297,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "99f9ebe571b16a4d9d0c492324d2212954748acb3d1410506a0389fcda36510b"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "31da1c91fe291a440c67a1bcb7307c324ac7c3400eb0ceb0a3fa7b3c9ee8e8fa",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "baseline-metroid-full-s20260922-w8-m2048",
+      "input_file": "baseline-metroid-full-s20260922-w8-m2048.json",
+      "input_sha256": "c2fe86e264e40a41414526694a14c6400167004f190c84698baee67816a1d9a1",
+      "result": {
+        "endpoint": {
+          "area": 16,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 9930,
+          "map_x": 20,
+          "map_y": 11,
+          "missile_capacity": 10,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 1,
+          "x": 85,
+          "y": 130
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": null,
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": null,
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": null,
+            "kraid_area": null,
+            "kraid_defeated": null,
+            "long_beam": null,
+            "missile_capacity": {
+              "execution": 374,
+              "route_action_end_frame": 13017
+            },
+            "morph_ball": {
+              "execution": 17,
+              "route_action_end_frame": 845
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 434,
+              "route_action_end_frame": 15030
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 0,
+          "max_missile_capacity": 10
+        },
+        "observed_map_cells": {
+          "brinstar": 33,
+          "kraid_area": 0,
+          "norfair": 7,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 22679,
+        "route_frames": 21750,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "15ce1b07fe58dc68cca7330a6131a5d87d53f9bcd5dafc73846b9daad3f0b85b"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "e714fae1fe3a4132bd2dcdfb180d298bd9a04e8e53d0ab4b7b15569f4e075284",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "baseline-metroid-full-s20260924-w8-m2048",
+      "input_file": "baseline-metroid-full-s20260924-w8-m2048.json",
+      "input_sha256": "1a20807b064f6b51654354aa674f4ea7b63eca5ee547ebe992f70a7304f46c3d",
+      "result": {
+        "endpoint": {
+          "area": 17,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 382,
+          "map_x": 26,
+          "map_y": 15,
+          "missile_capacity": 10,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 1,
+          "x": 233,
+          "y": 113
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": null,
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": null,
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": null,
+            "kraid_area": null,
+            "kraid_defeated": null,
+            "long_beam": null,
+            "missile_capacity": {
+              "execution": 378,
+              "route_action_end_frame": 11802
+            },
+            "morph_ball": {
+              "execution": 13,
+              "route_action_end_frame": 539
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 424,
+              "route_action_end_frame": 13800
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 0,
+          "max_missile_capacity": 10
+        },
+        "observed_map_cells": {
+          "brinstar": 33,
+          "kraid_area": 0,
+          "norfair": 20,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 27020,
+        "route_frames": 26091,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "09de74fbad81c155565434c22953593cc8fa92347e237c0596e096e68f59ec30"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "4e486d3348ede3d17892aee4b9938323cf7d9b36de9a7bca5c9fafc087e0e850",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "baseline-metroid-full-s20260920-w8-m2048",
+      "input_file": "baseline-metroid-full-s20260920-w8-m2048.json",
+      "input_sha256": "0d6f3a45952db05cb5fb4425c403d99fbda9d52a16152eb5600576320c47ef83",
+      "result": {
+        "endpoint": {
+          "area": 17,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 9911,
+          "map_x": 30,
+          "map_y": 15,
+          "missile_capacity": 10,
+          "missiles": 2,
+          "mode": 3,
+          "pose": 6,
+          "x": 191,
+          "y": 9
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": null,
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": null,
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": null,
+            "kraid_area": null,
+            "kraid_defeated": null,
+            "long_beam": null,
+            "missile_capacity": {
+              "execution": 432,
+              "route_action_end_frame": 14077
+            },
+            "morph_ball": {
+              "execution": 24,
+              "route_action_end_frame": 1104
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 515,
+              "route_action_end_frame": 16603
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 0,
+          "max_missile_capacity": 10
+        },
+        "observed_map_cells": {
+          "brinstar": 33,
+          "kraid_area": 0,
+          "norfair": 18,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 26001,
+        "route_frames": 25072,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "9ffa5a6c28c74dd72da4dd4e075e6600ce45a66417ec303228462379f1718182"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    },
+    {
+      "binary_sha256": "812aea95f9b539f98ea86532a661458de3965bf1b2aa0bf1c272c6b0bfa3a07e",
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "evidence_sha256": "08fb101185f8219f8bb00bb9671567c7a4712b5171c3ab461276711150731d13",
+      "format": "nes-progress-replay-v2",
+      "game": "metroid",
+      "id": "baseline-metroid-full-s20260921-w8-m2048",
+      "input_file": "baseline-metroid-full-s20260921-w8-m2048.json",
+      "input_sha256": "84105ef77c3a0858b4298cea46636bee65c2cf765d46b580d51c2fe4f1d6b398",
+      "result": {
+        "endpoint": {
+          "area": 17,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 9966,
+          "map_x": 27,
+          "map_y": 14,
+          "missile_capacity": 10,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 3,
+          "x": 228,
+          "y": 145
+        },
+        "named_progress": {
+          "first_seen": {
+            "bombs": null,
+            "brinstar": {
+              "execution": 0,
+              "route_action_end_frame": 0
+            },
+            "ending": null,
+            "energy_tank": null,
+            "escape_started": null,
+            "high_jump": null,
+            "ice_beam": null,
+            "kraid_area": null,
+            "kraid_defeated": null,
+            "long_beam": null,
+            "missile_capacity": {
+              "execution": 375,
+              "route_action_end_frame": 13302
+            },
+            "morph_ball": {
+              "execution": 14,
+              "route_action_end_frame": 783
+            },
+            "mother_brain_defeated": null,
+            "norfair": {
+              "execution": 445,
+              "route_action_end_frame": 15767
+            },
+            "ridley_area": null,
+            "ridley_defeated": null,
+            "screw_attack": null,
+            "tourian": null,
+            "varia_suit": null,
+            "wave_beam": null
+          },
+          "format": "metroid-named-progress-v2",
+          "max_energy_tanks": 0,
+          "max_missile_capacity": 10
+        },
+        "observed_map_cells": {
+          "brinstar": 33,
+          "kraid_area": 0,
+          "norfair": 12,
+          "ridley_area": 0,
+          "tourian": 0
+        },
+        "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "physical_frames_including_setup": 24218,
+        "route_frames": 23289,
+        "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
+        "setup_frames": 929,
+        "snapshot_sha256": "635c6668e998f3a062eef58c1354c695e8b175b73aa30d5ec753fe5aa216b99a"
+      },
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "verified_replays": 2
+    }
+  ]
+}

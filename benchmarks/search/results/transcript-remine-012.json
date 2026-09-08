@@ -1,0 +1,35 @@
+{
+  "format": "harmony-search-transcript-remine-v1",
+  "interpretation": "Complete-session audit, including rejected and canceled final pilots. Source identities establish what was read; raw private transcripts are not redistributed. Mechanism decisions are in ../SYNTHESIS.md. No prescribed solutions or cross-location resource tiers were imported.",
+  "reviewed_code_commit": "0d77701f64517269dd49f669988acd58f4cb8637",
+  "sources": {
+    "metroid": {
+      "last_timestamp": "2026-09-07T21:16:06.825Z",
+      "session": "108e7269-155a-51f6-89de-4ec6421fb4fb",
+      "source_lines": 3543,
+      "source_sha256": "5e4f8a9fbb5b7bd3b63f1bce0664b41195d60e1646259ca5166d331d4b27b852",
+      "text_blocks": 292
+    },
+    "mm2": {
+      "last_timestamp": "2026-09-07T23:39:37.528Z",
+      "session": "cd484718-ab48-58f8-8e35-7bcb3f22170b",
+      "source_lines": 12283,
+      "source_sha256": "e9d8a18c92828b3bd56283da9ff322409753991cd9eee18c3096623a665a8c34",
+      "text_blocks": 1032
+    },
+    "smb-integrator": {
+      "last_timestamp": "2026-09-03T00:17:08.519Z",
+      "session": "f5ae3504-1ce6-498c-91e7-e10e85ee30ed",
+      "source_lines": 3746,
+      "source_sha256": "24bff180229abad50093650631eebb314d896f92d0799666a37016bfa9bae286",
+      "text_blocks": 288
+    },
+    "smb-worker": {
+      "last_timestamp": "2026-09-02T21:04:50.894Z",
+      "session": "3b9ddf2e-f77d-42ba-a6ff-f9f339c05bfd",
+      "source_lines": 6103,
+      "source_sha256": "8cdd16a99dc04c19c6c005bbc6d56f05acdbeb2fbcab15c185ea1e2460792712",
+      "text_blocks": 80
+    }
+  }
+}

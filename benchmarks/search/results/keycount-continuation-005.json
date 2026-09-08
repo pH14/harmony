@@ -1,0 +1,3411 @@
+{
+  "format": "harmony-search-evidence-v1",
+  "scope": "Complete three-seed development comparison of retained-key count weighting plus continuation replay against continuation alone. Fixed current workload policies and resource budgets. All four solved-case median frame costs regress; Metroid retains its item/capacity plateau and whole-game Nova remains at seven clears. This does not support adding retained-key weighting to the general candidate. It remains a bounded, versioned experiment.",
+  "raw_export_location": "ms02:/root/harmony-search-eval/public/",
+  "inputs": [
+    {
+      "role": "baseline",
+      "run": "pilot-continuation-005",
+      "results_sha256": "fbd1e3484c85c793fa1c56d374abbc33036d0a832bb3c82c38656369787b4d31",
+      "matrix_sha256": "1ccd62edca3b11aad69bddaee227c37f7d6940af6336776cc8d5c380277295e5",
+      "suite": {
+        "cases": [
+          {
+            "game": "smb",
+            "id": "smb-full",
+            "origin": "power-on gameplay genesis",
+            "require_solved": true,
+            "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
+            "search": {
+              "executions": 600000,
+              "frames": 80000000
+            }
+          },
+          {
+            "game": "nova",
+            "id": "nova-level-1",
+            "level": 1,
+            "origin": "level 1 gameplay genesis",
+            "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+            "search": {
+              "actions": 512,
+              "executions": 100000,
+              "frames": 5000000
+            }
+          },
+          {
+            "game": "mm2",
+            "id": "mm2-metal",
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {},
+            "stage": 6
+          },
+          {
+            "game": "metroid",
+            "id": "metroid-full",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {
+              "executions": 500000
+            }
+          },
+          {
+            "ai": "hard",
+            "game": "stb",
+            "id": "stb-hard",
+            "origin": "power-on local match, default stage, native Hard AI",
+            "rom_sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3",
+            "search": {
+              "actions": 512,
+              "executions": 20000,
+              "frames": 3000000
+            }
+          },
+          {
+            "game": "nova",
+            "id": "nova-full",
+            "level": 1,
+            "origin": "power-on level 1 genesis; all 40 level flags required",
+            "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+            "search": {
+              "actions": 8192,
+              "executions": 300000,
+              "frames": 40000000
+            },
+            "whole_game": true
+          }
+        ],
+        "format": "harmony-search-eval-v1",
+        "id": "nes-pilot-continuation-005",
+        "memory_mib": [
+          2048
+        ],
+        "search": {
+          "actions": 8192,
+          "executions": 400000,
+          "frames": 60000000,
+          "mixture": "energy_splice_continuation_v1:6",
+          "result_slots": 2,
+          "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "verification": "witness",
+          "wall_seconds": 900,
+          "window": 2
+        },
+        "seeds": [
+          20260905,
+          20260906,
+          20260907
+        ],
+        "workers": [
+          8
+        ]
+      },
+      "matrix": {
+        "build": {
+          "attestation": "supplied",
+          "binary_sha256": "18c2df002b88860f1574c1870b7c584226aabffeb15fc55040534d66cff0dfbc",
+          "source": {
+            "binary_sha256": "18c2df002b88860f1574c1870b7c584226aabffeb15fc55040534d66cff0dfbc",
+            "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+            "dirty": null,
+            "files": 254,
+            "format": "harmony-search-build-v1",
+            "locked": true,
+            "profile": "release",
+            "revision": null,
+            "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+            "rustflags": "",
+            "source_tree_sha256": "ee9d36fd1fd808820220cde6998bbf3be740b3e7f2f5426c1eb84d7d0d58351a"
+          }
+        },
+        "cells": [
+          "smb-full-s20260905-w8-m2048",
+          "smb-full-s20260906-w8-m2048",
+          "smb-full-s20260907-w8-m2048",
+          "nova-level-1-s20260905-w8-m2048",
+          "nova-level-1-s20260906-w8-m2048",
+          "nova-level-1-s20260907-w8-m2048",
+          "mm2-metal-s20260905-w8-m2048",
+          "mm2-metal-s20260906-w8-m2048",
+          "mm2-metal-s20260907-w8-m2048",
+          "metroid-full-s20260905-w8-m2048",
+          "metroid-full-s20260906-w8-m2048",
+          "metroid-full-s20260907-w8-m2048",
+          "stb-hard-s20260905-w8-m2048",
+          "stb-hard-s20260906-w8-m2048",
+          "stb-hard-s20260907-w8-m2048",
+          "nova-full-s20260905-w8-m2048",
+          "nova-full-s20260906-w8-m2048",
+          "nova-full-s20260907-w8-m2048"
+        ],
+        "format": "harmony-search-eval-v1",
+        "host": {
+          "cpu_model": "Intel(R) Core(TM) Ultra 9 285HX",
+          "hostname": "ms02",
+          "logical_cpus": 24,
+          "machine": "x86_64",
+          "release": "7.1.8+deb13-amd64",
+          "system": "Linux"
+        },
+        "runner": {
+          "cpu_capacity": 24,
+          "disk_limit_gib": 8,
+          "finish_seconds": 600,
+          "jobs": 3,
+          "memory_capacity_mib": 40000,
+          "overhead_mib": 1024,
+          "sample_seconds": 1
+        }
+      },
+      "selector_accounting": {
+        "metroid-full-s20260905-w8-m2048": {
+          "cell_selections": 316315,
+          "classes_skipped": 1655621,
+          "concentration": {
+            "distinct_window_parents": 129871,
+            "draws_per_parent_milli": 2435,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 316315
+          },
+          "continuation_selections": 79973,
+          "counter_resets": 0,
+          "productive_selections": 142273,
+          "retirement": {
+            "bands_over_threshold": 303,
+            "cells_over_threshold": 8204,
+            "entries_over_threshold": 12141,
+            "rooms_over_threshold": 96
+          },
+          "uniform_selections": 105379
+        },
+        "metroid-full-s20260906-w8-m2048": {
+          "cell_selections": 316535,
+          "classes_skipped": 2318918,
+          "concentration": {
+            "distinct_window_parents": 135202,
+            "draws_per_parent_milli": 2341,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 316535
+          },
+          "continuation_selections": 79275,
+          "counter_resets": 0,
+          "productive_selections": 149328,
+          "retirement": {
+            "bands_over_threshold": 298,
+            "cells_over_threshold": 8052,
+            "entries_over_threshold": 9574,
+            "rooms_over_threshold": 90
+          },
+          "uniform_selections": 105849
+        },
+        "metroid-full-s20260907-w8-m2048": {
+          "cell_selections": 323517,
+          "classes_skipped": 3535766,
+          "concentration": {
+            "distinct_window_parents": 123975,
+            "draws_per_parent_milli": 2609,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 323517
+          },
+          "continuation_selections": 70899,
+          "counter_resets": 0,
+          "productive_selections": 140027,
+          "retirement": {
+            "bands_over_threshold": 350,
+            "cells_over_threshold": 9497,
+            "entries_over_threshold": 12886,
+            "rooms_over_threshold": 108
+          },
+          "uniform_selections": 107500
+        },
+        "mm2-metal-s20260905-w8-m2048": {
+          "cell_selections": 7800,
+          "classes_skipped": 25489,
+          "concentration": {
+            "distinct_window_parents": 3071,
+            "draws_per_parent_milli": 2539,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 7800
+          },
+          "continuation_selections": 1255,
+          "counter_resets": 0,
+          "productive_selections": 3614,
+          "retirement": {
+            "bands_over_threshold": 81,
+            "cells_over_threshold": 468,
+            "entries_over_threshold": 319,
+            "rooms_over_threshold": 21
+          },
+          "uniform_selections": 2525
+        },
+        "mm2-metal-s20260906-w8-m2048": {
+          "cell_selections": 24155,
+          "classes_skipped": 335822,
+          "concentration": {
+            "distinct_window_parents": 8351,
+            "draws_per_parent_milli": 2892,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 24155
+          },
+          "continuation_selections": 5637,
+          "counter_resets": 0,
+          "productive_selections": 8912,
+          "retirement": {
+            "bands_over_threshold": 103,
+            "cells_over_threshold": 759,
+            "entries_over_threshold": 836,
+            "rooms_over_threshold": 21
+          },
+          "uniform_selections": 8113
+        },
+        "mm2-metal-s20260907-w8-m2048": {
+          "cell_selections": 7779,
+          "classes_skipped": 55467,
+          "concentration": {
+            "distinct_window_parents": 2910,
+            "draws_per_parent_milli": 2673,
+            "final_window_size": 4,
+            "window_cap": 128,
+            "window_draws": 7779
+          },
+          "continuation_selections": 940,
+          "counter_resets": 0,
+          "productive_selections": 3569,
+          "retirement": {
+            "bands_over_threshold": 92,
+            "cells_over_threshold": 583,
+            "entries_over_threshold": 468,
+            "rooms_over_threshold": 22
+          },
+          "uniform_selections": 2641
+        },
+        "nova-full-s20260905-w8-m2048": {
+          "cell_selections": 200590,
+          "classes_skipped": 10687463,
+          "concentration": {
+            "distinct_window_parents": 73144,
+            "draws_per_parent_milli": 2742,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 200590
+          },
+          "continuation_selections": 34128,
+          "counter_resets": 0,
+          "productive_selections": 85917,
+          "retirement": {
+            "bands_over_threshold": 946,
+            "cells_over_threshold": 5055,
+            "entries_over_threshold": 6336,
+            "rooms_over_threshold": 45
+          },
+          "uniform_selections": 66598
+        },
+        "nova-full-s20260906-w8-m2048": {
+          "cell_selections": 208991,
+          "classes_skipped": 9962275,
+          "concentration": {
+            "distinct_window_parents": 71156,
+            "draws_per_parent_milli": 2937,
+            "final_window_size": 4,
+            "window_cap": 128,
+            "window_draws": 208991
+          },
+          "continuation_selections": 22764,
+          "counter_resets": 0,
+          "productive_selections": 79991,
+          "retirement": {
+            "bands_over_threshold": 705,
+            "cells_over_threshold": 4846,
+            "entries_over_threshold": 6460,
+            "rooms_over_threshold": 34
+          },
+          "uniform_selections": 69930
+        },
+        "nova-full-s20260907-w8-m2048": {
+          "cell_selections": 196626,
+          "classes_skipped": 6095297,
+          "concentration": {
+            "distinct_window_parents": 80330,
+            "draws_per_parent_milli": 2447,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 196626
+          },
+          "continuation_selections": 39339,
+          "counter_resets": 0,
+          "productive_selections": 93395,
+          "retirement": {
+            "bands_over_threshold": 947,
+            "cells_over_threshold": 5606,
+            "entries_over_threshold": 6820,
+            "rooms_over_threshold": 46
+          },
+          "uniform_selections": 65403
+        },
+        "nova-level-1-s20260905-w8-m2048": {
+          "cell_selections": 1618,
+          "classes_skipped": 444,
+          "concentration": {
+            "distinct_window_parents": 817,
+            "draws_per_parent_milli": 1980,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 1618
+          },
+          "continuation_selections": 627,
+          "counter_resets": 0,
+          "productive_selections": 1476,
+          "retirement": {
+            "bands_over_threshold": 24,
+            "cells_over_threshold": 114,
+            "entries_over_threshold": 37,
+            "rooms_over_threshold": 3
+          },
+          "uniform_selections": 530
+        },
+        "nova-level-1-s20260906-w8-m2048": {
+          "cell_selections": 945,
+          "classes_skipped": 47,
+          "concentration": {
+            "distinct_window_parents": 507,
+            "draws_per_parent_milli": 1863,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 945
+          },
+          "continuation_selections": 343,
+          "counter_resets": 0,
+          "productive_selections": 930,
+          "retirement": {
+            "bands_over_threshold": 14,
+            "cells_over_threshold": 55,
+            "entries_over_threshold": 12,
+            "rooms_over_threshold": 2
+          },
+          "uniform_selections": 317
+        },
+        "nova-level-1-s20260907-w8-m2048": {
+          "cell_selections": 1506,
+          "classes_skipped": 132,
+          "concentration": {
+            "distinct_window_parents": 871,
+            "draws_per_parent_milli": 1729,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 1506
+          },
+          "continuation_selections": 553,
+          "counter_resets": 0,
+          "productive_selections": 1361,
+          "retirement": {
+            "bands_over_threshold": 32,
+            "cells_over_threshold": 117,
+            "entries_over_threshold": 39,
+            "rooms_over_threshold": 3
+          },
+          "uniform_selections": 531
+        },
+        "smb-full-s20260905-w8-m2048": {
+          "cell_selections": 211884,
+          "classes_skipped": 41904,
+          "concentration": {
+            "distinct_window_parents": 416379,
+            "draws_per_parent_milli": 508,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 211884
+          },
+          "counter_resets": 0,
+          "productive_selections": 222187,
+          "retirement": {
+            "bands_over_threshold": 510,
+            "cells_over_threshold": 10192,
+            "entries_over_threshold": 2807,
+            "rooms_over_threshold": 57
+          },
+          "uniform_selections": 70264
+        },
+        "smb-full-s20260906-w8-m2048": {
+          "cell_selections": 180033,
+          "classes_skipped": 16807,
+          "concentration": {
+            "distinct_window_parents": 317406,
+            "draws_per_parent_milli": 567,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 180033
+          },
+          "counter_resets": 0,
+          "productive_selections": 187309,
+          "retirement": {
+            "bands_over_threshold": 432,
+            "cells_over_threshold": 9049,
+            "entries_over_threshold": 2586,
+            "rooms_over_threshold": 39
+          },
+          "uniform_selections": 60451
+        },
+        "smb-full-s20260907-w8-m2048": {
+          "cell_selections": 225656,
+          "classes_skipped": 54409,
+          "concentration": {
+            "distinct_window_parents": 424158,
+            "draws_per_parent_milli": 532,
+            "final_window_size": 3,
+            "window_cap": 128,
+            "window_draws": 225656
+          },
+          "counter_resets": 0,
+          "productive_selections": 233050,
+          "retirement": {
+            "bands_over_threshold": 542,
+            "cells_over_threshold": 11807,
+            "entries_over_threshold": 3491,
+            "rooms_over_threshold": 54
+          },
+          "uniform_selections": 75189
+        },
+        "stb-hard-s20260905-w8-m2048": {
+          "cell_selections": 1961,
+          "classes_skipped": 989,
+          "concentration": {
+            "distinct_window_parents": 709,
+            "draws_per_parent_milli": 2765,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 1961
+          },
+          "continuation_selections": 844,
+          "counter_resets": 0,
+          "productive_selections": 1958,
+          "retirement": {
+            "bands_over_threshold": 15,
+            "cells_over_threshold": 114,
+            "entries_over_threshold": 67,
+            "rooms_over_threshold": 5
+          },
+          "uniform_selections": 643
+        },
+        "stb-hard-s20260906-w8-m2048": {
+          "cell_selections": 3881,
+          "classes_skipped": 1867,
+          "concentration": {
+            "distinct_window_parents": 1290,
+            "draws_per_parent_milli": 3008,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 3881
+          },
+          "continuation_selections": 1302,
+          "counter_resets": 0,
+          "productive_selections": 2968,
+          "retirement": {
+            "bands_over_threshold": 23,
+            "cells_over_threshold": 206,
+            "entries_over_threshold": 304,
+            "rooms_over_threshold": 3
+          },
+          "uniform_selections": 1336
+        },
+        "stb-hard-s20260907-w8-m2048": {
+          "cell_selections": 3782,
+          "classes_skipped": 3840,
+          "concentration": {
+            "distinct_window_parents": 1295,
+            "draws_per_parent_milli": 2920,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 3782
+          },
+          "continuation_selections": 1275,
+          "counter_resets": 0,
+          "productive_selections": 2874,
+          "retirement": {
+            "bands_over_threshold": 18,
+            "cells_over_threshold": 186,
+            "entries_over_threshold": 238,
+            "rooms_over_threshold": 5
+          },
+          "uniform_selections": 1273
+        }
+      }
+    },
+    {
+      "role": "candidate",
+      "run": "pilot-keycount-continuation-005",
+      "results_sha256": "01ec67a91631c2262153c8f117fafb91797b31581292861c25e866565aa706ab",
+      "matrix_sha256": "1ccd62edca3b11aad69bddaee227c37f7d6940af6336776cc8d5c380277295e5",
+      "suite": {
+        "cases": [
+          {
+            "game": "smb",
+            "id": "smb-full",
+            "origin": "power-on gameplay genesis",
+            "require_solved": true,
+            "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
+            "search": {
+              "executions": 600000,
+              "frames": 80000000
+            }
+          },
+          {
+            "game": "nova",
+            "id": "nova-level-1",
+            "level": 1,
+            "origin": "level 1 gameplay genesis",
+            "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+            "search": {
+              "actions": 512,
+              "executions": 100000,
+              "frames": 5000000
+            }
+          },
+          {
+            "game": "mm2",
+            "id": "mm2-metal",
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {},
+            "stage": 6
+          },
+          {
+            "game": "metroid",
+            "id": "metroid-full",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {
+              "executions": 500000
+            }
+          },
+          {
+            "ai": "hard",
+            "game": "stb",
+            "id": "stb-hard",
+            "origin": "power-on local match, default stage, native Hard AI",
+            "rom_sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3",
+            "search": {
+              "actions": 512,
+              "executions": 20000,
+              "frames": 3000000
+            }
+          },
+          {
+            "game": "nova",
+            "id": "nova-full",
+            "level": 1,
+            "origin": "power-on level 1 genesis; all 40 level flags required",
+            "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+            "search": {
+              "actions": 8192,
+              "executions": 300000,
+              "frames": 40000000
+            },
+            "whole_game": true
+          }
+        ],
+        "format": "harmony-search-eval-v1",
+        "id": "nes-pilot-keycount-continuation-005",
+        "memory_mib": [
+          2048
+        ],
+        "search": {
+          "actions": 8192,
+          "executions": 400000,
+          "frames": 60000000,
+          "mixture": "energy_splice_continuation_v1:6",
+          "result_slots": 2,
+          "selector": "room_cell_uniform_128_energy_frontier_cheapest_key_count_v1:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "verification": "witness",
+          "wall_seconds": 900,
+          "window": 2
+        },
+        "seeds": [
+          20260905,
+          20260906,
+          20260907
+        ],
+        "workers": [
+          8
+        ]
+      },
+      "matrix": {
+        "build": {
+          "attestation": "supplied",
+          "binary_sha256": "18c2df002b88860f1574c1870b7c584226aabffeb15fc55040534d66cff0dfbc",
+          "source": {
+            "binary_sha256": "18c2df002b88860f1574c1870b7c584226aabffeb15fc55040534d66cff0dfbc",
+            "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+            "dirty": null,
+            "files": 254,
+            "format": "harmony-search-build-v1",
+            "locked": true,
+            "profile": "release",
+            "revision": null,
+            "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+            "rustflags": "",
+            "source_tree_sha256": "ee9d36fd1fd808820220cde6998bbf3be740b3e7f2f5426c1eb84d7d0d58351a"
+          }
+        },
+        "cells": [
+          "smb-full-s20260905-w8-m2048",
+          "smb-full-s20260906-w8-m2048",
+          "smb-full-s20260907-w8-m2048",
+          "nova-level-1-s20260905-w8-m2048",
+          "nova-level-1-s20260906-w8-m2048",
+          "nova-level-1-s20260907-w8-m2048",
+          "mm2-metal-s20260905-w8-m2048",
+          "mm2-metal-s20260906-w8-m2048",
+          "mm2-metal-s20260907-w8-m2048",
+          "metroid-full-s20260905-w8-m2048",
+          "metroid-full-s20260906-w8-m2048",
+          "metroid-full-s20260907-w8-m2048",
+          "stb-hard-s20260905-w8-m2048",
+          "stb-hard-s20260906-w8-m2048",
+          "stb-hard-s20260907-w8-m2048",
+          "nova-full-s20260905-w8-m2048",
+          "nova-full-s20260906-w8-m2048",
+          "nova-full-s20260907-w8-m2048"
+        ],
+        "format": "harmony-search-eval-v1",
+        "host": {
+          "cpu_model": "Intel(R) Core(TM) Ultra 9 285HX",
+          "hostname": "ms02",
+          "logical_cpus": 24,
+          "machine": "x86_64",
+          "release": "7.1.8+deb13-amd64",
+          "system": "Linux"
+        },
+        "runner": {
+          "cpu_capacity": 24,
+          "disk_limit_gib": 8,
+          "finish_seconds": 600,
+          "jobs": 3,
+          "memory_capacity_mib": 40000,
+          "overhead_mib": 1024,
+          "sample_seconds": 1
+        }
+      },
+      "selector_accounting": {
+        "metroid-full-s20260905-w8-m2048": {
+          "cell_selections": 325513,
+          "classes_skipped": 3631668,
+          "concentration": {
+            "distinct_window_parents": 123531,
+            "draws_per_parent_milli": 2635,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 325513
+          },
+          "continuation_selections": 67716,
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 35805,
+            "hits": 449596,
+            "keys": 16384,
+            "reserve_bytes": 5013504
+          },
+          "productive_selections": 136375,
+          "retirement": {
+            "bands_over_threshold": 310,
+            "cells_over_threshold": 8443,
+            "entries_over_threshold": 12134,
+            "rooms_over_threshold": 94
+          },
+          "uniform_selections": 108556
+        },
+        "metroid-full-s20260906-w8-m2048": {
+          "cell_selections": 317237,
+          "classes_skipped": 1925880,
+          "concentration": {
+            "distinct_window_parents": 129197,
+            "draws_per_parent_milli": 2455,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 317237
+          },
+          "continuation_selections": 78104,
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 33139,
+            "hits": 452159,
+            "keys": 16384,
+            "reserve_bytes": 5013504
+          },
+          "productive_selections": 143961,
+          "retirement": {
+            "bands_over_threshold": 327,
+            "cells_over_threshold": 8959,
+            "entries_over_threshold": 11830,
+            "rooms_over_threshold": 104
+          },
+          "uniform_selections": 106341
+        },
+        "metroid-full-s20260907-w8-m2048": {
+          "cell_selections": 318717,
+          "classes_skipped": 1729774,
+          "concentration": {
+            "distinct_window_parents": 129568,
+            "draws_per_parent_milli": 2459,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 318717
+          },
+          "continuation_selections": 76920,
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 28971,
+            "hits": 456305,
+            "keys": 16384,
+            "reserve_bytes": 5013504
+          },
+          "productive_selections": 143358,
+          "retirement": {
+            "bands_over_threshold": 327,
+            "cells_over_threshold": 8788,
+            "entries_over_threshold": 11343,
+            "rooms_over_threshold": 99
+          },
+          "uniform_selections": 106023
+        },
+        "mm2-metal-s20260905-w8-m2048": {
+          "cell_selections": 12263,
+          "classes_skipped": 129069,
+          "concentration": {
+            "distinct_window_parents": 4288,
+            "draws_per_parent_milli": 2859,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 12263
+          },
+          "continuation_selections": 1729,
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 0,
+            "hits": 15964,
+            "keys": 2005,
+            "reserve_bytes": 5111808
+          },
+          "productive_selections": 4724,
+          "retirement": {
+            "bands_over_threshold": 92,
+            "cells_over_threshold": 631,
+            "entries_over_threshold": 616,
+            "rooms_over_threshold": 22
+          },
+          "uniform_selections": 3977
+        },
+        "mm2-metal-s20260906-w8-m2048": {
+          "cell_selections": 19787,
+          "classes_skipped": 185475,
+          "concentration": {
+            "distinct_window_parents": 8144,
+            "draws_per_parent_milli": 2429,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 19787
+          },
+          "continuation_selections": 6092,
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 0,
+            "hits": 30515,
+            "keys": 2099,
+            "reserve_bytes": 5111808
+          },
+          "productive_selections": 8872,
+          "retirement": {
+            "bands_over_threshold": 91,
+            "cells_over_threshold": 696,
+            "entries_over_threshold": 789,
+            "rooms_over_threshold": 22
+          },
+          "uniform_selections": 6735
+        },
+        "mm2-metal-s20260907-w8-m2048": {
+          "cell_selections": 11252,
+          "classes_skipped": 124233,
+          "concentration": {
+            "distinct_window_parents": 4136,
+            "draws_per_parent_milli": 2720,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 11252
+          },
+          "continuation_selections": 1511,
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 0,
+            "hits": 14316,
+            "keys": 2196,
+            "reserve_bytes": 5111808
+          },
+          "productive_selections": 4611,
+          "retirement": {
+            "bands_over_threshold": 105,
+            "cells_over_threshold": 728,
+            "entries_over_threshold": 776,
+            "rooms_over_threshold": 21
+          },
+          "uniform_selections": 3749
+        },
+        "nova-full-s20260905-w8-m2048": {
+          "cell_selections": 197529,
+          "classes_skipped": 8725611,
+          "concentration": {
+            "distinct_window_parents": 74349,
+            "draws_per_parent_milli": 2656,
+            "final_window_size": 3,
+            "window_cap": 128,
+            "window_draws": 197529
+          },
+          "continuation_selections": 38225,
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 1393,
+            "hits": 283465,
+            "keys": 16384,
+            "reserve_bytes": 5046272
+          },
+          "productive_selections": 89741,
+          "retirement": {
+            "bands_over_threshold": 962,
+            "cells_over_threshold": 4962,
+            "entries_over_threshold": 5027,
+            "rooms_over_threshold": 56
+          },
+          "uniform_selections": 65488
+        },
+        "nova-full-s20260906-w8-m2048": {
+          "cell_selections": 200242,
+          "classes_skipped": 7909012,
+          "concentration": {
+            "distinct_window_parents": 76469,
+            "draws_per_parent_milli": 2618,
+            "final_window_size": 4,
+            "window_cap": 128,
+            "window_draws": 200242
+          },
+          "continuation_selections": 33928,
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 5956,
+            "hits": 279014,
+            "keys": 16384,
+            "reserve_bytes": 5046272
+          },
+          "productive_selections": 88831,
+          "retirement": {
+            "bands_over_threshold": 944,
+            "cells_over_threshold": 5619,
+            "entries_over_threshold": 6851,
+            "rooms_over_threshold": 49
+          },
+          "uniform_selections": 67184
+        },
+        "nova-full-s20260907-w8-m2048": {
+          "cell_selections": 199619,
+          "classes_skipped": 6934086,
+          "concentration": {
+            "distinct_window_parents": 78143,
+            "draws_per_parent_milli": 2554,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 199619
+          },
+          "continuation_selections": 35009,
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 6825,
+            "hits": 278102,
+            "keys": 16384,
+            "reserve_bytes": 5046272
+          },
+          "productive_selections": 91062,
+          "retirement": {
+            "bands_over_threshold": 970,
+            "cells_over_threshold": 5631,
+            "entries_over_threshold": 7120,
+            "rooms_over_threshold": 52
+          },
+          "uniform_selections": 66683
+        },
+        "nova-level-1-s20260905-w8-m2048": {
+          "cell_selections": 2353,
+          "classes_skipped": 934,
+          "concentration": {
+            "distinct_window_parents": 1083,
+            "draws_per_parent_milli": 2172,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 2353
+          },
+          "continuation_selections": 822,
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 0,
+            "hits": 3023,
+            "keys": 914,
+            "reserve_bytes": 5046272
+          },
+          "productive_selections": 1853,
+          "retirement": {
+            "bands_over_threshold": 39,
+            "cells_over_threshold": 172,
+            "entries_over_threshold": 82,
+            "rooms_over_threshold": 2
+          },
+          "uniform_selections": 762
+        },
+        "nova-level-1-s20260906-w8-m2048": {
+          "cell_selections": 2563,
+          "classes_skipped": 657,
+          "concentration": {
+            "distinct_window_parents": 1309,
+            "draws_per_parent_milli": 1957,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 2563
+          },
+          "continuation_selections": 945,
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 0,
+            "hits": 3453,
+            "keys": 980,
+            "reserve_bytes": 5046272
+          },
+          "productive_selections": 2091,
+          "retirement": {
+            "bands_over_threshold": 42,
+            "cells_over_threshold": 182,
+            "entries_over_threshold": 96,
+            "rooms_over_threshold": 3
+          },
+          "uniform_selections": 925
+        },
+        "nova-level-1-s20260907-w8-m2048": {
+          "cell_selections": 3078,
+          "classes_skipped": 4068,
+          "concentration": {
+            "distinct_window_parents": 1575,
+            "draws_per_parent_milli": 1954,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 3078
+          },
+          "continuation_selections": 978,
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 0,
+            "hits": 4035,
+            "keys": 1060,
+            "reserve_bytes": 5046272
+          },
+          "productive_selections": 2234,
+          "retirement": {
+            "bands_over_threshold": 46,
+            "cells_over_threshold": 246,
+            "entries_over_threshold": 146,
+            "rooms_over_threshold": 4
+          },
+          "uniform_selections": 1039
+        },
+        "smb-full-s20260905-w8-m2048": {
+          "cell_selections": 160895,
+          "classes_skipped": 19939,
+          "concentration": {
+            "distinct_window_parents": 253830,
+            "draws_per_parent_milli": 633,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 160895
+          },
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 109144,
+            "hits": 88742,
+            "keys": 16384,
+            "reserve_bytes": 5111808
+          },
+          "productive_selections": 162964,
+          "retirement": {
+            "bands_over_threshold": 468,
+            "cells_over_threshold": 8135,
+            "entries_over_threshold": 2583,
+            "rooms_over_threshold": 51
+          },
+          "uniform_selections": 53375
+        },
+        "smb-full-s20260906-w8-m2048": {
+          "cell_selections": 309402,
+          "classes_skipped": 21577,
+          "concentration": {
+            "distinct_window_parents": 846720,
+            "draws_per_parent_milli": 365,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 309402
+          },
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 256358,
+            "hits": 140257,
+            "keys": 16384,
+            "reserve_bytes": 5111808
+          },
+          "productive_selections": 341582,
+          "retirement": {
+            "bands_over_threshold": 400,
+            "cells_over_threshold": 12371,
+            "entries_over_threshold": 1093,
+            "rooms_over_threshold": 44
+          },
+          "uniform_selections": 103597
+        },
+        "smb-full-s20260907-w8-m2048": {
+          "cell_selections": 221383,
+          "classes_skipped": 74763,
+          "concentration": {
+            "distinct_window_parents": 462579,
+            "draws_per_parent_milli": 478,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 221383
+          },
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 164851,
+            "hits": 113923,
+            "keys": 16384,
+            "reserve_bytes": 5111808
+          },
+          "productive_selections": 234084,
+          "retirement": {
+            "bands_over_threshold": 546,
+            "cells_over_threshold": 10667,
+            "entries_over_threshold": 2709,
+            "rooms_over_threshold": 58
+          },
+          "uniform_selections": 73775
+        },
+        "stb-hard-s20260905-w8-m2048": {
+          "cell_selections": 3858,
+          "classes_skipped": 3996,
+          "concentration": {
+            "distinct_window_parents": 1245,
+            "draws_per_parent_milli": 3098,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 3858
+          },
+          "continuation_selections": 1500,
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 0,
+            "hits": 4931,
+            "keys": 1640,
+            "reserve_bytes": 5046272
+          },
+          "productive_selections": 3186,
+          "retirement": {
+            "bands_over_threshold": 25,
+            "cells_over_threshold": 184,
+            "entries_over_threshold": 234,
+            "rooms_over_threshold": 5
+          },
+          "uniform_selections": 1213
+        },
+        "stb-hard-s20260906-w8-m2048": {
+          "cell_selections": 4525,
+          "classes_skipped": 2692,
+          "concentration": {
+            "distinct_window_parents": 1487,
+            "draws_per_parent_milli": 3043,
+            "final_window_size": 3,
+            "window_cap": 128,
+            "window_draws": 4525
+          },
+          "continuation_selections": 1734,
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 0,
+            "hits": 5770,
+            "keys": 2066,
+            "reserve_bytes": 5046272
+          },
+          "productive_selections": 3900,
+          "retirement": {
+            "bands_over_threshold": 38,
+            "cells_over_threshold": 265,
+            "entries_over_threshold": 266,
+            "rooms_over_threshold": 4
+          },
+          "uniform_selections": 1577
+        },
+        "stb-hard-s20260907-w8-m2048": {
+          "cell_selections": 5695,
+          "classes_skipped": 9893,
+          "concentration": {
+            "distinct_window_parents": 1938,
+            "draws_per_parent_milli": 2938,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 5695
+          },
+          "continuation_selections": 2230,
+          "counter_resets": 0,
+          "key_counts": {
+            "capacity": 16384,
+            "evictions": 0,
+            "hits": 7461,
+            "keys": 2404,
+            "reserve_bytes": 5046272
+          },
+          "productive_selections": 4421,
+          "retirement": {
+            "bands_over_threshold": 28,
+            "cells_over_threshold": 296,
+            "entries_over_threshold": 341,
+            "rooms_over_threshold": 4
+          },
+          "uniform_selections": 1940
+        }
+      }
+    }
+  ],
+  "comparison": {
+    "format": "harmony-search-comparison-v1",
+    "pairs": [
+      {
+        "cell": "metroid-full-s20260905-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 2,
+          "stream_sha256": "f7e03160808cd23b5f1edc607f9c38d45fbcb22f9df2e9746888dfafe2b7d1bf",
+          "frames": 56687361,
+          "search_seconds": 269.099103316,
+          "frames_per_second": 210656.0754066604,
+          "peak_rss": 854212608,
+          "peak_disk": 12406973,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "workload_diagnostics": {
+            "coverage_bitmap_bytes": 32768,
+            "map_cells_observed": 62,
+            "scope": "this run's live gameplay observations; union across explored branches"
+          }
+        },
+        "candidate": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 2,
+          "stream_sha256": "3c96c09234c912577ec3e38d074da53647651b51b4ad8d253f1e788ea72283cd",
+          "frames": 52771812,
+          "search_seconds": 247.124122847,
+          "frames_per_second": 213543.75037143662,
+          "peak_rss": 868474880,
+          "peak_disk": 12392278,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "workload_diagnostics": {
+            "coverage_bitmap_bytes": 32768,
+            "map_cells_observed": 60,
+            "scope": "this run's live gameplay observations; union across explored branches"
+          }
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "metroid-full-s20260906-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": false,
+        "baseline": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 2,
+          "stream_sha256": "a27221c18231133752543f1f39fb78d56bd1b5882a559fa15cb6c7b4f67e2318",
+          "frames": 58558153,
+          "search_seconds": 336.817980105,
+          "frames_per_second": 173856.96862663038,
+          "peak_rss": 858402816,
+          "peak_disk": 12525742,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "workload_diagnostics": {
+            "coverage_bitmap_bytes": 32768,
+            "map_cells_observed": 56,
+            "scope": "this run's live gameplay observations; union across explored branches"
+          }
+        },
+        "candidate": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 2,
+          "stream_sha256": "45f2b8124300985fa465e0d24a3d6b890ff02ff413bc4dfa6fc27761275b270b",
+          "frames": 54902845,
+          "search_seconds": 319.426024336,
+          "frames_per_second": 171879.68674164262,
+          "peak_rss": 920932352,
+          "peak_disk": 12502325,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "workload_diagnostics": {
+            "coverage_bitmap_bytes": 32768,
+            "map_cells_observed": 61,
+            "scope": "this run's live gameplay observations; union across explored branches"
+          }
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "metroid-full-s20260907-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": false,
+        "baseline": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 2,
+          "stream_sha256": "fd505505841b941cfa7ef5466e69265c7334b44c32a1960c2902319893e49859",
+          "frames": 52326264,
+          "search_seconds": 306.626391961,
+          "frames_per_second": 170651.53350092383,
+          "peak_rss": 953765888,
+          "peak_disk": 12486810,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "workload_diagnostics": {
+            "coverage_bitmap_bytes": 32768,
+            "map_cells_observed": 62,
+            "scope": "this run's live gameplay observations; union across explored branches"
+          }
+        },
+        "candidate": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 2,
+          "stream_sha256": "ed1d3717b384e174ed4005d03b42aea1dc7ca445d82b4d1702b6ca35a65b6374",
+          "frames": 55903274,
+          "search_seconds": 325.933612607,
+          "frames_per_second": 171517.36377495478,
+          "peak_rss": 911892480,
+          "peak_disk": 12511868,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "workload_diagnostics": {
+            "coverage_bitmap_bytes": 32768,
+            "map_cells_observed": 63,
+            "scope": "this run's live gameplay observations; union across explored branches"
+          }
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "mm2-metal-s20260905-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 1322946,
+          "result_slots": 2,
+          "stream_sha256": "2dd6a9889361da689b2e3dfb336e2f4b5eec14f35ba54fec944536fa6b5d550e",
+          "frames": 1324411,
+          "search_seconds": 5.477760751,
+          "frames_per_second": 241779.63591385775,
+          "peak_rss": 110538752,
+          "peak_disk": 395951,
+          "progress": {
+            "boss_damage": 28,
+            "bosses": 1,
+            "enemy_damage": 0,
+            "room": 21,
+            "screen": 21,
+            "stage": 6,
+            "x": 232,
+            "y": 252
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 2086712,
+          "result_slots": 2,
+          "stream_sha256": "79f62925490c7a32b3e395c6c80646c32e360a4771ca2a3681c7cb7d51847e9b",
+          "frames": 2088980,
+          "search_seconds": 8.779154184,
+          "frames_per_second": 237947.75171020054,
+          "peak_rss": 118804480,
+          "peak_disk": 555300,
+          "progress": {
+            "boss_damage": 28,
+            "bosses": 1,
+            "enemy_damage": 0,
+            "room": 21,
+            "screen": 21,
+            "stage": 6,
+            "x": 232,
+            "y": 252
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "mm2-metal-s20260906-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": false,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 4166091,
+          "result_slots": 2,
+          "stream_sha256": "7607639e945ea894feb904b5f829b4d04540d4c8715fabb19241a063930facc0",
+          "frames": 4167939,
+          "search_seconds": 20.359749364,
+          "frames_per_second": 204714.6517122518,
+          "peak_rss": 127885312,
+          "peak_disk": 1085034,
+          "progress": {
+            "boss_damage": 28,
+            "bosses": 1,
+            "enemy_damage": 0,
+            "room": 21,
+            "screen": 21,
+            "stage": 6,
+            "x": 24,
+            "y": 252
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 3729674,
+          "result_slots": 2,
+          "stream_sha256": "29f5021c112c1bea9c5d7f208ebb8ef121413a92427e49f9c159306280157904",
+          "frames": 3732044,
+          "search_seconds": 16.059390553,
+          "frames_per_second": 232390.13882147786,
+          "peak_rss": 128880640,
+          "peak_disk": 954326,
+          "progress": {
+            "boss_damage": 28,
+            "bosses": 1,
+            "enemy_damage": 0,
+            "room": 21,
+            "screen": 21,
+            "stage": 6,
+            "x": 232,
+            "y": 252
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "mm2-metal-s20260907-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 1325844,
+          "result_slots": 2,
+          "stream_sha256": "ead3d6c9128df093dc392122c05460fa72d1f6214b1d64f33b773407a0debc3e",
+          "frames": 1327018,
+          "search_seconds": 5.481039852,
+          "frames_per_second": 242110.62787944858,
+          "peak_rss": 114712576,
+          "peak_disk": 387370,
+          "progress": {
+            "boss_damage": 28,
+            "bosses": 1,
+            "enemy_damage": 0,
+            "room": 21,
+            "screen": 21,
+            "stage": 6,
+            "x": 24,
+            "y": 252
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 1927759,
+          "result_slots": 2,
+          "stream_sha256": "bae9fa1e161058b8b02ed09a3e3919437eb84696e9d6f2b3006824e8e329a66f",
+          "frames": 1935454,
+          "search_seconds": 8.051207029,
+          "frames_per_second": 240393.0234346977,
+          "peak_rss": 131702784,
+          "peak_disk": 523366,
+          "progress": {
+            "boss_damage": 28,
+            "bosses": 1,
+            "enemy_damage": 0,
+            "room": 21,
+            "screen": 21,
+            "stage": 6,
+            "x": 24,
+            "y": 252
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "nova-full-s20260905-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 2,
+          "stream_sha256": "8d1a7676208e722114fff17a1deb7c422e8635b3e62efc8d0ae8a64b8e5046dd",
+          "frames": 38527100,
+          "search_seconds": 161.594564015,
+          "frames_per_second": 238418.29231597003,
+          "peak_rss": 291549184,
+          "peak_disk": 7407658,
+          "progress": {
+            "available": 8,
+            "cleared": 7,
+            "collectibles": 5,
+            "level": 7,
+            "started_level": 7,
+            "x": 3979,
+            "y": 104
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 2,
+          "stream_sha256": "ec72adfea190d6036db347700e1766f99b68a2ccd67f52099440db141326a824",
+          "frames": 38427494,
+          "search_seconds": 160.717500337,
+          "frames_per_second": 239099.62461725343,
+          "peak_rss": 293855232,
+          "peak_disk": 7450413,
+          "progress": {
+            "available": 8,
+            "cleared": 7,
+            "collectibles": 6,
+            "level": 5,
+            "started_level": 7,
+            "x": 4005,
+            "y": 72
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "nova-full-s20260906-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": false,
+        "baseline": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 2,
+          "stream_sha256": "78cfb42c8c31f456f951c9ee4d337621b607ad299ea5667caab2e9c7102c43e8",
+          "frames": 39180006,
+          "search_seconds": 191.121133566,
+          "frames_per_second": 205000.9084237141,
+          "peak_rss": 282644480,
+          "peak_disk": 7449746,
+          "progress": {
+            "available": 8,
+            "cleared": 7,
+            "collectibles": 6,
+            "level": 7,
+            "started_level": 7,
+            "x": 3977,
+            "y": 104
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 2,
+          "stream_sha256": "0959d15a5536b00074e9411f4c4d56e778346d00f660fde7c741cd599f6ae4f1",
+          "frames": 38943651,
+          "search_seconds": 197.2138521,
+          "frames_per_second": 197469.1462354941,
+          "peak_rss": 310120448,
+          "peak_disk": 7521672,
+          "progress": {
+            "available": 8,
+            "cleared": 7,
+            "collectibles": 7,
+            "level": 6,
+            "started_level": 6,
+            "x": 2952,
+            "y": 227
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "nova-full-s20260907-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": false,
+        "baseline": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 2,
+          "stream_sha256": "ebe628345570fc06ad64ad352f970011ba3f09f96bf3abcb7e1889ff15351dae",
+          "frames": 39055554,
+          "search_seconds": 192.223492587,
+          "frames_per_second": 203177.83989032207,
+          "peak_rss": 318115840,
+          "peak_disk": 7541069,
+          "progress": {
+            "available": 8,
+            "cleared": 7,
+            "collectibles": 7,
+            "level": 7,
+            "started_level": 7,
+            "x": 3979,
+            "y": 104
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 2,
+          "stream_sha256": "37a1ea301d56bf8d86cdf101c8a41cd174d948bb7a8c5114100b334f4a53831e",
+          "frames": 39387296,
+          "search_seconds": 162.397109784,
+          "frames_per_second": 242536.9272420425,
+          "peak_rss": 314937344,
+          "peak_disk": 7467615,
+          "progress": {
+            "available": 8,
+            "cleared": 7,
+            "collectibles": 7,
+            "level": 7,
+            "started_level": 7,
+            "x": 3979,
+            "y": 104
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "nova-level-1-s20260905-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": false,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 363020,
+          "result_slots": 2,
+          "stream_sha256": "f8488aa22ca37dd6480c12f36688e76d58626c79aff015d9e49db6c4011355fd",
+          "frames": 364534,
+          "search_seconds": 1.705296505,
+          "frames_per_second": 213765.7579964371,
+          "peak_rss": 41787392,
+          "peak_disk": 118171,
+          "progress": {
+            "available": 2,
+            "cleared": 1,
+            "collectibles": 1,
+            "level": 1,
+            "started_level": 1,
+            "x": 3509,
+            "y": 184
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 524718,
+          "result_slots": 2,
+          "stream_sha256": "1740be91b7abadabf1e6b5e8c3214d7449d190b760cc6fa47aabab5342716302",
+          "frames": 526403,
+          "search_seconds": 2.179612807,
+          "frames_per_second": 241512.16138454268,
+          "peak_rss": 44863488,
+          "peak_disk": 148427,
+          "progress": {
+            "available": 2,
+            "cleared": 1,
+            "collectibles": 0,
+            "level": 1,
+            "started_level": 1,
+            "x": 3503,
+            "y": 181
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "nova-level-1-s20260906-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 209009,
+          "result_slots": 2,
+          "stream_sha256": "964f74148303c117164b1d44e8b397e94bfd4b203a38766411886a6bef0cce1b",
+          "frames": 211139,
+          "search_seconds": 0.884015338,
+          "frames_per_second": 238840.87857308195,
+          "peak_rss": 39297024,
+          "peak_disk": 89208,
+          "progress": {
+            "available": 2,
+            "cleared": 1,
+            "collectibles": 1,
+            "level": 1,
+            "started_level": 1,
+            "x": 3512,
+            "y": 184
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 583786,
+          "result_slots": 2,
+          "stream_sha256": "56fbf2d81ab4acfe4084da801a434cbab16a9820db9eea20335ed84c26e755f2",
+          "frames": 585569,
+          "search_seconds": 2.405432661,
+          "frames_per_second": 243436.0393845172,
+          "peak_rss": 45150208,
+          "peak_disk": 169329,
+          "progress": {
+            "available": 2,
+            "cleared": 1,
+            "collectibles": 1,
+            "level": 1,
+            "started_level": 1,
+            "x": 3511,
+            "y": 184
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "nova-level-1-s20260907-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": false,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 338450,
+          "result_slots": 2,
+          "stream_sha256": "6cd144080d7c9da2c2f9a9f5a2dc63f01ecdf0135bbf704445a8d2ce418bf69e",
+          "frames": 339908,
+          "search_seconds": 1.5924467359999999,
+          "frames_per_second": 213450.15334943047,
+          "peak_rss": 41988096,
+          "peak_disk": 114098,
+          "progress": {
+            "available": 2,
+            "cleared": 1,
+            "collectibles": 0,
+            "level": 1,
+            "started_level": 1,
+            "x": 3502,
+            "y": 184
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 692077,
+          "result_slots": 2,
+          "stream_sha256": "dad132a8be8b584a10ae38e421b3b69a38b3193a1e8b5e995c11c2fe9d87e947",
+          "frames": 693712,
+          "search_seconds": 2.872706185,
+          "frames_per_second": 241483.7979680125,
+          "peak_rss": 45719552,
+          "peak_disk": 173598,
+          "progress": {
+            "available": 2,
+            "cleared": 1,
+            "collectibles": 1,
+            "level": 1,
+            "started_level": 1,
+            "x": 3502,
+            "y": 184
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "smb-full-s20260905-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 38800578,
+          "result_slots": 2,
+          "stream_sha256": "13e60fa2e26655dddb0dbdced42767e4030b3e6ea9b4748c290c90ea3553b535",
+          "frames": 38802031,
+          "search_seconds": 221.12871142,
+          "frames_per_second": 175472.60485003915,
+          "peak_rss": 2763673600,
+          "peak_disk": 7575109,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 25762216,
+          "result_slots": 2,
+          "stream_sha256": "e5acee4e3818d1d844c0835c41411dd52233de56ed8e825de3acfbf50499657b",
+          "frames": 25763574,
+          "search_seconds": 156.502961175,
+          "frames_per_second": 164620.36121598643,
+          "peak_rss": 2600951808,
+          "peak_disk": 5882282,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "smb-full-s20260906-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 32542330,
+          "result_slots": 2,
+          "stream_sha256": "393be8c4faffcc6f427b156c4a6212ab552413b8b8661f8904dff2ae100f88bb",
+          "frames": 32544263,
+          "search_seconds": 217.265924423,
+          "frames_per_second": 149790.00083160223,
+          "peak_rss": 2643509248,
+          "peak_disk": 6454308,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 68857107,
+          "result_slots": 2,
+          "stream_sha256": "d6dd849112fa015fa62e4703a9a2c4090f1f1db1c8ca5bfbd2483fde876b0fc7",
+          "frames": 68859751,
+          "search_seconds": 422.517213256,
+          "frames_per_second": 162975.01933555165,
+          "peak_rss": 2821820416,
+          "peak_disk": 11075638,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "smb-full-s20260907-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 40921438,
+          "result_slots": 2,
+          "stream_sha256": "efc1c630335be0a5377931bddfa5cced42e8ed3edee86b1c599426868beff9fd",
+          "frames": 40924716,
+          "search_seconds": 274.541710826,
+          "frames_per_second": 149065.56776699558,
+          "peak_rss": 2790518784,
+          "peak_disk": 8078711,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 43690977,
+          "result_slots": 2,
+          "stream_sha256": "f1c2ec2ed99d846c4a29641cf77db95c3ce8c9abee9c01b17a9c8c8adf6294ce",
+          "frames": 43693029,
+          "search_seconds": 284.685975446,
+          "frames_per_second": 153477.9819467707,
+          "peak_rss": 2800640000,
+          "peak_disk": 7969810,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "stb-hard-s20260905-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 447097,
+          "result_slots": 2,
+          "stream_sha256": "7c71963991351fabe9208a97094af15a90c1f7b079966163fac96ba92b820078",
+          "frames": 449064,
+          "search_seconds": 1.940239224,
+          "frames_per_second": 231447.74852773515,
+          "peak_rss": 73052160,
+          "peak_disk": 125496,
+          "progress": {
+            "opponent_damage": 27,
+            "opponent_kos": 5
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 845442,
+          "result_slots": 2,
+          "stream_sha256": "c1f5f1a5c8e23e310f606c4bc30e50d71ccafb72fa2fb37561b1a3a81553c95b",
+          "frames": 847059,
+          "search_seconds": 3.57146463,
+          "frames_per_second": 237174.12539516037,
+          "peak_rss": 82821120,
+          "peak_disk": 199986,
+          "progress": {
+            "opponent_damage": 55,
+            "opponent_kos": 5
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "stb-hard-s20260906-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 819129,
+          "result_slots": 2,
+          "stream_sha256": "25ac45f220a693278beaa6084d45f901a1e636ba87fdad98016fb12ac98a85e9",
+          "frames": 820345,
+          "search_seconds": 3.387930961,
+          "frames_per_second": 242137.4607225947,
+          "peak_rss": 81764352,
+          "peak_disk": 198837,
+          "progress": {
+            "opponent_damage": 32,
+            "opponent_kos": 5
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 1017821,
+          "result_slots": 2,
+          "stream_sha256": "1dca365a71c2caa4328f142435902504c52f309fc11a2e032ea5004245dcae56",
+          "frames": 1019175,
+          "search_seconds": 4.179854189,
+          "frames_per_second": 243830.27586994134,
+          "peak_rss": 86851584,
+          "peak_disk": 232837,
+          "progress": {
+            "opponent_damage": 27,
+            "opponent_kos": 5
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "stb-hard-s20260907-w8-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 799122,
+          "result_slots": 2,
+          "stream_sha256": "4b5a30835de05ea810653e06e5a43201b5aa030be32f3eecfdbb455e2cdb089a",
+          "frames": 801352,
+          "search_seconds": 3.24870525,
+          "frames_per_second": 246668.11493594255,
+          "peak_rss": 80400384,
+          "peak_disk": 192725,
+          "progress": {
+            "opponent_damage": 53,
+            "opponent_kos": 5
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 1254489,
+          "result_slots": 2,
+          "stream_sha256": "61b2bb3e46f6732509d6d48da2425de16ce1b948769b3195f8a6aa83790521ce",
+          "frames": 1255832,
+          "search_seconds": 5.123217593,
+          "frames_per_second": 245125.64168968337,
+          "peak_rss": 91705344,
+          "peak_disk": 285281,
+          "progress": {
+            "opponent_damage": 47,
+            "opponent_kos": 5
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      }
+    ],
+    "timing_note": "Matching recorded allocation does not establish host isolation. Concurrent jobs may share physical cores and finish at different times; use admitted frame cost for search quality and isolated runs for precise throughput claims.",
+    "baseline": [
+      {
+        "case": "metroid-full",
+        "workers": 8,
+        "memory_mib": 2048,
+        "trials": 3,
+        "valid_trials": 3,
+        "errors": 0,
+        "solved": 0,
+        "solve_fraction_of_valid": 0.0,
+        "solve_fraction_wilson95": [
+          0.0,
+          0.5614970317550454
+        ],
+        "median_frames_to_victory_among_successes": null,
+        "median_search_frames_per_second": 173856.96862663038
+      },
+      {
+        "case": "mm2-metal",
+        "workers": 8,
+        "memory_mib": 2048,
+        "trials": 3,
+        "valid_trials": 3,
+        "errors": 0,
+        "solved": 3,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "median_frames_to_victory_among_successes": 1325844,
+        "median_search_frames_per_second": 241779.63591385775
+      },
+      {
+        "case": "nova-full",
+        "workers": 8,
+        "memory_mib": 2048,
+        "trials": 3,
+        "valid_trials": 3,
+        "errors": 0,
+        "solved": 0,
+        "solve_fraction_of_valid": 0.0,
+        "solve_fraction_wilson95": [
+          0.0,
+          0.5614970317550454
+        ],
+        "median_frames_to_victory_among_successes": null,
+        "median_search_frames_per_second": 205000.9084237141
+      },
+      {
+        "case": "nova-level-1",
+        "workers": 8,
+        "memory_mib": 2048,
+        "trials": 3,
+        "valid_trials": 3,
+        "errors": 0,
+        "solved": 3,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "median_frames_to_victory_among_successes": 338450,
+        "median_search_frames_per_second": 213765.7579964371
+      },
+      {
+        "case": "smb-full",
+        "workers": 8,
+        "memory_mib": 2048,
+        "trials": 3,
+        "valid_trials": 3,
+        "errors": 0,
+        "solved": 3,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "median_frames_to_victory_among_successes": 38800578,
+        "median_search_frames_per_second": 149790.00083160223
+      },
+      {
+        "case": "stb-hard",
+        "workers": 8,
+        "memory_mib": 2048,
+        "trials": 3,
+        "valid_trials": 3,
+        "errors": 0,
+        "solved": 3,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "median_frames_to_victory_among_successes": 799122,
+        "median_search_frames_per_second": 242137.4607225947
+      }
+    ],
+    "candidate": [
+      {
+        "case": "metroid-full",
+        "workers": 8,
+        "memory_mib": 2048,
+        "trials": 3,
+        "valid_trials": 3,
+        "errors": 0,
+        "solved": 0,
+        "solve_fraction_of_valid": 0.0,
+        "solve_fraction_wilson95": [
+          0.0,
+          0.5614970317550454
+        ],
+        "median_frames_to_victory_among_successes": null,
+        "median_search_frames_per_second": 171879.68674164262
+      },
+      {
+        "case": "mm2-metal",
+        "workers": 8,
+        "memory_mib": 2048,
+        "trials": 3,
+        "valid_trials": 3,
+        "errors": 0,
+        "solved": 3,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "median_frames_to_victory_among_successes": 2086712,
+        "median_search_frames_per_second": 237947.75171020054
+      },
+      {
+        "case": "nova-full",
+        "workers": 8,
+        "memory_mib": 2048,
+        "trials": 3,
+        "valid_trials": 3,
+        "errors": 0,
+        "solved": 0,
+        "solve_fraction_of_valid": 0.0,
+        "solve_fraction_wilson95": [
+          0.0,
+          0.5614970317550454
+        ],
+        "median_frames_to_victory_among_successes": null,
+        "median_search_frames_per_second": 239099.62461725343
+      },
+      {
+        "case": "nova-level-1",
+        "workers": 8,
+        "memory_mib": 2048,
+        "trials": 3,
+        "valid_trials": 3,
+        "errors": 0,
+        "solved": 3,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "median_frames_to_victory_among_successes": 583786,
+        "median_search_frames_per_second": 241512.16138454268
+      },
+      {
+        "case": "smb-full",
+        "workers": 8,
+        "memory_mib": 2048,
+        "trials": 3,
+        "valid_trials": 3,
+        "errors": 0,
+        "solved": 3,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "median_frames_to_victory_among_successes": 43690977,
+        "median_search_frames_per_second": 162975.01933555165
+      },
+      {
+        "case": "stb-hard",
+        "workers": 8,
+        "memory_mib": 2048,
+        "trials": 3,
+        "valid_trials": 3,
+        "errors": 0,
+        "solved": 3,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "median_frames_to_victory_among_successes": 1017821,
+        "median_search_frames_per_second": 243830.27586994134
+      }
+    ]
+  },
+  "comparison_to_entry_counts": {
+    "baseline_run": "pilot-count-continuation-005",
+    "candidate_run": "pilot-keycount-continuation-005",
+    "comparison": {
+      "format": "harmony-search-comparison-v1",
+      "pairs": [
+        {
+          "cell": "metroid-full-s20260905-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": false,
+          "same_runner_configuration": true,
+          "timing_environment_matches": false,
+          "baseline": {
+            "solved": false,
+            "frames_to_victory": null,
+            "result_slots": 2,
+            "stream_sha256": "d476627f9d286b14067e7b62032c74d9ebbf3c7c6fdc85763e7934b994c713b9",
+            "frames": 53805921,
+            "search_seconds": 311.783268139,
+            "frames_per_second": 172574.7546401756,
+            "peak_rss": 925921280,
+            "peak_disk": 12491260,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 60,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          },
+          "candidate": {
+            "solved": false,
+            "frames_to_victory": null,
+            "result_slots": 2,
+            "stream_sha256": "3c96c09234c912577ec3e38d074da53647651b51b4ad8d253f1e788ea72283cd",
+            "frames": 52771812,
+            "search_seconds": 247.124122847,
+            "frames_per_second": 213543.75037143662,
+            "peak_rss": 868474880,
+            "peak_disk": 12392278,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 60,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "metroid-full-s20260906-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": false,
+          "same_runner_configuration": true,
+          "timing_environment_matches": false,
+          "baseline": {
+            "solved": false,
+            "frames_to_victory": null,
+            "result_slots": 2,
+            "stream_sha256": "df7c0d981f210039460c470bf80570bdec5cb6cf10dbc8ae8617b4bdbded0d7d",
+            "frames": 54251539,
+            "search_seconds": 256.236020332,
+            "frames_per_second": 211724.87353537313,
+            "peak_rss": 910024704,
+            "peak_disk": 12394968,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 60,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          },
+          "candidate": {
+            "solved": false,
+            "frames_to_victory": null,
+            "result_slots": 2,
+            "stream_sha256": "45f2b8124300985fa465e0d24a3d6b890ff02ff413bc4dfa6fc27761275b270b",
+            "frames": 54902845,
+            "search_seconds": 319.426024336,
+            "frames_per_second": 171879.68674164262,
+            "peak_rss": 920932352,
+            "peak_disk": 12502325,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 61,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "metroid-full-s20260907-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": false,
+          "same_runner_configuration": true,
+          "timing_environment_matches": false,
+          "baseline": {
+            "solved": false,
+            "frames_to_victory": null,
+            "result_slots": 2,
+            "stream_sha256": "5ff0633d86e89d5e8be3a3d8c271962c7e1fcbfa9aebd14531e3060eafe33fc6",
+            "frames": 54757077,
+            "search_seconds": 321.407996816,
+            "frames_per_second": 170366.25579464782,
+            "peak_rss": 947523584,
+            "peak_disk": 12504195,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 61,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          },
+          "candidate": {
+            "solved": false,
+            "frames_to_victory": null,
+            "result_slots": 2,
+            "stream_sha256": "ed1d3717b384e174ed4005d03b42aea1dc7ca445d82b4d1702b6ca35a65b6374",
+            "frames": 55903274,
+            "search_seconds": 325.933612607,
+            "frames_per_second": 171517.36377495478,
+            "peak_rss": 911892480,
+            "peak_disk": 12511868,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 63,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "mm2-metal-s20260905-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": true,
+          "same_runner_configuration": true,
+          "timing_environment_matches": true,
+          "baseline": {
+            "solved": true,
+            "frames_to_victory": 1374972,
+            "result_slots": 2,
+            "stream_sha256": "df79a6947578fddf0ca14a68d1f54ef6eaf44243de4913ed154668174078ad8b",
+            "frames": 1376837,
+            "search_seconds": 5.305369015,
+            "frames_per_second": 259517.669007987,
+            "peak_rss": 113274880,
+            "peak_disk": 414166,
+            "progress": {
+              "boss_damage": 28,
+              "bosses": 1,
+              "enemy_damage": 0,
+              "room": 21,
+              "screen": 21,
+              "stage": 6,
+              "x": 24,
+              "y": 252
+            },
+            "workload_diagnostics": null
+          },
+          "candidate": {
+            "solved": true,
+            "frames_to_victory": 2086712,
+            "result_slots": 2,
+            "stream_sha256": "79f62925490c7a32b3e395c6c80646c32e360a4771ca2a3681c7cb7d51847e9b",
+            "frames": 2088980,
+            "search_seconds": 8.779154184,
+            "frames_per_second": 237947.75171020054,
+            "peak_rss": 118804480,
+            "peak_disk": 555300,
+            "progress": {
+              "boss_damage": 28,
+              "bosses": 1,
+              "enemy_damage": 0,
+              "room": 21,
+              "screen": 21,
+              "stage": 6,
+              "x": 232,
+              "y": 252
+            },
+            "workload_diagnostics": null
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "mm2-metal-s20260906-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": true,
+          "same_runner_configuration": true,
+          "timing_environment_matches": true,
+          "baseline": {
+            "solved": true,
+            "frames_to_victory": 2466902,
+            "result_slots": 2,
+            "stream_sha256": "a657032fff392e1d4f7e00cec3cde9cc15f3db3965eb6c7a633090c67bce1abf",
+            "frames": 2468205,
+            "search_seconds": 9.761673542,
+            "frames_per_second": 252846.5011025463,
+            "peak_rss": 123731968,
+            "peak_disk": 651166,
+            "progress": {
+              "boss_damage": 28,
+              "bosses": 1,
+              "enemy_damage": 0,
+              "room": 21,
+              "screen": 21,
+              "stage": 6,
+              "x": 232,
+              "y": 252
+            },
+            "workload_diagnostics": null
+          },
+          "candidate": {
+            "solved": true,
+            "frames_to_victory": 3729674,
+            "result_slots": 2,
+            "stream_sha256": "29f5021c112c1bea9c5d7f208ebb8ef121413a92427e49f9c159306280157904",
+            "frames": 3732044,
+            "search_seconds": 16.059390553,
+            "frames_per_second": 232390.13882147786,
+            "peak_rss": 128880640,
+            "peak_disk": 954326,
+            "progress": {
+              "boss_damage": 28,
+              "bosses": 1,
+              "enemy_damage": 0,
+              "room": 21,
+              "screen": 21,
+              "stage": 6,
+              "x": 232,
+              "y": 252
+            },
+            "workload_diagnostics": null
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "mm2-metal-s20260907-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": false,
+          "same_runner_configuration": true,
+          "timing_environment_matches": false,
+          "baseline": {
+            "solved": true,
+            "frames_to_victory": 1889540,
+            "result_slots": 2,
+            "stream_sha256": "ccc43f9183370bb24f910e50aabaf06c2069b5a546d409ea4eda3a11465d831b",
+            "frames": 1891610,
+            "search_seconds": 8.6175196,
+            "frames_per_second": 219507.47869491356,
+            "peak_rss": 118669312,
+            "peak_disk": 534863,
+            "progress": {
+              "boss_damage": 28,
+              "bosses": 1,
+              "enemy_damage": 0,
+              "room": 21,
+              "screen": 21,
+              "stage": 6,
+              "x": 24,
+              "y": 252
+            },
+            "workload_diagnostics": null
+          },
+          "candidate": {
+            "solved": true,
+            "frames_to_victory": 1927759,
+            "result_slots": 2,
+            "stream_sha256": "bae9fa1e161058b8b02ed09a3e3919437eb84696e9d6f2b3006824e8e329a66f",
+            "frames": 1935454,
+            "search_seconds": 8.051207029,
+            "frames_per_second": 240393.0234346977,
+            "peak_rss": 131702784,
+            "peak_disk": 523366,
+            "progress": {
+              "boss_damage": 28,
+              "bosses": 1,
+              "enemy_damage": 0,
+              "room": 21,
+              "screen": 21,
+              "stage": 6,
+              "x": 24,
+              "y": 252
+            },
+            "workload_diagnostics": null
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "nova-full-s20260905-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": true,
+          "same_runner_configuration": true,
+          "timing_environment_matches": true,
+          "baseline": {
+            "solved": false,
+            "frames_to_victory": null,
+            "result_slots": 2,
+            "stream_sha256": "a4d680b644e9b7074c59596048339e1ec6ef24c4d0cd420cd0e971d796a85d33",
+            "frames": 39061480,
+            "search_seconds": 161.500670776,
+            "frames_per_second": 241865.74465797687,
+            "peak_rss": 335347712,
+            "peak_disk": 7469588,
+            "progress": {
+              "available": 8,
+              "cleared": 7,
+              "collectibles": 6,
+              "level": 7,
+              "started_level": 7,
+              "x": 3979,
+              "y": 104
+            },
+            "workload_diagnostics": null
+          },
+          "candidate": {
+            "solved": false,
+            "frames_to_victory": null,
+            "result_slots": 2,
+            "stream_sha256": "ec72adfea190d6036db347700e1766f99b68a2ccd67f52099440db141326a824",
+            "frames": 38427494,
+            "search_seconds": 160.717500337,
+            "frames_per_second": 239099.62461725343,
+            "peak_rss": 293855232,
+            "peak_disk": 7450413,
+            "progress": {
+              "available": 8,
+              "cleared": 7,
+              "collectibles": 6,
+              "level": 5,
+              "started_level": 7,
+              "x": 4005,
+              "y": 72
+            },
+            "workload_diagnostics": null
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "nova-full-s20260906-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": false,
+          "same_runner_configuration": true,
+          "timing_environment_matches": false,
+          "baseline": {
+            "solved": false,
+            "frames_to_victory": null,
+            "result_slots": 2,
+            "stream_sha256": "8c8e243500bb57bc0148dfd48a9f9311c1555129600608755a99ddca6f507423",
+            "frames": 38282757,
+            "search_seconds": 191.557322772,
+            "frames_per_second": 199850.13595938502,
+            "peak_rss": 296026112,
+            "peak_disk": 7477484,
+            "progress": {
+              "available": 8,
+              "cleared": 7,
+              "collectibles": 6,
+              "level": 7,
+              "started_level": 7,
+              "x": 3979,
+              "y": 104
+            },
+            "workload_diagnostics": null
+          },
+          "candidate": {
+            "solved": false,
+            "frames_to_victory": null,
+            "result_slots": 2,
+            "stream_sha256": "0959d15a5536b00074e9411f4c4d56e778346d00f660fde7c741cd599f6ae4f1",
+            "frames": 38943651,
+            "search_seconds": 197.2138521,
+            "frames_per_second": 197469.1462354941,
+            "peak_rss": 310120448,
+            "peak_disk": 7521672,
+            "progress": {
+              "available": 8,
+              "cleared": 7,
+              "collectibles": 7,
+              "level": 6,
+              "started_level": 6,
+              "x": 2952,
+              "y": 227
+            },
+            "workload_diagnostics": null
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "nova-full-s20260907-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": false,
+          "same_runner_configuration": true,
+          "timing_environment_matches": false,
+          "baseline": {
+            "solved": false,
+            "frames_to_victory": null,
+            "result_slots": 2,
+            "stream_sha256": "54b1d82f43429e9efb6b307e8b0d29f8b3975d28bc068885b28261a4e569cbb5",
+            "frames": 38220349,
+            "search_seconds": 189.923042802,
+            "frames_per_second": 201241.2419057848,
+            "peak_rss": 274554880,
+            "peak_disk": 7447139,
+            "progress": {
+              "available": 7,
+              "cleared": 6,
+              "collectibles": 4,
+              "level": 6,
+              "started_level": 6,
+              "x": 2952,
+              "y": 228
+            },
+            "workload_diagnostics": null
+          },
+          "candidate": {
+            "solved": false,
+            "frames_to_victory": null,
+            "result_slots": 2,
+            "stream_sha256": "37a1ea301d56bf8d86cdf101c8a41cd174d948bb7a8c5114100b334f4a53831e",
+            "frames": 39387296,
+            "search_seconds": 162.397109784,
+            "frames_per_second": 242536.9272420425,
+            "peak_rss": 314937344,
+            "peak_disk": 7467615,
+            "progress": {
+              "available": 8,
+              "cleared": 7,
+              "collectibles": 7,
+              "level": 7,
+              "started_level": 7,
+              "x": 3979,
+              "y": 104
+            },
+            "workload_diagnostics": null
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "nova-level-1-s20260905-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": true,
+          "same_runner_configuration": true,
+          "timing_environment_matches": true,
+          "baseline": {
+            "solved": true,
+            "frames_to_victory": 463031,
+            "result_slots": 2,
+            "stream_sha256": "65da6f295e210b67d96c8faf7a71b98b688839bc29328ffcd6af38f2072f5106",
+            "frames": 465405,
+            "search_seconds": 1.83578674,
+            "frames_per_second": 253518.00939579724,
+            "peak_rss": 42983424,
+            "peak_disk": 131904,
+            "progress": {
+              "available": 2,
+              "cleared": 1,
+              "collectibles": 0,
+              "level": 1,
+              "started_level": 1,
+              "x": 3502,
+              "y": 184
+            },
+            "workload_diagnostics": null
+          },
+          "candidate": {
+            "solved": true,
+            "frames_to_victory": 524718,
+            "result_slots": 2,
+            "stream_sha256": "1740be91b7abadabf1e6b5e8c3214d7449d190b760cc6fa47aabab5342716302",
+            "frames": 526403,
+            "search_seconds": 2.179612807,
+            "frames_per_second": 241512.16138454268,
+            "peak_rss": 44863488,
+            "peak_disk": 148427,
+            "progress": {
+              "available": 2,
+              "cleared": 1,
+              "collectibles": 0,
+              "level": 1,
+              "started_level": 1,
+              "x": 3503,
+              "y": 181
+            },
+            "workload_diagnostics": null
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "nova-level-1-s20260906-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": true,
+          "same_runner_configuration": true,
+          "timing_environment_matches": true,
+          "baseline": {
+            "solved": true,
+            "frames_to_victory": 242433,
+            "result_slots": 2,
+            "stream_sha256": "bdf892b5cecf7a5120af11f4e54d6e26f70820e4dbfeeb277a000c9a49146404",
+            "frames": 244691,
+            "search_seconds": 0.919981278,
+            "frames_per_second": 265973.89082954795,
+            "peak_rss": 39395328,
+            "peak_disk": 86360,
+            "progress": {
+              "available": 2,
+              "cleared": 1,
+              "collectibles": 0,
+              "level": 1,
+              "started_level": 1,
+              "x": 3513,
+              "y": 184
+            },
+            "workload_diagnostics": null
+          },
+          "candidate": {
+            "solved": true,
+            "frames_to_victory": 583786,
+            "result_slots": 2,
+            "stream_sha256": "56fbf2d81ab4acfe4084da801a434cbab16a9820db9eea20335ed84c26e755f2",
+            "frames": 585569,
+            "search_seconds": 2.405432661,
+            "frames_per_second": 243436.0393845172,
+            "peak_rss": 45150208,
+            "peak_disk": 169329,
+            "progress": {
+              "available": 2,
+              "cleared": 1,
+              "collectibles": 1,
+              "level": 1,
+              "started_level": 1,
+              "x": 3511,
+              "y": 184
+            },
+            "workload_diagnostics": null
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "nova-level-1-s20260907-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": true,
+          "same_runner_configuration": true,
+          "timing_environment_matches": true,
+          "baseline": {
+            "solved": true,
+            "frames_to_victory": 569750,
+            "result_slots": 2,
+            "stream_sha256": "d9dbd58f0eea8a6e16eabce4c5825c1935dd73d94e6c7639dc7601a248b4bde0",
+            "frames": 571532,
+            "search_seconds": 2.236194961,
+            "frames_per_second": 255582.36646075692,
+            "peak_rss": 44220416,
+            "peak_disk": 160572,
+            "progress": {
+              "available": 2,
+              "cleared": 1,
+              "collectibles": 1,
+              "level": 1,
+              "started_level": 1,
+              "x": 3513,
+              "y": 184
+            },
+            "workload_diagnostics": null
+          },
+          "candidate": {
+            "solved": true,
+            "frames_to_victory": 692077,
+            "result_slots": 2,
+            "stream_sha256": "dad132a8be8b584a10ae38e421b3b69a38b3193a1e8b5e995c11c2fe9d87e947",
+            "frames": 693712,
+            "search_seconds": 2.872706185,
+            "frames_per_second": 241483.7979680125,
+            "peak_rss": 45719552,
+            "peak_disk": 173598,
+            "progress": {
+              "available": 2,
+              "cleared": 1,
+              "collectibles": 1,
+              "level": 1,
+              "started_level": 1,
+              "x": 3502,
+              "y": 184
+            },
+            "workload_diagnostics": null
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "smb-full-s20260905-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": true,
+          "same_runner_configuration": true,
+          "timing_environment_matches": true,
+          "baseline": {
+            "solved": true,
+            "frames_to_victory": 38458615,
+            "result_slots": 2,
+            "stream_sha256": "e6d55d88ec5501760d75a9563076a34479b15324cb044e9b3a7caed1b16739fd",
+            "frames": 38459612,
+            "search_seconds": 215.912555534,
+            "frames_per_second": 178125.87093363228,
+            "peak_rss": 2749820928,
+            "peak_disk": 7272688,
+            "progress": {
+              "level": 3,
+              "progress": 286,
+              "world": 7
+            },
+            "workload_diagnostics": null
+          },
+          "candidate": {
+            "solved": true,
+            "frames_to_victory": 25762216,
+            "result_slots": 2,
+            "stream_sha256": "e5acee4e3818d1d844c0835c41411dd52233de56ed8e825de3acfbf50499657b",
+            "frames": 25763574,
+            "search_seconds": 156.502961175,
+            "frames_per_second": 164620.36121598643,
+            "peak_rss": 2600951808,
+            "peak_disk": 5882282,
+            "progress": {
+              "level": 3,
+              "progress": 286,
+              "world": 7
+            },
+            "workload_diagnostics": null
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "smb-full-s20260906-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": true,
+          "same_runner_configuration": true,
+          "timing_environment_matches": true,
+          "baseline": {
+            "solved": true,
+            "frames_to_victory": 35271871,
+            "result_slots": 2,
+            "stream_sha256": "057ee4dd4c5e2e89af8cba48b057b8abadaeddbc512cabb3afb32219ee735432",
+            "frames": 35272810,
+            "search_seconds": 238.541767142,
+            "frames_per_second": 147868.48618842787,
+            "peak_rss": 2716401664,
+            "peak_disk": 7213133,
+            "progress": {
+              "level": 3,
+              "progress": 286,
+              "world": 7
+            },
+            "workload_diagnostics": null
+          },
+          "candidate": {
+            "solved": true,
+            "frames_to_victory": 68857107,
+            "result_slots": 2,
+            "stream_sha256": "d6dd849112fa015fa62e4703a9a2c4090f1f1db1c8ca5bfbd2483fde876b0fc7",
+            "frames": 68859751,
+            "search_seconds": 422.517213256,
+            "frames_per_second": 162975.01933555165,
+            "peak_rss": 2821820416,
+            "peak_disk": 11075638,
+            "progress": {
+              "level": 3,
+              "progress": 286,
+              "world": 7
+            },
+            "workload_diagnostics": null
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "smb-full-s20260907-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": true,
+          "same_runner_configuration": true,
+          "timing_environment_matches": true,
+          "baseline": {
+            "solved": true,
+            "frames_to_victory": 32572108,
+            "result_slots": 2,
+            "stream_sha256": "e01ba54d967d04237e6f031c8569e1cb8eac9af332243a2b33c78cc139e45a70",
+            "frames": 32574002,
+            "search_seconds": 230.753141326,
+            "frames_per_second": 141163.85074030515,
+            "peak_rss": 2752573440,
+            "peak_disk": 7200020,
+            "progress": {
+              "level": 3,
+              "progress": 286,
+              "world": 7
+            },
+            "workload_diagnostics": null
+          },
+          "candidate": {
+            "solved": true,
+            "frames_to_victory": 43690977,
+            "result_slots": 2,
+            "stream_sha256": "f1c2ec2ed99d846c4a29641cf77db95c3ce8c9abee9c01b17a9c8c8adf6294ce",
+            "frames": 43693029,
+            "search_seconds": 284.685975446,
+            "frames_per_second": 153477.9819467707,
+            "peak_rss": 2800640000,
+            "peak_disk": 7969810,
+            "progress": {
+              "level": 3,
+              "progress": 286,
+              "world": 7
+            },
+            "workload_diagnostics": null
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "stb-hard-s20260905-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": true,
+          "same_runner_configuration": true,
+          "timing_environment_matches": true,
+          "baseline": {
+            "solved": true,
+            "frames_to_victory": 1029913,
+            "result_slots": 2,
+            "stream_sha256": "03e147061792d39169422825a25b899c650591b1792fc95a948608c3dea4d621",
+            "frames": 1032021,
+            "search_seconds": 4.216748181,
+            "frames_per_second": 244743.33199457426,
+            "peak_rss": 84467712,
+            "peak_disk": 238910,
+            "progress": {
+              "opponent_damage": 47,
+              "opponent_kos": 5
+            },
+            "workload_diagnostics": null
+          },
+          "candidate": {
+            "solved": true,
+            "frames_to_victory": 845442,
+            "result_slots": 2,
+            "stream_sha256": "c1f5f1a5c8e23e310f606c4bc30e50d71ccafb72fa2fb37561b1a3a81553c95b",
+            "frames": 847059,
+            "search_seconds": 3.57146463,
+            "frames_per_second": 237174.12539516037,
+            "peak_rss": 82821120,
+            "peak_disk": 199986,
+            "progress": {
+              "opponent_damage": 55,
+              "opponent_kos": 5
+            },
+            "workload_diagnostics": null
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "stb-hard-s20260906-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": true,
+          "same_runner_configuration": true,
+          "timing_environment_matches": true,
+          "baseline": {
+            "solved": true,
+            "frames_to_victory": 973257,
+            "result_slots": 2,
+            "stream_sha256": "593868641e118a913cdf4446355c892ab69bd6694e1b8352730502094a897a47",
+            "frames": 975229,
+            "search_seconds": 3.9045284369999997,
+            "frames_per_second": 249768.70209435743,
+            "peak_rss": 84447232,
+            "peak_disk": 223809,
+            "progress": {
+              "opponent_damage": 39,
+              "opponent_kos": 5
+            },
+            "workload_diagnostics": null
+          },
+          "candidate": {
+            "solved": true,
+            "frames_to_victory": 1017821,
+            "result_slots": 2,
+            "stream_sha256": "1dca365a71c2caa4328f142435902504c52f309fc11a2e032ea5004245dcae56",
+            "frames": 1019175,
+            "search_seconds": 4.179854189,
+            "frames_per_second": 243830.27586994134,
+            "peak_rss": 86851584,
+            "peak_disk": 232837,
+            "progress": {
+              "opponent_damage": 27,
+              "opponent_kos": 5
+            },
+            "workload_diagnostics": null
+          },
+          "same_recorded_search": false
+        },
+        {
+          "cell": "stb-hard-s20260907-w8-m2048",
+          "comparable": true,
+          "baseline_status": "complete",
+          "candidate_status": "complete",
+          "same_host": true,
+          "same_cpu_set": true,
+          "same_runner_configuration": true,
+          "timing_environment_matches": true,
+          "baseline": {
+            "solved": true,
+            "frames_to_victory": 1195448,
+            "result_slots": 2,
+            "stream_sha256": "0675f0d3f6aa43450778c2c3088db27171b8d257688dc6b6f001efa409dc36ce",
+            "frames": 1197235,
+            "search_seconds": 4.619228136,
+            "frames_per_second": 259185.0769762457,
+            "peak_rss": 88612864,
+            "peak_disk": 277505,
+            "progress": {
+              "opponent_damage": 53,
+              "opponent_kos": 5
+            },
+            "workload_diagnostics": null
+          },
+          "candidate": {
+            "solved": true,
+            "frames_to_victory": 1254489,
+            "result_slots": 2,
+            "stream_sha256": "61b2bb3e46f6732509d6d48da2425de16ce1b948769b3195f8a6aa83790521ce",
+            "frames": 1255832,
+            "search_seconds": 5.123217593,
+            "frames_per_second": 245125.64168968337,
+            "peak_rss": 91705344,
+            "peak_disk": 285281,
+            "progress": {
+              "opponent_damage": 47,
+              "opponent_kos": 5
+            },
+            "workload_diagnostics": null
+          },
+          "same_recorded_search": false
+        }
+      ],
+      "timing_note": "Matching recorded allocation does not establish host isolation. Concurrent jobs may share physical cores and finish at different times; use admitted frame cost for search quality and isolated runs for precise throughput claims.",
+      "baseline": [
+        {
+          "case": "metroid-full",
+          "workers": 8,
+          "memory_mib": 2048,
+          "trials": 3,
+          "valid_trials": 3,
+          "errors": 0,
+          "solved": 0,
+          "solve_fraction_of_valid": 0.0,
+          "solve_fraction_wilson95": [
+            0.0,
+            0.5614970317550454
+          ],
+          "median_frames_to_victory_among_successes": null,
+          "median_search_frames_per_second": 172574.7546401756
+        },
+        {
+          "case": "mm2-metal",
+          "workers": 8,
+          "memory_mib": 2048,
+          "trials": 3,
+          "valid_trials": 3,
+          "errors": 0,
+          "solved": 3,
+          "solve_fraction_of_valid": 1.0,
+          "solve_fraction_wilson95": [
+            0.4385029682449546,
+            1.0
+          ],
+          "median_frames_to_victory_among_successes": 1889540,
+          "median_search_frames_per_second": 252846.5011025463
+        },
+        {
+          "case": "nova-full",
+          "workers": 8,
+          "memory_mib": 2048,
+          "trials": 3,
+          "valid_trials": 3,
+          "errors": 0,
+          "solved": 0,
+          "solve_fraction_of_valid": 0.0,
+          "solve_fraction_wilson95": [
+            0.0,
+            0.5614970317550454
+          ],
+          "median_frames_to_victory_among_successes": null,
+          "median_search_frames_per_second": 201241.2419057848
+        },
+        {
+          "case": "nova-level-1",
+          "workers": 8,
+          "memory_mib": 2048,
+          "trials": 3,
+          "valid_trials": 3,
+          "errors": 0,
+          "solved": 3,
+          "solve_fraction_of_valid": 1.0,
+          "solve_fraction_wilson95": [
+            0.4385029682449546,
+            1.0
+          ],
+          "median_frames_to_victory_among_successes": 463031,
+          "median_search_frames_per_second": 255582.36646075692
+        },
+        {
+          "case": "smb-full",
+          "workers": 8,
+          "memory_mib": 2048,
+          "trials": 3,
+          "valid_trials": 3,
+          "errors": 0,
+          "solved": 3,
+          "solve_fraction_of_valid": 1.0,
+          "solve_fraction_wilson95": [
+            0.4385029682449546,
+            1.0
+          ],
+          "median_frames_to_victory_among_successes": 35271871,
+          "median_search_frames_per_second": 147868.48618842787
+        },
+        {
+          "case": "stb-hard",
+          "workers": 8,
+          "memory_mib": 2048,
+          "trials": 3,
+          "valid_trials": 3,
+          "errors": 0,
+          "solved": 3,
+          "solve_fraction_of_valid": 1.0,
+          "solve_fraction_wilson95": [
+            0.4385029682449546,
+            1.0
+          ],
+          "median_frames_to_victory_among_successes": 1029913,
+          "median_search_frames_per_second": 249768.70209435743
+        }
+      ],
+      "candidate": [
+        {
+          "case": "metroid-full",
+          "workers": 8,
+          "memory_mib": 2048,
+          "trials": 3,
+          "valid_trials": 3,
+          "errors": 0,
+          "solved": 0,
+          "solve_fraction_of_valid": 0.0,
+          "solve_fraction_wilson95": [
+            0.0,
+            0.5614970317550454
+          ],
+          "median_frames_to_victory_among_successes": null,
+          "median_search_frames_per_second": 171879.68674164262
+        },
+        {
+          "case": "mm2-metal",
+          "workers": 8,
+          "memory_mib": 2048,
+          "trials": 3,
+          "valid_trials": 3,
+          "errors": 0,
+          "solved": 3,
+          "solve_fraction_of_valid": 1.0,
+          "solve_fraction_wilson95": [
+            0.4385029682449546,
+            1.0
+          ],
+          "median_frames_to_victory_among_successes": 2086712,
+          "median_search_frames_per_second": 237947.75171020054
+        },
+        {
+          "case": "nova-full",
+          "workers": 8,
+          "memory_mib": 2048,
+          "trials": 3,
+          "valid_trials": 3,
+          "errors": 0,
+          "solved": 0,
+          "solve_fraction_of_valid": 0.0,
+          "solve_fraction_wilson95": [
+            0.0,
+            0.5614970317550454
+          ],
+          "median_frames_to_victory_among_successes": null,
+          "median_search_frames_per_second": 239099.62461725343
+        },
+        {
+          "case": "nova-level-1",
+          "workers": 8,
+          "memory_mib": 2048,
+          "trials": 3,
+          "valid_trials": 3,
+          "errors": 0,
+          "solved": 3,
+          "solve_fraction_of_valid": 1.0,
+          "solve_fraction_wilson95": [
+            0.4385029682449546,
+            1.0
+          ],
+          "median_frames_to_victory_among_successes": 583786,
+          "median_search_frames_per_second": 241512.16138454268
+        },
+        {
+          "case": "smb-full",
+          "workers": 8,
+          "memory_mib": 2048,
+          "trials": 3,
+          "valid_trials": 3,
+          "errors": 0,
+          "solved": 3,
+          "solve_fraction_of_valid": 1.0,
+          "solve_fraction_wilson95": [
+            0.4385029682449546,
+            1.0
+          ],
+          "median_frames_to_victory_among_successes": 43690977,
+          "median_search_frames_per_second": 162975.01933555165
+        },
+        {
+          "case": "stb-hard",
+          "workers": 8,
+          "memory_mib": 2048,
+          "trials": 3,
+          "valid_trials": 3,
+          "errors": 0,
+          "solved": 3,
+          "solve_fraction_of_valid": 1.0,
+          "solve_fraction_wilson95": [
+            0.4385029682449546,
+            1.0
+          ],
+          "median_frames_to_victory_among_successes": 1017821,
+          "median_search_frames_per_second": 243830.27586994134
+        }
+      ]
+    },
+    "baseline_results_sha256": "f523da127d5082690ceb0fd589804a6f3e18fe5158ad21836cebb25a78ecc24a",
+    "baseline_matrix_sha256": "1ccd62edca3b11aad69bddaee227c37f7d6940af6336776cc8d5c380277295e5"
+  }
+}

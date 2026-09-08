@@ -1,0 +1,13 @@
+{
+  "archive": "harmony-progress-report-010.tar.gz",
+  "archive_bytes": 29619094,
+  "archive_sha256": "fc9c057c6aef417657d2af5f9680e1304a50b532ccf63051d4576aacaa708c81",
+  "files": 261,
+  "format": "harmony-search-publication-v1",
+  "records_sha256": {
+    "metroid-long-horizon-008.json": "a11725f72e31c7a26a9993091a489df12140635a5cbc66443aad5da47aa95ee0",
+    "progress-audit-010.json": "3cc07bd8445ab5bbb3e18523015eb3d589f8d515386ce8dcf8e5862fa34bfb0b",
+    "qualification-final-010.json": "a7fde5e479dad5919d2057cb2125e31826f54ed3121be8bd5b2c88545fec6977"
+  },
+  "scope": "ROM-free named Metroid progress and historical-depth report. Includes both complete long-run exports, 53 corrected long-run trajectory replays, 17 historical/panel replays, two qualification exports, figures, and checksums. Does not contain licensed ROMs, cores, snapshots, full campaign streams or media."
+}

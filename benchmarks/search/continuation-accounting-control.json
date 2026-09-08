@@ -1,0 +1,93 @@
+{
+  "format": "harmony-search-eval-v1",
+  "id": "nes-continuation-accounting-control-development-v1",
+  "seeds": [
+    20260905,
+    20260906,
+    20260907
+  ],
+  "workers": [
+    8
+  ],
+  "memory_mib": [
+    2048
+  ],
+  "search": {
+    "executions": 400000,
+    "actions": 8192,
+    "window": 2,
+    "result_slots": 2,
+    "wall_seconds": 900,
+    "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+    "suffix": "one_to_six_within_3_longest_actions_full_hold",
+    "mixture": "energy_splice_continuation_v1:6",
+    "verification": "witness",
+    "frames": 60000000
+  },
+  "cases": [
+    {
+      "id": "smb-full",
+      "game": "smb",
+      "origin": "power-on gameplay genesis",
+      "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
+      "search": {
+        "frames": 80000000,
+        "executions": 600000
+      }
+    },
+    {
+      "id": "nova-level-1",
+      "game": "nova",
+      "level": 1,
+      "origin": "level 1 gameplay genesis",
+      "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+      "search": {
+        "actions": 512,
+        "executions": 100000,
+        "frames": 5000000
+      }
+    },
+    {
+      "id": "mm2-metal",
+      "game": "mm2",
+      "stage": 6,
+      "origin": "power-on menus selecting Metal stage; independent stage",
+      "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+      "search": {}
+    },
+    {
+      "id": "metroid-full",
+      "game": "metroid",
+      "origin": "power-on new-game genesis",
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "search": {
+        "executions": 500000
+      }
+    },
+    {
+      "id": "stb-hard",
+      "game": "stb",
+      "ai": "hard",
+      "origin": "power-on local match, default stage, native Hard AI",
+      "rom_sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3",
+      "search": {
+        "actions": 512,
+        "executions": 20000,
+        "frames": 3000000
+      }
+    },
+    {
+      "id": "nova-full",
+      "game": "nova",
+      "level": 1,
+      "origin": "power-on level 1 genesis; all 40 level flags required",
+      "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+      "search": {
+        "actions": 8192,
+        "executions": 300000,
+        "frames": 40000000
+      },
+      "whole_game": true
+    }
+  ]
+}

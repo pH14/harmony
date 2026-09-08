@@ -1,0 +1,1418 @@
+{
+  "format": "harmony-search-evidence-v1",
+  "integration_base": "444ac54c",
+  "scope": "Controlled development pilots, before the MM2 v18 adapter audit and before deterministic frame caps. These are hypotheses for the later validation panel, not a default promotion. The baseline uses main search mechanisms with the imported, fixed game adapters.",
+  "raw_export_location": "ms02:/root/harmony-search-eval/public/",
+  "panels": {
+    "continuation": {
+      "inputs": [
+        {
+          "role": "baseline",
+          "run": "baseline-pilot-002",
+          "results_sha256": "78e7848079295ce81809a5582dc7a91dcf86f042a7eb69eb1842de1e2856cb92",
+          "matrix_sha256": "f2260c5009834915e1ddeadf2156ed89c6a056a1558f6e2020e95d97c7706131",
+          "suite": {
+            "cases": [
+              {
+                "game": "smb",
+                "id": "smb-full",
+                "origin": "power-on gameplay genesis",
+                "require_solved": true,
+                "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea"
+              },
+              {
+                "game": "nova",
+                "id": "nova-level-1",
+                "level": 1,
+                "origin": "level 1 gameplay genesis",
+                "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+                "search": {
+                  "actions": 512,
+                  "executions": 100000
+                }
+              },
+              {
+                "game": "mm2",
+                "id": "mm2-metal",
+                "origin": "power-on menus selecting Metal stage; independent stage",
+                "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+                "stage": 6
+              },
+              {
+                "game": "metroid",
+                "id": "metroid-full",
+                "origin": "power-on new-game genesis",
+                "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+                "search": {
+                  "executions": 500000
+                }
+              },
+              {
+                "ai": "hard",
+                "game": "stb",
+                "id": "stb-hard",
+                "origin": "power-on local match, default stage, native Hard AI",
+                "rom_sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3",
+                "search": {
+                  "actions": 512,
+                  "executions": 20000
+                }
+              }
+            ],
+            "format": "harmony-search-eval-v1",
+            "id": "nes-baseline-pilot-v1",
+            "memory_mib": [
+              2048
+            ],
+            "search": {
+              "actions": 8192,
+              "executions": 400000,
+              "mixture": "energy_splice:6",
+              "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+              "suffix": "one_to_six_within_3_longest_actions_full_hold",
+              "verification": "witness",
+              "wall_seconds": 900,
+              "window": 1
+            },
+            "seeds": [
+              20260905,
+              20260906,
+              20260907
+            ],
+            "workers": [
+              8
+            ]
+          },
+          "matrix": {
+            "build": {
+              "attestation": "supplied",
+              "binary_sha256": "4c19d8610f9f89c1d0bb5655c3c40178191195268d83f332d05537c0f22bb88d",
+              "source": {
+                "binary_sha256": "4c19d8610f9f89c1d0bb5655c3c40178191195268d83f332d05537c0f22bb88d",
+                "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+                "dirty": null,
+                "files": 248,
+                "format": "harmony-search-build-v1",
+                "locked": true,
+                "profile": "release",
+                "revision": null,
+                "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+                "rustflags": "",
+                "source_tree_sha256": "afba01407f111969baa65714e3d8bea5774e67b172fc6d0751847fbb35c9c355"
+              }
+            },
+            "cells": [
+              "smb-full-s20260905-w8-m2048",
+              "smb-full-s20260906-w8-m2048",
+              "smb-full-s20260907-w8-m2048",
+              "nova-level-1-s20260905-w8-m2048",
+              "nova-level-1-s20260906-w8-m2048",
+              "nova-level-1-s20260907-w8-m2048",
+              "mm2-metal-s20260905-w8-m2048",
+              "mm2-metal-s20260906-w8-m2048",
+              "mm2-metal-s20260907-w8-m2048",
+              "metroid-full-s20260905-w8-m2048",
+              "metroid-full-s20260906-w8-m2048",
+              "metroid-full-s20260907-w8-m2048",
+              "stb-hard-s20260905-w8-m2048",
+              "stb-hard-s20260906-w8-m2048",
+              "stb-hard-s20260907-w8-m2048"
+            ],
+            "format": "harmony-search-eval-v1",
+            "host": {
+              "cpu_model": "Intel(R) Core(TM) Ultra 9 285HX",
+              "hostname": "ms02",
+              "logical_cpus": 24,
+              "machine": "x86_64",
+              "release": "7.1.8+deb13-amd64",
+              "system": "Linux"
+            },
+            "runner": {
+              "cpu_capacity": 24,
+              "disk_limit_gib": 8,
+              "finish_seconds": 600,
+              "jobs": 3,
+              "memory_capacity_mib": 40000,
+              "overhead_mib": 1024,
+              "sample_seconds": 1
+            }
+          }
+        },
+        {
+          "role": "candidate",
+          "run": "continuation-pilot-002",
+          "results_sha256": "37057c2c93de80e97ed9e1d56034e693977b3e8a54416b835b6c500054c890da",
+          "matrix_sha256": "f2260c5009834915e1ddeadf2156ed89c6a056a1558f6e2020e95d97c7706131",
+          "suite": {
+            "cases": [
+              {
+                "game": "smb",
+                "id": "smb-full",
+                "origin": "power-on gameplay genesis",
+                "require_solved": true,
+                "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea"
+              },
+              {
+                "game": "nova",
+                "id": "nova-level-1",
+                "level": 1,
+                "origin": "level 1 gameplay genesis",
+                "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+                "search": {
+                  "actions": 512,
+                  "executions": 100000
+                }
+              },
+              {
+                "game": "mm2",
+                "id": "mm2-metal",
+                "origin": "power-on menus selecting Metal stage; independent stage",
+                "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+                "stage": 6
+              },
+              {
+                "game": "metroid",
+                "id": "metroid-full",
+                "origin": "power-on new-game genesis",
+                "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+                "search": {
+                  "executions": 500000
+                }
+              },
+              {
+                "ai": "hard",
+                "game": "stb",
+                "id": "stb-hard",
+                "origin": "power-on local match, default stage, native Hard AI",
+                "rom_sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3",
+                "search": {
+                  "actions": 512,
+                  "executions": 20000
+                }
+              }
+            ],
+            "format": "harmony-search-eval-v1",
+            "id": "nes-baseline-pilot-v1",
+            "memory_mib": [
+              2048
+            ],
+            "search": {
+              "actions": 8192,
+              "executions": 400000,
+              "mixture": "energy_splice_continuation_v1:6",
+              "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+              "suffix": "one_to_six_within_3_longest_actions_full_hold",
+              "verification": "witness",
+              "wall_seconds": 900,
+              "window": 1
+            },
+            "seeds": [
+              20260905,
+              20260906,
+              20260907
+            ],
+            "workers": [
+              8
+            ]
+          },
+          "matrix": {
+            "build": {
+              "attestation": "supplied",
+              "binary_sha256": "4c19d8610f9f89c1d0bb5655c3c40178191195268d83f332d05537c0f22bb88d",
+              "source": {
+                "binary_sha256": "4c19d8610f9f89c1d0bb5655c3c40178191195268d83f332d05537c0f22bb88d",
+                "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+                "dirty": null,
+                "files": 248,
+                "format": "harmony-search-build-v1",
+                "locked": true,
+                "profile": "release",
+                "revision": null,
+                "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+                "rustflags": "",
+                "source_tree_sha256": "afba01407f111969baa65714e3d8bea5774e67b172fc6d0751847fbb35c9c355"
+              }
+            },
+            "cells": [
+              "smb-full-s20260905-w8-m2048",
+              "smb-full-s20260906-w8-m2048",
+              "smb-full-s20260907-w8-m2048",
+              "nova-level-1-s20260905-w8-m2048",
+              "nova-level-1-s20260906-w8-m2048",
+              "nova-level-1-s20260907-w8-m2048",
+              "mm2-metal-s20260905-w8-m2048",
+              "mm2-metal-s20260906-w8-m2048",
+              "mm2-metal-s20260907-w8-m2048",
+              "metroid-full-s20260905-w8-m2048",
+              "metroid-full-s20260906-w8-m2048",
+              "metroid-full-s20260907-w8-m2048",
+              "stb-hard-s20260905-w8-m2048",
+              "stb-hard-s20260906-w8-m2048",
+              "stb-hard-s20260907-w8-m2048"
+            ],
+            "format": "harmony-search-eval-v1",
+            "host": {
+              "cpu_model": "Intel(R) Core(TM) Ultra 9 285HX",
+              "hostname": "ms02",
+              "logical_cpus": 24,
+              "machine": "x86_64",
+              "release": "7.1.8+deb13-amd64",
+              "system": "Linux"
+            },
+            "runner": {
+              "cpu_capacity": 24,
+              "disk_limit_gib": 8,
+              "finish_seconds": 600,
+              "jobs": 3,
+              "memory_capacity_mib": 40000,
+              "overhead_mib": 1024,
+              "sample_seconds": 1
+            }
+          }
+        }
+      ],
+      "comparison": {
+        "format": "harmony-search-comparison-v1",
+        "pairs": [
+          {
+            "cell": "metroid-full-s20260905-w8-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": false,
+            "same_runner_configuration": true,
+            "timing_environment_matches": false,
+            "baseline": {
+              "solved": false,
+              "frames_to_victory": null,
+              "frames": 66465147,
+              "search_seconds": 447.53011444,
+              "frames_per_second": 148515.47383167426,
+              "peak_rss": 949301248,
+              "peak_disk": 11824275,
+              "progress": {
+                "items": 1,
+                "missile_capacity": 10
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": false,
+              "frames_to_victory": null,
+              "frames": 53595127,
+              "search_seconds": 337.861726193,
+              "frames_per_second": 158630.35924165125,
+              "peak_rss": 920330240,
+              "peak_disk": 11649804,
+              "progress": {
+                "items": 1,
+                "missile_capacity": 10
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "metroid-full-s20260906-w8-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": false,
+            "same_runner_configuration": true,
+            "timing_environment_matches": false,
+            "baseline": {
+              "solved": false,
+              "frames_to_victory": null,
+              "frames": 58374291,
+              "search_seconds": 349.487112215,
+              "frames_per_second": 167028.45100648198,
+              "peak_rss": 938881024,
+              "peak_disk": 11657503,
+              "progress": {
+                "items": 1,
+                "missile_capacity": 10
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": false,
+              "frames_to_victory": null,
+              "frames": 54867388,
+              "search_seconds": 395.644592402,
+              "frames_per_second": 138678.4731895217,
+              "peak_rss": 792944640,
+              "peak_disk": 11736874,
+              "progress": {
+                "items": 1,
+                "missile_capacity": 10
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "metroid-full-s20260907-w8-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": false,
+              "frames_to_victory": null,
+              "frames": 58826176,
+              "search_seconds": 401.617793841,
+              "frames_per_second": 146473.03207708275,
+              "peak_rss": 910069760,
+              "peak_disk": 11729194,
+              "progress": {
+                "items": 1,
+                "missile_capacity": 10
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": false,
+              "frames_to_victory": null,
+              "frames": 53792799,
+              "search_seconds": 383.429054675,
+              "frames_per_second": 140294.00835467607,
+              "peak_rss": 948445184,
+              "peak_disk": 11712504,
+              "progress": {
+                "items": 1,
+                "missile_capacity": 10
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "mm2-metal-s20260905-w8-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": true,
+              "frames_to_victory": 2063494,
+              "frames": 2064662,
+              "search_seconds": 10.908471168,
+              "frames_per_second": 189271.43576789074,
+              "peak_rss": 148049920,
+              "peak_disk": 580193,
+              "progress": {
+                "boss_damage": 28,
+                "bosses": 1,
+                "enemy_damage": 0,
+                "room": 21,
+                "screen": 21,
+                "stage": 6,
+                "x": 24,
+                "y": 252
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": true,
+              "frames_to_victory": 2447645,
+              "frames": 2448301,
+              "search_seconds": 13.778118566,
+              "frames_per_second": 177694.8709123193,
+              "peak_rss": 165945344,
+              "peak_disk": 705825,
+              "progress": {
+                "boss_damage": 28,
+                "bosses": 1,
+                "enemy_damage": 0,
+                "room": 21,
+                "screen": 21,
+                "stage": 6,
+                "x": 24,
+                "y": 252
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "mm2-metal-s20260906-w8-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": true,
+              "frames_to_victory": 6491257,
+              "frames": 6491816,
+              "search_seconds": 33.618779586,
+              "frames_per_second": 193100.88230280112,
+              "peak_rss": 188829696,
+              "peak_disk": 1521414,
+              "progress": {
+                "boss_damage": 28,
+                "bosses": 1,
+                "enemy_damage": 0,
+                "room": 21,
+                "screen": 21,
+                "stage": 6,
+                "x": 24,
+                "y": 252
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": true,
+              "frames_to_victory": 3156608,
+              "frames": 3158242,
+              "search_seconds": 16.967086615,
+              "frames_per_second": 186139.322068876,
+              "peak_rss": 173211648,
+              "peak_disk": 848951,
+              "progress": {
+                "boss_damage": 28,
+                "bosses": 1,
+                "enemy_damage": 0,
+                "room": 21,
+                "screen": 21,
+                "stage": 6,
+                "x": 232,
+                "y": 252
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "mm2-metal-s20260907-w8-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": true,
+              "frames_to_victory": 8351732,
+              "frames": 8352318,
+              "search_seconds": 43.983050341,
+              "frames_per_second": 189898.56172422308,
+              "peak_rss": 209281024,
+              "peak_disk": 1991018,
+              "progress": {
+                "boss_damage": 28,
+                "bosses": 1,
+                "enemy_damage": 0,
+                "room": 21,
+                "screen": 21,
+                "stage": 6,
+                "x": 24,
+                "y": 252
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": true,
+              "frames_to_victory": 2230234,
+              "frames": 2230956,
+              "search_seconds": 11.838652376,
+              "frames_per_second": 188446.7867747112,
+              "peak_rss": 155246592,
+              "peak_disk": 635032,
+              "progress": {
+                "boss_damage": 28,
+                "bosses": 1,
+                "enemy_damage": 0,
+                "room": 21,
+                "screen": 21,
+                "stage": 6,
+                "x": 232,
+                "y": 252
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "nova-level-1-s20260905-w8-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": true,
+              "frames_to_victory": 607691,
+              "frames": 608946,
+              "search_seconds": 2.9964567410000003,
+              "frames_per_second": 203222.02275370675,
+              "peak_rss": 44376064,
+              "peak_disk": 162115,
+              "progress": {
+                "available": 2,
+                "cleared": 1,
+                "collectibles": 1,
+                "level": 1,
+                "started_level": 1,
+                "x": 3514,
+                "y": 184
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": true,
+              "frames_to_victory": 524851,
+              "frames": 525813,
+              "search_seconds": 2.788738835,
+              "frames_per_second": 188548.6706036422,
+              "peak_rss": 43450368,
+              "peak_disk": 146682,
+              "progress": {
+                "available": 2,
+                "cleared": 1,
+                "collectibles": 0,
+                "level": 1,
+                "started_level": 1,
+                "x": 3506,
+                "y": 184
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "nova-level-1-s20260906-w8-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": true,
+              "frames_to_victory": 657168,
+              "frames": 657904,
+              "search_seconds": 3.190618159,
+              "frames_per_second": 206199.54103382886,
+              "peak_rss": 44322816,
+              "peak_disk": 160736,
+              "progress": {
+                "available": 2,
+                "cleared": 1,
+                "collectibles": 1,
+                "level": 1,
+                "started_level": 1,
+                "x": 3502,
+                "y": 184
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": true,
+              "frames_to_victory": 257984,
+              "frames": 258619,
+              "search_seconds": 1.353270484,
+              "frames_per_second": 191106.65831975685,
+              "peak_rss": 40148992,
+              "peak_disk": 99393,
+              "progress": {
+                "available": 2,
+                "cleared": 1,
+                "collectibles": 1,
+                "level": 1,
+                "started_level": 1,
+                "x": 3507,
+                "y": 184
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "nova-level-1-s20260907-w8-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": true,
+              "frames_to_victory": 343689,
+              "frames": 345151,
+              "search_seconds": 1.6717625919999999,
+              "frames_per_second": 206459.33917392022,
+              "peak_rss": 39419904,
+              "peak_disk": 100245,
+              "progress": {
+                "available": 2,
+                "cleared": 1,
+                "collectibles": 0,
+                "level": 1,
+                "started_level": 1,
+                "x": 3508,
+                "y": 184
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": true,
+              "frames_to_victory": 756435,
+              "frames": 757733,
+              "search_seconds": 4.035904979,
+              "frames_per_second": 187747.97819639154,
+              "peak_rss": 47800320,
+              "peak_disk": 206486,
+              "progress": {
+                "available": 2,
+                "cleared": 1,
+                "collectibles": 1,
+                "level": 1,
+                "started_level": 1,
+                "x": 3503,
+                "y": 184
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "smb-full-s20260905-w8-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": true,
+              "frames_to_victory": 45307184,
+              "frames": 45308068,
+              "search_seconds": 328.127446938,
+              "frames_per_second": 138080.7013335919,
+              "peak_rss": 2821173248,
+              "peak_disk": 8493952,
+              "progress": {
+                "level": 3,
+                "progress": 286,
+                "world": 7
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": true,
+              "frames_to_victory": 45326665,
+              "frames": 45327549,
+              "search_seconds": 329.711148843,
+              "frames_per_second": 137476.54320777554,
+              "peak_rss": 2822959104,
+              "peak_disk": 8497226,
+              "progress": {
+                "level": 3,
+                "progress": 286,
+                "world": 7
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "smb-full-s20260906-w8-m2048",
+            "comparable": true,
+            "baseline_status": "regression",
+            "candidate_status": "regression",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": false,
+              "frames_to_victory": null,
+              "frames": 65649032,
+              "search_seconds": 534.587385576,
+              "frames_per_second": 122803.1819891623,
+              "peak_rss": 2822733824,
+              "peak_disk": 10441586,
+              "progress": {
+                "level": 0,
+                "progress": 337,
+                "world": 7
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": false,
+              "frames_to_victory": null,
+              "frames": 69366998,
+              "search_seconds": 548.015130746,
+              "frames_per_second": 126578.61819539974,
+              "peak_rss": 2810556416,
+              "peak_disk": 10467308,
+              "progress": {
+                "level": 3,
+                "progress": 137,
+                "world": 6
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "smb-full-s20260907-w8-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": true,
+              "frames_to_victory": 45126697,
+              "frames": 45126899,
+              "search_seconds": 391.990635436,
+              "frames_per_second": 115122.39048722845,
+              "peak_rss": 2843930624,
+              "peak_disk": 8658303,
+              "progress": {
+                "level": 3,
+                "progress": 286,
+                "world": 7
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": true,
+              "frames_to_victory": 45142289,
+              "frames": 45142491,
+              "search_seconds": 393.170508345,
+              "frames_per_second": 114816.57459513287,
+              "peak_rss": 2843299840,
+              "peak_disk": 8659510,
+              "progress": {
+                "level": 3,
+                "progress": 286,
+                "world": 7
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "stb-hard-s20260905-w8-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": true,
+              "frames_to_victory": 434988,
+              "frames": 436259,
+              "search_seconds": 2.257813994,
+              "frames_per_second": 193221.85138338723,
+              "peak_rss": 70299648,
+              "peak_disk": 102693,
+              "progress": {
+                "opponent_damage": 35,
+                "opponent_kos": 5
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": true,
+              "frames_to_victory": 928345,
+              "frames": 929098,
+              "search_seconds": 4.8737463,
+              "frames_per_second": 190633.23012935655,
+              "peak_rss": 85569536,
+              "peak_disk": 210583,
+              "progress": {
+                "opponent_damage": 48,
+                "opponent_kos": 5
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "stb-hard-s20260906-w8-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": true,
+              "frames_to_victory": 635000,
+              "frames": 636642,
+              "search_seconds": 3.296447725,
+              "frames_per_second": 193129.7120751399,
+              "peak_rss": 78319616,
+              "peak_disk": 135519,
+              "progress": {
+                "opponent_damage": 30,
+                "opponent_kos": 5
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": true,
+              "frames_to_victory": 345513,
+              "frames": 345811,
+              "search_seconds": 1.841748828,
+              "frames_per_second": 187762.30218944926,
+              "peak_rss": 70426624,
+              "peak_disk": 97888,
+              "progress": {
+                "opponent_damage": 14,
+                "opponent_kos": 5
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "stb-hard-s20260907-w8-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": true,
+              "frames_to_victory": 840397,
+              "frames": 841298,
+              "search_seconds": 4.098977474,
+              "frames_per_second": 205245.82175344738,
+              "peak_rss": 78151680,
+              "peak_disk": 175021,
+              "progress": {
+                "opponent_damage": 23,
+                "opponent_kos": 5
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": true,
+              "frames_to_victory": 543161,
+              "frames": 543937,
+              "search_seconds": 2.791091987,
+              "frames_per_second": 194883.22224186157,
+              "peak_rss": 73924608,
+              "peak_disk": 133976,
+              "progress": {
+                "opponent_damage": 39,
+                "opponent_kos": 5
+              },
+              "workload_diagnostics": null
+            }
+          }
+        ],
+        "timing_note": "Matching recorded allocation does not establish host isolation. Concurrent jobs may share physical cores and finish at different times; use admitted frame cost for search quality and isolated runs for precise throughput claims.",
+        "baseline": [
+          {
+            "case": "metroid-full",
+            "workers": 8,
+            "memory_mib": 2048,
+            "trials": 3,
+            "valid_trials": 3,
+            "errors": 0,
+            "solved": 0,
+            "solve_fraction_of_valid": 0.0,
+            "solve_fraction_wilson95": [
+              0.0,
+              0.5614970317550454
+            ],
+            "median_frames_to_victory_among_successes": null,
+            "median_search_frames_per_second": 148515.47383167426
+          },
+          {
+            "case": "mm2-metal",
+            "workers": 8,
+            "memory_mib": 2048,
+            "trials": 3,
+            "valid_trials": 3,
+            "errors": 0,
+            "solved": 3,
+            "solve_fraction_of_valid": 1.0,
+            "solve_fraction_wilson95": [
+              0.4385029682449546,
+              1.0
+            ],
+            "median_frames_to_victory_among_successes": 6491257,
+            "median_search_frames_per_second": 189898.56172422308
+          },
+          {
+            "case": "nova-level-1",
+            "workers": 8,
+            "memory_mib": 2048,
+            "trials": 3,
+            "valid_trials": 3,
+            "errors": 0,
+            "solved": 3,
+            "solve_fraction_of_valid": 1.0,
+            "solve_fraction_wilson95": [
+              0.4385029682449546,
+              1.0
+            ],
+            "median_frames_to_victory_among_successes": 607691,
+            "median_search_frames_per_second": 206199.54103382886
+          },
+          {
+            "case": "smb-full",
+            "workers": 8,
+            "memory_mib": 2048,
+            "trials": 3,
+            "valid_trials": 3,
+            "errors": 0,
+            "solved": 2,
+            "solve_fraction_of_valid": 0.6666666666666666,
+            "solve_fraction_wilson95": [
+              0.2076596008020477,
+              0.9385080552796037
+            ],
+            "median_frames_to_victory_among_successes": 45216940.5,
+            "median_search_frames_per_second": 122803.1819891623
+          },
+          {
+            "case": "stb-hard",
+            "workers": 8,
+            "memory_mib": 2048,
+            "trials": 3,
+            "valid_trials": 3,
+            "errors": 0,
+            "solved": 3,
+            "solve_fraction_of_valid": 1.0,
+            "solve_fraction_wilson95": [
+              0.4385029682449546,
+              1.0
+            ],
+            "median_frames_to_victory_among_successes": 635000,
+            "median_search_frames_per_second": 193221.85138338723
+          }
+        ],
+        "candidate": [
+          {
+            "case": "metroid-full",
+            "workers": 8,
+            "memory_mib": 2048,
+            "trials": 3,
+            "valid_trials": 3,
+            "errors": 0,
+            "solved": 0,
+            "solve_fraction_of_valid": 0.0,
+            "solve_fraction_wilson95": [
+              0.0,
+              0.5614970317550454
+            ],
+            "median_frames_to_victory_among_successes": null,
+            "median_search_frames_per_second": 140294.00835467607
+          },
+          {
+            "case": "mm2-metal",
+            "workers": 8,
+            "memory_mib": 2048,
+            "trials": 3,
+            "valid_trials": 3,
+            "errors": 0,
+            "solved": 3,
+            "solve_fraction_of_valid": 1.0,
+            "solve_fraction_wilson95": [
+              0.4385029682449546,
+              1.0
+            ],
+            "median_frames_to_victory_among_successes": 2447645,
+            "median_search_frames_per_second": 186139.322068876
+          },
+          {
+            "case": "nova-level-1",
+            "workers": 8,
+            "memory_mib": 2048,
+            "trials": 3,
+            "valid_trials": 3,
+            "errors": 0,
+            "solved": 3,
+            "solve_fraction_of_valid": 1.0,
+            "solve_fraction_wilson95": [
+              0.4385029682449546,
+              1.0
+            ],
+            "median_frames_to_victory_among_successes": 524851,
+            "median_search_frames_per_second": 188548.6706036422
+          },
+          {
+            "case": "smb-full",
+            "workers": 8,
+            "memory_mib": 2048,
+            "trials": 3,
+            "valid_trials": 3,
+            "errors": 0,
+            "solved": 2,
+            "solve_fraction_of_valid": 0.6666666666666666,
+            "solve_fraction_wilson95": [
+              0.2076596008020477,
+              0.9385080552796037
+            ],
+            "median_frames_to_victory_among_successes": 45234477.0,
+            "median_search_frames_per_second": 126578.61819539974
+          },
+          {
+            "case": "stb-hard",
+            "workers": 8,
+            "memory_mib": 2048,
+            "trials": 3,
+            "valid_trials": 3,
+            "errors": 0,
+            "solved": 3,
+            "solve_fraction_of_valid": 1.0,
+            "solve_fraction_wilson95": [
+              0.4385029682449546,
+              1.0
+            ],
+            "median_frames_to_victory_among_successes": 543161,
+            "median_search_frames_per_second": 190633.23012935655
+          }
+        ]
+      }
+    },
+    "entry_counts": {
+      "inputs": [
+        {
+          "role": "baseline",
+          "run": "smb-main-002",
+          "results_sha256": "ac42bd29189f6cab1816f9dd44149a913861576f8703814ea5a429f706017f5e",
+          "matrix_sha256": "9115a6cd76fa2e6059d6466ec01688e315bbaa4ecf42be3cfd65a449e59f3b59",
+          "suite": {
+            "cases": [
+              {
+                "game": "smb",
+                "id": "smb-full",
+                "origin": "power-on gameplay genesis",
+                "require_solved": true,
+                "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea"
+              }
+            ],
+            "format": "harmony-search-eval-v1",
+            "id": "smb-regression-v1",
+            "memory_mib": [
+              2048
+            ],
+            "search": {
+              "actions": 8192,
+              "executions": 400000,
+              "mixture": "energy_splice:6",
+              "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+              "suffix": "one_to_six_within_3_longest_actions_full_hold",
+              "verification": "witness",
+              "wall_seconds": 600,
+              "window": 1
+            },
+            "seeds": [
+              20260905,
+              20260906,
+              20260907
+            ],
+            "workers": [
+              24
+            ]
+          },
+          "matrix": {
+            "build": {
+              "attestation": "supplied",
+              "binary_sha256": "4c19d8610f9f89c1d0bb5655c3c40178191195268d83f332d05537c0f22bb88d",
+              "source": {
+                "binary_sha256": "4c19d8610f9f89c1d0bb5655c3c40178191195268d83f332d05537c0f22bb88d",
+                "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+                "dirty": null,
+                "files": 248,
+                "format": "harmony-search-build-v1",
+                "locked": true,
+                "profile": "release",
+                "revision": null,
+                "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+                "rustflags": "",
+                "source_tree_sha256": "afba01407f111969baa65714e3d8bea5774e67b172fc6d0751847fbb35c9c355"
+              }
+            },
+            "cells": [
+              "smb-full-s20260905-w24-m2048",
+              "smb-full-s20260906-w24-m2048",
+              "smb-full-s20260907-w24-m2048"
+            ],
+            "format": "harmony-search-eval-v1",
+            "host": {
+              "cpu_model": "Intel(R) Core(TM) Ultra 9 285HX",
+              "hostname": "ms02",
+              "logical_cpus": 24,
+              "machine": "x86_64",
+              "release": "7.1.8+deb13-amd64",
+              "system": "Linux"
+            },
+            "runner": {
+              "cpu_capacity": 24,
+              "disk_limit_gib": 8,
+              "finish_seconds": 600,
+              "jobs": 1,
+              "memory_capacity_mib": 40000,
+              "overhead_mib": 1024,
+              "sample_seconds": 1
+            }
+          }
+        },
+        {
+          "role": "candidate",
+          "run": "smb-count-capped-002",
+          "results_sha256": "79256e4ba4c09d38247f7a8052f40eace79445746ec34ea2a556dbdfa024de32",
+          "matrix_sha256": "9115a6cd76fa2e6059d6466ec01688e315bbaa4ecf42be3cfd65a449e59f3b59",
+          "suite": {
+            "cases": [
+              {
+                "game": "smb",
+                "id": "smb-full",
+                "origin": "power-on gameplay genesis",
+                "require_solved": true,
+                "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea"
+              }
+            ],
+            "format": "harmony-search-eval-v1",
+            "id": "smb-regression-v1",
+            "memory_mib": [
+              2048
+            ],
+            "search": {
+              "actions": 8192,
+              "executions": 400000,
+              "mixture": "energy_splice:6",
+              "selector": "room_cell_uniform_128_energy_frontier_cheapest_count_v1:3,6,12,2",
+              "suffix": "one_to_six_within_3_longest_actions_full_hold",
+              "verification": "witness",
+              "wall_seconds": 600,
+              "window": 1
+            },
+            "seeds": [
+              20260905,
+              20260906,
+              20260907
+            ],
+            "workers": [
+              24
+            ]
+          },
+          "matrix": {
+            "build": {
+              "attestation": "supplied",
+              "binary_sha256": "4c19d8610f9f89c1d0bb5655c3c40178191195268d83f332d05537c0f22bb88d",
+              "source": {
+                "binary_sha256": "4c19d8610f9f89c1d0bb5655c3c40178191195268d83f332d05537c0f22bb88d",
+                "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+                "dirty": null,
+                "files": 248,
+                "format": "harmony-search-build-v1",
+                "locked": true,
+                "profile": "release",
+                "revision": null,
+                "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+                "rustflags": "",
+                "source_tree_sha256": "afba01407f111969baa65714e3d8bea5774e67b172fc6d0751847fbb35c9c355"
+              }
+            },
+            "cells": [
+              "smb-full-s20260905-w24-m2048",
+              "smb-full-s20260906-w24-m2048",
+              "smb-full-s20260907-w24-m2048"
+            ],
+            "format": "harmony-search-eval-v1",
+            "host": {
+              "cpu_model": "Intel(R) Core(TM) Ultra 9 285HX",
+              "hostname": "ms02",
+              "logical_cpus": 24,
+              "machine": "x86_64",
+              "release": "7.1.8+deb13-amd64",
+              "system": "Linux"
+            },
+            "runner": {
+              "cpu_capacity": 24,
+              "disk_limit_gib": 8,
+              "finish_seconds": 600,
+              "jobs": 1,
+              "memory_capacity_mib": 40000,
+              "overhead_mib": 1024,
+              "sample_seconds": 1
+            }
+          }
+        }
+      ],
+      "comparison": {
+        "format": "harmony-search-comparison-v1",
+        "pairs": [
+          {
+            "cell": "smb-full-s20260905-w24-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": true,
+              "frames_to_victory": 53545060,
+              "frames": 53549437,
+              "search_seconds": 189.8304642,
+              "frames_per_second": 282090.849989082,
+              "peak_rss": 2799288320,
+              "peak_disk": 9270578,
+              "progress": {
+                "level": 3,
+                "progress": 286,
+                "world": 7
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": true,
+              "frames_to_victory": 29179126,
+              "frames": 29181284,
+              "search_seconds": 107.308840473,
+              "frames_per_second": 271937.3713421338,
+              "peak_rss": 2655907840,
+              "peak_disk": 5828815,
+              "progress": {
+                "level": 3,
+                "progress": 286,
+                "world": 7
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "smb-full-s20260906-w24-m2048",
+            "comparable": true,
+            "baseline_status": "regression",
+            "candidate_status": "complete",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": false,
+              "frames_to_victory": null,
+              "frames": 67382225,
+              "search_seconds": 218.632735309,
+              "frames_per_second": 308198.2435282015,
+              "peak_rss": 2867834880,
+              "peak_disk": 9888159,
+              "progress": {
+                "level": 3,
+                "progress": 137,
+                "world": 6
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": true,
+              "frames_to_victory": 34826492,
+              "frames": 34827906,
+              "search_seconds": 131.185132809,
+              "frames_per_second": 265486.6847656278,
+              "peak_rss": 2764001280,
+              "peak_disk": 7011448,
+              "progress": {
+                "level": 3,
+                "progress": 286,
+                "world": 7
+              },
+              "workload_diagnostics": null
+            }
+          },
+          {
+            "cell": "smb-full-s20260907-w24-m2048",
+            "comparable": true,
+            "baseline_status": "complete",
+            "candidate_status": "regression",
+            "same_host": true,
+            "same_cpu_set": true,
+            "same_runner_configuration": true,
+            "timing_environment_matches": true,
+            "baseline": {
+              "solved": true,
+              "frames_to_victory": 47413715,
+              "frames": 47417126,
+              "search_seconds": 172.459895103,
+              "frames_per_second": 274945.81259997044,
+              "peak_rss": 2899664896,
+              "peak_disk": 8873698,
+              "progress": {
+                "level": 3,
+                "progress": 286,
+                "world": 7
+              },
+              "workload_diagnostics": null
+            },
+            "candidate": {
+              "solved": false,
+              "frames_to_victory": null,
+              "frames": 69383403,
+              "search_seconds": 222.46531675,
+              "frames_per_second": 311884.13553008373,
+              "peak_rss": 2867908608,
+              "peak_disk": 9893064,
+              "progress": {
+                "level": 3,
+                "progress": 137,
+                "world": 6
+              },
+              "workload_diagnostics": null
+            }
+          }
+        ],
+        "timing_note": "Matching recorded allocation does not establish host isolation. Concurrent jobs may share physical cores and finish at different times; use admitted frame cost for search quality and isolated runs for precise throughput claims.",
+        "baseline": [
+          {
+            "case": "smb-full",
+            "workers": 24,
+            "memory_mib": 2048,
+            "trials": 3,
+            "valid_trials": 3,
+            "errors": 0,
+            "solved": 2,
+            "solve_fraction_of_valid": 0.6666666666666666,
+            "solve_fraction_wilson95": [
+              0.2076596008020477,
+              0.9385080552796037
+            ],
+            "median_frames_to_victory_among_successes": 50479387.5,
+            "median_search_frames_per_second": 282090.849989082
+          }
+        ],
+        "candidate": [
+          {
+            "case": "smb-full",
+            "workers": 24,
+            "memory_mib": 2048,
+            "trials": 3,
+            "valid_trials": 3,
+            "errors": 0,
+            "solved": 2,
+            "solve_fraction_of_valid": 0.6666666666666666,
+            "solve_fraction_wilson95": [
+              0.2076596008020477,
+              0.9385080552796037
+            ],
+            "median_frames_to_victory_among_successes": 32002809.0,
+            "median_search_frames_per_second": 271937.3713421338
+          }
+        ]
+      }
+    }
+  }
+}

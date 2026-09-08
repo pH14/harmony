@@ -20,6 +20,35 @@ pub const ADDRESS_SPACE_SIZE: u64 = 64 * 1024;
 /// Longest controller hold accepted from an input.
 pub const MAX_HOLD_FRAMES: u8 = 120;
 
+/// Length of an iNES header.
+const INES_HEADER_LEN: usize = 16;
+/// iNES header byte holding the low mapper nibble and the cartridge flags.
+const INES_FLAGS6: usize = 6;
+/// Flag 6 bit that declares battery-backed cartridge work RAM at `$6000`.
+const INES_BATTERY: u8 = 0x02;
+
+/// Copy a ROM image with its cartridge work RAM declared present.
+///
+/// Mappers that map RAM at `$6000` allocate it whatever the header says, but
+/// a backend publishes that region through its memory interface only for an
+/// image that declares it. Games without a battery keep durable progress
+/// there — items collected, equipment carried — so an observation decoder
+/// cannot see their progress until the region is published.
+///
+/// # Errors
+///
+/// Returns an error when the bytes are not an iNES image.
+pub fn with_cartridge_ram(rom: &[u8]) -> Result<Vec<u8>, MachineError> {
+    if rom.len() < INES_HEADER_LEN || &rom[..4] != b"NES\x1a" {
+        return Err(MachineError::Backend(
+            "cartridge work RAM needs an iNES image".to_owned(),
+        ));
+    }
+    let mut image = rom.to_vec();
+    image[INES_FLAGS6] |= INES_BATTERY;
+    Ok(image)
+}
+
 /// Blob format version of a NES [`Reproducer`]: a flat sequence of
 /// `(buttons, hold_frames)` byte pairs in execution order.
 pub const ENV_BLOB_VERSION: u16 = 1;
@@ -255,6 +284,24 @@ mod tests {
 
         fn frames(&self) -> &[[u8; 2048]] {
             &[]
+        }
+    }
+
+    #[test]
+    fn cartridge_ram_declaration_only_sets_the_battery_flag() {
+        for flags in 0..=u8::MAX {
+            let mut rom: Vec<_> = (0..64_u8).collect();
+            rom[..4].copy_from_slice(b"NES\x1a");
+            rom[6] = flags;
+            let mut expected = rom.clone();
+            expected[6] |= 2;
+            let declared = super::with_cartridge_ram(&rom).unwrap();
+            assert_eq!(declared, expected);
+            assert_eq!(rom[6], flags, "the supplied ROM must remain unchanged");
+            assert_eq!(super::with_cartridge_ram(&declared).unwrap(), declared);
+        }
+        for bad in [&[][..], &b"NES\x1a"[..], &[0_u8; 16][..]] {
+            assert!(super::with_cartridge_ram(bad).is_err());
         }
     }
 

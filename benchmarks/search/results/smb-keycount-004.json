@@ -1,0 +1,717 @@
+{
+  "format": "harmony-search-evidence-v1",
+  "scope": "Five paired development seeds at each of two memory budgets. Entry-local count weighting versus bounded retention-key count history, fixed SMB policy and 400000-execution/80000000-frame/window-one stress condition. The key-history experiment did not improve solve reliability over entry counts. Memory budgets reuse the same seeds and are not ten independent seed trials.",
+  "raw_export_location": "ms02:/root/harmony-search-eval/public/",
+  "inputs": [
+    {
+      "role": "baseline",
+      "run": "smb-regression-count-003",
+      "results_sha256": "0b5a91d218b8aa0591cdcce2ae75357536050d440d8b8426c1f821bcfa053243",
+      "matrix_sha256": "09496a166aeb3b8f67166dbb5abf4dbdd710f7a235d01d4b7685ff78a2394f29",
+      "suite": {
+        "cases": [
+          {
+            "game": "smb",
+            "id": "smb-full",
+            "origin": "power-on gameplay genesis",
+            "require_solved": true,
+            "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea"
+          }
+        ],
+        "format": "harmony-search-eval-v1",
+        "id": "smb-regression-count-003",
+        "memory_mib": [
+          256,
+          2048
+        ],
+        "search": {
+          "actions": 8192,
+          "executions": 400000,
+          "frames": 80000000,
+          "mixture": "energy_splice:6",
+          "selector": "room_cell_uniform_128_energy_frontier_cheapest_count_v1:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "verification": "witness",
+          "wall_seconds": 600,
+          "window": 1
+        },
+        "seeds": [
+          20260905,
+          20260906,
+          20260907,
+          20260908,
+          20260909
+        ],
+        "workers": [
+          24
+        ]
+      },
+      "matrix": {
+        "build": {
+          "attestation": "supplied",
+          "binary_sha256": "f1061f840c21bcf83d62f250fcc76ac78c9cc851c08a99e869db50610413406e",
+          "source": {
+            "binary_sha256": "f1061f840c21bcf83d62f250fcc76ac78c9cc851c08a99e869db50610413406e",
+            "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+            "dirty": null,
+            "files": 250,
+            "format": "harmony-search-build-v1",
+            "locked": true,
+            "profile": "release",
+            "revision": null,
+            "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+            "rustflags": "",
+            "source_tree_sha256": "0fae93cf9ddde15ff90312418c2179299424f9a056ca4bd67842bc885f45a9b1"
+          }
+        },
+        "cells": [
+          "smb-full-s20260905-w24-m256",
+          "smb-full-s20260905-w24-m2048",
+          "smb-full-s20260906-w24-m256",
+          "smb-full-s20260906-w24-m2048",
+          "smb-full-s20260907-w24-m256",
+          "smb-full-s20260907-w24-m2048",
+          "smb-full-s20260908-w24-m256",
+          "smb-full-s20260908-w24-m2048",
+          "smb-full-s20260909-w24-m256",
+          "smb-full-s20260909-w24-m2048"
+        ],
+        "format": "harmony-search-eval-v1",
+        "host": {
+          "cpu_model": "Intel(R) Core(TM) Ultra 9 285HX",
+          "hostname": "ms02",
+          "logical_cpus": 24,
+          "machine": "x86_64",
+          "release": "7.1.8+deb13-amd64",
+          "system": "Linux"
+        },
+        "runner": {
+          "cpu_capacity": 24,
+          "disk_limit_gib": 8,
+          "finish_seconds": 600,
+          "jobs": 1,
+          "memory_capacity_mib": 40000,
+          "overhead_mib": 1024,
+          "sample_seconds": 1
+        }
+      }
+    },
+    {
+      "role": "candidate",
+      "run": "smb-keycount-004",
+      "results_sha256": "88ad05c18a7eb7c520375049f6ea6d8512c33366e2efffb2846b977b430b2940",
+      "matrix_sha256": "fc800acc79b5d1f3ea0a34ebb9758d9e1b8d625aaaaafdfb2b5158726f8a9997",
+      "suite": {
+        "cases": [
+          {
+            "game": "smb",
+            "id": "smb-full",
+            "origin": "power-on gameplay genesis",
+            "require_solved": true,
+            "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea"
+          }
+        ],
+        "format": "harmony-search-eval-v1",
+        "id": "smb-keycount-004",
+        "memory_mib": [
+          256,
+          2048
+        ],
+        "search": {
+          "actions": 8192,
+          "executions": 400000,
+          "frames": 80000000,
+          "mixture": "energy_splice:6",
+          "selector": "room_cell_uniform_128_energy_frontier_cheapest_key_count_v1:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "verification": "witness",
+          "wall_seconds": 600,
+          "window": 1
+        },
+        "seeds": [
+          20260905,
+          20260906,
+          20260907,
+          20260908,
+          20260909
+        ],
+        "workers": [
+          24
+        ]
+      },
+      "matrix": {
+        "build": {
+          "attestation": "supplied",
+          "binary_sha256": "9e58a434323bae98a1d59f148b94274ea931686070eb8848f62cc290a547bf32",
+          "source": {
+            "binary_sha256": "9e58a434323bae98a1d59f148b94274ea931686070eb8848f62cc290a547bf32",
+            "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+            "dirty": null,
+            "files": 252,
+            "format": "harmony-search-build-v1",
+            "locked": true,
+            "profile": "release",
+            "revision": null,
+            "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+            "rustflags": "",
+            "source_tree_sha256": "98e2f81fac3350b759ace508442163aefeece5bfaf5366ff0942a5f83e7ac35e"
+          }
+        },
+        "cells": [
+          "smb-full-s20260905-w24-m256",
+          "smb-full-s20260905-w24-m2048",
+          "smb-full-s20260906-w24-m256",
+          "smb-full-s20260906-w24-m2048",
+          "smb-full-s20260907-w24-m256",
+          "smb-full-s20260907-w24-m2048",
+          "smb-full-s20260908-w24-m256",
+          "smb-full-s20260908-w24-m2048",
+          "smb-full-s20260909-w24-m256",
+          "smb-full-s20260909-w24-m2048"
+        ],
+        "format": "harmony-search-eval-v1",
+        "host": {
+          "cpu_model": "Intel(R) Core(TM) Ultra 9 285HX",
+          "hostname": "ms02",
+          "logical_cpus": 24,
+          "machine": "x86_64",
+          "release": "7.1.8+deb13-amd64",
+          "system": "Linux"
+        },
+        "runner": {
+          "cpu_capacity": 24,
+          "disk_limit_gib": 8,
+          "finish_seconds": 600,
+          "jobs": 1,
+          "memory_capacity_mib": 40000,
+          "overhead_mib": 1024,
+          "sample_seconds": 1
+        }
+      }
+    }
+  ],
+  "comparison": {
+    "baseline": [
+      {
+        "case": "smb-full",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": 36544083.5,
+        "median_search_frames_per_second": 273020.785566986,
+        "memory_mib": 2048,
+        "solve_fraction_of_valid": 0.8,
+        "solve_fraction_wilson95": [
+          0.37553462976252533,
+          0.9637758913675698
+        ],
+        "solved": 4,
+        "trials": 5,
+        "valid_trials": 5,
+        "workers": 24
+      },
+      {
+        "case": "smb-full",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": 59560874.5,
+        "median_search_frames_per_second": 328843.56587985257,
+        "memory_mib": 256,
+        "solve_fraction_of_valid": 0.8,
+        "solve_fraction_wilson95": [
+          0.37553462976252533,
+          0.9637758913675698
+        ],
+        "solved": 4,
+        "trials": 5,
+        "valid_trials": 5,
+        "workers": 24
+      }
+    ],
+    "candidate": [
+      {
+        "case": "smb-full",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": 39614421.5,
+        "median_search_frames_per_second": 270001.88517685607,
+        "memory_mib": 2048,
+        "solve_fraction_of_valid": 0.8,
+        "solve_fraction_wilson95": [
+          0.37553462976252533,
+          0.9637758913675698
+        ],
+        "solved": 4,
+        "trials": 5,
+        "valid_trials": 5,
+        "workers": 24
+      },
+      {
+        "case": "smb-full",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": 58722141,
+        "median_search_frames_per_second": 342196.013757606,
+        "memory_mib": 256,
+        "solve_fraction_of_valid": 0.6,
+        "solve_fraction_wilson95": [
+          0.2307242812760128,
+          0.882379225767352
+        ],
+        "solved": 3,
+        "trials": 5,
+        "valid_trials": 5,
+        "workers": 24
+      }
+    ],
+    "format": "harmony-search-comparison-v1",
+    "pairs": [
+      {
+        "baseline": {
+          "frames": 29181284,
+          "frames_per_second": 270878.968282769,
+          "frames_to_victory": 29179126,
+          "peak_disk": 5830800,
+          "peak_rss": 2646929408,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 107.728127381,
+          "solved": true,
+          "stream_sha256": "9895e4626677249e99f916ae2c44cb169ae27b1c6cb2eb6bad68399f847d05fa",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 41022039,
+          "frames_per_second": 263843.8744382434,
+          "frames_to_victory": 41019685,
+          "peak_disk": 7934219,
+          "peak_rss": 2826948608,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 155.478458946,
+          "solved": true,
+          "stream_sha256": "4ec3db2ee642e5393c1bf4eae1ad20fc26b3f9e289659d666a19eb0c010784c4",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "smb-full-s20260905-w24-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 45330563,
+          "frames_per_second": 323236.3000406651,
+          "frames_to_victory": 45327622,
+          "peak_disk": 6531321,
+          "peak_rss": 465235968,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 140.239703877,
+          "solved": true,
+          "stream_sha256": "80c4d2bf9d0c9f002e44bc93da121737799167e3535e12697eabaeb232d18398",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 80004851,
+          "frames_per_second": 352584.1744139573,
+          "frames_to_victory": null,
+          "peak_disk": 9382995,
+          "peak_rss": 456503296,
+          "progress": {
+            "level": 1,
+            "progress": 174,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 226.909931885,
+          "solved": false,
+          "stream_sha256": "4e7212f30c7965f70cd5f61c56b8bc356e497db7ab144f4bf182712d959c662c",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "regression",
+        "cell": "smb-full-s20260905-w24-m256",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 34827906,
+          "frames_per_second": 263297.85167469026,
+          "frames_to_victory": 34826492,
+          "peak_disk": 7013502,
+          "peak_rss": 2757554176,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 132.275693776,
+          "solved": true,
+          "stream_sha256": "04bc6a73b6f0593d039b04b5d311656fa9d38c1ec2b715b902d92a0e2dd3250c",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 41210135,
+          "frames_per_second": 252067.3759990363,
+          "frames_to_victory": 41207148,
+          "peak_disk": 8350336,
+          "peak_rss": 2839236608,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 163.488570612,
+          "solved": true,
+          "stream_sha256": "7cd40df3ea038737c3798f28adc7ebd4bb5bc05bcba936b64f026cd1ef6f56d8",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "smb-full-s20260906-w24-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 73365548,
+          "frames_per_second": 328843.56587985257,
+          "frames_to_victory": 73363933,
+          "peak_disk": 10242810,
+          "peak_rss": 472281088,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 223.101667821,
+          "solved": true,
+          "stream_sha256": "c2c7f1781f00bc64b855e7087a733044f7450d9b4498ef226cf6ce23a280a5bf",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 64613595,
+          "frames_per_second": 342196.013757606,
+          "frames_to_victory": 64606784,
+          "peak_disk": 8476532,
+          "peak_rss": 459685888,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 188.820419883,
+          "solved": true,
+          "stream_sha256": "7cef77eb6b5474a74d97d2900800ceaf4e9e7c6f3b42828926ba0d0ef5a76e8e",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "smb-full-s20260906-w24-m256",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 69383403,
+          "frames_per_second": 311889.54506368854,
+          "frames_to_victory": null,
+          "peak_disk": 9893158,
+          "peak_rss": 2867597312,
+          "progress": {
+            "level": 3,
+            "progress": 137,
+            "world": 6
+          },
+          "result_slots": 1,
+          "search_seconds": 222.461458225,
+          "solved": false,
+          "stream_sha256": "17b1ba254bfc9e30b9e9047ffba3cea0af05682703241e8614a0677d545da00e",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "regression",
+        "candidate": {
+          "frames": 38212770,
+          "frames_per_second": 273231.5247495691,
+          "frames_to_victory": 38209158,
+          "peak_disk": 7188933,
+          "peak_rss": 2749300736,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 139.854908891,
+          "solved": true,
+          "stream_sha256": "d4895db1cb1a2e53804fefbf65c41a5d8122af2cd3616fa0c92b016dac1b4e7d",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "smb-full-s20260907-w24-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 48449664,
+          "frames_per_second": 315771.8976357249,
+          "frames_to_victory": 48445418,
+          "peak_disk": 7123595,
+          "peak_rss": 463962112,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 153.432475666,
+          "solved": true,
+          "stream_sha256": "37c8a5158de8446e554af58ccf57edf3d78e1bdef16bec8c12bb3940f1f017f1",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 58725722,
+          "frames_per_second": 329197.2091991655,
+          "frames_to_victory": 58722141,
+          "peak_disk": 7941919,
+          "peak_rss": 454078464,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 178.390704292,
+          "solved": true,
+          "stream_sha256": "2287654f2edbf68f6a6b1ccd80291de72e8745e6470594c41b766df50f12250f",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "smb-full-s20260907-w24-m256",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 38264753,
+          "frames_per_second": 273020.785566986,
+          "frames_to_victory": 38261675,
+          "peak_disk": 7239093,
+          "peak_rss": 2767130624,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 140.153259469,
+          "solved": true,
+          "stream_sha256": "f49d426993b2bd397519227c25ad0c8b7781c2e9a95b45b0997c55eb24883953",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 29586407,
+          "frames_per_second": 270001.88517685607,
+          "frames_to_victory": 29583822,
+          "peak_disk": 5877272,
+          "peak_rss": 2642362368,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 109.578520093,
+          "solved": true,
+          "stream_sha256": "05a0adf2429f4bf4f3150825070af900d95d655ce29e9b985e456ec9b481852b",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "smb-full-s20260908-w24-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 80005540,
+          "frames_per_second": 350705.114250051,
+          "frames_to_victory": null,
+          "peak_disk": 9635640,
+          "peak_rss": 477052928,
+          "progress": {
+            "level": 3,
+            "progress": 137,
+            "world": 6
+          },
+          "result_slots": 1,
+          "search_seconds": 228.127668372,
+          "solved": false,
+          "stream_sha256": "85a3778c45c09a78614467158eeaaf5df26b920b4a69a4f3ed8c28bdbc4ebdd2",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "regression",
+        "candidate": {
+          "frames": 43813123,
+          "frames_per_second": 311549.4783310209,
+          "frames_to_victory": 43810086,
+          "peak_disk": 6570326,
+          "peak_rss": 471384064,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 140.629742777,
+          "solved": true,
+          "stream_sha256": "383492714c3c15c5834bfbbfe07262fda8a1d2c5c95c1e3610d27cc402511016",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "smb-full-s20260908-w24-m256",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 39851707,
+          "frames_per_second": 275690.97986848524,
+          "frames_to_victory": 39849308,
+          "peak_disk": 7507047,
+          "peak_rss": 2768072704,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 144.552088788,
+          "solved": true,
+          "stream_sha256": "2f7305d8006e59cf8c494421b911b0fa7b003a34f5aa2ed20d916bf91b1aadf6",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 70716482,
+          "frames_per_second": 316930.16443378845,
+          "frames_to_victory": null,
+          "peak_disk": 9904900,
+          "peak_rss": 2868609024,
+          "progress": {
+            "level": 3,
+            "progress": 153,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 223.129540624,
+          "solved": false,
+          "stream_sha256": "cbd7b58a9916984aa1a7d5012433d53b9144c78228b468cf5e6f96bc189543ff",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "regression",
+        "cell": "smb-full-s20260909-w24-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 70679424,
+          "frames_per_second": 338663.3592112583,
+          "frames_to_victory": 70676331,
+          "peak_disk": 9429528,
+          "peak_rss": 468267008,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 208.701124812,
+          "solved": true,
+          "stream_sha256": "ecc7db5b9f87eee345eb5c88144b6898ba6d1a096fcaf4d500a8c475cb4fef98",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 80004762,
+          "frames_per_second": 343827.726943204,
+          "frames_to_victory": null,
+          "peak_disk": 9754672,
+          "peak_rss": 460021760,
+          "progress": {
+            "level": 3,
+            "progress": 265,
+            "world": 7
+          },
+          "result_slots": 1,
+          "search_seconds": 232.688511515,
+          "solved": false,
+          "stream_sha256": "02d316e114ee23cb0cb791088ab27ad96698872408034212e4c4c37bb1ef4d2f",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "regression",
+        "cell": "smb-full-s20260909-w24-m256",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      }
+    ],
+    "timing_note": "Matching recorded allocation does not establish host isolation. Concurrent jobs may share physical cores and finish at different times; use admitted frame cost for search quality and isolated runs for precise throughput claims."
+  }
+}

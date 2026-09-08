@@ -577,6 +577,19 @@ impl QuickNesMachine {
                 "QuickNES ABI mismatch: state={state_len} bytes, system RAM={memory_len} bytes"
             )));
         }
+        // The core leaves cartridge work RAM uninitialized for an image that
+        // declares it, so power-on state would otherwise vary between
+        // processes. Fill it with the value the core itself writes for an
+        // image that declares none.
+        // SAFETY: the region is the one the core just reported for this
+        // loaded game; the length is validated before the write.
+        unsafe {
+            let cartridge = (api.get_memory_data)(RETRO_MEMORY_SAVE_RAM).cast::<u8>();
+            let cartridge_len = (api.get_memory_size)(RETRO_MEMORY_SAVE_RAM);
+            if !cartridge.is_null() && (1..=MAX_SAVE_RAM_SIZE).contains(&cartridge_len) {
+                std::ptr::write_bytes(cartridge, 0xff, cartridge_len);
+            }
+        }
         Ok(Self {
             api,
             #[cfg(not(miri))]
@@ -1921,8 +1934,11 @@ mod tests {
         assert_eq!(machine.read(0, 1).expect("read"), vec![3]);
         assert_eq!(machine.read(0x07ff, 1).expect("last WRAM byte"), vec![0]);
         assert!(machine.read(0x0800, 1).is_err());
-        assert_eq!(machine.read(0x6000, 1).expect("first save byte"), vec![0]);
-        assert_eq!(machine.read(0x7fff, 1).expect("last save byte"), vec![0]);
+        assert_eq!(
+            machine.read(0x6000, 1).expect("first save byte"),
+            vec![0xff]
+        );
+        assert_eq!(machine.read(0x7fff, 1).expect("last save byte"), vec![0xff]);
         assert!(machine.read(0x8000, 1).is_err());
         assert_eq!(machine.read_wram().expect("fixed RAM read")[0], 3);
         assert_eq!(machine.read_save_ram().expect("save RAM").len(), 8 * 1024);

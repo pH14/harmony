@@ -1,0 +1,131 @@
+name: Checks / Search evaluation
+on:
+  pull_request:
+    paths:
+      - benchmarks/search/**
+      - dissonance/searcher/**
+      - workloads/nes/**
+      - workloads/nes-machine/**
+      - workloads/nes-protocol/**
+      - dissonance/Cargo.*
+      - rust-toolchain.toml
+      - scripts/build-quicknes-core.sh
+      - .github/actions/stb-evaluation/**
+      - .github/workflows/search-eval.yml
+  push:
+    branches: [main]
+    paths:
+      - benchmarks/search/**
+      - dissonance/searcher/**
+      - workloads/nes/**
+      - workloads/nes-machine/**
+      - workloads/nes-protocol/**
+      - dissonance/Cargo.*
+      - rust-toolchain.toml
+      - scripts/build-quicknes-core.sh
+      - .github/actions/stb-evaluation/**
+      - .github/workflows/search-eval.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  portable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Runner failures and publication contracts
+        run: python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
+      - name: Generic search and deterministic replay
+        run: cargo test --manifest-path dissonance/searcher/Cargo.toml --locked
+      - name: Workload contracts without licensed ROMs
+        run: cargo test --manifest-path workloads/nes/Cargo.toml --lib --bin nes-eval --locked
+      - name: Dependency ownership
+        run: python3 scripts/check-dependency-boundaries.py
+  source-built:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      HARMONY_STB_BUILD_JOBS: "2"
+      HARMONY_QUICKNES_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install source build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential curl git unzip python3 python3-pil cc65
+      - name: Reproduce open game images and the pinned core
+        run: |
+          workloads/nes/scripts/build-nova-rom.sh /tmp/search-eval-assets/nova
+          workloads/nes/scripts/build-stb-rom.sh /tmp/search-eval-assets/stb
+          scripts/build-quicknes-core.sh /tmp/search-eval-assets/quicknes_libretro.so
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root = Path('/tmp/search-eval-assets')
+          files = {'core': root/'quicknes_libretro.so', 'nova': root/'nova/nova.nes', 'stb': root/'stb/stb.nes'}
+          inventory = {name: {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+                       for name, path in files.items()}
+          (root/'inventory.json').write_text(json.dumps(inventory))
+          PY
+      - name: Build an identified evaluation executable
+        run: python3 benchmarks/search/eval.py build --out /tmp/search-eval-build --jobs 2
+      - name: Cartridge RAM survives real-core snapshots
+        env:
+          HARMONY_QUICKNES_CORE: /tmp/search-eval-assets/quicknes_libretro.so
+          HARMONY_NOVA_ROM: /tmp/search-eval-assets/nova/nova.nes
+        run: >-
+          cargo test --locked --manifest-path workloads/nes-machine/Cargo.toml
+          --target-dir /tmp/search-eval-build/target --test cartridge_ram
+          -- --ignored --exact declared_cartridge_ram_survives_real_core_restore
+      - name: Run the common harness and verify full campaign replay
+        run: |
+          python3 benchmarks/search/eval.py run benchmarks/search/ci.json \
+            --assets /tmp/search-eval-assets/inventory.json \
+            --binary /tmp/search-eval-build/nes-eval \
+            --build-info /tmp/search-eval-build/build-info.json \
+            --out /tmp/search-eval-runs --jobs 2 --cpus 4 --memory-capacity-mib 3072 --finish-seconds 60
+      - name: Export compact evidence
+        if: always()
+        run: python3 benchmarks/search/eval.py export /tmp/search-eval-runs --out /tmp/search-eval-public
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: source-built-search-evaluation-${{ github.run_id }}
+          path: /tmp/search-eval-public
+          if-no-files-found: warn
+          retention-days: 30
+
+  stb-contract:
+    name: Source build, probe, search and replay (${{ matrix.ai.name }}, seed ${{ matrix.seed }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        ai:
+          - { name: easy, level: 1, executions: 2000, require_victory: false }
+          - { name: fair, level: 2, executions: 2000, require_victory: false }
+          - { name: hard, level: 3, executions: 20000, require_victory: true }
+        # Bounded qualification uses one registered seed on every trigger.
+        seed: [1]
+    env:
+      STB_BUILD: workloads/nes/build/stb
+      STB_ARTIFACT: workloads/nes/build/stb-artifact
+      STB_EXECUTIONS: ${{ matrix.ai.executions }}
+      STB_REQUIRE_VICTORY: ${{ matrix.ai.require_victory }}
+      STB_SEED: ${{ matrix.seed }}
+      STB_AI: ${{ matrix.ai.name }}
+      STB_AI_LEVEL: ${{ matrix.ai.level }}
+      STB_WORKERS: "2"
+      HARMONY_STB_BUILD_JOBS: "2"
+      HARMONY_QUICKNES_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/stb-evaluation

@@ -2,7 +2,51 @@
 
 //! Game-neutral scoped worker pool for campaign job execution.
 
-use std::{error::Error, fmt, sync::mpsc, thread};
+use std::{collections::VecDeque, error::Error, fmt, sync::mpsc, thread};
+
+/// Credits cover both executing and completed-but-unadmitted jobs. Receiving a
+/// result does not release a credit: only its ordered admission does.
+pub(crate) struct ResultSlots {
+    outstanding: Vec<usize>,
+    available: VecDeque<u32>,
+    limit: usize,
+}
+
+impl ResultSlots {
+    pub(crate) fn new(workers: u32, limit: usize) -> Self {
+        assert!(workers > 0, "result slots require at least one worker");
+        assert!((1..=2).contains(&limit));
+        Self {
+            outstanding: vec![0; workers as usize],
+            available: (0..limit).flat_map(|_| 0..workers).collect(),
+            limit,
+        }
+    }
+
+    pub(crate) fn reserve(&mut self) -> Option<u32> {
+        let worker = self.available.pop_front()?;
+        let count = &mut self.outstanding[worker as usize];
+        assert!(*count < self.limit);
+        *count += 1;
+        Some(worker)
+    }
+
+    pub(crate) fn admit(&mut self, worker: u32) -> Result<(), &'static str> {
+        let count = self
+            .outstanding
+            .get_mut(worker as usize)
+            .ok_or("admitted result has an unknown physical worker")?;
+        *count = count
+            .checked_sub(1)
+            .ok_or("admitted result has no reserved result slot")?;
+        self.available.push_back(worker);
+        Ok(())
+    }
+
+    pub(crate) fn available(&self) -> usize {
+        self.available.len()
+    }
+}
 
 /// One worker's completed output or deterministic failure text.
 #[derive(Debug)]
@@ -164,7 +208,65 @@ where
 mod tests {
     use std::{cell::Cell, rc::Rc, sync::mpsc};
 
-    use super::{WorkerPool, WorkerPoolError, WorkerReply, with_worker_pool};
+    use super::{ResultSlots, WorkerPool, WorkerPoolError, WorkerReply, with_worker_pool};
+
+    #[test]
+    fn result_slots_bound_every_executor_until_admission() {
+        for limit in [1, 2] {
+            let mut slots = ResultSlots::new(2, limit);
+            for _ in 0..limit {
+                assert_eq!(slots.reserve(), Some(0));
+                assert_eq!(slots.reserve(), Some(1));
+            }
+            assert_eq!(slots.reserve(), None);
+            slots.admit(1).unwrap();
+            assert_eq!(slots.reserve(), Some(1));
+            assert_eq!(slots.reserve(), None);
+            assert!(slots.admit(2).is_err());
+            for _ in 0..limit {
+                slots.admit(0).unwrap();
+            }
+            assert!(slots.admit(0).is_err());
+            assert_eq!(slots.available(), limit);
+        }
+    }
+
+    #[test]
+    fn a_second_reserved_job_runs_while_an_earlier_worker_is_blocked() {
+        let (release, blocked) = mpsc::channel();
+        with_worker_pool(
+            2,
+            |_| Ok::<_, String>(()),
+            |_, (gate, value): (Option<mpsc::Receiver<()>>, u8)| {
+                if let Some(gate) = gate {
+                    gate.recv().map_err(|e| e.to_string())?;
+                }
+                Ok::<_, String>(value)
+            },
+            move |pool| -> Result<(), Box<dyn std::error::Error>> {
+                let mut slots = ResultSlots::new(2, 2);
+                for job in [(Some(blocked), 0), (None, 1), (None, 2), (None, 3)] {
+                    pool.send(slots.reserve().expect("bounded prefill"), job)?;
+                }
+                // Both replies must come from worker 1, before worker 0 is
+                // released and before any result credit is returned.
+                for value in [1, 3] {
+                    let reply = pool.receive()?;
+                    assert_eq!(reply.worker, 1);
+                    assert_eq!(reply.outcome?, value);
+                    assert_eq!(slots.reserve(), None);
+                }
+                release.send(())?;
+                for value in [0, 2] {
+                    let reply = pool.receive()?;
+                    assert_eq!(reply.worker, 0);
+                    assert_eq!(reply.outcome?, value);
+                }
+                Ok(())
+            },
+        )
+        .expect("bounded physical overlap");
+    }
 
     #[test]
     fn try_receive_distinguishes_ready_empty_and_disconnected() {

@@ -1,0 +1,2162 @@
+{
+  "format": "harmony-search-evidence-v1",
+  "scope": "Complete three-seed development pilot on fixed current workload policies including the thinner MM2 v18 key, window two and result buffering two. Ordinary energy splice versus learned continuations, without count or semantic-progress selector changes. Concurrent eight-worker trials support admitted-work comparison; timing does not establish isolated throughput. All failures and unchanged plateaus are retained.",
+  "raw_export_location": "ms02:/root/harmony-search-eval/public/",
+  "inputs": [
+    {
+      "role": "baseline",
+      "run": "pilot-main-005",
+      "results_sha256": "ea684a815728d6e4d31f2fe3b0568be91e62a90e9a53e7f6ab6a8d5ed060121c",
+      "matrix_sha256": "1ccd62edca3b11aad69bddaee227c37f7d6940af6336776cc8d5c380277295e5",
+      "suite": {
+        "cases": [
+          {
+            "game": "smb",
+            "id": "smb-full",
+            "origin": "power-on gameplay genesis",
+            "require_solved": true,
+            "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
+            "search": {
+              "executions": 600000,
+              "frames": 80000000
+            }
+          },
+          {
+            "game": "nova",
+            "id": "nova-level-1",
+            "level": 1,
+            "origin": "level 1 gameplay genesis",
+            "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+            "search": {
+              "actions": 512,
+              "executions": 100000,
+              "frames": 5000000
+            }
+          },
+          {
+            "game": "mm2",
+            "id": "mm2-metal",
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {},
+            "stage": 6
+          },
+          {
+            "game": "metroid",
+            "id": "metroid-full",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {
+              "executions": 500000
+            }
+          },
+          {
+            "ai": "hard",
+            "game": "stb",
+            "id": "stb-hard",
+            "origin": "power-on local match, default stage, native Hard AI",
+            "rom_sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3",
+            "search": {
+              "actions": 512,
+              "executions": 20000,
+              "frames": 3000000
+            }
+          },
+          {
+            "game": "nova",
+            "id": "nova-full",
+            "level": 1,
+            "origin": "power-on level 1 genesis; all 40 level flags required",
+            "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+            "search": {
+              "actions": 8192,
+              "executions": 300000,
+              "frames": 40000000
+            },
+            "whole_game": true
+          }
+        ],
+        "format": "harmony-search-eval-v1",
+        "id": "nes-pilot-main-005",
+        "memory_mib": [
+          2048
+        ],
+        "search": {
+          "actions": 8192,
+          "executions": 400000,
+          "frames": 60000000,
+          "mixture": "energy_splice:6",
+          "result_slots": 2,
+          "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "verification": "witness",
+          "wall_seconds": 900,
+          "window": 2
+        },
+        "seeds": [
+          20260905,
+          20260906,
+          20260907
+        ],
+        "workers": [
+          8
+        ]
+      },
+      "matrix": {
+        "build": {
+          "attestation": "supplied",
+          "binary_sha256": "18c2df002b88860f1574c1870b7c584226aabffeb15fc55040534d66cff0dfbc",
+          "source": {
+            "binary_sha256": "18c2df002b88860f1574c1870b7c584226aabffeb15fc55040534d66cff0dfbc",
+            "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+            "dirty": null,
+            "files": 254,
+            "format": "harmony-search-build-v1",
+            "locked": true,
+            "profile": "release",
+            "revision": null,
+            "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+            "rustflags": "",
+            "source_tree_sha256": "ee9d36fd1fd808820220cde6998bbf3be740b3e7f2f5426c1eb84d7d0d58351a"
+          }
+        },
+        "cells": [
+          "smb-full-s20260905-w8-m2048",
+          "smb-full-s20260906-w8-m2048",
+          "smb-full-s20260907-w8-m2048",
+          "nova-level-1-s20260905-w8-m2048",
+          "nova-level-1-s20260906-w8-m2048",
+          "nova-level-1-s20260907-w8-m2048",
+          "mm2-metal-s20260905-w8-m2048",
+          "mm2-metal-s20260906-w8-m2048",
+          "mm2-metal-s20260907-w8-m2048",
+          "metroid-full-s20260905-w8-m2048",
+          "metroid-full-s20260906-w8-m2048",
+          "metroid-full-s20260907-w8-m2048",
+          "stb-hard-s20260905-w8-m2048",
+          "stb-hard-s20260906-w8-m2048",
+          "stb-hard-s20260907-w8-m2048",
+          "nova-full-s20260905-w8-m2048",
+          "nova-full-s20260906-w8-m2048",
+          "nova-full-s20260907-w8-m2048"
+        ],
+        "format": "harmony-search-eval-v1",
+        "host": {
+          "cpu_model": "Intel(R) Core(TM) Ultra 9 285HX",
+          "hostname": "ms02",
+          "logical_cpus": 24,
+          "machine": "x86_64",
+          "release": "7.1.8+deb13-amd64",
+          "system": "Linux"
+        },
+        "runner": {
+          "cpu_capacity": 24,
+          "disk_limit_gib": 8,
+          "finish_seconds": 600,
+          "jobs": 3,
+          "memory_capacity_mib": 40000,
+          "overhead_mib": 1024,
+          "sample_seconds": 1
+        }
+      },
+      "selector_accounting": {
+        "metroid-full-s20260905-w8-m2048": {
+          "cell_selections": 376540,
+          "classes_skipped": 4197415,
+          "concentration": {
+            "distinct_window_parents": 128053,
+            "draws_per_parent_milli": 2940,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 376540
+          },
+          "counter_resets": 0,
+          "productive_selections": 123467,
+          "retirement": {
+            "bands_over_threshold": 318,
+            "cells_over_threshold": 8434,
+            "entries_over_threshold": 11631,
+            "rooms_over_threshold": 96
+          },
+          "uniform_selections": 125557
+        },
+        "metroid-full-s20260906-w8-m2048": {
+          "cell_selections": 376410,
+          "classes_skipped": 6007864,
+          "concentration": {
+            "distinct_window_parents": 127271,
+            "draws_per_parent_milli": 2957,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 376410
+          },
+          "counter_resets": 0,
+          "productive_selections": 121510,
+          "retirement": {
+            "bands_over_threshold": 314,
+            "cells_over_threshold": 8572,
+            "entries_over_threshold": 13170,
+            "rooms_over_threshold": 94
+          },
+          "uniform_selections": 125757
+        },
+        "metroid-full-s20260907-w8-m2048": {
+          "cell_selections": 376718,
+          "classes_skipped": 4999595,
+          "concentration": {
+            "distinct_window_parents": 123142,
+            "draws_per_parent_milli": 3059,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 376718
+          },
+          "counter_resets": 0,
+          "productive_selections": 120969,
+          "retirement": {
+            "bands_over_threshold": 336,
+            "cells_over_threshold": 9291,
+            "entries_over_threshold": 13067,
+            "rooms_over_threshold": 101
+          },
+          "uniform_selections": 125446
+        },
+        "mm2-metal-s20260905-w8-m2048": {
+          "cell_selections": 13365,
+          "classes_skipped": 116893,
+          "concentration": {
+            "distinct_window_parents": 4483,
+            "draws_per_parent_milli": 2981,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 13365
+          },
+          "counter_resets": 0,
+          "productive_selections": 4412,
+          "retirement": {
+            "bands_over_threshold": 107,
+            "cells_over_threshold": 688,
+            "entries_over_threshold": 672,
+            "rooms_over_threshold": 22
+          },
+          "uniform_selections": 4371
+        },
+        "mm2-metal-s20260906-w8-m2048": {
+          "cell_selections": 36863,
+          "classes_skipped": 745119,
+          "concentration": {
+            "distinct_window_parents": 12927,
+            "draws_per_parent_milli": 2851,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 36863
+          },
+          "counter_resets": 0,
+          "productive_selections": 10980,
+          "retirement": {
+            "bands_over_threshold": 111,
+            "cells_over_threshold": 791,
+            "entries_over_threshold": 1201,
+            "rooms_over_threshold": 22
+          },
+          "uniform_selections": 12313
+        },
+        "mm2-metal-s20260907-w8-m2048": {
+          "cell_selections": 12031,
+          "classes_skipped": 150017,
+          "concentration": {
+            "distinct_window_parents": 4418,
+            "draws_per_parent_milli": 2723,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 12031
+          },
+          "counter_resets": 0,
+          "productive_selections": 4301,
+          "retirement": {
+            "bands_over_threshold": 107,
+            "cells_over_threshold": 726,
+            "entries_over_threshold": 675,
+            "rooms_over_threshold": 22
+          },
+          "uniform_selections": 4079
+        },
+        "nova-full-s20260905-w8-m2048": {
+          "cell_selections": 212709,
+          "classes_skipped": 8945281,
+          "concentration": {
+            "distinct_window_parents": 84073,
+            "draws_per_parent_milli": 2530,
+            "final_window_size": 4,
+            "window_cap": 128,
+            "window_draws": 212709
+          },
+          "counter_resets": 0,
+          "productive_selections": 85296,
+          "retirement": {
+            "bands_over_threshold": 1121,
+            "cells_over_threshold": 5913,
+            "entries_over_threshold": 7068,
+            "rooms_over_threshold": 71
+          },
+          "uniform_selections": 70529
+        },
+        "nova-full-s20260906-w8-m2048": {
+          "cell_selections": 213137,
+          "classes_skipped": 14453853,
+          "concentration": {
+            "distinct_window_parents": 85137,
+            "draws_per_parent_milli": 2503,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 213137
+          },
+          "counter_resets": 0,
+          "productive_selections": 82865,
+          "retirement": {
+            "bands_over_threshold": 947,
+            "cells_over_threshold": 6185,
+            "entries_over_threshold": 7749,
+            "rooms_over_threshold": 48
+          },
+          "uniform_selections": 71417
+        },
+        "nova-full-s20260907-w8-m2048": {
+          "cell_selections": 216222,
+          "classes_skipped": 6332823,
+          "concentration": {
+            "distinct_window_parents": 72983,
+            "draws_per_parent_milli": 2962,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 216222
+          },
+          "counter_resets": 0,
+          "productive_selections": 79964,
+          "retirement": {
+            "bands_over_threshold": 1092,
+            "cells_over_threshold": 5396,
+            "entries_over_threshold": 5816,
+            "rooms_over_threshold": 56
+          },
+          "uniform_selections": 72046
+        },
+        "nova-level-1-s20260905-w8-m2048": {
+          "cell_selections": 2373,
+          "classes_skipped": 1181,
+          "concentration": {
+            "distinct_window_parents": 1089,
+            "draws_per_parent_milli": 2179,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 2373
+          },
+          "counter_resets": 0,
+          "productive_selections": 1330,
+          "retirement": {
+            "bands_over_threshold": 24,
+            "cells_over_threshold": 128,
+            "entries_over_threshold": 97,
+            "rooms_over_threshold": 2
+          },
+          "uniform_selections": 788
+        },
+        "nova-level-1-s20260906-w8-m2048": {
+          "cell_selections": 2343,
+          "classes_skipped": 559,
+          "concentration": {
+            "distinct_window_parents": 1027,
+            "draws_per_parent_milli": 2281,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 2343
+          },
+          "counter_resets": 0,
+          "productive_selections": 1425,
+          "retirement": {
+            "bands_over_threshold": 32,
+            "cells_over_threshold": 136,
+            "entries_over_threshold": 99,
+            "rooms_over_threshold": 3
+          },
+          "uniform_selections": 835
+        },
+        "nova-level-1-s20260907-w8-m2048": {
+          "cell_selections": 1237,
+          "classes_skipped": 29,
+          "concentration": {
+            "distinct_window_parents": 590,
+            "draws_per_parent_milli": 2096,
+            "final_window_size": 3,
+            "window_cap": 128,
+            "window_draws": 1237
+          },
+          "counter_resets": 0,
+          "productive_selections": 855,
+          "retirement": {
+            "bands_over_threshold": 10,
+            "cells_over_threshold": 61,
+            "entries_over_threshold": 38,
+            "rooms_over_threshold": 3
+          },
+          "uniform_selections": 460
+        },
+        "smb-full-s20260905-w8-m2048": {
+          "cell_selections": 211884,
+          "classes_skipped": 41904,
+          "concentration": {
+            "distinct_window_parents": 416379,
+            "draws_per_parent_milli": 508,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 211884
+          },
+          "counter_resets": 0,
+          "productive_selections": 222187,
+          "retirement": {
+            "bands_over_threshold": 510,
+            "cells_over_threshold": 10192,
+            "entries_over_threshold": 2807,
+            "rooms_over_threshold": 57
+          },
+          "uniform_selections": 70264
+        },
+        "smb-full-s20260906-w8-m2048": {
+          "cell_selections": 180033,
+          "classes_skipped": 16807,
+          "concentration": {
+            "distinct_window_parents": 317406,
+            "draws_per_parent_milli": 567,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 180033
+          },
+          "counter_resets": 0,
+          "productive_selections": 187309,
+          "retirement": {
+            "bands_over_threshold": 432,
+            "cells_over_threshold": 9049,
+            "entries_over_threshold": 2586,
+            "rooms_over_threshold": 39
+          },
+          "uniform_selections": 60451
+        },
+        "smb-full-s20260907-w8-m2048": {
+          "cell_selections": 225656,
+          "classes_skipped": 54409,
+          "concentration": {
+            "distinct_window_parents": 424158,
+            "draws_per_parent_milli": 532,
+            "final_window_size": 3,
+            "window_cap": 128,
+            "window_draws": 225656
+          },
+          "counter_resets": 0,
+          "productive_selections": 233050,
+          "retirement": {
+            "bands_over_threshold": 542,
+            "cells_over_threshold": 11807,
+            "entries_over_threshold": 3491,
+            "rooms_over_threshold": 54
+          },
+          "uniform_selections": 75189
+        },
+        "stb-hard-s20260905-w8-m2048": {
+          "cell_selections": 6389,
+          "classes_skipped": 4421,
+          "concentration": {
+            "distinct_window_parents": 1904,
+            "draws_per_parent_milli": 3355,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 6389
+          },
+          "counter_resets": 0,
+          "productive_selections": 3655,
+          "retirement": {
+            "bands_over_threshold": 26,
+            "cells_over_threshold": 234,
+            "entries_over_threshold": 377,
+            "rooms_over_threshold": 4
+          },
+          "uniform_selections": 2060
+        },
+        "stb-hard-s20260906-w8-m2048": {
+          "cell_selections": 1196,
+          "classes_skipped": 654,
+          "concentration": {
+            "distinct_window_parents": 439,
+            "draws_per_parent_milli": 2724,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 1196
+          },
+          "counter_resets": 0,
+          "productive_selections": 893,
+          "retirement": {
+            "bands_over_threshold": 4,
+            "cells_over_threshold": 33,
+            "entries_over_threshold": 56,
+            "rooms_over_threshold": 3
+          },
+          "uniform_selections": 407
+        },
+        "stb-hard-s20260907-w8-m2048": {
+          "cell_selections": 3745,
+          "classes_skipped": 2796,
+          "concentration": {
+            "distinct_window_parents": 1335,
+            "draws_per_parent_milli": 2805,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 3745
+          },
+          "counter_resets": 0,
+          "productive_selections": 2334,
+          "retirement": {
+            "bands_over_threshold": 11,
+            "cells_over_threshold": 155,
+            "entries_over_threshold": 196,
+            "rooms_over_threshold": 2
+          },
+          "uniform_selections": 1268
+        }
+      }
+    },
+    {
+      "role": "candidate",
+      "run": "pilot-continuation-005",
+      "results_sha256": "fbd1e3484c85c793fa1c56d374abbc33036d0a832bb3c82c38656369787b4d31",
+      "matrix_sha256": "1ccd62edca3b11aad69bddaee227c37f7d6940af6336776cc8d5c380277295e5",
+      "suite": {
+        "cases": [
+          {
+            "game": "smb",
+            "id": "smb-full",
+            "origin": "power-on gameplay genesis",
+            "require_solved": true,
+            "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
+            "search": {
+              "executions": 600000,
+              "frames": 80000000
+            }
+          },
+          {
+            "game": "nova",
+            "id": "nova-level-1",
+            "level": 1,
+            "origin": "level 1 gameplay genesis",
+            "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+            "search": {
+              "actions": 512,
+              "executions": 100000,
+              "frames": 5000000
+            }
+          },
+          {
+            "game": "mm2",
+            "id": "mm2-metal",
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {},
+            "stage": 6
+          },
+          {
+            "game": "metroid",
+            "id": "metroid-full",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {
+              "executions": 500000
+            }
+          },
+          {
+            "ai": "hard",
+            "game": "stb",
+            "id": "stb-hard",
+            "origin": "power-on local match, default stage, native Hard AI",
+            "rom_sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3",
+            "search": {
+              "actions": 512,
+              "executions": 20000,
+              "frames": 3000000
+            }
+          },
+          {
+            "game": "nova",
+            "id": "nova-full",
+            "level": 1,
+            "origin": "power-on level 1 genesis; all 40 level flags required",
+            "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+            "search": {
+              "actions": 8192,
+              "executions": 300000,
+              "frames": 40000000
+            },
+            "whole_game": true
+          }
+        ],
+        "format": "harmony-search-eval-v1",
+        "id": "nes-pilot-continuation-005",
+        "memory_mib": [
+          2048
+        ],
+        "search": {
+          "actions": 8192,
+          "executions": 400000,
+          "frames": 60000000,
+          "mixture": "energy_splice_continuation_v1:6",
+          "result_slots": 2,
+          "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "verification": "witness",
+          "wall_seconds": 900,
+          "window": 2
+        },
+        "seeds": [
+          20260905,
+          20260906,
+          20260907
+        ],
+        "workers": [
+          8
+        ]
+      },
+      "matrix": {
+        "build": {
+          "attestation": "supplied",
+          "binary_sha256": "18c2df002b88860f1574c1870b7c584226aabffeb15fc55040534d66cff0dfbc",
+          "source": {
+            "binary_sha256": "18c2df002b88860f1574c1870b7c584226aabffeb15fc55040534d66cff0dfbc",
+            "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+            "dirty": null,
+            "files": 254,
+            "format": "harmony-search-build-v1",
+            "locked": true,
+            "profile": "release",
+            "revision": null,
+            "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+            "rustflags": "",
+            "source_tree_sha256": "ee9d36fd1fd808820220cde6998bbf3be740b3e7f2f5426c1eb84d7d0d58351a"
+          }
+        },
+        "cells": [
+          "smb-full-s20260905-w8-m2048",
+          "smb-full-s20260906-w8-m2048",
+          "smb-full-s20260907-w8-m2048",
+          "nova-level-1-s20260905-w8-m2048",
+          "nova-level-1-s20260906-w8-m2048",
+          "nova-level-1-s20260907-w8-m2048",
+          "mm2-metal-s20260905-w8-m2048",
+          "mm2-metal-s20260906-w8-m2048",
+          "mm2-metal-s20260907-w8-m2048",
+          "metroid-full-s20260905-w8-m2048",
+          "metroid-full-s20260906-w8-m2048",
+          "metroid-full-s20260907-w8-m2048",
+          "stb-hard-s20260905-w8-m2048",
+          "stb-hard-s20260906-w8-m2048",
+          "stb-hard-s20260907-w8-m2048",
+          "nova-full-s20260905-w8-m2048",
+          "nova-full-s20260906-w8-m2048",
+          "nova-full-s20260907-w8-m2048"
+        ],
+        "format": "harmony-search-eval-v1",
+        "host": {
+          "cpu_model": "Intel(R) Core(TM) Ultra 9 285HX",
+          "hostname": "ms02",
+          "logical_cpus": 24,
+          "machine": "x86_64",
+          "release": "7.1.8+deb13-amd64",
+          "system": "Linux"
+        },
+        "runner": {
+          "cpu_capacity": 24,
+          "disk_limit_gib": 8,
+          "finish_seconds": 600,
+          "jobs": 3,
+          "memory_capacity_mib": 40000,
+          "overhead_mib": 1024,
+          "sample_seconds": 1
+        }
+      },
+      "selector_accounting": {
+        "metroid-full-s20260905-w8-m2048": {
+          "cell_selections": 316315,
+          "classes_skipped": 1655621,
+          "concentration": {
+            "distinct_window_parents": 129871,
+            "draws_per_parent_milli": 2435,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 316315
+          },
+          "continuation_selections": 79973,
+          "counter_resets": 0,
+          "productive_selections": 142273,
+          "retirement": {
+            "bands_over_threshold": 303,
+            "cells_over_threshold": 8204,
+            "entries_over_threshold": 12141,
+            "rooms_over_threshold": 96
+          },
+          "uniform_selections": 105379
+        },
+        "metroid-full-s20260906-w8-m2048": {
+          "cell_selections": 316535,
+          "classes_skipped": 2318918,
+          "concentration": {
+            "distinct_window_parents": 135202,
+            "draws_per_parent_milli": 2341,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 316535
+          },
+          "continuation_selections": 79275,
+          "counter_resets": 0,
+          "productive_selections": 149328,
+          "retirement": {
+            "bands_over_threshold": 298,
+            "cells_over_threshold": 8052,
+            "entries_over_threshold": 9574,
+            "rooms_over_threshold": 90
+          },
+          "uniform_selections": 105849
+        },
+        "metroid-full-s20260907-w8-m2048": {
+          "cell_selections": 323517,
+          "classes_skipped": 3535766,
+          "concentration": {
+            "distinct_window_parents": 123975,
+            "draws_per_parent_milli": 2609,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 323517
+          },
+          "continuation_selections": 70899,
+          "counter_resets": 0,
+          "productive_selections": 140027,
+          "retirement": {
+            "bands_over_threshold": 350,
+            "cells_over_threshold": 9497,
+            "entries_over_threshold": 12886,
+            "rooms_over_threshold": 108
+          },
+          "uniform_selections": 107500
+        },
+        "mm2-metal-s20260905-w8-m2048": {
+          "cell_selections": 7800,
+          "classes_skipped": 25489,
+          "concentration": {
+            "distinct_window_parents": 3071,
+            "draws_per_parent_milli": 2539,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 7800
+          },
+          "continuation_selections": 1255,
+          "counter_resets": 0,
+          "productive_selections": 3614,
+          "retirement": {
+            "bands_over_threshold": 81,
+            "cells_over_threshold": 468,
+            "entries_over_threshold": 319,
+            "rooms_over_threshold": 21
+          },
+          "uniform_selections": 2525
+        },
+        "mm2-metal-s20260906-w8-m2048": {
+          "cell_selections": 24155,
+          "classes_skipped": 335822,
+          "concentration": {
+            "distinct_window_parents": 8351,
+            "draws_per_parent_milli": 2892,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 24155
+          },
+          "continuation_selections": 5637,
+          "counter_resets": 0,
+          "productive_selections": 8912,
+          "retirement": {
+            "bands_over_threshold": 103,
+            "cells_over_threshold": 759,
+            "entries_over_threshold": 836,
+            "rooms_over_threshold": 21
+          },
+          "uniform_selections": 8113
+        },
+        "mm2-metal-s20260907-w8-m2048": {
+          "cell_selections": 7779,
+          "classes_skipped": 55467,
+          "concentration": {
+            "distinct_window_parents": 2910,
+            "draws_per_parent_milli": 2673,
+            "final_window_size": 4,
+            "window_cap": 128,
+            "window_draws": 7779
+          },
+          "continuation_selections": 940,
+          "counter_resets": 0,
+          "productive_selections": 3569,
+          "retirement": {
+            "bands_over_threshold": 92,
+            "cells_over_threshold": 583,
+            "entries_over_threshold": 468,
+            "rooms_over_threshold": 22
+          },
+          "uniform_selections": 2641
+        },
+        "nova-full-s20260905-w8-m2048": {
+          "cell_selections": 200590,
+          "classes_skipped": 10687463,
+          "concentration": {
+            "distinct_window_parents": 73144,
+            "draws_per_parent_milli": 2742,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 200590
+          },
+          "continuation_selections": 34128,
+          "counter_resets": 0,
+          "productive_selections": 85917,
+          "retirement": {
+            "bands_over_threshold": 946,
+            "cells_over_threshold": 5055,
+            "entries_over_threshold": 6336,
+            "rooms_over_threshold": 45
+          },
+          "uniform_selections": 66598
+        },
+        "nova-full-s20260906-w8-m2048": {
+          "cell_selections": 208991,
+          "classes_skipped": 9962275,
+          "concentration": {
+            "distinct_window_parents": 71156,
+            "draws_per_parent_milli": 2937,
+            "final_window_size": 4,
+            "window_cap": 128,
+            "window_draws": 208991
+          },
+          "continuation_selections": 22764,
+          "counter_resets": 0,
+          "productive_selections": 79991,
+          "retirement": {
+            "bands_over_threshold": 705,
+            "cells_over_threshold": 4846,
+            "entries_over_threshold": 6460,
+            "rooms_over_threshold": 34
+          },
+          "uniform_selections": 69930
+        },
+        "nova-full-s20260907-w8-m2048": {
+          "cell_selections": 196626,
+          "classes_skipped": 6095297,
+          "concentration": {
+            "distinct_window_parents": 80330,
+            "draws_per_parent_milli": 2447,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 196626
+          },
+          "continuation_selections": 39339,
+          "counter_resets": 0,
+          "productive_selections": 93395,
+          "retirement": {
+            "bands_over_threshold": 947,
+            "cells_over_threshold": 5606,
+            "entries_over_threshold": 6820,
+            "rooms_over_threshold": 46
+          },
+          "uniform_selections": 65403
+        },
+        "nova-level-1-s20260905-w8-m2048": {
+          "cell_selections": 1618,
+          "classes_skipped": 444,
+          "concentration": {
+            "distinct_window_parents": 817,
+            "draws_per_parent_milli": 1980,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 1618
+          },
+          "continuation_selections": 627,
+          "counter_resets": 0,
+          "productive_selections": 1476,
+          "retirement": {
+            "bands_over_threshold": 24,
+            "cells_over_threshold": 114,
+            "entries_over_threshold": 37,
+            "rooms_over_threshold": 3
+          },
+          "uniform_selections": 530
+        },
+        "nova-level-1-s20260906-w8-m2048": {
+          "cell_selections": 945,
+          "classes_skipped": 47,
+          "concentration": {
+            "distinct_window_parents": 507,
+            "draws_per_parent_milli": 1863,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 945
+          },
+          "continuation_selections": 343,
+          "counter_resets": 0,
+          "productive_selections": 930,
+          "retirement": {
+            "bands_over_threshold": 14,
+            "cells_over_threshold": 55,
+            "entries_over_threshold": 12,
+            "rooms_over_threshold": 2
+          },
+          "uniform_selections": 317
+        },
+        "nova-level-1-s20260907-w8-m2048": {
+          "cell_selections": 1506,
+          "classes_skipped": 132,
+          "concentration": {
+            "distinct_window_parents": 871,
+            "draws_per_parent_milli": 1729,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 1506
+          },
+          "continuation_selections": 553,
+          "counter_resets": 0,
+          "productive_selections": 1361,
+          "retirement": {
+            "bands_over_threshold": 32,
+            "cells_over_threshold": 117,
+            "entries_over_threshold": 39,
+            "rooms_over_threshold": 3
+          },
+          "uniform_selections": 531
+        },
+        "smb-full-s20260905-w8-m2048": {
+          "cell_selections": 211884,
+          "classes_skipped": 41904,
+          "concentration": {
+            "distinct_window_parents": 416379,
+            "draws_per_parent_milli": 508,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 211884
+          },
+          "counter_resets": 0,
+          "productive_selections": 222187,
+          "retirement": {
+            "bands_over_threshold": 510,
+            "cells_over_threshold": 10192,
+            "entries_over_threshold": 2807,
+            "rooms_over_threshold": 57
+          },
+          "uniform_selections": 70264
+        },
+        "smb-full-s20260906-w8-m2048": {
+          "cell_selections": 180033,
+          "classes_skipped": 16807,
+          "concentration": {
+            "distinct_window_parents": 317406,
+            "draws_per_parent_milli": 567,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 180033
+          },
+          "counter_resets": 0,
+          "productive_selections": 187309,
+          "retirement": {
+            "bands_over_threshold": 432,
+            "cells_over_threshold": 9049,
+            "entries_over_threshold": 2586,
+            "rooms_over_threshold": 39
+          },
+          "uniform_selections": 60451
+        },
+        "smb-full-s20260907-w8-m2048": {
+          "cell_selections": 225656,
+          "classes_skipped": 54409,
+          "concentration": {
+            "distinct_window_parents": 424158,
+            "draws_per_parent_milli": 532,
+            "final_window_size": 3,
+            "window_cap": 128,
+            "window_draws": 225656
+          },
+          "counter_resets": 0,
+          "productive_selections": 233050,
+          "retirement": {
+            "bands_over_threshold": 542,
+            "cells_over_threshold": 11807,
+            "entries_over_threshold": 3491,
+            "rooms_over_threshold": 54
+          },
+          "uniform_selections": 75189
+        },
+        "stb-hard-s20260905-w8-m2048": {
+          "cell_selections": 1961,
+          "classes_skipped": 989,
+          "concentration": {
+            "distinct_window_parents": 709,
+            "draws_per_parent_milli": 2765,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 1961
+          },
+          "continuation_selections": 844,
+          "counter_resets": 0,
+          "productive_selections": 1958,
+          "retirement": {
+            "bands_over_threshold": 15,
+            "cells_over_threshold": 114,
+            "entries_over_threshold": 67,
+            "rooms_over_threshold": 5
+          },
+          "uniform_selections": 643
+        },
+        "stb-hard-s20260906-w8-m2048": {
+          "cell_selections": 3881,
+          "classes_skipped": 1867,
+          "concentration": {
+            "distinct_window_parents": 1290,
+            "draws_per_parent_milli": 3008,
+            "final_window_size": 1,
+            "window_cap": 128,
+            "window_draws": 3881
+          },
+          "continuation_selections": 1302,
+          "counter_resets": 0,
+          "productive_selections": 2968,
+          "retirement": {
+            "bands_over_threshold": 23,
+            "cells_over_threshold": 206,
+            "entries_over_threshold": 304,
+            "rooms_over_threshold": 3
+          },
+          "uniform_selections": 1336
+        },
+        "stb-hard-s20260907-w8-m2048": {
+          "cell_selections": 3782,
+          "classes_skipped": 3840,
+          "concentration": {
+            "distinct_window_parents": 1295,
+            "draws_per_parent_milli": 2920,
+            "final_window_size": 2,
+            "window_cap": 128,
+            "window_draws": 3782
+          },
+          "continuation_selections": 1275,
+          "counter_resets": 0,
+          "productive_selections": 2874,
+          "retirement": {
+            "bands_over_threshold": 18,
+            "cells_over_threshold": 186,
+            "entries_over_threshold": 238,
+            "rooms_over_threshold": 5
+          },
+          "uniform_selections": 1273
+        }
+      }
+    }
+  ],
+  "comparison": {
+    "baseline": [
+      {
+        "case": "metroid-full",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": null,
+        "median_search_frames_per_second": 183814.29623922956,
+        "memory_mib": 2048,
+        "solve_fraction_of_valid": 0.0,
+        "solve_fraction_wilson95": [
+          0.0,
+          0.5614970317550454
+        ],
+        "solved": 0,
+        "trials": 3,
+        "valid_trials": 3,
+        "workers": 8
+      },
+      {
+        "case": "mm2-metal",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": 2108987,
+        "median_search_frames_per_second": 218243.72889333675,
+        "memory_mib": 2048,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "solved": 3,
+        "trials": 3,
+        "valid_trials": 3,
+        "workers": 8
+      },
+      {
+        "case": "nova-full",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": null,
+        "median_search_frames_per_second": 214506.34451207862,
+        "memory_mib": 2048,
+        "solve_fraction_of_valid": 0.0,
+        "solve_fraction_wilson95": [
+          0.0,
+          0.5614970317550454
+        ],
+        "solved": 0,
+        "trials": 3,
+        "valid_trials": 3,
+        "workers": 8
+      },
+      {
+        "case": "nova-level-1",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": 462909,
+        "median_search_frames_per_second": 243355.3648272456,
+        "memory_mib": 2048,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "solved": 3,
+        "trials": 3,
+        "valid_trials": 3,
+        "workers": 8
+      },
+      {
+        "case": "smb-full",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": 38787730,
+        "median_search_frames_per_second": 150338.53178283756,
+        "memory_mib": 2048,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "solved": 3,
+        "trials": 3,
+        "valid_trials": 3,
+        "workers": 8
+      },
+      {
+        "case": "stb-hard",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": 744718,
+        "median_search_frames_per_second": 265386.1756705987,
+        "memory_mib": 2048,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "solved": 3,
+        "trials": 3,
+        "valid_trials": 3,
+        "workers": 8
+      }
+    ],
+    "candidate": [
+      {
+        "case": "metroid-full",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": null,
+        "median_search_frames_per_second": 173856.96862663038,
+        "memory_mib": 2048,
+        "solve_fraction_of_valid": 0.0,
+        "solve_fraction_wilson95": [
+          0.0,
+          0.5614970317550454
+        ],
+        "solved": 0,
+        "trials": 3,
+        "valid_trials": 3,
+        "workers": 8
+      },
+      {
+        "case": "mm2-metal",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": 1325844,
+        "median_search_frames_per_second": 241779.63591385775,
+        "memory_mib": 2048,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "solved": 3,
+        "trials": 3,
+        "valid_trials": 3,
+        "workers": 8
+      },
+      {
+        "case": "nova-full",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": null,
+        "median_search_frames_per_second": 205000.9084237141,
+        "memory_mib": 2048,
+        "solve_fraction_of_valid": 0.0,
+        "solve_fraction_wilson95": [
+          0.0,
+          0.5614970317550454
+        ],
+        "solved": 0,
+        "trials": 3,
+        "valid_trials": 3,
+        "workers": 8
+      },
+      {
+        "case": "nova-level-1",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": 338450,
+        "median_search_frames_per_second": 213765.7579964371,
+        "memory_mib": 2048,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "solved": 3,
+        "trials": 3,
+        "valid_trials": 3,
+        "workers": 8
+      },
+      {
+        "case": "smb-full",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": 38800578,
+        "median_search_frames_per_second": 149790.00083160223,
+        "memory_mib": 2048,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "solved": 3,
+        "trials": 3,
+        "valid_trials": 3,
+        "workers": 8
+      },
+      {
+        "case": "stb-hard",
+        "errors": 0,
+        "median_frames_to_victory_among_successes": 799122,
+        "median_search_frames_per_second": 242137.4607225947,
+        "memory_mib": 2048,
+        "solve_fraction_of_valid": 1.0,
+        "solve_fraction_wilson95": [
+          0.4385029682449546,
+          1.0
+        ],
+        "solved": 3,
+        "trials": 3,
+        "valid_trials": 3,
+        "workers": 8
+      }
+    ],
+    "format": "harmony-search-comparison-v1",
+    "pairs": [
+      {
+        "baseline": {
+          "frames": 58328668,
+          "frames_per_second": 183814.29623922956,
+          "frames_to_victory": null,
+          "peak_disk": 12487739,
+          "peak_rss": 858746880,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "result_slots": 2,
+          "search_seconds": 317.32389261,
+          "solved": false,
+          "stream_sha256": "acb3fb39bc667952b233ee93c62934457416ff80e115761d33c68da232e12080",
+          "workload_diagnostics": {
+            "coverage_bitmap_bytes": 32768,
+            "map_cells_observed": 58,
+            "scope": "this run's live gameplay observations; union across explored branches"
+          }
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 56687361,
+          "frames_per_second": 210656.0754066604,
+          "frames_to_victory": null,
+          "peak_disk": 12406973,
+          "peak_rss": 854212608,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "result_slots": 2,
+          "search_seconds": 269.099103316,
+          "solved": false,
+          "stream_sha256": "f7e03160808cd23b5f1edc607f9c38d45fbcb22f9df2e9746888dfafe2b7d1bf",
+          "workload_diagnostics": {
+            "coverage_bitmap_bytes": 32768,
+            "map_cells_observed": 62,
+            "scope": "this run's live gameplay observations; union across explored branches"
+          }
+        },
+        "candidate_status": "complete",
+        "cell": "metroid-full-s20260905-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": false,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": false
+      },
+      {
+        "baseline": {
+          "frames": 59706357,
+          "frames_per_second": 227767.76299433733,
+          "frames_to_victory": null,
+          "peak_disk": 12386284,
+          "peak_rss": 856555520,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "result_slots": 2,
+          "search_seconds": 262.136995223,
+          "solved": false,
+          "stream_sha256": "c923ae723d824af751b7adf0bb9cbdbed157316076220f02c70388120c576321",
+          "workload_diagnostics": {
+            "coverage_bitmap_bytes": 32768,
+            "map_cells_observed": 60,
+            "scope": "this run's live gameplay observations; union across explored branches"
+          }
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 58558153,
+          "frames_per_second": 173856.96862663038,
+          "frames_to_victory": null,
+          "peak_disk": 12525742,
+          "peak_rss": 858402816,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "result_slots": 2,
+          "search_seconds": 336.817980105,
+          "solved": false,
+          "stream_sha256": "a27221c18231133752543f1f39fb78d56bd1b5882a559fa15cb6c7b4f67e2318",
+          "workload_diagnostics": {
+            "coverage_bitmap_bytes": 32768,
+            "map_cells_observed": 56,
+            "scope": "this run's live gameplay observations; union across explored branches"
+          }
+        },
+        "candidate_status": "complete",
+        "cell": "metroid-full-s20260906-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": false,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": false
+      },
+      {
+        "baseline": {
+          "frames": 56484096,
+          "frames_per_second": 179930.52285741246,
+          "frames_to_victory": null,
+          "peak_disk": 12482879,
+          "peak_rss": 936124416,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "result_slots": 2,
+          "search_seconds": 313.921702127,
+          "solved": false,
+          "stream_sha256": "6ff41e812452255b9a1f0212e20fbeb3706f7be81bb20160bca29c80be6f9a25",
+          "workload_diagnostics": {
+            "coverage_bitmap_bytes": 32768,
+            "map_cells_observed": 60,
+            "scope": "this run's live gameplay observations; union across explored branches"
+          }
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 52326264,
+          "frames_per_second": 170651.53350092383,
+          "frames_to_victory": null,
+          "peak_disk": 12486810,
+          "peak_rss": 953765888,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "result_slots": 2,
+          "search_seconds": 306.626391961,
+          "solved": false,
+          "stream_sha256": "fd505505841b941cfa7ef5466e69265c7334b44c32a1960c2902319893e49859",
+          "workload_diagnostics": {
+            "coverage_bitmap_bytes": 32768,
+            "map_cells_observed": 62,
+            "scope": "this run's live gameplay observations; union across explored branches"
+          }
+        },
+        "candidate_status": "complete",
+        "cell": "metroid-full-s20260907-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 2110000,
+          "frames_per_second": 218243.72889333675,
+          "frames_to_victory": 2108987,
+          "peak_disk": 553945,
+          "peak_rss": 115507200,
+          "progress": {
+            "boss_damage": 28,
+            "bosses": 1,
+            "enemy_damage": 0,
+            "room": 21,
+            "screen": 21,
+            "stage": 6,
+            "x": 232,
+            "y": 252
+          },
+          "result_slots": 2,
+          "search_seconds": 9.668089941,
+          "solved": true,
+          "stream_sha256": "3229009f713470514a7e83305ead4ae42aaa7831245c09af25e8ed229e5ff8e3",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 1324411,
+          "frames_per_second": 241779.63591385775,
+          "frames_to_victory": 1322946,
+          "peak_disk": 395951,
+          "peak_rss": 110538752,
+          "progress": {
+            "boss_damage": 28,
+            "bosses": 1,
+            "enemy_damage": 0,
+            "room": 21,
+            "screen": 21,
+            "stage": 6,
+            "x": 232,
+            "y": 252
+          },
+          "result_slots": 2,
+          "search_seconds": 5.477760751,
+          "solved": true,
+          "stream_sha256": "2dd6a9889361da689b2e3dfb336e2f4b5eec14f35ba54fec944536fa6b5d550e",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "mm2-metal-s20260905-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": false,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": false
+      },
+      {
+        "baseline": {
+          "frames": 6394082,
+          "frames_per_second": 254586.98810301168,
+          "frames_to_victory": 6392751,
+          "peak_disk": 1368379,
+          "peak_rss": 132104192,
+          "progress": {
+            "boss_damage": 28,
+            "bosses": 1,
+            "enemy_damage": 0,
+            "room": 21,
+            "screen": 21,
+            "stage": 6,
+            "x": 232,
+            "y": 252
+          },
+          "result_slots": 2,
+          "search_seconds": 25.115509821,
+          "solved": true,
+          "stream_sha256": "6ddaa7d68d0ff5710d641a673c9c3f4e0a2663c816bc3c80190177859275a089",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 4167939,
+          "frames_per_second": 204714.6517122518,
+          "frames_to_victory": 4166091,
+          "peak_disk": 1085034,
+          "peak_rss": 127885312,
+          "progress": {
+            "boss_damage": 28,
+            "bosses": 1,
+            "enemy_damage": 0,
+            "room": 21,
+            "screen": 21,
+            "stage": 6,
+            "x": 24,
+            "y": 252
+          },
+          "result_slots": 2,
+          "search_seconds": 20.359749364,
+          "solved": true,
+          "stream_sha256": "7607639e945ea894feb904b5f829b4d04540d4c8715fabb19241a063930facc0",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "mm2-metal-s20260906-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": false,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": false
+      },
+      {
+        "baseline": {
+          "frames": 1956726,
+          "frames_per_second": 214735.3670526032,
+          "frames_to_victory": 1954363,
+          "peak_disk": 516781,
+          "peak_rss": 120983552,
+          "progress": {
+            "boss_damage": 28,
+            "bosses": 1,
+            "enemy_damage": 0,
+            "room": 21,
+            "screen": 21,
+            "stage": 6,
+            "x": 24,
+            "y": 252
+          },
+          "result_slots": 2,
+          "search_seconds": 9.112267005,
+          "solved": true,
+          "stream_sha256": "10be4e2b6ce8ca1f25aa7de83160f1b9e248693d423f0c3bd72678d997310d17",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 1327018,
+          "frames_per_second": 242110.62787944858,
+          "frames_to_victory": 1325844,
+          "peak_disk": 387370,
+          "peak_rss": 114712576,
+          "progress": {
+            "boss_damage": 28,
+            "bosses": 1,
+            "enemy_damage": 0,
+            "room": 21,
+            "screen": 21,
+            "stage": 6,
+            "x": 24,
+            "y": 252
+          },
+          "result_slots": 2,
+          "search_seconds": 5.481039852,
+          "solved": true,
+          "stream_sha256": "ead3d6c9128df093dc392122c05460fa72d1f6214b1d64f33b773407a0debc3e",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "mm2-metal-s20260907-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": false,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": false
+      },
+      {
+        "baseline": {
+          "frames": 40001655,
+          "frames_per_second": 257643.7267745988,
+          "frames_to_victory": null,
+          "peak_disk": 7013067,
+          "peak_rss": 312647680,
+          "progress": {
+            "available": 8,
+            "cleared": 7,
+            "collectibles": 6,
+            "level": 7,
+            "started_level": 7,
+            "x": 3978,
+            "y": 104
+          },
+          "result_slots": 2,
+          "search_seconds": 155.25957298,
+          "solved": false,
+          "stream_sha256": "f95e32c7b217ee3412c208c873b8b3e9db00bd30ff728fc3494e0d2aff7efe33",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 38527100,
+          "frames_per_second": 238418.29231597003,
+          "frames_to_victory": null,
+          "peak_disk": 7407658,
+          "peak_rss": 291549184,
+          "progress": {
+            "available": 8,
+            "cleared": 7,
+            "collectibles": 5,
+            "level": 7,
+            "started_level": 7,
+            "x": 3979,
+            "y": 104
+          },
+          "result_slots": 2,
+          "search_seconds": 161.594564015,
+          "solved": false,
+          "stream_sha256": "8d1a7676208e722114fff17a1deb7c422e8635b3e62efc8d0ae8a64b8e5046dd",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "nova-full-s20260905-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 40001341,
+          "frames_per_second": 212034.77445604824,
+          "frames_to_victory": null,
+          "peak_disk": 7086548,
+          "peak_rss": 316370944,
+          "progress": {
+            "available": 8,
+            "cleared": 7,
+            "collectibles": 7,
+            "level": 7,
+            "started_level": 7,
+            "x": 3978,
+            "y": 104
+          },
+          "result_slots": 2,
+          "search_seconds": 188.654625651,
+          "solved": false,
+          "stream_sha256": "0a41ae922bd21ffce97c05449aceebb2346f4a2615e2f636a98aad2d6e4d7cce",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 39180006,
+          "frames_per_second": 205000.9084237141,
+          "frames_to_victory": null,
+          "peak_disk": 7449746,
+          "peak_rss": 282644480,
+          "progress": {
+            "available": 8,
+            "cleared": 7,
+            "collectibles": 6,
+            "level": 7,
+            "started_level": 7,
+            "x": 3977,
+            "y": 104
+          },
+          "result_slots": 2,
+          "search_seconds": 191.121133566,
+          "solved": false,
+          "stream_sha256": "78cfb42c8c31f456f951c9ee4d337621b607ad299ea5667caab2e9c7102c43e8",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "nova-full-s20260906-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 40002337,
+          "frames_per_second": 214506.34451207862,
+          "frames_to_victory": null,
+          "peak_disk": 7140978,
+          "peak_rss": 297623552,
+          "progress": {
+            "available": 8,
+            "cleared": 7,
+            "collectibles": 7,
+            "level": 3,
+            "started_level": 7,
+            "x": 2880,
+            "y": 136
+          },
+          "result_slots": 2,
+          "search_seconds": 186.485565688,
+          "solved": false,
+          "stream_sha256": "f646a33c5dc47c7916fb9197036e73dac2bbe17c731b1ee70393718414042442",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 39055554,
+          "frames_per_second": 203177.83989032207,
+          "frames_to_victory": null,
+          "peak_disk": 7541069,
+          "peak_rss": 318115840,
+          "progress": {
+            "available": 8,
+            "cleared": 7,
+            "collectibles": 7,
+            "level": 7,
+            "started_level": 7,
+            "x": 3979,
+            "y": 104
+          },
+          "result_slots": 2,
+          "search_seconds": 192.223492587,
+          "solved": false,
+          "stream_sha256": "ebe628345570fc06ad64ad352f970011ba3f09f96bf3abcb7e1889ff15351dae",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "nova-full-s20260907-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 479748,
+          "frames_per_second": 243355.3648272456,
+          "frames_to_victory": 477807,
+          "peak_disk": 121119,
+          "peak_rss": 41820160,
+          "progress": {
+            "available": 2,
+            "cleared": 1,
+            "collectibles": 0,
+            "level": 1,
+            "started_level": 1,
+            "x": 3509,
+            "y": 184
+          },
+          "result_slots": 2,
+          "search_seconds": 1.9713886330000001,
+          "solved": true,
+          "stream_sha256": "5cb417581445f5ce114786af845198f220dbd683474135470a5dac1033d2ddbc",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 364534,
+          "frames_per_second": 213765.7579964371,
+          "frames_to_victory": 363020,
+          "peak_disk": 118171,
+          "peak_rss": 41787392,
+          "progress": {
+            "available": 2,
+            "cleared": 1,
+            "collectibles": 1,
+            "level": 1,
+            "started_level": 1,
+            "x": 3509,
+            "y": 184
+          },
+          "result_slots": 2,
+          "search_seconds": 1.705296505,
+          "solved": true,
+          "stream_sha256": "f8488aa22ca37dd6480c12f36688e76d58626c79aff015d9e49db6c4011355fd",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "nova-level-1-s20260905-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 466204,
+          "frames_per_second": 224585.73563059053,
+          "frames_to_victory": 462909,
+          "peak_disk": 128620,
+          "peak_rss": 42819584,
+          "progress": {
+            "available": 2,
+            "cleared": 1,
+            "collectibles": 1,
+            "level": 1,
+            "started_level": 1,
+            "x": 3502,
+            "y": 184
+          },
+          "result_slots": 2,
+          "search_seconds": 2.075839762,
+          "solved": true,
+          "stream_sha256": "cccb88b639c85349af3f8eb17c434e39e0c1dd517e50f1c2457b7557356406ac",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 211139,
+          "frames_per_second": 238840.87857308195,
+          "frames_to_victory": 209009,
+          "peak_disk": 89208,
+          "peak_rss": 39297024,
+          "progress": {
+            "available": 2,
+            "cleared": 1,
+            "collectibles": 1,
+            "level": 1,
+            "started_level": 1,
+            "x": 3512,
+            "y": 184
+          },
+          "result_slots": 2,
+          "search_seconds": 0.884015338,
+          "solved": true,
+          "stream_sha256": "964f74148303c117164b1d44e8b397e94bfd4b203a38766411886a6bef0cce1b",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "nova-level-1-s20260906-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": false,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": false
+      },
+      {
+        "baseline": {
+          "frames": 255453,
+          "frames_per_second": 267867.9728336557,
+          "frames_to_victory": 253763,
+          "peak_disk": 88886,
+          "peak_rss": 39460864,
+          "progress": {
+            "available": 2,
+            "cleared": 1,
+            "collectibles": 1,
+            "level": 1,
+            "started_level": 1,
+            "x": 3503,
+            "y": 184
+          },
+          "result_slots": 2,
+          "search_seconds": 0.953652642,
+          "solved": true,
+          "stream_sha256": "54ad539ac2b3bcf7cc6e272c9a274267e31018e0e5532e6aab60d6a9b9272db2",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 339908,
+          "frames_per_second": 213450.15334943047,
+          "frames_to_victory": 338450,
+          "peak_disk": 114098,
+          "peak_rss": 41988096,
+          "progress": {
+            "available": 2,
+            "cleared": 1,
+            "collectibles": 0,
+            "level": 1,
+            "started_level": 1,
+            "x": 3502,
+            "y": 184
+          },
+          "result_slots": 2,
+          "search_seconds": 1.5924467359999999,
+          "solved": true,
+          "stream_sha256": "6cd144080d7c9da2c2f9a9f5a2dc63f01ecdf0135bbf704445a8d2ce418bf69e",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "nova-level-1-s20260907-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": false,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": false
+      },
+      {
+        "baseline": {
+          "frames": 38789183,
+          "frames_per_second": 175614.55633958807,
+          "frames_to_victory": 38787730,
+          "peak_disk": 7575659,
+          "peak_rss": 2771935232,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 2,
+          "search_seconds": 220.876810035,
+          "solved": true,
+          "stream_sha256": "4b18851548f20f868ab01603cf6498b52d95e25becf7abf638cdb7443ca78cce",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 38802031,
+          "frames_per_second": 175472.60485003915,
+          "frames_to_victory": 38800578,
+          "peak_disk": 7575109,
+          "peak_rss": 2763673600,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 2,
+          "search_seconds": 221.12871142,
+          "solved": true,
+          "stream_sha256": "13e60fa2e26655dddb0dbdced42767e4030b3e6ea9b4748c290c90ea3553b535",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "smb-full-s20260905-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 32536386,
+          "frames_per_second": 150338.53178283756,
+          "frames_to_victory": 32534453,
+          "peak_disk": 6451813,
+          "peak_rss": 2642722816,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 2,
+          "search_seconds": 216.420804528,
+          "solved": true,
+          "stream_sha256": "d8cf55494ee59f38b99bff73bb6aa135ba6d0c09bcd91ed03de7562a8f18d25c",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 32544263,
+          "frames_per_second": 149790.00083160223,
+          "frames_to_victory": 32542330,
+          "peak_disk": 6454308,
+          "peak_rss": 2643509248,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 2,
+          "search_seconds": 217.265924423,
+          "solved": true,
+          "stream_sha256": "393be8c4faffcc6f427b156c4a6212ab552413b8b8661f8904dff2ae100f88bb",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "smb-full-s20260906-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 40915292,
+          "frames_per_second": 148803.42473313975,
+          "frames_to_victory": 40912014,
+          "peak_disk": 8077570,
+          "peak_rss": 2791804928,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 2,
+          "search_seconds": 274.962031777,
+          "solved": true,
+          "stream_sha256": "b192d6212b9d25d40d0b016ee471003a4c11d6b2ebdb8cd6e4ce7aec6ab24beb",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 40924716,
+          "frames_per_second": 149065.56776699558,
+          "frames_to_victory": 40921438,
+          "peak_disk": 8078711,
+          "peak_rss": 2790518784,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "result_slots": 2,
+          "search_seconds": 274.541710826,
+          "solved": true,
+          "stream_sha256": "efc1c630335be0a5377931bddfa5cced42e8ed3edee86b1c599426868beff9fd",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "smb-full-s20260907-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 1274813,
+          "frames_per_second": 267863.5165613874,
+          "frames_to_victory": 1273198,
+          "peak_disk": 246876,
+          "peak_rss": 86605824,
+          "progress": {
+            "opponent_damage": 30,
+            "opponent_kos": 5
+          },
+          "result_slots": 2,
+          "search_seconds": 4.759188621,
+          "solved": true,
+          "stream_sha256": "cb09bda720c796e85973dc6302d3f042550b01aad2beecb9bd523d4175b119f5",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 449064,
+          "frames_per_second": 231447.74852773515,
+          "frames_to_victory": 447097,
+          "peak_disk": 125496,
+          "peak_rss": 73052160,
+          "progress": {
+            "opponent_damage": 27,
+            "opponent_kos": 5
+          },
+          "result_slots": 2,
+          "search_seconds": 1.940239224,
+          "solved": true,
+          "stream_sha256": "7c71963991351fabe9208a97094af15a90c1f7b079966163fac96ba92b820078",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "stb-hard-s20260905-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 234412,
+          "frames_per_second": 258440.792407041,
+          "frames_to_victory": 232178,
+          "peak_disk": 74356,
+          "peak_rss": 66699264,
+          "progress": {
+            "opponent_damage": 16,
+            "opponent_kos": 5
+          },
+          "result_slots": 2,
+          "search_seconds": 0.907023995,
+          "solved": true,
+          "stream_sha256": "5f4d3297d21cd038001d7e2b0c690668656b7b6641eccf69cbc46992d9e73b81",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 820345,
+          "frames_per_second": 242137.4607225947,
+          "frames_to_victory": 819129,
+          "peak_disk": 198837,
+          "peak_rss": 81764352,
+          "progress": {
+            "opponent_damage": 32,
+            "opponent_kos": 5
+          },
+          "result_slots": 2,
+          "search_seconds": 3.387930961,
+          "solved": true,
+          "stream_sha256": "25ac45f220a693278beaa6084d45f901a1e636ba87fdad98016fb12ac98a85e9",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "stb-hard-s20260906-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      },
+      {
+        "baseline": {
+          "frames": 747440,
+          "frames_per_second": 265386.1756705987,
+          "frames_to_victory": 744718,
+          "peak_disk": 154982,
+          "peak_rss": 79228928,
+          "progress": {
+            "opponent_damage": 25,
+            "opponent_kos": 5
+          },
+          "result_slots": 2,
+          "search_seconds": 2.816424021,
+          "solved": true,
+          "stream_sha256": "9112b99e8693101a3f00e51f0339bfbfce922bc7ebe30ce6e9de495e1d9eb6fd",
+          "workload_diagnostics": null
+        },
+        "baseline_status": "complete",
+        "candidate": {
+          "frames": 801352,
+          "frames_per_second": 246668.11493594255,
+          "frames_to_victory": 799122,
+          "peak_disk": 192725,
+          "peak_rss": 80400384,
+          "progress": {
+            "opponent_damage": 53,
+            "opponent_kos": 5
+          },
+          "result_slots": 2,
+          "search_seconds": 3.24870525,
+          "solved": true,
+          "stream_sha256": "4b5a30835de05ea810653e06e5a43201b5aa030be32f3eecfdbb455e2cdb089a",
+          "workload_diagnostics": null
+        },
+        "candidate_status": "complete",
+        "cell": "stb-hard-s20260907-w8-m2048",
+        "comparable": true,
+        "same_cpu_set": true,
+        "same_host": true,
+        "same_recorded_search": false,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true
+      }
+    ],
+    "timing_note": "Matching recorded allocation does not establish host isolation. Concurrent jobs may share physical cores and finish at different times; use admitted frame cost for search quality and isolated runs for precise throughput claims."
+  }
+}

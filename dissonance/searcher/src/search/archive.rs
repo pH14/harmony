@@ -19,7 +19,11 @@ use std::{
     sync::Arc,
 };
 
-use crate::search::rand::RomuDuoJrRand;
+use crate::search::{
+    continuation::{Continuation, ContinuationBank},
+    key_counts::{KEY_COUNT_CAPACITY, KeyCounts},
+    rand::RomuDuoJrRand,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
@@ -58,6 +62,11 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     /// preference and superseded representatives should stop receiving work.
     fn slot_capacity() -> usize {
         MAX_ENTRIES_PER_KEY
+    }
+    /// Workload progress relation, independent of map identity. Equal may
+    /// represent incomparability; this relation must never order a map.
+    fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
+        left.cmp(&right)
     }
     /// Compare two keys that map to the same depth-0 slot by game-owned state
     /// preference. The archive treats the result as opaque and falls back to
@@ -205,6 +214,19 @@ pub enum SelectorPolicy {
     /// cheapest, flooring at 1. Cheap entries hold the most unspent budget
     /// under any workload clock, so they take most of the cell's draws.
     EnergyFrontierCheapest(RetireThresholds),
+    /// The cost-ranked frontier walk, dividing each member's draw weight by
+    /// one plus its admitted selections. Cheap members start ahead without
+    /// permanently monopolizing a cell's exploration budget.
+    EnergyFrontierCheapestCount(RetireThresholds),
+    /// Count-weighted cost selection using the workload's progress relation
+    /// instead of interpreting location identity as progress.
+    EnergyProgressCheapestCount(RetireThresholds),
+    /// Count weighting backed by bounded retention-key history, surviving
+    /// entry replacement and metadata compaction.
+    EnergyFrontierCheapestKeyCount(RetireThresholds),
+    /// Cost selection using semantic progress without entry-count weighting.
+    /// Equal-progress locations share frontier rank regardless of map identity.
+    EnergyProgressCheapest(RetireThresholds),
 }
 
 /// The recorded identifier of a parent selector.
@@ -227,6 +249,22 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
                 threshold_values(scales)
             )
         }
+        SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:{}",
+            threshold_values(scales)
+        ),
+        SelectorPolicy::EnergyProgressCheapest(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_progress_cheapest_v1:{}",
+            threshold_values(scales)
+        ),
+        SelectorPolicy::EnergyProgressCheapestCount(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_progress_cheapest_count_v1:{}",
+            threshold_values(scales)
+        ),
+        SelectorPolicy::EnergyFrontierCheapestCount(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:{}",
+            threshold_values(scales)
+        ),
         SelectorPolicy::EnergyFrontierCheapest(scales) => {
             format!(
                 "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest:{}",
@@ -261,15 +299,31 @@ pub fn selector_policy_from_identifier(
     let retire_prefix = format!("{SELECTOR_IDENTIFIER}_retire:");
     let energy_prefix = format!("{SELECTOR_IDENTIFIER}_energy:");
     let frontier_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier:");
+    let key_count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:");
+    let semantic_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_v1:");
+    let progress_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_count_v1:");
+    let count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:");
     let cheapest_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest:");
     enum Parsed {
         Retire,
         Energy,
         EnergyFrontier,
         EnergyFrontierCheapest,
+        EnergyFrontierCheapestCount,
+        EnergyProgressCheapest,
+        EnergyProgressCheapestCount,
+        EnergyFrontierCheapestKeyCount,
     }
     let (values, selector) = if let Some(values) = identifier.strip_prefix(&retire_prefix) {
         (values, Parsed::Retire)
+    } else if let Some(values) = identifier.strip_prefix(&key_count_prefix) {
+        (values, Parsed::EnergyFrontierCheapestKeyCount)
+    } else if let Some(values) = identifier.strip_prefix(&semantic_prefix) {
+        (values, Parsed::EnergyProgressCheapest)
+    } else if let Some(values) = identifier.strip_prefix(&progress_prefix) {
+        (values, Parsed::EnergyProgressCheapestCount)
+    } else if let Some(values) = identifier.strip_prefix(&count_prefix) {
+        (values, Parsed::EnergyFrontierCheapestCount)
     } else if let Some(values) = identifier.strip_prefix(&cheapest_prefix) {
         (values, Parsed::EnergyFrontierCheapest)
     } else if let Some(values) = identifier.strip_prefix(&frontier_prefix) {
@@ -298,9 +352,19 @@ pub fn selector_policy_from_identifier(
         groups: parsed[1..].to_vec(),
     };
     Ok(match selector {
+        Parsed::EnergyFrontierCheapestKeyCount => {
+            SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
+        }
+        Parsed::EnergyProgressCheapest => SelectorPolicy::EnergyProgressCheapest(thresholds),
+        Parsed::EnergyProgressCheapestCount => {
+            SelectorPolicy::EnergyProgressCheapestCount(thresholds)
+        }
         Parsed::Retire => SelectorPolicy::Retire(thresholds),
         Parsed::Energy => SelectorPolicy::Energy(thresholds),
         Parsed::EnergyFrontier => SelectorPolicy::EnergyFrontier(thresholds),
+        Parsed::EnergyFrontierCheapestCount => {
+            SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
+        }
         Parsed::EnergyFrontierCheapest => SelectorPolicy::EnergyFrontierCheapest(thresholds),
     })
 }
@@ -333,6 +397,8 @@ const CELL_NOVELTY_RANK_SCALE: usize = 8;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectorPath {
+    /// A discovered continuation retried from a stronger same-slot state.
+    Continuation,
     /// The one-in-four uniform draw over all active entries.
     Uniform,
     /// The group walk: deepest coarsest class first, one unexhausted group
@@ -349,6 +415,8 @@ pub struct SelectorDraw {
     /// Path this draw took.
     pub path: SelectorPath,
     /// Fully exhausted classes skipped before this draw found its cell.
+    /// Semantic selectors inspect one sampled class; legacy walks may inspect
+    /// several. Counts describe each policy's traversal, not a shared work unit.
     pub classes_skipped: u64,
     /// Whether this draw found every active entry exhausted and reset the
     /// exhaustion counters.
@@ -370,6 +438,12 @@ pub struct ConcentrationDraw {
 /// Per-campaign accounting for the selector.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SelectorAccounting {
+    /// Bounded selection history by retention key; absent for legacy policies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_counts: Option<KeyCountAccounting>,
+    /// Admitted attempts at learned continuations, absent in historical policies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_selections: Option<u64>,
     /// Parent selections drawn through the uniform path.
     pub uniform_selections: u64,
     /// Parent selections drawn through the cell path.
@@ -387,6 +461,21 @@ pub struct SelectorAccounting {
     /// reports recorded under the compiled selector keep their exact bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement: Option<RetirementAccounting>,
+}
+
+/// Resource accounting for persistent retention-key selection counts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct KeyCountAccounting {
+    /// Maximum distinct keys remembered.
+    pub capacity: usize,
+    /// Keys currently remembered.
+    pub keys: usize,
+    /// Recorded selections (including skips) with a remembered key.
+    pub hits: u64,
+    /// Least-recently-selected keys evicted from the bounded history.
+    pub evictions: u64,
+    /// Fixed conservative reserve included in logical history memory.
+    pub reserve_bytes: usize,
 }
 
 /// Retirement state at report time under a retiring selector.
@@ -844,6 +933,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     historical_entries_dropped: u64,
     /// Rare full-input reconstructions from the compact prefix structure.
     input_reconstructions: Cell<u64>,
+    continuations: Option<ContinuationBank<K::Group, A>>,
+    key_counts: KeyCounts<K::Group>,
 }
 
 /// Members of one walk class, ascending per selection cell.
@@ -1366,6 +1457,8 @@ where
             history_compactions: 0,
             historical_entries_dropped: 0,
             input_reconstructions: Cell::new(0),
+            continuations: None,
+            key_counts: KeyCounts::default(),
         }
     }
 
@@ -2687,6 +2780,23 @@ where
         if self.active_count >= self.max_entries {
             return Err("archive population limit did not retire an entry".into());
         }
+        if let Some(bank) = &mut self.continuations {
+            if replace.is_some_and(|replaced| {
+                key.preference_cmp(self.entries[replaced].key) == Ordering::Greater
+            }) {
+                bank.improved(key.group(0), self.next_entry_id);
+            }
+            if let Some(parent) = parent_id {
+                let entry = &self.entries[parent];
+                bank.record(
+                    entry.key.group(0),
+                    key.group(0),
+                    entry.id,
+                    self.next_entry_id,
+                    &suffix,
+                );
+            }
+        }
         if let Some(replaced) = replace {
             self.replacement_time_displaced = self.replacement_time_displaced.saturating_add(1);
             self.deactivate(replaced);
@@ -2977,6 +3087,62 @@ where
         self.walk_to_cell_scan(rand, classes_skipped, ignore_streaks)
     }
 
+    fn persistent_key_counts(&self) -> bool {
+        matches!(
+            self.selector_policy,
+            SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
+        )
+    }
+
+    fn semantic_progress(&self) -> bool {
+        matches!(
+            self.selector_policy,
+            SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressCheapestCount(_)
+        )
+    }
+
+    fn class_order(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        ignore_streaks: bool,
+    ) -> Result<Vec<Reverse<K::Group>>, Box<dyn Error>> {
+        let mut classes = self.classes.keys().copied().collect::<Vec<_>>();
+        if !self.semantic_progress() {
+            return Ok(classes);
+        }
+        classes.retain(|class| {
+            let map = if ignore_streaks {
+                &self.active_skip_groups
+            } else {
+                &self.live_skip_groups
+            };
+            map.get(&class.0).is_some_and(|groups| !groups.is_empty())
+        });
+        let maximal = classes
+            .iter()
+            .copied()
+            .filter(|candidate| {
+                !classes
+                    .iter()
+                    .any(|other| K::progress_cmp(other.0, candidate.0) == Ordering::Greater)
+            })
+            .collect::<Vec<_>>();
+        if classes.is_empty() {
+            return Ok(classes);
+        }
+        let count = NonZeroUsize::new(maximal.len())
+            .ok_or("workload progress relation has a dominance cycle")?;
+        // Preserve the old random stream for a unique maximum, including a
+        // conventional totally ordered linear workload.
+        let selected = maximal[if maximal.len() == 1 {
+            0
+        } else {
+            rand.below(count)
+        }];
+        Ok(vec![selected])
+    }
+
     fn walk_to_cell_scan(
         &self,
         rand: &mut RomuDuoJrRand,
@@ -2984,7 +3150,8 @@ where
         ignore_streaks: bool,
     ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
         let skip_depth = 2.min(Self::coarsest_depth());
-        for cell_map in self.classes.values() {
+        for class in self.class_order(rand, ignore_streaks)? {
+            let cell_map = &self.classes[&class];
             let mut cells = Vec::new();
             let mut subclass_live = BTreeMap::<K::Group, bool>::new();
             for members in cell_map.values() {
@@ -3023,7 +3190,16 @@ where
                     let band = key.group(Self::frontier_depth());
                     deepest
                         .entry(key.group(depth))
-                        .and_modify(|frontier| *frontier = (*frontier).max(band))
+                        .and_modify(|frontier| {
+                            let ahead = if self.semantic_progress() {
+                                K::progress_cmp(band, *frontier) == Ordering::Greater
+                            } else {
+                                band > *frontier
+                            };
+                            if ahead {
+                                *frontier = band;
+                            }
+                        })
                         .or_insert(band);
                 }
                 let mut groups = deepest.keys().copied().collect::<Vec<_>>();
@@ -3080,7 +3256,8 @@ where
     ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
         let class_depth = Self::class_depth();
         let cell_depth = Self::cell_depth();
-        for (reverse_class, cells) in &self.classes {
+        for reverse_class in self.class_order(rand, false)? {
+            let cells = &self.classes[&reverse_class];
             let class = reverse_class.0;
             let active_skip = self.active_skip_groups.get(&class).map_or(0, BTreeMap::len);
             let live_skip = self.live_skip_groups.get(&class).map_or(0, BTreeMap::len);
@@ -3183,7 +3360,17 @@ where
                 .live_children
                 .get(level)
                 .and_then(|children| children.get(&(class, current)))
-                .and_then(BTreeSet::last)
+                .and_then(|children| {
+                    if self.semantic_progress() {
+                        children.iter().find(|candidate| {
+                            !children.iter().any(|other| {
+                                K::progress_cmp(*other, **candidate) == Ordering::Greater
+                            })
+                        })
+                    } else {
+                        children.last()
+                    }
+                })
                 .ok_or("live selector hierarchy is missing a pooled group's frontier")?;
         }
         Ok(current)
@@ -3215,7 +3402,11 @@ where
         let (scales, ranked_by_frontier) = match &self.selector_policy {
             SelectorPolicy::Energy(scales) => (scales, false),
             SelectorPolicy::EnergyFrontier(scales)
-            | SelectorPolicy::EnergyFrontierCheapest(scales) => (scales, true),
+            | SelectorPolicy::EnergyFrontierCheapest(scales)
+            | SelectorPolicy::EnergyFrontierCheapestCount(scales)
+            | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales)
+            | SelectorPolicy::EnergyProgressCheapest(scales)
+            | SelectorPolicy::EnergyProgressCheapestCount(scales) => (scales, true),
             _ => return Ok(rand.below(count)),
         };
         // A key with no pooled depth at this position has no barren counter
@@ -3275,8 +3466,19 @@ where
             }
             let (rank, span) = match (frontier, cells) {
                 (Some(frontier), _) => {
-                    let behind = ranked.partition_point(|band| *band <= frontier[index]);
-                    (ranked.len().saturating_sub(behind), 16)
+                    let ahead = if self.semantic_progress() {
+                        ranked
+                            .iter()
+                            .filter(|band| {
+                                K::progress_cmp(**band, frontier[index]) == Ordering::Greater
+                            })
+                            .take(16)
+                            .count()
+                    } else {
+                        let behind = ranked.partition_point(|band| *band <= frontier[index]);
+                        ranked.len().saturating_sub(behind)
+                    };
+                    (ahead, 16)
                 }
                 (None, Some(cells)) => {
                     let (opened, cost) = cells[index];
@@ -3320,7 +3522,11 @@ where
             SelectorPolicy::Retire(thresholds)
             | SelectorPolicy::Energy(thresholds)
             | SelectorPolicy::EnergyFrontier(thresholds)
-            | SelectorPolicy::EnergyFrontierCheapest(thresholds) => {
+            | SelectorPolicy::EnergyFrontierCheapest(thresholds)
+            | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
+            | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
+            | SelectorPolicy::EnergyProgressCheapest(thresholds)
+            | SelectorPolicy::EnergyProgressCheapestCount(thresholds) => {
                 self.since_retained[id] < thresholds.entry
             }
         }
@@ -3333,7 +3539,11 @@ where
             SelectorPolicy::GroupUniform
             | SelectorPolicy::Energy(_)
             | SelectorPolicy::EnergyFrontier(_)
-            | SelectorPolicy::EnergyFrontierCheapest(_) => true,
+            | SelectorPolicy::EnergyFrontierCheapest(_)
+            | SelectorPolicy::EnergyFrontierCheapestCount(_)
+            | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
+            | SelectorPolicy::EnergyProgressCheapest(_)
+            | SelectorPolicy::EnergyProgressCheapestCount(_) => true,
             SelectorPolicy::Retire(thresholds) => {
                 thresholds
                     .groups
@@ -3388,14 +3598,40 @@ where
         let id = if matches!(
             self.selector_policy,
             SelectorPolicy::EnergyFrontierCheapest(_)
+                | SelectorPolicy::EnergyFrontierCheapestCount(_)
+                | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
+                | SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             let mut ranked = window
                 .iter()
                 .map(|id| (self.time_in_group[*id], *id))
                 .collect::<Vec<_>>();
             ranked.sort_unstable();
-            let weights = (0..ranked.len())
-                .map(|rank| 256_usize >> (rank / CHEAPEST_RANK_SCALE).min(8))
+            let count_weighted = matches!(
+                self.selector_policy,
+                SelectorPolicy::EnergyFrontierCheapestCount(_)
+                    | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
+                    | SelectorPolicy::EnergyProgressCheapestCount(_)
+            );
+            let weights = ranked
+                .iter()
+                .enumerate()
+                .map(|(rank, (_, id))| {
+                    let halvings = (rank / CHEAPEST_RANK_SCALE).min(8);
+                    if count_weighted {
+                        let count = if self.persistent_key_counts() {
+                            self.selected[*id]
+                                .max(self.key_counts.get(self.entries[*id].key.group(0)))
+                        } else {
+                            self.selected[*id]
+                        };
+                        let draws = usize::try_from(count).unwrap_or(usize::MAX);
+                        ((65_536_usize >> halvings) / draws.saturating_add(1)).max(1)
+                    } else {
+                        256_usize >> halvings
+                    }
+                })
                 .collect::<Vec<_>>();
             let total =
                 NonZeroUsize::new(weights.iter().sum()).ok_or("cheapest weights sum to zero")?;
@@ -3501,11 +3737,35 @@ where
         self.stored_input_actions
     }
 
+    /// Enable bounded learned transition reuse. Its full capacity is reserved
+    /// against the campaign budget before bootstrap in both live and replay.
+    pub(crate) fn enable_continuations(&mut self, enabled: bool) {
+        self.continuations = enabled.then(ContinuationBank::default);
+    }
+
+    /// Stale parents are deliberately not pinned by speculative work. The
+    /// coordinator checks liveness and duplicates before dispatch.
+    pub(crate) fn pop_continuation(&mut self) -> Option<Continuation<A>> {
+        self.continuations.as_mut()?.pop()
+    }
+
     /// Deterministic conservative bytes charged to compact history/indexes.
     #[must_use]
     pub fn history_memory_bytes(&self) -> usize {
         self.history_memory_bytes
             .saturating_add(self.auxiliary_history_memory_bytes())
+            .saturating_add(
+                if self.persistent_key_counts() || self.key_counts.len() > 0 {
+                    KeyCounts::<K::Group>::reserve_bytes()
+                } else {
+                    0
+                },
+            )
+            .saturating_add(if self.continuations.is_some() {
+                ContinuationBank::<K::Group, A>::reserve_bytes()
+            } else {
+                0
+            })
     }
 
     /// Deterministic bytes charged to compact entry metadata, excluding its
@@ -3569,6 +3829,17 @@ where
         self.group_barren.iter().map(BTreeMap::len).sum()
     }
 
+    /// A retry under a separately accounted continuation policy is a use for cache
+    /// maintenance, but is not an ordinary exploration draw or barren attempt.
+    pub(crate) fn record_isolated_continuation(&mut self, id: usize) {
+        self.referenced[id] = true;
+        let count = self
+            .selector_accounting
+            .continuation_selections
+            .get_or_insert(0);
+        *count = count.saturating_add(1);
+    }
+
     /// Account one recorded selection of `id`.
     pub fn record_selection(&mut self, id: usize, draw: &SelectorDraw) {
         // The reset-marked draw is the only place streak counters clear.
@@ -3588,6 +3859,9 @@ where
         self.since_retained[id] = self.since_retained[id].saturating_add(1);
         self.referenced[id] = true;
         let key = self.entries[id].key;
+        if self.persistent_key_counts() {
+            self.key_counts.record(key.group(0), self.selected[id]);
+        }
         if let Some(members) = self
             .classes
             .get_mut(&Reverse(key.group(Self::class_depth())))
@@ -3605,6 +3879,10 @@ where
                 | SelectorPolicy::Energy(_)
                 | SelectorPolicy::EnergyFrontier(_)
                 | SelectorPolicy::EnergyFrontierCheapest(_)
+                | SelectorPolicy::EnergyFrontierCheapestCount(_)
+                | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
+                | SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
                 let counter = map.entry(key.group(offset + 1)).or_insert(0);
@@ -3612,6 +3890,13 @@ where
             }
         }
         match draw.path {
+            SelectorPath::Continuation => {
+                let count = self
+                    .selector_accounting
+                    .continuation_selections
+                    .get_or_insert(0);
+                *count = count.saturating_add(1);
+            }
             SelectorPath::Uniform => {
                 self.selector_accounting.uniform_selections = self
                     .selector_accounting
@@ -3670,7 +3955,11 @@ where
         let clears_groups = match self.selector_policy {
             SelectorPolicy::Retire(_) => true,
             SelectorPolicy::Energy(_) | SelectorPolicy::EnergyFrontier(_) => new_slot_descendant,
-            SelectorPolicy::EnergyFrontierCheapest(_) => new_cell_descendant,
+            SelectorPolicy::EnergyFrontierCheapest(_)
+            | SelectorPolicy::EnergyFrontierCheapestCount(_)
+            | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
+            | SelectorPolicy::EnergyProgressCheapest(_)
+            | SelectorPolicy::EnergyProgressCheapestCount(_) => new_cell_descendant,
             SelectorPolicy::GroupUniform => false,
         };
         if clears_groups {
@@ -3689,10 +3978,23 @@ where
     #[must_use]
     pub fn selector_report(&self) -> SelectorAccounting {
         let mut accounting = self.selector_accounting.clone();
+        if self.persistent_key_counts() {
+            accounting.key_counts = Some(KeyCountAccounting {
+                capacity: KEY_COUNT_CAPACITY,
+                keys: self.key_counts.len(),
+                hits: self.key_counts.hits,
+                evictions: self.key_counts.evictions,
+                reserve_bytes: KeyCounts::<K::Group>::reserve_bytes(),
+            });
+        }
         if let SelectorPolicy::Retire(thresholds)
         | SelectorPolicy::Energy(thresholds)
         | SelectorPolicy::EnergyFrontier(thresholds)
-        | SelectorPolicy::EnergyFrontierCheapest(thresholds) = &self.selector_policy
+        | SelectorPolicy::EnergyFrontierCheapest(thresholds)
+        | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
+        | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
+        | SelectorPolicy::EnergyProgressCheapest(thresholds)
+        | SelectorPolicy::EnergyProgressCheapestCount(thresholds) = &self.selector_policy
         {
             let entries_over_threshold = u64::try_from(
                 self.since_retained
@@ -4925,6 +5227,79 @@ mod tests {
     }
 
     #[test]
+    fn continuation_attempts_do_not_exhaust_an_ordinary_draw_or_its_key_count() {
+        let mut archive = archive_with_prunable_history();
+        archive.selector_policy =
+            SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
+                entry: 1,
+                groups: vec![1],
+            });
+        let id = archive.active.iter().position(|active| *active).unwrap();
+        let key = archive.entries[id].key.group(0);
+        for _ in 0..20 {
+            archive.record_isolated_continuation(id);
+        }
+        assert!(archive.entry_unexhausted(id));
+        assert_eq!(archive.key_counts.get(key), 0);
+        assert!(archive.group_barren.iter().all(BTreeMap::is_empty));
+        assert_eq!(archive.selector_report().continuation_selections, Some(20));
+        archive.record_selection(
+            id,
+            &SelectorDraw {
+                path: SelectorPath::GroupWalk,
+                classes_skipped: 0,
+                counter_reset: false,
+                concentration: None,
+            },
+        );
+        assert!(!archive.entry_unexhausted(id));
+        assert_eq!(archive.key_counts.get(key), 1);
+    }
+
+    #[test]
+    fn key_selection_history_survives_metadata_compaction_and_rebirth() {
+        let mut archive = archive_with_prunable_history();
+        archive.selector_policy =
+            SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
+                entry: 1000,
+                groups: vec![1000],
+            });
+        let old = archive.entries[0].key;
+        let draw = SelectorDraw {
+            path: SelectorPath::GroupWalk,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+        };
+        for _ in 0..19 {
+            archive.record_selection(0, &draw);
+        }
+        archive.compact_history_for_final_report().unwrap();
+        assert!(archive.entries.iter().all(|entry| entry.key != old));
+        let new = archive
+            .insert(
+                None,
+                100,
+                ArchiveCandidate {
+                    suffix: vec![255, 255, 255],
+                    key: old,
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(archive.selected[new], 0);
+        assert_eq!(archive.key_counts.get(old.group(0)), 19);
+        archive.record_selection(new, &draw);
+        assert_eq!(archive.key_counts.get(old.group(0)), 20);
+        let accounting = archive.selector_report().key_counts.unwrap();
+        assert_eq!(accounting.keys, 1);
+        assert_eq!(accounting.hits, 19);
+        assert!(archive.history_memory_bytes() >= accounting.reserve_bytes);
+    }
+
+    #[test]
     fn entry_pressure_triggers_history_compaction() {
         let mut archive = archive_with_prunable_history();
         archive.max_entries = 0;
@@ -5849,6 +6224,43 @@ mod tests {
     }
 
     #[test]
+    fn repeated_draws_release_a_cells_budget_to_untried_members() {
+        let keys: Vec<[u16; 4]> = (0..40).map(|id| [id, 0, 0, 0]).collect();
+        let mut archive = flat_archive::<5>(&keys);
+        let policy = SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
+            entry: 1024,
+            groups: vec![1024, 1024, 1024],
+        });
+        assert_eq!(
+            selector_policy_from_identifier(&super::selector_policy_identifier(&policy), 3)
+                .unwrap(),
+            policy
+        );
+        archive.selector_policy = policy;
+        for id in 0..40 {
+            archive.time_in_group[id] = id as u64;
+        }
+        for id in 0..4 {
+            archive.selected[id] = 1000;
+        }
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e34);
+        let mut repeated = 0;
+        let mut distant = 0;
+        for _ in 0..4096 {
+            let (id, _) = archive
+                .draw_from_cell(&mut rand, (0..40).collect())
+                .unwrap();
+            repeated += usize::from(id < 4);
+            distant += usize::from(id >= 32);
+        }
+        assert!(
+            repeated < 200,
+            "frequently drawn members retained {repeated}/4096 draws"
+        );
+        assert!(distant > 0, "expensive alternatives never received work");
+    }
+
+    #[test]
     fn the_frontier_selector_weights_the_deepest_band_over_a_fresh_shallow_one() {
         // Two bands with zero barrenness everywhere: energy alone would draw
         // them evenly, so the frontier factor must be what separates them.
@@ -6018,6 +6430,7 @@ mod tests {
                     let concentration = draw.concentration.expect("concentration record");
                     assert_eq!(concentration.window_size, 128);
                 }
+                SelectorPath::Continuation => panic!("continuations require explicit dispatch"),
                 SelectorPath::Uniform => {
                     assert!(draw.concentration.is_none());
                 }
@@ -6218,5 +6631,125 @@ mod tests {
             "a slower route never displaces a faster one"
         );
         assert_eq!(archive.active_count(), 4);
+    }
+    #[derive(Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct LabelledKey<const CLASSES: bool> {
+        label: u16,
+        progress: u16,
+    }
+
+    impl<const CLASSES: bool> ArchiveKey for LabelledKey<CLASSES> {
+        type Group = [u16; 2];
+        type Lineage = ();
+        fn groups() -> usize {
+            5
+        }
+        fn group(self, depth: usize) -> Self::Group {
+            if depth == 4 && !CLASSES {
+                [0, 0]
+            } else {
+                [self.label, self.progress]
+            }
+        }
+        fn progress_cmp(left: Self::Group, right: Self::Group) -> std::cmp::Ordering {
+            left[1].cmp(&right[1])
+        }
+        fn complete(self, _: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+        fn record(_: &mut Self::Lineage, _: Self) {}
+    }
+
+    #[test]
+    fn semantic_selection_does_not_reward_arbitrary_location_labels() {
+        fn sample<const CLASSES: bool>(
+            labels: [u16; 3],
+            semantic: bool,
+            counts: bool,
+        ) -> [usize; 3] {
+            let mut archive = Archive::<u8, LabelledKey<CLASSES>, (), ()>::new(|_| 1);
+            for (id, label) in labels.into_iter().enumerate() {
+                archive
+                    .insert(
+                        None,
+                        0,
+                        ArchiveCandidate {
+                            suffix: vec![id as u8],
+                            key: LabelledKey {
+                                label,
+                                progress: if id == 2 { 1 } else { 2 },
+                            },
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .unwrap();
+            }
+            let thresholds = RetireThresholds {
+                entry: 1000,
+                groups: vec![1000; 3],
+            };
+            archive.selector_policy = if semantic && !counts {
+                SelectorPolicy::EnergyProgressCheapest(thresholds)
+            } else if semantic {
+                SelectorPolicy::EnergyProgressCheapestCount(thresholds)
+            } else {
+                SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
+            };
+            let mut rand = RomuDuoJrRand::with_seed(802);
+            let mut counts = [0; 3];
+            for _ in 0..12_000 {
+                let (id, draw) = archive.select_parent(&mut rand, 64).unwrap();
+                if draw.path == SelectorPath::GroupWalk {
+                    counts[id] += 1;
+                }
+            }
+            counts
+        }
+        for labels in [[1, 900, 2000], [2000, 1, 900]] {
+            let classes = sample::<true>(labels, true, true);
+            assert!(
+                classes[0] > 4000 && classes[1] > 4000,
+                "equivalent progress must share classes: {classes:?}"
+            );
+            assert_eq!(
+                classes[2], 0,
+                "a larger label must not displace actual progress"
+            );
+            let bands = sample::<false>(labels, true, true);
+            assert!(
+                bands[0].abs_diff(bands[1]) < 400,
+                "location labels changed frontier weighting: {bands:?}"
+            );
+            assert!(
+                bands[0] > bands[2] * 2,
+                "declared progress must still influence selection: {bands:?}"
+            );
+        }
+        let legacy = sample::<true>([1, 900, 2000], false, true);
+        assert!(
+            legacy[2] > 8000,
+            "the control must reproduce the old label bias"
+        );
+        for labels in [[10, 90, 200], [200, 10, 90]] {
+            let draws = sample::<false>(labels, true, false);
+            assert!(
+                draws[0] > draws[2] && draws[1] > draws[2],
+                "semantic-only {draws:?}"
+            );
+            assert!(
+                draws[0].abs_diff(draws[1]) < 400,
+                "equal progress {draws:?}"
+            );
+        }
+        let policy = SelectorPolicy::EnergyProgressCheapest(RetireThresholds {
+            entry: 3,
+            groups: vec![6, 12, 2],
+        });
+        assert_eq!(
+            selector_policy_from_identifier(&super::selector_policy_identifier(&policy), 3)
+                .unwrap(),
+            policy
+        );
     }
 }

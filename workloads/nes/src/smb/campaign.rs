@@ -3247,10 +3247,17 @@ mod tests {
                 .all(|line| !line.contains("unix_time")),
             "no sidecar field reaches the recorded stream"
         );
-        let progress: SmbCampaignProgressRecord =
-            serde_json::from_slice(&sidecar).expect("the short run emits one progress record");
-        assert_eq!(progress.executions, 1);
-        assert!(progress.frames_emulated > 0);
+        let records: Vec<SmbCampaignProgressRecord> = std::str::from_utf8(&sidecar)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.first().unwrap().executions, 1);
+        let progress = records.last().unwrap();
+        assert_eq!(progress.executions, observed.executions_completed);
+        assert_eq!(progress.frames_emulated, observed.frames_emulated);
+        assert!(progress.progress.is_some());
+        assert!(progress.search_elapsed_millis.is_some());
         let replayed =
             replay_smb_campaign(&rom, &with, None).expect("sidecar run replays byte-exact");
         assert_eq!(replayed.stream_sha256, observed.stream_sha256);

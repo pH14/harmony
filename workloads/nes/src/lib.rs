@@ -9,3 +9,9 @@ pub mod prepare;
 pub mod smb;
 
 pub mod package;
+
+pub mod stb;
+
+pub mod mm2;
+
+pub mod metroid;

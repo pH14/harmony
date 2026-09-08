@@ -1,0 +1,673 @@
+{
+  "format": "harmony-search-diagnostic-v1",
+  "scope": "Supplemental interpretation of complete Metroid pilot evidence after candidate selection; no change to the frozen validation candidate. The tanks milestone counts missile-capacity increments plus energy tanks. The primary progress watermark separately tracks equipment and missile capacity. The areas field is a bitset, not an area count.",
+  "matched_frame_budget": 50000000,
+  "sampling": "Last cumulative observation at or below the budget; no interpolation. All runs exceed the budget.",
+  "inputs": [
+    {
+      "run": "pilot-main-005",
+      "results_sha256": "ea684a815728d6e4d31f2fe3b0568be91e62a90e9a53e7f6ab6a8d5ed060121c",
+      "matrix_sha256": "1ccd62edca3b11aad69bddaee227c37f7d6940af6336776cc8d5c380277295e5",
+      "trials": [
+        {
+          "cell": "metroid-full-s20260905-w8-m2048",
+          "final_progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "final_milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 2
+          },
+          "verified_witness": {
+            "dead": false,
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "snapshot_sha256": "d6711cb662efe8f9aaeb3cf9e76fc5ecd9d9b58fce1c825f620a4408df32a9eb",
+            "victory": false
+          },
+          "matched_work": {
+            "frames_emulated": 49988094,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 58,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          }
+        },
+        {
+          "cell": "metroid-full-s20260906-w8-m2048",
+          "final_progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "final_milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 2
+          },
+          "verified_witness": {
+            "dead": false,
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "snapshot_sha256": "fff621f09d5162c4494f303b3729e71262656b23dc3f430e94e0e223b7936757",
+            "victory": false
+          },
+          "matched_work": {
+            "frames_emulated": 49995287,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 59,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          }
+        },
+        {
+          "cell": "metroid-full-s20260907-w8-m2048",
+          "final_progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "final_milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 2
+          },
+          "verified_witness": {
+            "dead": false,
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "snapshot_sha256": "a81b230adad3eba9700858dc1a8bce547cc96b0d47d744b830aaaeb15d8ca10d",
+            "victory": false
+          },
+          "matched_work": {
+            "frames_emulated": 49990675,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 60,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "run": "pilot-continuation-005",
+      "results_sha256": "fbd1e3484c85c793fa1c56d374abbc33036d0a832bb3c82c38656369787b4d31",
+      "matrix_sha256": "1ccd62edca3b11aad69bddaee227c37f7d6940af6336776cc8d5c380277295e5",
+      "trials": [
+        {
+          "cell": "metroid-full-s20260905-w8-m2048",
+          "final_progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "final_milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 2
+          },
+          "verified_witness": {
+            "dead": false,
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "snapshot_sha256": "e8a6b798bab9919116564df457b11aa5f338d3b81894f0e2c5d8aedcf3cb7a0e",
+            "victory": false
+          },
+          "matched_work": {
+            "frames_emulated": 49998813,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 61,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          }
+        },
+        {
+          "cell": "metroid-full-s20260906-w8-m2048",
+          "final_progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "final_milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 2
+          },
+          "verified_witness": {
+            "dead": false,
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "snapshot_sha256": "8a74280ee05d3b7a45ecd239d388cf03337ff5efcabf4cf01d7f0a94e75900bb",
+            "victory": false
+          },
+          "matched_work": {
+            "frames_emulated": 49997796,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 55,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          }
+        },
+        {
+          "cell": "metroid-full-s20260907-w8-m2048",
+          "final_progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "final_milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 2
+          },
+          "verified_witness": {
+            "dead": false,
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "snapshot_sha256": "c900464807f5f4cc6625bfdf7d3acdb1adcc89b43fb8654fa8fbe3f490ac66a1",
+            "victory": false
+          },
+          "matched_work": {
+            "frames_emulated": 49996586,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 62,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "run": "pilot-count-continuation-005",
+      "results_sha256": "f523da127d5082690ceb0fd589804a6f3e18fe5158ad21836cebb25a78ecc24a",
+      "matrix_sha256": "1ccd62edca3b11aad69bddaee227c37f7d6940af6336776cc8d5c380277295e5",
+      "trials": [
+        {
+          "cell": "metroid-full-s20260905-w8-m2048",
+          "final_progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "final_milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 2
+          },
+          "verified_witness": {
+            "dead": false,
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "snapshot_sha256": "dd18b9f85888375940739bf00be119d6359708fb32c73671e93a589e268a4958",
+            "victory": false
+          },
+          "matched_work": {
+            "frames_emulated": 49994191,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 60,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          }
+        },
+        {
+          "cell": "metroid-full-s20260906-w8-m2048",
+          "final_progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "final_milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 2
+          },
+          "verified_witness": {
+            "dead": false,
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "snapshot_sha256": "64b5dd3f0f529303ca4f9b6923941a601493361cff3ec1b41d792c308fde0140",
+            "victory": false
+          },
+          "matched_work": {
+            "frames_emulated": 49999979,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 60,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          }
+        },
+        {
+          "cell": "metroid-full-s20260907-w8-m2048",
+          "final_progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "final_milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 2
+          },
+          "verified_witness": {
+            "dead": false,
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "snapshot_sha256": "4280b1f8e74f7df0bbf510847dfb96db16949fc666156dcb6b6725d8ffdb09bb",
+            "victory": false
+          },
+          "matched_work": {
+            "frames_emulated": 49996681,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 61,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "run": "pilot-progress-continuation-005",
+      "results_sha256": "21b469edea2db1be4d1bed8deb0c856e0dbe69667dbf04ab5e43b5eecbd1a8b5",
+      "matrix_sha256": "1ccd62edca3b11aad69bddaee227c37f7d6940af6336776cc8d5c380277295e5",
+      "trials": [
+        {
+          "cell": "metroid-full-s20260905-w8-m2048",
+          "final_progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "final_milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 2
+          },
+          "verified_witness": {
+            "dead": false,
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "snapshot_sha256": "8305f1070f791bb97e5754f9526207275ac648ae770009c2667adcee3309bfab",
+            "victory": false
+          },
+          "matched_work": {
+            "frames_emulated": 49998919,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 69,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          }
+        },
+        {
+          "cell": "metroid-full-s20260906-w8-m2048",
+          "final_progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "final_milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 3
+          },
+          "verified_witness": {
+            "dead": false,
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 3
+            },
+            "snapshot_sha256": "deb6a780d35dc58b6eb933faac19566467f3522f60bb332b45fa5317d5681169",
+            "victory": false
+          },
+          "matched_work": {
+            "frames_emulated": 49999105,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 3
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 77,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          }
+        },
+        {
+          "cell": "metroid-full-s20260907-w8-m2048",
+          "final_progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "final_milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 2
+          },
+          "verified_witness": {
+            "dead": false,
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "snapshot_sha256": "a6fbdd4b3a7600691b5792f094a3043064fd9e17e2a09f786dc6e8c37547baf9",
+            "victory": false
+          },
+          "matched_work": {
+            "frames_emulated": 49991585,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 72,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "run": "pilot-keycount-continuation-005",
+      "results_sha256": "01ec67a91631c2262153c8f117fafb91797b31581292861c25e866565aa706ab",
+      "matrix_sha256": "1ccd62edca3b11aad69bddaee227c37f7d6940af6336776cc8d5c380277295e5",
+      "trials": [
+        {
+          "cell": "metroid-full-s20260905-w8-m2048",
+          "final_progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "final_milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 2
+          },
+          "verified_witness": {
+            "dead": false,
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "snapshot_sha256": "cb65a77bea4db692ce4c3aede600b723fbf105eb110fab338e2d4931945b76f4",
+            "victory": false
+          },
+          "matched_work": {
+            "frames_emulated": 49992331,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 60,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          }
+        },
+        {
+          "cell": "metroid-full-s20260906-w8-m2048",
+          "final_progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "final_milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 2
+          },
+          "verified_witness": {
+            "dead": false,
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "snapshot_sha256": "23614a8976c0637987b1aaf58c7715e580b233253153717142fc5cf100bcce82",
+            "victory": false
+          },
+          "matched_work": {
+            "frames_emulated": 49995544,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 61,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          }
+        },
+        {
+          "cell": "metroid-full-s20260907-w8-m2048",
+          "final_progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "final_milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 2
+          },
+          "verified_witness": {
+            "dead": false,
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "snapshot_sha256": "712c126934c41962be47f6648b08cadd7de2d78d33a77a5351d91d9f01970137",
+            "victory": false
+          },
+          "matched_work": {
+            "frames_emulated": 49992391,
+            "progress": {
+              "items": 1,
+              "missile_capacity": 10
+            },
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 2
+            },
+            "workload_diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "map_cells_observed": 61,
+              "scope": "this run's live gameplay observations; union across explored branches"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
