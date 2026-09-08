@@ -17,6 +17,23 @@ pub struct BossDefeats {
     pub ridley: bool,
 }
 
+/// Reporting transitions observed anywhere inside one controller action.
+/// Latching preserves brief states without emitting extra search observations.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TourianEvents {
+    pub mother_brain_defeated: bool,
+    pub escape_started: bool,
+}
+
+impl TourianEvents {
+    pub fn observe(&mut self, state: super::target::MetroidMechanicalState, status: u8) {
+        if state.area == 0x13 && state.in_play() && !state.is_dead() {
+            self.mother_brain_defeated |= matches!(status, 3..=7 | 9 | 10);
+            self.escape_started |= matches!(status, 6 | 7);
+        }
+    }
+}
+
 /// First observation in admission order. Frame is a route coordinate, not work.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct FirstSeen {
@@ -70,7 +87,7 @@ pub struct NamedProgress {
 impl Default for NamedProgress {
     fn default() -> Self {
         Self {
-            format: "metroid-named-progress-v1",
+            format: "metroid-named-progress-v2",
             first_seen: GEAR
                 .iter()
                 .map(|(_, name)| *name)
@@ -142,13 +159,13 @@ impl NamedProgress {
         // 32nd hit enters state 3. State 8 initializes a living Mother Brain.
         // States 6/7 are the armed/exploded time bomb. No map coordinate or
         // action advice is involved; other areas' reused RAM is ignored.
-        if state.area == 0x13 && state.in_play() {
-            if matches!(observation.mother_brain_status, 3..=7 | 9 | 10) {
-                note("mother_brain_defeated");
-            }
-            if matches!(observation.mother_brain_status, 6 | 7) {
-                note("escape_started");
-            }
+        let mut tourian = observation.tourian_events;
+        tourian.observe(state, observation.mother_brain_status);
+        if tourian.mother_brain_defeated {
+            note("mother_brain_defeated");
+        }
+        if tourian.escape_started {
+            note("escape_started");
         }
         if state.ending {
             note("ending");
@@ -187,6 +204,7 @@ mod tests {
                 ridley: ridley & 2 != 0,
             },
             mother_brain_status: 0,
+            tourian_events: TourianEvents::default(),
             changed_indices: Vec::new(),
             dead: false,
             log_line: String::new(),

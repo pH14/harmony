@@ -42,9 +42,9 @@ use crate::{
 };
 
 /// Stream format written by Metroid campaigns.
-pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v3";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v4";
 /// Snapshot checkpoint format written by Metroid campaigns.
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v3";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v4";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -98,7 +98,7 @@ impl MetroidGame {
             "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;\
              genesis=metroid-new-game-v1:prefix-sha256={:x};\
              image=cartridge-ram-declared-v1;\
-             result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v3;sha256={core_sha256}",
+             result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v4;sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
             machine::quicknes::QUICKNES_BUILD,
             machine::quicknes::QUICKNES_OPTIONS,
@@ -470,7 +470,7 @@ impl Reporting for MetroidGame {
             "map_cells_observed": evidence.observed_map.count(),
             "coverage_bitmap_bytes": 32768,
             "named_progress": evidence.named_progress,
-            "scope": "this run's live gameplay observations; union across explored branches"
+            "observation_filter": "live gameplay observations supplied to this accumulator"
         }))
     }
     fn merge_witness_diagnostics(
@@ -797,9 +797,10 @@ impl Evaluation for MetroidGame {
         evidence
             .observed_map
             .observe(state.area, state.map_x, state.map_y);
+        let observation = target.observe();
         evidence
             .named_progress
-            .observe(&target.observe(), 0, target.frames_clocked());
+            .observe(&observation, 0, observation.frame_count);
         evidence.genesis_area.get_or_insert(state.area);
         Ok(())
     }
@@ -860,10 +861,9 @@ impl Evaluation for MetroidGame {
             || (action.milestones.gained && evidence.first_inputs.first_gain.is_none());
         let champion = action_champion_key(&action.observations)
             .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
-        if first_input_needed
-            || champion.is_some()
-            || (!discoveries.is_empty() && self.milestone_input_dir.is_some())
-        {
+        // Reconstruction is counted in deterministic reports. Whether files
+        // are published must not change that count when the stream is replayed.
+        if first_input_needed || champion.is_some() || !discoveries.is_empty() {
             let input = input()?;
             self.publish_milestones(&discoveries, &input)?;
             update_first_inputs(
@@ -930,7 +930,72 @@ pub fn replay_metroid_campaign_checkpointed(
 
 #[cfg(test)]
 mod tests {
-    use super::MapCoverage;
+    use super::*;
+
+    #[test]
+    fn named_discovery_reconstructs_input_independently_of_output_configuration() {
+        use crate::metroid::{
+            progress::{BossDefeats, TourianEvents},
+            target::decode_state,
+        };
+        let directory =
+            std::env::temp_dir().join(format!("metroid-discovery-test-{}", std::process::id()));
+        let mut wram = [0; 2048];
+        wram[0x1e] = 3;
+        wram[0x107] = 3;
+        wram[0x74] = 0x14;
+        let observation = MetroidObservations {
+            frame_count: 99,
+            decoded: decode_state(&wram, &[0; 8192]).unwrap(),
+            boss_defeats: BossDefeats::default(),
+            mother_brain_status: 0,
+            tourian_events: TourianEvents::default(),
+            changed_indices: Vec::new(),
+            dead: false,
+            log_line: String::new(),
+        };
+        let action = MetroidCampaignActionResult {
+            action: ButtonChord::new(0, 1),
+            observations: vec![observation],
+            milestones: MetroidMilestones::default(),
+            dead: false,
+            victory: false,
+            failed: false,
+            candidate: None,
+        };
+        for publish in [false, true] {
+            let mut game = MetroidGame::new(&[], Path::new("unused"), "unused");
+            if publish {
+                game = game.with_milestone_input_dir(directory.clone());
+            }
+            let mut evidence = MetroidCampaignEvidence {
+                // Suppress the scalar champion/first-gain paths: this second
+                // area is solely a new named discovery.
+                champion_key: action_champion_key(&action.observations),
+                ..Default::default()
+            };
+            let mut reconstructions = 0;
+            game.merge_action_evidence(&mut evidence, &action, 12, || {
+                reconstructions += 1;
+                Ok(MetroidInput::default())
+            })
+            .unwrap();
+            assert_eq!(reconstructions, 1);
+            // Repeated discoveries must stay bounded.
+            game.merge_action_evidence(&mut evidence, &action, 13, || {
+                panic!("an unchanged discovery must not reconstruct again")
+            })
+            .unwrap();
+            assert_eq!(
+                evidence.named_progress.first_seen["ridley_area"]
+                    .unwrap()
+                    .execution,
+                12
+            );
+        }
+        assert!(directory.join("ridley_area.json").is_file());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn observed_map_union_deduplicates_and_keeps_area_identity() {

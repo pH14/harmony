@@ -43,6 +43,7 @@ fn replay(
         return Err("game must be metroid or mm2".into());
     }
     let mut target = MetroidTarget::from_rom_bytes_headless(rom, core, core_hash)?;
+    let setup_frames = target.frames_clocked();
     let mut progress = NamedProgress::default();
     let mut cells = BTreeSet::new();
     progress.observe(&target.observe(), 0, 0);
@@ -54,7 +55,7 @@ fn replay(
         if target.exit_kind() != ExitKind::Ok {
             return Err("emulator failed".into());
         }
-        let end = target.frames_clocked();
+        let end = target.observe().frame_count;
         for observation in target.last_action_observations() {
             progress.observe(observation, index as u64 + 1, end);
             let state = observation.decoded;
@@ -74,7 +75,8 @@ fn replay(
         "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
         "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
         "named_progress": progress, "observed_map_cells": area_cells,
-        "endpoint": target.mechanical_state(), "frames": target.frames_clocked(),
+        "endpoint": target.mechanical_state(), "route_frames": target.observe().frame_count,
+        "physical_frames_including_setup": target.frames_clocked(), "setup_frames": setup_frames,
         "snapshot_sha256": format!("{:x}", Sha256::digest(postcard::to_allocvec(&target.snapshot().ok_or("snapshot failed")?)?))
     }))
 }
@@ -98,7 +100,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!(
         "{}",
         json!({
-            "format": "nes-progress-replay-v1", "game": args[0], "verified_replays": 2,
+            "format": "nes-progress-replay-v2", "game": args[0], "verified_replays": 2,
             "rom_sha256": format!("{:x}", Sha256::digest(&rom)), "core_sha256": core_hash,
             "input_sha256": format!("{:x}", Sha256::digest(&bytes)), "result": first
         })

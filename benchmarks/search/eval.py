@@ -411,7 +411,7 @@ def named_progress(item, witness=False):
     diagnostics = ((result.get('witness') or {}).get('diagnostics') if witness else
                    item.get('last_progress', {}).get('workload_diagnostics')) or {}
     value = diagnostics.get('named_progress') or {}
-    return value if value.get('format') == 'metroid-named-progress-v1' else None
+    return value if value.get('format') in {'metroid-named-progress-v1', 'metroid-named-progress-v2'} else None
 
 
 def metroid_html(results):

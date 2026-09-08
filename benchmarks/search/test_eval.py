@@ -60,6 +60,18 @@ class EvaluationTests(unittest.TestCase):
 
 
 
+    def test_current_named_progress_schema_reaches_html_and_aggregate(self):
+        progress = {'format':'metroid-named-progress-v2', 'first_seen':{
+            name:None for name in eval.METROID_MILESTONES}, 'max_missile_capacity':10, 'max_energy_tanks':1}
+        progress['first_seen']['escape_started'] = {'execution':12, 'route_action_end_frame':403}
+        item = {'cell':'metroid-s1', 'case':'metroid', 'status':'complete',
+                'search_request':{'game':'metroid'}, 'result':{'solved':False},
+                'last_progress':{'workload_diagnostics':{'named_progress':progress,
+                    'observation_filter':'live gameplay observations supplied to this accumulator'}}}
+        self.assertEqual(eval.named_progress(item), progress)
+        self.assertIn('Escape started — execution 12', eval.metroid_html([item]))
+        self.assertEqual(eval.aggregates([item])[0]['metroid_milestones']['escape_started']['observed'], 1)
+
     def test_export_includes_only_named_milestone_tapes_and_rejects_symlinks(self):
         matrix = self.root/'matrix'
         item = self.matrix(matrix)

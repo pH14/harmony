@@ -56,7 +56,8 @@ High Jump, Screw Attack, Varia Suit, Wave Beam, and Ice Beam independently;
 Brinstar, Norfair, Kraid's area, Ridley's area, and Tourian independently; and
 Kraid defeated, Ridley defeated, Mother Brain defeated, escape started, and
 the ending independently. Mother Brain initialization is not defeat; its $98
-state machine is interpreted only in Tourian gameplay. Area entry never
+state machine is interpreted only in Tourian gameplay. Brief defeat/escape
+transitions are latched from each frame without adding search events. Area entry never
 implies boss defeat. Equipment is a union of observed gear bits, so beams lost
 or replaced later remain recorded. `max_missile_capacity` and `max_energy_tanks`
 are separate maxima, not a combined pickup score. Capacity is not a pickup
@@ -77,6 +78,8 @@ and the deterministic endpoint. Its main champion/victory witness separately
 reports one trajectory's named progress. Do not call a union over search branches
 one successful playthrough. Discovery-tape verification is charged to the
 verification phase; the bounded export cost during discovery is part of search.
+A first named discovery reconstructs its tape regardless of output configuration,
+so publication options cannot alter deterministic report counters.
 The live observer includes only observations admitted in this run, not a restored
 archive's complete history. Missing fields in older reports mean **unavailable**,
 not zero. A retained champion replay cannot establish everything an older search
@@ -88,7 +91,11 @@ with the defeat write in `Bank07.asm` at `LDD75`: `(InArea & 0x0f) >> 1`
 stores 1 at $687B for Kraid and 2 at $687C for Ridley. The previous decoder
 incorrectly tested bit 0 for both bosses. Correcting the count is versioned as
 key policy v8; named boss observation bytes require stream/checkpoint/result
-digest v3 (v2 introduced named Kraid/Ridley flags; v3 adds Mother Brain state).
+digest v4 (v2 introduced named Kraid/Ridley flags; v3 added Mother Brain state;
+v4 latches transient Tourian events). Named-progress v2 and replay-probe v2 also
+correct origin/retrospective route timestamps to exclude genesis setup; the probe
+reports physical work and setup separately. Earlier v1 timestamps in the 007
+audit are superseded by the corrected audit, not silently rewritten.
 Existing v7 results and the v2 reporting measurements remain immutable. The unrelated legacy combined
 capacity score remains explicit rather than silently redefining past policies.
 

@@ -11,7 +11,7 @@ use std::{error::Error, path::Path};
 use machine::{Machine, MachineError, SnapId, StopConditions, nes, quicknes::QuickNesMachine};
 use serde::{Deserialize, Serialize};
 
-use super::progress::BossDefeats;
+use super::progress::{BossDefeats, TourianEvents};
 use crate::target::{ExitKind, Target};
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
@@ -263,6 +263,8 @@ pub struct MetroidObservations {
     /// Tourian's Mother Brain state machine ($98), reporting-only. Other banks
     /// may reuse this byte; interpretation must require Tourian gameplay.
     pub mother_brain_status: u8,
+    /// Tourian transitions latched across frames of this action, reporting-only.
+    pub tourian_events: TourianEvents,
     /// Sorted work-RAM indices changed since the prior emitted event.
     pub changed_indices: Vec<u16>,
     /// Whether Samus is dead at this event.
@@ -415,6 +417,7 @@ impl MetroidTarget {
             decoded: state,
             boss_defeats: decode_boss_defeats(&cartridge)?,
             mother_brain_status: read_byte(&wram, 0x98)?,
+            tourian_events: TourianEvents::default(),
             changed_indices: Vec::new(),
             dead: false,
             log_line: "frame=0 changed=[]".to_owned(),
@@ -491,12 +494,12 @@ impl MetroidTarget {
     }
 
     fn make_observation(
-        &self,
         frame_count: u64,
         state: MetroidMechanicalState,
         wram: &[u8; WRAM_SIZE],
         prior_wram: &[u8; WRAM_SIZE],
         boss_defeats: BossDefeats,
+        tourian_events: TourianEvents,
     ) -> MetroidObservations {
         let changed_indices = wram
             .iter()
@@ -513,6 +516,7 @@ impl MetroidTarget {
             decoded: state,
             boss_defeats,
             mother_brain_status: wram[0x98],
+            tourian_events,
             changed_indices: changed_indices.clone(),
             dead: state.is_dead(),
             log_line: format!("frame={frame_count} changed={changed_indices:?}"),
@@ -564,44 +568,17 @@ impl Target for MetroidTarget {
             self.failed = true;
             return;
         };
-        let Ok(boss_defeats) = decode_boss_defeats(&cartridge) else {
-            self.failed = true;
-            return;
-        };
-        let mut prior_wram = self.current_wram;
-        let mut prior_state = self.observation.decoded;
-        let mut observations = Vec::new();
-        let mut died = self.observation.dead;
-        let base = self.observation.frame_count;
-        for (offset, wram) in frames.iter().enumerate() {
-            let Ok(state) = decode_state(wram, &cartridge) else {
-                self.failed = true;
-                return;
-            };
-            let frame_count = base + u64::try_from(offset).unwrap_or(u64::MAX) + 1;
-            let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
-                || state.is_dead() != prior_state.is_dead();
-            if boundary || offset + 1 == frames.len() {
-                observations.push(self.make_observation(
-                    frame_count,
-                    state,
-                    wram,
-                    &prior_wram,
-                    boss_defeats,
-                ));
-                prior_wram = *wram;
+        match decode_action_observations(&frames, &cartridge, &self.observation, self.current_wram)
+        {
+            Ok((observations, wram)) => {
+                if let Some(last) = observations.last() {
+                    self.observation = last.clone();
+                }
+                self.current_wram = wram;
+                self.action_observations = observations;
             }
-            died |= state.is_dead();
-            prior_state = state;
-            if died {
-                break;
-            }
+            Err(_) => self.failed = true,
         }
-        if let Some(last) = observations.last() {
-            self.observation = last.clone();
-        }
-        self.current_wram = prior_wram;
-        self.action_observations = observations;
     }
 
     fn observe(&self) -> Self::Observations {
@@ -659,6 +636,43 @@ impl Target for MetroidTarget {
     }
 }
 
+/// Decode the held action without adding reporting transitions to the search
+/// event stream. The endpoint carries every live Tourian event in the action.
+fn decode_action_observations(
+    frames: &[[u8; WRAM_SIZE]],
+    cartridge: &[u8],
+    initial: &MetroidObservations,
+    mut prior_wram: [u8; WRAM_SIZE],
+) -> Result<(Vec<MetroidObservations>, [u8; WRAM_SIZE]), MachineError> {
+    let boss_defeats = decode_boss_defeats(cartridge)?;
+    let mut prior_state = initial.decoded;
+    let mut observations = Vec::new();
+    let mut tourian_events = TourianEvents::default();
+    for (offset, wram) in frames.iter().enumerate() {
+        let state = decode_state(wram, cartridge)?;
+        let frame_count = initial.frame_count + u64::try_from(offset).unwrap_or(u64::MAX) + 1;
+        tourian_events.observe(state, wram[0x98]);
+        let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
+            || state.is_dead() != prior_state.is_dead();
+        if boundary || offset + 1 == frames.len() {
+            observations.push(MetroidTarget::make_observation(
+                frame_count,
+                state,
+                wram,
+                &prior_wram,
+                boss_defeats,
+                tourian_events,
+            ));
+            prior_wram = *wram;
+        }
+        prior_state = state;
+        if state.is_dead() {
+            break;
+        }
+    }
+    Ok((observations, prior_wram))
+}
+
 /// Map column and row of the screen Samus occupies.
 ///
 /// The engine's map position tracks the scroll rather than Samus: along
@@ -708,4 +722,54 @@ pub fn spatial_bucket(state: MetroidMechanicalState) -> (u8, u8, u8, u8, u8, u8,
         state.items(),
         state.collectibles(),
     )
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use crate::metroid::progress::NamedProgress;
+
+    #[test]
+    fn transient_escape_survives_stationary_held_action_without_extra_events() {
+        let cartridge = [0; 8192];
+        for (area, health, expected) in [(0x13, 3, true), (0x11, 3, false), (0x13, 0, false)] {
+            let mut wram = [0; WRAM_SIZE];
+            wram[GAME_MODE] = GAME_MODE_PLAYING;
+            wram[0x107] = health;
+            wram[0x74] = area;
+            let initial = MetroidTarget::make_observation(
+                400,
+                decode_state(&wram, &cartridge).unwrap(),
+                &wram,
+                &wram,
+                BossDefeats::default(),
+                TourianEvents::default(),
+            );
+            let frames: Vec<_> = [5, 6, 0]
+                .into_iter()
+                .map(|status| {
+                    let mut frame = wram;
+                    frame[0x98] = status;
+                    frame
+                })
+                .collect();
+            let (observations, _) =
+                decode_action_observations(&frames, &cartridge, &initial, wram).unwrap();
+            let mut progress = NamedProgress::default();
+            if expected {
+                // The old event filter produces just the endpoint, at state 0.
+                assert_eq!(observations.len(), 1);
+                assert_eq!(observations[0].mother_brain_status, 0);
+                assert_eq!(observations[0].frame_count, 403);
+            }
+            for observation in &observations {
+                progress.observe(observation, 7, observations.last().unwrap().frame_count);
+            }
+            assert_eq!(progress.first_seen["escape_started"].is_some(), expected);
+            assert_eq!(
+                progress.first_seen["mother_brain_defeated"].is_some(),
+                expected
+            );
+        }
+    }
 }
