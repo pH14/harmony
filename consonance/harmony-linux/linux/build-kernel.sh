@@ -22,18 +22,8 @@ extract_kernel
 # applies independently and the two arches never collide on patch numbers — the
 # x86 build consumes patches/x86/ only; the arm64 build (build-arm64-kernel.sh)
 # consumes patches/arm64/ (hm-0dst, tribunal F7).
-# Idempotent: an exactly-applied tree passes the reverse dry-run and is
-# skipped; a drifted or partially-patched tree fails loudly (remove the
-# extracted tree under $BUILD_ROOT and rebuild — never a silent divergence).
-for guest_patch in "$LINUX_DIR"/patches/x86/[0-9][0-9][0-9][0-9]-*.patch; do
-    patch_name=${guest_patch##*/}
-    if (cd "$KSRC" && patch -p1 -R --dry-run --force <"$guest_patch") >/dev/null 2>&1; then
-        echo "== kernel: $patch_name already applied"
-    else
-        echo "== kernel: applying $patch_name"
-        (cd "$KSRC" && patch -p1 --force <"$guest_patch")
-    fi
-done
+# Record the complete series: later patches can change earlier patch context.
+bash "$LINUX_DIR/apply-patch-series.sh" "$KSRC" "$LINUX_DIR/patches/x86"
 
 mkdir -p "$KOBJ" "$ART_DIR"
 
