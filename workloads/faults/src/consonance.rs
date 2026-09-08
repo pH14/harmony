@@ -109,11 +109,12 @@ impl FaultConfig {
             .unwrap_or(usize::MAX / (1024 * 1024))
             .saturating_mul(1024 * 1024);
         // A campaign never encodes the virtual-time trace, so the sparse
-        // checkpoint hash over all guest RAM would only slow every execution.
+        // checkpoint hash over all of a gigabyte-class guest's RAM would only
+        // slow every run, starting with the boot that reaches setup.
         SessionConfig::new(ram, SEED, SETUP_BUDGET, self.cmdline())
             .with_identity_tag(IDENTITY_TAG)
             .with_wall_limit(WALL_LIMIT)
-            .with_deferred_checkpoint_hashes()
+            .with_deferred_virtual_time_checkpoint_hashes()
     }
 }
 
@@ -235,6 +236,10 @@ struct Live {
     /// Cached prefix endpoints with the use stamp that orders eviction.
     snapshots: BTreeMap<Vec<FaultAction>, (SnapId, u64)>,
     uses: u64,
+    /// Action horizons this session ran in the guest. A restored cache entry
+    /// does not count, so the number distinguishes guest execution from
+    /// snapshot reuse.
+    horizons_run: u64,
     /// Set when a guest stopped answering and must not be resumed.
     abandoned: bool,
 }
@@ -252,6 +257,7 @@ pub struct FaultTarget {
     action_observations: Vec<FaultObservations>,
     failed: bool,
     horizons_clocked: u64,
+    guest_horizons_run: u64,
     root_seal: u64,
 }
 
@@ -281,8 +287,27 @@ impl FaultTarget {
             observation,
             failed: false,
             horizons_clocked: 0,
+            guest_horizons_run: 0,
             root_seal,
         })
+    }
+
+    /// Boot a session no earlier run has touched, so the snapshot cache holds
+    /// nothing but this session's own sealed setup point.
+    ///
+    /// A replay's claim is that the recorded actions reproduce the bug, and a
+    /// cached prefix from an earlier run would answer part of that claim with
+    /// a restored snapshot instead of guest execution. This thread's session,
+    /// if it has one, is dropped, so an evaluator thread in a campaign uses
+    /// [`FaultTarget::new`] and keeps its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the guest cannot boot or never reaches the fault
+    /// agent's setup point.
+    pub fn fresh(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<Self, String> {
+        LIVE.with(|slot| slot.borrow_mut().take());
+        Self::new(kernel, initramfs, config)
     }
 
     /// The sealed setup `Moment` every action window is measured from.
@@ -313,6 +338,14 @@ impl FaultTarget {
     #[must_use]
     pub fn horizons_clocked(&self) -> u64 {
         self.horizons_clocked
+    }
+
+    /// Action horizons this handle ran in the guest. An action answered from
+    /// the session's snapshot cache is not counted, so a replay can state how
+    /// much of its action list the guest actually executed.
+    #[must_use]
+    pub fn guest_horizons_run(&self) -> u64 {
+        self.guest_horizons_run
     }
 
     /// The whole-VM state hash of the current endpoint.
@@ -356,6 +389,7 @@ impl FaultTarget {
         match result {
             Ok(observation) => {
                 self.actions.clear();
+                self.guest_horizons_run = 0;
                 self.observation = observation.clone();
                 self.action_observations = vec![observation];
                 self.failed = false;
@@ -436,11 +470,16 @@ impl FaultTarget {
         if self.failed || !self.observation.stop.is_continuable() {
             return;
         }
-        let result = with_live(&self.config, |live| live.advance(&self.actions, action));
+        let result = with_live(&self.config, |live| {
+            let before = live.horizons_run;
+            let observation = live.advance(&self.actions, action)?;
+            Ok((observation, live.horizons_run.saturating_sub(before)))
+        });
         match result {
-            Ok(observation) => {
+            Ok((observation, ran)) => {
                 self.actions.push(action);
                 self.horizons_clocked = self.horizons_clocked.saturating_add(1);
+                self.guest_horizons_run = self.guest_horizons_run.saturating_add(ran);
                 self.observation = observation.clone();
                 self.action_observations.push(observation);
             }
@@ -508,6 +547,7 @@ impl Live {
             },
             snapshots,
             uses: 0,
+            horizons_run: 0,
             abandoned: false,
         })
     }
@@ -668,6 +708,7 @@ impl Live {
     /// branches from it.
     fn run_action(&mut self, index: usize) -> Result<(FaultObservations, Option<SnapId>), String> {
         let deadline = self.windows.deadline(index);
+        self.horizons_run = self.horizons_run.saturating_add(1);
         let stop = match self.session.run_until(deadline) {
             Ok(stop) => stop,
             Err(error) => return Err(self.abandon("run", &error)),

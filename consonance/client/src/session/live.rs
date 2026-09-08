@@ -102,7 +102,7 @@ impl Session {
         #[cfg(target_arch = "x86_64")]
         let seed = config.seed;
         let cmdline = config.cmdline.clone();
-        let defer_checkpoint_hashes = config.defer_checkpoint_hashes;
+        let defer_checkpoint_hashes = config.defer_virtual_time_checkpoint_hashes;
         let boot = move |kernel: &[u8], initramfs: &[u8]| {
             #[cfg(target_arch = "x86_64")]
             let mut vmm = boot_linux_stock_virtual_time(kernel, initramfs, ram, &cmdline, seed)
@@ -110,13 +110,14 @@ impl Session {
             #[cfg(target_arch = "aarch64")]
             let mut vmm = boot_selected_control(kernel, initramfs, &cmdline, ram)
                 .map_err(|error| format!("Consonance boot compose failed: {error:?}"))?;
-            // The VMM accepts deferral only before its first traced event, so
-            // it is settled here rather than on the running session.
+            vmm.wire_snapshot_hashing();
+            // Before the guest runs, so the boot's own checkpoints are deferred
+            // too, and on every VM this closure builds, which includes the ones
+            // a restore boots from the session factory.
             if defer_checkpoint_hashes {
                 vmm.defer_virtual_time_checkpoint_hashes()
-                    .map_err(|error| format!("defer checkpoint hashes: {error}"))?;
+                    .map_err(|error| format!("defer virtual-time hashes: {error}"))?;
             }
-            vmm.wire_snapshot_hashing();
             Ok::<_, String>(vmm)
         };
 

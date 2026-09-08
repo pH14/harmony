@@ -59,6 +59,11 @@ whose guest stopped for good while settling is recorded with that stop. A
 bounded LRU keeps recent prefixes resident and rebuilds evicted ones from their
 longest cached ancestor.
 
+A campaign never encodes the virtual-time trace, so the session is configured
+to defer sparse checkpoint hashing. Each due checkpoint would otherwise hash
+all of a gigabyte-class guest's RAM inside the run that reached it, starting
+with the boot that reaches setup.
+
 [`campaign`](src/campaign.rs) implements the game-neutral campaign interface
 over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
 which pairs the sometimes-assertion set with the live-node bitmap and the
@@ -78,7 +83,20 @@ harmony search --package faults IMAGE.oci --backend consonance \
 
 Both modes write `report.json` ([`package`](src/package.rs)) with the pinned
 image, kernel and agent hashes, the execution identity, the run bounds, and
-either the bugs found or the replay outcomes. Search also writes
+either the bugs found or the replay outcomes.
+
+Every replay run boots a session no earlier run has touched, so no snapshot
+another run cached can stand in for guest execution: each run reaches the
+sealed setup point and executes the recorded actions itself. Each run records
+the actions it applied beside the horizons it ran in the guest, and the two are
+equal when nothing came from a cache. A search replays every bug it records the
+same way, and reports the bug as confirmed only when the replay reproduced the
+evidence the campaign saw: the assertions it violated, or the same stop when
+the stop was the only evidence. `bug_found` and `first_bug_execution` come from
+the confirmed bugs, so a hit that no replay reproduced is reported and does not
+count as a rediscovery.
+
+Search also writes
 `campaign-summary.json`, `stream.jsonl`, `progress.jsonl`,
 `first-bug-input.json`, and one `bug-N.json` per recorded bug
 ([`report`](src/report.rs)); each of those carries the action list and the

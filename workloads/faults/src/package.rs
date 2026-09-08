@@ -84,6 +84,10 @@ pub struct BugSummary {
     pub sometimes: Vec<u32>,
     /// Whole-VM state hash at the terminal endpoint, lowercase hex.
     pub state_hash: String,
+    /// Whether replaying the action list reproduced this bug's evidence.
+    pub confirmed: bool,
+    /// The confirming replay run, absent when the replay could not run.
+    pub replay: Option<ReplaySummary>,
 }
 
 /// One run of a replayed action list.
@@ -99,6 +103,47 @@ pub struct ReplaySummary {
     pub state_hash: String,
     /// `assert_always` ids the guest reported violated.
     pub violations: Vec<u32>,
+    /// `assert_sometimes` and `assert_reachable` ids the guest reported hit.
+    /// A workload's oracle publishes one of these when it reached a verdict,
+    /// so a run with none of them checked nothing.
+    pub sometimes: Vec<u32>,
+    /// Actions this run applied. A run that stops at a bug applies no more.
+    pub actions_applied: u64,
+    /// Action horizons this run executed in the guest. It equals
+    /// `actions_applied` when every applied action ran in the guest rather
+    /// than being answered from a cached snapshot of an earlier run.
+    pub guest_horizons: u64,
+}
+
+/// Whether `replay` reproduced the evidence a campaign recorded for one bug.
+///
+/// A campaign hit counts as a rediscovery only when running its action list
+/// again shows the same evidence: every assertion the campaign saw violated,
+/// and the same stop when the stop was the only evidence the campaign had. A
+/// run that reported no bug, or a different one, confirms nothing.
+#[must_use]
+pub fn replay_confirms_bug(
+    recorded_stop: FaultStop,
+    recorded_violations: &[u32],
+    replay: &ReplaySummary,
+) -> bool {
+    replay.bug
+        && recorded_violations
+            .iter()
+            .all(|point| replay.violations.contains(point))
+        && (!recorded_violations.is_empty() || replay.stop == recorded_stop)
+}
+
+/// The admission position of the first campaign hit a replay confirmed.
+///
+/// A run's verdict rests on this: a campaign that recorded hits none of which
+/// replayed found nothing it can hand to a reader.
+#[must_use]
+pub fn first_confirmed_bug(bugs: &[BugSummary]) -> Option<u64> {
+    bugs.iter()
+        .filter(|bug| bug.confirmed)
+        .map(|bug| bug.execution)
+        .min()
 }
 
 /// The report both modes write to `report.json`.
@@ -231,7 +276,10 @@ mod live {
     };
     use serde_json::json;
 
-    use super::{Artifacts, BugSummary, Options, ReplaySummary, Report, sha256_hex};
+    use super::{
+        Artifacts, BugSummary, Options, ReplaySummary, Report, first_confirmed_bug,
+        replay_confirms_bug, sha256_hex,
+    };
     use crate::{
         bundle::FaultVocabulary,
         campaign::{FaultCampaignConfig, FaultGame, run_fault_campaign_checkpointed},
@@ -343,27 +391,46 @@ mod live {
         )?;
         report.executions = campaign_report.campaign.executions_completed;
         report.horizons_clocked = campaign_report.campaign.frames_emulated;
-        report.first_bug_execution = campaign_report.executions_to_first_bug;
-        report.bug_found = campaign_report.bugs_found > 0;
         for bug in &written {
-            // The campaign records what a bug looked like, not the guest state
-            // it left behind, so each bug is replayed once for its state hash.
-            let state_hash = match replay_once(artifacts, &config, &bug.actions) {
-                Ok((_, hash, _)) => hash,
+            // A campaign hit is a claim about an action list, so each one is
+            // replayed from a fresh session: the replay both supplies the
+            // guest state hash the campaign never recorded and decides whether
+            // the hit is a rediscovery.
+            let violations: Vec<u32> = bug.observations.violations.iter().copied().collect();
+            let witness = match replay_once(artifacts, &config, &bug.actions) {
+                Ok(summary) => Some(summary),
                 Err(error) => {
-                    eprintln!("bug {} did not replay for a state hash: {error}", bug.bug);
-                    String::new()
+                    eprintln!("bug {} did not replay: {error}", bug.bug);
+                    None
                 }
             };
+            let confirmed = witness.as_ref().is_some_and(|witness| {
+                replay_confirms_bug(bug.observations.stop, &violations, witness)
+            });
+            if !confirmed {
+                eprintln!(
+                    "bug {} was not confirmed by replay and is reported unconfirmed",
+                    bug.bug
+                );
+            }
             report.bugs.push(BugSummary {
                 execution: bug.execution,
                 actions: bug.actions.clone(),
                 stop: bug.observations.stop,
-                violations: bug.observations.violations.iter().copied().collect(),
+                violations,
                 sometimes: bug.observations.sometimes.iter().copied().collect(),
-                state_hash,
+                state_hash: witness
+                    .as_ref()
+                    .map(|witness| witness.state_hash.clone())
+                    .unwrap_or_default(),
+                confirmed,
+                replay: witness,
             });
         }
+        // A campaign hit no replay reproduced is not a rediscovery, so the
+        // run's verdict and its first hit both come from the confirmed bugs.
+        report.first_bug_execution = first_confirmed_bug(&report.bugs);
+        report.bug_found = report.first_bug_execution.is_some();
         report.wall_seconds = started.elapsed().as_secs();
         report.write(&options.output)?;
         Ok(report)
@@ -391,47 +458,47 @@ mod live {
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         for run in 1..=repeat {
-            let (target, state_hash, horizons) = replay_once(artifacts, &config, actions)?;
-            report.horizons_clocked = report.horizons_clocked.saturating_add(horizons);
-            report.bug_found |= target.bug;
-            report.replays.push(ReplaySummary {
-                run,
-                bug: target.bug,
-                stop: target.stop,
-                state_hash,
-                violations: target.violations,
-            });
+            let mut summary = replay_once(artifacts, &config, actions)?;
+            summary.run = run;
+            report.horizons_clocked = report
+                .horizons_clocked
+                .saturating_add(summary.guest_horizons);
+            report.bug_found |= summary.bug;
+            report.replays.push(summary);
         }
         report.wall_seconds = started.elapsed().as_secs();
         report.write(&options.output)?;
         Ok(report)
     }
 
-    struct Outcome {
-        bug: bool,
-        stop: crate::target::FaultStop,
-        violations: Vec<u32>,
-    }
-
-    /// Apply one action list to a fresh session and observe the endpoint.
+    /// Apply one action list to a session no earlier run has touched and
+    /// observe the endpoint.
+    ///
+    /// The session is fresh so that no snapshot an earlier run cached can
+    /// stand in for guest execution: the run boots, reaches the sealed setup
+    /// point, and executes every action of the list. `run` is set by the
+    /// caller that ordered the runs.
     fn replay_once(
         artifacts: &Artifacts,
         config: &FaultConfig,
         actions: &[FaultAction],
-    ) -> Result<(Outcome, String, u64), Box<dyn Error>> {
-        let mut target = FaultTarget::new(&artifacts.kernel, &artifacts.initramfs, config)?;
-        target.reset();
+    ) -> Result<ReplaySummary, Box<dyn Error>> {
+        let mut target = FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, config)?;
         for action in actions {
             target.apply(*action);
         }
         let observation = target.observation();
-        let outcome = Outcome {
+        let summary = ReplaySummary {
+            run: 1,
             bug: target.found_bug(),
             stop: observation.stop,
+            state_hash: target.state_hash().map(|bytes| sha256_hex(&bytes))?,
             violations: observation.violations.iter().copied().collect(),
+            sometimes: observation.sometimes.iter().copied().collect(),
+            actions_applied: target.horizons_clocked(),
+            guest_horizons: target.guest_horizons_run(),
         };
-        let hash = target.state_hash().map(|bytes| sha256_hex(&bytes))?;
-        Ok((outcome, hash, target.horizons_clocked()))
+        Ok(summary)
     }
 
     fn hostname() -> String {
@@ -528,6 +595,97 @@ mod tests {
         assert_eq!(parse_recorded_input(&report).expect("report"), actions);
         assert!(parse_recorded_input("[]").is_err());
         assert!(parse_recorded_input("{}").is_err());
+    }
+
+    fn replay_summary(bug: bool, stop: FaultStop, violations: &[u32]) -> ReplaySummary {
+        ReplaySummary {
+            run: 1,
+            bug,
+            stop,
+            state_hash: "hash".to_owned(),
+            violations: violations.to_vec(),
+            sometimes: vec![24],
+            actions_applied: 3,
+            guest_horizons: 3,
+        }
+    }
+
+    fn bug_summary(execution: u64, confirmed: bool) -> BugSummary {
+        BugSummary {
+            execution,
+            actions: vec![FaultAction::Hook(3)],
+            stop: FaultStop::Assertion { point: 2 },
+            violations: vec![2],
+            sometimes: vec![24],
+            state_hash: "hash".to_owned(),
+            confirmed,
+            replay: None,
+        }
+    }
+
+    #[test]
+    fn a_replay_confirms_a_bug_only_by_reproducing_its_evidence() {
+        let violated = FaultStop::Assertion { point: 2 };
+        assert!(
+            replay_confirms_bug(violated, &[2], &replay_summary(true, violated, &[2])),
+            "the recorded assertion fired again"
+        );
+        assert!(
+            !replay_confirms_bug(
+                violated,
+                &[2],
+                &replay_summary(false, FaultStop::Deadline, &[])
+            ),
+            "a clean replay confirms nothing"
+        );
+        assert!(
+            !replay_confirms_bug(violated, &[2], &replay_summary(true, FaultStop::Crash, &[])),
+            "a crash is not the assertion the campaign recorded"
+        );
+        assert!(
+            !replay_confirms_bug(
+                violated,
+                &[2],
+                &replay_summary(true, FaultStop::Assertion { point: 7 }, &[7])
+            ),
+            "another assertion is another bug"
+        );
+    }
+
+    #[test]
+    fn a_stop_only_bug_is_confirmed_by_the_same_stop() {
+        assert!(replay_confirms_bug(
+            FaultStop::Crash,
+            &[],
+            &replay_summary(true, FaultStop::Crash, &[])
+        ));
+        assert!(
+            !replay_confirms_bug(
+                FaultStop::Crash,
+                &[],
+                &replay_summary(true, FaultStop::Assertion { point: 2 }, &[2])
+            ),
+            "a crash and an assertion are different evidence"
+        );
+    }
+
+    #[test]
+    fn a_campaign_hit_no_replay_reproduced_is_not_a_rediscovery() {
+        assert_eq!(first_confirmed_bug(&[]), None);
+        assert_eq!(
+            first_confirmed_bug(&[bug_summary(4, false), bug_summary(9, false)]),
+            None,
+            "unconfirmed hits leave the run with nothing to report"
+        );
+        assert_eq!(
+            first_confirmed_bug(&[bug_summary(9, true), bug_summary(4, false)]),
+            Some(9),
+            "the first hit is the earliest confirmed one, not the earliest recorded"
+        );
+        assert_eq!(
+            first_confirmed_bug(&[bug_summary(9, true), bug_summary(4, true)]),
+            Some(4)
+        );
     }
 
     #[test]

@@ -2,21 +2,24 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Run one fresh search campaign for one arm of a historical-bug case.
 #
-# The vulnerable arm must find the bug inside the budget and the control arm
-# must not find it at all. A miss on the vulnerable arm fails: this bug is
-# expected to be found, so a miss says the machinery regressed rather than
-# saying nothing.
+# The vulnerable arm must find, inside the budget, a bug that carries the case's
+# own oracle evidence and that replayed successfully from a fresh session; the
+# control arm must find no such bug at all. historical-oracle.sh holds the rule.
+# A miss on the vulnerable arm fails: this bug is expected to be found, so a
+# miss says the machinery regressed rather than saying nothing.
 set -euo pipefail
 
 : "${CASE_ID:?}" "${ARM:?}" "${PG_VERSION:?}" "${HORIZON_MS:?}" "${RAM_MIB:?}"
 : "${SEED:?}" "${WORKERS:?}" "${ACTIONS:?}" "${EXECUTIONS:?}" "${WALL_MINUTES:?}"
-: "${KNOBS:?}"
+: "${KNOBS:?}" "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
 
 case "${ARM}" in
     vulnerable) want=true ;;
     control) want=false ;;
     *) echo "unknown arm ${ARM}" >&2; exit 2 ;;
 esac
+
+oracle=$(dirname "$0")/historical-oracle.sh
 
 harmony=${PWD}/tools/harmony
 agent=${PWD}/tools/fault-agent
@@ -63,20 +66,15 @@ if [[ "${status}" -ne 0 ]] || [[ ! -s "${report}" ]]; then
     exit 1
 fi
 
-if jq -e --argjson want "${want}" '.mode == "search" and .bug_found == $want' \
-    "${report}" >/dev/null; then
-    outcome=pass
-else
-    outcome=fail
-    verdict=1
-fi
+outcome=$("${oracle}" search "${report}" "${ARM}") || verdict=1
 
 {
     echo "## Search campaign — ${ARM} (PostgreSQL ${PG_VERSION})"
     echo
     echo "| field | value |"
     echo "|---|---|"
-    jq -r --arg want "${want}" --arg outcome "${outcome}" '
+    jq -r --arg want "${want}" --arg outcome "${outcome}" \
+        --arg assertion "${ORACLE_ASSERTION}" '
         ["seed", (.seed | tostring)],
         ["workers", (.workers | tostring)],
         ["executions", (.executions | tostring)],
@@ -84,6 +82,8 @@ fi
         ["wall seconds", (.wall_seconds | tostring)],
         ["bug found", (.bug_found | tostring)],
         ["bug expected", $want],
+        ["confirmed bugs carrying the oracle assertion",
+         ([.bugs[] | select(.confirmed and (.violations | index($assertion | tonumber)))] | length | tostring)],
         ["executions to first hit", (.first_bug_execution | tostring)],
         ["verdict", $outcome]
         | "| \(.[0]) | \(.[1]) |"

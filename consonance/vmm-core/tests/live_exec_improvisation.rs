@@ -39,7 +39,7 @@
 //! — which the run announces does **not** satisfy gate 2.
 //!
 //! Run on `ssh <qualified-host>` with the LOADED patched KVM modules + a built image,
-//! CPU-pinned per `docs/HARDWARE-TESTING.md` (lease a core via `box-window.sh`; never
+//! CPU-pinned per `docs/HARDWARE-TESTING.md` (reserve an idle core on the qualified host; never
 //! touch another lease's cores or its patched-KVM window). ALWAYS revert KVM to
 //! stock **1396736** + verify after any patched run.
 //! ```text

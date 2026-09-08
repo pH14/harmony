@@ -31,33 +31,8 @@ extract_kernel
 # applies independently and the two arches never collide on patch numbers — the
 # x86 build consumes patches/x86/ only; the arm64 build (build-arm64-kernel.sh)
 # consumes patches/arm64/ (hm-0dst, tribunal F7).
-# Idempotent: a stamp records each applied patch, and a drifted or
-# partially-patched tree fails loudly (remove the extracted tree under
-# $BUILD_ROOT and rebuild — never a silent divergence).
-for guest_patch in "$LINUX_DIR"/patches/x86/[0-9][0-9][0-9][0-9]-*.patch; do
-    patch_name=${guest_patch##*/}
-    # A stamp records each applied patch: later patches in the series touch
-    # the same lines, so reversing one of them alone does not test cleanly,
-    # and forcing a patch that does not apply writes the hunks that happen
-    # to match and leaves the tree between two series.
-    stamp=$KSRC/.harmony-applied-$patch_name
-    if [ -f "$stamp" ]; then
-        echo "== kernel: $patch_name already applied"
-    elif (cd "$KSRC" && patch -p1 --dry-run --force <"$guest_patch") >/dev/null 2>&1; then
-        echo "== kernel: applying $patch_name"
-        (cd "$KSRC" && patch -p1 --force <"$guest_patch")
-        touch "$stamp"
-    elif (cd "$KSRC" && patch -p1 -R --dry-run --force <"$guest_patch") >/dev/null 2>&1; then
-        # A build tree carried over from before the stamps existed holds the
-        # series with no record of it, so adopt what the tree already has. A
-        # partially applied patch matches neither direction and still fails.
-        echo "== kernel: $patch_name is already in $KSRC; recording its stamp"
-        touch "$stamp"
-    else
-        echo "FAIL: $patch_name does not apply to $KSRC; delete the tree to re-extract" >&2
-        exit 1
-    fi
-done
+# Record the complete series: later patches can change earlier patch context.
+bash "$LINUX_DIR/apply-patch-series.sh" "$KSRC" "$LINUX_DIR/patches/x86"
 
 mkdir -p "$KOBJ" "$ART_DIR"
 

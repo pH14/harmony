@@ -4,10 +4,13 @@
 #
 #   historical-replay.sh <mode> <input.json>
 #
-# The vulnerable arm must report the bug on every repeat and the control arm on
-# none. Anything else fails, including a replay that produced no report at all.
-# The step summary is written whether the rule holds or not, because a failing
-# run is the evidence a reader most wants to see.
+# Every repeat on the vulnerable arm must violate the case's own oracle
+# assertion, and every control repeat must reach that oracle's verdict and pass
+# it. historical-oracle.sh holds the rule; a crash, another assertion, or a
+# detector that never ran does not stand in for either result. Anything else
+# fails, including a replay that produced no report at all. The step summary is
+# written whether the rule holds or not, because a failing run is the evidence a
+# reader most wants to see.
 set -euo pipefail
 
 mode=$1
@@ -15,6 +18,7 @@ input=$2
 
 : "${CASE_ID:?}" "${HORIZON_MS:?}" "${RAM_MIB:?}"
 : "${VULNERABLE_VERSION:?}" "${CONTROL_VERSION:?}"
+: "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
 
 # The knobs reach the workload on the guest command line, so a replay only
 # reproduces a search's conditions when it boots with the same ones.
@@ -31,6 +35,12 @@ kernel=${PWD}/guest/bzImage-faultlab
 base_initramfs=${PWD}/guest/initramfs.cpio.gz
 chmod +x "${harmony}" "${agent}"
 test -f "${input}"
+
+oracle=$(dirname "$0")/historical-oracle.sh
+
+# The recorded input bounds how many actions a run may apply; a report that
+# claims more ran than the input names is not a replay of this input.
+actions=$(jq -r 'if type == "array" then length else (.actions | length) end' "${input}")
 
 mkdir -p reports
 summary=${GITHUB_STEP_SUMMARY:-/dev/null}
@@ -62,29 +72,24 @@ replay_arm() {
 
     local report="${out}/report.json"
     if [[ "${status}" -ne 0 ]] || [[ ! -s "${report}" ]]; then
-        rows+=("| ${arm} | ${version} | ${repeats} | — | ${want} | — | no report (exit ${status}) |")
+        rows+=("| ${arm} | ${version} | ${repeats} | — | — | ${want} | — | fail: no report (exit ${status}) |")
         verdict=1
         return
     fi
 
-    local bugs hashes_agree
-    bugs=$(jq -r '[.replays[] | select(.bug)] | length' "${report}")
+    local violated checked hashes_agree
+    violated=$(jq -r --argjson id "${ORACLE_ASSERTION}" \
+        '[.replays[] | select(.violations | index($id))] | length' "${report}")
+    checked=$(jq -r --argjson id "${ORACLE_EVIDENCE}" \
+        '[.replays[] | select(.sometimes | index($id))] | length' "${report}")
     hashes_agree=$(jq -r '[.replays[].state_hash] | unique | length == 1' "${report}")
 
-    # The oracle rule. State-hash agreement is reported beside it and is not
-    # part of the rule: hosted runners have stock KVM, where the guest can read
-    # the host counter directly.
-    local ok=fail
-    if jq -e --argjson n "${repeats}" --argjson want "${want}" '
-        .mode == "replay"
-        and (.replays | length) == $n
-        and all(.replays[]; .bug == $want)
-    ' "${report}" >/dev/null; then
-        ok=pass
-    else
-        verdict=1
-    fi
-    rows+=("| ${arm} | ${version} | ${repeats} | ${bugs} | ${want} | ${hashes_agree} | ${ok} |")
+    # State-hash agreement is reported beside the rule and is not part of it:
+    # hosted runners have stock KVM, where the guest can read the host counter
+    # directly.
+    local ok
+    ok=$("${oracle}" replay "${report}" "${arm}" "${repeats}" "${actions}") || verdict=1
+    rows+=("| ${arm} | ${version} | ${repeats} | ${violated} | ${checked} | ${want} | ${hashes_agree} | ${ok} |")
 }
 
 replay_arm vulnerable "${VULNERABLE_VERSION}" "${vulnerable_repeats}" true
@@ -93,8 +98,9 @@ replay_arm control "${CONTROL_VERSION}" "${control_repeats}" false
 {
     echo "## ${mode} replay — ${input}"
     echo
-    echo "| arm | PostgreSQL | repeats | bugs reported | bug expected | state hashes agree | verdict |"
-    echo "|---|---|---|---|---|---|---|"
+    echo "| arm | PostgreSQL | repeats | runs violating assertion ${ORACLE_ASSERTION} |\
+ runs reaching the oracle verdict | violation expected | state hashes agree | verdict |"
+    echo "|---|---|---|---|---|---|---|---|"
     printf '%s\n' "${rows[@]}"
 } >>"${summary}"
 

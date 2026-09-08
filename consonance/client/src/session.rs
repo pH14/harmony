@@ -43,8 +43,9 @@ pub const RAM_GPA_BASE: u64 = 0x4000_0000;
 /// Package-owned launch and resource settings for one neutral session.
 ///
 /// A workload selects these values once while preparing its execution
-/// identity. They affect boot and restore compatibility, so the complete
-/// configuration is included in [`Session::identity_with_config`].
+/// identity. The settings that affect boot and restore compatibility are
+/// included in [`Session::identity_with_config`]; the host resource bounds and
+/// evidence settings documented as such below are not.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SessionConfig {
     /// Guest RAM in bytes. The VMM requires a page-aligned, non-zero value.
@@ -67,12 +68,20 @@ pub struct SessionConfig {
     /// absent from [`identity_with_config`] and from the image identity.
     #[serde(default)]
     pub wall_limit: Option<Duration>,
-    /// Record the sparse virtual-time checkpoint hashes after a run instead of
-    /// during it. Each checkpoint hashes all guest RAM, so a session that never
-    /// encodes its trace skips that cost on every run. Host-side evidence
-    /// plumbing only, so like `wall_limit` it is absent from the identities.
+    /// Record sparse virtual-time checkpoint hashes after a run rather than
+    /// during it.
+    ///
+    /// Each due checkpoint otherwise hashes the whole guest RAM inside the run
+    /// that reached it, which a large guest cannot afford during boot. A
+    /// composition root that opts in installs the byte-identical hashes
+    /// afterwards with
+    /// [`Vmm::checkpoint_virtual_time_trace_at`](vmm_core::vmm::Vmm::checkpoint_virtual_time_trace_at).
+    /// This is host-side evidence plumbing: it changes neither guest state nor
+    /// the normalized event sequence, so like [`Self::wall_limit`] it is
+    /// deliberately absent from [`identity_with_config`] and from the image
+    /// identity.
     #[serde(default)]
-    pub defer_checkpoint_hashes: bool,
+    pub defer_virtual_time_checkpoint_hashes: bool,
 }
 
 impl Default for SessionConfig {
@@ -84,7 +93,7 @@ impl Default for SessionConfig {
             cmdline: default_cmdline().to_owned(),
             identity_tag: String::new(),
             wall_limit: None,
-            defer_checkpoint_hashes: false,
+            defer_virtual_time_checkpoint_hashes: false,
         }
     }
 }
@@ -100,7 +109,7 @@ impl SessionConfig {
             cmdline: cmdline.into(),
             identity_tag: String::new(),
             wall_limit: None,
-            defer_checkpoint_hashes: false,
+            defer_virtual_time_checkpoint_hashes: false,
         }
     }
 
@@ -119,10 +128,14 @@ impl SessionConfig {
         self
     }
 
-    /// Hash the virtual-time checkpoints after each run rather than during it.
+    /// Defer sparse virtual-time checkpoint hashing on every VM this session
+    /// boots, including the ones a restore boots from the session's factory.
+    ///
+    /// The setting is applied before the guest runs, so the boot itself is
+    /// covered.
     #[must_use]
-    pub fn with_deferred_checkpoint_hashes(mut self) -> Self {
-        self.defer_checkpoint_hashes = true;
+    pub fn with_deferred_virtual_time_checkpoint_hashes(mut self) -> Self {
+        self.defer_virtual_time_checkpoint_hashes = true;
         self
     }
 
@@ -854,6 +867,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn deferred_checkpoint_hashing_is_opt_in_and_off_by_default() {
+        let plain = SessionConfig::new(PAGE_SIZE, 1, 2, "cmdline");
+        assert!(!plain.defer_virtual_time_checkpoint_hashes);
+        assert!(!SessionConfig::default().defer_virtual_time_checkpoint_hashes);
+        let deferred = plain.clone().with_deferred_virtual_time_checkpoint_hashes();
+        assert!(deferred.defer_virtual_time_checkpoint_hashes);
+        assert_eq!(
+            SessionConfig {
+                defer_virtual_time_checkpoint_hashes: false,
+                ..deferred.clone()
+            },
+            plain,
+            "the option changes nothing else about the launch settings"
+        );
+    }
+
+    #[test]
+    fn deferred_checkpoint_hashing_stays_out_of_execution_identity() {
+        let plain = SessionConfig::new(PAGE_SIZE, 1, 2, "cmdline");
+        let deferred = plain.clone().with_deferred_virtual_time_checkpoint_hashes();
+        // Host-side evidence plumbing, so two runs that differ only in when
+        // the checkpoint hashes are taken share one execution identity.
+        assert_eq!(
+            identity_with_config(b"kernel", b"initramfs", &deferred),
+            identity_with_config(b"kernel", b"initramfs", &plain)
+        );
+        assert_eq!(
+            image_identity_with_config(b"kernel", b"initramfs", &deferred),
+            image_identity_with_config(b"kernel", b"initramfs", &plain)
+        );
+        let tagged = plain.clone().with_identity_tag("workload");
+        assert_ne!(
+            identity_with_config(b"kernel", b"initramfs", &tagged),
+            identity_with_config(b"kernel", b"initramfs", &plain),
+            "a setting that does reach identity still moves it"
+        );
+    }
+
+    #[test]
+    fn a_config_without_the_option_decodes_with_it_off() {
+        let json = serde_json::json!({
+            "ram_bytes": PAGE_SIZE,
+            "seed": 1,
+            "run_budget": 2,
+            "cmdline": "cmdline",
+            "identity_tag": "",
+        })
+        .to_string();
+        let decoded: SessionConfig = serde_json::from_str(&json).expect("decode");
+        assert_eq!(decoded, SessionConfig::new(PAGE_SIZE, 1, 2, "cmdline"));
+        let deferred = decoded.with_deferred_virtual_time_checkpoint_hashes();
+        let round_tripped: SessionConfig =
+            serde_json::from_str(&serde_json::to_string(&deferred).expect("encode"))
+                .expect("decode");
+        assert_eq!(round_tripped, deferred);
+    }
+
+    #[test]
     fn console_pages_are_drained_for_diagnostics() {
         let mut offsets = Vec::new();
         let console = drain_console_pages(|offset| {
@@ -1337,27 +1408,15 @@ mod tests {
     }
 
     #[test]
-    fn a_config_serialized_without_the_host_side_fields_still_loads() {
-        for field in ["wall_limit", "defer_checkpoint_hashes"] {
-            let mut value = serde_json::to_value(SessionConfig::default()).expect("serialize");
-            value
-                .as_object_mut()
-                .expect("configuration is a JSON object")
-                .remove(field)
-                .expect("the field is serialized");
-            let decoded: SessionConfig = serde_json::from_value(value).expect("deserialize");
-            assert_eq!(decoded, SessionConfig::default());
-        }
-    }
-
-    #[test]
-    fn deferred_checkpoint_hashing_is_outside_the_session_identity() {
-        let deferred = SessionConfig::default().with_deferred_checkpoint_hashes();
-        assert!(deferred.defer_checkpoint_hashes);
-        assert_eq!(
-            identity_with_config(b"kernel", b"initramfs", &deferred),
-            identity_with_config(b"kernel", b"initramfs", &SessionConfig::default()),
-        );
+    fn a_config_serialized_without_a_wall_limit_still_loads() {
+        let mut value = serde_json::to_value(SessionConfig::default()).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("configuration is a JSON object")
+            .remove("wall_limit")
+            .expect("the field is serialized");
+        let decoded: SessionConfig = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(decoded, SessionConfig::default());
     }
 
     #[test]

@@ -58,6 +58,8 @@ jobs:
       executions: ${{ steps.read.outputs.executions }}
       wall_minutes: ${{ steps.read.outputs.wall_minutes }}
       knobs: ${{ steps.read.outputs.knobs }}
+      oracle_assertion: ${{ steps.read.outputs.oracle_assertion }}
+      oracle_evidence: ${{ steps.read.outputs.oracle_evidence }}
       witness: ${{ steps.read.outputs.witness }}
       vulnerable_version: ${{ steps.read.outputs.vulnerable_version }}
       vulnerable_sha256: ${{ steps.read.outputs.vulnerable_sha256 }}
@@ -72,7 +74,8 @@ jobs:
         run: |
           set -euo pipefail
           case_json="${CASE_DIR}/case.json"
-          jq -e 'has("id") and has("search") and has("run") and has("arms")' \
+          jq -e 'has("id") and has("search") and has("run") and has("arms")
+            and (.oracle | has("assertion") and has("evidence"))' \
             "${case_json}" >/dev/null
           emit() { printf '%s=%s\n' "$1" "$2" >>"${GITHUB_OUTPUT}"; }
           emit case_id "$(jq -r .id "${case_json}")"
@@ -86,6 +89,10 @@ jobs:
           emit vulnerable_sha256 "$(jq -r .arms.vulnerable.sha256 "${case_json}")"
           emit control_version "$(jq -r .arms.control.version "${case_json}")"
           emit control_sha256 "$(jq -r .arms.control.sha256 "${case_json}")"
+          # Both arms are judged on these two ids: the assertion whose violation
+          # is this bug, and the point its detector publishes on every verdict.
+          emit oracle_assertion "$(jq -r .oracle.assertion "${case_json}")"
+          emit oracle_evidence "$(jq -r .oracle.evidence "${case_json}")"
           # The hooks read knobs from /proc/cmdline, so they travel as one
           # space-separated --knobs string.
           emit knobs "$(jq -r '.run.knobs | to_entries | map("\(.key)=\(.value)") | join(" ")' \
@@ -111,6 +118,7 @@ jobs:
               ["control", .arms.control.version],
               ["kernel profile", .kernel_profile],
               ["oracle", "@\(.oracle.kind) \(.oracle.assertion) — \(.oracle.detector)"],
+              ["oracle verdict evidence", "@reachable \(.oracle.evidence)"],
               ["horizon", "\(.run.horizon_ms) ms"],
               ["ram", "\(.run.ram_mib) MiB"],
               ["status", .status],
@@ -329,6 +337,8 @@ jobs:
           VULNERABLE_VERSION: ${{ needs.manifest.outputs.vulnerable_version }}
           CONTROL_VERSION: ${{ needs.manifest.outputs.control_version }}
           KNOBS: ${{ needs.manifest.outputs.knobs }}
+          ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}
+          ORACLE_EVIDENCE: ${{ needs.manifest.outputs.oracle_evidence }}
         run: .github/scripts/historical-replay.sh probe "${CASE_DIR}/probe.json"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -374,6 +384,8 @@ jobs:
           VULNERABLE_VERSION: ${{ needs.manifest.outputs.vulnerable_version }}
           CONTROL_VERSION: ${{ needs.manifest.outputs.control_version }}
           KNOBS: ${{ needs.manifest.outputs.knobs }}
+          ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}
+          ORACLE_EVIDENCE: ${{ needs.manifest.outputs.oracle_evidence }}
           WITNESS: ${{ needs.manifest.outputs.witness }}
         run: .github/scripts/historical-replay.sh witness "${WITNESS}"
       - uses: actions/upload-artifact@v4
@@ -433,6 +445,8 @@ jobs:
           EXECUTIONS: ${{ needs.manifest.outputs.executions }}
           WALL_MINUTES: ${{ needs.manifest.outputs.wall_minutes }}
           KNOBS: ${{ needs.manifest.outputs.knobs }}
+          ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}
+          ORACLE_EVIDENCE: ${{ needs.manifest.outputs.oracle_evidence }}
         run: .github/scripts/historical-search.sh
       - uses: actions/upload-artifact@v4
         if: always()
