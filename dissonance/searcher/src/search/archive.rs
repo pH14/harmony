@@ -792,11 +792,52 @@ pub struct ArchiveCandidate<A: Ord, K, M> {
     pub milestones: M,
 }
 
+/// Read-only same-slot competition, emitted before any incumbent is removed.
+/// Lazy inputs are reconstructed only if the observer requests them. Their
+/// allocations and work belong to diagnostics, not deterministic report counters.
+pub struct RetentionObservation<'a, A: Ord, K, S> {
+    /// Admission sequence of the proposed candidate.
+    pub execution: u64,
+    /// Proposed endpoint key and snapshot.
+    pub candidate: (K, &'a S),
+    /// Incumbent key and resident snapshot, if still cached.
+    pub incumbent: (K, Option<&'a S>),
+    /// Whether the candidate displaces this incumbent under the current rule.
+    pub replaces: bool,
+    /// Incumbent admission sequence.
+    pub created_execution: u64,
+    /// Incumbent exposure before this competition.
+    pub exposure: EntrySelectorCounters,
+    /// Whether the incumbent ever entered the selector's recency window.
+    pub in_window_ever: bool,
+    /// Materialize candidate and incumbent inputs without changing search counters.
+    pub inputs: &'a dyn Fn() -> Result<(Input<A>, Input<A>), &'static str>,
+}
+
+/// Constant-space lifecycle counters, reporting-only and excluded from replay state.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RetentionDiagnostics {
+    /// Full-slot competitions (excluding duplicate inputs).
+    pub competitions: u64,
+    /// Incumbents removed by replacement or memory/population eviction.
+    pub removed: u64,
+    /// Removed incumbents never exposed in the recency window.
+    pub removed_never_in_window: u64,
+    /// Removed incumbents never selected.
+    pub removed_never_selected: u64,
+    /// Removed incumbents never produced a retained extension.
+    pub removed_never_productive: u64,
+    /// Sum of admitted selections received by removed incumbents.
+    pub removed_selections: u64,
+}
+
 /// The generic snapshot archive.
 pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     /// Retention stops when the entry count reaches this bound; campaign
     /// runs record their bound in the stream header and replay under it.
     pub max_entries: usize,
+    /// Reporting-only lifecycle census; fixed size, no search feedback.
+    pub retention_diagnostics: RetentionDiagnostics,
     /// Retained entries in insertion order.
     pub(crate) entries: Vec<ArchiveEntry<A, K, M, S>>,
     /// Stable stream id to current compact in-memory slot.
@@ -1391,6 +1432,7 @@ where
     pub fn new(action_time: fn(&A) -> u64) -> Self {
         Self {
             max_entries: MAX_ARCHIVE_ENTRIES,
+            retention_diagnostics: RetentionDiagnostics::default(),
             entries: Vec::new(),
             id_to_index: BTreeMap::new(),
             next_entry_id: 0,
@@ -1582,6 +1624,14 @@ where
         if !self.active.get(id).copied().unwrap_or(false) {
             return false;
         }
+        self.retention_diagnostics.removed += 1;
+        self.retention_diagnostics.removed_never_in_window += u64::from(!self.in_window_ever[id]);
+        self.retention_diagnostics.removed_never_selected += u64::from(self.selected[id] == 0);
+        self.retention_diagnostics.removed_never_productive += u64::from(self.productive[id] == 0);
+        self.retention_diagnostics.removed_selections = self
+            .retention_diagnostics
+            .removed_selections
+            .saturating_add(self.selected[id]);
         self.active[id] = false;
         self.active_count = self.active_count.saturating_sub(1);
         let slot_key = self.entries[id].key.group(0);
@@ -2132,6 +2182,10 @@ where
     pub(crate) fn materialize_input(&self, id: usize) -> Result<Input<A>, &'static str> {
         self.input_reconstructions
             .set(self.input_reconstructions.get().saturating_add(1));
+        self.materialize_input_untracked(id)
+    }
+
+    fn materialize_input_untracked(&self, id: usize) -> Result<Input<A>, &'static str> {
         let entry = self.entries.get(id).ok_or("archive input id is missing")?;
         let actions = self
             .input_index
@@ -2711,6 +2765,29 @@ where
         candidate: ArchiveCandidate<A, K, M>,
         snapshot: S,
     ) -> Result<(Option<usize>, K), Box<dyn Error>> {
+        self.insert_after_observed(parent_id, previous, execution, candidate, snapshot, |_| {
+            Ok(())
+        })
+    }
+
+    /// Insert with a read-only diagnostic observer of full-slot competitions.
+    /// The observer must use bounded storage and never supply decisions or random
+    /// draws back to the campaign. Errors stop the run rather than losing evidence.
+    ///
+    /// # Errors
+    /// Returns insertion errors or an observer error.
+    pub fn insert_after_observed<F>(
+        &mut self,
+        parent_id: Option<usize>,
+        previous: Option<K>,
+        execution: u64,
+        candidate: ArchiveCandidate<A, K, M>,
+        snapshot: S,
+        observer: F,
+    ) -> Result<(Option<usize>, K), Box<dyn Error>>
+    where
+        F: FnOnce(&RetentionObservation<'_, A, K, S>) -> Result<(), Box<dyn Error>>,
+    {
         let ArchiveCandidate {
             suffix,
             key,
@@ -2740,8 +2817,8 @@ where
         let slot = self.slots.entry(key.group(0)).or_default().clone();
         let new_slot = slot.is_empty();
         let slot_full = slot.len() >= K::slot_capacity().max(1);
-        let replace = if slot_full {
-            let worst = slot.iter().copied().min_by(|left, right| {
+        let worst = if slot_full {
+            slot.iter().copied().min_by(|left, right| {
                 let left_entry = &self.entries[*left];
                 let right_entry = &self.entries[*right];
                 left_entry
@@ -2749,15 +2826,40 @@ where
                     .preference_cmp(right_entry.key)
                     .then_with(|| self.time_in_group[*right].cmp(&self.time_in_group[*left]))
                     .then_with(|| right_entry.id.cmp(&left_entry.id))
-            });
-            worst.filter(|id| match key.preference_cmp(self.entries[*id].key) {
-                Ordering::Greater => true,
-                Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
-                Ordering::Less => false,
             })
         } else {
             None
         };
+        let replace = worst.filter(|id| match key.preference_cmp(self.entries[*id].key) {
+            Ordering::Greater => true,
+            Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
+            Ordering::Less => false,
+        });
+        if let Some(id) = worst {
+            self.retention_diagnostics.competitions += 1;
+            observer(&RetentionObservation {
+                execution,
+                candidate: (key, &snapshot),
+                incumbent: (self.entries[id].key, self.entries[id].snapshot.as_deref()),
+                replaces: replace.is_some(),
+                created_execution: self.entries[id].created_execution,
+                exposure: EntrySelectorCounters {
+                    selected: self.selected[id],
+                    productive: self.productive[id],
+                },
+                in_window_ever: self.in_window_ever[id],
+                inputs: &|| {
+                    let mut input = match parent_id {
+                        Some(parent) => self.materialize_input_untracked(parent)?,
+                        None => Input {
+                            actions: Vec::new(),
+                        },
+                    };
+                    input.actions.extend_from_slice(&suffix);
+                    Ok((input, self.materialize_input_untracked(id)?))
+                },
+            })?;
+        }
         if slot_full && replace.is_none() {
             self.rejected = self.rejected.saturating_add(1);
             return Ok((None, key));
@@ -4489,6 +4591,61 @@ mod tests {
         }
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn retention_observation_preserves_decisions_inputs_and_search_counters() {
+        let run = |observe: bool| {
+            let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+            let mut events = Vec::new();
+            for (execution, quality) in [2, 1, 3].into_iter().enumerate() {
+                archive
+                    .insert_after_observed(
+                        None,
+                        None,
+                        execution as u64,
+                        ArchiveCandidate {
+                            suffix: vec![quality],
+                            key: PreferredKey { slot: 7, quality },
+                            milestones: (),
+                        },
+                        (),
+                        |event| {
+                            if observe {
+                                let (candidate, incumbent) = (event.inputs)()?;
+                                events.push((
+                                    event.replaces,
+                                    candidate.actions,
+                                    incumbent.actions,
+                                    event.exposure.selected,
+                                ));
+                            }
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+            }
+            assert_eq!(archive.input_reconstructions.get(), 0);
+            assert_eq!(archive.retention_diagnostics.competitions, 2);
+            assert_eq!(archive.retention_diagnostics.removed_never_selected, 1);
+            (
+                archive.active.clone(),
+                archive.retained,
+                archive.rejected,
+                archive.selector_report(),
+                events,
+            )
+        };
+        let control = run(false);
+        let observed = run(true);
+        assert_eq!(
+            (&control.0, control.1, control.2, &control.3),
+            (&observed.0, observed.1, observed.2, &observed.3)
+        );
+        assert_eq!(
+            observed.4,
+            vec![(false, vec![1], vec![2], 0), (true, vec![3], vec![2], 0)]
+        );
     }
 
     #[test]

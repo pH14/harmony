@@ -6,3 +6,6 @@ pub mod archive;
 pub mod campaign;
 pub mod progress;
 pub mod target;
+
+/// Reporting-only bounded replacement-pair diagnostics.
+pub mod retention_audit;

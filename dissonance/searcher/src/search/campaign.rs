@@ -281,6 +281,19 @@ pub trait CampaignTypes: Sync {
 
 /// Stream and result serialization owned by a campaign adapter.
 pub trait Reporting: CampaignTypes {
+    /// Observe a same-slot competition without affecting search decisions.
+    /// Implementations must bound their memory and account for diagnostic work.
+    fn observe_retention(
+        &self,
+        _event: &super::archive::RetentionObservation<'_, Self::Action, Self::Key, Self::Snapshot>,
+    ) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+    /// Flush and disable campaign-only diagnostics before verification replay.
+    fn finish_retention_observation(&self) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+
     /// Optional bounded observation diagnostics for the live sidecar. These
     /// values never influence selection, admission, or deterministic reports.
     fn diagnostics(_evidence: &Self::Evidence) -> Option<serde_json::Value> {
@@ -1807,7 +1820,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                     continue;
                 }
                 let retained_before = self.archive.retained;
-                let (admitted, key) = self.archive.insert_after(
+                let (admitted, key) = self.archive.insert_after_observed(
                     Some(current_parent),
                     previous_key,
                     sequence,
@@ -1817,6 +1830,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                         milestones: action.milestones,
                     },
                     candidate.snapshot,
+                    |event| game.observe_retention(event),
                 )?;
                 match admitted {
                     Some(id) if self.archive.retained > retained_before => {
@@ -2415,6 +2429,9 @@ fn replay_splice<G: Game>(
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "K: Serialize + DeserializeOwned")]
 pub struct CampaignProgressRecord<K> {
+    /// Constant-space retention/exposure census; not deterministic replay state.
+    #[serde(default)]
+    pub retention_diagnostics: super::archive::RetentionDiagnostics,
     /// Workload-owned observation counters; no selector feedback is implied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workload_diagnostics: Option<serde_json::Value>,
@@ -2529,6 +2546,7 @@ fn write_live_progress<G: Game>(
         .map(|(key, cheapest, retained)| (Some(key), cheapest, retained))
         .unwrap_or((None, 0, 0));
     let line = serde_json::to_string(&CampaignProgressRecord {
+        retention_diagnostics: core.archive.retention_diagnostics,
         workload_diagnostics: G::diagnostics(&core.evidence),
         coordinator: coordinator_profile
             .enabled

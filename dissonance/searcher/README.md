@@ -170,3 +170,14 @@ relation considers map cells equal, so no map cell can dominate another. It is
 not the full historical cross-location preference/Pareto implementation, and
 it does not restore the prototype's improvement-replay queues. Its separate
 identifier permits an ablation without changing any existing selector's behavior.
+
+## Retention diagnostics
+
+`Reporting::observe_retention` can inspect a same-slot competition before the
+incumbent is removed. The read-only event includes cached snapshots, prior
+selection exposure, and lazy reconstruction of both inputs. Observers must
+bound their storage and account for reconstruction separately; observer input
+materialization never changes deterministic reconstruction counters. The
+constant-size `retention_diagnostics` sidecar census counts removal before
+window exposure, selection, and productive extension. It is not replay state.
+The evaluator flushes/disables campaign sampling before verification replay.

@@ -723,6 +723,37 @@ impl Mm2Target {
         &self.genesis_prefix
     }
 
+    /// Expand a gameplay input into the controller frames actually executed.
+    /// `apply` can append idle award waits; raw power-on replay must include
+    /// those waits explicitly to reproduce the searched state across stages.
+    /// Returns only the gameplay portion; the caller prepends `genesis_prefix`.
+    pub fn physical_input(&mut self, input: &Mm2Input) -> Result<Mm2Input, Box<dyn Error>> {
+        self.reset();
+        let mut actions = Vec::new();
+        for action in &input.actions {
+            if self.is_dead() || self.defeated_a_boss() {
+                return Err("physical input contains actions after a terminal event".into());
+            }
+            let before = self.frames_clocked();
+            self.apply(action);
+            if self.exit_kind() != ExitKind::Ok {
+                return Err("physical input replay failed".into());
+            }
+            let elapsed = self.frames_clocked().saturating_sub(before);
+            let held = u64::from(action.bounded_hold_frames());
+            if elapsed < held {
+                return Err("physical action ran fewer frames than its controller hold".into());
+            }
+            actions.push(ButtonChord::new(
+                action.buttons,
+                action.bounded_hold_frames(),
+            ));
+            let extra = u32::try_from(elapsed - held)?;
+            actions.extend(idle_chords(extra));
+        }
+        Ok(Mm2Input { actions })
+    }
+
     /// Current decoded state.
     #[must_use]
     pub fn mechanical_state(&self) -> Mm2MechanicalState {

@@ -112,3 +112,15 @@ repeats the replay, and includes ROM/core/input hashes. In its replay report,
 For Mega Man 2, `nes-progress mm2 CORE ROM searched-power-on-prefix.json wily4`
 checks that the retained tape still reaches that stage through the current
 runtime; it is a compatibility fixture, not a fresh search result.
+
+The opt-in `retention_audit` evaluation flag records at most 16 competing input
+pairs in each of five diagnostic categories: different equipment, different
+capacity, resource tradeoffs, equal preference, and ordered resources. A separate
+sampling hash leaves the campaign RNG untouched. Incumbents with evicted cached
+snapshots are counted but excluded, so samples are not a census of every state.
+The declared 2.5 MiB action-payload bound plus metadata/reconstruction and output
+buffers are diagnostic overhead reflected in RSS and I/O, outside logical archive
+memory. `metroid-retention-probe` reconstructs each pair and applies the same
+sampled suffixes to both sides. It reports physical probe/prefix frames, gains,
+survival, and living map exits separately. These diagnostic starts never count
+as fresh validation; differing endpoints alone are not useful-future evidence.

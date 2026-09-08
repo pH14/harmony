@@ -73,6 +73,7 @@ pub struct Mm2Game {
     stage: Mm2Stage,
     identity: String,
     champion_input_path: Option<PathBuf>,
+    setup_frames: std::sync::atomic::AtomicU64,
 }
 
 impl Mm2Game {
@@ -114,7 +115,15 @@ impl Mm2Game {
             stage,
             identity,
             champion_input_path: None,
+            setup_frames: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// Physical emulator frames spent constructing all targets in this context.
+    /// Includes every repeated chain prefix; reporting only, never replay state.
+    #[must_use]
+    pub fn setup_frame_count(&self) -> u64 {
+        self.setup_frames.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Write the champion input to `path` each time it improves, so a long
@@ -615,14 +624,19 @@ impl TargetExecution for Mm2Game {
     }
 
     fn new_target(&self) -> Result<Mm2Target, String> {
-        Mm2Target::from_rom_bytes_after(
+        let target = Mm2Target::from_rom_bytes_after(
             &self.rom,
             &self.core_path,
             &self.core_sha256,
             &self.prefix,
             self.stage,
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        self.setup_frames.fetch_add(
+            target.frames_clocked(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        Ok(target)
     }
 
     fn reset(&self, target: &mut Mm2Target) {

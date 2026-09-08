@@ -71,6 +71,7 @@ pub struct MetroidGame {
     identity: String,
     champion_input_path: Option<PathBuf>,
     milestone_input_dir: Option<PathBuf>,
+    retention_audit: Option<std::sync::Mutex<super::retention_audit::RetentionAudit>>,
 }
 
 impl MetroidGame {
@@ -112,6 +113,7 @@ impl MetroidGame {
             identity,
             champion_input_path: None,
             milestone_input_dir: None,
+            retention_audit: None,
         }
     }
 
@@ -128,6 +130,15 @@ impl MetroidGame {
     #[must_use]
     pub fn with_milestone_input_dir(mut self, directory: PathBuf) -> Self {
         self.milestone_input_dir = Some(directory);
+        self
+    }
+
+    /// Enable bounded replacement-pair sampling without changing search semantics.
+    #[must_use]
+    pub fn with_retention_audit(mut self, path: PathBuf) -> Self {
+        self.retention_audit = Some(std::sync::Mutex::new(
+            super::retention_audit::RetentionAudit::new(path),
+        ));
         self
     }
 
@@ -465,6 +476,34 @@ impl CampaignTypes for MetroidGame {
 }
 
 impl Reporting for MetroidGame {
+    fn observe_retention(
+        &self,
+        event: &crate::search::archive::RetentionObservation<
+            '_,
+            ButtonChord,
+            MetroidArchiveKey,
+            MetroidSnapshot,
+        >,
+    ) -> Result<(), Box<dyn Error>> {
+        if let Some(audit) = &self.retention_audit {
+            audit
+                .lock()
+                .map_err(|_| "retention audit lock poisoned")?
+                .observe(event)?;
+        }
+        Ok(())
+    }
+
+    fn finish_retention_observation(&self) -> Result<(), Box<dyn Error>> {
+        if let Some(audit) = &self.retention_audit {
+            audit
+                .lock()
+                .map_err(|_| "retention audit lock poisoned")?
+                .finish()?;
+        }
+        Ok(())
+    }
+
     fn diagnostics(evidence: &MetroidCampaignEvidence) -> Option<serde_json::Value> {
         Some(serde_json::json!({
             "map_cells_observed": evidence.observed_map.count(),
