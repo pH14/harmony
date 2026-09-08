@@ -7,7 +7,7 @@
 //! hypercall-doorbell ABI**: it marshals a request frame into a shared, page-aligned
 //! guest-physical request page, rings the architecture's one-exit doorbell (x86 port I/O or
 //! arm64 MMIO) through [`IoDoorbell`], and reads the host's response frame back out of the response page — its length
-//! taken from the frame header and bounded so a hostile host can never make the shim read past a
+//! taken from the frame header and bounded so a misbehaving host can never make the shim read past a
 //! page, write past the caller's buffer, or panic. A `Client<VmcallTransport>` is then a complete
 //! guest hypercall client that composes with the task-01 `Client` unchanged.
 //!
@@ -543,7 +543,7 @@ pub enum TransportError {
     /// host wrote no frame — e.g. a bad doorbell, or an off-VM build).
     HostRejected,
     /// The response frame's header-declared length (`HEADER_LEN + payload_len`) exceeds
-    /// `PAGE_SIZE` or the caller's `resp` buffer — a malformed or hostile host response; never
+    /// `PAGE_SIZE` or the caller's `resp` buffer — a malformed host response; never
     /// partially copied.
     BadResponseLength,
 }
@@ -643,7 +643,7 @@ impl<D: IoDoorbell> hypercall_proto::Transport for VmcallTransport<D> {
     /// `resp`.
     ///
     /// The response length is read from the host-written response-frame header; it is
-    /// attacker-controlled, so the `u64` bound check (before any `as usize` cast) is the
+    /// host-written, so the `u64` bound check (before any `as usize` cast) is the
     /// load-bearing safety property — no header value can make this read past the response page,
     /// write past `resp`, or panic.
     fn exchange(&mut self, req: &[u8], resp: &mut [u8]) -> Result<usize, Self::Error> {

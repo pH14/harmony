@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Build table-generated N6 JIT instruction-sweep initramfses and their
-# traps-off planted negatives for the native Linux architecture.
+# traps-off negative controls for the native Linux architecture.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -46,14 +46,14 @@ case "$(uname -m)" in
         ;;
 esac
 
-echo "== N6: generator/verifier planted negatives"
+echo "== N6: generator/verifier negative controls"
 python3 "$generator" --table "$table" self-test
 python3 "$generator" --table "$table" guest-assembly --arch "$arch" \
     >"$n6_root/n6-generated.S"
 python3 "$generator" --table "$table" guest-header --arch "$arch" \
     >"$n6_root/n6-generated.h"
 
-echo "== N6: entropy audit planted negative"
+echo "== N6: entropy audit negative control"
 negative=$n6_root/n6-entropy-negative.S
 cat >"$negative" <<EOF
 .text

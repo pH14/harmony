@@ -592,7 +592,7 @@ pub fn load(
     // backing the guest cannot read back (the page faults to the userspace LAPIC).
     // The kernel loads at the header's `pref_address` and cannot be relocated, so a
     // load region that would straddle the page is rejected. (Real kernels load near
-    // 1 MiB, far below the ~4 GiB page; this guards a hostile/oversized header.)
+    // 1 MiB, far below the ~4 GiB page; this guards an oversized header.)
     if overlaps_lapic_mmio_page(load_addr, kernel_end) {
         return Err(LinuxLoadError::KernelDoesNotFit {
             load: load_addr,

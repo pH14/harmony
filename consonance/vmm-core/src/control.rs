@@ -3512,7 +3512,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot materialize through two production Replay verbs; the pure session comparator and planted negative remain Miri-covered"
+        ignore = "reaches snapshot materialize through two production Replay verbs; the pure session comparator and negative control remain Miri-covered"
     )]
     fn control_session_accumulates_every_restore_delimited_trace() {
         use crate::session_trace::{
@@ -3548,7 +3548,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot materialize through two production Replay verbs; the pure session comparator and planted negative remain Miri-covered"
+        ignore = "reaches snapshot materialize through two production Replay verbs; the pure session comparator and negative control remain Miri-covered"
     )]
     fn taking_the_session_trace_returns_and_drains_completed_segments() {
         let mut server = accumulated_session_server();

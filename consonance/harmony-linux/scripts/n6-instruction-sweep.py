@@ -733,17 +733,17 @@ def synthetic_arm_summary(rows: list[Row]) -> str:
 
 
 def expect_failure(label: str, action) -> None:
-    """Require a planted negative to be rejected."""
+    """Require a negative control to be rejected."""
     try:
         action()
     except SweepError:
         print(f"N6_NEGATIVE_OK {label}")
         return
-    raise SweepError(f"planted negative unexpectedly passed: {label}")
+    raise SweepError(f"negative control unexpectedly passed: {label}")
 
 
 def self_test(rows: list[Row]) -> None:
-    """Exercise the verifier's positive path and meaningful planted negatives."""
+    """Exercise the verifier's positive path and meaningful negative controls."""
     longest_result = "value:ffffffffffffffff:mem:ffffffffffffffff"
     for row in rows:
         for ordinal, operation in enumerate(row.operations, start=1):

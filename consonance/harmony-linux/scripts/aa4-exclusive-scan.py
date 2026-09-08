@@ -155,7 +155,7 @@ def executable_words(path: str):
     # section-aware PRE-FLIGHT; the AUTHORITATIVE W^X gate is the runtime page-granular
     # execute-guard (hm-rfz), which rescans the ACTUAL bytes of any page the guest makes
     # executable. A forged ELF that mislabels executable hazard-bearing code as a data section
-    # therefore passes HERE but is rejected THERE — proven by the aa4-mislabel-evasion fixture.
+    # therefore passes HERE but is rejected THERE — proven by a forged-ELF fixture.
     data_ranges.sort()
     _data_starts = [lo for lo, _ in data_ranges]
 

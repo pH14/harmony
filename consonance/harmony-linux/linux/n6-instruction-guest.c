@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/* Table-generated N6 hostile instruction sweep, run as the guest's PID 1. */
+/* Table-generated N6 instruction sweep, run as the guest's PID 1. */
 
 #define _GNU_SOURCE
 #include <errno.h>

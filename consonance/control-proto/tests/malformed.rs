@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 3 — adversarial decode (the in-tree twin of the `cargo-fuzz` target in
+//! Gate 3 — malformed-input decode (the in-tree twin of the `cargo-fuzz` target in
 //! `fuzz/`). `decode_*` on arbitrary byte strings, on valid frames with
 //! single-byte mutations, and on truncations of every length never panics, never
 //! reads out of bounds, and reports `ProtocolError` cleanly. A header advertising
@@ -170,7 +170,7 @@ fn malformed_complete_body_is_short_frame() {
 }
 
 /// The retired bare-handle snapshot reply (wire tag 2, pre-127 `Reply::SnapId`)
-/// is rejected as a malformed body — a hostile or stale peer cannot smuggle a
+/// is rejected as a malformed body — a malformed or stale peer cannot smuggle a
 /// **cut-less** snapshot handle past the decoder. The tag is reserved, never
 /// reused.
 #[test]
@@ -183,13 +183,13 @@ fn retired_snapid_tag_is_rejected() {
     assert_eq!(decode_reply(&buf), Err(ProtocolError::ShortFrame));
 }
 
-/// Hostile decodes of the seal-bound `Snapshot` reply (task 127): a body
+/// Malformed decodes of the seal-bound `Snapshot` reply (task 127): a body
 /// truncated at **every** field boundary of `id · at · sdk_events · tainted` is
 /// `ShortFrame`; a non-canonical taint byte is rejected (the encoding stays
 /// one-to-one); trailing bytes inside the declared body are rejected. No
 /// partial cut can ever decode.
 #[test]
-fn snapshot_reply_hostile_bodies_are_rejected() {
+fn snapshot_reply_malformed_bodies_are_rejected() {
     // The full well-formed body: RESULT_OK · REPLY_SNAPSHOT (0x0A) · id ·
     // at · sdk_events · tainted.
     let mut body = vec![0x00u8, 0x0A];

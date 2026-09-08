@@ -7515,7 +7515,7 @@ mod tests {
         // one-shot leaves no future wake — the vCPU would be stuck warping V-time. Treat
         // it like IF==0: terminate, do NOT advance V-time or re-enter. (Deterministic, not
         // a determinism bug; Linux's timer is deliverable so runc/Postgres are unaffected
-        // — this hardens the keystone against adversarial guests.)
+        // — this hardens the keystone against misbehaving guests.)
         let w = |off: u64, val: u64| {
             Exit::Common(CommonExit::Mmio {
                 gpa: Gpa(APIC_MMIO_BASE + off),

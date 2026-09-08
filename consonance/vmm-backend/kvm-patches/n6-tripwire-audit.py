@@ -74,7 +74,7 @@ def main() -> int:
         audit(patches, pins)
         print("N6_TRIPWIRE_OK patches=3 hashes=3 mechanisms=15")
 
-        # Meaningful planted negative: deleting the exit ABI token while
+        # Meaningful negative control: deleting the exit ABI token while
         # recomputing its pin must still fail the semantic audit.
         mutant = dict(patches)
         mutant["0001"] = mutant["0001"].replace(

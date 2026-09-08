@@ -19,7 +19,7 @@ pub fn process_target(node: u16, fault: &Fault) -> Vec<u8> {
 }
 
 /// Decode bytes produced by [`process_target`]. `None` on any malformed or
-/// trailing input — a hostile target never panics a service.
+/// trailing input — a malformed target never panics a service.
 #[must_use]
 pub fn decode_process_target(b: &[u8]) -> Option<(u16, Fault)> {
     let mut r = Reader::new(b);

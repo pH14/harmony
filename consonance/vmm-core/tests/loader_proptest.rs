@@ -45,7 +45,7 @@ proptest! {
     }
 
     /// An image with the magic planted at a random 4-byte-aligned offset (the
-    /// realistic adversarial shape) still never panics — it reaches the field
+    /// realistic worst-case shape) still never panics — it reaches the field
     /// parse / checksum / address-field paths with arbitrary trailing bytes.
     #[test]
     fn aligned_magic_total(

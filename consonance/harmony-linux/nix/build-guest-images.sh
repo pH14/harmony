@@ -275,7 +275,7 @@ else
             N6_TRAPS_OFF=1 ./build-kernel.sh)
     fi
     if [ "$serialization_gate" -eq 1 ]; then
-        echo "== N5: run /dev/harmony serialization positive and planted negative"
+        echo "== N5: run /dev/harmony serialization positive and negative control"
         (cd "$linux_dir" && ./test-harmony-serialization.sh)
     fi
     # The fault-library profile: the same series and pinned source, built

@@ -128,7 +128,7 @@ pub enum Outcome {
 pub trait Environment {
     /// Answer one **guest** [`DecisionPoint`] with an [`Answer`]. Deterministic
     /// given the backing's own state and the point; never panics, even on a
-    /// hostile point. A [`HostFault`] is never surfaced here — it has no decision
+    /// malformed point. A [`HostFault`] is never surfaced here — it has no decision
     /// point.
     fn decide(&mut self, point: &DecisionPoint) -> Outcome;
 }
