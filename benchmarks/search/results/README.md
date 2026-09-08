@@ -66,6 +66,19 @@ retains its plateau, observing 60/60/61 map cells. This does not support adding
 counts to the general candidate; the qualified SMB reference is a separate
 resource condition.
 
+[`progress-continuation-005.json`](progress-continuation-005.json) isolates
+semantic progress ordering on top of count-weighted continuation replay.
+At the last observation at or below 50 million admitted frames, Metroid covers
+69/77/72 map cells versus 60/60/61 (median 72 versus 60, +20%). No run gains
+another item or missile-capacity tier. At termination the counts are 75/83/75,
+but those runs also performed more frames, so the matched-work comparison is
+the stronger evidence. These are three development seeds and sampled counts.
+
+Metal Man still clears on every seed, but its median cost rises from 1,889,540
+to 5,172,804 frames (+173.8%). The other workload policies retain their default
+progress ordering and reproduce their prior frame costs. Semantic progress is
+an explicit exploration experiment, not the general recommended selector.
+
 ## Qualified SMB reference
 
 [`smb-reference-005.json`](smb-reference-005.json) records four development
