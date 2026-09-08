@@ -59,6 +59,11 @@ whose guest stopped for good while settling is recorded with that stop. A
 bounded LRU keeps recent prefixes resident and rebuilds evicted ones from their
 longest cached ancestor.
 
+A campaign never encodes the virtual-time trace, so the session is configured
+to defer sparse checkpoint hashing. Each due checkpoint would otherwise hash
+all of a gigabyte-class guest's RAM inside the run that reached it, starting
+with the boot that reaches setup.
+
 [`campaign`](src/campaign.rs) implements the game-neutral campaign interface
 over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
 which pairs the sometimes-assertion set with the live-node bitmap and the

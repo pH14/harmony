@@ -102,6 +102,7 @@ impl Session {
         #[cfg(target_arch = "x86_64")]
         let seed = config.seed;
         let cmdline = config.cmdline.clone();
+        let defer_checkpoint_hashes = config.defer_virtual_time_checkpoint_hashes;
         let boot = move |kernel: &[u8], initramfs: &[u8]| {
             #[cfg(target_arch = "x86_64")]
             let mut vmm = boot_linux_stock_virtual_time(kernel, initramfs, ram, &cmdline, seed)
@@ -110,6 +111,13 @@ impl Session {
             let mut vmm = boot_selected_control(kernel, initramfs, &cmdline, ram)
                 .map_err(|error| format!("Consonance boot compose failed: {error:?}"))?;
             vmm.wire_snapshot_hashing();
+            // Before the guest runs, so the boot's own checkpoints are deferred
+            // too, and on every VM this closure builds, which includes the ones
+            // a restore boots from the session factory.
+            if defer_checkpoint_hashes {
+                vmm.defer_virtual_time_checkpoint_hashes()
+                    .map_err(|error| format!("defer virtual-time hashes: {error}"))?;
+            }
             Ok::<_, String>(vmm)
         };
 
@@ -323,18 +331,6 @@ impl Session {
             Self::try_seal,
             Self::settle_step,
         )
-    }
-
-    /// Record virtual-time checkpoint hashes for the live VM after the run
-    /// rather than during it. Must precede the first traced event.
-    pub fn defer_virtual_time_checkpoint_hashes(&mut self) -> Result<(), Box<dyn Error>> {
-        self.client
-            .transport_mut()
-            .vmm_mut()
-            .ok_or_else(|| SessionError::Control("session has no live VM".to_owned()))?
-            .defer_virtual_time_checkpoint_hashes()
-            .map_err(|error| SessionError::Control(error.to_string()))?;
-        Ok(())
     }
 
     /// Seal the current point, or `None` when the server cannot seal it yet.

@@ -108,9 +108,13 @@ impl FaultConfig {
         let ram = usize::try_from(self.ram_mib)
             .unwrap_or(usize::MAX / (1024 * 1024))
             .saturating_mul(1024 * 1024);
+        // A campaign never encodes the virtual-time trace, so the sparse
+        // checkpoint hash over all of a gigabyte-class guest's RAM would only
+        // slow every run, starting with the boot that reaches setup.
         SessionConfig::new(ram, SEED, SETUP_BUDGET, self.cmdline())
             .with_identity_tag(IDENTITY_TAG)
             .with_wall_limit(WALL_LIMIT)
+            .with_deferred_virtual_time_checkpoint_hashes()
     }
 }
 
@@ -520,11 +524,6 @@ impl Live {
             Vec::new(),
         )
         .map_err(|error| format!("fault guest boot failed: {error}"))?;
-        // A campaign never encodes the virtual-time trace, so the sparse
-        // checkpoint hash over all guest RAM would only slow every execution.
-        session
-            .defer_virtual_time_checkpoint_hashes()
-            .map_err(|error| format!("defer virtual-time hashes: {error}"))?;
         session.set_service_factory(service_factory());
         // The client boots to the fault agent's `setup_complete`, which the
         // agent publishes once every node is up and the readiness command has

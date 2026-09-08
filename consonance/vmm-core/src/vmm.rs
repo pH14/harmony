@@ -4518,6 +4518,43 @@ mod tests {
     }
 
     #[test]
+    fn deferral_chosen_before_the_first_run_covers_that_run() {
+        let exits = || {
+            (0..256)
+                .map(|_| Exit::Arch(X86Exit::Rdtsc))
+                .collect::<Vec<_>>()
+        };
+        // The order a composition root wires one VM in: snapshot hashing on,
+        // deferral chosen, and only then the guest runs.
+        let mut vmm = vtime_vmm(exits(), 11);
+        vmm.wire_snapshot_hashing();
+        vmm.defer_virtual_time_checkpoint_hashes().unwrap();
+        for _ in 0..256 {
+            assert_eq!(vmm.step().unwrap(), Step::Continued);
+        }
+        assert!(vmm.snapshot_hashing_wired());
+        assert_eq!(
+            vmm.virtual_time_trace().unwrap().normalized_log().events[255].state_hash,
+            None,
+            "the checkpoint the run itself reached was deferred"
+        );
+        let hash = vmm.state_hash().unwrap();
+        vmm.checkpoint_virtual_time_trace_at(255, hash).unwrap();
+        assert_eq!(
+            vmm.virtual_time_trace().unwrap().normalized_log().events[255].state_hash,
+            Some(hash),
+            "the deferred hash still materializes"
+        );
+
+        // Choosing it once the guest has run is refused, so a run that must not
+        // hash during it has to have the choice made before it starts.
+        let mut late = vtime_vmm(exits(), 11);
+        late.wire_snapshot_hashing();
+        assert_eq!(late.step().unwrap(), Step::Continued);
+        assert!(late.defer_virtual_time_checkpoint_hashes().is_err());
+    }
+
+    #[test]
     fn trace_and_snapshot_boundary_guards_fail_closed_independently() {
         assert!(!synchronous_checkpoint_due(false, false));
         assert!(!synchronous_checkpoint_due(false, true));
