@@ -42,6 +42,21 @@ python3 benchmarks/search/eval.py run benchmarks/search/evaluation.json \
   --memory-capacity-mib 40000
 ```
 
+Repeat the qualified whole-game SMB gate with the same identified build:
+
+```sh
+python3 benchmarks/search/eval.py run benchmarks/search/smb-reference.json \
+  --assets /private/assets.json --binary /private/builds/search-001/nes-eval \
+  --build-info /private/builds/search-001/build-info.json \
+  --out /private/runs/smb-reference-001 --jobs 1 --cpus 24 \
+  --memory-capacity-mib 8192
+```
+
+This searches from a new game on each registered seed and fails if any cell
+misses its declared victory budget. The five-seed reference passed on ms02;
+its measured resource costs and the separate stress-panel failures are in
+[`results`](results/README.md).
+
 Builds and matrix output directories must be new. The build helper checks that
 source identity is unchanged during compilation and records compiler versions,
 source hash, flags and executable hash. `--build-info` is checked against the
@@ -93,9 +108,10 @@ frame, execution and wall ceilings. SMB's dedicated regression panel keeps the
 400,000-execution gate; the broad eight-worker panel allows 600,000 executions
 under an 80-million-frame cap. The practical SMB reference allows 600,000
 executions and 120 million frames at 24 workers. It solved all four development
-seeds (including seed 1) in 122–167 seconds, with witnesses verified; the separate
-five-seed validation is registered before those results are observed. These are
-distinct resource conditions.
+seeds (including seed 1) in 122–167 seconds and all five fresh validation seeds
+in 89–251 seconds, including witness verification. One validation seed needed
+598,013 executions, close to the 600,000 ceiling. These are distinct resource
+conditions; the stress-panel failures remain recorded.
 
 All manifests specify exact ROM hashes and normal menu origins. MM2 is currently
 an independent-stage panel; it does not claim full-game evaluation. Metroid

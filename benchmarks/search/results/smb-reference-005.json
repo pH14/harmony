@@ -1,0 +1,1157 @@
+{
+  "format": "harmony-search-evidence-v1",
+  "scope": "Practical fresh whole-game SMB recipe qualified on five registered validation seeds, separately from four development seeds. Fixed main SMB adapter; generic entry-count weighting and bounded execution overlap; no supplied gameplay tape. This is a different resource profile from the one-reservation 400000/80000000 stress panel, whose failures remain recorded.",
+  "raw_export_location": "ms02:/root/harmony-search-eval/public/",
+  "inputs": [
+    {
+      "role": "development",
+      "run": "smb-reference-development-005",
+      "results_sha256": "2a06a04a7f50a9bc0c5730b5438a046d3c52c9103d712437125afca4d6508b81",
+      "matrix_sha256": "8b983eb7e6254cea8f074100fcda9c62bea1f2126a83ba9610bdac38801706db",
+      "suite": {
+        "cases": [
+          {
+            "game": "smb",
+            "id": "smb-full",
+            "origin": "power-on gameplay genesis",
+            "require_solved": true,
+            "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea"
+          }
+        ],
+        "format": "harmony-search-eval-v1",
+        "id": "nes-smb-reference-development-005",
+        "memory_mib": [
+          2048
+        ],
+        "search": {
+          "actions": 8192,
+          "executions": 600000,
+          "frames": 120000000,
+          "mixture": "energy_splice:6",
+          "result_slots": 2,
+          "selector": "room_cell_uniform_128_energy_frontier_cheapest_count_v1:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "verification": "witness",
+          "wall_seconds": 600,
+          "window": 2
+        },
+        "seeds": [
+          1,
+          20260905,
+          20260906,
+          20260907
+        ],
+        "workers": [
+          24
+        ]
+      },
+      "matrix": {
+        "build": {
+          "attestation": "supplied",
+          "binary_sha256": "18c2df002b88860f1574c1870b7c584226aabffeb15fc55040534d66cff0dfbc",
+          "source": {
+            "binary_sha256": "18c2df002b88860f1574c1870b7c584226aabffeb15fc55040534d66cff0dfbc",
+            "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+            "dirty": null,
+            "files": 254,
+            "format": "harmony-search-build-v1",
+            "locked": true,
+            "profile": "release",
+            "revision": null,
+            "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+            "rustflags": "",
+            "source_tree_sha256": "ee9d36fd1fd808820220cde6998bbf3be740b3e7f2f5426c1eb84d7d0d58351a"
+          }
+        },
+        "cells": [
+          "smb-full-s1-w24-m2048",
+          "smb-full-s20260905-w24-m2048",
+          "smb-full-s20260906-w24-m2048",
+          "smb-full-s20260907-w24-m2048"
+        ],
+        "format": "harmony-search-eval-v1",
+        "host": {
+          "cpu_model": "Intel(R) Core(TM) Ultra 9 285HX",
+          "hostname": "ms02",
+          "logical_cpus": 24,
+          "machine": "x86_64",
+          "release": "7.1.8+deb13-amd64",
+          "system": "Linux"
+        },
+        "runner": {
+          "cpu_capacity": 24,
+          "disk_limit_gib": 8,
+          "finish_seconds": 600,
+          "jobs": 1,
+          "memory_capacity_mib": 40000,
+          "overhead_mib": 1024,
+          "sample_seconds": 1
+        }
+      },
+      "aggregates": [
+        {
+          "case": "smb-full",
+          "errors": 0,
+          "median_frames_to_victory_among_successes": 50226779.0,
+          "median_search_frames_per_second": 396918.74565721094,
+          "memory_mib": 2048,
+          "solve_fraction_of_valid": 1.0,
+          "solve_fraction_wilson95": [
+            0.5101091635454027,
+            1.0
+          ],
+          "solved": 4,
+          "trials": 4,
+          "valid_trials": 4,
+          "workers": 24
+        }
+      ],
+      "trials": [
+        {
+          "cell": "smb-full-s1-w24-m2048",
+          "status": "complete",
+          "elapsed_seconds": 140.86574251996353,
+          "cpu_seconds": 1756.773417,
+          "cpu_set": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23
+          ],
+          "result": {
+            "executions": 340794,
+            "executions_per_second": 2595.504610696373,
+            "executions_to_first_victory": 340747,
+            "export_seconds": 0.001954042,
+            "format": "nes-eval-result-v1",
+            "frame_budget_overshoot": 0,
+            "frames_emulated": 53106606,
+            "frames_per_second": 404462.6393992725,
+            "frames_to_first_victory": 53101622,
+            "milestones": {
+              "max_1_1_scroll_bucket": 197,
+              "reached_1_1_flag": true,
+              "reached_1_2": true,
+              "reached_onward": true
+            },
+            "preparation_seconds": 0.001097036,
+            "progress": {
+              "level": 3,
+              "progress": 286,
+              "world": 7
+            },
+            "search_seconds": 131.301635372,
+            "solved": true,
+            "status": "complete",
+            "stop_reason": "victory",
+            "stream_bytes_generated": 231534378,
+            "stream_retained": false,
+            "stream_sha256": "dc7989352209f4991ca8cce92f8c68a86a6b481f660c1ec9946fa4ffecf4d002",
+            "verification": "witness",
+            "verification_seconds": 8.566043903,
+            "victory_observed": true,
+            "witness": {
+              "dead": false,
+              "milestones": {
+                "max_1_1_scroll_bucket": 195,
+                "reached_1_1_flag": true,
+                "reached_1_2": true,
+                "reached_onward": true
+              },
+              "snapshot_sha256": "c7ca74c2715ae8ac06ac39235dbe7cf97377bc0a55c4932b4fa8826fa54d5e12",
+              "victory": true
+            }
+          },
+          "max_process_rss_bytes": 2887995392,
+          "peak_process_tree_rss_bytes_sampled": 2826076160,
+          "peak_disk_logical_bytes_sampled": 8847976,
+          "peak_disk_allocated_bytes_sampled": 8871936,
+          "final_disk": {
+            "allocated_bytes": 8871936,
+            "categories": {
+              "reports_and_logs": 3901194,
+              "telemetry": 4946782
+            },
+            "logical_bytes": 8847976
+          },
+          "rss_by_phase_bytes_sampled": {
+            "done": 0,
+            "search": 2826076160,
+            "verification": 685912064
+          },
+          "io_bytes_last_sample": {
+            "read_bytes": 0,
+            "rss_bytes": 0,
+            "write_bytes": 8667136
+          },
+          "rusage": {
+            "input_block_operations": 0,
+            "involuntary_context_switches": 17660,
+            "output_block_operations": 16928,
+            "voluntary_context_switches": 1215932
+          }
+        },
+        {
+          "cell": "smb-full-s20260905-w24-m2048",
+          "status": "complete",
+          "elapsed_seconds": 121.76797370100394,
+          "cpu_seconds": 1456.331404,
+          "cpu_set": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23
+          ],
+          "result": {
+            "executions": 306526,
+            "executions_per_second": 2722.2463551972514,
+            "executions_to_first_victory": 306479,
+            "export_seconds": 0.001826512,
+            "format": "nes-eval-result-v1",
+            "frame_budget_overshoot": 0,
+            "frames_emulated": 43843760,
+            "frames_per_second": 389374.8519151493,
+            "frames_to_first_victory": 43838866,
+            "milestones": {
+              "max_1_1_scroll_bucket": 197,
+              "reached_1_1_flag": true,
+              "reached_1_2": true,
+              "reached_onward": true
+            },
+            "preparation_seconds": 0.001076664,
+            "progress": {
+              "level": 3,
+              "progress": 286,
+              "world": 7
+            },
+            "search_seconds": 112.600389533,
+            "solved": true,
+            "status": "complete",
+            "stop_reason": "victory",
+            "stream_bytes_generated": 205665766,
+            "stream_retained": false,
+            "stream_sha256": "0c82a90637874689dc0d9d3426bd07f8dd0977ba84270befbd3d967cb923c4d3",
+            "verification": "witness",
+            "verification_seconds": 8.536973547,
+            "victory_observed": true,
+            "witness": {
+              "dead": false,
+              "milestones": {
+                "max_1_1_scroll_bucket": 195,
+                "reached_1_1_flag": true,
+                "reached_1_2": true,
+                "reached_onward": true
+              },
+              "snapshot_sha256": "56f68ccc832ad53e4951c1eb8f67897d3f1a71b6a297634ee3bf5680931be533",
+              "victory": true
+            }
+          },
+          "max_process_rss_bytes": 2807664640,
+          "peak_process_tree_rss_bytes_sampled": 2742312960,
+          "peak_disk_logical_bytes_sampled": 7990015,
+          "peak_disk_allocated_bytes_sampled": 8019968,
+          "final_disk": {
+            "allocated_bytes": 8019968,
+            "categories": {
+              "reports_and_logs": 3554462,
+              "telemetry": 4435553
+            },
+            "logical_bytes": 7990015
+          },
+          "rss_by_phase_bytes_sampled": {
+            "done": 0,
+            "search": 2742312960,
+            "verification": 1150861312
+          },
+          "io_bytes_last_sample": {
+            "read_bytes": 0,
+            "rss_bytes": 0,
+            "write_bytes": 7843840
+          },
+          "rusage": {
+            "input_block_operations": 0,
+            "involuntary_context_switches": 12514,
+            "output_block_operations": 15320,
+            "voluntary_context_switches": 1070350
+          }
+        },
+        {
+          "cell": "smb-full-s20260906-w24-m2048",
+          "status": "complete",
+          "elapsed_seconds": 131.7835825260263,
+          "cpu_seconds": 1580.3390539999998,
+          "cpu_set": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23
+          ],
+          "result": {
+            "executions": 339743,
+            "executions_per_second": 2754.033771224923,
+            "executions_to_first_victory": 339696,
+            "export_seconds": 0.001788299,
+            "format": "nes-eval-result-v1",
+            "frame_budget_overshoot": 0,
+            "frames_emulated": 47357158,
+            "frames_per_second": 383887.8577078396,
+            "frames_to_first_victory": 47351936,
+            "milestones": {
+              "max_1_1_scroll_bucket": 197,
+              "reached_1_1_flag": true,
+              "reached_1_2": true,
+              "reached_onward": true
+            },
+            "preparation_seconds": 0.001120876,
+            "progress": {
+              "level": 3,
+              "progress": 286,
+              "world": 7
+            },
+            "search_seconds": 123.361958575,
+            "solved": true,
+            "status": "complete",
+            "stop_reason": "victory",
+            "stream_bytes_generated": 228333722,
+            "stream_retained": false,
+            "stream_sha256": "d94ee58863332f683aaaf55cc872dd1947f69aac19081f91605c9f65a46f8d52",
+            "verification": "witness",
+            "verification_seconds": 8.269391052,
+            "victory_observed": true,
+            "witness": {
+              "dead": false,
+              "milestones": {
+                "max_1_1_scroll_bucket": 195,
+                "reached_1_1_flag": true,
+                "reached_1_2": true,
+                "reached_onward": true
+              },
+              "snapshot_sha256": "d2866eec9e694fbd2902fa79757dc2fed228caa47e757410fd7b9cf604dbb2a6",
+              "victory": true
+            }
+          },
+          "max_process_rss_bytes": 2874466304,
+          "peak_process_tree_rss_bytes_sampled": 2811633664,
+          "peak_disk_logical_bytes_sampled": 8797795,
+          "peak_disk_allocated_bytes_sampled": 8822784,
+          "final_disk": {
+            "allocated_bytes": 8822784,
+            "categories": {
+              "reports_and_logs": 3881349,
+              "telemetry": 4916446
+            },
+            "logical_bytes": 8797795
+          },
+          "rss_by_phase_bytes_sampled": {
+            "done": 0,
+            "search": 2811633664,
+            "verification": 722403328
+          },
+          "io_bytes_last_sample": {
+            "read_bytes": 0,
+            "rss_bytes": 0,
+            "write_bytes": 8622080
+          },
+          "rusage": {
+            "input_block_operations": 0,
+            "involuntary_context_switches": 13212,
+            "output_block_operations": 16840,
+            "voluntary_context_switches": 1176736
+          }
+        },
+        {
+          "cell": "smb-full-s20260907-w24-m2048",
+          "status": "complete",
+          "elapsed_seconds": 167.08304406807292,
+          "cpu_seconds": 2211.758275,
+          "cpu_set": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23
+          ],
+          "result": {
+            "executions": 405792,
+            "executions_per_second": 2561.16853784521,
+            "executions_to_first_victory": 405745,
+            "export_seconds": 0.002118305,
+            "format": "nes-eval-result-v1",
+            "frame_budget_overshoot": 0,
+            "frames_emulated": 67007788,
+            "frames_per_second": 422921.6899697426,
+            "frames_to_first_victory": 67003949,
+            "milestones": {
+              "max_1_1_scroll_bucket": 197,
+              "reached_1_1_flag": true,
+              "reached_1_2": true,
+              "reached_onward": true
+            },
+            "preparation_seconds": 0.00109029,
+            "progress": {
+              "level": 3,
+              "progress": 286,
+              "world": 7
+            },
+            "search_seconds": 158.440178381,
+            "solved": true,
+            "status": "complete",
+            "stop_reason": "victory",
+            "stream_bytes_generated": 279211468,
+            "stream_retained": false,
+            "stream_sha256": "713e87b7a9b0ba8612f47b02369274ffee7340d40bbae114e0d2a36a8b87251b",
+            "verification": "witness",
+            "verification_seconds": 8.429238695,
+            "victory_observed": true,
+            "witness": {
+              "dead": false,
+              "milestones": {
+                "max_1_1_scroll_bucket": 195,
+                "reached_1_1_flag": true,
+                "reached_1_2": true,
+                "reached_onward": true
+              },
+              "snapshot_sha256": "07748329ef92053fac83409f2bc10802eda392e266402b646a68f8a29ba5ae9a",
+              "victory": true
+            }
+          },
+          "max_process_rss_bytes": 2875838464,
+          "peak_process_tree_rss_bytes_sampled": 2807238656,
+          "peak_disk_logical_bytes_sampled": 10469078,
+          "peak_disk_allocated_bytes_sampled": 10502144,
+          "final_disk": {
+            "allocated_bytes": 10502144,
+            "categories": {
+              "reports_and_logs": 4560212,
+              "telemetry": 5908866
+            },
+            "logical_bytes": 10469078
+          },
+          "rss_by_phase_bytes_sampled": {
+            "done": 0,
+            "search": 2807238656,
+            "verification": 1108148224
+          },
+          "io_bytes_last_sample": {
+            "read_bytes": 0,
+            "rss_bytes": 0,
+            "write_bytes": 10256384
+          },
+          "rusage": {
+            "input_block_operations": 0,
+            "involuntary_context_switches": 30961,
+            "output_block_operations": 20032,
+            "voluntary_context_switches": 1506430
+          }
+        }
+      ]
+    },
+    {
+      "role": "validation",
+      "run": "smb-reference-validation-005",
+      "results_sha256": "b55e89746e9dbff72858b8183b4b76866749ff6f00ef313b540f17aad41d3a9d",
+      "matrix_sha256": "1592cf645c71244b459efcba00f603aaba88a51aa2ffa182bdaa0128bf1de621",
+      "suite": {
+        "cases": [
+          {
+            "game": "smb",
+            "id": "smb-full",
+            "origin": "power-on gameplay genesis",
+            "require_solved": true,
+            "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea"
+          }
+        ],
+        "format": "harmony-search-eval-v1",
+        "id": "nes-smb-reference-v1",
+        "memory_mib": [
+          2048
+        ],
+        "search": {
+          "actions": 8192,
+          "executions": 600000,
+          "frames": 120000000,
+          "mixture": "energy_splice:6",
+          "result_slots": 2,
+          "selector": "room_cell_uniform_128_energy_frontier_cheapest_count_v1:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "verification": "witness",
+          "wall_seconds": 600,
+          "window": 2
+        },
+        "seeds": [
+          20260910,
+          20260911,
+          20260912,
+          20260913,
+          20260914
+        ],
+        "workers": [
+          24
+        ]
+      },
+      "matrix": {
+        "build": {
+          "attestation": "supplied",
+          "binary_sha256": "18c2df002b88860f1574c1870b7c584226aabffeb15fc55040534d66cff0dfbc",
+          "source": {
+            "binary_sha256": "18c2df002b88860f1574c1870b7c584226aabffeb15fc55040534d66cff0dfbc",
+            "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+            "dirty": null,
+            "files": 254,
+            "format": "harmony-search-build-v1",
+            "locked": true,
+            "profile": "release",
+            "revision": null,
+            "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+            "rustflags": "",
+            "source_tree_sha256": "ee9d36fd1fd808820220cde6998bbf3be740b3e7f2f5426c1eb84d7d0d58351a"
+          }
+        },
+        "cells": [
+          "smb-full-s20260910-w24-m2048",
+          "smb-full-s20260911-w24-m2048",
+          "smb-full-s20260912-w24-m2048",
+          "smb-full-s20260913-w24-m2048",
+          "smb-full-s20260914-w24-m2048"
+        ],
+        "format": "harmony-search-eval-v1",
+        "host": {
+          "cpu_model": "Intel(R) Core(TM) Ultra 9 285HX",
+          "hostname": "ms02",
+          "logical_cpus": 24,
+          "machine": "x86_64",
+          "release": "7.1.8+deb13-amd64",
+          "system": "Linux"
+        },
+        "runner": {
+          "cpu_capacity": 24,
+          "disk_limit_gib": 8,
+          "finish_seconds": 600,
+          "jobs": 1,
+          "memory_capacity_mib": 40000,
+          "overhead_mib": 1024,
+          "sample_seconds": 1
+        }
+      },
+      "aggregates": [
+        {
+          "case": "smb-full",
+          "errors": 0,
+          "median_frames_to_victory_among_successes": 54043675,
+          "median_search_frames_per_second": 404578.579278415,
+          "memory_mib": 2048,
+          "solve_fraction_of_valid": 1.0,
+          "solve_fraction_wilson95": [
+            0.5655175352168251,
+            1.0
+          ],
+          "solved": 5,
+          "trials": 5,
+          "valid_trials": 5,
+          "workers": 24
+        }
+      ],
+      "trials": [
+        {
+          "cell": "smb-full-s20260910-w24-m2048",
+          "status": "complete",
+          "elapsed_seconds": 118.75254580599722,
+          "cpu_seconds": 1405.7065539999999,
+          "cpu_set": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23
+          ],
+          "result": {
+            "executions": 301688,
+            "executions_per_second": 2732.030432211846,
+            "executions_to_first_victory": 301641,
+            "export_seconds": 0.001697057,
+            "format": "nes-eval-result-v1",
+            "frame_budget_overshoot": 0,
+            "frames_emulated": 42017148,
+            "frames_per_second": 380499.47963044303,
+            "frames_to_first_victory": 42011964,
+            "milestones": {
+              "max_1_1_scroll_bucket": 197,
+              "reached_1_1_flag": true,
+              "reached_1_2": true,
+              "reached_onward": true
+            },
+            "preparation_seconds": 0.00105385,
+            "progress": {
+              "level": 3,
+              "progress": 286,
+              "world": 7
+            },
+            "search_seconds": 110.426295565,
+            "solved": true,
+            "status": "complete",
+            "stop_reason": "victory",
+            "stream_bytes_generated": 201613481,
+            "stream_retained": false,
+            "stream_sha256": "33112e2a5dc91ed95635cdff4c162c901392d0a3b24be57f26e67b57b0ef15b6",
+            "verification": "witness",
+            "verification_seconds": 8.238856024,
+            "victory_observed": true,
+            "witness": {
+              "dead": false,
+              "milestones": {
+                "max_1_1_scroll_bucket": 195,
+                "reached_1_1_flag": true,
+                "reached_1_2": true,
+                "reached_onward": true
+              },
+              "snapshot_sha256": "1c9b3df686d40c1d6d79b71d4cb6637280e66d75f32fba9c2d39e499886cb135",
+              "victory": true
+            }
+          },
+          "max_process_rss_bytes": 2794401792,
+          "peak_process_tree_rss_bytes_sampled": 2734710784,
+          "peak_disk_logical_bytes_sampled": 7857246,
+          "peak_disk_allocated_bytes_sampled": 7880704,
+          "final_disk": {
+            "allocated_bytes": 7880704,
+            "categories": {
+              "reports_and_logs": 3495684,
+              "telemetry": 4361562
+            },
+            "logical_bytes": 7857246
+          },
+          "rss_by_phase_bytes_sampled": {
+            "done": 0,
+            "search": 2734710784,
+            "verification": 581488640
+          },
+          "io_bytes_last_sample": {
+            "read_bytes": 0,
+            "rss_bytes": 0,
+            "write_bytes": 7704576
+          },
+          "rusage": {
+            "input_block_operations": 0,
+            "involuntary_context_switches": 11540,
+            "output_block_operations": 15048,
+            "voluntary_context_switches": 1142352
+          }
+        },
+        {
+          "cell": "smb-full-s20260911-w24-m2048",
+          "status": "complete",
+          "elapsed_seconds": 250.59772151894867,
+          "cpu_seconds": 3538.343592,
+          "cpu_set": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23
+          ],
+          "result": {
+            "executions": 598060,
+            "executions_per_second": 2472.3364197197543,
+            "executions_to_first_victory": 598013,
+            "export_seconds": 0.006004543,
+            "format": "nes-eval-result-v1",
+            "frame_budget_overshoot": 0,
+            "frames_emulated": 107644217,
+            "frames_per_second": 444993.3419076954,
+            "frames_to_first_victory": 107639106,
+            "milestones": {
+              "max_1_1_scroll_bucket": 197,
+              "reached_1_1_flag": true,
+              "reached_1_2": true,
+              "reached_onward": true
+            },
+            "preparation_seconds": 0.00113988,
+            "progress": {
+              "level": 3,
+              "progress": 286,
+              "world": 7
+            },
+            "search_seconds": 241.900736174,
+            "solved": true,
+            "status": "complete",
+            "stop_reason": "victory",
+            "stream_bytes_generated": 438450636,
+            "stream_retained": false,
+            "stream_sha256": "b3b6b81dd75b0c90d8137bf59196fb124551be64aff88190a904568090ce49d0",
+            "verification": "witness",
+            "verification_seconds": 8.468511104,
+            "victory_observed": true,
+            "witness": {
+              "dead": false,
+              "milestones": {
+                "max_1_1_scroll_bucket": 195,
+                "reached_1_1_flag": true,
+                "reached_1_2": true,
+                "reached_onward": true
+              },
+              "snapshot_sha256": "ea89a7217e3900e02f583806bce9b91db0a789a66e7de2a3c2198225dff7c503",
+              "victory": true
+            }
+          },
+          "max_process_rss_bytes": 3029094400,
+          "peak_process_tree_rss_bytes_sampled": 2927251456,
+          "peak_disk_logical_bytes_sampled": 15155961,
+          "peak_disk_allocated_bytes_sampled": 15183872,
+          "final_disk": {
+            "allocated_bytes": 15183872,
+            "categories": {
+              "reports_and_logs": 6355314,
+              "telemetry": 8800647
+            },
+            "logical_bytes": 15155961
+          },
+          "rss_by_phase_bytes_sampled": {
+            "done": 0,
+            "search": 2927251456,
+            "verification": 1912836096
+          },
+          "io_bytes_last_sample": {
+            "read_bytes": 0,
+            "rss_bytes": 0,
+            "write_bytes": 14807040
+          },
+          "rusage": {
+            "input_block_operations": 0,
+            "involuntary_context_switches": 53395,
+            "output_block_operations": 28920,
+            "voluntary_context_switches": 2761211
+          }
+        },
+        {
+          "cell": "smb-full-s20260912-w24-m2048",
+          "status": "complete",
+          "elapsed_seconds": 142.90795022703242,
+          "cpu_seconds": 1792.971442,
+          "cpu_set": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23
+          ],
+          "result": {
+            "executions": 345729,
+            "executions_per_second": 2587.968121890189,
+            "executions_to_first_victory": 345682,
+            "export_seconds": 0.002002911,
+            "format": "nes-eval-result-v1",
+            "frame_budget_overshoot": 0,
+            "frames_emulated": 54048018,
+            "frames_per_second": 404578.579278415,
+            "frames_to_first_victory": 54043675,
+            "milestones": {
+              "max_1_1_scroll_bucket": 197,
+              "reached_1_1_flag": true,
+              "reached_1_2": true,
+              "reached_onward": true
+            },
+            "preparation_seconds": 0.001107132,
+            "progress": {
+              "level": 3,
+              "progress": 286,
+              "world": 7
+            },
+            "search_seconds": 133.590903642,
+            "solved": true,
+            "status": "complete",
+            "stop_reason": "victory",
+            "stream_bytes_generated": 236081520,
+            "stream_retained": false,
+            "stream_sha256": "70db19a3251056dafbcc030441d2df7507c5a23130918cece99d26fab3b44855",
+            "verification": "witness",
+            "verification_seconds": 8.31028469,
+            "victory_observed": true,
+            "witness": {
+              "dead": false,
+              "milestones": {
+                "max_1_1_scroll_bucket": 195,
+                "reached_1_1_flag": true,
+                "reached_1_2": true,
+                "reached_onward": true
+              },
+              "snapshot_sha256": "2ab515629752f4c7beee5368c9b841bf40cba836bf79ba7742c96a1d39d3fa40",
+              "victory": true
+            }
+          },
+          "max_process_rss_bytes": 2908307456,
+          "peak_process_tree_rss_bytes_sampled": 2898391040,
+          "peak_disk_logical_bytes_sampled": 8940304,
+          "peak_disk_allocated_bytes_sampled": 8970240,
+          "final_disk": {
+            "allocated_bytes": 8970240,
+            "categories": {
+              "reports_and_logs": 3919784,
+              "telemetry": 5020520
+            },
+            "logical_bytes": 8940304
+          },
+          "rss_by_phase_bytes_sampled": {
+            "done": 0,
+            "search": 2898391040,
+            "verification": 762245120
+          },
+          "io_bytes_last_sample": {
+            "read_bytes": 0,
+            "rss_bytes": 0,
+            "write_bytes": 8761344
+          },
+          "rusage": {
+            "input_block_operations": 0,
+            "involuntary_context_switches": 17931,
+            "output_block_operations": 17112,
+            "voluntary_context_switches": 1212884
+          }
+        },
+        {
+          "cell": "smb-full-s20260913-w24-m2048",
+          "status": "complete",
+          "elapsed_seconds": 89.5246093920432,
+          "cpu_seconds": 959.291181,
+          "cpu_set": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23
+          ],
+          "result": {
+            "executions": 242714,
+            "executions_per_second": 2994.850909745513,
+            "executions_to_first_victory": 242667,
+            "export_seconds": 0.001687612,
+            "format": "nes-eval-result-v1",
+            "frame_budget_overshoot": 0,
+            "frames_emulated": 28228322,
+            "frames_per_second": 348309.5982196712,
+            "frames_to_first_victory": 28223022,
+            "milestones": {
+              "max_1_1_scroll_bucket": 197,
+              "reached_1_1_flag": true,
+              "reached_1_2": true,
+              "reached_onward": true
+            },
+            "preparation_seconds": 0.001106667,
+            "progress": {
+              "level": 3,
+              "progress": 286,
+              "world": 7
+            },
+            "search_seconds": 81.043767224,
+            "solved": true,
+            "status": "complete",
+            "stop_reason": "victory",
+            "stream_bytes_generated": 161371863,
+            "stream_retained": false,
+            "stream_sha256": "3b628e24682cf0d6f5e634abbc000bf405808b9a712cdd13504473ba2cbb7a22",
+            "verification": "witness",
+            "verification_seconds": 7.658471658,
+            "victory_observed": true,
+            "witness": {
+              "dead": false,
+              "milestones": {
+                "max_1_1_scroll_bucket": 195,
+                "reached_1_1_flag": true,
+                "reached_1_2": true,
+                "reached_onward": true
+              },
+              "snapshot_sha256": "d71e7c01af1a366263fd3b4a9974c199425811fb20b35da56313a2a001892ba9",
+              "victory": true
+            }
+          },
+          "max_process_rss_bytes": 2653245440,
+          "peak_process_tree_rss_bytes_sampled": 2602643456,
+          "peak_disk_logical_bytes_sampled": 6367522,
+          "peak_disk_allocated_bytes_sampled": 6397952,
+          "final_disk": {
+            "allocated_bytes": 6397952,
+            "categories": {
+              "reports_and_logs": 2875318,
+              "telemetry": 3492204
+            },
+            "logical_bytes": 6367522
+          },
+          "rss_by_phase_bytes_sampled": {
+            "done": 0,
+            "search": 2602643456,
+            "verification": 704438272
+          },
+          "io_bytes_last_sample": {
+            "read_bytes": 0,
+            "rss_bytes": 0,
+            "write_bytes": 6266880
+          },
+          "rusage": {
+            "input_block_operations": 0,
+            "involuntary_context_switches": 6228,
+            "output_block_operations": 12240,
+            "voluntary_context_switches": 896717
+          }
+        },
+        {
+          "cell": "smb-full-s20260914-w24-m2048",
+          "status": "complete",
+          "elapsed_seconds": 185.19137832394335,
+          "cpu_seconds": 2483.82083,
+          "cpu_set": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23
+          ],
+          "result": {
+            "executions": 454004,
+            "executions_per_second": 2581.5904721226593,
+            "executions_to_first_victory": 453957,
+            "export_seconds": 0.001559389,
+            "format": "nes-eval-result-v1",
+            "frame_budget_overshoot": 0,
+            "frames_emulated": 75813569,
+            "frames_per_second": 431096.61454087147,
+            "frames_to_first_victory": 75810079,
+            "milestones": {
+              "max_1_1_scroll_bucket": 197,
+              "reached_1_1_flag": true,
+              "reached_1_2": true,
+              "reached_onward": true
+            },
+            "preparation_seconds": 0.001083583,
+            "progress": {
+              "level": 3,
+              "progress": 286,
+              "world": 7
+            },
+            "search_seconds": 175.862130304,
+            "solved": true,
+            "status": "complete",
+            "stop_reason": "victory",
+            "stream_bytes_generated": 313974893,
+            "stream_retained": false,
+            "stream_sha256": "0f99ba196d43607ae04fcfbe6cda1d0b1c332b94d5a02d8ba820bf91fa651d25",
+            "verification": "witness",
+            "verification_seconds": 8.526766913,
+            "victory_observed": true,
+            "witness": {
+              "dead": false,
+              "milestones": {
+                "max_1_1_scroll_bucket": 195,
+                "reached_1_1_flag": true,
+                "reached_1_2": true,
+                "reached_onward": true
+              },
+              "snapshot_sha256": "e2c2631cd663720c49e5d7e929ef392a3dc146e3b7f90e404656af10562e52ff",
+              "victory": true
+            }
+          },
+          "max_process_rss_bytes": 2869886976,
+          "peak_process_tree_rss_bytes_sampled": 2804125696,
+          "peak_disk_logical_bytes_sampled": 11541811,
+          "peak_disk_allocated_bytes_sampled": 11567104,
+          "final_disk": {
+            "allocated_bytes": 11567104,
+            "categories": {
+              "reports_and_logs": 4912785,
+              "telemetry": 6629026
+            },
+            "logical_bytes": 11541811
+          },
+          "rss_by_phase_bytes_sampled": {
+            "done": 0,
+            "search": 2804125696,
+            "verification": 1044561920
+          },
+          "io_bytes_last_sample": {
+            "read_bytes": 0,
+            "rss_bytes": 0,
+            "write_bytes": 11292672
+          },
+          "rusage": {
+            "input_block_operations": 0,
+            "involuntary_context_switches": 32311,
+            "output_block_operations": 22056,
+            "voluntary_context_switches": 1708787
+          }
+        }
+      ]
+    }
+  ]
+}

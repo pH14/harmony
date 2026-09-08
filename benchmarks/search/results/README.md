@@ -36,6 +36,25 @@ Whole-game Nova reached 5, 6, and 7 cleared-level flags in these short runs. Thi
 confirms execution continues through intermediate clears, without claiming all
 40 levels are solved. Throughput trials do not require whole-game completion.
 
+## Qualified SMB reference
+
+[`smb-reference-005.json`](smb-reference-005.json) records four development
+seeds and five separately registered fresh validation seeds. All nine fresh
+whole-game searches produced twice-replayed winning witnesses. The reference
+uses entry counts, 24 workers, 2,048 MiB, a two-reservation window, two physical
+result slots, and ceilings of 600,000 executions / 120 million admitted frames.
+No gameplay tape or adapter change is supplied.
+
+The five validation seeds all passed in 89–251 seconds including verification
+(median 143 seconds), with first-victory frame costs of 28.2–107.6 million.
+OS peak process RSS ranged from 2,530 to 2,889 MiB despite the 2,048 MiB logical
+archive budget; final per-cell disk footprints were 6.1–14.5 MiB.
+Seed 20260911 needed 598,013 executions, leaving little headroom under the gate.
+The four development seeds took 122–167 seconds. These small fixed panels do
+not establish that arbitrary seeds always succeed. Run the checked
+[`smb-reference.json`](../smb-reference.json) to repeat this recipe; retain the
+stricter stress panel below as a separate condition.
+
 ## Extended SMB count panel
 
 [`smb-count-extended.json`](smb-count-extended.json) retains five paired seeds at
