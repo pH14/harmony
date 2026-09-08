@@ -1,0 +1,14 @@
+{
+  "archive": "harmony-remine-report-012.tar.gz",
+  "archive_bytes": 60675219,
+  "archive_sha256": "bd1f48e51dbc991d3efee587e64a5689a58a8dd911b055a7997cda249ad3389d",
+  "files": 1238,
+  "format": "harmony-search-publication-v1",
+  "measured_code_commit": "0d77701f64517269dd49f669988acd58f4cb8637",
+  "records_sha256": {
+    "remine-012.json": "543a7341d606e04a4e98fa5ffd8f189b047664cb51c0d5130a33da86d82000f1",
+    "smb-zero-dispatch-012.json": "e5cb600e325cdd6b3337633245e4ede263c7bff7926e659eb62b9717abd250e5",
+    "transcript-remine-012.json": "f169831e7f5466b93dd2a7a86ed82d9aec5482d423da60032aea43b298f6afc5"
+  },
+  "scope": "ROM-free transcript-remining and continuation-policy report. Includes 137 cells across 12 panels, registered requests, resource samples, named Metroid first-discovery inputs and replay results, figures, publication tools, and checksums. Excludes licensed ROMs, cores, snapshots, full campaign streams, and gameplay media."
+}

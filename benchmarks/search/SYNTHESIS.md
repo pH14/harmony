@@ -144,3 +144,13 @@ preserving the v1 identifier. Existing v1 outcome tables measure the combined
 mechanism; they remain valid observations but do not isolate triggered replay
 from its effect on ordinary mutation weights. The new panels compare v1 and v2
 directly rather than relabeling old records.
+
+The completed [012 panel](results/README.md#remined-policy-panel-012) retains
+both gains and regressions. Alphabet continuation reaches Bombs and Kraid's
+area earlier in all three long Metroid seeds, but loses two Long Beam discoveries
+and the control's one Ridley-area discovery; neither arm defeats a boss. It
+reduces Nova level 1's paired victory cost in the short panel while increasing
+Metal Man and STB costs. Isolated accounting v2 has a substantial Nova level 1
+regression and an STB gain. Neither experiment changes defaults. The established
+policy still preserves all 18 isolated throughput streams, and the separate
+five-seed SMB reference reproduces its previous search streams and victories.

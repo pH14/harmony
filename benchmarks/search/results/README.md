@@ -14,6 +14,138 @@ Git commits by exact source-hash equality against freshly extracted Git trees.
 Build 005 is `02463cae`. Its executable and original source-copy metadata remain
 immutable; later commits are not retroactively attributed to that measured build.
 
+## Complete-session design audit
+
+[`transcript-remine-012.json`](transcript-remine-012.json) identifies the complete
+SMB worker/integrator, Metroid, and Mega Man 2 transcripts used in the second
+design audit. The source sessions remain private. The mechanism-by-mechanism
+decisions, including rejected and canceled experiments, are recorded in
+[`SYNTHESIS.md`](../SYNTHESIS.md#second-transcript-audit).
+
+This audit recovered alphabet exploration with separately accounted continuation
+replay. It also identified the ordinary splice-energy coupling in the existing
+continuation policy. The new `alphabet_continuation_v1` and
+`energy_splice_continuation_v2:<scale>` identifiers isolate triggered retries;
+the old v1 identifier retains its behavior for historical replay. Neither new
+policy adds game-specific priorities or changes the ordinary policy defaults.
+
+## Remined policy panel 012
+
+[`remine-012.json`](remine-012.json) records the frozen candidate at
+`0d77701f64517269dd49f669988acd58f4cb8637`. Its source hash matches a clean Git
+extraction; the executable was built once on ms02. Later evidence commits are
+not attributed to that executable. All comparisons use the same final runner
+with coordinator profiling enabled.
+
+The isolated throughput checkpoint compares builds 010 and 012 under the
+established policy, one cell at a time on the otherwise idle host. All 18 paired
+search streams, outcomes, and admitted frame totals match. Per-origin medians
+of paired candidate/control frames/s ratios range from 0.978 to 1.037. This
+small sample detects no large throughput regression; it is not a statistical
+equivalence test. Raw RSS, logical archive memory, sampled output disk, and
+process I/O remain in the evidence.
+
+The two policy experiments each reuse three development seeds on six origins.
+There are no gained or lost solves in either experiment. Alphabet continuation
+and its control both solve Metal Man, Nova level 1, and STB Hard on all three
+seeds; both miss SMB, Metroid, and whole-game Nova at these short-panel budgets.
+Both accounting variants also solve all three SMB seeds, but neither dispatches
+any continuations on SMB. That is a control with no replay activity, not evidence
+of replay efficacy. The fresh SMB reference below remains a separate, more
+generous configuration.
+
+| Paired experiment | Origin | Median candidate/control victory-frame ratio | Solves in each arm |
+| --- | --- | ---: | ---: |
+| Alphabet continuation | Metal Man | 1.128 | 3/3 |
+| Alphabet continuation | Nova level 1 | 0.631 | 3/3 |
+| Alphabet continuation | STB Hard | 1.174 | 3/3 |
+| Isolated accounting v2 | SMB (zero dispatches) | identical work; see audit below | 3/3 |
+| Isolated accounting v2 | Metal Man | 1.007 | 3/3 |
+| Isolated accounting v2 | Nova level 1 | 2.125 | 3/3 |
+| Isolated accounting v2 | STB Hard | 0.603 | 3/3 |
+
+These are medians of seed-paired ratios among shared successes, not ratios of
+arm medians. Nova level 1 improves with alphabet continuation but regresses
+substantially with accounting v2. Neither policy is promoted as a general
+default. The policy panels run concurrent jobs; their frames/s describe those
+allocations and do not establish isolated policy speedups. Short Metroid runs
+remain at Morph Ball, missile capacity 10, and Brinstar/Norfair in all arms;
+whole-game Nova retains seven clear flags and remains unsolved.
+
+The [SMB dispatch audit](smb-zero-dispatch-012.json) records zero replay dispatches
+throughout the 012 panels. SMB uses the default equal same-slot preference
+relation, so its route-cost replacements never trigger the continuation bank.
+In the accounting panel, all three complete deterministic campaign reports
+match after excluding only mixture identity and stream hash; work totals and
+winning inputs also match. The raw streams were not retained in these policy
+runs, so this does not independently verify every stream record. The alphabet
+pair additionally includes the bank's reserved-memory cost. The report's policy
+tables include per-arm dispatch totals to distinguish active replay from these
+controls. No zero-dispatch result establishes continuation efficacy.
+
+The six long Metroid cells all reach the 3-million-execution ceiling with four
+workers and an 8 GiB logical budget. Both arms use the semantic parent selector;
+only alphabet continuation changes. Bombs and Kraid-area entry are discovered
+earlier in every continuation seed, but other coverage regresses:
+
+| Search-wide milestone | Control observed | Continuation observed | Control median first execution | Continuation median first execution |
+| --- | ---: | ---: | ---: | ---: |
+| Bombs | 3/3 | 3/3 | 2,393,367 | 1,409,832 |
+| Kraid's area | 3/3 | 3/3 | 2,443,424 | 1,555,597 |
+| Long Beam | 3/3 | 1/3 | 1,431,568 | 1,025,044 |
+| Ridley's area | 1/3 | 0/3 | 2,742,879 | unavailable |
+| Any boss defeated | 0/3 | 0/3 | unavailable | unavailable |
+
+First-execution medians include observed discoveries only. They do not turn
+unobserved events into zero-cost successes. Both arms observe Morph Ball, an
+energy tank, missile capacity, Brinstar, and Norfair in every seed. Neither arm
+observes Ice Beam, High Jump, Screw Attack, Varia Suit, Wave Beam, Tourian,
+Mother Brain defeat, escape start, or an ending. Maximum missile capacities
+are 15/20/15 in the controls and 25/20/25 with continuation; maximum energy-tank
+counts are 1/1/1 and 1/1/2. These capacity maxima are aggregate observations,
+not an assertion that one trajectory contains the union of discoveries.
+Every named first-discovery input and each champion replays twice.
+
+| Arm / seed | Admitted frames | Frames/s | Peak RSS MiB | Last logical memory MiB | Peak output disk MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Control / 3 | 382,101,298 | 122,593 | 4,268.1 | 3,508.8 | 97.3 |
+| Control / 4 | 371,057,908 | 123,097 | 4,617.3 | 3,853.1 | 97.8 |
+| Control / 5 | 366,764,950 | 101,739 | 5,382.1 | 4,582.0 | 99.7 |
+| Continuation / 3 | 354,818,860 | 97,338 | 5,103.4 | 4,294.2 | 98.9 |
+| Continuation / 4 | 358,282,129 | 98,122 | 4,826.6 | 4,027.8 | 99.7 |
+| Continuation / 5 | 349,373,025 | 95,777 | 5,393.6 | 4,566.7 | 100.1 |
+
+The long arms use disjoint, heterogeneous CPU sets concurrently; their timing
+is descriptive. Three million executions also incur different admitted-frame
+costs, as shown above. Resource peaks cover the cell including verification;
+the logical-memory column is the last archive charge, not its peak. All three
+controls match checkpoint 008's semantic arm in registered requests, work,
+outcomes, common milestone timestamps, and capacity maxima. This does not
+assert full-stream equality across the changed reporting schema. The two
+previously unavailable Tourian fields are retained explicitly in the comparison.
+
+The separate fresh SMB reference passes 5/5 on build 012. All five complete
+search-stream hashes, work totals, and victory costs match the registered
+checkpoint 005 reference. These are fresh executions using the existing
+reference seeds, with no imported winning inputs. Seed 20260911 still needs
+598,013 executions under the 600,000 ceiling; the check does not establish
+large budget headroom or success for arbitrary seeds.
+
+Eighteen qualification cells also pass full campaign/report/checkpoint replay
+and twice-replayed witnesses: six legacy 500-job campaigns and two new-policy
+panels of six 5,000-job campaigns. Both new modes dispatch learned continuations
+in five short origin fixtures; SMB records none because its preference relation
+never triggers the bank. Qualification is not a solve claim. The source-built
+real QuickNES cartridge-RAM restore test
+passes locally and in CI.
+
+[`remine-publication-012.json`](remine-publication-012.json) binds the complete
+ROM-free report archive to its file count, archive SHA-256, measured code commit,
+and compact records. The report retains all 137 cells in 12 panels, figures,
+per-arm replay-dispatch counts, explicit memory/disk columns, and publication
+scripts. Fable 5.1 xhigh reviewed the implementation and completed evidence;
+its follow-up checks verified the fixes, including the zero-dispatch SMB scope.
+
 ## Historical depth audit
 
 [`progress-audit-010.json`](progress-audit-010.json) corrects the scope of the

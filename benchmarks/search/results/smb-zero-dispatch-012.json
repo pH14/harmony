@@ -1,0 +1,178 @@
+{
+  "accounting_report_pairs": [
+    {
+      "cell": "smb-full-s20260905-w8-m2048",
+      "differing_report_fields": [
+        "mixture_policy",
+        "stream_sha256"
+      ],
+      "normalized_report_sha256": "4911c7c580c98cfec38d3e0c02ae20eb5cdcdc0c06b1609467fb836cd88a4dd3",
+      "normalized_reports_equal": true,
+      "report_sha256": [
+        "77adea4785a7ec2153ca7c02d250b1a3ee6a3523f98d6ab67186f867dd548a97",
+        "084366d6e77378dbbca8ba2615dbb4b3d6564925f059294da2f4c533d92edaf6"
+      ],
+      "victory_input_sha256": "454323282789163827a8b08c2a305e26e9edb906bc07e75060ec0840aff5fe98",
+      "victory_inputs_equal": true
+    },
+    {
+      "cell": "smb-full-s20260906-w8-m2048",
+      "differing_report_fields": [
+        "mixture_policy",
+        "stream_sha256"
+      ],
+      "normalized_report_sha256": "575ed495b3ed71a5623801d8aa83e9c2faf8a7f33203eb68d1e2886d7ba58af6",
+      "normalized_reports_equal": true,
+      "report_sha256": [
+        "c0102c45c789a528fe0e1ebdf6977498b286b20abaad11144f7df7c5dd688701",
+        "9ae60ae3022759bcc63ef41a803739035345e6ccb59fe434743a4ad4fe1fa66a"
+      ],
+      "victory_input_sha256": "3d5777b7cff82a6880086ffcd53cb9b55322300e7d2372079dbaf3614377478e",
+      "victory_inputs_equal": true
+    },
+    {
+      "cell": "smb-full-s20260907-w8-m2048",
+      "differing_report_fields": [
+        "mixture_policy",
+        "stream_sha256"
+      ],
+      "normalized_report_sha256": "e079faae21eb15df5606bb64cdb7d688c026a7fe4bd3b49c682e82d21d6d6853",
+      "normalized_reports_equal": true,
+      "report_sha256": [
+        "77d54c4410c5215a45eceb7f8528bbdae5de03ae3a78c74310b1726f88e6dd04",
+        "e5c96ecb675042718c97fdb6970627544bfcff0b3ae782cfe42c4b9ea56d6ebb"
+      ],
+      "victory_input_sha256": "557f69fa3cd182dc2fd6d9e2636b3506a6906d2b8d52a07e484ffaffa9d85891",
+      "victory_inputs_equal": true
+    }
+  ],
+  "format": "harmony-search-zero-dispatch-audit-v1",
+  "measured_code_commit": "0d77701f64517269dd49f669988acd58f4cb8637",
+  "reason": "SmbArchiveKey does not override the default equal preference relation. Route-cost replacements do not satisfy the strictly-greater same-slot preference condition that triggers the bank.",
+  "scope": "All 012 SMB cells report zero continuation dispatches. Accounting-arm reports compare equal after excluding mixture identity and stream hash; winning inputs also match. The policy-panel raw streams were not retained, so this is not an independent full-stream comparison. The alphabet control/candidate pair also changes the bank memory reserve.",
+  "smb_panels": [
+    {
+      "cells": [
+        "smb-full-s20260905-w8-m2048",
+        "smb-full-s20260906-w8-m2048",
+        "smb-full-s20260907-w8-m2048"
+      ],
+      "continuation_dispatches_per_cell": [
+        0,
+        0,
+        0
+      ],
+      "panel": "alphabet-continuation"
+    },
+    {
+      "cells": [
+        "smb-full-s20260905-w8-m2048",
+        "smb-full-s20260906-w8-m2048",
+        "smb-full-s20260907-w8-m2048"
+      ],
+      "continuation_dispatches_per_cell": [
+        0,
+        0,
+        0
+      ],
+      "panel": "alphabet-control"
+    },
+    {
+      "cells": [
+        "smb-full-s20260905-w8-m2048",
+        "smb-full-s20260906-w8-m2048",
+        "smb-full-s20260907-w8-m2048"
+      ],
+      "continuation_dispatches_per_cell": [
+        0,
+        0,
+        0
+      ],
+      "panel": "continuation-accounting-control"
+    },
+    {
+      "cells": [
+        "smb-full-s20260905-w8-m2048",
+        "smb-full-s20260906-w8-m2048",
+        "smb-full-s20260907-w8-m2048"
+      ],
+      "continuation_dispatches_per_cell": [
+        0,
+        0,
+        0
+      ],
+      "panel": "continuation-accounting-isolated"
+    },
+    {
+      "cells": [
+        "smb-full-s1-w2-m512"
+      ],
+      "continuation_dispatches_per_cell": [
+        0
+      ],
+      "panel": "qualification-alphabet"
+    },
+    {
+      "cells": [
+        "smb-full-s1-w2-m512"
+      ],
+      "continuation_dispatches_per_cell": [
+        0
+      ],
+      "panel": "qualification-isolated"
+    },
+    {
+      "cells": [
+        "smb-full-s1-w2-m512"
+      ],
+      "continuation_dispatches_per_cell": [
+        0
+      ],
+      "panel": "qualification-remine"
+    },
+    {
+      "cells": [
+        "smb-full-s20260910-w24-m2048",
+        "smb-full-s20260911-w24-m2048",
+        "smb-full-s20260912-w24-m2048",
+        "smb-full-s20260913-w24-m2048",
+        "smb-full-s20260914-w24-m2048"
+      ],
+      "continuation_dispatches_per_cell": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "panel": "smb-reference-remine"
+    },
+    {
+      "cells": [
+        "smb-full-s20260905-w24-m512",
+        "smb-full-s20260906-w24-m512",
+        "smb-full-s20260907-w24-m512"
+      ],
+      "continuation_dispatches_per_cell": [
+        0,
+        0,
+        0
+      ],
+      "panel": "throughput-checkpoint-baseline"
+    },
+    {
+      "cells": [
+        "smb-full-s20260905-w24-m512",
+        "smb-full-s20260906-w24-m512",
+        "smb-full-s20260907-w24-m512"
+      ],
+      "continuation_dispatches_per_cell": [
+        0,
+        0,
+        0
+      ],
+      "panel": "throughput-checkpoint-candidate"
+    }
+  ],
+  "source_record_sha256": "543a7341d606e04a4e98fa5ffd8f189b047664cb51c0d5130a33da86d82000f1"
+}
