@@ -13,7 +13,8 @@ harmony search --package nes smb.nes --core quicknes_libretro.so
 harmony search --package nes --backend native smb.nes --core quicknes_libretro.so
 harmony search --package nes --backend consonance smb.nes \
   --kernel bzImage --base-initramfs initramfs-nes.cpio.gz
-harmony search --package faults foo.oci
+harmony search --package faults foo.oci --kernel bzImage \
+  --base-initramfs initramfs.cpio.gz --fault-agent fault-agent --out run
 ```
 
 NES identifies SMB or Nova by ROM hash and defaults to `native`. Supply the
@@ -23,20 +24,28 @@ execution uses a controlled kernel and the ROM-free image produced by
 adds the ROM and launch command. It requires a supported Linux KVM host.
 
 The faults package defaults to `consonance`. Its OCI image supplies
-`/harmony/workload.json`, node executables, topology setup, and check/recovery
-commands using the [workload schema](../workloads/faults/src/spec.rs).
-All replicas and the fault supervisor execute inside one VM on one virtual CPU.
-Supply the controlled kernel with `--kernel`, the Linux base image with
-`--base-initramfs`, and a static `fault-guest` binary with `--fault-agent` or
-`HARMONY_FAULT_AGENT`. Installed artifacts are discovered through
-`HARMONY_GUEST_DIR`. Preparation injects the supervisor into the staged image;
-its commands execute inside the guest.
+`/etc/harmony/bundle`, which names the workload's nodes, hooks, setup and
+readiness commands in the [bundle format](../workloads/fault-agent/README.md),
+plus the executables those lines run. Every node and the fault agent execute
+inside one VM on one virtual CPU. Supply the controlled kernel with `--kernel`,
+the Linux base image with `--base-initramfs`, and the static musl fault agent
+with `--fault-agent` or `HARMONY_FAULT_AGENT`. Installed artifacts are
+discovered through `HARMONY_GUEST_DIR`. Preparation injects the agent into the
+staged image; its commands execute inside the guest.
+
+`--horizon-ms` sets the guest time one fault action runs for and `--ram-mib` the
+guest RAM. `--knobs "k=v k=v"` adds guest command-line words, `--places FILE`
+lists the execution places the park action may hold a node at, and
+`--wall-minutes` bounds a search in host time. `--replay INPUT.json --repeat N`
+runs a recorded action list, such as a search's own `bug-1.json`, instead of
+searching. Both modes write `report.json`.
 
 `--seed`, `--workers`, `--executions`, and `--actions` bound the campaign's logical
-work. `--out` selects a fresh output directory. `prepared.json` records the
-resolved workload, backend artifacts, and search settings; `stream.jsonl`,
-`checkpoint.json`, and `report.json` retain campaign choices, state, and results.
-An explicit backend selection is checked before execution.
+work. `--out` selects a fresh output directory. Every package writes
+`stream.jsonl` and `report.json`, retaining campaign choices and results; NES
+adds `prepared.json` and `checkpoint.json`, and faults adds `campaign.json` and
+one `bug-N.json` per bug. An explicit backend selection is checked before
+execution.
 
 ## OCI execution
 

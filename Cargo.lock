@@ -339,28 +339,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "fault-runtime"
-version = "0.1.0"
-dependencies = [
- "serde",
- "thiserror",
-]
-
-[[package]]
 name = "faults-workload"
 version = "0.1.0"
 dependencies = [
  "consonance-client",
- "fault-runtime",
+ "control-proto",
+ "environment",
+ "fault-policy",
  "guest-image",
  "oci-support",
- "postcard",
  "searcher",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
- "thiserror",
 ]
 
 [[package]]

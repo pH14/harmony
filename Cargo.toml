@@ -24,11 +24,8 @@ exclude = [
   "workloads/tetanes-guest",
   "workloads/guest-image",
   "workloads/fault-agent",
-  "workloads/fault-guest",
   "workloads/fault-policy",
-  "workloads/fault-runtime",
   "workloads/faults",
-  "workloads/fault-sdk",
   "workloads/oci",
 ]
 

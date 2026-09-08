@@ -44,9 +44,31 @@ pub struct Args {
     /// Package base initramfs; preparation adds the ROM or OCI rootfs.
     #[arg(long)]
     base_initramfs: Option<PathBuf>,
-    /// Static guest fault supervisor; defaults to HARMONY_FAULT_AGENT.
+    /// Static musl fault agent installed in the workload image; defaults to
+    /// HARMONY_FAULT_AGENT.
     #[arg(long)]
     fault_agent: Option<PathBuf>,
+    /// Guest milliseconds one fault action runs for.
+    #[arg(long, default_value_t = 500)]
+    horizon_ms: u64,
+    /// Guest RAM in MiB.
+    #[arg(long, default_value_t = 1024)]
+    ram_mib: u32,
+    /// Extra guest command-line words, space separated.
+    #[arg(long)]
+    knobs: Option<String>,
+    /// File of execution places the park action may hold a node at.
+    #[arg(long)]
+    places: Option<PathBuf>,
+    /// Wall-clock cutoff on a search, in minutes.
+    #[arg(long)]
+    wall_minutes: Option<u64>,
+    /// Recorded action list or bug report to run instead of searching.
+    #[arg(long)]
+    replay: Option<PathBuf>,
+    /// Runs of the recorded action list.
+    #[arg(long, default_value_t = 1)]
+    repeat: u32,
 }
 pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
     let backend = args.backend.unwrap_or(match args.package {
@@ -69,7 +91,7 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
         workers: args.workers,
         executions: args.executions,
         actions: args.actions,
-        output: args.out,
+        output: args.out.clone(),
     };
     match (args.package, backend) {
         (Package::Nes, Backend::Native) => {
@@ -86,17 +108,60 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
             return Err("the faults package requires --backend consonance".into());
         }
         (Package::Faults, Backend::Consonance) => {
+            let faults = faults_options(&args)?;
+            let replay = read_replay(args.replay.as_deref())?;
             run_faults_consonance(
                 &args.input,
                 args.kernel,
                 args.base_initramfs,
                 args.fault_agent,
-                &options,
+                &faults,
+                replay.as_deref(),
+                args.repeat,
             )?;
         }
     }
     println!("artifacts   {}", options.output.display());
     Ok(ExitCode::SUCCESS)
+}
+
+/// The recorded action list `--replay` names, when it names one.
+fn read_replay(
+    path: Option<&std::path::Path>,
+) -> Result<Option<Vec<faults_workload::FaultAction>>, Box<dyn Error>> {
+    match path {
+        Some(path) => Ok(Some(faults_workload::parse_recorded_input(
+            &std::fs::read_to_string(path)?,
+        )?)),
+        None => Ok(None),
+    }
+}
+
+/// The fault package's own run bounds, read from the shared flags plus the
+/// package-specific ones.
+fn faults_options(args: &Args) -> Result<faults_workload::Options, Box<dyn Error>> {
+    let places = match args.places.as_deref() {
+        Some(path) => faults_workload::bundle::parse_places(&std::fs::read_to_string(path)?)?,
+        None => Vec::new(),
+    };
+    Ok(faults_workload::Options {
+        seed: args.seed,
+        workers: args.workers,
+        executions: args.executions,
+        actions: args.actions,
+        horizon_ms: args.horizon_ms,
+        ram_mib: args.ram_mib,
+        knobs: args
+            .knobs
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect(),
+        places,
+        wall_minutes: args.wall_minutes,
+        output: args.out.clone(),
+    })
 }
 
 fn require_supported_linux(is_linux: bool) -> Result<(), Box<dyn Error>> {
@@ -163,7 +228,9 @@ fn run_faults_consonance(
     kernel: Option<PathBuf>,
     base: Option<PathBuf>,
     agent: Option<PathBuf>,
-    options: &SearchOptions,
+    options: &faults_workload::Options,
+    replay: Option<&[faults_workload::FaultAction]>,
+    repeat: u32,
 ) -> Result<(), Box<dyn Error>> {
     #[cfg(all(
         target_os = "linux",
@@ -180,33 +247,43 @@ fn run_faults_consonance(
             .ok_or("guest base image missing: use --base-initramfs")?;
         let agent = agent
             .or_else(|| std::env::var_os("HARMONY_FAULT_AGENT").map(PathBuf::from))
-            .or_else(|| installed.dir.map(|dir| dir.join("fault-guest")))
-            .ok_or("fault supervisor missing: use --fault-agent or HARMONY_FAULT_AGENT")?;
+            .or_else(|| installed.dir.map(|dir| dir.join("fault-agent")))
+            .ok_or("fault agent missing: use --fault-agent or HARMONY_FAULT_AGENT")?;
+        let agent = std::fs::read(agent)?;
         let prepared = faults_workload::prepare::prepare_oci(
             input.to_str().ok_or("OCI input must be UTF-8")?,
             &std::fs::read(base)?,
-            &std::fs::read(agent)?,
+            &agent,
         )?;
-        let options = faults_workload::SearchOptions {
-            seed: options.seed,
-            workers: options.workers,
-            executions: options.executions,
-            actions: options.actions,
-            output: options.output.clone(),
+        let artifacts = faults_workload::Artifacts {
+            kernel: std::fs::read(kernel)?,
+            initramfs: prepared.initramfs,
+            agent,
         };
-        faults_workload::search_consonance(
-            &prepared.spec,
-            &std::fs::read(kernel)?,
-            &prepared.initramfs,
-            &options,
-        )
+        let report = match replay {
+            Some(actions) => {
+                faults_workload::package::replay(&artifacts, actions, repeat, options)?
+            }
+            None => {
+                let vocabulary = prepared
+                    .vocabulary
+                    .clone()
+                    .with_places(options.places.clone())?;
+                faults_workload::package::search(&artifacts, &vocabulary, options)?
+            }
+        };
+        println!(
+            "bug_found   {}  executions {}  horizons {}",
+            report.bug_found, report.executions, report.horizons_clocked
+        );
+        Ok(())
     }
     #[cfg(not(all(
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64")
     )))]
     {
-        let _ = (input, kernel, base, agent, options);
+        let _ = (input, kernel, base, agent, options, replay, repeat);
         Err("faults Consonance execution requires a supported Linux KVM host".into())
     }
 }
@@ -239,6 +316,13 @@ mod tests {
             kernel: None,
             base_initramfs: None,
             fault_agent: None,
+            horizon_ms: 500,
+            ram_mib: 1024,
+            knobs: None,
+            places: None,
+            wall_minutes: None,
+            replay: None,
+            repeat: 1,
         }
     }
 
@@ -285,10 +369,59 @@ mod tests {
             Some(PathBuf::from("missing-kernel")),
             Some(PathBuf::from("missing-initramfs")),
             Some(PathBuf::from("missing-agent")),
-            &options(),
+            &faults_options(&args(Package::Faults, Backend::Consonance)).expect("options"),
+            None,
+            1,
         )
         .expect_err("missing fault guest artifacts must fail");
         assert!(!error.to_string().is_empty());
+    }
+
+    #[test]
+    fn fault_flags_become_the_package_run_bounds() {
+        let mut args = args(Package::Faults, Backend::Consonance);
+        args.horizon_ms = 250;
+        args.ram_mib = 2048;
+        args.knobs = Some("faultlab.puts=20  faultlab.keys=4".to_owned());
+        args.wall_minutes = Some(30);
+        let options = faults_options(&args).expect("options");
+        assert_eq!(options.horizon_ms, 250);
+        assert_eq!(options.ram_mib, 2048);
+        assert_eq!(options.knobs, ["faultlab.puts=20", "faultlab.keys=4"]);
+        assert_eq!(options.wall_minutes, Some(30));
+        assert!(options.places.is_empty());
+        assert_eq!(options.output, PathBuf::from("missing-output"));
+    }
+
+    #[test]
+    fn a_places_file_reaches_the_park_action_vocabulary() {
+        let file = tempfile::NamedTempFile::new().expect("temp file");
+        std::fs::write(file.path(), "0x1000\nffff8000\n# a comment\n").expect("write");
+        let mut args = args(Package::Faults, Backend::Consonance);
+        args.places = Some(file.path().to_path_buf());
+        assert_eq!(
+            faults_options(&args).expect("options").places,
+            [0x1000, 0xffff_8000]
+        );
+        args.places = Some(PathBuf::from("missing-places"));
+        assert!(faults_options(&args).is_err());
+    }
+
+    #[test]
+    fn a_replay_input_is_a_recorded_action_list_or_a_bug_report() {
+        let actions = vec![
+            faults_workload::FaultAction::Hook(1),
+            faults_workload::FaultAction::Kill(0),
+        ];
+        let file = tempfile::NamedTempFile::new().expect("temp file");
+        std::fs::write(
+            file.path(),
+            serde_json::to_string(&actions).expect("serialize"),
+        )
+        .expect("write");
+        assert_eq!(read_replay(Some(file.path())).expect("read"), Some(actions));
+        assert_eq!(read_replay(None).expect("read"), None);
+        assert!(read_replay(Some(std::path::Path::new("missing-replay.json"))).is_err());
     }
 
     #[test]

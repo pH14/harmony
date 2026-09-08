@@ -60,17 +60,13 @@ workload_support = [
 ]
 workload_packages = [
     "workloads/fault-agent",
-    "workloads/fault-guest",
-    "workloads/fault-sdk",
     "workloads/nes-guest",
     "workloads/fault-policy",
-    "workloads/fault-runtime",
     "workloads/faults",
     "workloads/tetanes-guest",
     "workloads/nes",
 ]
 composition_apps_tests = [
-    "workloads/faults/fixtures/replicated-service",
     "workloads/tools",
     "cli",
     "consonance/acceptance-suite",

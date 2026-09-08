@@ -142,16 +142,19 @@ machine driver interprets NES controller actions and publications. Shared
 host/guest codec code validates publication versions and region bounds. Native
 emulator snapshots and whole-VM snapshots retain distinct execution identities.
 
-`workloads/fault-policy` owns the optional fault decision catalog and its legacy
-compatibility adapter. `workloads/fault-runtime` owns deterministic guest fault
-schedules and process/network enforcement. The systems package puts its
-supervisor, logical nodes, message paths, and files inside one VM on one virtual
-CPU, so whole-VM snapshots preserve the entire experiment.
+`workloads/fault-policy` owns the fault decision catalog, its wire forms, and the
+standing-fault codec the host and guest share. `workloads/fault-agent` is the
+in-guest supervisor that enforces those faults, and `workloads/faults` is the
+package that searches over them. A distributed workload puts its agent, nodes,
+message paths, and files inside one VM on one virtual CPU, so whole-VM snapshots
+preserve the entire experiment.
 
 The CLI selects a package and backend at campaign startup. Packages prepare the
 input and record workload semantics, execution artifacts, and search settings as
-separate identities. The default NES backend is native; the systems faults
-package uses Consonance.
+separate identities. Each package declares the backends it supports and its
+default: NES defaults to native, and the faults package runs only on Consonance.
+An explicitly selected backend is never silently substituted, and the CLI names
+the missing artifact or host capability when one is unavailable.
 
 ## Enforcing ownership
 

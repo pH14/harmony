@@ -141,18 +141,6 @@ jobs:
       - name: consonance/acceptance-suite/payloads sdk-demo build (bare metal, from its dir)
         working-directory: consonance/acceptance-suite/payloads
         run: cargo build -p sdk-demo
-      # Fault request codecs are optional package code. Keep their no_std
-      # adapter independently gated so the generic SDK/protocol crates cannot
-      # regain a dependency on fault policy while the guest adapter still
-      # compiles for the real bare-metal target.
-      - name: workloads/fault-sdk gates (out-of-workspace manifest)
-        run: |
-          cargo fmt --manifest-path workloads/fault-sdk/Cargo.toml -- --check
-          cargo clippy --locked --manifest-path workloads/fault-sdk/Cargo.toml --all-features --all-targets -- -D warnings
-          cargo test --locked --manifest-path workloads/fault-sdk/Cargo.toml --all-features
-          cargo deny --manifest-path workloads/fault-sdk/Cargo.toml check --config deny.toml licenses
-          rustup target add x86_64-unknown-none
-          cargo build --locked --manifest-path workloads/fault-sdk/Cargo.toml --lib --target x86_64-unknown-none
       # workloads/nes-guest (task 86) is out-of-workspace (its own manifest).
       # Gate it explicitly or it rots green. The portable brain
       # (chord decode, RAM map, billboard, mock-core agent loop) tests everywhere;
@@ -205,7 +193,7 @@ jobs:
 
       - name: Workload support and fault toolkit gates
         run: |
-          for package in oci guest-image fault-guest nes-protocol fault-policy fault-runtime faults tools; do
+          for package in oci guest-image nes-protocol fault-policy faults tools; do
             manifest="workloads/$package/Cargo.toml"
             cargo fmt --manifest-path "$manifest" --all -- --check
             cargo clippy --locked --manifest-path "$manifest" --all-features --all-targets -- -D warnings
@@ -225,15 +213,6 @@ jobs:
           cargo deny --manifest-path workloads/fault-agent/Cargo.toml check --config deny.toml licenses
           rustup target add x86_64-unknown-linux-musl
           cargo clippy --locked --manifest-path workloads/fault-agent/Cargo.toml --target x86_64-unknown-linux-musl --all-targets -- -D warnings
-
-      - name: Replicated workload fixture gates
-        run: |
-          manifest=workloads/faults/fixtures/replicated-service/Cargo.toml
-          cargo fmt --manifest-path "$manifest" --all -- --check
-          cargo clippy --locked --manifest-path "$manifest" --all-targets -- -D warnings
-          cargo test --locked --manifest-path "$manifest"
-          cargo build --locked --manifest-path "$manifest" --bins
-          sudo unshare --net workloads/faults/fixtures/replicated-service/smoke.sh
 
       - name: NES workload package gates
         run: |

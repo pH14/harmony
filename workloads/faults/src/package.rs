@@ -1,132 +1,218 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Fault package composition and artifact identity.
+
+//! The package's two entry points and the report both write.
+//!
+//! Search runs a campaign over the workload's action alphabet until it finds a
+//! bug or spends its budget. Replay runs one recorded action list a fixed
+//! number of times, which is how a reported bug is confirmed. Both write
+//! `report.json` into the output directory with the same fields, so one reader
+//! serves both.
 
 use std::{error::Error, fs, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-#[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
-))]
-use searcher::search::{
-    archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy, SelectorPolicy},
-    campaign::{
-        CampaignConfig, CampaignOrigin, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
-        run_campaign_checkpointed,
-    },
-    draw::{DrawMixture, SuffixShape},
-};
-#[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
-))]
-use std::io::BufWriter;
+use crate::target::{FaultAction, FaultStop};
 
-use crate::DELAY_FORWARD_LATENCY_MS;
-use crate::spec::WorkloadSpec;
-
-#[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
-))]
-use crate::game::{FaultCampaignRun, FaultGame};
-
-/// Logical limits for one deterministic fault campaign.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SearchOptions {
+/// Package name recorded in every report.
+pub const PACKAGE: &str = "faults";
+/// What one campaign or replay was asked to do.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Options {
+    /// Campaign seed. A replay records it but does not draw from it.
     pub seed: u64,
+    /// Evaluator threads, each owning one guest.
     pub workers: u32,
+    /// Executions the campaign may admit.
     pub executions: u64,
+    /// Maximum actions in one input.
     pub actions: usize,
+    /// Milliseconds of guest time one action runs for.
+    pub horizon_ms: u64,
+    /// Guest RAM in MiB.
+    pub ram_mib: u32,
+    /// Extra guest command-line words.
+    pub knobs: Vec<String>,
+    /// Execution places the Park action may hold a node at.
+    pub places: Vec<u64>,
+    /// Optional wall-clock cutoff on a search.
+    pub wall_minutes: Option<u64>,
+    /// Artifact destination.
     pub output: PathBuf,
 }
 
-/// Search parameters that affect generated candidates and campaign identity.
-/// The output directory is an artifact destination and is intentionally not
-/// part of this value.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SearchIdentity {
-    pub seed: u64,
-    pub workers: u32,
-    pub executions: u64,
-    pub actions: usize,
+impl Options {
+    /// Virtual nanoseconds one action runs for.
+    #[must_use]
+    pub fn horizon_nanos(&self) -> u64 {
+        self.horizon_ms.saturating_mul(1_000_000)
+    }
+
+    /// Reject settings that cannot produce a run before a guest boots.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a bound is zero or the output directory already
+    /// holds artifacts.
+    pub fn validate(&self) -> Result<(), Box<dyn Error>> {
+        if self.workers == 0 || self.actions == 0 || self.executions == 0 {
+            return Err("workers, actions, and executions must be positive".into());
+        }
+        if self.horizon_ms == 0 || self.ram_mib == 0 {
+            return Err("--horizon-ms and --ram-mib must be positive".into());
+        }
+        if self.output.exists() && fs::read_dir(&self.output)?.next().is_some() {
+            return Err("search output directory must be empty; choose a new --out path".into());
+        }
+        Ok(())
+    }
 }
 
-impl From<&SearchOptions> for SearchIdentity {
-    fn from(options: &SearchOptions) -> Self {
+/// One bug the run found, with the action list that reproduces it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BugSummary {
+    /// Ordered admission position of the execution that found it.
+    pub execution: u64,
+    /// The action list, in execution order.
+    pub actions: Vec<FaultAction>,
+    /// How the guest stopped.
+    pub stop: FaultStop,
+    /// `assert_always` ids the guest reported violated.
+    pub violations: Vec<u32>,
+    /// `assert_sometimes` ids the guest reported hit.
+    pub sometimes: Vec<u32>,
+    /// Whole-VM state hash at the terminal endpoint, lowercase hex.
+    pub state_hash: String,
+}
+
+/// One run of a replayed action list.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ReplaySummary {
+    /// One-based run ordinal.
+    pub run: u32,
+    /// Whether this run reproduced the bug.
+    pub bug: bool,
+    /// How the guest stopped.
+    pub stop: FaultStop,
+    /// Whole-VM state hash at the endpoint, lowercase hex.
+    pub state_hash: String,
+    /// `assert_always` ids the guest reported violated.
+    pub violations: Vec<u32>,
+}
+
+/// The report both modes write to `report.json`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Report {
+    /// Always [`PACKAGE`].
+    pub package: String,
+    /// `search` or `replay`.
+    pub mode: String,
+    /// SHA-256 of the prepared guest initramfs.
+    pub image_sha256: String,
+    /// SHA-256 of the guest kernel.
+    pub kernel_sha256: String,
+    /// SHA-256 of the static fault agent installed in the image.
+    pub fault_agent_sha256: String,
+    /// The execution identity the run pinned.
+    pub identity: String,
+    /// Campaign seed.
+    pub seed: u64,
+    /// Evaluator threads.
+    pub workers: u32,
+    /// Milliseconds of guest time one action ran for.
+    pub horizon_ms: u64,
+    /// Guest RAM in MiB.
+    pub ram_mib: u32,
+    /// Executions the campaign completed; zero in replay mode.
+    pub executions: u64,
+    /// Whether the run found or reproduced a bug.
+    pub bug_found: bool,
+    /// Admission position of the first bug-finding execution.
+    pub first_bug_execution: Option<u64>,
+    /// Bugs the search recorded; empty in replay mode.
+    pub bugs: Vec<BugSummary>,
+    /// Replay runs; empty in search mode.
+    pub replays: Vec<ReplaySummary>,
+    /// Action horizons the run clocked.
+    pub horizons_clocked: u64,
+    /// Wall-clock seconds the run took.
+    pub wall_seconds: u64,
+}
+
+impl Report {
+    /// A report with everything the run knows before it boots a guest.
+    #[must_use]
+    pub fn new(mode: &str, artifacts: &Artifacts, identity: String, options: &Options) -> Self {
         Self {
+            package: PACKAGE.to_owned(),
+            mode: mode.to_owned(),
+            image_sha256: sha256_hex(&artifacts.initramfs),
+            kernel_sha256: sha256_hex(&artifacts.kernel),
+            fault_agent_sha256: sha256_hex(&artifacts.agent),
+            identity,
             seed: options.seed,
             workers: options.workers,
-            executions: options.executions,
-            actions: options.actions,
+            horizon_ms: options.horizon_ms,
+            ram_mib: options.ram_mib,
+            executions: 0,
+            bug_found: false,
+            first_bug_execution: None,
+            bugs: Vec::new(),
+            replays: Vec::new(),
+            horizons_clocked: 0,
+            wall_seconds: 0,
         }
     }
-}
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct WorkloadIdentity {
-    pub package: String,
-    pub workload_sha256: String,
-    pub semantics: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ExecutionIdentity {
-    pub backend: String,
-    pub isa: String,
-    pub core_contract: String,
-    pub artifacts: std::collections::BTreeMap<String, String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct PreparedIdentity {
-    pub workload: WorkloadIdentity,
-    pub execution: ExecutionIdentity,
-    pub search: SearchIdentity,
-    pub search_policy: String,
-}
-
-fn validate_output(options: &SearchOptions) -> Result<(), Box<dyn Error>> {
-    if options.workers == 0 || options.actions == 0 || options.executions == 0 {
-        return Err("workers, actions, and executions must be positive".into());
+    /// Write the report into `directory`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory or the file cannot be written.
+    pub fn write(&self, directory: &std::path::Path) -> Result<(), Box<dyn Error>> {
+        fs::create_dir_all(directory)?;
+        serde_json::to_writer_pretty(fs::File::create(directory.join("report.json"))?, self)?;
+        Ok(())
     }
-    if options.output.exists() && fs::read_dir(&options.output)?.next().is_some() {
-        return Err("search output directory must be empty; choose a new --out path".into());
-    }
-    Ok(())
 }
 
-fn record_identity(
-    spec: &WorkloadSpec,
-    execution: ExecutionIdentity,
-    options: &SearchOptions,
-) -> Result<(), Box<dyn Error>> {
-    let identity = PreparedIdentity {
-        workload: WorkloadIdentity {
-            package: "faults-v2".into(),
-            workload_sha256: spec.identity_sha256()?,
-            semantics: format!(
-                "fault-action-v2;catalog-v2;workload-schema-v2;delay-forward-{DELAY_FORWARD_LATENCY_MS}ms;pending-work-v1;runtime-action-v1;sdk-check-v1"
-            ),
-        },
-        execution,
-        search: SearchIdentity::from(options),
-        search_policy: "campaign-v1;bounded-catalog;admit-alive;group-uniform".into(),
+/// The three byte artifacts one run pins.
+pub struct Artifacts {
+    /// The controlled guest kernel.
+    pub kernel: Vec<u8>,
+    /// The prepared guest initramfs.
+    pub initramfs: Vec<u8>,
+    /// The static fault agent installed in the image.
+    pub agent: Vec<u8>,
+}
+
+/// A recorded action list, read from `--replay`. A bug report written by a
+/// search parses directly, and so does a bare action array.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+enum RecordedInput {
+    Actions(Vec<FaultAction>),
+    Report { actions: Vec<FaultAction> },
+}
+
+/// Read a recorded action list from a bug report or a bare action array.
+///
+/// # Errors
+///
+/// Returns an error when the text is neither shape or names no actions.
+pub fn parse_recorded_input(text: &str) -> Result<Vec<FaultAction>, Box<dyn Error>> {
+    let actions = match serde_json::from_str::<RecordedInput>(text)? {
+        RecordedInput::Actions(actions) | RecordedInput::Report { actions } => actions,
     };
-    fs::create_dir_all(&options.output)?;
-    serde_json::to_writer_pretty(
-        fs::File::create(options.output.join("prepared.json"))?,
-        &identity,
-    )?;
-    Ok(())
+    if actions.is_empty() {
+        return Err("the recorded input names no actions".into());
+    }
+    Ok(actions)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 #[cfg(all(
@@ -135,148 +221,314 @@ fn record_identity(
     any(target_arch = "x86_64", target_arch = "aarch64"),
     not(miri)
 ))]
-fn run_campaign(game: FaultGame, options: &SearchOptions) -> Result<(), Box<dyn Error>> {
-    let run = FaultCampaignRun::default();
-    let config = CampaignConfig {
-        campaign_seed: options.seed,
-        workers: options.workers,
-        execution_budget: options.executions,
-        action_limit: options.actions,
-        host: "harmony-search".into(),
-        wall_budget: None,
-        continue_after_victory: false,
-        archive_entry_limit: MAX_ARCHIVE_ENTRIES,
-        reservations_per_worker: DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
-        memory_budget_mib: None,
-        materialize_final_artifacts: true,
-        run,
-        suffix: SuffixShape::OneOrTwo,
-        mixture: DrawMixture::AlphabetOnly,
-        retention: RetentionPolicy::AdmitAlive,
-        selector: SelectorPolicy::GroupUniform,
-        victory_input_path: Some(options.output.join("victory.json")),
+mod live {
+    use std::{error::Error, io::BufWriter, time::Instant};
+
+    use searcher::search::{
+        archive::{RetentionPolicy, SelectorPolicy},
+        campaign::CampaignOrigin,
+        draw::{DrawMixture, SuffixShape},
     };
-    let mut stream = BufWriter::new(fs::File::create(options.output.join("stream.jsonl"))?);
-    let (report, checkpoint) =
-        run_campaign_checkpointed(&game, &config, &CampaignOrigin::Genesis, &mut stream, None)?;
-    serde_json::to_writer_pretty(
-        fs::File::create(options.output.join("report.json"))?,
-        &report,
-    )?;
-    serde_json::to_writer(
-        fs::File::create(options.output.join("checkpoint.json"))?,
-        &checkpoint,
-    )?;
-    Ok(())
-}
 
-/// Search the declared workload in one single-vCPU Consonance VM per worker.
-pub fn search_consonance(
-    spec: &WorkloadSpec,
-    kernel: &[u8],
-    initramfs: &[u8],
-    options: &SearchOptions,
-) -> Result<(), Box<dyn Error>> {
-    validate_output(options)?;
-    record_identity(
-        spec,
-        ExecutionIdentity {
-            backend: "consonance".into(),
-            isa: std::env::consts::ARCH.into(),
-            core_contract: {
-                #[cfg(all(
-                    feature = "consonance",
-                    target_os = "linux",
-                    any(target_arch = "x86_64", target_arch = "aarch64"),
-                    not(miri)
-                ))]
-                {
-                    consonance_client::session::Session::identity_with_config(
-                        kernel,
-                        initramfs,
-                        &crate::game::fault_session_config(),
-                    )
-                }
-                #[cfg(not(all(
-                    feature = "consonance",
-                    target_os = "linux",
-                    any(target_arch = "x86_64", target_arch = "aarch64"),
-                    not(miri)
-                )))]
-                {
-                    "consonance-session-unavailable-on-this-target".into()
-                }
-            },
-            artifacts: [
-                ("kernel".into(), format!("{:x}", Sha256::digest(kernel))),
-                (
-                    "initramfs".into(),
-                    format!("{:x}", Sha256::digest(initramfs)),
-                ),
-            ]
-            .into(),
-        },
-        options,
-    )?;
+    use super::{Artifacts, BugSummary, Options, ReplaySummary, Report, sha256_hex};
 
-    #[cfg(all(
-        feature = "consonance",
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64"),
-        not(miri)
-    ))]
-    {
-        let game = FaultGame::new_consonance(spec, kernel, initramfs)?;
-        run_campaign(game, options)
+    /// Retained archive entries in a search. The archive holds one entry per
+    /// distinct endpoint key, and the key space is bounded by the bundle.
+    const ARCHIVE_ENTRY_LIMIT: usize = 4096;
+    use crate::{
+        bundle::FaultVocabulary,
+        campaign::{FaultCampaignConfig, FaultGame, run_fault_campaign_checkpointed},
+        consonance::{FaultConfig, FaultTarget, identity},
+        report::write_bug_reports,
+        target::{ActionWindows, FaultAction},
+    };
+
+    fn config(options: &Options) -> FaultConfig {
+        FaultConfig {
+            knobs: options.knobs.clone(),
+            horizon_nanos: options.horizon_nanos(),
+            ram_mib: options.ram_mib,
+        }
     }
 
-    #[cfg(not(all(
-        feature = "consonance",
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64"),
-        not(miri)
-    )))]
-    {
-        let _ = (kernel, initramfs);
-        Err("fault Consonance search requires Linux x86_64/aarch64".into())
+    /// Search the workload's action alphabet for a bug.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the campaign cannot run or its artifacts cannot
+    /// be written.
+    pub fn search(
+        artifacts: &Artifacts,
+        vocabulary: &FaultVocabulary,
+        options: &Options,
+    ) -> Result<Report, Box<dyn Error>> {
+        options.validate()?;
+        let config = config(options);
+        let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
+        let mut report = Report::new("search", artifacts, identity, options);
+        std::fs::create_dir_all(&options.output)?;
+        let game = FaultGame::new(&artifacts.kernel, &artifacts.initramfs, &config);
+        let campaign = FaultCampaignConfig {
+            campaign_seed: options.seed,
+            vocabulary: vocabulary.clone(),
+            workers: options.workers,
+            execution_budget: options.executions,
+            action_limit: options.actions,
+            host: hostname(),
+            wall_budget: options
+                .wall_minutes
+                .map(|minutes| std::time::Duration::from_secs(minutes.saturating_mul(60))),
+            archive_entry_limit: ARCHIVE_ENTRY_LIMIT,
+            memory_budget_mib: None,
+            materialize_final_artifacts: true,
+            retention: RetentionPolicy::default(),
+            selector: SelectorPolicy::default(),
+            suffix: SuffixShape::default(),
+            mixture: DrawMixture::default(),
+            victory_input_path: Some(options.output.join("victory-input.json")),
+        };
+        let started = Instant::now();
+        let mut stream =
+            BufWriter::new(std::fs::File::create(options.output.join("stream.jsonl"))?);
+        let (campaign_report, _checkpoint) = run_fault_campaign_checkpointed(
+            &game,
+            &campaign,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )?;
+        serde_json::to_writer_pretty(
+            std::fs::File::create(options.output.join("campaign.json"))?,
+            &campaign_report,
+        )?;
+        let windows = ActionWindows {
+            root_seal: game.root_seal().unwrap_or_default(),
+            horizon_nanos: config.horizon_nanos,
+        };
+        let written = write_bug_reports(
+            windows,
+            &campaign_report.campaign.archive.bugs,
+            &options.output,
+        )?;
+        report.executions = campaign_report.campaign.executions_completed;
+        report.horizons_clocked = campaign_report.campaign.frames_emulated;
+        report.first_bug_execution = campaign_report.executions_to_first_bug;
+        report.bug_found = campaign_report.bugs_found > 0;
+        for bug in &written {
+            // The campaign records what a bug looked like, not the guest state
+            // it left behind, so each bug is replayed once for its state hash.
+            let state_hash = match replay_once(artifacts, &config, &bug.actions) {
+                Ok((_, hash, _)) => hash,
+                Err(error) => {
+                    eprintln!("bug {} did not replay for a state hash: {error}", bug.bug);
+                    String::new()
+                }
+            };
+            report.bugs.push(BugSummary {
+                execution: bug.execution,
+                actions: bug.actions.clone(),
+                stop: bug.observations.stop,
+                violations: bug.observations.violations.iter().copied().collect(),
+                sometimes: bug.observations.sometimes.iter().copied().collect(),
+                state_hash,
+            });
+        }
+        report.wall_seconds = started.elapsed().as_secs();
+        report.write(&options.output)?;
+        Ok(report)
+    }
+
+    /// Run one recorded action list `repeat` times.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a run cannot reach its guest.
+    pub fn replay(
+        artifacts: &Artifacts,
+        actions: &[FaultAction],
+        repeat: u32,
+        options: &Options,
+    ) -> Result<Report, Box<dyn Error>> {
+        if repeat == 0 {
+            return Err("--repeat must be positive".into());
+        }
+        let config = config(options);
+        let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
+        let mut report = Report::new("replay", artifacts, identity, options);
+        let started = Instant::now();
+        for run in 1..=repeat {
+            let (target, state_hash, horizons) = replay_once(artifacts, &config, actions)?;
+            report.horizons_clocked = report.horizons_clocked.saturating_add(horizons);
+            report.bug_found |= target.bug;
+            report.replays.push(ReplaySummary {
+                run,
+                bug: target.bug,
+                stop: target.stop,
+                state_hash,
+                violations: target.violations,
+            });
+        }
+        report.wall_seconds = started.elapsed().as_secs();
+        report.write(&options.output)?;
+        Ok(report)
+    }
+
+    struct Outcome {
+        bug: bool,
+        stop: crate::target::FaultStop,
+        violations: Vec<u32>,
+    }
+
+    /// Apply one action list to a fresh session and observe the endpoint.
+    fn replay_once(
+        artifacts: &Artifacts,
+        config: &FaultConfig,
+        actions: &[FaultAction],
+    ) -> Result<(Outcome, String, u64), Box<dyn Error>> {
+        let mut target = FaultTarget::new(&artifacts.kernel, &artifacts.initramfs, config)?;
+        target.reset();
+        for action in actions {
+            target.apply(*action);
+        }
+        let observation = target.observation();
+        let outcome = Outcome {
+            bug: target.found_bug(),
+            stop: observation.stop,
+            violations: observation.violations.iter().copied().collect(),
+        };
+        let hash = target.state_hash().map(|bytes| sha256_hex(&bytes))?;
+        Ok((outcome, hash, target.horizons_clocked()))
+    }
+
+    fn hostname() -> String {
+        std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_owned())
     }
 }
+
+#[cfg(all(
+    feature = "consonance",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+pub use live::{replay, search};
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn search_options_require_a_fresh_output_directory() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut options = SearchOptions {
-            seed: 1,
-            workers: 1,
-            executions: 1,
-            actions: 1,
-            output: tmp.path().to_owned(),
-        };
-        assert!(validate_output(&options).is_ok());
-        fs::write(tmp.path().join("existing"), b"x").unwrap();
-        assert!(validate_output(&options).is_err());
-        options.output = tmp.path().join("new");
-        assert!(validate_output(&options).is_ok());
+    fn options() -> Options {
+        Options {
+            seed: 7,
+            workers: 2,
+            executions: 10,
+            actions: 4,
+            horizon_ms: 500,
+            ram_mib: 1024,
+            knobs: Vec::new(),
+            places: Vec::new(),
+            wall_minutes: None,
+            output: PathBuf::from("unused"),
+        }
     }
 
     #[test]
-    fn search_identity_excludes_artifact_destination() {
-        let mut first = SearchOptions {
-            seed: 7,
-            workers: 2,
-            executions: 9,
-            actions: 11,
-            output: PathBuf::from("first-artifacts"),
+    fn a_horizon_in_milliseconds_becomes_guest_nanoseconds() {
+        assert_eq!(options().horizon_nanos(), 500_000_000);
+        assert_eq!(
+            Options {
+                horizon_ms: u64::MAX,
+                ..options()
+            }
+            .horizon_nanos(),
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn zero_bounds_are_refused_before_a_guest_boots() {
+        for broken in [
+            Options {
+                workers: 0,
+                ..options()
+            },
+            Options {
+                executions: 0,
+                ..options()
+            },
+            Options {
+                actions: 0,
+                ..options()
+            },
+            Options {
+                horizon_ms: 0,
+                ..options()
+            },
+            Options {
+                ram_mib: 0,
+                ..options()
+            },
+        ] {
+            assert!(broken.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn a_non_empty_output_directory_is_refused() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let options = Options {
+            output: directory.path().to_path_buf(),
+            ..options()
         };
-        let first_identity = SearchIdentity::from(&first);
-        first.output = PathBuf::from("second-artifacts");
-        let second_identity = SearchIdentity::from(&first);
-        assert_eq!(first_identity, second_identity);
-        let encoded = serde_json::to_string(&first_identity).unwrap();
-        assert!(!encoded.contains("artifacts"));
+        assert!(options.validate().is_ok(), "an empty directory is accepted");
+        std::fs::write(directory.path().join("report.json"), b"{}").expect("write");
+        assert!(options.validate().is_err());
+    }
+
+    #[test]
+    fn a_recorded_input_reads_as_a_bug_report_or_a_bare_action_list() {
+        let actions = vec![FaultAction::Hook(1), FaultAction::Kill(0)];
+        let bare = serde_json::to_string(&actions).expect("serialize");
+        assert_eq!(parse_recorded_input(&bare).expect("bare"), actions);
+        let report = serde_json::json!({ "bug": 1, "actions": actions }).to_string();
+        assert_eq!(parse_recorded_input(&report).expect("report"), actions);
+        assert!(parse_recorded_input("[]").is_err());
+        assert!(parse_recorded_input("{}").is_err());
+    }
+
+    #[test]
+    fn a_report_pins_every_artifact_and_round_trips_through_json() {
+        let artifacts = Artifacts {
+            kernel: b"kernel".to_vec(),
+            initramfs: b"initramfs".to_vec(),
+            agent: b"agent".to_vec(),
+        };
+        let report = Report::new("search", &artifacts, "identity".to_owned(), &options());
+        assert_eq!(report.package, PACKAGE);
+        assert_eq!(report.kernel_sha256, sha256_hex(b"kernel"));
+        assert_eq!(report.image_sha256, sha256_hex(b"initramfs"));
+        assert_eq!(report.fault_agent_sha256, sha256_hex(b"agent"));
+        assert_eq!(report.first_bug_execution, None);
+        let text = serde_json::to_string(&report).expect("serialize");
+        assert!(text.contains("\"first_bug_execution\":null"));
+        let decoded: Report = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(decoded, report);
+    }
+
+    #[test]
+    fn a_report_is_written_into_the_output_directory() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let artifacts = Artifacts {
+            kernel: Vec::new(),
+            initramfs: Vec::new(),
+            agent: Vec::new(),
+        };
+        let report = Report::new("replay", &artifacts, String::new(), &options());
+        report.write(directory.path()).expect("write");
+        let text = std::fs::read_to_string(directory.path().join("report.json")).expect("read");
+        assert_eq!(
+            serde_json::from_str::<Report>(&text).expect("decode"),
+            report
+        );
     }
 }
