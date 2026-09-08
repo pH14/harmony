@@ -129,11 +129,11 @@ mod tests {
     use super::*;
 
     const BUNDLE: &str = "\
-node 0 etcd-0 /usr/local/bin/etcd-node 0
-ready /usr/local/bin/etcd-ready
-setup /usr/local/bin/etcd-setup
-hook 1 /usr/local/bin/etcd-compact
-hook 2 /usr/local/bin/etcd-defrag
+setup /bin/sh -c \"mkdir -p /tmp/etcd\"
+node etcd /usr/bin/etcd --data-dir /tmp/etcd
+hook 1 /hooks/compact
+hook 2 /hooks/defrag
+ready /usr/bin/etcdctl endpoint health
 ";
 
     fn image(root: &Path) {

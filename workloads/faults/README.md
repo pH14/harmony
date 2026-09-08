@@ -13,7 +13,7 @@ in the fault agent's bundle format:
 
 | line | meaning |
 |---|---|
-| `node <id> <name> <argv...>` | one workload process the agent supervises |
+| `node <name> <argv...>` | one workload process the agent supervises |
 | `hook <id> <argv...>` | a command the search can run at any moment |
 | `setup <argv...>` | runs once, before any node starts |
 | `ready <argv...>` | must pass before the run's setup point is sealed |
