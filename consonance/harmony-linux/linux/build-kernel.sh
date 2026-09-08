@@ -38,6 +38,12 @@ for guest_patch in "$LINUX_DIR"/patches/x86/[0-9][0-9][0-9][0-9]-*.patch; do
         echo "== kernel: applying $patch_name"
         (cd "$KSRC" && patch -p1 --force <"$guest_patch")
         touch "$stamp"
+    elif (cd "$KSRC" && patch -p1 -R --dry-run --force <"$guest_patch") >/dev/null 2>&1; then
+        # A build tree carried over from before the stamps existed holds the
+        # series with no record of it, so adopt what the tree already has. A
+        # partially applied patch matches neither direction and still fails.
+        echo "== kernel: $patch_name is already in $KSRC; recording its stamp"
+        touch "$stamp"
     else
         echo "FAIL: $patch_name does not apply to $KSRC; delete the tree to re-extract" >&2
         exit 1
