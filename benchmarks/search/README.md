@@ -93,6 +93,9 @@ as a separate stress condition.
 | `qualification.json` | Six small cases: all five games plus whole-game Nova configuration. Full stream/checkpoint replay and twice-repeated witness replay; 500 executions per case. |
 | `ci.json` | Source-built Nova (level and whole-game origins) and STB through the common runner, with full small-campaign replay and a frame cap. No licensed commercial ROM is used. |
 | `pilot.json` | Three exploratory seeds on SMB, Nova level 1 and whole game, Metal Man, Metroid new game and STB Hard. |
+| `alphabet-control.json`, `alphabet-continuation.json` | The same development pilot origins and budgets, comparing alphabet-only mutation with separately accounted quarter-share continuation replay. These exploratory panels do not require every case to solve. |
+| `metroid-long-horizon-semantic.json`, `metroid-long-horizon-continuation.json` | Three reused development seeds at 3 million executions, 4 workers and 8 GiB; semantic parent selection with alphabet-only mutation versus the new continuation policy. |
+| `throughput-checkpoint.json` | The 18-cell throughput panel with the adopted two-result-slot profile, for an isolated comparison of unchanged policies before and after implementation changes. |
 | `evaluation-continuation.json` | Frozen candidate for the full panel: learned continuation replay with the original parent selector. Selected from the completed pilots before any full-panel outcome was observed. |
 | `evaluation.json` | Main-mechanism control: five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
 | `smb-reference.json` | Practical fresh whole-game SMB recipe: 24 workers, 2,048 MiB, count weighting, two-reservation window/two result slots, 600,000 executions and 120 million frames. Five fresh validation seeds; every cell must solve. |
@@ -174,11 +177,19 @@ limit, then drains admitted work and verifies evidence.
   occupancy. Process I/O is logged separately; sampling can miss short-lived peaks.
   Broader runtime-file accounting is tracked in
   [#274](https://github.com/pH14/harmony/issues/274).
+
 - **I/O and CPU:** sampled `/proc` read/write bytes, CPU seconds and OS block
   operation/context-switch counts. The final sampled byte totals are lower bounds
   if a process exits between samples; block operations are not byte counts.
 - **Coordinator:** optional phase timing and dispatched action budgets. Requested
   replay/suffix time is labelled separately from actual emulator frame work.
+
+The HTML run table and Metroid milestone table show peak process RSS, the last
+reported logical archive charge, and peak sampled output disk in MiB. In the
+milestone table these columns span the search-union and trajectory rows because
+they measure the whole benchmark cell, including verification. Missing samples
+remain `unavailable`; a measured zero stays zero. Raw byte values, allocated disk
+bytes, and phase-specific memory remain in each summary and telemetry stream.
 
 Performance runs hash and discard the full event stream while retaining compact
 reports and a best/winning input. This bounds disk growth without pretending a

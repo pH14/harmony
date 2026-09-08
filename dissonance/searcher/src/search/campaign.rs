@@ -2741,10 +2741,8 @@ where
         config.memory_budget_mib,
     );
     core.archive.selector_policy = config.selector.clone();
-    core.archive.enable_continuations(matches!(
-        config.mixture,
-        DrawMixture::EnergySpliceContinuation { .. }
-    ));
+    core.archive
+        .enable_continuations(config.mixture.uses_continuations());
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = game.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the bootstrap target: {error}").into()
@@ -3181,8 +3179,14 @@ where
                         .archive
                         .index_of_id(pending_job.parent_id)
                         .ok_or("completed job parent is no longer resident")?;
-                    core.archive
-                        .record_selection(parent_index, &pending_job.selector);
+                    let isolated_continuation = config.mixture == DrawMixture::AlphabetContinuation
+                        && pending_job.selector.path == SelectorPath::Continuation;
+                    if isolated_continuation {
+                        core.archive.record_isolated_continuation(parent_index);
+                    } else {
+                        core.archive
+                            .record_selection(parent_index, &pending_job.selector);
+                    }
                     let retained_ids = retained_archive_indexes(&core, &decisions);
                     let new_slot_descendant = retained_ids
                         .iter()
@@ -3190,12 +3194,14 @@ where
                     let new_cell_descendant = retained_ids
                         .iter()
                         .any(|id| core.archive.opened_new_cell(*id));
-                    core.archive.record_selection_outcome(
-                        parent_index,
-                        !retained_ids.is_empty(),
-                        new_slot_descendant,
-                        new_cell_descendant,
-                    );
+                    if !isolated_continuation {
+                        core.archive.record_selection_outcome(
+                            parent_index,
+                            !retained_ids.is_empty(),
+                            new_slot_descendant,
+                            new_cell_descendant,
+                        );
+                    }
                     if let DrawMixture::Energy { .. }
                     | DrawMixture::EnergySplice { .. }
                     | DrawMixture::EnergySpliceContinuation { .. } = config.mixture
@@ -3699,10 +3705,8 @@ where
     core.record_progress = header.progress_policy.is_some();
     core.bounded_progress_curve = uses_bounded_progress_curve(header.progress_policy.as_deref());
     core.archive.selector_policy = replay_selector.clone();
-    core.archive.enable_continuations(matches!(
-        replay_mixture,
-        DrawMixture::EnergySpliceContinuation { .. }
-    ));
+    core.archive
+        .enable_continuations(replay_mixture.uses_continuations());
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = game.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
@@ -3848,7 +3852,7 @@ where
             }
             CampaignStreamRecord::Job(job) => {
                 if job.selector.path == SelectorPath::Continuation
-                    && (!matches!(replay_mixture, DrawMixture::EnergySpliceContinuation { .. })
+                    && (!replay_mixture.uses_continuations()
                         || !job.sequence.is_multiple_of(4)
                         || job.mixture_weight != 0
                         || job.splice_weight != u8::MAX
@@ -3977,18 +3981,24 @@ where
                 }
                 game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector)?;
-                core.archive.record_selection(parent_index, &job.selector);
-                let retained_ids = retained_archive_indexes(&core, &decisions);
-                core.archive.record_selection_outcome(
-                    parent_index,
-                    !retained_ids.is_empty(),
-                    retained_ids
-                        .iter()
-                        .any(|id| core.archive.opened_new_slot(*id)),
-                    retained_ids
-                        .iter()
-                        .any(|id| core.archive.opened_new_cell(*id)),
-                );
+                if replay_mixture == DrawMixture::AlphabetContinuation
+                    && job.selector.path == SelectorPath::Continuation
+                {
+                    core.archive.record_isolated_continuation(parent_index);
+                } else {
+                    core.archive.record_selection(parent_index, &job.selector);
+                    let retained_ids = retained_archive_indexes(&core, &decisions);
+                    core.archive.record_selection_outcome(
+                        parent_index,
+                        !retained_ids.is_empty(),
+                        retained_ids
+                            .iter()
+                            .any(|id| core.archive.opened_new_slot(*id)),
+                        retained_ids
+                            .iter()
+                            .any(|id| core.archive.opened_new_cell(*id)),
+                    );
+                }
                 if !legacy_schedule {
                     core.archive.unpin_job_origin(snapshot_id);
                 }

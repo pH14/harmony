@@ -277,11 +277,14 @@ impl Evaluation for TestGame {
 }
 #[test]
 fn continuations_and_count_selection_replay_under_snapshot_pressure() {
-    for (workers, semantic, persistent) in [
-        (1, false, false),
-        (4, false, false),
-        (4, true, false),
-        (4, false, true),
+    for (workers, semantic, persistent, alphabet) in [
+        (1, false, false, false),
+        (4, false, false, false),
+        (4, true, false, false),
+        (4, false, true, false),
+        (1, false, false, true),
+        (4, false, false, true),
+        (4, false, true, true),
     ] {
         let config = CampaignConfig {
             campaign_seed: 947,
@@ -297,7 +300,11 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             materialize_final_artifacts: true,
             run: (),
             suffix: SuffixShape::OneOrTwo,
-            mixture: DrawMixture::EnergySpliceContinuation { scale: 6 },
+            mixture: if alphabet {
+                DrawMixture::AlphabetContinuation
+            } else {
+                DrawMixture::EnergySpliceContinuation { scale: 6 }
+            },
             retention: RetentionPolicy::AdmitAlive,
             selector: if persistent {
                 SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
@@ -437,7 +444,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             replay_campaign_checkpointed(&TestGame, &bounded_stream, None, None).unwrap(),
             (bounded, bounded_checkpoint)
         );
-        let tampered = text.replacen("energy_splice_continuation_v1:6", "energy_splice:6", 1);
+        let tampered = text.replacen(&draw_mixture_identifier(config.mixture), "alphabet_only", 1);
         assert!(replay_campaign_checkpointed(&TestGame, tampered.as_bytes(), None, None).is_err());
         let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
         let line = lines

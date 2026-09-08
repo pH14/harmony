@@ -120,6 +120,18 @@ pub enum DrawMixture {
         /// Barren suffixes per halving of a strategy's share.
         scale: u64,
     },
+    /// Retry learned exits in one quarter of reservations; other draws use
+    /// only the alphabet. Retries have separate exploration accounting.
+    AlphabetContinuation,
+}
+
+impl DrawMixture {
+    pub(crate) fn uses_continuations(self) -> bool {
+        matches!(
+            self,
+            Self::EnergySpliceContinuation { .. } | Self::AlphabetContinuation
+        )
+    }
 }
 
 /// Which strategy an energy draw assigned to one suffix.
@@ -153,6 +165,7 @@ pub fn draw_mixture_identifier(mixture: DrawMixture) -> String {
             format!("energy_splice_continuation_v1:{scale}")
         }
         DrawMixture::AlphabetOnly => MIXTURE_ALPHABET_ONLY_IDENTIFIER.to_owned(),
+        DrawMixture::AlphabetContinuation => "alphabet_continuation_v1".to_owned(),
         DrawMixture::BiasedHalf => MIXTURE_BIASED_HALF_IDENTIFIER.to_owned(),
         DrawMixture::Energy { scale } => format!("{MIXTURE_ENERGY_PREFIX}{scale}"),
         DrawMixture::EnergySplice { scale } => format!("{MIXTURE_ENERGY_SPLICE_PREFIX}{scale}"),
@@ -188,6 +201,7 @@ pub fn draw_mixture_from_identifier(identifier: &str) -> Result<DrawMixture, Box
     }
     match identifier {
         MIXTURE_ALPHABET_ONLY_IDENTIFIER => Ok(DrawMixture::AlphabetOnly),
+        "alphabet_continuation_v1" => Ok(DrawMixture::AlphabetContinuation),
         MIXTURE_BIASED_HALF_IDENTIFIER => Ok(DrawMixture::BiasedHalf),
         _ => Err(format!("draw mixture {identifier} is not recognized").into()),
     }
@@ -334,7 +348,9 @@ where
             rand.below(NonZeroUsize::new(256).ok_or("invalid mixture weight bound")?)
                 < usize::from(mixture_weight),
         ),
-        DrawMixture::AlphabetOnly | DrawMixture::BiasedHalf => None,
+        DrawMixture::AlphabetOnly | DrawMixture::AlphabetContinuation | DrawMixture::BiasedHalf => {
+            None
+        }
     };
     let length = match shape {
         SuffixShape::OneOrTwo => {
@@ -410,6 +426,7 @@ mod tests {
             DrawMixture::Energy { scale: 6 },
             DrawMixture::EnergySplice { scale: 6 },
             DrawMixture::EnergySpliceContinuation { scale: 6 },
+            DrawMixture::AlphabetContinuation,
         ] {
             assert_eq!(
                 draw_mixture_from_identifier(&draw_mixture_identifier(mixture))
@@ -419,6 +436,29 @@ mod tests {
         }
         assert!(draw_mixture_from_identifier("table_only").is_err());
         assert!(draw_mixture_from_identifier("energy:0").is_err());
+    }
+
+    #[test]
+    fn alphabet_continuation_keeps_ordinary_suffixes_identical() {
+        for seed in 0..512 {
+            for shape in [SuffixShape::OneOrTwo, SuffixShape::OneToSix] {
+                let draw = |mixture| {
+                    draw_suffix(
+                        shape,
+                        mixture,
+                        255,
+                        seed,
+                        |_| panic!("alphabet continuation consulted a biased table"),
+                        |rand| Ok(rand.next_u64()),
+                    )
+                    .unwrap()
+                };
+                assert_eq!(
+                    draw(DrawMixture::AlphabetOnly),
+                    draw(DrawMixture::AlphabetContinuation)
+                );
+            }
+        }
     }
 
     /// A biased table that offers nothing must consume no draw, so a run

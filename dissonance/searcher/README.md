@@ -87,6 +87,14 @@ use independent versioned identifiers:
   splice draws. This is continuation replay: applying a previously discovered
   action tail from a new state and evaluating the resulting state normally.
   It is distinct from verification replay, which checks a recorded execution.
+- `alphabet_continuation_v1` uses the same bounded, quarter-share learned exits
+  with alphabet-only ordinary draws. A retry increments only continuation
+  accounting and the cache-use bit; it does not consume entry/key selection
+  counts, mark exploration barren, or reward the ordinary mutation strategy.
+  Results still pass through normal retention and may trigger another improved
+  same-slot continuation. This separates route repair from ordinary exploration
+  without adding a workload preference tier. The older energy-splice continuation
+  identifier preserves its original combined accounting and mutation behavior.
 
 The continuation bank retains at most 8,192 observed exits, eight destinations
 per source slot, 128 actions per exit, and 1,024 pending attempts. It charges a

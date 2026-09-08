@@ -3827,6 +3827,17 @@ where
         self.group_barren.iter().map(BTreeMap::len).sum()
     }
 
+    /// A retry under the alphabet-continuation policy is a use for cache
+    /// maintenance, but is not an ordinary exploration draw or barren attempt.
+    pub(crate) fn record_isolated_continuation(&mut self, id: usize) {
+        self.referenced[id] = true;
+        let count = self
+            .selector_accounting
+            .continuation_selections
+            .get_or_insert(0);
+        *count = count.saturating_add(1);
+    }
+
     /// Account one recorded selection of `id`.
     pub fn record_selection(&mut self, id: usize, draw: &SelectorDraw) {
         // The reset-marked draw is the only place streak counters clear.
@@ -5211,6 +5222,36 @@ mod tests {
             archive.historical_entries_dropped(),
             u64::try_from(HISTORY_COMPACTION_MIN_DROPS).expect("threshold fits in u64")
         );
+    }
+
+    #[test]
+    fn continuation_attempts_do_not_exhaust_an_ordinary_draw_or_its_key_count() {
+        let mut archive = archive_with_prunable_history();
+        archive.selector_policy =
+            SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
+                entry: 1,
+                groups: vec![1],
+            });
+        let id = archive.active.iter().position(|active| *active).unwrap();
+        let key = archive.entries[id].key.group(0);
+        for _ in 0..20 {
+            archive.record_isolated_continuation(id);
+        }
+        assert!(archive.entry_unexhausted(id));
+        assert_eq!(archive.key_counts.get(key), 0);
+        assert!(archive.group_barren.iter().all(BTreeMap::is_empty));
+        assert_eq!(archive.selector_report().continuation_selections, Some(20));
+        archive.record_selection(
+            id,
+            &SelectorDraw {
+                path: SelectorPath::GroupWalk,
+                classes_skipped: 0,
+                counter_reset: false,
+                concentration: None,
+            },
+        );
+        assert!(!archive.entry_unexhausted(id));
+        assert_eq!(archive.key_counts.get(key), 1);
     }
 
     #[test]

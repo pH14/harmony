@@ -414,6 +414,18 @@ def named_progress(item, witness=False):
     return value if value.get('format') in {'metroid-named-progress-v1', 'metroid-named-progress-v2'} else None
 
 
+RESOURCE_HEADERS = '<th>Peak RSS MiB</th><th>Last logical memory MiB</th><th>Peak output disk MiB</th>'
+
+
+def resource_cells(item, rowspan=1):
+    values = (item.get('max_process_rss_bytes'),
+              (item.get('last_progress') or {}).get('resident_memory_bytes'),
+              item.get('peak_disk_logical_bytes_sampled'))
+    return ''.join(f'<td rowspan="{rowspan}">' +
+                   ('unavailable' if value is None else f'{value / 1048576:,.1f}') + '</td>'
+                   for value in values)
+
+
 def metroid_html(results):
     items = [item for item in results if item.get('search_request', {}).get('game') == 'metroid']
     if not items:
@@ -436,7 +448,8 @@ def metroid_html(results):
             rows.append('<tr>' + ''.join('<td>' + text + '</td>' for text in [
                 cell, scope, names(value, gear), names(value, areas), names(value, bosses),
                 html.escape(str(value['max_missile_capacity'])) if value else 'unavailable',
-                html.escape(str(value['max_energy_tanks'])) if value else 'unavailable']) + '</tr>')
+                html.escape(str(value['max_energy_tanks'])) if value else 'unavailable'])
+                + (resource_cells(item, rowspan=2) if scope == 'Search branches' else '') + '</tr>')
     discoveries = []
     for item in items:
         progress = named_progress(item)
@@ -452,10 +465,11 @@ def metroid_html(results):
                                f'route action ends at frame {stamp["route_action_end_frame"]:,}; {link}</li>')
     return ('<h2>Metroid milestones</h2><p>Each milestone is an observation, not a prescribed route or reward. '
             'Search rows are unions across branches; replay rows describe one trajectory. Area entry does not imply '
-            'boss defeat. Capacity includes boss bonuses and is not a count of missile pickups. '
+            'boss defeat. Resource columns span both rows and describe the whole benchmark cell, including verification; '
+            'logical memory is the last reported archive charge. Capacity includes boss bonuses and is not a count of missile pickups. '
             'Not observed means absent from captured observations up to the recorded stop; unavailable means the schema did not record it.</p>'
             '<div class="scroll"><table><thead><tr><th>Cell</th><th>Scope</th><th>Equipment</th><th>Areas entered</th>'
-            '<th>Bosses / ending</th><th>Missile capacity</th><th>Energy tanks</th></tr></thead><tbody>'
+            '<th>Bosses / ending</th><th>Missile capacity</th><th>Energy tanks</th>' + RESOURCE_HEADERS + '</tr></thead><tbody>'
             + ''.join(rows) + '</tbody></table></div><details><summary>First discoveries and replay evidence</summary>'
             '<p>Execution is admitted search work. Route frame is an action endpoint on the discovered input, '
             'not cumulative emulated work or an exact pickup frame. Inputs are independently replayed twice.</p><ul>'
@@ -472,14 +486,14 @@ def report_html(results, title):
         rows.append('<tr>' + ''.join('<td>' + str(x) + '</td>' for x in [
             f'<a href="{cell}/summary.json">{cell}</a>', html.escape(item['status']),
             'yes' if r.get('solved') else 'no' if r else 'unavailable', number(r.get('frames_to_first_victory')),
-            number(r.get('frames_emulated')), number(r.get('frames_per_second')), number(r.get('search_seconds')),
-            number(item.get('max_process_rss_bytes')), number(item.get('peak_disk_logical_bytes_sampled'))]) + '</tr>')
+            number(r.get('frames_emulated')), number(r.get('frames_per_second')), number(r.get('search_seconds'))])
+            + resource_cells(item) + '</tr>')
     panels = ''.join('<li>' + html.escape(json.dumps(row, sort_keys=True)) + '</li>' for row in aggregates(results))
     return '''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>''' + html.escape(title) + '''</title><style>body{font:15px/1.55 system-ui;margin:2rem;color:#162132;background:#f7f9fc}table{border-collapse:collapse;background:white;white-space:nowrap}th,td{padding:.55rem;text-align:right;border-bottom:1px solid #dce3ef}th:first-child,td:first-child{text-align:left}a{color:#1356a0}li{margin:.8rem 0;overflow-wrap:anywhere}.scroll{overflow:auto}h1{font-size:1.6rem}</style>
 <h1>''' + html.escape(title) + '''</h1><p>Fresh search runs with frozen workload policies. Independent stage and level fixtures are separate from whole-game completion. Missing victories are censored at the recorded budget; failures remain visible.</p>
 <p>Frames include admitted emulator work and replay/probes inside search. Throughput excludes witness verification and external export. Peak RSS is the operating system's process maximum; disk peaks sample the cell output directory. Shared assets/builds and temporary files outside that directory are excluded. See each summary for phase measurements, process-group RSS, logical archive memory, I/O and provenance.</p>
-<div class="scroll"><table><thead><tr><th>Cell</th><th>Status</th><th>Solved</th><th>Frames to victory</th><th>Total frames</th><th>Frames/s</th><th>Search s</th><th>RSS bytes</th><th>Output disk bytes</th></tr></thead><tbody>''' + ''.join(rows) + '''</tbody></table></div>
+<div class="scroll"><table><thead><tr><th>Cell</th><th>Status</th><th>Solved</th><th>Frames to victory</th><th>Total frames</th><th>Frames/s</th><th>Search s</th>''' + RESOURCE_HEADERS + '</tr></thead><tbody>' + ''.join(rows) + '''</tbody></table></div>
 ''' + metroid_html(results) + '''<h2>Seed panels</h2><p>Wilson 95% intervals describe uncertainty in solve fractions. Time-to-victory medians include successes only and are not estimates for censored runs. Three-seed pilots are exploratory.</p><ul>''' + panels + '''</ul><p><a href="results.json">Results JSON</a> · <a href="suite.json">Frozen matrix</a> · <a href="matrix.json">Build and host</a> · <a href="checksums.json">SHA-256 manifest</a></p></html>'''
 
 

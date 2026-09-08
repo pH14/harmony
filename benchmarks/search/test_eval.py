@@ -71,6 +71,16 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(eval.named_progress(item), progress)
         self.assertIn('Escape started — execution 12', eval.metroid_html([item]))
         self.assertEqual(eval.aggregates([item])[0]['metroid_milestones']['escape_started']['observed'], 1)
+        item['max_process_rss_bytes'] = 2 * 1048576
+        item['peak_disk_logical_bytes_sampled'] = 0
+        text = eval.metroid_html([item])
+        self.assertIn('Peak RSS MiB', text)
+        self.assertIn('Peak output disk MiB', text)
+        self.assertIn('<td rowspan="2">2.0</td><td rowspan="2">unavailable</td><td rowspan="2">0.0</td>', text)
+        item['last_progress']['resident_memory_bytes'] = 1048576
+        text = eval.report_html([item], 'Resources')
+        self.assertIn('Last logical memory MiB', text)
+        self.assertIn('<td rowspan="1">2.0</td><td rowspan="1">1.0</td><td rowspan="1">0.0</td>', text)
 
     def test_export_includes_only_named_milestone_tapes_and_rejects_symlinks(self):
         matrix = self.root/'matrix'

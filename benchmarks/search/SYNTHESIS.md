@@ -112,3 +112,28 @@ entire historical algorithm. The long-horizon manifests retain this distinction.
 The independent Ridley flag decoder correction is versioned v8; the named-report
 schema does not contribute rewards or route hints. See the progress audit for
 source hashes, replay evidence, and the exact limits of the comparison.
+
+## Second transcript audit
+
+The complete source sessions were re-read through their latest saved entries,
+including the SMB worker session `3b9ddf2e-f77d-42ba-a6ff-f9f339c05bfd` and its
+integrator session `f5ae3504-1ce6-498c-91e7-e10e85ee30ed`. Earlier extracts of the
+MM2 and Metroid sessions omitted their final outcomes.
+
+| Mechanism | Source outcome | Current treatment |
+| --- | --- | --- |
+| SMB bounded maintenance, eight-action keyframes, live-frontier ranking, complete controller vocabulary | Accepted mechanisms from the program-v3 lineage, subsequently integrated in #249 | Already present in the current core and adapter. Recovered commits have different ancestry after integration; code, rather than ancestry alone, establishes preservation. |
+| SMB within-cell count weighting and rollout time cap | Count weighting succeeded across three full-memory seeds but had a mixed small-memory companion; the cap changed executions per frame and the two mechanisms interacted | Already exposed independently, with retained-key history as a separate experiment. Compare frames as well as executions; do not revive the rejected maze-state hint or curated vocabulary. |
+| SMB shorter keyframe replay bound | 200,000 paired decisions matched, with no throughput improvement; long splice tails caused most frame cost | Keep the existing action-distance bound and measured rollout cap. |
+| MM2 within-cell Pareto/preference weighting and slot collapsing | Seven selector variants lost depth; the final consultation found that worse resource states still held useful exits | Preserve distinct states and test learned exits instead of dropping states by resource dominance. Cross-location preference ranking remains excluded. |
+| MM2 continuation pilot, final transcript line 12280 | Rejected at 2M jobs: 6.2% of jobs consumed 17.3% of frames, with more retained copies and later or missing milestones | The earlier 32-segment transfer test established feasibility, not efficacy. Keep the failed pilot in the interpretation; its proposed admission filter was not tested. |
+| Metroid per-destination exits, newest-first queue, quarter replay share | Better than lineage-only exits and uncapped/half-share replay in development runs | Present in the bounded continuation bank, with deliberately smaller storage bounds. |
+| Metroid replay tiers and cross-location destination preference filter | Helped particular item waves; the later tier-fairness experiment was canceled and has no efficacy result | Do not import the items/tanks/missiles/health priority or assume state preferences transfer between locations. These are not established generic improvements. |
+| Alphabet exploration plus separately accounted triggered replay | Both source prototypes kept triggered jobs separate from ordinary exploration; Metroid used alphabet-only mutation after ordinary splicing failed its pilot | Newly exposed as `alphabet_continuation_v1`. The prior port coupled replay to energy-splice mutation and charged retries to ordinary selection/barren counters. Preserve that old identifier for replay compatibility. |
+
+The new alphabet policy is an explicit experiment. It does not reproduce the
+historical Metroid resource tiers or prove that MM2's rejected long-tail pilot
+will improve. Its ordinary draws match alphabet-only for the same mutation seed,
+while generic tests require actual continuation dispatch, separate accounting,
+bounded reservations, and exact replay under snapshot pressure. The panels must
+measure resource costs and quality before any default change.
