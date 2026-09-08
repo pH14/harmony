@@ -274,18 +274,20 @@ else
             ./build-n6-instruction-images.sh && \
             N6_TRAPS_OFF=1 ./build-kernel.sh)
     fi
-    # The fault-library profile: the same series and pinned source, built
-    # single-processor with ring-3 counter reads left to the host, so stock
-    # database binaries run. It carries its own reviewed counter-opcode
-    # baseline because its call sites sit at different offsets. Built last so
-    # the profiles above keep the object-directory sequence they were
-    # reproduced under.
-    echo "== N5: build the fault-library x86 kernel profile"
-    (cd "$linux_dir" && FAULTLAB_TRAPS_OFF=1 ./build-kernel.sh)
     if [ "$serialization_gate" -eq 1 ]; then
         echo "== N5: run /dev/harmony serialization positive and planted negative"
         (cd "$linux_dir" && ./test-harmony-serialization.sh)
     fi
+    # The fault-library profile: the same series and pinned source, built
+    # single-processor with ring-3 counter reads left to the host, so stock
+    # database binaries run. It carries its own reviewed counter-opcode
+    # baseline because its call sites sit at different offsets. Built after
+    # everything above: the other profiles keep the object-directory sequence
+    # they were reproduced under, and the serialization test seeds its KUnit
+    # kernels from that shared object directory's configuration, which a
+    # concurrency test needs left multiprocessor.
+    echo "== N5: build the fault-library x86 kernel profile"
+    (cd "$linux_dir" && FAULTLAB_TRAPS_OFF=1 ./build-kernel.sh)
     mkdir -p "$stage/x86_64"
     for name in bzImage bzImage-faultlab initramfs.cpio.gz; do
         [ -f "$artifacts/$name" ] || {
