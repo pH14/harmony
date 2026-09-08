@@ -30,7 +30,10 @@ Adapter audit remains separate from engine ablations. In particular, the MM2 v18
 progress-aware selector separates location labels from progress. Metroid
 count-based capability identity and ordinary splice donor ordering still need
 separate ablations;
-being hidden behind `ArchiveKey` does not make them unbiased. Source-labelled
+being hidden behind `ArchiveKey` does not make them unbiased. The imported Nova
+and STB policies still use the default `Ord` progress relation; the semantic
+parent-selection experiment does not remove their residual coordinate bias.
+Source-labelled
 mechanics are allowed; inferred routes, waypoint rewards, curated winning chords,
 per-obstacle weapon advice, and imported solution tapes are not.
 

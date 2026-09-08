@@ -72,8 +72,8 @@ cargo clippy --manifest-path dissonance/searcher/Cargo.toml --all-targets -- -D 
 
 ## Search evaluation policies
 
-The legacy selector identifiers retain their exact behavior. Two opt-in search
-experiments are versioned independently:
+The legacy selector identifiers retain their exact behavior. Search experiments
+use independent versioned identifiers:
 
 - `room_cell_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides
   each within-cell cost weight by one plus that entry's admitted selections.
