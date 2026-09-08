@@ -120,8 +120,7 @@ feeding them back into machine state. Canonical hashes and recorded artifacts
 remain the execution evidence.
 
 `unison` compares deterministic subjects and localizes divergence.
-`acceptance-suite` applies the project oracles to registered microprograms and
-workloads. [Testing](TESTING.md) describes these layers.
+Stock-KVM virtual-time checks exercise controlled Linux guests. [Testing](TESTING.md) describes these layers.
 
 ## dissonance
 

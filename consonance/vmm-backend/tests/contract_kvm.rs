@@ -2,7 +2,7 @@
 //! The **hardware** leg of the `Backend` contract tests (`docs/TESTING.md`,
 //! rung 2): the *identical* [`vmm_backend::contract`] exam the portable
 //! `contract_mock.rs` runs over `MockBackend`, run here over the live
-//! `KvmBackend` and `PatchedKvmBackend`.
+//! `KvmBackend`.
 //!
 //! `#[cfg(all(target_os = "linux", target_arch = "x86_64"))]` + `#[ignore]`, so
 //! CI **compiles** it on every push and never runs it. Run it manually per
@@ -19,7 +19,7 @@
 //! hand-assembled real-mode fragments written from the instruction encodings and
 //! the pattern in `tests/kvm_smoke.rs`; they have not yet executed on the box.
 //! The first hardware run is expected to correct stub details (segment setup,
-//! which scenarios a patched backend can actually surface). What is *not*
+//! which scenarios stock KVM can surface). What is *not*
 //! provisional is the exam itself — it is the same code the portable leg
 //! already passes.
 #![cfg(all(
@@ -29,9 +29,7 @@
 ))]
 
 use vmm_backend::contract::{BackendFixture, ContractReport, Scenario, run_all};
-use vmm_backend::{
-    Backend, CpuidModel, Gpa, KvmBackend, MsrFilter, MsrRange, PatchedKvmBackend, X86Policy,
-};
+use vmm_backend::{Backend, CpuidModel, Gpa, KvmBackend, MsrFilter, MsrRange, X86Policy};
 
 /// Guest RAM size. 64 KiB is a whole real-mode segment and covers every guest
 /// frame the stubs touch.
@@ -80,14 +78,10 @@ impl Drop for GuestMem {
 /// The hand-assembled real-mode stub for each scenario, or `None` when this
 /// backend cannot put the guest in that situation at all.
 ///
-/// `patched` selects the determinism backend's extra reach: stock KVM services
-/// `CPUID` and `VMCALL` in-kernel and never traps `RDTSC`/`RDRAND`, so those
-/// scenarios are unavailable there by design, not by omission.
-///
 /// Every stub ends in `hlt; jmp -3`, so each `run` after the armed exit returns
 /// `Idle` again — the same repeated-halt shape the mock's scripted `Idle` tail
 /// provides.
-fn stub(scenario: Scenario, patched: bool) -> Option<Vec<u8>> {
+fn stub(scenario: Scenario) -> Option<Vec<u8>> {
     // hlt ; jmp -3  (back to the hlt)
     const HALT_LOOP: [u8; 3] = [0xF4, 0xEB, 0xFD];
     let head: Vec<u8> = match scenario {
@@ -105,16 +99,8 @@ fn stub(scenario: Scenario, patched: bool) -> Option<Vec<u8>> {
         ],
         // Serviced in-kernel from the installed CPUID table on both backends.
         Scenario::Cpuid => return None,
-        // Stock KVM services VMCALL in-kernel; the patched backend's hypercall
-        // transport needs the doorbell wiring vmm-core composes, which is above
-        // this trait.
+        // The doorbell transport is composed above this trait.
         Scenario::Hypercall => return None,
-        // rdtsc — only the determinism backend traps it.
-        Scenario::Rdtsc if patched => vec![0x0F, 0x31],
-        Scenario::Rdtsc => return None,
-        // rdrand ax — only the determinism backend traps it.
-        Scenario::Rdrand if patched => vec![0x0F, 0xC7, 0xF0],
-        Scenario::Rdrand => return None,
     };
     let mut code = head;
     code.extend_from_slice(&HALT_LOOP);
@@ -181,27 +167,6 @@ impl LiveBackend for KvmBackend {
     }
 }
 
-impl LiveBackend for PatchedKvmBackend {
-    fn open() -> Self {
-        PatchedKvmBackend::new().unwrap_or_else(|e| {
-            panic!(
-                "PatchedKvmBackend::new failed ({e}); the patched KVM modules \
-                 (KVM_CAP_X86_DETERMINISTIC_INTERCEPTS) must be loaded"
-            )
-        })
-    }
-    fn enable_dirty_log(&mut self) {
-        self.set_dirty_log_enabled(true);
-    }
-    fn load(&mut self, gpa: Gpa, bytes: &[u8]) {
-        self.write_guest(gpa, bytes).expect("write_guest");
-    }
-    fn map(&mut self, gpa: Gpa, host: &mut [u8]) {
-        // SAFETY: as above.
-        unsafe { self.map_memory(gpa, host) }.expect("map_memory");
-    }
-}
-
 /// Put the vCPU into flat real mode with `rip` at `entry` (linear == GPA, paging
 /// off), through the trait's own save/restore.
 fn enter_real_mode_at<B: LiveBackend>(backend: &mut B, entry: u64) {
@@ -219,16 +184,14 @@ fn enter_real_mode_at<B: LiveBackend>(backend: &mut B, entry: u64) {
 /// so a `GuestMem` can never be freed while a backend still maps it.
 struct KvmFixture<B: LiveBackend> {
     name: &'static str,
-    patched: bool,
     mems: Vec<GuestMem>,
     _marker: std::marker::PhantomData<B>,
 }
 
 impl<B: LiveBackend> KvmFixture<B> {
-    fn new(name: &'static str, patched: bool) -> Self {
+    fn new(name: &'static str) -> Self {
         KvmFixture {
             name,
-            patched,
             mems: Vec::new(),
             _marker: std::marker::PhantomData,
         }
@@ -258,7 +221,7 @@ impl<B: LiveBackend> BackendFixture for KvmFixture<B> {
     }
 
     fn spawn(&mut self, scenario: Scenario) -> Option<B> {
-        let code = stub(scenario, self.patched)?;
+        let code = stub(scenario)?;
         Some(self.boot(&code, ENTRY))
     }
 
@@ -300,40 +263,14 @@ fn assert_ran(report: &ContractReport, exams: &[&'static str]) {
 #[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
 fn stock_kvm_backend_passes_the_contract_exam() {
     require_kvm();
-    let mut fx: KvmFixture<KvmBackend> = KvmFixture::new("kvm-stock", false);
+    let mut fx: KvmFixture<KvmBackend> = KvmFixture::new("kvm-stock");
     let report = run_all(&mut fx);
     println!("[CONTRACT] {report:#?}");
 
     assert_ran(&report, REQUIRED_EVERYWHERE);
-    // Its determinism capabilities are all false, so the capability-keyed
-    // exactness exams are declined by design and recorded as such.
-    assert!(
-        !report.did_run("exactness/deterministic_tsc_traps"),
-        "stock KVM cannot trap RDTSC; claiming that exam ran would be a false green"
-    );
     assert!(
         !report.declined.is_empty(),
         "stock KVM's declines are part of its contract; an empty decline list means the exam \
          stopped recording them"
-    );
-}
-
-#[test]
-#[ignore = "live patched KVM; run on the determinism box with --ignored (see file header)"]
-fn patched_kvm_backend_passes_the_contract_exam() {
-    require_kvm();
-    let mut fx: KvmFixture<PatchedKvmBackend> = KvmFixture::new("kvm-patched", true);
-    let report = run_all(&mut fx);
-    println!("[CONTRACT] {report:#?}");
-
-    assert_ran(&report, REQUIRED_EVERYWHERE);
-    // The determinism backend advertises trapped clock and RNG, so those exams
-    // must actually run.
-    assert_ran(
-        &report,
-        &[
-            "exactness/deterministic_tsc_traps",
-            "exactness/deterministic_rng_traps",
-        ],
     );
 }

@@ -40,7 +40,7 @@ multiple-versions = "warn"
 # packages pass the check. MPL-2.0 is the sole other copyleft license admitted;
 # its requirements stay scoped to the dependency's own files. This policy is
 # enforced not only on the root workspace but
-# also on the consonance/acceptance-suite/payloads workspace and the cargo-fuzz manifests — see the
+# also on the cargo-fuzz manifests — see the
 # `cargo deny (guest + fuzz manifests)` CI step — so e.g. libfuzzer-sys's
 # LLVM-libFuzzer runtime (NCSA) is actually license-checked.
 version = 2

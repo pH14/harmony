@@ -72,7 +72,7 @@ mod arm64_kvm_sys;
 
 // The **x86-64 KVM substrate**, gated on the architecture it traps as well as the
 // OS (`all(target_os = "linux", target_arch = "x86_64")` — the same seam
-// `vmm-core`'s `hostassert` already uses). `kvm_bindings` exposes a *different*
+// other Linux-only backend facilities use). `kvm_bindings` exposes a *different*
 // `kvm_regs`/`kvm_sregs` on each arch, so this code is not merely Linux-only, it is
 // x86-64-only: gating it on the OS alone made the crate fail to even `cargo check`
 // on `aarch64-unknown-linux-gnu`, which would have blocked the additive ARM backend
@@ -87,12 +87,6 @@ mod arm64_kvm_sys;
 mod kvm;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvm_sys;
-// `patched_kvm` is the box-only syscall orchestration for the determinism
-// backend (the `KVM_EXIT_DETERMINISM` decode/complete logic it drives is the
-// pure, unit-tested `kvm` module); like `kvm_sys` it is excluded from the
-// coverage + mutation gates (it cannot run without the patched `/dev/kvm`).
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-mod patched_kvm;
 
 pub use arch::arm64::{
     ARM64_GIC_BITMAP_WORDS, ARM64_GIC_PRIORITY_BYTES, Arm64, Arm64Caps, Arm64Completion,
@@ -104,7 +98,7 @@ pub use arch::x86::{
     CpuidEntry, CpuidModel, DebugRegs, DescriptorTable, Injection, MsrFilter, MsrRange, Segment,
     VcpuEvents, VcpuRegs, VcpuSregs, VcpuState, X86, X86Caps, X86Completion, X86Exit, X86Policy,
 };
-pub use arch::{Arch, ArchCaps, ArchExit};
+pub use arch::{Arch, ArchExit};
 pub use backend::Backend;
 pub use error::{BackendError, Result};
 pub use exit::{Capabilities, CommonExit, Exit, ExitCounts, ExitReason, HypercallFrame};
@@ -129,6 +123,3 @@ pub use arm64_kvm_sys::LiveKvm;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use kvm_sys::KvmBackend;
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub use patched_kvm::PatchedKvmBackend;

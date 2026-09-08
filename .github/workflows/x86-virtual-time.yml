@@ -193,7 +193,6 @@ jobs:
         run: |
           python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
           python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
-          python3 consonance/vmm-backend/kvm-patches/n6-tripwire-audit.py
       - name: Run traps-off negative, then two traps-on JIT sweeps
         run: |
           mkdir -p n6-report

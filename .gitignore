@@ -2,10 +2,8 @@
 /consonance/harmony-linux/build
 /consonance/harmony-linux/dl
 /consonance/harmony-linux/libvoidstar/build
-/consonance/acceptance-suite/payloads/target
 *.img
 *.bin
-!consonance/acceptance-suite/golden/*.bin
 /.claude/skills/pr-review-workspace/
 .agent-prompt.md
 .env

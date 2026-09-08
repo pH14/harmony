@@ -31,6 +31,13 @@ dispatch, and records. `vendor/arm64` supplies the arm64 Image/DTB boot path,
 board devices, policy, and records. The arm64 vendor is also used to exercise
 the additive architecture seam on portable mocks and QEMU.
 
+Boot does not require a particular host CPU model, stepping, or microcode.
+Each architecture supplies one guest machine policy; the backend supplies the
+required virtualization capabilities. The x86 runtime boots controlled Linux on stock KVM; instruction interception
+patches, Multiboot payloads, and the legacy acceptance runner have been retired.
+The x86 policy and snapshot compatibility
+rules are documented in [contracts/x86](contracts/x86/README.md).
+
 ## Checks
 
 Portable tests use scripted mock backends and cover the run loop, loaders,

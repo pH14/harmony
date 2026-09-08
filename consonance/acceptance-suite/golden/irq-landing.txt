@@ -1,3 +1,0 @@
-PAYLOAD irq-landing START
-OK irq-landing
-PAYLOAD irq-landing PASS

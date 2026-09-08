@@ -76,7 +76,7 @@ pub enum CommonExit {
     },
     /// Hypercall transport (docs/ARCHITECTURE.md) → `complete_hypercall(ret)`.
     /// **Not surfaced by stock `KvmBackend`** (stock KVM services VMCALL
-    /// in-kernel); it exists for `PatchedKvmBackend`/`DirectVmxBackend`.
+    /// in-kernel); it exists for a backend with userspace instruction emulation.
     Hypercall(HypercallFrame),
     /// The guest went idle waiting for an event (x86 `HLT` / ARM `WFI` — one
     /// concept above the trait; `KVM_EXIT_HLT` on x86 KVM). Idle-skip
@@ -164,19 +164,11 @@ pub struct HypercallFrame {
     pub args: [u64; 4],
 }
 
-/// What this backend can honestly provide. The unison report reads this to
-/// **refuse to claim determinism** for a payload that needs a capability the
-/// backend lacks. Stock `KvmBackend` reports every determinism field `false`;
-/// `PatchedKvmBackend`/`DirectVmxBackend` raise them. `C` is the vendor's
-/// arch-named flag set ([`Arch::Caps`]); the engine reads it only through the
-/// neutral [`ArchCaps`](crate::arch::ArchCaps) questions.
+/// Backend identity and the architecture-specific features used by the runtime.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Capabilities<C> {
     /// Human-readable backend name for the report (e.g. `"kvm-stock"`).
     pub name: &'static str,
-    /// Surfaces the guest's hardware-RNG reads as exits resolvable to a seeded
-    /// stream (NOT the host RNG). x86: `RDRAND`/`RDSEED`.
-    pub deterministic_rng: bool,
     /// The vendor's arch-named capability flags.
     pub arch: C,
 }
@@ -202,14 +194,6 @@ pub enum ExitReason {
     Hypercall,
     /// CPUID.
     Cpuid,
-    /// `RDTSC`.
-    Rdtsc,
-    /// `RDTSCP`.
-    Rdtscp,
-    /// `RDRAND`.
-    Rdrand,
-    /// `RDSEED`.
-    Rdseed,
     /// Idle halt.
     Idle,
     /// Shutdown / unrecoverable guest fault.
@@ -239,14 +223,6 @@ pub struct ExitCounts {
     pub hypercall: u64,
     /// CPUID exits.
     pub cpuid: u64,
-    /// `RDTSC` exits.
-    pub rdtsc: u64,
-    /// `RDTSCP` exits.
-    pub rdtscp: u64,
-    /// `RDRAND` exits.
-    pub rdrand: u64,
-    /// `RDSEED` exits.
-    pub rdseed: u64,
     /// Idle-halt exits.
     pub idle: u64,
     /// Shutdown exits.
@@ -268,7 +244,7 @@ impl ExitCounts {
 
     /// `(reason, count)` pairs in a fixed, deterministic order (the field order
     /// above), for the report. Exactly one entry per [`ExitReason`].
-    pub fn entries(&self) -> [(ExitReason, u64); 13] {
+    pub fn entries(&self) -> [(ExitReason, u64); 9] {
         [
             (ExitReason::Io, self.io),
             (ExitReason::Mmio, self.mmio),
@@ -276,10 +252,6 @@ impl ExitCounts {
             (ExitReason::Wrmsr, self.wrmsr),
             (ExitReason::Hypercall, self.hypercall),
             (ExitReason::Cpuid, self.cpuid),
-            (ExitReason::Rdtsc, self.rdtsc),
-            (ExitReason::Rdtscp, self.rdtscp),
-            (ExitReason::Rdrand, self.rdrand),
-            (ExitReason::Rdseed, self.rdseed),
             (ExitReason::Idle, self.idle),
             (ExitReason::Shutdown, self.shutdown),
             (ExitReason::Sysreg, self.sysreg),
@@ -305,10 +277,6 @@ impl ExitCounts {
             ExitReason::Wrmsr => &mut self.wrmsr,
             ExitReason::Hypercall => &mut self.hypercall,
             ExitReason::Cpuid => &mut self.cpuid,
-            ExitReason::Rdtsc => &mut self.rdtsc,
-            ExitReason::Rdtscp => &mut self.rdtscp,
-            ExitReason::Rdrand => &mut self.rdrand,
-            ExitReason::Rdseed => &mut self.rdseed,
             ExitReason::Idle => &mut self.idle,
             ExitReason::Shutdown => &mut self.shutdown,
             ExitReason::Sysreg => &mut self.sysreg,
