@@ -14,6 +14,15 @@ cd "$(dirname "$0")"
 
 require_linux_amd64
 require_tools cc make flex bison bc xz gzip
+
+# Each profile variable names one published artifact and one reviewed
+# counter-opcode baseline, so a build that claimed both would publish a kernel
+# under a label that does not describe it.
+if [ -n "${N6_TRAPS_OFF:-}" ] && [ -n "${FAULTLAB_TRAPS_OFF:-}" ]; then
+    echo "FAIL: N6_TRAPS_OFF and FAULTLAB_TRAPS_OFF select different kernels; set one" >&2
+    exit 1
+fi
+
 extract_kernel
 
 # Apply every numbered harmony guest-kernel diff in lexical order. These are
@@ -149,21 +158,23 @@ make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
 # `test-publish-gate.sh` with a planted rejection.
 # Site offsets are toolchain-dependent, so each build toolchain carries its
 # own committed baseline over the same reviewed function set;
-# HARMONY_RDTSC_ALLOWLIST / HARMONY_RDRAND_ALLOWLIST select them (default:
-# the box toolchain's lists).
+# HARMONY_RDTSC_ALLOWLIST / HARMONY_RDRAND_ALLOWLIST select them for the
+# default kernel (default: the box toolchain's lists).
 echo "== kernel: counter-opcode scan (rdtsc/rdtscp + rdrand/rdseed reachability gate)"
+rdtsc_allowlist=${HARMONY_RDTSC_ALLOWLIST:-$LINUX_DIR/rdtsc-allowlist.txt}
+rdrand_allowlist=${HARMONY_RDRAND_ALLOWLIST:-$LINUX_DIR/rdrand-allowlist.txt}
 # The fault-library kernel is a single-processor build, so its counter-read
 # sites sit at other offsets than the SMP kernels' and it carries its own
-# reviewed baseline.
-rdtsc_allowlist=$LINUX_DIR/rdtsc-allowlist.txt
-rdrand_allowlist=$LINUX_DIR/rdrand-allowlist.txt
+# reviewed baseline. That baseline belongs to the profile, so it wins over an
+# environment selection, which names a list captured from another
+# configuration and would scan this kernel against the wrong function set.
 if [ -n "${FAULTLAB_TRAPS_OFF:-}" ]; then
     rdtsc_allowlist=$LINUX_DIR/rdtsc-allowlist-faultlab.txt
     rdrand_allowlist=$LINUX_DIR/rdrand-allowlist-faultlab.txt
+    echo "== kernel: fault-library profile scans against its own baseline"
 fi
 bash "$LINUX_DIR/scan-counter-opcodes.sh" "$KOBJ/vmlinux" \
-    "${HARMONY_RDTSC_ALLOWLIST:-$rdtsc_allowlist}" \
-    "${HARMONY_RDRAND_ALLOWLIST:-$rdrand_allowlist}"
+    "$rdtsc_allowlist" "$rdrand_allowlist"
 
 # Publish ONLY after the scan passed.
 kernel_output=bzImage

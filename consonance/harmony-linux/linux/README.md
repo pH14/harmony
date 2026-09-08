@@ -27,6 +27,11 @@ change moves the counter-read sites.
 | Instruction sweep negative | `N6_TRAPS_OFF=1` | `bzImage-n6-traps-off` |
 | Fault library | `FAULTLAB_TRAPS_OFF=1` | `bzImage-faultlab` |
 
+The selectors are mutually exclusive, and setting both fails the build before
+any work happens. `HARMONY_RDTSC_ALLOWLIST` and `HARMONY_RDRAND_ALLOWLIST`
+choose the per-toolchain baseline for the default kernel; a profile that
+carries its own baseline scans against that one regardless.
+
 The fault-library profile runs stock database binaries, which the default
 kernel cannot: it leaves ring-3 counter reads to the host and builds
 single-processor. `x86-faultlab-config-fragment` records why for each symbol,
