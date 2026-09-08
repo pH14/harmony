@@ -13,7 +13,7 @@
 //!   (c) a schedule-absent control run differs (the faults are actually landing).
 //!
 //! Run on `ssh <qualified-host>` with the LOADED patched KVM modules + the built Postgres
-//! image, CPU-pinned per `docs/HARDWARE-TESTING.md` (lease a core via `box-window.sh`):
+//! image, CPU-pinned per `docs/HARDWARE-TESTING.md` (reserve an idle core on the qualified host):
 //! ```text
 //! make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux postgres-image     # or copy a prebuilt image
 //! taskset -c <core> cargo test -p vmm-core --release --test live_host_plane -- --ignored --nocapture

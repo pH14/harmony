@@ -17,7 +17,7 @@
 //! `boot_patched_corpus` names the x86 vendor's patched backend. Every function
 //! here needs a real `/dev/kvm`, the loaded patched KVM modules, and built
 //! payloads, so no portable test can drive it; its evidence is the hardware lane
-//! (`scripts/box-gates.sh`).
+//! (manual hardware qualification per `docs/HARDWARE-TESTING.md`).
 
 use std::path::PathBuf;
 

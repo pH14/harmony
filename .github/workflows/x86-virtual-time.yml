@@ -23,7 +23,7 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: x86-virtual-time-${{ github.ref }}
+  group: x86-virtual-time-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
