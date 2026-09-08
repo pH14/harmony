@@ -479,6 +479,10 @@ mod real {
     }
 
     fn spawn_hook(spec: &HookSpec, hook_dir: &Path, tick: u64) -> Result<Hook, String> {
+        // A workload's setup command may mount a fresh filesystem over the
+        // directory's parent, so it is made again at every spawn.
+        std::fs::create_dir_all(hook_dir)
+            .map_err(|error| format!("{}: {error}", hook_dir.display()))?;
         let path = hook_dir.join(format!("hook-{}-{tick}.out", spec.id));
         let sink = File::create(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let output = File::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;

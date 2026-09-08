@@ -42,6 +42,12 @@ gives up once the caller's total settle allowance is spent. A guest that has
 crashed or gone quiescent advances no further, so its endpoint is offered one
 last seal and then reported rather than settled again.
 
+`SessionConfig::defer_checkpoint_hashes` records the sparse virtual-time
+checkpoint hashes after a run instead of during it. Each checkpoint hashes all
+guest RAM, so a package that never encodes its trace sets it to keep that cost
+off every run. The VMM accepts the deferral only before its first traced
+event, which is why it is a launch setting rather than a call on the session.
+
 `SessionConfig::wall_limit` bounds one run in host time. A guest spinning on a
 frozen virtual clock takes no exit, so it never reaches its virtual-time
 deadline and only the host clock notices it; past the bound the run is

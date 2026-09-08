@@ -67,6 +67,12 @@ pub struct SessionConfig {
     /// absent from [`identity_with_config`] and from the image identity.
     #[serde(default)]
     pub wall_limit: Option<Duration>,
+    /// Record the sparse virtual-time checkpoint hashes after a run instead of
+    /// during it. Each checkpoint hashes all guest RAM, so a session that never
+    /// encodes its trace skips that cost on every run. Host-side evidence
+    /// plumbing only, so like `wall_limit` it is absent from the identities.
+    #[serde(default)]
+    pub defer_checkpoint_hashes: bool,
 }
 
 impl Default for SessionConfig {
@@ -78,6 +84,7 @@ impl Default for SessionConfig {
             cmdline: default_cmdline().to_owned(),
             identity_tag: String::new(),
             wall_limit: None,
+            defer_checkpoint_hashes: false,
         }
     }
 }
@@ -93,6 +100,7 @@ impl SessionConfig {
             cmdline: cmdline.into(),
             identity_tag: String::new(),
             wall_limit: None,
+            defer_checkpoint_hashes: false,
         }
     }
 
@@ -108,6 +116,13 @@ impl SessionConfig {
     #[must_use]
     pub fn with_wall_limit(mut self, wall_limit: Duration) -> Self {
         self.wall_limit = Some(wall_limit);
+        self
+    }
+
+    /// Hash the virtual-time checkpoints after each run rather than during it.
+    #[must_use]
+    pub fn with_deferred_checkpoint_hashes(mut self) -> Self {
+        self.defer_checkpoint_hashes = true;
         self
     }
 
@@ -1322,15 +1337,27 @@ mod tests {
     }
 
     #[test]
-    fn a_config_serialized_without_a_wall_limit_still_loads() {
-        let mut value = serde_json::to_value(SessionConfig::default()).expect("serialize");
-        value
-            .as_object_mut()
-            .expect("configuration is a JSON object")
-            .remove("wall_limit")
-            .expect("the field is serialized");
-        let decoded: SessionConfig = serde_json::from_value(value).expect("deserialize");
-        assert_eq!(decoded, SessionConfig::default());
+    fn a_config_serialized_without_the_host_side_fields_still_loads() {
+        for field in ["wall_limit", "defer_checkpoint_hashes"] {
+            let mut value = serde_json::to_value(SessionConfig::default()).expect("serialize");
+            value
+                .as_object_mut()
+                .expect("configuration is a JSON object")
+                .remove(field)
+                .expect("the field is serialized");
+            let decoded: SessionConfig = serde_json::from_value(value).expect("deserialize");
+            assert_eq!(decoded, SessionConfig::default());
+        }
+    }
+
+    #[test]
+    fn deferred_checkpoint_hashing_is_outside_the_session_identity() {
+        let deferred = SessionConfig::default().with_deferred_checkpoint_hashes();
+        assert!(deferred.defer_checkpoint_hashes);
+        assert_eq!(
+            identity_with_config(b"kernel", b"initramfs", &deferred),
+            identity_with_config(b"kernel", b"initramfs", &SessionConfig::default()),
+        );
     }
 
     #[test]
