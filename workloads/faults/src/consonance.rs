@@ -19,10 +19,15 @@ use std::{
     cell::RefCell, collections::BTreeMap, error::Error, path::Path, sync::Arc, time::Duration,
 };
 
-use consonance_client::session::{PortableSnapshot, Session, SessionConfig, identity_with_config};
-use control_proto::{Moment, SnapId, StopReason};
+use consonance_client::session::{
+    PortableSnapshot, Session, SessionConfig, SessionError, identity_with_config,
+};
+use control_proto::{SnapId, StopReason};
 use environment::{
-    channel::{Answer as ChannelAnswer, ChannelError, Question, ServiceHandler, ServiceResponse},
+    Moment,
+    channel::{
+        Answer as ChannelAnswer, ChannelError, Effect, Question, ServiceHandler, ServiceResponse,
+    },
     input_spec::{ServiceConfig, ServiceFactory},
 };
 use fault_policy::{STANDING_NAMESPACE, StandingWindow, encode_standing, encode_windows};
@@ -54,8 +59,9 @@ const SNAPSHOT_CACHE_LIMIT: usize = 96;
 /// endpoint. The refusal is a point the virtual clock cannot seal, such as an
 /// exit still in flight, so a short step forward finds a sealable one.
 const SETTLE_STEP_NANOS: u64 = 100_000;
-/// Seal attempts per endpoint before it counts as having no successor.
-const SETTLE_ATTEMPTS: u32 = 16;
+/// Guest time one endpoint may spend settling in total. Past it the endpoint
+/// counts as having no successor and the search never branches from it.
+const SETTLE_ALLOWANCE_NANOS: u64 = 16 * SETTLE_STEP_NANOS;
 /// Serial console bytes kept when a guest is abandoned: the workload's own
 /// account of what it was doing when it stopped exiting.
 const CONSOLE_TAIL: usize = 1_500;
@@ -579,7 +585,7 @@ impl Live {
             // reconcile, and that shifts the guest's timing enough for a
             // rebuilt endpoint to differ from the one first observed.
             self.branch(last, &actions[..=index])?;
-            let (observation, snap) = self.run_action(actions[index], index)?;
+            let (observation, snap) = self.run_action(index)?;
             let Some(snap) = snap else {
                 return Ok(Err(observation));
             };
@@ -616,43 +622,47 @@ impl Live {
             }
         };
         self.branch(parent, &next)?;
-        let (observation, snap) = self.run_action(action, prefix.len())?;
+        let (observation, snap) = self.run_action(prefix.len())?;
         if let Some(snap) = snap {
             self.remember(next, snap)?;
         }
         Ok(observation)
     }
 
-    /// Restore `parent` under the whole input's standing-fault list. Windows
-    /// already behind the parent's seal are inert, so one branch carries the
-    /// entire input.
+    /// Restore `parent` under the whole input's standing-fault list and the
+    /// host-plane perturbation its last action stages. Windows already behind
+    /// the parent's seal are inert, so one branch carries the entire input.
     fn branch(&mut self, parent: SnapId, actions: &[FaultAction]) -> Result<(), String> {
         let config = branch_config(self.windows, actions)
             .map_err(|error| format!("branch configuration: {error}"))?;
+        let effects = self.staged_effects(actions)?;
         self.session
-            .branch_with_service(parent, config, Vec::new())
+            .branch_with_service(parent, config, Vec::new(), effects)
             .map_err(|error| format!("branch: {error}"))
     }
 
-    /// Run `action` to its horizon and seal the endpoint. An endpoint the
-    /// session cannot seal is run a little further and retried; one that never
-    /// seals is observed with no snapshot, so the search never branches from
-    /// it.
-    fn run_action(
-        &mut self,
-        action: FaultAction,
-        index: usize,
-    ) -> Result<(FaultObservations, Option<SnapId>), String> {
-        let window = self.windows.window(index);
-        if let Some(perturb) = action_delta(action, window).perturb {
-            let fault = fault_policy::HostFault::decode(&perturb.fault)
-                .map_err(|error| format!("staged host fault: {error}"))?;
-            let effect = fault_policy::consonance::effect(&fault)
-                .map_err(|error| format!("staged host fault: {error}"))?;
-            self.session
-                .stage_effect(perturb.at, &effect)
-                .map_err(|error| format!("stage effect: {error}"))?;
-        }
+    /// The host-plane effect the input's last action stages, if any. Every
+    /// earlier action's effect applied on the way to `parent` and its moment
+    /// lies behind that seal, so only the last one is staged again.
+    fn staged_effects(&self, actions: &[FaultAction]) -> Result<Vec<(u64, Effect)>, String> {
+        let Some(index) = actions.len().checked_sub(1) else {
+            return Ok(Vec::new());
+        };
+        let Some(perturb) = action_delta(actions[index], self.windows.window(index)).perturb else {
+            return Ok(Vec::new());
+        };
+        let fault = fault_policy::HostFault::decode(&perturb.fault)
+            .map_err(|error| format!("staged host fault: {error}"))?;
+        let effect = fault_policy::consonance::effect(&fault)
+            .map_err(|error| format!("staged host fault: {error}"))?;
+        Ok(vec![(perturb.at, effect)])
+    }
+
+    /// Run the action at `index` to its horizon and seal the endpoint. An
+    /// endpoint the session cannot seal is run a little further and retried;
+    /// one that never seals is observed with no snapshot, so the search never
+    /// branches from it.
+    fn run_action(&mut self, index: usize) -> Result<(FaultObservations, Option<SnapId>), String> {
         let deadline = self.windows.deadline(index);
         let stop = match self.session.run_until(deadline) {
             Ok(stop) => stop,
@@ -668,14 +678,30 @@ impl Live {
         let mut stop = FaultStop::from_stop_reason(&stop);
         let mut snap = None;
         if stop.is_continuable() {
-            match self.session.seal(SETTLE_STEP_NANOS, SETTLE_ATTEMPTS) {
+            match self.session.seal(SETTLE_STEP_NANOS, SETTLE_ALLOWANCE_NANOS) {
+                // A point that sealed without settling keeps the stop the run
+                // reported; settling ran the guest further, so where it left
+                // the guest is what the endpoint is judged on.
                 Ok((sealed, _at, settled)) => {
-                    stop = FaultStop::from_stop_reason(&settled);
+                    if let Some(settled) = &settled {
+                        stop = FaultStop::from_stop_reason(settled);
+                    }
                     if stop.is_continuable() {
                         snap = Some(sealed);
                     }
                 }
-                Err(error) => return Err(self.abandon("seal", &error)),
+                Err(error) => match error.downcast_ref::<SessionError>() {
+                    // The guest stopped for good while settling and the point
+                    // it stopped at is unsealable. That stop is the endpoint's
+                    // evidence, and the session is still usable.
+                    Some(SessionError::Stop(reason)) => stop = FaultStop::from_stop_reason(reason),
+                    // The allowance ran out with the guest still off any
+                    // sealable point, so the endpoint has no successor.
+                    Some(SessionError::Settle { allowance }) => {
+                        eprintln!("fault endpoint never sealed within {allowance} ns of settling");
+                    }
+                    _ => return Err(self.abandon("seal", &error)),
+                },
             }
         }
         if snap.is_none() && stop.is_continuable() {

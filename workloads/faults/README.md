@@ -51,9 +51,12 @@ branch installs it.
 
 [`consonance`](src/consonance.rs) drives one `consonance_client::session::Session`
 per evaluator thread. Each portable action prefix maps to a real whole-VM
-snapshot: the session branches its parent under the prefix's window list, runs
-to the action's horizon deadline, and seals the endpoint. Endpoints the session
-cannot seal have no successor and the search records them as dead. A bounded
+snapshot: the session branches its parent under the prefix's window list and
+the host-plane effect its last action stages, runs to the action's horizon
+deadline, and seals the endpoint. An endpoint the session cannot seal within
+its settle allowance has no successor and the search records it as dead; one
+whose guest stopped for good while settling is recorded with that stop. A
+bounded
 LRU keeps recent prefixes resident and rebuilds evicted ones from their longest
 cached ancestor.
 

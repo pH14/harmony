@@ -297,6 +297,10 @@ mod live {
             mixture: DrawMixture::AlphabetOnly,
             victory_input_path: Some(options.output.join("first-bug-input.json")),
         };
+        // not order-observable: the elapsed wall time is reported to the
+        // operator and never reaches a search decision, an archive key, or a
+        // recorded byte.
+        #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         let mut stream =
             BufWriter::new(std::fs::File::create(options.output.join("stream.jsonl"))?);
@@ -382,6 +386,9 @@ mod live {
         let config = config(options);
         let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
         let mut report = Report::new("replay", artifacts, identity, options);
+        // not order-observable: the elapsed wall time is reported to the
+        // operator and never reaches a replay's inputs or its state hash.
+        #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         for run in 1..=repeat {
             let (target, state_hash, horizons) = replay_once(artifacts, &config, actions)?;
