@@ -54,10 +54,10 @@ pub struct StbArchiveGroup {
 /// Quality-diversity key for one STB endpoint.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbArchiveKey {
-    /// Objective progress prefix. The generic archive currently uses `Ord`
-    /// both for map identity and for its live-progress walk, so these fields
-    /// precede identity-only tie breakers. A future generic progress hook can
-    /// remove that API coupling without changing this recorded key.
+    /// Objective progress prefix. Legacy selectors use `Ord` for identity and
+    /// progress walks, so these fields precede identity-only tie breakers.
+    /// This imported policy retains the default progress relation; adopting
+    /// the new generic hook is a separate versioned adapter experiment.
     pub opponent_kos: u8,
     pub opponent_damage: u8,
     pub player_a_stocks: u8,

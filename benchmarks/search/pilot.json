@@ -15,7 +15,8 @@
   "search": {
     "executions": 400000,
     "actions": 8192,
-    "window": 1,
+    "window": 2,
+    "result_slots": 2,
     "wall_seconds": 900,
     "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
     "suffix": "one_to_six_within_3_longest_actions_full_hold",

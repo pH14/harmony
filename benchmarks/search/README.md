@@ -42,6 +42,21 @@ python3 benchmarks/search/eval.py run benchmarks/search/evaluation.json \
   --memory-capacity-mib 40000
 ```
 
+Repeat the qualified whole-game SMB gate with the same identified build:
+
+```sh
+python3 benchmarks/search/eval.py run benchmarks/search/smb-reference.json \
+  --assets /private/assets.json --binary /private/builds/search-001/nes-eval \
+  --build-info /private/builds/search-001/build-info.json \
+  --out /private/runs/smb-reference-001 --jobs 1 --cpus 24 \
+  --memory-capacity-mib 8192
+```
+
+This searches from a new game on each registered seed and fails if any cell
+misses its declared victory budget. The five-seed reference passed on ms02;
+its measured resource costs and the separate stress-panel failures are in
+[`results`](results/README.md).
+
 Builds and matrix output directories must be new. The build helper checks that
 source identity is unchanged during compilation and records compiler versions,
 source hash, flags and executable hash. `--build-info` is checked against the
@@ -66,6 +81,10 @@ It can increase worker-result RSS, which is outside the logical archive budget.
 The request and native identity record the choice; omission means one and keeps
 older evaluation binaries usable. Compare one versus two at the same logical
 window and work budget, and check stream hashes as well as memory and throughput.
+The pilot and full native evaluation use a two-reservation window and two result
+slots after the isolated 18-pair execution comparison reproduced every stream.
+The dedicated SMB regression panel retains its original one-reservation profile
+as a separate stress condition.
 
 ## Registered panels
 
@@ -74,17 +93,26 @@ window and work budget, and check stream hashes as well as memory and throughput
 | `qualification.json` | Six small cases: all five games plus whole-game Nova configuration. Full stream/checkpoint replay and twice-repeated witness replay; 500 executions per case. |
 | `ci.json` | Source-built Nova (level and whole-game origins) and STB through the common runner, with full small-campaign replay and a frame cap. No licensed commercial ROM is used. |
 | `pilot.json` | Three exploratory seeds on SMB, Nova level 1 and whole game, Metal Man, Metroid new game and STB Hard. |
-| `evaluation.json` | Five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
+| `evaluation-continuation.json` | Frozen candidate for the full panel: learned continuation replay with the original parent selector. Selected from the completed pilots before any full-panel outcome was observed. |
+| `evaluation.json` | Main-mechanism control: five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
+| `smb-reference.json` | Practical fresh whole-game SMB recipe: 24 workers, 2,048 MiB, count weighting, two-reservation window/two result slots, 600,000 executions and 120 million frames. Five fresh validation seeds; every cell must solve. |
 | `smb-regression.json` | Fresh whole-game SMB at 24 workers and both 256/2048 MiB, five seeds. Every cell must solve within its declared budget. |
 | `throughput.json` | Short isolated 24-worker runs across all five games, three seeds, a two-reservation window and 512 MiB. Copy it and change only `result_slots` from 1 to 2 to measure physical overlap. Whole-game completion is not required in this work-limited panel. |
 
 Seeds 20260905–20260907 form the development pilot. The dedicated SMB gate adds
 20260908–20260909; those seeds have now been observed in count-policy validation.
-The full evaluation uses a separate, preregistered panel, 20260910–20260914, for
+The practical SMB reference validates on 20260910–20260914. Before any broad
+evaluation cell ran, its seeds were moved to the separate, preregistered panel
+20260920–20260924, preserving unobserved trials for
 validating a mechanism selected from the development runs. Performance panels have explicit
 frame, execution and wall ceilings. SMB's dedicated regression panel keeps the
 400,000-execution gate; the broad eight-worker panel allows 600,000 executions
-under an 80-million-frame cap. These are distinct resource conditions.
+under an 80-million-frame cap. The practical SMB reference allows 600,000
+executions and 120 million frames at 24 workers. It solved all four development
+seeds (including seed 1) in 122–167 seconds and all five fresh validation seeds
+in 89–251 seconds, including witness verification. One validation seed needed
+598,013 executions, close to the 600,000 ceiling. These are distinct resource
+conditions; the stress-panel failures remain recorded.
 
 All manifests specify exact ROM hashes and normal menu origins. MM2 is currently
 an independent-stage panel; it does not claim full-game evaluation. Metroid
@@ -97,6 +125,12 @@ origins, seed panel, ROM/core, adapter policies and resource budgets fixed. The
 comparison command rejects mismatches rather than quietly combining them.
 Engine experiments are described in [SYNTHESIS.md](SYNTHESIS.md); prototype claims
 are not accepted merely because a previous single seed succeeded.
+The full candidate is frozen in `evaluation-continuation.json`;
+[`candidate-registration-005.json`](candidate-registration-005.json) records
+the choice before any completed full-panel outcome was observed. Run it with
+the same runner allocation as `evaluation.json`, changing only the output
+directory, then compare the complete matrices.
+
 Completed development evidence and its limitations are retained in
 [`results`](results/README.md), including failed seeds.
 

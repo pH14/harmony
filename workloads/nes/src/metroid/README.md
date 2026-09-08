@@ -27,6 +27,13 @@ trajectory achieved their union. The inherited count representation and
 lexicographic resource preference are policy tradeoffs, not true capability
 or resource dominance.
 
+The primary progress watermark records equipment count and missile capacity.
+The `milestones.tanks` field combines missile tanks (capacity divided by five)
+and energy tanks, so it can improve while the primary watermark stays fixed.
+`milestones.areas` is an area bitset, not a count: decimal 3 has two area bits
+set. Inspect the individual fields and the verified witness before calling a
+run stalled or combining observations into one trajectory.
+
 The live sidecar separately counts observed map cells with a fixed 32 KiB bitmap
 over raw area identity and the 32x32 map coordinates. It includes living gameplay
 observations across explored branches in this run, and does not claim that one
