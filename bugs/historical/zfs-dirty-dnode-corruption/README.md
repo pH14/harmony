@@ -19,7 +19,7 @@ doesn't exist — cloning only widened the window, and 2.2.1's `zfs_bclone_enabl
 did **not** fix it. The buggy `dnode_is_dirty()` pattern is years older; it became practically
 hittable when `zfs_dmu_offset_next_sync=1` became the default in **2.1.4**.
 
-- **Affected (practically exploitable)**: 2.1.4–2.1.13, 2.2.0, 2.2.1 (Linux and FreeBSD;
+- **Affected (affected in practice)**: 2.1.4–2.1.13, 2.2.0, 2.2.1 (Linux and FreeBSD;
   FreeBSD 14.0 shipped it — errata EN-23:16.openzfs). Pre-2.1.4: race present but vanishingly
   rare; earliest affected version is unresolved upstream.
 - **Fix**: commit

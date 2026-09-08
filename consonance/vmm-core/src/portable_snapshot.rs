@@ -1229,7 +1229,7 @@ mod tests {
     }
 
     #[test]
-    fn hostile_lengths_and_all_truncations_are_total() {
+    fn bad_lengths_and_all_truncations_are_total() {
         // Re-decoding every prefix re-hashes the prefix. Keep the full 8-KiB
         // artifact natively, but avoid quadratic interpreted SHA-256 over
         // thousands of semantically identical bulk-memory prefixes under

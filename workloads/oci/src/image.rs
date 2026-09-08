@@ -433,7 +433,7 @@ fn check_members(members: &[Member]) -> Result<(), ImageError> {
 }
 
 const TAR_BLOCK: usize = 512;
-/// Ceilings on what a hostile archive can make this reader allocate.
+/// Ceilings on what a malformed archive can make this reader allocate.
 const MAX_MEMBERS: usize = 1 << 20;
 const MAX_HEADER_DATA: u64 = 1 << 16;
 

@@ -14,8 +14,8 @@
 # KVM it reads the raw host counter and is fit for smoke tests only.
 #
 # Distinct from x86-n6-traps-off-config-fragment, which carries the same symbol
-# for an unrelated purpose: that kernel is the planted negative that proves a
-# hostile JIT probe can detect a live counter, and its identity stays
+# for an unrelated purpose: that kernel is the negative control that proves a
+# counter-reading probe can detect a live counter, and its identity stays
 # unambiguous.
 # CONFIG_HARMONY_USER_COUNTER_TRAPS is not set
 #

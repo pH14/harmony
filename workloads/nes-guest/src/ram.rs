@@ -24,7 +24,7 @@
 //! level (SMB scrolls one way), the clean progress signal the x-bucket rides.
 //!
 //! The decode is total over any buffer of at least [`WORK_RAM_LEN`] bytes and
-//! never panics on hostile bytes (rule 4) — every field is a plain byte read.
+//! never panics on arbitrary bytes (rule 4) — every field is a plain byte read.
 
 use std::fmt;
 

@@ -28,7 +28,7 @@ use environment::{
     channel::{
         Answer as ChannelAnswer, ChannelError, Effect, Question, ServiceHandler, ServiceResponse,
     },
-    input_spec::{ServiceConfig, ServiceFactory},
+    input_spec::{ServiceConfig, ServiceFactory, nominal_factory},
 };
 use fault_policy::{STANDING_NAMESPACE, StandingWindow, encode_standing, encode_windows};
 use searcher::target::ExitKind;
@@ -192,14 +192,14 @@ impl ServiceHandler for StandingHandler {
 }
 
 /// The factory that materializes this package's service from a branch's
-/// recorded configuration.
+/// recorded configuration. The sealed setup point was recorded under the
+/// nominal service, so restoring it asks for that one.
 #[must_use]
 pub fn service_factory() -> ServiceFactory {
-    Arc::new(|config: &ServiceConfig| {
+    let nominal = nominal_factory();
+    Arc::new(move |config: &ServiceConfig| {
         if config.identity != SERVICE_IDENTITY {
-            return Err(ChannelError::Handler(
-                "the branch names a service this package does not own".to_owned(),
-            ));
+            return nominal(config);
         }
         Ok(
             Box::new(StandingHandler::from_configuration(&config.configuration)?)
@@ -394,7 +394,10 @@ impl FaultTarget {
                 self.action_observations = vec![observation];
                 self.failed = false;
             }
-            Err(_) => self.failed = true,
+            Err(error) => {
+                eprintln!("fault target reset failed: {error}");
+                self.failed = true;
+            }
         }
     }
 
@@ -480,7 +483,10 @@ impl FaultTarget {
                 self.observation = observation.clone();
                 self.action_observations.push(observation);
             }
-            Err(_) => self.failed = true,
+            Err(error) => {
+                eprintln!("fault action {action:?} failed: {error}");
+                self.failed = true;
+            }
         }
     }
 
@@ -708,10 +714,13 @@ impl Live {
             Err(error) => return Err(self.abandon("run", &error)),
         };
         if let StopReason::Crash { vtime, info } = &stop {
+            let tail = self.session.console_tail().unwrap_or_default();
+            let start = tail.len().saturating_sub(CONSOLE_TAIL);
             eprintln!(
-                "fault guest crashed at {vtime:?}: {:?} {}",
+                "fault guest crashed at {vtime:?}: {:?} {}\nconsole tail:\n{}",
                 info.kind,
-                String::from_utf8_lossy(&info.detail)
+                String::from_utf8_lossy(&info.detail),
+                String::from_utf8_lossy(&tail[start..])
             );
         }
         let mut stop = FaultStop::from_stop_reason(&stop);
@@ -803,4 +812,29 @@ pub fn from_paths(
     let kernel = std::fs::read(kernel).map_err(|error| format!("read kernel: {error}"))?;
     let initramfs = std::fs::read(initramfs).map_err(|error| format!("read initramfs: {error}"))?;
     FaultTarget::new(&kernel, &initramfs, config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_factory_serves_the_nominal_service_the_setup_point_was_sealed_under() {
+        let factory = service_factory();
+        let handler = factory(&ServiceConfig::default()).expect("nominal service");
+        assert_eq!(handler.identity(), ServiceConfig::default().identity);
+        let own = factory(&ServiceConfig {
+            identity: SERVICE_IDENTITY.to_vec(),
+            configuration: encode_windows(&[]).expect("an empty standing list encodes"),
+        })
+        .expect("an empty standing list");
+        assert_eq!(own.identity(), SERVICE_IDENTITY);
+        assert!(
+            factory(&ServiceConfig {
+                identity: b"another-package".to_vec(),
+                configuration: Vec::new(),
+            })
+            .is_err()
+        );
+    }
 }
