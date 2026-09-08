@@ -566,7 +566,6 @@ fn validate_restore_shape_keys_and_xsave_len() {
 fn kvm_capabilities_are_honestly_false() {
     let c = kvm_capabilities();
     assert_eq!(c.name, "kvm-stock");
-    assert!(!c.deterministic_rng);
 }
 
 #[test]

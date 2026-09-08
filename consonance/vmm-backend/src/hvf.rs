@@ -1022,11 +1022,9 @@ impl Backend for HvfBackend {
     fn capabilities(&self) -> Capabilities<Arm64Caps> {
         Capabilities {
             name: "hvf-arm64-virtual_time",
-            deterministic_rng: false,
+
             arch: Arm64Caps {
                 in_kernel_gic: false,
-                deterministic_cntvct: false,
-                enforces_cntv_cval: false,
             },
         }
     }

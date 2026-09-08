@@ -406,7 +406,7 @@ mod tests {
         fn capabilities(&self) -> Capabilities<X86Caps> {
             Capabilities {
                 name: "default-retire-test",
-                deterministic_rng: false,
+
                 arch: X86Caps,
             }
         }
