@@ -1597,12 +1597,9 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn capabilities(&self) -> Capabilities<crate::arch::arm64::Arm64Caps> {
-        // Stock claims NO determinism (mirrors stock x86 `KvmBackend`): the
-        // work clock, the exact-landing, and the paravirt clock are all patched/
-        // AA-gated. Every field honestly false.
+        // The backend owns and snapshots the in-kernel interrupt controller.
         Capabilities {
             name: "kvm-arm64-vgicv3",
-
             arch: crate::arch::arm64::Arm64Caps {
                 in_kernel_gic: true,
             },

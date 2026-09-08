@@ -15,7 +15,7 @@ Install the external Cargo tools used by the quality gates:
 scripts/install-quality-tools.sh
 ```
 
-The standalone harmony-linux SDK build additionally use the
+The standalone harmony-linux SDK build additionally uses the
 `x86_64-unknown-none` target:
 
 ```sh

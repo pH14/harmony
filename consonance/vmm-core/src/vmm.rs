@@ -1465,7 +1465,7 @@ where
     /// discard the partially restored VM.
     pub fn restore_vm_state(&mut self, s: &<B::A as Vendor>::Snapshot) -> Result<(), VmmError> {
         // 0. Refuse if **any** backend completion is staged (not just RNG). A
-        //    read-style / MSR / CPUID / determinism exit this VM serviced leaves a
+        //    I/O, MSR, or CPUID exit this VM serviced leaves a
         //    pending reg-write/RIP-advance in the backend's `kvm_run`; `Backend::restore`
         //    does not clear it, so the next run would commit the *old* exit's
         //    completion over the restored state. Restore only into a fresh backend, or
@@ -1473,7 +1473,7 @@ where
         if self.completion_staged {
             return Err(VmmError::ContractViolation(
                 "restore_vm_state into a backend with a staged completion: the VM just serviced a \
-                 read/MSR/CPUID/determinism exit whose completion is pending in kvm_run and is not \
+                 read/MSR/CPUID exit whose completion is pending in kvm_run and is not \
                  cleared by restore — it would commit the old exit on the next run. Complete and \
                  retire the old exit first, or use a freshly-booted VM."
                     .to_string(),
@@ -6382,7 +6382,6 @@ mod tests {
     fn configured_stock_mock(exits: Vec<Exit<X86>>) -> MockBackend {
         let mut m = MockBackend::with_capabilities(vmm_backend::Capabilities {
             name: "mock-stock",
-
             arch: X86Caps,
         });
         m.extend_exits(exits);
@@ -7453,7 +7452,7 @@ mod tests {
     #[test]
     fn restore_vm_state_rejects_a_staged_non_rng_completion() {
         // Restoring into a backend that just serviced a non-RNG read/MSR/CPUID/
-        // determinism exit (a completion pending in kvm_run that restore does not
+        // serviced exit (a completion pending in kvm_run that restore does not
         // clear) is refused — it would commit the old exit on the next run.
         let mut src = full_vmm(VcpuState::default(), mutate_exits(), 500, 1);
         step_n(&mut src, 6);

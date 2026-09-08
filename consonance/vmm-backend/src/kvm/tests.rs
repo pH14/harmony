@@ -563,7 +563,7 @@ fn validate_restore_shape_keys_and_xsave_len() {
 }
 
 #[test]
-fn kvm_capabilities_are_honestly_false() {
+fn kvm_capabilities_report_the_stock_backend_name() {
     let c = kvm_capabilities();
     assert_eq!(c.name, "kvm-stock");
 }

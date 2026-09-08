@@ -1022,7 +1022,6 @@ impl Backend for HvfBackend {
     fn capabilities(&self) -> Capabilities<Arm64Caps> {
         Capabilities {
             name: "hvf-arm64-virtual_time",
-
             arch: Arm64Caps {
                 in_kernel_gic: false,
             },
