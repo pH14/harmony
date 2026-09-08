@@ -1,0 +1,83 @@
+{
+  "horizon_nanos": 500000000,
+  "actions": [
+    {
+      "Restart": 0
+    },
+    {
+      "Restart": 0
+    },
+    {
+      "Hook": 3
+    },
+    {
+      "Kill": 0
+    },
+    {
+      "Kill": 0
+    },
+    {
+      "Pause": [
+        0,
+        5
+      ]
+    },
+    {
+      "Restart": 0
+    },
+    {
+      "Pause": [
+        0,
+        1
+      ]
+    },
+    {
+      "Pause": [
+        0,
+        1
+      ]
+    },
+    {
+      "Hook": 3
+    },
+    {
+      "Restart": 0
+    },
+    "Wait",
+    {
+      "Hook": 1
+    },
+    {
+      "Hook": 2
+    },
+    "Wait",
+    {
+      "Hook": 2
+    },
+    {
+      "Hook": 4
+    },
+    {
+      "Hook": 3
+    },
+    {
+      "Pause": [
+        0,
+        100
+      ]
+    },
+    {
+      "Hook": 1
+    },
+    {
+      "Hook": 2
+    },
+    {
+      "Hook": 4
+    },
+    "Wait",
+    {
+      "Hook": 3
+    }
+  ]
+}

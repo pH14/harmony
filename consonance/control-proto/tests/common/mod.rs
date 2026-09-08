@@ -2,7 +2,7 @@
 //! Shared proptest strategies that build arbitrary **in-bounds**
 //! `Request` / `Reply` / `ControlError` values (small payloads, so a generated
 //! frame body never approaches `MAX_FRAME_LEN`). Used by the round-trip,
-//! streaming, and adversarial property tests.
+//! streaming, and malformed-input property tests.
 
 #![allow(dead_code)] // each test binary uses a subset of these helpers.
 

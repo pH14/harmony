@@ -510,7 +510,7 @@ fn read_reseeds(r: &mut Reader) -> Result<BTreeMap<Moment, u64>, EnvError> {
 /// reactive session did, now on the one `Moment` axis rather than a branch-local
 /// decision index. An override whose [`Answer`] is **inadmissible for the
 /// decision** is deterministically ignored (the seeded base answers instead), so
-/// a mutated or hostile reproducer can never hand a service an impossible answer
+/// a mutated or malformed reproducer can never hand a service an impossible answer
 /// or panic [`decide`](Environment::decide) (conventions rule 4); see
 /// [`DecisionPoint::admits`]. The base stream advances **only on a fallback** (an
 /// admissible override consumes no PRNG), exactly as a recorded reactive session

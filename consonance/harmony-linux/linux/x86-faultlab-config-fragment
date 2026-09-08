@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Fault-library guest kernel: retain the pvclock but let ring-3 read the
+# timestamp counter.
+#
+# The historical database specimens cannot run under CR4.TSD. Go's runtime
+# reads the counter directly (etcd and etcdctl fault on their first
+# `cputicks`), and so does glibc's dynamic loader before `main`, which takes
+# down every PostgreSQL binary. CR4.TSD faults inside the guest before any VM
+# exit can happen, so the host's RDTSC exiting is never reached while it is
+# set.
+#
+# This variant is therefore only deterministic on a host with the patched KVM
+# loaded, where RDTSC exits and the host answers from virtual time. On stock
+# KVM it reads the raw host counter and is fit for smoke tests only.
+#
+# Distinct from x86-n6-traps-off-config-fragment, which carries the same symbol
+# for an unrelated purpose: that kernel is the negative control that proves a
+# counter-reading probe can detect a live counter, and its identity stays
+# unambiguous.
+# CONFIG_HARMONY_USER_COUNTER_TRAPS is not set
+#
+# Multiprocessor, like the other kernels, even though the guest has one vCPU.
+# The host delivers the timer interrupt only at VM exits it services, so on
+# an SMP kernel a writer that finds an rwsem reserved for a queued waiter
+# spins until a scheduler tick that never comes; three processes writing one
+# tmpfs file reach that state. A single-processor build has no optimistic
+# spinning, but on stock KVM it stops in early boot, right after the memory
+# initialization report, before the first console registers, and never
+# exits again. The database cases run under a host wall-clock bound that
+# reports a spinning guest as a hung run, so SMP stays until the
+# single-processor boot is understood.
+#
+# The task park (patches/x86/0006): a workload thread held at a user
+# instruction by a hardware execution breakpoint the kernel owns, for the
+# races no signal-delivered pause can reach. Needs the perf breakpoint
+# framework the Kata base provides.
+CONFIG_HARMONY_PARK=y

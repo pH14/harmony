@@ -53,6 +53,14 @@ pub fn arb_proc_fault() -> impl Strategy<Value = Fault> {
         any::<u64>().prop_map(|d| Fault::ProcPause(Span(d))),
         Just(Fault::ProcKill),
         Just(Fault::ProcRestart),
+        any::<u32>().prop_map(Fault::RunHook),
+        (any::<u64>(), any::<u32>(), any::<u64>()).prop_map(|(addr, hits, hold)| {
+            Fault::ProcPark {
+                addr,
+                hits,
+                hold: Span(hold),
+            }
+        }),
     ]
 }
 

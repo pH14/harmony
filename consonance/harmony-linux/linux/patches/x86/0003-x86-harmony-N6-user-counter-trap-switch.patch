@@ -24,8 +24,8 @@ repository's designated guest-kernel patch exception.
 +	default y
 +	help
 +	  Set CR4.TSD for every newly executed userspace image and refuse a
-+	  subsequent PR_TSC_ENABLE. Disable only for the N6 planted negative
-+	  kernel that proves the hostile JIT probe detects a live TSC.
++	  subsequent PR_TSC_ENABLE. Disable only for the N6 negative control
++	  kernel that proves the counter-reading probe detects a live TSC.
  
  config KVM_GUEST
  	bool "KVM Guest support (including kvmclock)"

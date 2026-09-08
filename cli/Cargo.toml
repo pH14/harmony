@@ -22,9 +22,7 @@ oci-support = { path = "../workloads/oci", version = "=0.1.0" }
 faults-workload = { version = "=0.1.0", path = "../workloads/faults", features = ["consonance"] }
 vmm-core = { path = "../consonance/vmm-core", version = "0.1.0" }
 vmm-backend = { path = "../consonance/vmm-backend", version = "0.1.0" }
-
-[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
-libc = "0.2"
+consonance-client = { path = "../consonance/client", version = "=0.1.0" }
 
 [lints]
 workspace = true

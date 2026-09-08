@@ -310,7 +310,7 @@ fn reply_hello() {
 /// `Request::Snapshot` carries the handle, the synchronized seal `Moment`, the
 /// included SDK-event count (the cut), and the taint byte — all from the same
 /// stopped server state. (The pre-127 bare-handle `SnapId` reply, wire tag 2,
-/// is retired; see `retired_snapid_tag_is_rejected` in `adversarial.rs`.)
+/// is retired; see `retired_snapid_tag_is_rejected` in `malformed.rs`.)
 #[test]
 fn reply_snapshot_untainted_carries_the_cut() {
     check_reply(

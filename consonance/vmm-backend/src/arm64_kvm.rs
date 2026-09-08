@@ -2882,7 +2882,7 @@ mod tests {
             asserted.line_level[0] & (1 << 27),
             0,
             "the serviced-exit boundary must expose the asserted architectural line; \
-             a one-entry-late application is the planted negative"
+             a one-entry-late application is the negative control"
         );
         assert!(matches!(
             b.run().unwrap(),
@@ -2938,7 +2938,7 @@ mod tests {
         assert_eq!(spi.take_accepted_interrupt(), Some(GicIntId(65)));
         assert_eq!(spi.save().unwrap().gic.unwrap().active[2], 1 << 1);
 
-        // Planted negative: the same asserted line and exit script cannot pass
+        // Negative control: the same asserted line and exit script cannot pass
         // the oracle when the fake kernel deliberately withholds the
         // pending→active transition.
         let mut fake = FakeKvm::new();

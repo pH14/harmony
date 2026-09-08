@@ -1,0 +1,7 @@
+setup /opt/harmony/setup.sh
+node postgres /opt/harmony/node.sh
+ready /opt/harmony/ready.sh
+hook 1 /opt/harmony/hooks.sh 1
+hook 2 /opt/harmony/hooks.sh 2
+hook 3 /opt/harmony/hooks.sh 3
+hook 4 /opt/harmony/hooks.sh 4

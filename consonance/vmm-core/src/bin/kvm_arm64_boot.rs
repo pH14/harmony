@@ -322,7 +322,7 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::FAILURE;
             }
 
-            // Required planted negative on the exact production workload:
+            // Required negative control on the exact production workload:
             // move every delivered tick one exit late. Identically late twins
             // still compare equal, while the independent schedule oracle must
             // reject that shared error at the same genuine boundary.

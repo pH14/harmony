@@ -255,7 +255,7 @@ pub enum ServeError {
     Protocol(#[from] control_proto::ProtocolError),
     /// The substrate failed mid-verb (a step error, a failed fresh-VM boot, a
     /// backend save failure). The VM's state can no longer be vouched for.
-    #[error("substrate failure")]
+    #[error("substrate failure: {0}")]
     Vmm(#[from] VmmError),
     /// The snapshot store / codec hit an invariant failure (not a caller error
     /// — those answer `ControlError` replies).
@@ -583,6 +583,15 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// the serial capture after a session ends). `None` after a fatal error.
     pub fn vmm(&self) -> Option<&Vmm<B>> {
         self.vmm.as_ref()
+    }
+
+    /// Mutable access to the live VM for host-side evidence settings a
+    /// composition root chooses before its first run, such as
+    /// [`Vmm::defer_virtual_time_checkpoint_hashes`]. Restores replace the VM,
+    /// so a setting applied here covers only the current one. `None` after a
+    /// fatal error.
+    pub fn vmm_mut(&mut self) -> Option<&mut Vmm<B>> {
+        self.vmm.as_mut()
     }
 
     /// Complete restore-aware normalized trace for this control session.
@@ -2597,6 +2606,7 @@ mod tests {
         }
         fn respond(
             &mut self,
+            _: environment::Moment,
             _: &environment::channel::Question,
         ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
         {
@@ -2782,6 +2792,7 @@ mod tests {
         }
         fn respond(
             &mut self,
+            _: environment::Moment,
             _: &environment::channel::Question,
         ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
         {
@@ -2820,6 +2831,14 @@ mod tests {
 
     /// [`server`] whose live VM's mock has **dirty tracking armed** (task 95
     /// M2.1), so a second seal can derive from the first.
+    #[test]
+    fn vmm_mut_reaches_the_live_vm() {
+        let mut s = server(Vec::new());
+        let shared = s.vmm().expect("live VM") as *const Vmm<MockBackend>;
+        let exclusive = s.vmm_mut().expect("live VM") as *mut Vmm<MockBackend> as *const _;
+        assert!(std::ptr::eq(shared, exclusive));
+    }
+
     fn server_tracked() -> ControlServer<MockBackend> {
         let mut m = MockBackend::new();
         m.enable_dirty_tracking();
@@ -2974,6 +2993,7 @@ mod tests {
         }
         fn respond(
             &mut self,
+            _: environment::Moment,
             _: &environment::channel::Question,
         ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
         {
@@ -3492,7 +3512,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot materialize through two production Replay verbs; the pure session comparator and planted negative remain Miri-covered"
+        ignore = "reaches snapshot materialize through two production Replay verbs; the pure session comparator and negative control remain Miri-covered"
     )]
     fn control_session_accumulates_every_restore_delimited_trace() {
         use crate::session_trace::{
@@ -3528,7 +3548,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot materialize through two production Replay verbs; the pure session comparator and planted negative remain Miri-covered"
+        ignore = "reaches snapshot materialize through two production Replay verbs; the pure session comparator and negative control remain Miri-covered"
     )]
     fn taking_the_session_trace_returns_and_drains_completed_segments() {
         let mut server = accumulated_session_server();

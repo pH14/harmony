@@ -118,7 +118,7 @@ pub fn pagemap_offset(vaddr: u64) -> u64 {
 /// VM: guest-physical) address for `vaddr`: bit 63 = present, bits 0..55 =
 /// PFN (zero when the reader lacks `CAP_SYS_ADMIN`), gpa = pfn·4096 + the
 /// within-page offset. A PFN too large to form a u64 GPA (a 55-bit PFN can
-/// exceed it ×4096) is rejected as the corrupt/hostile input it is — library
+/// exceed it ×4096) is rejected as the corrupt input it is — library
 /// logic never panics on input (rule 4).
 pub fn decode_pagemap_entry(entry: u64, vaddr: u64) -> Result<u64, String> {
     if entry & (1 << 63) == 0 {

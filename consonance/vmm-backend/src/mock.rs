@@ -142,6 +142,10 @@ pub struct MockBackend {
     /// being silently swallowed by the extra call. The mock cannot observe real
     /// guest writes (it never writes RAM), so the set is scripted.
     dirty_pending: Option<Vec<u64>>,
+    /// A scripted host cancellation latch, so a caller's handling of a backend
+    /// that can be interrupted mid-run is testable without KVM. The mock never
+    /// reads it; `None` models a backend that cannot be interrupted.
+    cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Default for MockBackend {
@@ -169,7 +173,17 @@ impl MockBackend {
             defer_accept: false,
             completions: Vec::new(),
             dirty_pending: None,
+            cancellation: None,
         }
+    }
+
+    /// Report `latch` from [`Backend::cancellation_flag`].
+    pub fn with_cancellation_flag(
+        mut self,
+        latch: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.cancellation = Some(latch);
+        self
     }
 
     /// A fresh mock reporting `caps` instead of the default.
@@ -492,6 +506,10 @@ impl Backend for MockBackend {
 
     fn reset_exit_counts(&mut self) {
         self.counts = ExitCounts::default();
+    }
+
+    fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        self.cancellation.clone()
     }
 
     fn capabilities(&self) -> MockCaps {

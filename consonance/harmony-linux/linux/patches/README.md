@@ -23,9 +23,10 @@ diff against a pristine extract. Preserve the explanatory preamble before the
 first diff header.
 
 After an x86 clock-source change, run the counter-opcode scan and update
-`../rdtsc-allowlist.txt` if the deliberate instruction count changes. After any
-kernel patch change, run the image test to regenerate and verify
-`../MANIFEST.sha256`.
+`../rdtsc-allowlist.txt` (and `../rdtsc-allowlist-faultlab.txt`, the
+fault-library kernel's baseline) if the deliberate
+instruction count changes. After any kernel patch change, run the image test to
+regenerate and verify `../MANIFEST.sha256`.
 
 ## x86 series
 
@@ -36,6 +37,23 @@ kernel patch change, run the image test to regenerate and verify
 - `0002-x86-harmony-character-device.patch` adds `/dev/harmony`, attributed
   event delivery, and deterministic entropy transactions over the existing
   doorbell.
+- `0003-x86-harmony-N6-user-counter-trap-switch.patch` adds the default-on
+  `CONFIG_HARMONY_USER_COUNTER_TRAPS`, which applies `PR_TSC_SIGSEGV` at exec
+  and refuses a later `PR_TSC_ENABLE`. Turning it off for one kernel makes
+  ring-3 counter confinement testable on its own.
+- `0004-x86-harmony-syscall-tick.patch` rings the virtual-time tick at every
+  context switch and idle-poll iteration, so an armed clock event comes due
+  even after the runnable task blocks and the sole vCPU enters idle polling.
+- `0005-x86-harmony-early-boot-entropy.patch` recognizes the `harmony_pvclock`
+  token in `boot_command_line` before `SETUP_RNG_SEED` is credited, keeping a
+  native counter read out of the first CRNG key.
+- `0006-x86-harmony-task-park.patch` adds `CONFIG_HARMONY_PARK` and
+  `/dev/harmony-park`, through which a supervisor holds one thread of a
+  workload at a user instruction on its k-th execution: a per-thread hardware
+  execution breakpoint counted in the kernel, and a sleep taken on the thread's
+  own return to user mode. Only the fault-library kernel enables it; with the
+  symbol off, the system-call entry poll is an empty inline and every other
+  kernel's bytes are unchanged.
 
 The clock source contains two deliberate `rdtsc` instructions. The reviewed
 allowlist records their locations. The x86 build rejects unaccounted counter

@@ -262,7 +262,7 @@ mod tests {
         physical_exception_residue.pstate |= PSTATE_TCO | PSTATE_BTYPE;
         physical_exception_residue.spsr_el1 |= PSTATE_TCO | PSTATE_BTYPE;
 
-        // Planted negative: an identity comparison without canonicalization
+        // Negative control: an identity comparison without canonicalization
         // detects the exact host exception-entry residue seen in M5.
         assert_ne!(physical_exception_residue, canonical);
         assert!(has_noncanonical_core_regs(&physical_exception_residue));
