@@ -13,14 +13,8 @@
 //!
 //! ## Why a port-I/O doorbell, not `VMCALL` (integrator ruling, 2026-06-23)
 //!
-//! The original ABI (task 10) used `VMCALL` with the request/response GPAs in `RBX`/`RCX`.
-//! **Stock KVM services `VMCALL` in-kernel**: for our magic number (`0x3150_4348`) its
-//! `kvm_emulate_hypercall` returns `-ENOSYS` to the guest and resumes — it never surfaces a
-//! `KVM_EXIT_HYPERCALL` to userspace (only `KVM_HC_MAP_GPA_RANGE` does). So a `VMCALL` doorbell
-//! needs the patched/direct-VMX backend (task 21). A port `OUT` to a magic port, by contrast,
-//! **is** surfaced by stock KVM as `KVM_EXIT_IO` — so this hypercall channel works with **zero**
-//! kernel patch. (RDTSC/RNG interception still needs the patched backend; that is separate — this
-//! crate is only the doorbell.)
+//! Stock KVM surfaces port OUT as KVM_EXIT_IO, so this channel needs no
+//! hypervisor patch.
 //!
 //! ## The doorbell protocol (single `OUT` — atomic)
 //!

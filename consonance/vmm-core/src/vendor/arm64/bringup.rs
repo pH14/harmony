@@ -269,7 +269,7 @@ pub fn boot_hvf_control(
 
 /// **The composition root** (`tasks/112` M4): the one place the concrete
 /// `(Arm64KvmBackend, Arm64)` pair is named — Linux+aarch64-gated, mirroring
-/// x86's `boot_selected`. Constructs the stock KVM/arm64 backend
+/// x86's stock-KVM virtual-time boot. Constructs the stock KVM/arm64 backend
 /// (`KVM_CREATE_VM` → `KVM_CREATE_VCPU` → `KVM_ARM_VCPU_INIT` in
 /// `LiveKvm::new`), boxes it as `Box<dyn Backend<A = Arm64>>`, composes the
 /// same Image + initramfs bytes as the HVF oracle, and wires exit-assigned

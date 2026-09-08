@@ -50,12 +50,8 @@ pub telemetry::EventKind::Msr
 pub telemetry::EventKind::Msr::index: u32
 pub telemetry::EventKind::Msr::value: u64
 pub telemetry::EventKind::Msr::write: bool
-pub telemetry::EventKind::Rng
-pub telemetry::EventKind::Rng::value: u64
 pub telemetry::EventKind::Terminal
 pub telemetry::EventKind::Terminal::reason: alloc::string::String
-pub telemetry::EventKind::Tsc
-pub telemetry::EventKind::Tsc::value: u64
 pub enum telemetry::Mode
 pub telemetry::Mode::Live
 pub telemetry::Mode::Replay

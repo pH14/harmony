@@ -15,7 +15,7 @@ vtime-arch-control-vns=10000
 vtime-execution-tick-vns=100000
 vtime-clockevent-period-vns=10000000
 cpuid 00000000.00000000 00000020 756e6547 6c65746e 49656e69
-cpuid 00000001.00000000 000906ec 00010800 dyn:osxsave:76da3203 0f8bbb7f
+cpuid 00000001.00000000 000906ec 00010800 dyn:osxsave:36da3203 0f8bbb7f
 cpuid 00000002.00000000 0000ff01 00000000 00000000 00000000
 cpuid 00000003.* 00000000 00000000 00000000 00000000
 cpuid 00000004.00000000 00000121 01c0003f 0000003f 00000000
@@ -25,7 +25,7 @@ cpuid 00000004.00000003 00000163 03c0003f 00003fff 00000000
 cpuid 00000004.00000004+ 00000000 00000000 00000000 00000000
 cpuid 00000005.* 00000000 00000000 00000000 00000000
 cpuid 00000006.* 00000004 00000000 00000000 00000000
-cpuid 00000007.00000000 00000000 009c27ab 00000000 20000000
+cpuid 00000007.00000000 00000000 009827ab 00000000 20000000
 cpuid 00000007.00000001+ 00000000 00000000 00000000 00000000
 cpuid 00000008.* 00000000 00000000 00000000 00000000
 cpuid 00000009.* 00000000 00000000 00000000 00000000
@@ -1124,10 +1124,10 @@ insn PCONFIG cooperative-hidden out-of-scope scope
 insn RDPID cooperative-hidden out-of-scope scope
 insn RDPKRU cr4-pin(pke=0) ud intercept
 insn RDPMC vmx-exit(rdpmc-exiting) gp intercept
-insn RDRAND vmx-exit(rdrand-exiting) seeded-prng intercept
-insn RDSEED vmx-exit(rdseed-exiting) seeded-prng intercept
-insn RDTSC vmx-exit(rdtsc-exiting) vclock.tsc intercept
-insn RDTSCP vmx-exit(rdtsc-exiting) vclock.tsc+tsc-aux intercept
+insn RDRAND cooperative-hidden out-of-scope scope
+insn RDSEED cooperative-hidden out-of-scope scope
+insn RDTSC cooperative-audited out-of-scope scope
+insn RDTSCP cooperative-audited out-of-scope scope
 insn SERIALIZE cooperative-hidden out-of-scope scope
 insn SHA cooperative-hidden out-of-scope scope
 insn TPAUSE cooperative-hidden out-of-scope scope

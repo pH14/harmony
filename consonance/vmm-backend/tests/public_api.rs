@@ -7,7 +7,7 @@
 //! failing test and a reviewable diff.
 //!
 //! **The frozen surface is the x86-64 Linux one** (it includes `KvmBackend` and
-//! `PatchedKvmBackend`), so the snapshot is generated and checked on the x86-64
+//! the stock-KVM virtual-time runtime), so the snapshot is generated and checked on the x86-64
 //! Linux CI runner. Other targets have different architecture-gated concrete
 //! backends, so this test skips loudly there rather than comparing unlike
 //! surfaces.
@@ -31,7 +31,7 @@ const CRATE: &str = "vmm-backend";
 #[ignore = "needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`"]
 fn public_api_matches_snapshot() {
     // The frozen contract is the x86-64 Linux surface (includes KvmBackend and
-    // PatchedKvmBackend). Other targets expose different concrete backends.
+    // KvmBackend). Other targets expose different concrete backends.
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         eprintln!("SKIP: {CRATE} public-api test — frozen on x86-64 Linux");
         return;

@@ -3,7 +3,7 @@ name = "vmm-core"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "The deterministic VMM above the Backend trait: Multiboot loader, 32-bit-PM entry state, CPUID/MSR-filter policy, bring-up device shims, and the event loop (BRINGUP M1/M2)"
+description = "Deterministic virtual-time execution of controlled Linux guests above the Backend trait"
 
 [lints]
 workspace = true

@@ -12,7 +12,7 @@ name: quality
 # immune").
 #
 # What STAYS on the box (NOT in this workflow, and never was): the ~23
-# live determinism gates that need a real /dev/kvm, the patched KVM module, and
+# live determinism gates that need a real /dev/kvm, and
 # quiet pinned cores. Those run out-of-band
 # through the box run-window tooling (now in the harmony-development repo).
 # Formalizing them as a dispatchable `runs-on: [self-hosted, kvm]` job is a documented
@@ -77,12 +77,11 @@ jobs:
       - name: cargo deny
         run: cargo deny check
       # The root `cargo deny check` only sees the root workspace. License-check the
-      # out-of-workspace manifests too (consonance/acceptance-suite/payloads + the cargo-fuzz harnesses), so
+      # out-of-workspace manifests too (the cargo-fuzz harnesses), so
       # their deps — e.g. libfuzzer-sys's NCSA-licensed LLVM runtime — are asserted
       # AGPL-compatible against the same allow-list (task 91).
       - name: cargo deny (guest + fuzz manifests)
         run: |
-          cargo deny --manifest-path consonance/acceptance-suite/payloads/Cargo.toml check --config deny.toml licenses
           cargo deny --manifest-path consonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses
       - name: cargo nextest
         run: cargo nextest run --all-features
@@ -90,9 +89,8 @@ jobs:
         run: |
           python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
           python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py listing > /tmp/n6-listing.tsv
-          cmp /tmp/n6-listing.tsv consonance/acceptance-suite/instruction-contract.generated.tsv
+          cmp /tmp/n6-listing.tsv consonance/harmony-linux/scripts/instruction-contract.generated.tsv
           python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
-          python3 consonance/vmm-backend/kvm-patches/n6-tripwire-audit.py
       - name: V-time cost fitter self-test
         run: python3 scripts/fit-vtime-costs.py --self-test
       # The architecture boundary seam gate (tasks/108). The whole point of the `Arch` trait
@@ -133,18 +131,6 @@ jobs:
           # std leak). Fails the gate if anything pulls in std.
           rustup target add x86_64-unknown-none
           cargo build --manifest-path consonance/harmony-linux/sdk/Cargo.toml --lib --target x86_64-unknown-none
-      # Actually LINK the SDK-instrumented demo guest for bare metal — from its own
-      # dir, so consonance/acceptance-suite/payloads/.cargo/config.toml (target + linker) applies. The
-      # consonance/harmony-linux/sdk `--lib` proof above compiles the library, but only a full payload
-      # link exercises the SDK end-to-end against the boot shim; a regression that
-      # breaks the demo (the box gate's guest) would otherwise surface only on the box.
-      - name: consonance/acceptance-suite/payloads sdk-demo build (bare metal, from its dir)
-        working-directory: consonance/acceptance-suite/payloads
-        run: cargo build -p sdk-demo
-      # Fault request codecs are optional package code. Keep their no_std
-      # adapter independently gated so the generic SDK/protocol crates cannot
-      # regain a dependency on fault policy while the guest adapter still
-      # compiles for the real bare-metal target.
       - name: workloads/fault-sdk gates (out-of-workspace manifest)
         run: |
           cargo fmt --manifest-path workloads/fault-sdk/Cargo.toml -- --check
@@ -251,39 +237,11 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov,cargo-nextest
-      # `--ignore-filename-regex` drops the box-only `cfg(linux)` substrate paths
-      # from the coverage denominator: the stock-KVM path
-      # (`consonance/vmm-backend/src/kvm.rs`, `…/src/kvm/`, `…/src/kvm_sys.rs`), the
-      # task-21 determinism backend (`…/src/patched_kvm.rs`) and the live ARM
-      # substrate entrypoints. The latter are the Hypervisor.framework FFI module
-      # and its probe/oracle binaries plus the HVF/KVM boot and control-server
-      # composition binaries; they require entitlements or `/dev/kvm` and built
-      # guest images. Their portable mechanisms remain coverage-counted in
-      # `arm64_kvm.rs`, the ARM value/state modules, `mock_arm64.rs`, and vmm-core's
-      # ARM dispatch/snapshot/oracle logic. This
-      # coverage job runs **without `--ignored`** (and on every crate's matrix), so
-      # the box-only `#[ignore]` integration tests that exercise the FFI / perf
-      # orchestration end-to-end never run here — counting those paths would only
-      # drag the floor, and running live KVM/perf in this job is impossible on a
-      # hosted runner (no /dev/kvm, no patched module). They are verified instead by
-      # those `#[ignore]` live tests and by Miri (which still *executes* `kvm.rs`'s
-      # synthetic-`kvm_run` unit tests — incl. the KVM_EXIT_DETERMINISM decode — so a
-      # logic regression still fails the suite, just not coverage-*counted*).
-      # `consonance/acceptance-suite/src/realvmm.rs` is excluded on the same grounds:
-      # it is the acceptance runner's real-VMM composition root and needs a
-      # real `/dev/kvm`, the patched modules, and built payloads, so no portable test can
-      # reach it. The same applies to the generic Consonance live Session
-      # composition root (`consonance/client/src/session/live.rs`): portable
-      # identity and sparse snapshot validation remain coverage-counted in
-      # `session.rs`, while boot/control calls require the hardware lane. The
-      # coverage-gated set is the portable, platform-agnostic logic the splits
-      # factored out: `region`/`run_buf`, the value types, the run-loop contract
-      # (`mock`/`run_loop`) and vmm-core's V-time
-      # completion. The owning crate READMEs describe those boundaries.
+      # Exclude platform syscall orchestration; portable mechanisms remain counted.
       - name: cargo llvm-cov (region floor 90%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
-            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|hvf\.rs|bin/(hvf_probe|hvf_state_oracle|arm64_kvm_id_probe)\.rs)|consonance/vmm-core/src/bin/(hvf_boot|hvf_control_probe|hvf_control_server|hvf_postgres_m3|kvm_arm64_boot|kvm_arm64_control_server)\.rs|consonance/acceptance-suite/src/realvmm\.rs|consonance/client/src/session/live\.rs' \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|hvf\.rs|bin/(hvf_probe|hvf_state_oracle|arm64_kvm_id_probe)\.rs)|consonance/vmm-core/src/bin/(hvf_boot|hvf_control_probe|hvf_control_server|hvf_postgres_m3|kvm_arm64_boot|kvm_arm64_control_server)\.rs|consonance/client/src/session/live\.rs' \
             --fail-under-regions 90
       - uses: actions/upload-artifact@v4
         if: always()
@@ -504,7 +462,7 @@ jobs:
       - name: public-api snapshot tests
         run: |
           cargo test \
-            -p hypercall-proto -p hypercall-doorbell -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p gicv3 -p telemetry -p environment -p control-proto -p acceptance-suite \
+            -p hypercall-proto -p hypercall-doorbell -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p gicv3 -p telemetry -p environment -p control-proto \
             --test public_api -- --ignored --nocapture
           # consonance/harmony-linux/sdk is out-of-workspace (its own manifest), so it is not in the
           # `-p` list above — freeze its public surface on its own manifest.

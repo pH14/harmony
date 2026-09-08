@@ -165,8 +165,6 @@ function shortDesc(ev) {
     case "Mmio":       return `@0x${p.addr.toString(16)} ${p.write?"ST":"LD"} ${p.value}`;
     case "Hypercall":  return `svc=${p.service} op=${p.opcode} st=${p.status}`;
     case "Msr":        return `idx=0x${p.index.toString(16)} ${p.write?"WR":"RD"} ${p.value}`;
-    case "Tsc":        return `tsc=${p.value}`;
-    case "Rng":        return `rng=${p.value}`;
     case "Cpuid":      return `leaf=0x${p.leaf.toString(16)}/${p.subleaf}`;
     case "Inject":     return `vector=${p.vector}`;
     case "Checkpoint": return hex(p.state_hash).slice(0,16)+"…";

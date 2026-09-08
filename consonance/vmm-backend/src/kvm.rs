@@ -61,45 +61,6 @@ pub(crate) fn kvm_err(e: kvm_ioctls::Error) -> BackendError {
     BackendError::Io(std::io::Error::from_raw_os_error(e.errno()))
 }
 
-// ---------------------------------------------------------------------------
-// `KVM_EXIT_DETERMINISM` ABI — the patched-KVM determinism-intercept surface
-// (`PatchedKvmBackend`). Validated against
-// `consonance/vmm-backend/kvm-patches/patches/0001-*.patch`: a new exit reason `41`, a
-// `kvm_run.determinism` payload overlaying the exit-info union, and the opt-in
-// cap `245`. Stock KVM never enables the cap, so it never produces this exit —
-// the decode below is dead for `KvmBackend` and live only for the patched
-// backend (and the synthetic-`kvm_run` unit tests). These are NOT in
-// `kvm-bindings` (the patch is out-of-tree), so the payload is read/written by
-// raw, bounded offset rather than a typed union member.
-// ---------------------------------------------------------------------------
-
-/// `KVM_EXIT_DETERMINISM` (patch 0001).
-pub(crate) const KVM_EXIT_DETERMINISM: u32 = 41;
-/// `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` (patch 0001) — opt-in, settable only
-/// before vCPU creation.
-pub(crate) const KVM_CAP_X86_DETERMINISTIC_INTERCEPTS: u32 = 245;
-
-/// `determinism.insn` kinds (kernel → user, patch 0001).
-const KVM_DETERMINISM_RDTSC: u32 = 0;
-const KVM_DETERMINISM_RDTSCP: u32 = 1;
-const KVM_DETERMINISM_RDRAND: u32 = 2;
-const KVM_DETERMINISM_RDSEED: u32 = 3;
-/// `determinism.flags` bit (user → kernel): request `CF = 1` (RNG success).
-const KVM_DETERMINISM_FLAG_CF: u8 = 1;
-
-/// Byte offset of the exit-info union (`__bindgen_anon_1`) within `kvm_run`. The
-/// `determinism` payload overlays it exactly like `io`/`mmio`. Derived with
-/// `offset_of!` rather than hardcoded (the spike used a literal `32`) so a uapi
-/// layout change can never silently desync the raw determinism-field access.
-const DET_BASE: usize = core::mem::offset_of!(kvm_run, __bindgen_anon_1);
-// `determinism` field offsets, relative to `DET_BASE` (patch 0001 struct order):
-//   insn u32 @0, width u32 @4, value u64 @8, aux u64 @16, flags u8 @24, dest u8 @25.
-const DET_INSN: usize = DET_BASE; // __u32 insn   (kernel -> user)
-const DET_WIDTH: usize = DET_BASE + 4; // __u32 width  (kernel -> user)
-const DET_VALUE: usize = DET_BASE + 8; // __u64 value  (user -> kernel)
-const DET_AUX: usize = DET_BASE + 16; // __u64 aux    (user -> kernel, RDTSCP)
-const DET_FLAGS: usize = DET_BASE + 24; // __u8  flags  (user -> kernel, RNG CF)
-
 /// What the last returned exit awaits, with the `kvm_run` context needed to write
 /// its completion before the next entry. Stock KVM never surfaces
 /// Hypercall/Cpuid (serviced in-kernel), so there is no pending variant for them.
@@ -121,16 +82,6 @@ pub(crate) enum Pending {
     /// `Wrmsr`: `complete_ok` resumes with `error = 0`, `complete_fault` with
     /// `error != 0`.
     Wrmsr,
-    /// A `KVM_EXIT_DETERMINISM` intercept (patched KVM): `complete_read(value)`
-    /// writes `determinism.value` (→ dest / EDX:EAX). `rdtscp` additionally
-    /// writes `IA32_TSC_AUX` → ECX; `rng` (RDRAND/RDSEED) additionally sets
-    /// `CF` (deterministic success).
-    Determinism {
-        /// The intercepted instruction was `RDTSCP` (carry `aux` → ECX).
-        rdtscp: bool,
-        /// The intercepted instruction was `RDRAND`/`RDSEED` (set `CF`).
-        rng: bool,
-    },
 }
 
 // ---------------------------------------------------------------------------
@@ -243,42 +194,6 @@ impl RunPage {
         }
     }
 
-    /// Read a little-endian `u32` at byte `off` through the bounded `run_buf`
-    /// seam (the `determinism` payload is not a `kvm-bindings` union member).
-    fn read_u32_at(&self, off: usize) -> Result<u32> {
-        // SAFETY: `run`/`len` describe a live buffer; `RunBuf` bound-checks the
-        // offset and rejects anything past `len`.
-        let buf = unsafe { RunBuf::new(self.run.cast::<u8>(), self.len) };
-        let mut b = [0u8; 4];
-        buf.read_bytes(off, &mut b)?;
-        Ok(u32::from_le_bytes(b))
-    }
-
-    /// Write a little-endian `u64` at byte `off` through the bounded `run_buf`
-    /// seam.
-    fn write_u64_at(&self, off: usize, value: u64) -> Result<()> {
-        // SAFETY: as `read_u32_at`; `RunBuf` bound-checks the write.
-        let mut buf = unsafe { RunBuf::new(self.run.cast::<u8>(), self.len) };
-        buf.write_bytes(off, &value.to_le_bytes())
-    }
-
-    /// Write a single byte at `off` through the bounded `run_buf` seam.
-    fn write_u8_at(&self, off: usize, value: u8) -> Result<()> {
-        // SAFETY: as `read_u32_at`; `RunBuf` bound-checks the write.
-        let mut buf = unsafe { RunBuf::new(self.run.cast::<u8>(), self.len) };
-        buf.write_bytes(off, &[value])
-    }
-
-    /// `determinism.insn` (kernel → user): which instruction was intercepted.
-    fn det_insn(&self) -> Result<u32> {
-        self.read_u32_at(DET_INSN)
-    }
-
-    /// `determinism.width` (kernel → user): result width in bytes.
-    fn det_width(&self) -> Result<u32> {
-        self.read_u32_at(DET_WIDTH)
-    }
-
     /// `kvm_run.ready_for_interrupt_injection` (kernel → user, written by KVM in
     /// `post_kvm_run_save` after **every** `KVM_RUN`): non-zero iff the guest can
     /// accept a maskable interrupt on the next entry. KVM derives it from
@@ -381,7 +296,6 @@ pub(crate) fn decode_exit(page: RunPage) -> Result<Option<(Exit<X86>, Pending)>>
                 Pending::Wrmsr,
             )))
         }
-        KVM_EXIT_DETERMINISM => decode_determinism(page).map(Some),
         KVM_EXIT_HLT => Ok(Some((Exit::Common(CommonExit::Idle), Pending::None))),
         KVM_EXIT_SHUTDOWN => Ok(Some((Exit::Common(CommonExit::Shutdown), Pending::None))),
         KVM_EXIT_INTERNAL_ERROR => Err(BackendError::Internal("KVM_EXIT_INTERNAL_ERROR")),
@@ -465,78 +379,6 @@ fn decode_mmio(page: RunPage) -> (Exit<X86>, Pending) {
             }),
             Pending::MmioLoad { len },
         )
-    }
-}
-
-/// Map a `KVM_EXIT_DETERMINISM` (patched KVM) into the matching instruction-read
-/// `Exit<X86>` plus the `Determinism` completion it arms. `RDTSC`/`RDTSCP` carry no
-/// width to the VMM (the value is always 64-bit EDX:EAX); `RDRAND`/`RDSEED`
-/// carry the destination `width` (2/4/8) so vmm-core masks the seeded draw.
-fn decode_determinism(page: RunPage) -> Result<(Exit<X86>, Pending)> {
-    let insn = page.det_insn()?;
-    // `width` is bounded by the instruction operand size (≤ 8); the cast is
-    // lossless for the conforming `2/4/8` the kernel reports.
-    let width = page.det_width()?.min(u32::from(u8::MAX)) as u8;
-    match insn {
-        KVM_DETERMINISM_RDTSC => Ok((
-            Exit::Arch(X86Exit::Rdtsc),
-            Pending::Determinism {
-                rdtscp: false,
-                rng: false,
-            },
-        )),
-        KVM_DETERMINISM_RDTSCP => Ok((
-            Exit::Arch(X86Exit::Rdtscp),
-            Pending::Determinism {
-                rdtscp: true,
-                rng: false,
-            },
-        )),
-        KVM_DETERMINISM_RDRAND => Ok((
-            Exit::Arch(X86Exit::Rdrand { width }),
-            Pending::Determinism {
-                rdtscp: false,
-                rng: true,
-            },
-        )),
-        KVM_DETERMINISM_RDSEED => Ok((
-            Exit::Arch(X86Exit::Rdseed { width }),
-            Pending::Determinism {
-                rdtscp: false,
-                rng: true,
-            },
-        )),
-        _ => Err(BackendError::Internal(
-            "unknown KVM_EXIT_DETERMINISM insn kind",
-        )),
-    }
-}
-
-/// Complete a pending `KVM_EXIT_DETERMINISM`: write `value` (→ dest / EDX:EAX),
-/// and — per the instruction — `aux` (RDTSCP's `IA32_TSC_AUX` → ECX) and the
-/// `CF` success flag (RNG). Pure: the orchestration layer supplies `aux` (it
-/// reads the guest's `IA32_TSC_AUX` via `KVM_GET_MSRS`, a syscall that cannot
-/// live here). Errors [`BackendError::NoPendingRead`] if no determinism exit is
-/// pending.
-pub(crate) fn apply_complete_determinism(
-    page: RunPage,
-    pending: Pending,
-    value: u64,
-    aux: u64,
-) -> Result<()> {
-    match pending {
-        Pending::Determinism { rdtscp, rng } => {
-            page.write_u64_at(DET_VALUE, value)?;
-            if rdtscp {
-                page.write_u64_at(DET_AUX, aux)?;
-            }
-            if rng {
-                // Deterministic success: a seeded draw always "succeeds" (CF=1).
-                page.write_u8_at(DET_FLAGS, KVM_DETERMINISM_FLAG_CF)?;
-            }
-            Ok(())
-        }
-        _ => Err(BackendError::NoPendingRead),
     }
 }
 
@@ -733,27 +575,7 @@ pub(crate) fn kvm_capabilities() -> Capabilities<X86Caps> {
     Capabilities {
         name: "kvm-stock",
         deterministic_rng: false,
-        arch: X86Caps {
-            deterministic_tsc: false,
-            enforces_tsc_deadline_msr: false,
-        },
-    }
-}
-
-/// The patched-KVM capabilities: RDTSC/RDTSCP and RDRAND/RDSEED are surfaced as
-/// exits the VMM resolves against V-time / the seeded entropy stream, so both
-/// determinism fields are honestly `true`. `enforces_tsc_deadline_msr` stays
-/// `false`: the determinism patch touches only the four instruction intercepts,
-/// not the `0x6E0` WRMSR fastpath (the contract hides `IA32_TSC_DEADLINE`
-/// instead — docs/ARCHITECTURE.md / R1, no in-kernel LAPIC).
-pub(crate) fn patched_capabilities() -> Capabilities<X86Caps> {
-    Capabilities {
-        name: "kvm-patched",
-        deterministic_rng: true,
-        arch: X86Caps {
-            deterministic_tsc: true,
-            enforces_tsc_deadline_msr: false,
-        },
+        arch: X86Caps,
     }
 }
 

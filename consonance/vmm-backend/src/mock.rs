@@ -86,11 +86,7 @@ fn pending_for(exit: &Exit<X86>) -> Pending {
             }
         },
         Exit::Arch(e) => match e {
-            X86Exit::Io { write: None, .. }
-            | X86Exit::Rdtsc
-            | X86Exit::Rdtscp
-            | X86Exit::Rdrand { .. }
-            | X86Exit::Rdseed { .. } => Pending::Read,
+            X86Exit::Io { write: None, .. } => Pending::Read,
             X86Exit::Rdmsr { .. } => Pending::Rdmsr,
             X86Exit::Wrmsr { .. } => Pending::Wrmsr,
             X86Exit::Cpuid { .. } => Pending::Cpuid,
@@ -106,10 +102,7 @@ fn pending_for(exit: &Exit<X86>) -> Pending {
 const MOCK_CAPS: MockCaps = Capabilities {
     name: "mock",
     deterministic_rng: true,
-    arch: crate::arch::x86::X86Caps {
-        deterministic_tsc: true,
-        enforces_tsc_deadline_msr: true,
-    },
+    arch: crate::arch::x86::X86Caps,
 };
 
 /// A deterministic, scripted [`Backend`] with no KVM dependency.

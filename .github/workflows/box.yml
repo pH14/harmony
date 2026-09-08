@@ -1,37 +1,12 @@
 name: box
 
-# The hardware lane contains checks that require bare metal. The checks in
-# `quality.yml` run on hosted runners; the gates here need a real `/dev/kvm`,
-# the patched KVM modules, and quiet pinned cores.
-#
-# Every job here must have a REGISTERED runner. A job whose label set matches
-# no registered runner does not skip — GitHub leaves it queued (for about a
-# day), and with `cancel-in-progress: false` on the repo-wide concurrency
-# group below, that phantom job wedges the whole hardware lane behind it.
-# That is why the x86 lane (`x86-64`, the retired determinism box) was
-# REMOVED with its machine in 2026-08 rather than left as a drop-in: this
-# commit's parent has the full job and `scripts/box-gates.sh`, its packaged
-# suite, when a successor box exists.
-#
-# `workflow_dispatch` only — **no schedule**. The box is a shared, leased
-# resource: a cron-triggered run would take a core out from under whoever is
-# using it, and a determinism gate contending with another workload is a gate
-# whose result means nothing (that is what the pinned cores are for). A human
-# starts a run when a window is free.
-#
-# ## The label scheme
-#
-# Runner labels describe capabilities: self-hosted, KVM, and architecture.
-# Jobs do not require a particular CPU model or a named machine. Host identity
-# may be recorded in qualification output, but it does not select guest policy.
+# The hardware lane requires a registered runner with KVM and the guest ISA.
+# Runner labels express capabilities, not a particular processor or machine.
 
 on:
   workflow_dispatch:
 
-# One hardware run at a time, repo-wide. Two concurrent runs would contend for
-# the same pinned cores and the same KVM modules — and the module revert of one
-# would land under the other's live guest. `cancel-in-progress: false`: a
-# half-finished run must be allowed to reach its revert step.
+# Serialize hardware jobs sharing a runner.
 concurrency:
   group: box-hardware
   cancel-in-progress: false

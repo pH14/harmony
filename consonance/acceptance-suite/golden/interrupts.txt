@@ -1,4 +1,0 @@
-PAYLOAD interrupts START
-OK swint
-OK timer
-PAYLOAD interrupts PASS

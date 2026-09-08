@@ -87,12 +87,6 @@ mod arm64_kvm_sys;
 mod kvm;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvm_sys;
-// `patched_kvm` is the box-only syscall orchestration for the determinism
-// backend (the `KVM_EXIT_DETERMINISM` decode/complete logic it drives is the
-// pure, unit-tested `kvm` module); like `kvm_sys` it is excluded from the
-// coverage + mutation gates (it cannot run without the patched `/dev/kvm`).
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-mod patched_kvm;
 
 pub use arch::arm64::{
     ARM64_GIC_BITMAP_WORDS, ARM64_GIC_PRIORITY_BYTES, Arm64, Arm64Caps, Arm64Completion,
@@ -129,6 +123,3 @@ pub use arm64_kvm_sys::LiveKvm;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use kvm_sys::KvmBackend;
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub use patched_kvm::PatchedKvmBackend;

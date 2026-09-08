@@ -6,7 +6,7 @@
 //! `KVM_X86_SET_MSR_FILTER`, `KVM_CAP_X86_USER_SPACE_MSR`) is KVM-specific and
 //! lives **below the trait** in `vmm-backend`. These functions produce
 //! backend-agnostic values ([`vmm_backend::CpuidModel`] / [`vmm_backend::MsrFilter`]
-//! / [`MsrDisposition`]) that [`crate::bringup::boot`] hands to the backend
+//! / [`MsrDisposition`]) that the Linux composition root hands to the backend
 //! through the trait. [`contract_hash`] is the SHA-256 of the §6 canonical
 //! serialization of these same tables, so the policy can never drift from the
 //! ratified contract.
@@ -235,34 +235,11 @@ pub fn cpuid_model() -> CpuidModel {
     CpuidModel { entries }
 }
 
-/// [`cpuid_model`] with the hardware-RNG bits — CPUID.1:ECX[30] (`RDRAND`) and
-/// CPUID.7.0:EBX[18] (`RDSEED`) — cleared, for the stock-backend virtual_time
-/// composition. §2 exposes both bits as exposed-but-trapped, a justification
-/// that requires the VMX RDRAND/RDSEED-exiting controls; stock KVM never
-/// surfaces that exit (§2's own caveat), so left exposed the instructions
-/// execute natively and feed true hardware entropy into the guest CRNG —
-/// measured as the X2 userspace-ASLR divergence. The pinned kernel reaches
-/// both instructions only through `cpu_feature_enabled` checks on these bits,
-/// so hiding them keeps the guest on its deterministic fallbacks; the X2
-/// determinism gates measure the closure.
-pub fn cpuid_model_hw_rng_hidden() -> CpuidModel {
-    let mut m = cpuid_model();
-    for e in &mut m.entries {
-        if e.leaf == 0x1 && e.subleaf == 0 {
-            e.ecx &= !(1 << 30);
-        }
-        if e.leaf == 0x7 && e.subleaf == 0 {
-            e.ebx &= !(1 << 18);
-        }
-    }
-    m
-}
-
 /// Overlay the three dynamic CPUID cells (see [`cpuid_model`]) onto the frozen
 /// `base` entry when servicing a userspace `X86Exit::Cpuid`, from the guest's live
 /// `CR4`/`XCR0` (`base.leaf`/`base.subleaf` select which rule applies). Never
 /// called for stock `KvmBackend` (CPUID is in-kernel); it exists so the
-/// patched/direct path stays contract-correct. Pure.
+/// userspace CPUID emulation stays contract-correct. Pure.
 pub fn resolve_cpuid(base: CpuidEntry, cr4: u64, xcr0: u64) -> CpuidEntry {
     let mut e = base;
     match (base.leaf, base.subleaf) {
@@ -448,29 +425,22 @@ mod tests {
     }
 
     #[test]
-    fn cpuid_model_hw_rng_hidden_clears_exactly_the_rng_bits() {
-        let base = cpuid_model();
-        let hidden = cpuid_model_hw_rng_hidden();
-        assert_eq!(base.entries.len(), hidden.entries.len());
-        for (b, h) in base.entries.iter().zip(&hidden.entries) {
-            match (b.leaf, b.subleaf) {
-                (0x1, 0) => {
-                    // The base exposes RDRAND; the variant clears only ECX[30].
-                    assert_ne!(b.ecx & (1 << 30), 0, "base exposes RDRAND");
-                    let mut want = *b;
-                    want.ecx &= !(1 << 30);
-                    assert_eq!(*h, want);
-                }
-                (0x7, 0) => {
-                    // The base exposes RDSEED; the variant clears only EBX[18].
-                    assert_ne!(b.ebx & (1 << 18), 0, "base exposes RDSEED");
-                    let mut want = *b;
-                    want.ebx &= !(1 << 18);
-                    assert_eq!(*h, want);
-                }
-                _ => assert_eq!(b, h),
-            }
-        }
+    fn cpuid_model_hides_hardware_rng() {
+        let model = cpuid_model();
+        assert_eq!(
+            model.entries.iter().find(|e| e.leaf == 1).unwrap().ecx & (1 << 30),
+            0
+        );
+        assert_eq!(
+            model
+                .entries
+                .iter()
+                .find(|e| e.leaf == 7 && e.subleaf == 0)
+                .unwrap()
+                .ebx
+                & (1 << 18),
+            0
+        );
     }
 
     #[test]
@@ -621,7 +591,7 @@ mod tests {
         )));
         // Section anchors.
         assert!(form.contains(
-            "\ncpuid 00000001.00000000 000906ec 00010800 dyn:osxsave:76da3203 0f8bbb7f\n"
+            "\ncpuid 00000001.00000000 000906ec 00010800 dyn:osxsave:36da3203 0f8bbb7f\n"
         ));
         assert!(form.contains("\ncpuid-default zeroed\n"));
         assert!(
@@ -669,7 +639,7 @@ mod tests {
         // The committed v6 hash is sha256 of exactly the golden bytes.
         let hex: String = contract_hash().iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
-            hex, "80e29c217f9081afe6d55cf1a0ad73dde29eeb1a771d820963e54c73689b7ac6",
+            hex, "e2cf2a502d598e042684a3bd5807aec0095f4fc9f7ee3d4eb538d3372c4a141d",
             "contract_hash must be sha256 of the golden canonical bytes"
         );
     }

@@ -305,7 +305,7 @@ impl GuestRam {
         &self.inner
     }
 
-    /// Mutable view for the loader / `write_boot_info` / `map_memory` (before the
+    /// Mutable view for the loader / `map_memory` (before the
     /// first run).
     pub fn as_mut_bytes(&mut self) -> &mut [u8] {
         &mut self.inner
@@ -361,35 +361,16 @@ impl VtimeWiring {
         self.clock.vns()
     }
 
-    /// Draw `width` (2/4/8) bytes from the seeded stream for an `RDRAND`/`RDSEED`
-    /// completion, using the **exact** byte convention of the `Entropy`
-    /// hypercall service (opcode 1, a `u32` count) so the two never diverge. The
-    /// value is returned with the low `width` bytes set (the backend writes only
-    /// those to the destination register).
-    pub(crate) fn draw_rng(&mut self, width: u8) -> Result<u64, VmmError> {
-        // The exit `width` is decoded from untrusted guest instruction bytes;
-        // RDRAND/RDSEED only have 16/32/64-bit forms, so accept ONLY {2,4,8} and
-        // fail closed on anything else (1/3/5/6/7/…) rather than service it.
-        if !matches!(width, 2 | 4 | 8) {
-            return Err(VmmError::ContractViolation(format!(
-                "RDRAND/RDSEED width {width} invalid (only 2/4/8 are architectural)"
-            )));
-        }
-        let n = usize::from(width);
+    /// Draw a word for the Linux boot seed from the same stream used by Entropy.
+    #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
+    pub(crate) fn next_entropy_word(&mut self) -> Result<u64, VmmError> {
         let mut buf = [0u8; 8];
-        let req = (n as u32).to_le_bytes();
-        let (status, got) = self.entropy.handle(1, &req, &mut buf[..n]);
-        // Fail-closed defence. For the in-tree `SeededEntropy` this is unreachable
-        // (a validated `n ∈ 1..=8` count + an `n`-byte buffer always yields
-        // `(Ok, n)`), so the `||`→`&&` mutant here is provably equivalent and is
-        // excluded in `.cargo/mutants.toml`; the `!=` halves stay mutation-gated.
-        if status != Status::Ok || got != n {
+        let (status, got) = self.entropy.handle(1, &8u32.to_le_bytes(), &mut buf);
+        if (status, got) != (Status::Ok, buf.len()) {
             return Err(VmmError::ContractViolation(format!(
-                "seeded entropy draw failed (status {status:?}, got {got} of {n} bytes)"
+                "seeded entropy draw failed (status {status:?}, got {got} of 8 bytes)"
             )));
         }
-        // `buf` is zero-initialized, so the low `width` bytes carry the draw and
-        // the high bytes stay 0 (the backend masks to `width`).
         Ok(u64::from_le_bytes(buf))
     }
 
@@ -688,19 +669,8 @@ where
     /// [`Vmm::state_blob`] on a worker. Default-off preserves synchronous trace
     /// semantics for every existing composition.
     pub(crate) deferred_virtual_time_checkpoints: bool,
-    /// Set when the most-recently-serviced exit staged an **RNG** completion
-    /// (RDRAND/RDSEED) whose seeded draw advanced the entropy stream but whose
-    /// register-write/RIP-advance is only staged for the next `KVM_RUN` (not in
-    /// `Backend::save`/`VtimeSnapshot`). Snapshotting here is unsound — restore
-    /// would re-execute the instruction against the already-advanced stream and
-    /// draw the *next* word. [`Vmm::save_vtime`] refuses at this boundary. Cleared
-    /// at the next `step` (its re-entry commits the staged completion). RDTSC/
-    /// RDTSCP/IO/MSR/CPUID completions are **idempotent on replay** (positional
-    /// work / re-queried device-or-contract value), so they do not set this.
-    pub(crate) rng_completion_staged: bool,
     /// `true` when the **last serviced exit staged *any* backend completion** (an
-    /// IO/MMIO read or write, an `Rdmsr`/`Wrmsr`, a `Cpuid`, or a determinism
-    /// `Rdtsc`/`Rdtscp`/`Rdrand`/`Rdseed`) whose register-write/RIP-advance is only
+    /// IO/MMIO read or write, an `Rdmsr`/`Wrmsr`, or a `Cpuid`) whose register-write/RIP-advance is only
     /// committed on the **next** `KVM_RUN`. Superset of [`Self::rng_completion_staged`]
     /// (which is the *non-idempotent* RNG subset). A snapshot may be *saved* at such a
     /// boundary for non-RNG exits (restore re-executes the instruction idempotently),
@@ -715,32 +685,6 @@ where
     /// Cleared only after a successful subsequent backend entry. This is a
     /// host-control latch, not guest or replay state.
     pub(crate) sdk_snapshot_reentry_required: bool,
-    /// `true` when the current point is a **V-time intercept boundary** — the last
-    /// serviced exit was a V-time intercept (RDTSC/RDTSCP/RDRAND/RDSEED or a TSC
-    /// MSR), or the VM is fresh (work 0) — so the **exact** effective V-time is known:
-    /// `assigned_clock` is the current, deterministic work. At any other exit
-    /// (HLT/PIO/CPUID) the work retired since the last intercept is not
-    /// deterministically measurable (exit-boundary variability), so the exact V-time is unknown.
-    /// [`Vmm::save_vtime`] requires this (a snapshot's `vns` must be exact — restore
-    /// resumes the TSC from it; §4), failing closed otherwise rather than recording a
-    /// stale `vns`. Set `false` **before** each `step`'s `backend.run()` (so a failed
-    /// run leaves it `false`, not stale-`true`) and back to `true` only by a
-    /// V-time-intercept completion. **Not** part of the hash — `state_blob` is
-    /// replay-equivalence *to the last intercept* and is correct at any exit (see
-    /// [`encode_vtime`]); only the *snapshot* needs exactness here.
-    /// Whether the synchronized boundary this step ended on was reached by an
-    /// **RDTSC/RDTSCP counter read specifically** (`complete_tsc`) — as opposed to
-    /// the other V-time intercepts (a TSC MSR, RDRAND/RDSEED) or the other
-    /// synchronized points (a deadline landing, an idle-warp restore). Gates the
-    /// pvclock registration **handshake** (r17): the wire contract (§3.1, r8)
-    /// promises the guest publishes its page GPA over the doorbell and then does a
-    /// **counter read**, so only that read may complete the handshake (stamp + arm
-    /// the pending page). A superset of nothing — it is a strict subset of
-    /// `clock_boundary` (every RDTSC boundary is synchronized, but not vice
-    /// versa). Cleared with `clock_boundary` before each entry; set `true`
-    /// **only** by [`complete_tsc`](crate::vendor::x86::dispatch). Not hashed (a
-    /// transient run-control flag).
-    pub(crate) tsc_read_intercept: bool,
     /// When set ([`Vmm::wire_snapshot_hashing`]), [`Vmm::state_blob`] folds the
     /// **canonical `vm_state` encoding** into the hash as a `VMST` chunk — the
     /// snapshot/branch path's "the canonical `vm_state` blob drives `state_hash`"
@@ -814,14 +758,8 @@ where
             virtual_time_trace: None,
             doorbell_exits: 0,
             deferred_virtual_time_checkpoints: false,
-            rng_completion_staged: false,
             completion_staged: false,
             sdk_snapshot_reentry_required: false,
-            // A fresh VM is at work 0: the effective V-time is exactly `vns_base`, so
-            // a snapshot here is exact (synchronized).
-            // No intercept has happened yet, let alone a counter read — a fresh VM's
-            // synchronized boundary is not an RDTSC handshake.
-            tsc_read_intercept: false,
             snapshot_hashing: false,
             idle_wake_vns: None,
             sdk: None,
@@ -829,10 +767,7 @@ where
         }
     }
 
-    /// Wire the determinism-complete V-time + seeded-RNG path (the
-    /// `PatchedKvmBackend` composition root calls this; stock KVM leaves it
-    /// unwired). After this, `RDTSC`/`RDTSCP` resolve to `VClock::guest_ticks(work)` and
-    /// `RDRAND`/`RDSEED` to the seeded stream, instead of failing closed.
+    /// Wire the assigned virtual-time clock and deterministic entropy stream.
     pub fn wire_vtime(&mut self, wiring: VtimeWiring) -> &mut Self {
         self.virtual_time_trace = Some(LiveVirtualTimeTrace::default());
         self.vtime = Some(wiring);
@@ -1208,7 +1143,6 @@ where
         }
         self.backend.retire_pending_completion()?;
         self.completion_staged = false;
-        self.rng_completion_staged = false;
         self.sdk_snapshot_reentry_required = false;
         Ok(())
     }
@@ -1302,63 +1236,9 @@ where
         Ok(())
     }
 
-    /// Capture the V-time + entropy state for a mid-run snapshot (docs/ARCHITECTURE.md
-    /// §4). `Ok(None)` if V-time is unwired (nothing to capture). Pair with
-    /// [`Vmm::restore_vtime`] (and the backend's `save`/`restore` + guest memory)
-    /// to resume an identical timeline after a restore.
-    ///
-    /// **Clean-boundary invariant (must hold).** A snapshot is only sound at a
-    /// boundary where **no RNG completion is staged**. `RDRAND`/`RDSEED` draw from
-    /// the seeded stream eagerly (the value is needed to stage the completion), but
-    /// the register-write/RIP-advance is only applied on the next `KVM_RUN` and is
-    /// **not** captured by `Backend::save` / [`VtimeSnapshot`]. Snapshotting between
-    /// the draw and that commit would, on restore, re-execute the instruction
-    /// against the already-advanced stream and hand the guest the *next* word —
-    /// divergence. So `save_vtime` **fails closed** there (the explorer steps to a
-    /// clean boundary first). Capturing/replaying the staged completion for a true
-    /// mid-exit snapshot is **task-08** (`snapshot-store`'s `vm_state` blob, which
-    /// owns the backend-internal `complete_userspace_io` state). RDTSC/RDTSCP/IO/
-    /// MSR/CPUID completions are idempotent on replay, so they are not guarded.
-    ///
-    /// **V-time-exactness invariant (must hold).** Unlike the hash, a snapshot's
-    /// `vns` must be the **exact** effective V-time at the snapshot point — restore
-    /// resumes the TSC from it (docs/ARCHITECTURE.md), so an off-by-post-intercept-work
-    /// `vns` is a *silently-wrong* restore (the next `RDTSC` reads low by the missed
-    /// work). The exact V-time is known **only at a V-time intercept** — the
-    /// synchronized, deterministic point where `assigned_clock` *is* the current
-    /// work. At any other exit (HLT/PIO/CPUID) the work retired since the last
-    /// intercept is **not deterministically measurable** (exit-boundary variability; the box O1 evidence
-    /// shows a terminal live read diverges), so the exact V-time is unknown and
-    /// `save_vtime` **fails closed** (`clock_boundary == false`) rather than record
-    /// a stale `vns`. (Project rule: never silently wrong.) **Integrator/design note:**
-    /// this constrains the control plane to snapshot at V-time-intercept boundaries —
-    /// the dissonance design snapshots at quiescent `HLT`, which is *not* such a point,
-    /// so it needs either a backend deterministic quiescent work read (not established
-    /// on-box for the cumulative read) or an intercept-aligned snapshot point.
-    /// `IA32_TSC_ADJUST` is captured in the snapshot (the contract places
-    /// TSC/TSC_ADJUST in `vm_state`), so a guest that wrote the MSR restores faithfully.
-    ///
-    /// **Clean-boundary invariant (must hold).** A snapshot is only sound where **no
-    /// RNG completion is staged**. `RDRAND`/`RDSEED` draw from the seeded stream
-    /// eagerly, but the register-write/RIP-advance is only applied on the next
-    /// `KVM_RUN` and is **not** captured by `Backend::save` / [`VtimeSnapshot`].
-    /// Snapshotting between the draw and that commit would, on restore, re-execute the
-    /// instruction against the already-advanced stream and hand the guest the *next*
-    /// word — divergence. So `save_vtime` **fails closed** there too. Full mid-exit
-    /// capture is **task-08** (`snapshot-store`'s `vm_state`).
-    ///
-    /// # Errors
-    /// [`VmmError::ContractViolation`] at an RNG mid-exit boundary or a non-synchronized
-    /// (non-V-time-intercept) point.
+    /// Capture assigned virtual time, clock configuration, and deterministic entropy.
+    /// Returns `None` before virtual-time wiring is installed.
     pub fn save_vtime(&self) -> Result<Option<VtimeSnapshot>, VmmError> {
-        if self.rng_completion_staged {
-            return Err(VmmError::ContractViolation(
-                "save_vtime at an RNG mid-exit boundary: the seeded RDRAND/RDSEED draw advanced \
-                 the stream but its completion is staged, not committed — snapshot only at a clean \
-                 boundary (step once more first). Full mid-exit capture is task-08."
-                    .to_string(),
-            ));
-        }
         match &self.vtime {
             None => Ok(None),
             Some(vt) => Ok(Some(VtimeSnapshot {
@@ -1369,51 +1249,18 @@ where
         }
     }
 
-    /// The **effective V-time** in whole nanoseconds — `snapshot_vns` of the
-    /// deterministic last-intercept anchor, i.e. exactly the V-time the `VTIM`
-    /// hash chunk folds in (see [`Vmm::state_blob`]) — or `None` when the
-    /// determinism path is not wired. Exit-boundary variability-free (never a live counter read) and
-    /// identical across same-seed runs at the same point, so the control
-    /// transport's `run(until)` deadline check (task 58) can compare it against a
-    /// V-time deadline without perturbing determinism. Unlike
-    /// [`Vmm::save_vtime`] it is **total**: at a non-synchronized point it
-    /// reports the last-intercept V-time (a lower bound on the true V-time) —
-    /// fine for a monotone deadline check, but never a snapshot's `vns` (that
-    /// exactness is `save_vtime`'s job, which fails closed instead).
+    /// Current assigned virtual time, or `None` before wiring.
     pub fn effective_vns(&self) -> Option<u64> {
         self.vtime.as_ref().map(|vt| vt.clock.vns())
     }
 
-    /// `true` iff [`effective_vns`](Vmm::effective_vns) is **exact** — the VM is at a
-    /// V-time-intercept boundary (`RDTSC`/`RDTSCP`/`RDRAND`/`RDSEED` / a TSC MSR / an
-    /// serviced-exit boundary, an idle warp, or fresh / just-restored), so
-    /// `assigned_clock` *is* the current exit count. At any other point (a
-    /// terminal `HLT`, a `Shutdown`/debug exit, a serial/MMIO exit) the guest may
-    /// have VM exits since the last intercept, so `effective_vns` is only a
-    /// **lower bound** and this is `false`.
-    ///
-    /// The control plane (PR #51 round-7) requires this wherever it trusts
-    /// `effective_vns` as an exact position — the `perturb` floor and the `m == vns`
-    /// exit-boundary drain — so a fault is never recorded at a `Moment` the guest has
-    /// already executed past (the same exactness [`save_vtime`](Vmm::save_vtime) fails
-    /// closed on). `false` when V-time is unwired.
-    /// The **boundary** preconditions [`Vmm::save_vm_state`] requires to seal a
-    /// snapshot: no staged RNG completion (`rng_completion_staged`), and — when
-    /// V-time is wired — at a `clock_boundary` intercept. This is the SINGLE
-    /// source of truth both `save_vm_state` and the deferred SDK snapshot-point
-    /// gate ([`Vmm::take_snapshot_point`]) consult, so "can I seal
-    /// here?" can never drift from what `save_vm_state` actually accepts (round-4
-    /// P1: the snapshot point used to gate on exact time alone, which
-    /// does NOT exclude a staged RNG completion, so it surfaced points the seal
-    /// then rejected). NOT included here: the vCPU-state representability check
-    /// (`unrepresentable_state`) — that is a property of the captured state, not
-    /// the boundary.
+    /// Whether the SDK has finished handling its current stop. Backend completion
+    /// retirement and vCPU-state representability are checked by their owning paths.
     pub(crate) fn can_snapshot(&self) -> bool {
-        !self.rng_completion_staged
-            && !self
-                .sdk
-                .as_ref()
-                .is_some_and(|sdk| sdk.pending_stop.is_some())
+        !self
+            .sdk
+            .as_ref()
+            .is_some_and(|sdk| sdk.pending_stop.is_some())
     }
 
     /// Restore the V-time + entropy state captured by [`Vmm::save_vtime`]: rebuild
@@ -1444,20 +1291,6 @@ where
     /// mechanism step, not `snap` validation: it can only fail on a host-side
     /// stamping bug (fail-closed), never on untrusted input.
     pub fn restore_vtime(&mut self, snap: &VtimeSnapshot) -> Result<(), VmmError> {
-        // 0. Refuse at an RNG mid-exit boundary (symmetric with `save_vtime`): a
-        //    staged RDRAND/RDSEED completion lives in the backend and is not undone
-        //    by a V-time restore, so rewinding entropy now would shift the next
-        //    draw. The flag clears on the next `step`'s commit (or the task-08
-        //    backend restore); do not clear it here (that would mask the pending
-        //    completion). At a clean boundary the flag is already false.
-        if self.rng_completion_staged {
-            return Err(VmmError::ContractViolation(
-                "restore_vtime at an RNG mid-exit boundary: a seeded RDRAND/RDSEED completion is \
-                 staged (not committed) — rewinding V-time here would shift the next draw. Restore \
-                 only at a clean boundary (step once more first)."
-                    .to_string(),
-            ));
-        }
         // 1. Validate, committing nothing. Rebuild the clock (validates the cfg)
         //    and validate the entropy blob into a CLONE (its `restore_state`
         //    rejects a malformed/untrusted blob without touching the live stream).
@@ -1566,8 +1399,8 @@ where
     /// inherits the parent's epoch and continues in lockstep with it.
     ///
     /// # Errors
-    /// [`VmmError::ContractViolation`] at an RNG mid-exit boundary, a non-synchronized
-    /// point, or if the live vCPU carries the PAE-only `kvm_sregs2` flags/pdptrs or
+    /// [`VmmError::ContractViolation`] while an SDK stop is pending,
+    /// or if the live vCPU carries the PAE-only `kvm_sregs2` flags/pdptrs or
     /// `debugregs.flags` (all zero for the 64-bit determinism guest — see
     /// [`crate::snapshot::unrepresentable_state`]); [`VmmError::Backend`] if reading the
     /// live vCPU state fails (a snapshot **fails closed** rather than sealing a zeroed or
@@ -1577,19 +1410,8 @@ where
         // snapshot-point surface can never advertise a point this rejects); when
         // it fails, report WHICH precondition failed for a precise diagnostic.
         if !self.can_snapshot() {
-            if self.rng_completion_staged {
-                return Err(VmmError::ContractViolation(
-                    "save_vm_state at an RNG mid-exit boundary: the seeded RDRAND/RDSEED draw \
-                     advanced the stream but its completion is staged, not committed — snapshot \
-                     only at a clean boundary (step once more first)."
-                        .to_string(),
-                ));
-            }
             return Err(VmmError::ContractViolation(
-                "save_vm_state at a non-synchronized point: the exact V-time (which a restored TSC \
-                 resumes from) is known only at a V-time intercept (RDTSC/RDTSCP/RDRAND/RDSEED or a \
-                 TSC MSR). Snapshot at a V-time-intercept boundary."
-                    .to_string(),
+                "save_vm_state while an SDK stop is pending".to_string(),
             ));
         }
         // Read the vCPU **fallibly**: a `Backend::save` failure must abort the
@@ -1782,7 +1604,6 @@ where
         // restored backend state.
         self.terminal = None;
         self.saved_state = None;
-        self.rng_completion_staged = false;
         // The restored backend is fresh (the next run re-executes from the restored
         // RIP) — no completion is pending.
         self.completion_staged = false;
@@ -1863,7 +1684,6 @@ where
         }
         // Clear the pvclock registration-handshake flag before entry. Only a
         // successfully serviced architecture time read sets it again.
-        self.tsc_read_intercept = false;
         // Advance the V-time LAPIC timer + the serial COM1 line and hand any
         // now-deliverable vector to the backend for injection at the next safe
         // VM-entry (Linux path only; a no-op when the xAPIC is unwired, so
@@ -1903,7 +1723,6 @@ where
         } else {
             false
         };
-        self.rng_completion_staged = false;
         self.completion_staged = exit.stages_completion();
         // Complete delivery of any vector the backend just **accepted** (issued
         // KVM_INTERRUPT for) — *after* the entry, *before* dispatching the exit, so a
@@ -2018,7 +1837,7 @@ where
     /// it twice is identical.
     ///
     /// The `VTIM` chunk is present **only** when the determinism path is wired
-    /// (`PatchedKvmBackend`). It captures the state that governs future RDTSC/RNG
+    /// (virtual-time wiring). It captures the state that governs future RDTSC/RNG
     /// output — the V-time clock rate (`ratio`/`guest_hz`/`guest_base`/`tsc_adjust`),
     /// the effective V-time (`vns_base` + work folded into one canonical field), and the entropy
     /// stream position (seed + draws so far) — so two states with identical RAM/regs
@@ -2334,10 +2153,17 @@ where
     /// two runs that emit different reported values digest differently even with
     /// byte-identical serial output.
     pub fn observable_digest(&self) -> [u8; 32] {
-        crate::corpus::observable_digest_of(
-            &self.report_stream,
-            <B::A as Vendor>::serial_capture(&self.devices),
-        )
+        let report_stream = &self.report_stream;
+        let serial = <B::A as Vendor>::serial_capture(&self.devices);
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(b"OBSV");
+        hasher.update((report_stream.len() as u64).to_le_bytes());
+        for v in report_stream {
+            hasher.update(v.to_le_bytes());
+        }
+        hasher.update((serial.len() as u64).to_le_bytes());
+        hasher.update(serial);
+        hasher.finalize().into()
     }
 
     // --- dispatch helpers --------------------------------------------------
@@ -3742,32 +3568,7 @@ where
         Ok((next, selected))
     }
 
-    /// The V-time (ns) the xAPIC sees — for the Current-Count register read and for
-    /// the LAPIC timer's expiry. `0` when V-time is unwired (M1/M2 never touch the
-    /// APIC page, so this is moot there).
-    ///
-    /// The work value it reads differs by backend capability, **not** backend
-    /// identity (R-Backend allows querying [`Backend::capabilities`]):
-    ///
-    /// - **Determinism-complete backend** (`deterministic_tsc`, the patched KVM /
-    ///   the mock): the **deterministic last-intercept anchor** — the same value the
-    ///   `VTIM`/`LAPC` hash uses. The patched backend traps every `RDTSC`, so the
-    ///   anchor advances densely *and* deterministically, and two same-seed boots
-    ///   fire the timer at bit-identical V-times (Phase B.2 / task-30 Phase C).
-    /// - **Stock backend** (no `RDTSC` trap): the anchor advances only at the rare
-    ///   `RDMSR(IA32_TSC)` intercepts and would freeze post-boot, so the periodic
-    ///   tick would never advance jiffies and the userspace serial-TX drain would
-    ///   stall. Read the **live** virtual-time clock instead — it advances with guest
-    ///   branches, so the timer keeps firing and the boot reaches `GUEST_READY`.
-    ///   Stock claims no determinism (Phase B.1 only *reaches* the milestone), so a
-    ///   host-noisy live read is sound here. The live read at this exit boundary is
-    ///   the work retired up to the faulting instruction (no guest code runs between
-    ///   the exit and this call).
-    ///
-    /// A failed virtual-time-clock read is **fail-closed** ([`VmmError::Work`]) — the same
-    /// posture as the TSC/RNG completions — rather than silently reusing a stale
-    /// `assigned_clock` (which would freeze or shift the timer, a determinism
-    /// hazard) or fabricating a clock value.
+    /// Assigned virtual time for LAPIC reads and timer expiry, or zero before wiring.
     pub(crate) fn now_vns(&self) -> Result<u64, VmmError> {
         match &self.vtime {
             Some(vt) => Ok(vt.clock.vns()),
@@ -4446,7 +4247,7 @@ mod tests {
     fn deferred_checkpoint_hash_is_byte_identical_and_cannot_overwrite() {
         let exits = || {
             (0..256)
-                .map(|_| Exit::Arch(X86Exit::Rdtsc))
+                .map(|_| Exit::Arch(X86Exit::Rdmsr { index: 0x10 }))
                 .collect::<Vec<_>>()
         };
         let mut synchronous = vtime_vmm(exits(), 7);
@@ -4492,51 +4293,6 @@ mod tests {
                 .checkpoint_virtual_time_trace_at(254, expected)
                 .is_err()
         );
-    }
-
-    #[test]
-    fn trace_and_snapshot_boundary_guards_fail_closed_independently() {
-        assert!(!synchronous_checkpoint_due(false, false));
-        assert!(!synchronous_checkpoint_due(false, true));
-        assert!(synchronous_checkpoint_due(true, false));
-        assert!(!synchronous_checkpoint_due(true, true));
-        let mut unwired = Vmm::new(configured_mock(Vec::new()), GuestRam::new(0x1000).unwrap());
-        assert!(unwired.checkpoint_virtual_time_trace().is_err());
-        assert_eq!(unwired.current_vns(), None);
-        unwired.set_idle_wake_vns(Some(123));
-        assert_eq!(unwired.idle_wake_vns, Some(123));
-        unwired.set_idle_wake_vns(None);
-        assert_eq!(unwired.idle_wake_vns, None);
-        unwired.rng_completion_staged = true;
-        assert!(!unwired.can_snapshot());
-
-        // A substrate-private raw record alone is enough to make enabling
-        // deferred hashing too late; it need not also have a portable event.
-        let mut raw_only = vtime_vmm(Vec::new(), 1);
-        raw_only
-            .virtual_time_trace
-            .as_mut()
-            .unwrap()
-            .record_raw_only(vmm_backend::ExitReason::Sysreg, "raw-only".to_string())
-            .unwrap();
-        assert!(raw_only.defer_virtual_time_checkpoint_hashes().is_err());
-        assert_eq!(raw_only.current_vns(), Some(0));
-
-        // Deferral during a portable event requires an active schedule. The
-        // wrapper must propagate that trace-level contract failure.
-        let mut no_schedule = vtime_vmm(Vec::new(), 1);
-        no_schedule
-            .virtual_time_trace
-            .as_mut()
-            .unwrap()
-            .begin(
-                vmm_backend::ExitReason::Rdtsc,
-                "rdtsc".to_string(),
-                NormalizedEventClass::TimeRead,
-                Vec::new(),
-            )
-            .unwrap();
-        assert!(no_schedule.trace_arm_clockevent_defer().is_err());
     }
 
     #[test]
@@ -4750,17 +4506,6 @@ mod tests {
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         vmm.doorbell_exits = 7;
         assert_eq!(vmm.doorbell_exits(), 7);
-    }
-
-    /// The seeded draw the `Entropy` hypercall service produces for `width` bytes,
-    /// recomputed independently so the test pins the *value*, not just the path.
-    fn expected_draw(seed: u64, width: u8) -> u64 {
-        let mut e = SeededEntropy::new(seed);
-        let mut buf = [0u8; 8];
-        let n = usize::from(width);
-        let (st, got) = e.handle(1, &(n as u32).to_le_bytes(), &mut buf[..n]);
-        assert_eq!((st, got), (Status::Ok, n));
-        u64::from_le_bytes(buf)
     }
 
     /// The hypercall doorbell captures an Event emission with its deterministic
@@ -5711,81 +5456,6 @@ mod tests {
         );
     }
 
-    /// `entropy_fill` and RDRAND draw from **one** `SeededEntropy` stream (round-5
-    /// P2): interleaving an `entropy_fill(8)` with a guest `RDRAND` yields the SAME
-    /// two words as two plain `RDRAND`s from the same seed — i.e. `entropy_fill`
-    /// takes stream word 1 and `RDRAND` takes word 2, never a duplicate word 1 from
-    /// a second stream.
-    #[test]
-    fn entropy_fill_and_rdrand_share_one_stream() {
-        // A V-time-wired VM with RAM large enough for the doorbell pages (0xE000).
-        let mk = |script: Vec<Exit<X86>>| {
-            let mut vmm = Vmm::new(configured_mock(script), GuestRam::new(TEST_RAM).unwrap());
-            vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 0x777).unwrap());
-            vmm.enable_sdk(nominal_env(0x777), &ServiceConfig::default());
-            vmm
-        };
-        // One `entropy_fill(8)` via the doorbell → 8 bytes (one stream word).
-        let entropy_fill = |vmm: &mut Vmm<MockBackend>| -> Vec<u8> {
-            let mut buf = [0u8; HC_PAGE];
-            let len = hypercall_proto::encode_request(
-                ServiceId::Entropy,
-                1,
-                1,
-                &8u32.to_le_bytes(),
-                &mut buf,
-            )
-            .unwrap();
-            vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + len].copy_from_slice(&buf[..len]);
-            vmm.dispatch_out(DOORBELL_PORT, 4, len as u32).unwrap();
-            let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
-            let (hdr, pl) = decode(&page).expect("a valid response frame");
-            assert_eq!(
-                hdr.status,
-                Status::Ok as u16,
-                "entropy is routed via the stream"
-            );
-            pl.to_vec()
-        };
-        let reads = |vmm: &Vmm<MockBackend>| -> Vec<u64> {
-            vmm.backend
-                .completions()
-                .iter()
-                .map(|c| match c {
-                    Completion::Read(v) => *v,
-                    other => panic!("expected a Read completion, got {other:?}"),
-                })
-                .collect()
-        };
-
-        // A: entropy_fill (stream word 1), then a guest RDRAND (word 2).
-        let mut a = mk(vec![
-            Exit::Arch(X86Exit::Rdrand { width: 8 }),
-            Exit::Common(CommonExit::Idle),
-        ]);
-        let word1 = u64::from_le_bytes(entropy_fill(&mut a).try_into().unwrap());
-        a.run().unwrap();
-        let a_stream = vec![word1, reads(&a)[0]];
-
-        // B (same seed): two plain RDRANDs — the pure stream, words 1 then 2.
-        let mut b = mk(vec![
-            Exit::Arch(X86Exit::Rdrand { width: 8 }),
-            Exit::Arch(X86Exit::Rdrand { width: 8 }),
-            Exit::Common(CommonExit::Idle),
-        ]);
-        b.run().unwrap();
-
-        assert_eq!(
-            a_stream,
-            reads(&b),
-            "entropy_fill + RDRAND is ONE stream (word 1 then word 2)"
-        );
-        assert_ne!(
-            a_stream[0], a_stream[1],
-            "consecutive words differ — not two streams from one seed minting a duplicate"
-        );
-    }
-
     /// The doorbell routes the **Entropy** service deterministically for a given
     /// seed (finding-4 + round-5 P2): equal seeds ⇒ equal entropy.
     #[test]
@@ -5860,7 +5530,10 @@ mod tests {
     fn rdtsc_completes_with_vtime_tsc_not_host() {
         // work = 10 → vns = 10 (ratio 1:1) → tsc = floor(10 * 2GHz/1e9) = 20.
         let mut vmm = vtime_vmm(
-            vec![Exit::Arch(X86Exit::Rdtsc), Exit::Common(CommonExit::Idle)],
+            vec![
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+                Exit::Common(CommonExit::Idle),
+            ],
             1,
         );
         assert!(vmm.vtime_wired(), "wire_vtime reports the path as wired");
@@ -5874,140 +5547,14 @@ mod tests {
         // RDTSCP is resolved identically above the trait (the backend supplies
         // ECX=IA32_TSC_AUX below it); the VMM still completes the V-time value.
         let mut vmm = vtime_vmm(
-            vec![Exit::Arch(X86Exit::Rdtscp), Exit::Common(CommonExit::Idle)],
+            vec![
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+                Exit::Common(CommonExit::Idle),
+            ],
             1,
         );
         vmm.run().expect("run");
         assert_eq!(vmm.backend.completions(), &[Completion::Read(2)]);
-    }
-
-    #[test]
-    fn rdrand_rdseed_draw_from_the_seeded_stream() {
-        const SEED: u64 = 0xABCD_1234;
-        let mut vmm = vtime_vmm(
-            vec![
-                Exit::Arch(X86Exit::Rdrand { width: 8 }),
-                Exit::Arch(X86Exit::Rdseed { width: 4 }),
-                Exit::Common(CommonExit::Idle),
-            ],
-            SEED,
-        );
-        vmm.run().expect("run");
-        // The two draws are consecutive words of the same xorshift64* stream the
-        // Entropy hypercall uses — recomputed here from a fresh SeededEntropy.
-        let mut e = SeededEntropy::new(SEED);
-        let mut b8 = [0u8; 8];
-        assert_eq!(e.handle(1, &8u32.to_le_bytes(), &mut b8), (Status::Ok, 8));
-        let mut b4 = [0u8; 8];
-        assert_eq!(
-            e.handle(1, &4u32.to_le_bytes(), &mut b4[..4]),
-            (Status::Ok, 4)
-        );
-        assert_eq!(
-            vmm.backend.completions(),
-            &[
-                Completion::Read(u64::from_le_bytes(b8)),
-                Completion::Read(u64::from_le_bytes(b4)),
-            ]
-        );
-    }
-
-    #[test]
-    fn unwired_rdtsc_and_rdrand_fail_closed() {
-        // Stock-style Vmm (no wire_vtime): the four exits must NOT be serviced
-        // with a host value — they are loud ContractViolations.
-        let mut tsc = Vmm::new(
-            configured_mock(vec![Exit::Arch(X86Exit::Rdtsc)]),
-            GuestRam::new(0x1000).unwrap(),
-        );
-        assert!(matches!(tsc.step(), Err(VmmError::ContractViolation(_))));
-        let mut rng = Vmm::new(
-            configured_mock(vec![Exit::Arch(X86Exit::Rdrand { width: 8 })]),
-            GuestRam::new(0x1000).unwrap(),
-        );
-        assert!(matches!(rng.step(), Err(VmmError::ContractViolation(_))));
-    }
-
-    #[test]
-    fn snapshot_restore_continues_the_clock_and_rng_exactly() {
-        const SEED: u64 = 0x5151_5151;
-        // A: draw one RNG word, then step to a CLEAN boundary before snapshotting.
-        // The RDRAND step stages an RNG completion (unsafe boundary); the following
-        // RDTSC step's re-entry commits it, so `save_vtime` is then valid. (Without
-        // the trailing RDTSC, `save_vtime` would fail closed — see
-        // `save_vtime_fails_closed_at_rng_mid_exit_boundary`.)
-        let mut a = vtime_vmm(
-            vec![
-                Exit::Arch(X86Exit::Rdrand { width: 8 }),
-                Exit::Arch(X86Exit::Rdtsc),
-            ],
-            SEED,
-        );
-        assert_eq!(a.step().unwrap(), Step::Continued); // RDRAND → first word (staged)
-        assert_eq!(a.step().unwrap(), Step::Continued); // RDTSC → commits RDRAND; tsc=100
-        let snap = a
-            .save_vtime()
-            .expect("save at clean boundary")
-            .expect("wired");
-        assert_eq!(snap.vns, 10001); // RNG control exit (10000) + time read (1)
-
-        // Restore into B whose counter sits at a NON-zero 99: restore_vtime must
-        // RESET it to 0 (else RDTSC would read work=99 → tsc=298, not 100), set
-        // vns_base=50, and resume the RNG stream at the *next* word — not the
-        // first. (B starting non-zero is what makes the counter-reset observable.)
-        let mut b = vtime_vmm(
-            vec![
-                Exit::Arch(X86Exit::Rdtsc),
-                Exit::Arch(X86Exit::Rdrand { width: 8 }),
-            ],
-            SEED, // a different seed would be overwritten by restore anyway
-        );
-        b.restore_vtime(&snap).expect("restore");
-        b.step().unwrap(); // RDTSC at reset work=0 → tsc(0) = 2*vns_base = 100
-        b.step().unwrap(); // RDRAND → the word AFTER A's first draw
-
-        // Clock continuity: B's first post-restore TSC equals A's TSC at the
-        // snapshot point (100), even though B's counter restarted at 0.
-        assert_eq!(b.backend.completions()[0], Completion::Read(20004));
-        // RNG continuity: A drew the first word; B (restored) draws the *second* —
-        // the stream resumed, it was not replayed.
-        let mut ref_stream = SeededEntropy::new(SEED);
-        let mut w0 = [0u8; 8];
-        let mut w1 = [0u8; 8];
-        ref_stream.handle(1, &8u32.to_le_bytes(), &mut w0);
-        ref_stream.handle(1, &8u32.to_le_bytes(), &mut w1);
-        assert_eq!(
-            a.backend.completions()[0],
-            Completion::Read(u64::from_le_bytes(w0))
-        );
-        assert_eq!(
-            b.backend.completions()[1],
-            Completion::Read(u64::from_le_bytes(w1))
-        );
-    }
-
-    /// Reviewer round-2 fix (1): `save_vtime` fails closed at an RNG mid-exit
-    /// boundary (the seeded draw advanced but its completion is only staged), and
-    /// becomes valid again after the next step commits it.
-    #[test]
-    fn save_vtime_fails_closed_at_rng_mid_exit_boundary() {
-        let mut v = vtime_vmm(
-            vec![
-                Exit::Arch(X86Exit::Rdrand { width: 8 }),
-                Exit::Arch(X86Exit::Rdtsc),
-            ],
-            0xABCD,
-        );
-        v.step().unwrap(); // RDRAND → RNG completion staged (unsafe boundary)
-        assert!(
-            matches!(v.save_vtime(), Err(VmmError::ContractViolation(_))),
-            "save_vtime must refuse while an RNG completion is staged"
-        );
-        v.step().unwrap(); // RDTSC → re-entry commits the RDRAND; boundary now clean
-        assert!(
-            v.save_vtime().is_ok(),
-            "save_vtime must succeed once the RNG completion is committed"
-        );
     }
 
     #[test]
@@ -6081,42 +5628,6 @@ mod tests {
         assert_eq!(v.effective_vns(), Some(snap.vns));
     }
 
-    /// Task-27 item 3 (revised per box-verification cross-model finding 2):
-    /// `restore_vtime` is **symmetric with `save_vtime`** — it fails closed at an RNG
-    /// mid-exit boundary (rewinding entropy while a backend RDRAND/RDSEED completion is
-    /// staged would shift the next draw), and does **not** clear the flag (that would
-    /// falsely declare the backend clean). At a **clean** boundary a restore-then-save
-    /// succeeds (the flag is already clear — item 3's actual requirement); the flag is
-    /// cleared only by the next `step`'s commit.
-    #[test]
-    fn restore_vtime_fails_closed_at_rng_mid_exit_boundary() {
-        const SEED: u64 = 0x99;
-        let mut v = vtime_vmm(
-            vec![
-                Exit::Arch(X86Exit::Rdrand { width: 8 }),
-                Exit::Arch(X86Exit::Rdtsc),
-            ],
-            SEED,
-        );
-        // Clean snapshot first (nothing stepped yet → boundary is clean).
-        let snap = v.save_vtime().expect("clean save").expect("wired");
-        // Step the RDRAND → an RNG completion is staged (the unsafe boundary).
-        v.step().unwrap();
-        assert!(
-            matches!(v.restore_vtime(&snap), Err(VmmError::ContractViolation(_))),
-            "restore_vtime must fail closed while an RNG completion is staged"
-        );
-        // The next step's re-entry commits the RDRAND → boundary clean again.
-        v.step().unwrap(); // RDTSC
-        // At a clean boundary restore succeeds, and a restore-then-save succeeds
-        // (item 3: no spurious ContractViolation at a clean boundary).
-        v.restore_vtime(&snap).expect("restore at clean boundary");
-        assert!(
-            v.save_vtime().is_ok(),
-            "restore-then-save at a clean boundary must succeed"
-        );
-    }
-
     /// Task-27 item 1: a guest reading `IA32_TSC` via `RDMSR(0x10)` gets the **same**
     /// V-time value the RDTSC instruction would at the same work — both flow through
     /// `guest_clock` (`VClock::guest_ticks` + the default-0 `IA32_TSC_ADJUST`) — and it is
@@ -6136,7 +5647,10 @@ mod tests {
             v
         };
         let mut insn = vtime_vmm(
-            vec![Exit::Arch(X86Exit::Rdtsc), Exit::Common(CommonExit::Idle)],
+            vec![
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+                Exit::Common(CommonExit::Idle),
+            ],
             1,
         );
         insn.run().unwrap();
@@ -6257,23 +5771,6 @@ mod tests {
                 GuestRam::new(0x1000).unwrap(),
             );
             assert!(matches!(wr.step(), Err(VmmError::ContractViolation(_))));
-        }
-    }
-
-    #[test]
-    fn rng_width_only_accepts_architectural_2_4_8() {
-        let mut w = VtimeWiring::new_virtual_time(contract_vclock_config(), 1).expect("wiring");
-        // Only the 16/32/64-bit forms are valid; everything else fails closed —
-        // including the in-`1..=8`-but-non-architectural widths 1/3/5/6/7 (the
-        // decoded exit width is untrusted).
-        for bad in [0u8, 1, 3, 5, 6, 7, 9, 16, 255] {
-            assert!(
-                matches!(w.draw_rng(bad), Err(VmmError::ContractViolation(_))),
-                "width {bad} must fail closed"
-            );
-        }
-        for good in [2u8, 4, 8] {
-            assert!(w.draw_rng(good).is_ok(), "width {good} must be accepted");
         }
     }
 
@@ -6606,24 +6103,6 @@ mod tests {
         assert_eq!(v.state_components(), v3.state_components());
     }
 
-    #[test]
-    fn expected_draw_matches_completion_for_each_width() {
-        for width in [2u8, 4, 8] {
-            let mut vmm = vtime_vmm(
-                vec![
-                    Exit::Arch(X86Exit::Rdrand { width }),
-                    Exit::Common(CommonExit::Idle),
-                ],
-                0xFEED,
-            );
-            vmm.run().unwrap();
-            assert_eq!(
-                vmm.backend.completions(),
-                &[Completion::Read(expected_draw(0xFEED, width))]
-            );
-        }
-    }
-
     /// Task-27 item 2, the fix itself: `state_hash`/`state_blob` must **not** take a
     /// live read of the virtual-time clock. The OLD `encode_vtime` did, at hash time — and
     /// that terminal read carries the non-deterministic post-last-intercept exit-path
@@ -6649,7 +6128,7 @@ mod tests {
         // Fresh: vns_base=0, step one RDTSC reading work=E ⇒ assigned_clock=E,
         // effective V-time = snapshot_vns(E) = E.
         let mut fresh = Vmm::new(
-            configured_mock(vec![Exit::Arch(X86Exit::Rdtsc)]),
+            configured_mock(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })]),
             GuestRam::new(0x1000).unwrap(),
         );
         let mut cfg = contract_vclock_config();
@@ -6674,30 +6153,6 @@ mod tests {
             fresh.state_hash().unwrap(),
             restored.state_hash().unwrap(),
             "a restored VM and a fresh VM at the same effective V-time must hash identically"
-        );
-    }
-
-    /// Task-27 item 2 (box-verification cross-model finding): an RNG exit
-    /// (RDRAND/RDSEED) is a V-time intercept and MUST advance `assigned_clock`.
-    /// Two states with **different** pre-RNG-exit exit counts but an **identical**
-    /// seeded draw must hash **DIFFERENTLY** — otherwise they collide in `VTIM` (a
-    /// false determinism MATCH) and then diverge on the next TSC read. Without the fix
-    /// both keep the stale anchor (`0` here, no prior TSC) and hash the same.
-    #[test]
-    fn rng_exit_advances_the_vtim_work_anchor() {
-        let after_rng_at_vns = |vns: u64| {
-            let mut v = vtime_vmm(
-                vec![Exit::Arch(X86Exit::Rdrand { width: 8 })],
-                0x7777, // same seed ⇒ identical draw in both
-            );
-            v.vtime.as_mut().unwrap().advance_virtual_time(vns);
-            v.step().unwrap(); // RDRAND draws AND records assigned_clock = work
-            v
-        };
-        assert_ne!(
-            after_rng_at_vns(100).state_hash().unwrap(),
-            after_rng_at_vns(200).state_hash().unwrap(),
-            "different pre-RNG-exit work ⇒ different VTIM, despite an identical seeded draw"
         );
     }
 
@@ -6910,7 +6365,7 @@ mod tests {
                     size: 4,
                     write: Some(0xFFFF_FFFF),
                 }), // TMICT: arm at now=0
-                Exit::Arch(X86Exit::Rdtsc), // V-time intercept → assigned_clock = W
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }), // V-time intercept → assigned_clock = W
                 Exit::Common(CommonExit::Mmio {
                     gpa: Gpa(0xFEE0_0390),
                     size: 4,
@@ -6974,10 +6429,7 @@ mod tests {
         let mut m = MockBackend::with_capabilities(vmm_backend::Capabilities {
             name: "mock-stock",
             deterministic_rng: false,
-            arch: X86Caps {
-                deterministic_tsc: false,
-                enforces_tsc_deadline_msr: false,
-            },
+            arch: X86Caps,
         });
         m.extend_exits(exits);
         m.set_policy(&X86Policy {
@@ -7015,7 +6467,7 @@ mod tests {
         // service (fired, accepted, IRR→ISR completed).
         let mut exits = arm_timer_exits(1);
         exits.push(read_mmio(isr_gpa(0x40))); // A: anchor still 0 → not delivered
-        exits.push(Exit::Arch(X86Exit::Rdtsc)); // V-time intercept → assigned_clock = W
+        exits.push(Exit::Arch(X86Exit::Rdmsr { index: 0x10 })); // V-time intercept → assigned_clock = W
         exits.push(read_mmio(isr_gpa(0x40))); // B: anchor = W → delivered
         exits.push(Exit::Common(CommonExit::Idle));
         let mut v = lapic_vmm(configured_mock(exits));
@@ -7195,7 +6647,7 @@ mod tests {
         let mut exits = arm_timer_exits(1);
         exits.push(UNMASK_IRQ4);
         exits.push(ENABLE_THRI);
-        exits.push(Exit::Arch(X86Exit::Rdtsc)); // advance the anchor → the timer fires into IRR
+        exits.push(Exit::Arch(X86Exit::Rdmsr { index: 0x10 })); // advance the anchor → the timer fires into IRR
         exits.push(Exit::Common(CommonExit::Idle));
         let mut mock = configured_mock(exits);
         mock.set_defer_accept(true);
@@ -7656,8 +7108,12 @@ mod tests {
                 size: 1,
                 write: Some(u32::from(b'H')),
             }), // serial 'H'
-            Exit::Arch(X86Exit::Rdrand { width: 8 }), // advance the entropy stream
-            Exit::Arch(X86Exit::Rdtsc), // V-time intercept → clean, synchronized boundary
+            Exit::Arch(X86Exit::Io {
+                port: 0x3f8,
+                size: 1,
+                write: Some(b'X'.into()),
+            }), // mutate serial output
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }), // V-time intercept → clean, synchronized boundary
         ]
     }
 
@@ -7676,7 +7132,7 @@ mod tests {
         let bytes = s.encode().expect("encodable (ratio_den == 1)");
         assert_eq!(vm_state::VmState::decode(&bytes).unwrap(), s);
         // The captured surface is non-trivial: regs, the V-time block, entropy
-        // position, and the device blob all reflect the run.
+        // state, and the device blob all reflect the run.
         assert_eq!(s.regs.rax, 0x1111);
         assert_eq!(s.vtime.snapshot_vns, 40002);
         assert_eq!(
@@ -7702,50 +7158,6 @@ mod tests {
         b.restore_vm_state(&s).expect("restore");
         let s2 = b.save_vm_state().expect("re-save after restore");
         assert_eq!(s, s2, "restore-then-save must reproduce the snapshot blob");
-    }
-
-    #[test]
-    fn restore_vm_state_resumes_tsc_and_forked_entropy_exactly() {
-        // After a restore the V-time clock continues from the snapshot's vns and the
-        // entropy stream resumes at its captured position (not replayed) — and a
-        // counter sitting at a NON-zero value is reset to 0 (else the TSC would read
-        // high). B reads the SECOND stream word (A drew the first) and a TSC that
-        // continues from the snapshot point.
-        const SEED: u64 = 0x5151_5151;
-        let mut a = full_vmm(VcpuState::default(), mutate_exits(), 500, SEED);
-        step_n(&mut a, 6);
-        let s = a.save_vm_state().unwrap();
-
-        // B's counter starts at 700 (non-zero) so the reset is observable.
-        let mut b = full_vmm(
-            VcpuState::default(),
-            vec![
-                Exit::Arch(X86Exit::Rdtsc),
-                Exit::Arch(X86Exit::Rdrand { width: 8 }),
-            ],
-            700,
-            0xDEAD, // overwritten by the restored stream
-        );
-        b.restore_vm_state(&s).unwrap();
-        b.step().unwrap(); // RDTSC at reset work=0 → visible = 2*vns_base + tsc_adjust
-        b.step().unwrap(); // RDRAND → the word AFTER A's first draw
-
-        // The RDTSC exit advances one V-ns beyond the restored snapshot before
-        // reading the visible clock; IA32_TSC_ADJUST is restored too.
-        assert_eq!(
-            b.backend.completions()[0],
-            Completion::Read(2 * (s.vtime.snapshot_vns + 1) + 0x1234)
-        );
-        let mut ref_stream = SeededEntropy::new(SEED);
-        let mut w0 = [0u8; 8];
-        let mut w1 = [0u8; 8];
-        ref_stream.handle(1, &8u32.to_le_bytes(), &mut w0);
-        ref_stream.handle(1, &8u32.to_le_bytes(), &mut w1);
-        assert_eq!(
-            b.backend.completions()[1],
-            Completion::Read(u64::from_le_bytes(w1)),
-            "restored entropy resumes at the next word (not replayed)"
-        );
     }
 
     #[test]
@@ -7784,38 +7196,8 @@ mod tests {
     }
 
     #[test]
-    fn branch_restores_then_forks_the_entropy_stream() {
-        // branch(snap, seed') = restore + reseed: memory + V-time continue from the
-        // snapshot, but the entropy stream forks to a divergent sequence.
-        const PARENT_SEED: u64 = 0x1111;
-        const BRANCH_SEED: u64 = 0x2222;
-        let mut a = full_vmm(VcpuState::default(), mutate_exits(), 500, PARENT_SEED);
-        step_n(&mut a, 6);
-        let s = a.save_vm_state().unwrap();
-
-        let mut b = full_vmm(
-            VcpuState::default(),
-            vec![Exit::Arch(X86Exit::Rdrand { width: 8 })],
-            0,
-            0xDEAD,
-        );
-        b.restore_vm_state(&s).unwrap();
-        b.reseed_entropy(BRANCH_SEED).unwrap();
-        b.step().unwrap(); // RDRAND draws from the BRANCH seed, not the parent's
-
-        let mut branch_stream = SeededEntropy::new(BRANCH_SEED);
-        let mut w = [0u8; 8];
-        branch_stream.handle(1, &8u32.to_le_bytes(), &mut w);
-        assert_eq!(
-            b.backend.completions()[0],
-            Completion::Read(u64::from_le_bytes(w)),
-            "the branch draws from the reseeded stream"
-        );
-    }
-
-    #[test]
     fn restore_trace_failure_is_classified_after_commit() {
-        let mut source = vtime_vmm(vec![Exit::Arch(X86Exit::Rdtsc)], 7);
+        let mut source = vtime_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], 7);
         source.step().unwrap();
         let snapshot = source.save_vm_state().unwrap();
 
@@ -7825,7 +7207,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .begin(
-                ExitReason::Rdtsc,
+                ExitReason::Rdmsr,
                 "planted active event".to_owned(),
                 NormalizedEventClass::TimeRead,
                 Vec::new(),
@@ -7969,7 +7351,7 @@ mod tests {
         // block; restoring it into a VM with no V-time wired is refused (wiring must
         // match the snapshot source). Both the guest_hz and the snapshot_vns disjuncts
         // are pinned individually.
-        let mut a = vtime_vmm(vec![Exit::Arch(X86Exit::Rdtsc)], 1);
+        let mut a = vtime_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], 1);
         a.step().unwrap();
         let s = a.save_vm_state().unwrap();
         assert!(
@@ -8126,7 +7508,7 @@ mod tests {
         // A target VM that just serviced an RDTSC (non-RNG) has a staged completion.
         let mut tgt = full_vmm(
             VcpuState::default(),
-            vec![Exit::Arch(X86Exit::Rdtsc)],
+            vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })],
             10,
             1,
         );
@@ -8135,29 +7517,6 @@ mod tests {
             tgt.restore_vm_state(&snap),
             Err(VmmError::ContractViolation(_))
         ));
-    }
-
-    #[test]
-    fn retiring_a_completion_clears_displaced_vmm_latches_before_restore() {
-        let mut src = full_vmm(VcpuState::default(), mutate_exits(), 500, 1);
-        step_n(&mut src, 6);
-        let snap = src.save_vm_state().unwrap();
-
-        let mut tgt = full_vmm(
-            VcpuState::default(),
-            vec![Exit::Arch(X86Exit::Rdtsc)],
-            10,
-            1,
-        );
-        tgt.step().unwrap();
-        tgt.sdk_snapshot_reentry_required = true;
-        assert!(tgt.completion_staged);
-
-        tgt.retire_pending_completion().unwrap();
-        assert!(!tgt.completion_staged);
-        assert!(!tgt.rng_completion_staged);
-        assert!(!tgt.sdk_snapshot_reentry_required);
-        tgt.restore_vm_state(&snap).unwrap();
     }
 
     #[test]
@@ -8515,7 +7874,7 @@ mod tests {
         // `lapic_pending || serial` arbitration.
         // Quiescent: a wired LAPIC with no timer programmed → nothing pending in the IRR.
         let mut q = lapic_vmm(configured_mock(vec![
-            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
             Exit::Common(CommonExit::Idle),
         ]));
         q.step().unwrap();
@@ -8528,7 +7887,7 @@ mod tests {
         // re-derives 0x40 without moving IRR→ISR.
         let mut exits = arm_timer_exits(1);
         exits.push(read_mmio(isr_gpa(0x20)));
-        exits.push(Exit::Arch(X86Exit::Rdtsc));
+        exits.push(Exit::Arch(X86Exit::Rdmsr { index: 0x10 }));
         let mut mock = configured_mock(exits);
         mock.set_defer_accept(true);
         let mut a = lapic_vmm(mock);
@@ -8554,7 +7913,7 @@ mod tests {
         // the in-flight injection is reproduced, not dropped.
         let mut exits = arm_timer_exits(1);
         exits.push(read_mmio(isr_gpa(0x20)));
-        exits.push(Exit::Arch(X86Exit::Rdtsc));
+        exits.push(Exit::Arch(X86Exit::Rdmsr { index: 0x10 }));
         let mut mock = configured_mock(exits);
         mock.set_defer_accept(true); // hold 0x40 un-accepted → it stays pending in IRR
         let mut a = lapic_vmm(mock);
@@ -8578,7 +7937,7 @@ mod tests {
         // Restore into a fresh, equivalently-wired VM and take one step: its first
         // service must re-derive the SAME pending vector from the restored IRR.
         let mut bmock = configured_mock(vec![
-            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
             Exit::Common(CommonExit::Idle),
         ]);
         bmock.set_defer_accept(true);
@@ -8610,7 +7969,7 @@ mod tests {
                     size: 1,
                     write: Some(0x07),
                 }), // offset+1 under DLAB ⇒ DLM = 7
-                Exit::Arch(X86Exit::Rdtsc), // re-synchronize for the save
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }), // re-synchronize for the save
             ],
             0,
             1,
@@ -8885,67 +8244,6 @@ mod tests {
         assert_eq!(vmm.pvclock_registration(), None);
     }
 
-    /// The pure-opt-in gate, host side: an offered-but-vtime-unwired VM and a
-    /// backend without a deterministic virtual-time clock both answer
-    /// `UnknownService` — the probing guest keeps its trap-backstopped paths.
-    /// The pure-opt-in gate, guest side (the "page off = byte-identical" half
-    /// of "Done means"): a VM that OFFERS the page but whose guest never
-    /// registers is **guest-observably identical** to an un-offered VM over
-    /// the same script — identical RAM, serial, and observable digest; no
-    /// stamp is ever written. The `state_blob`s differ by EXACTLY the `PVCK`
-    /// channel-configuration chunk (cross-model r1 P1: the offer governs future
-    /// execution, so it is state identity — the SDK fault-policy
-    /// precedent), and an un-offered blob carries no chunk at all (its bytes
-    /// are unchanged from before the feature existed).
-    #[test]
-    fn pvclock_unregistered_guest_is_guest_identical_and_differs_only_in_pvck() {
-        let script = || {
-            vec![
-                Exit::Arch(X86Exit::Rdtsc),
-                Exit::Arch(X86Exit::Rdrand { width: 8 }),
-                Exit::Arch(X86Exit::Rdtsc),
-                Exit::Common(CommonExit::Shutdown),
-            ]
-        };
-        let run = |offer: bool| {
-            let mut vmm = Vmm::new(configured_mock(script()), GuestRam::new(TEST_RAM).unwrap());
-            vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 7).unwrap());
-            if offer {
-                vmm.enable_pvclock();
-            }
-            vmm.run().unwrap();
-            (
-                vmm.guest_memory().to_vec(),
-                vmm.serial().to_vec(),
-                vmm.observable_digest(),
-                vmm.state_blob().unwrap(),
-            )
-        };
-        let (ram_on, serial_on, digest_on, blob_on) = run(true);
-        let (ram_off, serial_off, digest_off, blob_off) = run(false);
-        assert_eq!(ram_on, ram_off, "offering alone touched guest RAM");
-        assert_eq!(serial_on, serial_off);
-        assert_eq!(digest_on, digest_off);
-        // The blobs differ by exactly the PVCK chunk: splice it out of the
-        // offered blob (tag + u64 LE length + body, the put_chunk framing)
-        // and require byte equality with the un-offered blob.
-        let tag = blob_on
-            .windows(4)
-            .position(|w| w == b"PVCK")
-            .expect("offered blob carries the PVCK chunk");
-        let len = u64::from_le_bytes(blob_on[tag + 4..tag + 12].try_into().unwrap()) as usize;
-        let mut spliced = blob_on.clone();
-        spliced.drain(tag..tag + 12 + len);
-        assert_eq!(
-            spliced, blob_off,
-            "the offered and un-offered blobs differ beyond the PVCK chunk"
-        );
-        assert!(
-            !blob_off.windows(4).any(|w| w == b"PVCK"),
-            "an un-offered blob must carry no PVCK chunk"
-        );
-    }
-
     /// The `PVCK` chunk is real state identity: same configuration ⇒ same
     /// blob; a registration changes it because the future stamping target changes.
     #[test]
@@ -9017,7 +8315,7 @@ mod tests {
     fn pvclock_natural_exits_refresh_with_the_anchor_value() {
         let mut vmm = pvclock_vmm(
             vec![
-                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
                 // A serial byte OUT: an ordinary PIO exit, no V-time intercept.
                 Exit::Arch(X86Exit::Io {
                     port: 0x3F8,
@@ -9056,7 +8354,7 @@ mod tests {
         // page this test seals.
         let mut vmm = pvclock_vmm(
             vec![
-                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
                 Exit::Arch(X86Exit::Wrmsr {
                     index: IA32_TSC_ADJUST,
                     value: 5,
@@ -9127,12 +8425,12 @@ mod tests {
     fn pvclock_refresh_tracks_the_trap_oracle_through_intercepts() {
         let mut vmm = pvclock_vmm(
             vec![
-                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
                 Exit::Arch(X86Exit::Wrmsr {
                     index: IA32_TSC_ADJUST,
                     value: 5,
                 }),
-                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
             ],
             7,
         );
@@ -9179,7 +8477,7 @@ mod tests {
     /// oracle check loudly, proving the gate cannot pass vacuously.
     #[test]
     fn pvclock_oracle_check_fails_on_a_corrupted_page() {
-        let mut vmm = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdtsc)], 7);
+        let mut vmm = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], 7);
         ring_pvclock_register(&mut vmm, PV_GPA);
         vmm.step().unwrap();
         vmm.pvclock_check_oracle().expect("clean page passes");
@@ -9239,7 +8537,7 @@ mod tests {
         const SEED: u64 = 7;
         // Advance an armed VM to a LARGE clock value (the handshake lays the
         // canonical seq-0 stamp at the RDTSC anchor `work`).
-        let mut a = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdtsc)], SEED);
+        let mut a = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], SEED);
         a.vtime.as_mut().unwrap().advance_virtual_time(999);
         ring_pvclock_register(&mut a, PV_GPA);
         a.step().unwrap(); // handshake: arm + canonical stamp at 1000
@@ -9317,7 +8615,7 @@ mod tests {
     /// the source still owes. Once the handshake arms the page, the same VM seals.
     #[test]
     fn save_vm_state_rejects_a_pending_pvclock_registration() {
-        let mut v = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdtsc)], 7);
+        let mut v = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], 7);
         ring_pvclock_register(&mut v, PV_GPA); // pending: OUT recorded, no handshake
         // Reach a synchronized boundary while STILL pending — the restore_vtime
         // path the reviewer identified (the doorbell OUT alone never synchronizes).
@@ -9358,7 +8656,7 @@ mod tests {
         // is the epoch non-canonical, which is the state this test seals.
         let mut a = pvclock_vmm(
             vec![
-                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
                 Exit::Arch(X86Exit::Wrmsr {
                     index: IA32_TSC_ADJUST,
                     value: 5,
@@ -9396,7 +8694,7 @@ mod tests {
         // DIFFERENT page first: the blob's sealed registration is
         // authoritative — the stale-timeline registration is replaced, not
         // merely cleared (the arrival-deadline stale-arm class).
-        let mut b = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdtsc)], 7);
+        let mut b = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], 7);
         ring_pvclock_register(&mut b, PV_GPA + 0x1000);
         b.restore_snapshot(&image, &vm_state).unwrap();
         assert_eq!(
@@ -9424,7 +8722,7 @@ mod tests {
     fn pvclock_restore_mismatch_fails_loud() {
         // Sealed states from differently-configured source VMs.
         let seal = |register: bool| {
-            let mut src = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdtsc)], 7);
+            let mut src = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], 7);
             if register {
                 ring_pvclock_register(&mut src, PV_GPA);
             }
@@ -9434,11 +8732,11 @@ mod tests {
         let registered_state = seal(true);
         let offered_unregistered_state = seal(false);
         let unoffered_state = {
-            let mut src = vtime_vmm(vec![Exit::Arch(X86Exit::Rdtsc)], 7);
+            let mut src = vtime_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], 7);
             // vtime_vmm uses a small RAM; rebuild with TEST_RAM for image parity.
             let _ = &mut src;
             let mut src = Vmm::new(
-                configured_mock(vec![Exit::Arch(X86Exit::Rdtsc)]),
+                configured_mock(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })]),
                 GuestRam::new(TEST_RAM).unwrap(),
             );
             src.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 7).unwrap());
