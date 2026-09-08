@@ -269,6 +269,7 @@ mod real {
         let mut registers = Registers::new();
         let mut hooks: Vec<Hook> = Vec::new();
         let mut buf = [0_u8; MAX_PAYLOAD];
+        let mut launches = 0_u64;
 
         loop {
             clock.wait()?;
@@ -277,7 +278,15 @@ mod real {
             let tick = supervisor.counters().ticks + 1;
             for action in supervisor.tick(&active, &deaths) {
                 log(tick, &action.describe());
-                apply(action, bundle, nodes, &mut hooks, &args.hook_dir, tick)?;
+                apply(
+                    action,
+                    bundle,
+                    nodes,
+                    &mut hooks,
+                    &mut launches,
+                    &args.hook_dir,
+                    tick,
+                )?;
             }
             watch_parks(nodes, &mut supervisor, tick);
             drain_hooks(&mut hooks, &mut supervisor, sdk, tick)?;
@@ -308,11 +317,7 @@ mod real {
         let Some(len) = answered else {
             return Ok(ActiveFaults::new());
         };
-        let (_moment, entries) = fault_policy::parse_standing(&buf[..len])
-            .map_err(|error| format!("standing answer: {error}"))?;
-        Ok(ActiveFaults::from_entries(
-            entries.map(|entry| (entry.class, entry.target, entry.start)),
-        ))
+        ActiveFaults::from_answer(&buf[..len]).map_err(|error| format!("standing answer: {error}"))
     }
 
     /// Collect the nodes that exited since the last tick, reaping them.
@@ -344,6 +349,7 @@ mod real {
         bundle: &Bundle,
         nodes: &mut [Node],
         hooks: &mut Vec<Hook>,
+        launches: &mut u64,
         hook_dir: &Path,
         tick: u64,
     ) -> Result<(), String> {
@@ -406,7 +412,10 @@ mod real {
                 }
             }
             Action::RunHook(id) => match bundle.hook(id) {
-                Some(spec) => hooks.push(spawn_hook(spec, hook_dir, tick)?),
+                Some(spec) => {
+                    *launches += 1;
+                    hooks.push(spawn_hook(spec, hook_dir, *launches)?);
+                }
                 None => log(tick, &format!("hook {id} is not declared")),
             },
         }
@@ -478,12 +487,15 @@ mod real {
             .map_err(|error| format!("node {:?}: {error}", spec.name))
     }
 
-    fn spawn_hook(spec: &HookSpec, hook_dir: &Path, tick: u64) -> Result<Hook, String> {
+    /// Launch a hook with its stdout in a file of its own. `launch` counts
+    /// launches across the run, so two launches of one hook in a single tick
+    /// never share a file.
+    fn spawn_hook(spec: &HookSpec, hook_dir: &Path, launch: u64) -> Result<Hook, String> {
         // A workload's setup command may mount a fresh filesystem over the
         // directory's parent, so it is made again at every spawn.
         std::fs::create_dir_all(hook_dir)
             .map_err(|error| format!("{}: {error}", hook_dir.display()))?;
-        let path = hook_dir.join(format!("hook-{}-{tick}.out", spec.id));
+        let path = hook_dir.join(format!("hook-{}-{launch}.out", spec.id));
         let sink = File::create(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let output = File::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let child = command(&spec.argv)

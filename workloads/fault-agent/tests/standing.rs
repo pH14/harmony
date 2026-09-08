@@ -6,7 +6,7 @@
 //! through the shared encoder, so a silent change on either side of the
 //! contract fails this test.
 
-use fault_policy::{DecisionClass, Fault, Span, parse_standing, process_target};
+use fault_policy::{DecisionClass, Fault, Span, process_target};
 use harmony_fault_agent::faults::ActiveFaults;
 use harmony_fault_agent::supervisor::{Action, Supervisor};
 
@@ -35,8 +35,7 @@ fn process(node: u16, fault: &Fault, window: (u64, u64)) -> (u16, Vec<u8>, u64, 
 }
 
 fn decode(body: &[u8]) -> ActiveFaults {
-    let (_moment, entries) = parse_standing(body).expect("well-formed answer");
-    ActiveFaults::from_entries(entries.map(|entry| (entry.class, entry.target, entry.start)))
+    ActiveFaults::from_answer(body).expect("well-formed answer")
 }
 
 #[test]
@@ -111,13 +110,16 @@ fn a_malformed_answer_is_reported_not_panicked() {
     let good = answer(7, &[process(0, &Fault::ProcKill, (0, 1))]);
     // Truncated at every length, plus a count that outruns the body.
     for len in 0..good.len() {
-        assert!(parse_standing(&good[..len]).is_err(), "length {len}");
+        assert!(
+            ActiveFaults::from_answer(&good[..len]).is_err(),
+            "length {len}"
+        );
     }
     let mut lying = good.clone();
     lying[8..12].copy_from_slice(&9_u32.to_le_bytes());
-    assert!(parse_standing(&lying).is_err());
+    assert!(ActiveFaults::from_answer(&lying).is_err());
     // Trailing bytes past the last entry are refused too.
     let mut extra = good.clone();
     extra.push(0);
-    assert!(parse_standing(&extra).is_err());
+    assert!(ActiveFaults::from_answer(&extra).is_err());
 }

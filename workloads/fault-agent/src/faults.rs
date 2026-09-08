@@ -8,7 +8,7 @@
 //! and presents them in a canonical order so the reconciliation that follows is
 //! a function of the answer alone.
 
-use fault_policy::{DecisionClass, Fault, decode_process_target};
+use fault_policy::{DecisionClass, EnvError, Fault, decode_process_target, parse_standing};
 
 /// The parameters of a `Fault::ProcPark` window: the thread of the node that
 /// reaches an instruction for the `hits`-th time is held there by the guest
@@ -110,6 +110,18 @@ impl ActiveFaults {
             }
             _ => {}
         }
+    }
+
+    /// Decode one standing-poll answer body.
+    ///
+    /// # Errors
+    ///
+    /// Returns the codec's error when the body is not a well-formed answer.
+    pub fn from_answer(body: &[u8]) -> Result<Self, EnvError> {
+        let (_moment, entries) = parse_standing(body)?;
+        Ok(Self::from_entries(
+            entries.map(|entry| (entry.class, entry.target, entry.start)),
+        ))
     }
 
     /// Build the set from a standing-poll answer's `(class, target, start)`
