@@ -524,10 +524,12 @@ pub enum SessionError {
     Unboundable,
     /// The guest never reached a snapshot-eligible point within the caller's
     /// settle allowance.
-    #[error("guest reached no snapshot-eligible point within {settled} ns of settling")]
+    #[error("guest reached no snapshot-eligible point within a settle allowance of {allowance} ns")]
     Settle {
-        /// Virtual time spent settling before the attempt was abandoned.
-        settled: u64,
+        /// Settle allowance spent before the attempt was abandoned. Settling
+        /// asks for one step at a time and a step can stop early, so this
+        /// bounds the virtual time the guest consumed rather than reporting it.
+        allowance: u64,
     },
 }
 
@@ -635,7 +637,7 @@ where
             return Err(SessionError::Stop(stop.clone()).into());
         }
         if settled >= max_settle {
-            return Err(SessionError::Settle { settled }.into());
+            return Err(SessionError::Settle { allowance: settled }.into());
         }
         let step = settle_step.min(max_settle - settled);
         last = Some(advance(context, step)?);
@@ -1165,7 +1167,7 @@ mod tests {
         assert_eq!(clipped.runs, [10, 10, 5]);
         let mut exhausted = SettleFixture::new(31);
         let error = settle(&mut exhausted, 10, 30).unwrap_err().to_string();
-        assert!(error.contains("30 ns of settling"), "{error}");
+        assert!(error.contains("settle allowance of 30 ns"), "{error}");
         assert_eq!(exhausted.runs, [10, 10, 10]);
         assert_eq!(exhausted.seals, 4, "the allowance boundary is sealed too");
     }
