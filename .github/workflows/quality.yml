@@ -1,4 +1,4 @@
-name: quality
+name: Checks / Quality
 
 # Enforcement runs on GITHUB-HOSTED runners (ubuntu-latest). harmony is a public
 # repo, so standard Linux runners are free with unlimited minutes — the reason these
@@ -8,15 +8,10 @@ name: quality
 # the ARM64 pre-build apparatus incl. its Miri gate. None of them need bare metal
 # — a cache-thrashed slower run produces the same artifact and the same hash, so the
 # runner's microarchitecture and contention do not affect the verdict
-# (.github/workflows/box.yml, "CI runner isolation": "Correctness gates are contention-
-# immune").
+# for these checks.
 #
-# What STAYS on the box (NOT in this workflow, and never was): the ~23
-# live determinism gates that need a real /dev/kvm, and
-# quiet pinned cores. Those run out-of-band
-# through the box run-window tooling (now in the harmony-development repo).
-# Formalizing them as a dispatchable `runs-on: [self-hosted, kvm]` job is a documented
-# follow-up (see the migration PR description); until then the box's role is unchanged.
+# Hardware qualification runs out of band. Do not connect home-network
+# self-hosted runners to this public repository.
 #
 # Cargo tools (cargo-nextest, cargo-deny, cargo-llvm-cov, cargo-mutants) are installed
 # per-job with taiki-e/install-action (prebuilt binaries, seconds). The mutation
@@ -57,6 +52,10 @@ jobs:
           # The out-of-workspace Dissonance gate below scopes itself to the
           # first-parent diff (base -> PR merge, or previous -> pushed commit).
           fetch-depth: 2
+      - name: Benchmark report checks
+        run: node --test .github/scripts/benchmark-report.test.cjs
+      - name: Kernel patch-series checks
+        run: bash consonance/harmony-linux/linux/test-patch-series.sh
       - name: Install stable toolchain
         run: |
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
