@@ -1,0 +1,717 @@
+{
+  "format": "harmony-search-evidence-v1",
+  "scope": "Five paired seeds at each of two memory budgets, one-reservation window, 400000 executions and 80000000 admitted frames. Distinct identified builds with fixed SMB adapter policies; entry counts remain insufficient to pass every cell.",
+  "raw_export_location": "ms02:/root/harmony-search-eval/public/",
+  "inputs": [
+    {
+      "role": "baseline",
+      "run": "smb-main-004",
+      "results_sha256": "86a2e4c8f06c3460055a9817cd698987a794f8ddfe7c076e79673802f51e9df6",
+      "matrix_sha256": "fc800acc79b5d1f3ea0a34ebb9758d9e1b8d625aaaaafdfb2b5158726f8a9997",
+      "suite": {
+        "cases": [
+          {
+            "game": "smb",
+            "id": "smb-full",
+            "origin": "power-on gameplay genesis",
+            "require_solved": true,
+            "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea"
+          }
+        ],
+        "format": "harmony-search-eval-v1",
+        "id": "smb-main-004",
+        "memory_mib": [
+          256,
+          2048
+        ],
+        "search": {
+          "actions": 8192,
+          "executions": 400000,
+          "frames": 80000000,
+          "mixture": "energy_splice:6",
+          "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "verification": "witness",
+          "wall_seconds": 600,
+          "window": 1
+        },
+        "seeds": [
+          20260905,
+          20260906,
+          20260907,
+          20260908,
+          20260909
+        ],
+        "workers": [
+          24
+        ]
+      },
+      "matrix": {
+        "build": {
+          "attestation": "supplied",
+          "binary_sha256": "9e58a434323bae98a1d59f148b94274ea931686070eb8848f62cc290a547bf32",
+          "source": {
+            "binary_sha256": "9e58a434323bae98a1d59f148b94274ea931686070eb8848f62cc290a547bf32",
+            "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+            "dirty": null,
+            "files": 252,
+            "format": "harmony-search-build-v1",
+            "locked": true,
+            "profile": "release",
+            "revision": null,
+            "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+            "rustflags": "",
+            "source_tree_sha256": "98e2f81fac3350b759ace508442163aefeece5bfaf5366ff0942a5f83e7ac35e"
+          }
+        },
+        "cells": [
+          "smb-full-s20260905-w24-m256",
+          "smb-full-s20260905-w24-m2048",
+          "smb-full-s20260906-w24-m256",
+          "smb-full-s20260906-w24-m2048",
+          "smb-full-s20260907-w24-m256",
+          "smb-full-s20260907-w24-m2048",
+          "smb-full-s20260908-w24-m256",
+          "smb-full-s20260908-w24-m2048",
+          "smb-full-s20260909-w24-m256",
+          "smb-full-s20260909-w24-m2048"
+        ],
+        "format": "harmony-search-eval-v1",
+        "host": {
+          "cpu_model": "Intel(R) Core(TM) Ultra 9 285HX",
+          "hostname": "ms02",
+          "logical_cpus": 24,
+          "machine": "x86_64",
+          "release": "7.1.8+deb13-amd64",
+          "system": "Linux"
+        },
+        "runner": {
+          "cpu_capacity": 24,
+          "disk_limit_gib": 8,
+          "finish_seconds": 600,
+          "jobs": 1,
+          "memory_capacity_mib": 40000,
+          "overhead_mib": 1024,
+          "sample_seconds": 1
+        }
+      }
+    },
+    {
+      "role": "candidate",
+      "run": "smb-regression-count-003",
+      "results_sha256": "0b5a91d218b8aa0591cdcce2ae75357536050d440d8b8426c1f821bcfa053243",
+      "matrix_sha256": "09496a166aeb3b8f67166dbb5abf4dbdd710f7a235d01d4b7685ff78a2394f29",
+      "suite": {
+        "cases": [
+          {
+            "game": "smb",
+            "id": "smb-full",
+            "origin": "power-on gameplay genesis",
+            "require_solved": true,
+            "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea"
+          }
+        ],
+        "format": "harmony-search-eval-v1",
+        "id": "smb-regression-count-003",
+        "memory_mib": [
+          256,
+          2048
+        ],
+        "search": {
+          "actions": 8192,
+          "executions": 400000,
+          "frames": 80000000,
+          "mixture": "energy_splice:6",
+          "selector": "room_cell_uniform_128_energy_frontier_cheapest_count_v1:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "verification": "witness",
+          "wall_seconds": 600,
+          "window": 1
+        },
+        "seeds": [
+          20260905,
+          20260906,
+          20260907,
+          20260908,
+          20260909
+        ],
+        "workers": [
+          24
+        ]
+      },
+      "matrix": {
+        "build": {
+          "attestation": "supplied",
+          "binary_sha256": "f1061f840c21bcf83d62f250fcc76ac78c9cc851c08a99e869db50610413406e",
+          "source": {
+            "binary_sha256": "f1061f840c21bcf83d62f250fcc76ac78c9cc851c08a99e869db50610413406e",
+            "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+            "dirty": null,
+            "files": 250,
+            "format": "harmony-search-build-v1",
+            "locked": true,
+            "profile": "release",
+            "revision": null,
+            "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+            "rustflags": "",
+            "source_tree_sha256": "0fae93cf9ddde15ff90312418c2179299424f9a056ca4bd67842bc885f45a9b1"
+          }
+        },
+        "cells": [
+          "smb-full-s20260905-w24-m256",
+          "smb-full-s20260905-w24-m2048",
+          "smb-full-s20260906-w24-m256",
+          "smb-full-s20260906-w24-m2048",
+          "smb-full-s20260907-w24-m256",
+          "smb-full-s20260907-w24-m2048",
+          "smb-full-s20260908-w24-m256",
+          "smb-full-s20260908-w24-m2048",
+          "smb-full-s20260909-w24-m256",
+          "smb-full-s20260909-w24-m2048"
+        ],
+        "format": "harmony-search-eval-v1",
+        "host": {
+          "cpu_model": "Intel(R) Core(TM) Ultra 9 285HX",
+          "hostname": "ms02",
+          "logical_cpus": 24,
+          "machine": "x86_64",
+          "release": "7.1.8+deb13-amd64",
+          "system": "Linux"
+        },
+        "runner": {
+          "cpu_capacity": 24,
+          "disk_limit_gib": 8,
+          "finish_seconds": 600,
+          "jobs": 1,
+          "memory_capacity_mib": 40000,
+          "overhead_mib": 1024,
+          "sample_seconds": 1
+        }
+      }
+    }
+  ],
+  "comparison": {
+    "format": "harmony-search-comparison-v1",
+    "pairs": [
+      {
+        "cell": "smb-full-s20260905-w24-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 53545060,
+          "result_slots": 1,
+          "stream_sha256": "fa36886f75db411bb2fe2bdf3a69900b95456d6bf67831bc61d20f8957a8b9bc",
+          "frames": 53549437,
+          "search_seconds": 189.224985268,
+          "frames_per_second": 282993.4795564008,
+          "peak_rss": 2801692672,
+          "peak_disk": 9268886,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 29179126,
+          "result_slots": 1,
+          "stream_sha256": "9895e4626677249e99f916ae2c44cb169ae27b1c6cb2eb6bad68399f847d05fa",
+          "frames": 29181284,
+          "search_seconds": 107.728127381,
+          "frames_per_second": 270878.968282769,
+          "peak_rss": 2646929408,
+          "peak_disk": 5830800,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "smb-full-s20260905-w24-m256",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 79204783,
+          "result_slots": 1,
+          "stream_sha256": "ac26144bb42e1c42756e39a5156b349a262068a471c2ebfbc5d1c9863c5b61c8",
+          "frames": 79207287,
+          "search_seconds": 238.882627515,
+          "frames_per_second": 331574.07813184906,
+          "peak_rss": 472371200,
+          "peak_disk": 10548862,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 45327622,
+          "result_slots": 1,
+          "stream_sha256": "80c4d2bf9d0c9f002e44bc93da121737799167e3535e12697eabaeb232d18398",
+          "frames": 45330563,
+          "search_seconds": 140.239703877,
+          "frames_per_second": 323236.3000406651,
+          "peak_rss": 465235968,
+          "peak_disk": 6531321,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "smb-full-s20260906-w24-m2048",
+        "comparable": true,
+        "baseline_status": "regression",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 1,
+          "stream_sha256": "426451c85f0a4a2eb46df4ff7b51ad64c66f30942067c98d9a5b848549b7665f",
+          "frames": 67382225,
+          "search_seconds": 218.13181302,
+          "frames_per_second": 308905.9961823261,
+          "peak_rss": 2869084160,
+          "peak_disk": 9887983,
+          "progress": {
+            "level": 3,
+            "progress": 137,
+            "world": 6
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 34826492,
+          "result_slots": 1,
+          "stream_sha256": "04bc6a73b6f0593d039b04b5d311656fa9d38c1ec2b715b902d92a0e2dd3250c",
+          "frames": 34827906,
+          "search_seconds": 132.275693776,
+          "frames_per_second": 263297.85167469026,
+          "peak_rss": 2757554176,
+          "peak_disk": 7013502,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "smb-full-s20260906-w24-m256",
+        "comparable": true,
+        "baseline_status": "regression",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 1,
+          "stream_sha256": "850af9f959a33c04717fd6e328416e1aa12705b2b8f6f27673406a689222494d",
+          "frames": 80004332,
+          "search_seconds": 229.933205348,
+          "frames_per_second": 347945.969260572,
+          "peak_rss": 477114368,
+          "peak_disk": 9454255,
+          "progress": {
+            "level": 3,
+            "progress": 137,
+            "world": 6
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 73363933,
+          "result_slots": 1,
+          "stream_sha256": "c2c7f1781f00bc64b855e7087a733044f7450d9b4498ef226cf6ce23a280a5bf",
+          "frames": 73365548,
+          "search_seconds": 223.101667821,
+          "frames_per_second": 328843.56587985257,
+          "peak_rss": 472281088,
+          "peak_disk": 10242810,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "smb-full-s20260907-w24-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "regression",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 47413715,
+          "result_slots": 1,
+          "stream_sha256": "7d1252d229a12caf1fea43ff6ab2c5d3bfba3c576550dd5af804434752756f0a",
+          "frames": 47417126,
+          "search_seconds": 172.700235205,
+          "frames_per_second": 274563.1813628658,
+          "peak_rss": 2898907136,
+          "peak_disk": 8873854,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 1,
+          "stream_sha256": "17b1ba254bfc9e30b9e9047ffba3cea0af05682703241e8614a0677d545da00e",
+          "frames": 69383403,
+          "search_seconds": 222.461458225,
+          "frames_per_second": 311889.54506368854,
+          "peak_rss": 2867597312,
+          "peak_disk": 9893158,
+          "progress": {
+            "level": 3,
+            "progress": 137,
+            "world": 6
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "smb-full-s20260907-w24-m256",
+        "comparable": true,
+        "baseline_status": "regression",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 1,
+          "stream_sha256": "4d6e8eff43639f6d4117fa5b664812469f7e482dd56a3c46e5fdb0319fbcbb49",
+          "frames": 80004633,
+          "search_seconds": 227.359234167,
+          "frames_per_second": 351886.44654404034,
+          "peak_rss": 467890176,
+          "peak_disk": 9604733,
+          "progress": {
+            "level": 3,
+            "progress": 137,
+            "world": 6
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 48445418,
+          "result_slots": 1,
+          "stream_sha256": "37c8a5158de8446e554af58ccf57edf3d78e1bdef16bec8c12bb3940f1f017f1",
+          "frames": 48449664,
+          "search_seconds": 153.432475666,
+          "frames_per_second": 315771.8976357249,
+          "peak_rss": 463962112,
+          "peak_disk": 7123595,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "smb-full-s20260908-w24-m2048",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 62396495,
+          "result_slots": 1,
+          "stream_sha256": "5994f1a3247e9694f91abb0bd99ef6ff838c18853cd21b0b129741d4392cbb98",
+          "frames": 62401227,
+          "search_seconds": 206.256741661,
+          "frames_per_second": 302541.51450991875,
+          "peak_rss": 2825011200,
+          "peak_disk": 9959487,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 38261675,
+          "result_slots": 1,
+          "stream_sha256": "f49d426993b2bd397519227c25ad0c8b7781c2e9a95b45b0997c55eb24883953",
+          "frames": 38264753,
+          "search_seconds": 140.153259469,
+          "frames_per_second": 273020.785566986,
+          "peak_rss": 2767130624,
+          "peak_disk": 7239093,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "smb-full-s20260908-w24-m256",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "regression",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 59205960,
+          "result_slots": 1,
+          "stream_sha256": "1387d3e29f04695bdd78efab867370c9079bbf8164be77fd0b17e3442c103ea3",
+          "frames": 59211563,
+          "search_seconds": 181.48741348,
+          "frames_per_second": 326257.13191138266,
+          "peak_rss": 471506944,
+          "peak_disk": 8194087,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 1,
+          "stream_sha256": "85a3778c45c09a78614467158eeaaf5df26b920b4a69a4f3ed8c28bdbc4ebdd2",
+          "frames": 80005540,
+          "search_seconds": 228.127668372,
+          "frames_per_second": 350705.114250051,
+          "peak_rss": 477052928,
+          "peak_disk": 9635640,
+          "progress": {
+            "level": 3,
+            "progress": 137,
+            "world": 6
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "smb-full-s20260909-w24-m2048",
+        "comparable": true,
+        "baseline_status": "regression",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": false,
+          "frames_to_victory": null,
+          "result_slots": 1,
+          "stream_sha256": "2ebcc26b868d1eb3e796039745eff298787d4503009caff94e1502978942d8a0",
+          "frames": 72094293,
+          "search_seconds": 227.801926393,
+          "frames_per_second": 316477.97778331407,
+          "peak_rss": 2874630144,
+          "peak_disk": 9907129,
+          "progress": {
+            "level": 3,
+            "progress": 153,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 39849308,
+          "result_slots": 1,
+          "stream_sha256": "2f7305d8006e59cf8c494421b911b0fa7b003a34f5aa2ed20d916bf91b1aadf6",
+          "frames": 39851707,
+          "search_seconds": 144.552088788,
+          "frames_per_second": 275690.97986848524,
+          "peak_rss": 2768072704,
+          "peak_disk": 7507047,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      },
+      {
+        "cell": "smb-full-s20260909-w24-m256",
+        "comparable": true,
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "same_host": true,
+        "same_cpu_set": true,
+        "same_runner_configuration": true,
+        "timing_environment_matches": true,
+        "baseline": {
+          "solved": true,
+          "frames_to_victory": 53245865,
+          "result_slots": 1,
+          "stream_sha256": "c886c3724a9f65e05e5bc627a6951776f3e2437512ba8c1ad89564873dfa7025",
+          "frames": 53249764,
+          "search_seconds": 169.485994185,
+          "frames_per_second": 314183.8607730382,
+          "peak_rss": 469999616,
+          "peak_disk": 7753334,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "candidate": {
+          "solved": true,
+          "frames_to_victory": 70676331,
+          "result_slots": 1,
+          "stream_sha256": "ecc7db5b9f87eee345eb5c88144b6898ba6d1a096fcaf4d500a8c475cb4fef98",
+          "frames": 70679424,
+          "search_seconds": 208.701124812,
+          "frames_per_second": 338663.3592112583,
+          "peak_rss": 468267008,
+          "peak_disk": 9429528,
+          "progress": {
+            "level": 3,
+            "progress": 286,
+            "world": 7
+          },
+          "workload_diagnostics": null
+        },
+        "same_recorded_search": false
+      }
+    ],
+    "timing_note": "Matching recorded allocation does not establish host isolation. Concurrent jobs may share physical cores and finish at different times; use admitted frame cost for search quality and isolated runs for precise throughput claims.",
+    "baseline": [
+      {
+        "case": "smb-full",
+        "workers": 24,
+        "memory_mib": 2048,
+        "trials": 5,
+        "valid_trials": 5,
+        "errors": 0,
+        "solved": 3,
+        "solve_fraction_of_valid": 0.6,
+        "solve_fraction_wilson95": [
+          0.2307242812760128,
+          0.882379225767352
+        ],
+        "median_frames_to_victory_among_successes": 53545060,
+        "median_search_frames_per_second": 302541.51450991875
+      },
+      {
+        "case": "smb-full",
+        "workers": 24,
+        "memory_mib": 256,
+        "trials": 5,
+        "valid_trials": 5,
+        "errors": 0,
+        "solved": 3,
+        "solve_fraction_of_valid": 0.6,
+        "solve_fraction_wilson95": [
+          0.2307242812760128,
+          0.882379225767352
+        ],
+        "median_frames_to_victory_among_successes": 59205960,
+        "median_search_frames_per_second": 331574.07813184906
+      }
+    ],
+    "candidate": [
+      {
+        "case": "smb-full",
+        "workers": 24,
+        "memory_mib": 2048,
+        "trials": 5,
+        "valid_trials": 5,
+        "errors": 0,
+        "solved": 4,
+        "solve_fraction_of_valid": 0.8,
+        "solve_fraction_wilson95": [
+          0.37553462976252533,
+          0.9637758913675698
+        ],
+        "median_frames_to_victory_among_successes": 36544083.5,
+        "median_search_frames_per_second": 273020.785566986
+      },
+      {
+        "case": "smb-full",
+        "workers": 24,
+        "memory_mib": 256,
+        "trials": 5,
+        "valid_trials": 5,
+        "errors": 0,
+        "solved": 4,
+        "solve_fraction_of_valid": 0.8,
+        "solve_fraction_wilson95": [
+          0.37553462976252533,
+          0.9637758913675698
+        ],
+        "median_frames_to_victory_among_successes": 59560874.5,
+        "median_search_frames_per_second": 328843.56587985257
+      }
+    ]
+  }
+}

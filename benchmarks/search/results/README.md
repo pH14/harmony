@@ -7,6 +7,45 @@ seed-level comparisons, registered manifests, source/executable/core/ROM hashes,
 host allocation, and hashes of the complete allowlisted exports. Private ROMs,
 emulator cores, snapshots, and full campaign streams are not checked in.
 
+## Bounded physical overlap
+
+[`prefetch-005.json`](prefetch-005.json) compares one versus two unadmitted
+result-bearing jobs per physical executor. All 18 pairs have identical recorded
+search stream hashes, including frame counts, selections and outcomes. Runs use
+24 workers, a two-reservation logical window, 512 MiB, one isolated matrix job,
+and the same executable. These are short throughput trials, bounded to at most
+50,000 executions and 10 million frames, with smaller ceilings for quick cases.
+
+| Origin | Median frames/s, one slot | Median frames/s, two slots | Median paired improvement |
+| --- | ---: | ---: | ---: |
+| SMB new game | 282,343 | 401,213 | 42.1% |
+| Metroid new game | 366,292 | 514,904 | 40.1% |
+| Metal Man stage | 421,640 | 577,055 | 36.9% |
+| Nova level 1 | 439,732 | 597,582 | 35.9% |
+| Nova whole game | 420,806 | 574,284 | 35.8% |
+| STB Hard | 464,264 | 613,718 | 32.2% |
+
+The largest paired increase in OS peak RSS was 3.83 MiB. This native result does
+not establish the cost of buffering whole-VM snapshots; the generic API retains
+one result per worker by default. The two-slot option passed full native campaign
+replay qualification at all 19 origins, plus generic stream/checkpoint equality
+under memory pressure and frame caps. Quality panels use the qualified overlap
+configuration for both control and candidate.
+
+Whole-game Nova reached 5, 6, and 7 cleared-level flags in these short runs. This
+confirms execution continues through intermediate clears, without claiming all
+40 levels are solved. Throughput trials do not require whole-game completion.
+
+## Extended SMB count panel
+
+[`smb-count-extended.json`](smb-count-extended.json) retains five paired seeds at
+both 256 and 2,048 MiB, with a one-reservation window and the original
+400,000-execution / 80-million-frame ceilings. The main-mechanism control solved
+3/5 at each memory budget; entry count weighting solved 4/5 at each. Some seeds
+regressed, including a frame-capped failure at 256 MiB. The two memory conditions
+reuse the same five seeds and are not ten independent seed trials. These results
+show a panel gain but do not qualify a recipe that solves every required cell.
+
 ## Development panel 002
 
 [`development-002.json`](development-002.json) records two controlled ablations
