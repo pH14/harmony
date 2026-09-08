@@ -13,9 +13,9 @@
 //!
 //! # Environment (everything box-specific, in one place)
 //!
-//! - **Host**: the determinism box (`ssh hetzner`), det-cfl-v1 CPU, LOADED
+//! - **Host**: a separately provisioned, compatible host, det-cfl-v1 CPU, LOADED
 //!   patched KVM modules (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), perf_event;
-//!   CPU-pinned per `.github/workflows/box.yml`:
+//!   CPU-pinned per `docs/HARDWARE-TESTING.md`:
 //!   `taskset -c 2 cargo test -p vmm-core --release --test live_pvclock -- --ignored --test-threads=1`
 //! - **Kernel image**: the task-110 pvclock build —
 //!   `make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux kernel` (applies the kernel
@@ -74,7 +74,7 @@ fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on the determinism box with the \
-         LOADED patched KVM modules, CPU-pinned per .github/workflows/box.yml."
+         LOADED patched KVM modules, CPU-pinned per docs/HARDWARE-TESTING.md."
     );
 }
 

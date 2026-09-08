@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only **Postgres-on-k3s, client pod -> server pod, intra-guest** gates
-//! (`#[cfg(target_os = "linux")]` **and `#[ignore]`**, on `ssh <det-box>` with the
-//! LOADED patched KVM modules, CPU-pinned per `.github/workflows/box.yml`). Task 49 — the
+//! (`#[cfg(target_os = "linux")]` **and `#[ignore]`**, on `ssh <qualified-host>` with the
+//! LOADED patched KVM modules, CPU-pinned per `docs/HARDWARE-TESTING.md`). Task 49 — the
 //! determinism stress test at full stack height: a single guest VM (single-vCPU)
 //! runs a **single-node lightweight Kubernetes cluster (k3s)**, a `postgres` Pod
 //! serves the task-42 workload, and a separate `client` Pod connects to it **over
@@ -182,8 +182,8 @@ fn require_artifact(name: &str) -> Vec<u8> {
 fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
-        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
-         patched KVM modules, CPU-pinned per .github/workflows/box.yml."
+        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <qualified-host>` with the LOADED \
+         patched KVM modules, CPU-pinned per docs/HARDWARE-TESTING.md."
     );
 }
 
@@ -206,7 +206,7 @@ fn require_host_baseline() {
     assert!(
         all,
         "host CPU is not the det-cfl-v1 baseline — boot_linux cannot run the frozen contract here. \
-         Run on the determinism box (i9-9900K) per .github/workflows/box.yml."
+         Run on the determinism box (i9-9900K) per docs/HARDWARE-TESTING.md."
     );
 }
 
@@ -646,7 +646,7 @@ fn assert_intra_guest_cluster(tag: &str, out: &BootOutcome) {
 /// guest powers off cleanly within budget.
 #[test]
 #[ignore = "box-only live gate (LOADED patched KVM + built k3s image + det-cfl-v1 host); \
-            run on `ssh <det-box>` with `-- --ignored --nocapture`"]
+            run on `ssh <qualified-host>` with `-- --ignored --nocapture`"]
 fn k1_k3s_cluster_postgres_client_streams_patched() {
     require_kvm();
     require_host_baseline();

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only live M1/M2 gates (`#[cfg(target_os = "linux")]` **and `#[ignore]`**, on
-//! `ssh <det-box>`, CPU-pinned per `.github/workflows/box.yml`, against the real
+//! `ssh <qualified-host>`, CPU-pinned per `docs/HARDWARE-TESTING.md`, against the real
 //! `KvmBackend`).
 //!
 //! - **M1 — boots & prints.** `boot(KvmBackend::new(), hello, ram)` then `run()`:
@@ -83,17 +83,17 @@ fn require_payload(name: &str) -> Vec<u8> {
 }
 
 /// Require `/dev/kvm` + a constructible vCPU (Intel VMX + perf_event), else
-/// **panic (loud FAILURE)**. Run on `ssh <det-box>` (bare-metal Intel, not nested).
+/// **panic (loud FAILURE)**. Run on `ssh <qualified-host>` (bare-metal Intel, not nested).
 fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
-        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` (Intel VMX, \
-         perf_event), CPU-pinned `taskset -c 1` per .github/workflows/box.yml."
+        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <qualified-host>` (Intel VMX, \
+         perf_event), CPU-pinned `taskset -c 1` per docs/HARDWARE-TESTING.md."
     );
     if let Err(e) = KvmBackend::new() {
         panic!(
             "KvmBackend::new() failed ({e}) — needs bare-metal Intel VMX + /dev/kvm access on \
-             `ssh <det-box>` (not nested virtualization)."
+             `ssh <qualified-host>` (not nested virtualization)."
         );
     }
 }
@@ -127,7 +127,7 @@ fn require_host_baseline() {
         panic!(
             "host CPU does not match the det-cfl-v1 baseline (x86 CPU contract) — M1/M2 \
              cannot run the frozen contract faithfully here. Run on the det-cfl-v1 determinism \
-             box (i9-9900K, microcode 0xf8) per .github/workflows/box.yml; see \
+             box (i9-9900K, microcode 0xf8) per docs/HARDWARE-TESTING.md; see \
              consonance/vmm-core/README.md. The assert is NOT loosened \
              to fake a pass."
         );
@@ -139,7 +139,7 @@ fn require_host_baseline() {
 /// asserts pass/fail (that decision is the integrator's), so it does not claim
 /// anything about whether M1/M2 boot.
 #[test]
-#[ignore = "box-only host-baseline diagnostic; run on `ssh <det-box>` with `-- --ignored`"]
+#[ignore = "box-only host-baseline diagnostic; run on `ssh <qualified-host>` with `-- --ignored`"]
 fn host_assert_report() {
     let _ = print_host_baseline_report();
 }
@@ -148,7 +148,7 @@ fn host_assert_report() {
 
 #[test]
 #[ignore = "box-only live gate (real KVM + built payloads + det-cfl-v1 host); run on \
-            `ssh <det-box>` with `-- --ignored`"]
+            `ssh <qualified-host>` with `-- --ignored`"]
 fn m1_hello_boots_and_prints() {
     require_kvm();
     require_host_baseline();
@@ -268,7 +268,7 @@ fn assert_deterministic_twice(name: &str, payload: Vec<u8>, check_golden: bool) 
 
 #[test]
 #[ignore = "box-only live gate (real KVM + built payloads + det-cfl-v1 host); run on \
-            `ssh <det-box>` with `-- --ignored`"]
+            `ssh <qualified-host>` with `-- --ignored`"]
 fn m2_hello_deterministic_twice() {
     require_kvm();
     require_host_baseline();
@@ -278,7 +278,7 @@ fn m2_hello_deterministic_twice() {
 
 #[test]
 #[ignore = "box-only live gate (real KVM + built payloads + det-cfl-v1 host); run on \
-            `ssh <det-box>` with `-- --ignored`"]
+            `ssh <qualified-host>` with `-- --ignored`"]
 fn m2_compute_deterministic_twice() {
     require_kvm();
     require_host_baseline();

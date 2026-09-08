@@ -18,8 +18,8 @@
 //! Box-only because it needs the loaded patched `/dev/kvm`
 //! (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), and the `det-cfl-v1`
 //! host. `#[ignore]`d out of the default lane (like `live_determinism.rs`): default
-//! CI shows it **not-run**, never a vacuous green. Run on `ssh <det-box>`, CPU-pinned
-//! per `.github/workflows/box.yml`, patched modules loaded, reverted to stock after:
+//! CI shows it **not-run**, never a vacuous green. Run on `ssh <qualified-host>`, CPU-pinned
+//! per `docs/HARDWARE-TESTING.md`, patched modules loaded, reverted to stock after:
 //!
 //! ```sh
 //! taskset -c 4 cargo test -p vmm-core --test live_snapshot_branch -- --ignored --test-threads=1
@@ -112,8 +112,8 @@ type DynVmm = Vmm<Box<dyn Backend<A = X86>>>;
 fn boot_patched_or_panic() -> DynVmm {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
-        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the patched KVM \
-         modules loaded, CPU-pinned per .github/workflows/box.yml (taskset -c 4)."
+        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <qualified-host>` with the patched KVM \
+         modules loaded, CPU-pinned per docs/HARDWARE-TESTING.md (taskset -c 4)."
     );
     match boot_selected(BackendKind::Patched, &payload_image(), GUEST_RAM_LEN, SEED) {
         Ok(vmm) => vmm,
@@ -143,7 +143,7 @@ fn run_reference() -> ([u8; 32], Vec<u8>) {
 
 #[test]
 #[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host; run on \
-            `ssh <det-box>` with `-- --ignored`"]
+            `ssh <qualified-host>` with `-- --ignored`"]
 fn gate1_restore_replays_bit_identical() {
     // Reference continuation (un-snapshotted): boot → run → terminal.
     let (ref_hash, ref_serial) = run_reference();
@@ -190,7 +190,7 @@ fn gate1_restore_replays_bit_identical() {
 
 #[test]
 #[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host; run on \
-            `ssh <det-box>` with `-- --ignored`"]
+            `ssh <qualified-host>` with `-- --ignored`"]
 fn gate3_n_vms_share_one_read_only_base() {
     // Snapshot one booted image as the shared base.
     let mut a = boot_patched_or_panic();
@@ -225,7 +225,7 @@ fn gate3_n_vms_share_one_read_only_base() {
 
 #[test]
 #[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host; run on \
-            `ssh <det-box>` with `-- --ignored`"]
+            `ssh <qualified-host>` with `-- --ignored`"]
 fn gate2_capture_is_dirty_set_proportional() {
     // Gate 2 (capture side): a derived snapshot stores **only the pages dirtied since
     // its parent** — `owned_pages` tracks the dirty set, not the image size. Measured

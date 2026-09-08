@@ -22,7 +22,7 @@
 //!
 //! Box-only: needs the LOADED patched `/dev/kvm`, and the
 //! `det-cfl-v1` host; `#[ignore]`d so a plain `cargo nextest` shows it not-run.
-//! Run CPU-pinned per `.github/workflows/box.yml`, reverting KVM to stock afterwards:
+//! Run CPU-pinned per `docs/HARDWARE-TESTING.md`, reverting KVM to stock afterwards:
 //!   `cargo test -p acceptance-tests --release --test live_sdk -- --ignored --nocapture`
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
@@ -83,7 +83,7 @@ fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on the determinism box with the LOADED \
-         patched KVM modules, CPU-pinned per .github/workflows/box.yml."
+         patched KVM modules, CPU-pinned per docs/HARDWARE-TESTING.md."
     );
 }
 
