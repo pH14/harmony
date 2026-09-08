@@ -312,3 +312,338 @@ Metroid seed 3 is mixed; seed 4 misses the control energy tank and covers 79
 versus 82 map cells. C03 reaches the end of Heat in about 52M stage-search frames
 versus C02's 105M, with different fresh prefixes from their own Metal searches;
 that is an end-to-end chain comparison, not an isolated same-start Heat effect.
+
+### R02 — retention at the registered depth anchor
+
+After the R01 three-seed short panel, run resource retention on development
+seed 3 at the existing 3M execution / 400M frame / 4-worker / 8 GiB anchor,
+alphabet-only and semantic selector unchanged. The short panel exercises the
+mechanism but cannot assess the control's first Bombs discovery at 2.847M
+jobs. This is the registered anchor, not a larger exploratory budget. Bound:
+5280s search + 120s finish (90m); no checkpoint or historical input as origin.
+Use the completed D01 and matching frozen 012 control as comparator. Compare
+named progress at common admitted-work boundaries, observed/retained/single-
+trajectory capabilities, exposure, memory, and actual frames. Better late
+attainment qualifies replication on reused seeds 4/5; a late regression or
+unchanged depth with weak exposure motivates a separate selector/continuation
+comparison, not a budget increase. One seed cannot qualify a breakthrough.
+
+New experiment manifests now live outside hashed source directories and refuse
+existing names. Prior manifests remain preserved. Resource-009's full 488-file
+source bundle exactly matches attestation
+`f3c71d8ff926e1415310e1913a91bb155ec9f44b6fbdd550f399846881028296`;
+binary SHA-256
+`3faa91d35484802921cd1b5d8f790c4229fed5cc1bd8688442577296f387a32a`.
+Only the optional-resource availability guard and corrected diagnostic-storage
+label differ from the preceding qualified resource mechanism. Run the bounded
+actual-ROM smoke again before using this binary at depth; no new gameplay
+policy or budget is introduced by that qualification.
+
+R01 short panel complete: observed map cells control/resource are 87/81,
+82/79, 80/88 for seeds 3/4/5. Energy tank observed 3/3 control versus 2/3
+resource; no deep pickups or bosses at this horizon. This does not establish
+an improvement. R02 now tests the late behavior for which this horizon is
+inadequate, without increasing the registered work or memory limit.
+
+### E01 — retention with campaign-learned continuations
+
+Second and final active candidate family: combine the same bounded retention
+with the existing quarter-share `alphabet_continuation_v1` policy. Frozen 012
+shows earlier Bombs/Kraid area under that policy but reduced beam breadth;
+P02 shows discarded resource alternatives can supply missing local exits.
+Question: does retention preserve useful breadth under learned continuation,
+or merely dilute its faster exploration? No new vocabulary or controller tape
+is introduced; all continuations are learned in that campaign. First qualify
+5k Metroid full replay (5m), then one matched seed-3 500k/70M/4-worker/8 GiB
+comparison against continuation-only, 20m/cell, CPUs 8–11 and 12–15. Generic
+combined retention/continuation/eviction replay already passed. Inspect named
+capabilities, common-frame map coverage and exposure. A consistent local gain
+qualifies a full-depth combined probe; a clear regression redirects toward
+exposure/local-suffix diagnosis instead of automatically widening budgets.
+
+C02 ended at Wily 1's wall limit with admitted stage work below 120M frames.
+That is a censored stage result, not an exhausted fixed-work failure. Preserve
+all eight successful Robot Masters, all prefix/replay costs, and this failed
+stage. Any comparison with C03 must use common admitted work or explicitly
+state the censoring; further fixed-work qualification gets its own registration.
+
+### L01 — diagnostic local search from a discovered deep endpoint
+
+D01 first enters Kraid area at job 2,937,978, leaving only about 62k jobs in
+the anchor. Question: can ordinary local search advance from that reproducible
+endpoint, or is local action generation itself ineffective? Use D01's own
+first-Kraid-area input, verified twice from ordinary genesis, as an explicitly
+**diagnostic snapshot root**, never a fresh validation origin. Preserve the
+4096 total-action horizon by subtracting the source prefix length from the
+local allowance. No supplied route, hand-picked control sequence, or reward
+change is permitted. Implement only a bounded diagnostic executable using the
+existing snapshot-root campaign API; no searcher or game mechanics change.
+
+First qualify 5k full campaign/checkpoint replay from that root (5m) and replay
+the composed full witness twice from ordinary genesis. Then compare ordinary
+`one_to_six` against the existing generic bounded full-hold suffix
+`one_to_six_within_3_longest_actions_full_hold`, each 100k jobs/20M admitted
+frames, 4 workers/8 GiB, semantic selector, alphabet-only, development seed 3,
+20m/cell. Charge source verification, preparation, search and composed-witness
+replay separately. New bosses or capabilities qualify a fresh-search follow-up;
+only differing endpoints do not. If both fail without useful separation, stop
+this probe family and reconsider exposure rather than increasing its budget.
+
+E01 ended with 59 versus 55 map cells (continuation-only versus combined),
+no energy tank or deeper capability in either, and 50,777 versus 56,297 removals
+before selection. Combined retention reached Norfair earlier but did not show
+the consistent local gain required by this registration. Park family E; do not
+claim its full-depth behavior disproven. Active candidate families are now R
+and the separately isolated selection hypothesis S below.
+
+### S01 — isolate MM2 location ranking from mechanical progress
+
+The C02 Wily-1 witness is only 240 actions long, so the 4096 horizon is not a
+supported explanation for its plateau. Its historical frontier selector ranks
+opaque location identities, while the current MM2 adapter already supplies a
+separate progress relation using boss clears/damage (documented in its README).
+Question: does choosing on that declared progress relation escape the same
+stage-entry bottleneck at equal admitted work? Use the C02-discovered Crash
+bridge as a **diagnostic stage-entry prefix**, never an external fresh-chain
+input. Run semantic selection only, ordinary representative retention, same
+seed 20261001, energy-splice:6, 4 workers/8 GiB, 500k jobs/50M frames, 4096
+actions, window/result slots 2/2, 20m watchdog on CPUs 8–11. Compare the completed
+C02 stage's recorded progress at the same 50M-frame boundary. No new game
+reward, route, weapon advice, or decoder change. Reaching a boss/stage transition
+that control misses qualifies a new fully fresh selection-only chain; matching
+failure does not qualify a larger budget or a selector parameter sweep.
+
+L00's first launcher failed before emulation because ms02 lacks `/usr/bin/time`.
+Preserve the exit-127 log. Use Python's `wait4` process resource accounting
+instead; the corrected launcher uses a new qualification name and preserves
+the same input, limits, process-group watchdog and source-endpoint assertion.
+
+## Two-hour checkpoint — 22:25 UTC
+
+Completed/failed benchmark cells: 44 (43 complete executions, one infrastructure
+error; completion does not mean solved). These cells consumed 10,493,514 jobs,
+1,597,809,747 admitted frames and 39,157.30 process-tree CPU seconds (10.88 CPU
+hours, including their setup/verification). R02 is ongoing at 2,070,400 jobs /
+273,341,186 frames; diagnostic local/probe work and compiler costs are additional,
+with their own records. No untouched validation seeds have been inspected.
+
+Facts: D01 reproduces the anchor's work and milestones and sees no equipment or
+capacity collisions across 8.16M eligible competitions on seed 3. Finite paired
+suffixes disprove universal behavioral dominance by resource preference, but
+small bounded retention does not reliably improve fresh progress. R01's early
+50M-frame coverage gains reverse on two seeds by 500k jobs. E01 has no qualifying
+local gain and is parked. R02 has reached Long Beam at 2.062M jobs, later than
+control's 1.762M, but remains active until its registered stopping condition.
+
+Both fresh MM2 chains acquired all eight weapons. C02 stopped in Wily 1 at the
+wall limit after 98,421,774 stage frames; C03 stopped there after 118,402,491.
+Their total admitted chain frames are 286,628,099 and 323,395,219 respectively.
+The early Heat advantage did not survive the complete Robot Master sequence.
+Neither reached Wily 4. S01 semantic-selection-only, from C02's same stage-entry
+prefix, exhausted 50M frames without reaching a boss. Changing location ranking
+alone is therefore insufficient at that work on this diagnostic start.
+
+L00 reproduced D01's exact source snapshot, full local campaign and checkpoint,
+and composed ordinary-genesis witnesses. L01 ordinary and bounded-hold local
+search both increased missile capacity to 15 without a boss. The ordinary
+witness reports health 9800 in tenths with one energy tank; independent replay
+repeats it, but its mechanical meaning needs inspection before treating it as
+useful resource improvement. Local snapshot-root runs reset archive history and
+learned continuations, so they are not continuations of D01's full archive.
+
+Candidate status: R remains experimental; E is parked; S has no qualified fresh
+candidate. No defaults change. Next decisions: finish R02; inspect raw state and
+native endpoint rendering for the unusual local witness and shared MM2 plateau;
+redesign the failed probes based on those observations rather than increasing
+work automatically. Preserve the existing SMB reference and run Nova/STB checks
+at the next available isolated checkpoint. Consolidation remains 06:56 UTC;
+hard stop remains 08:26 UTC. This checkpoint records research progress, not a
+finished tranche, complete validation, or a breakthrough.
+
+## I01 preregistration — raw endpoint inspection
+
+Question: does L01 ordinary's decoded health 9800 reflect the physical emulator
+state, and what is visible at the repeated MM2 Wily 1 endpoint? Existing witness
+replay establishes reproducibility but uses the same adapter decoder. A separate
+raw-machine replay of the exact discovered input, with per-frame RAM and one
+native endpoint image, can expose a transient or decoder mismatch without any
+new search or controller advice. Add a bounded diagnostic CLI (no policy change),
+compile under the existing 20-minute initial-build watchdog, then allow five
+minutes for each replay, at most 20k actions / two million physical frames and
+64 anomalous health transitions. Run L01 ordinary and C02 Wily 1 only initially.
+Require raw endpoint agreement with the adapter (except explicitly derived MM2
+fields); retain raw RAM, native image, input/core/ROM hashes and frame costs.
+A mismatch requires adapter investigation before resource claims. Agreement
+establishes a native state effect but not usefulness; use the visible endpoint
+only to diagnose measurement/local-exploration boundaries, never to supply a
+route or controller sequence. No fresh validation evidence is produced.
+
+I01 Metroid raw replay matches all adapter fields. Health jumps 37 → 9800 on
+the final physical frame (98431), bytes $106=00, $107=98; this is native state,
+not a replay mismatch. Add a 120-frame neutral-input observation-only tail to
+identify transient death/resource semantics, charged separately and never used
+as a fresh search start. MM2 inspection failed after writing its image because
+it requested save RAM on a cartridge without that region; preserve failure and
+correct the diagnostic to read cartridge RAM only where the decoder uses it.
+Build 011 was unused after correcting a diagnostic mode-byte label; build 012
+ran I01. Freeze corrected build 013 and retry under the same five-minute bound,
+with new names. If the high health immediately resolves to death, investigate
+terminal observation timing before further retention tuning.
+
+R02 completed 3M jobs / 392,442,771 frames. It admitted 599,473 alternatives,
+observed 107 map cells, reached Long Beam late, and missed Bombs/Kraid area.
+Control observed 155 cells and reached both. No boss in either. This policy is
+not supported as an improvement at the fixed anchor; retain it as an explicit
+experimental ablation and park family R.
+
+## G01 preregistration — candidate checkpoint regressions
+
+Question: do the generic retention changes preserve the qualified SMB reference
+and companion workload replay? Small Metroid/MM2 checks do not cover these
+adapters. Reuse the frozen five-seed SMB evidence and repeat representative seed
+20260910 under its exact 24-worker/2-GiB/600k-job/120M-frame reference condition,
+ordinary retention. Allocate the host exclusively to this cell now R02 is done;
+retain 600s search plus 120s finishing and a 750s process-group watchdog. This is
+an explicit temporary CPU-allocation exception (all 24 workers) for reference
+compatibility, with ample memory headroom and no concurrent campaign. Require
+solved and compare the frozen reference's deterministic work/stream evidence.
+Then run Nova level 1, Nova whole-game and STB Hard 500-job full campaign replay
+qualification at 2 workers/512 MiB, once with ordinary retention and once with
+resource-extremes (their adapters supply no resource axes, so fallback should
+preserve streams). Each cell has 120s search/60s finish and 210s outer watchdog;
+whole suite watchdog 1260s. A failure blocks general compatibility claims and
+requires targeted diagnosis; passing establishes checkpoint compatibility, not
+new whole-game performance or a default-policy recommendation.
+
+## T01 preregistration — terminal observation correction
+
+I02's raw state equals the adapter endpoint in both games. Metroid's 9800 health
+becomes zero after one neutral frame and stays zero for all 120 observed frames;
+mode changes from play to death at offset 89. This is a transient damage-underflow
+state, not usable health. The pinned disassembly's Bank07 SubtractHealth
+($CED7–$CEF6) stores the BCD subtraction before checking borrow and zeroing health;
+a video-frame boundary can expose that intermediate RAM. Tank pickup caps the
+count at six ($DC03), and normal full health is 6999 tenths. Source:
+https://github.com/nmikstas/metroid-disassembly/blob/4270d57f9468daebdeea485686e31e26218a780c/Source_Files/Bank07.asm
+No route or controller advice is drawn from this source.
+
+Question: do transient impossible-health states poison same-slot retention?
+Family T is a workload-terminal correction, isolated from archive identity,
+retention, selector and local actions. R and E are parked. Add an explicit
+`death_or_bcd_underflow_or_ending_v3` policy that treats the BCD high-byte sign
+range (decoded health >=8000) as terminal, alongside the existing zero predicate.
+Keep legacy v2 available and the default for historical byte-compatible replay;
+record/reject mismatched terminal policy headers. Do not clamp healthy resource
+values, rank items, or add game-specific generic-search logic. The >=8000 range
+is deliberately separate from ordinary maximum-health capping; no broader
+invalid-state inference is claimed.
+
+Before fresh development: focused tests under 10m for the underflow frame,
+legitimate full health, ordinary damage and legacy/corrected policy separation;
+replay I02's witness with both policies and one-frame continuations from all
+256 controller masks (<=256 additional frames plus restoration, <=5m). Require
+all physical continuations to enter zero health and corrected admission to
+reject the endpoint while legacy retains it. Then a <=5k-job full campaign/root
+checkpoint replay from the earlier D01 development input (<=5m) must exercise
+this terminal change, with ordinary-genesis witness replay twice. A failed
+causal check blocks a larger campaign. Passing supports a 12M-frame paired local
+search at fixed source and a fresh development comparison; it does not establish
+that the correction improves depth or explains the whole anchor failure.
+
+T01 focused checks passed: 120 NES library tests plus the nes-eval unit test,
+including preservation of raw underflow health, valid-health acceptance, strict
+policy identifiers and rejection across replay contexts (15.38s compilation,
+25.52s tests). To make the <=5k full replay exercise the observed defect, use
+L01's own witness with its final action removed as a second bounded diagnostic
+origin. This is automatic truncation at the already-identified underflow action,
+not a hand-authored controller or fresh start. Compare legacy/corrected from
+that identical live prefix before any larger local or fresh run. Retain source
+hash and two ordinary-genesis replays; require actual differing admissions or
+deaths and full report/checkpoint equality on replay in both arms.
+
+T01 all-mask causal check passed: each of 256 one-frame physical continuations
+has zero health; legacy labels the exact 9800 endpoint alive and v3 labels it
+dead, without changing any mechanical field. Both 5k local campaign/checkpoint
+replays passed but their deterministic work/admissions are identical (587,447
+frames, 2,924 retained, 1,848 deaths). They did not exercise the terminal change.
+Refine the qualification origin to the same discovered tape truncated by exactly
+one physical frame (reduce its last hold from 8 to 7), instead of removing the
+whole last action. This tests the known frame-boundary defect directly under
+ordinary random suffixes, with the same 5k/2M/240s limits and new immutable names.
+This fixture is not a development improvement or a validation seed.
+
+G01 SMB exactly matches frozen reference seed 20260910: 301,688 jobs /
+42,017,148 frames, stream 33112e2a5dc91ed95635cdff4c162c901392d0a3b24be57f26e67b57b0ef15b6,
+solved. Nova level 1/full and STB Hard full replays pass in both retention arms;
+normalized reports differ only by the explicit slot_retention header and stream
+hash. Their unchanged work is 80,586 / 80,586 / 83,148 frames respectively.
+No new whole-game companion success is claimed from these 500-job checks.
+
+T01b full replay also passes in both arms with identical work: 207,761 frames,
+only the root retained, 5,000 deaths. Reading the action vocabulary explains why:
+its shortest action is two frames, so starting one frame before underflow skips
+past that intermediate value before any action endpoint. Redesign the fixture
+around this executable constraint: truncate the discovered final hold by two
+frames (8→6). The ordinary two-frame draws can then end on the known underflow
+frame. Keep the same bounds; this is a frame-alignment correction, not a budget
+increase. If this third fixture still has no differing admission, stop this
+qualification approach and use the direct execution/admission contract evidence
+without claiming full-campaign anomaly coverage.
+
+T01c passes actual-mechanism qualification. Both 5k full campaign/checkpoint
+replays agree exactly with their live runs. Legacy retains 3 states / 4,983
+deaths / 209,720 frames; corrected retains 2 / 4,986 / 209,750. The causal
+all-controller probe establishes the rejected branch's terminal future. The
+fixture is intentionally almost terminal and does not measure useful depth.
+
+## T02 preregistration — equal-frame local and fresh development
+
+Question: after preventing false high-health admission, does ordinary exploration
+preserve useful futures or progress more deeply? T01 proves the defect and replay
+mechanism but cannot answer search efficacy. Use the unchanged D01 first Kraid
+area input (own development discovery) for paired legacy/v3 local searches:
+4 workers, 8 GiB, alphabet-only, one_to_six, semantic selector, 8M admitted frames,
+100k execution safety cap, 1080s search plus verification within a 20m cell.
+Eight million is below both prior L01 frame totals, so the frame limit should
+bind; if executions or wall bind first, label censoring instead of extending.
+Keep ordinary retention. Compare boss/capability attainments, map coverage and
+retained/live exposure; replay composed witnesses twice from ordinary genesis.
+
+Also qualify terminal-014's legacy path against the frozen 100k seed-3 stream
+under the <=5m legacy condition. If it matches, run fresh v3 development seeds
+3,4,5 at the unchanged R01 500k/70M/4-worker/8-GiB condition; compare against the
+already frozen ordinary-retention controls. Same selector/vocabulary/mixture,
+no retained inputs. Each fresh cell has 1080s search +120s finish and a 1230s
+outer process-group watchdog. Allocate local arms CPUs 4–7 and 12–15; legacy
+compatibility CPUs 0–3, then fresh seed3 there. At most four 4-worker campaigns
+and 32 GiB logical search memory at once. Swap P/E class for subsequent seeds.
+Timing is descriptive unless CPU class matches. If v3 changes no short-search
+work, use the known late underflow witness to justify one fixed-anchor long
+probe; a short run cannot settle a late defect. If short work changes, require
+repeatable capability/exposure benefit or explicitly register a depth-specific
+question before going long. No resource-retention combination yet.
+
+T02 local arms both stop at 8,001,091 frames / 66,023 jobs, with identical
+40-cell coverage and no new capability. This is earlier than L01's known
+underflow-producing search, so it does not test downstream effect. Preserve
+this limit explicitly. Add constant-size, reporting-only counters for observed
+underflow action endpoints, candidate eligibility and first execution, plus
+maximum endpoint health and final cached underflow occupancy. These counters
+must not change stream/report bytes or add snapshots/reconstructions.
+The metadata records their fixed memory separately.
+
+To cross the already demonstrated late event, register T02b at 12M frames with
+a 150k-job safety cap (raise only the bounded diagnostic CLI's cap from 100k,
+keep full replay <=5k). Same D01 local origin and policies, <=20m per cell.
+The reason for 12M is L01's directly observed anomaly by 11,827,246 frames, not
+an unobserved hope of progress. Compare both arms at the common frame boundary;
+if either lacks an underflow endpoint, the local efficacy question remains
+unanswered and do not increase it again. First recheck the vocabulary-aligned
+5k fixture and legacy 100k hash with the new reporting build, then run T02b.
+Fresh T02 cells already running keep their immutable build and original scope.
+
+Changed-target Clippy found diagnostic wall-clock calls outside the existing
+explicit telemetry allowance and a collapsible conditional. Move only those
+clock reads into documented diagnostic helpers and simplify the conditional;
+these are reporting wrappers, not a campaign semantic change. Preserve the
+failed check log and rerun changed-target Clippy. Focused tests already passed.

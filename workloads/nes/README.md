@@ -92,3 +92,11 @@ Metroid supplies health/missiles and MM2 health/total weapon energy; other
 workloads keep ordinary retention. This bounded research policy leaves the
 controller vocabulary and selector unchanged. Its identity is recorded in
 streams and evaluation provenance.
+
+Development-only observation audits are available through `metroid-local-search`
+(request-bounded search from an input discovered by a prior campaign, with
+composed ordinary-genesis witness verification) and `nes-input-inspect`
+(raw-machine replay, endpoint RAM/image, and bounded terminal-state probes).
+Their diagnostic origins never qualify fresh search. Requests, bounds, exact
+provenance and experimental policy comparisons are documented in the
+[alternative-futures research ledger](../../benchmarks/search/alternative-futures/README.md).

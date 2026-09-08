@@ -64,6 +64,8 @@ struct Request {
     #[serde(default)]
     slot_retention: Option<String>,
     #[serde(default)]
+    metroid_terminal: Option<String>,
+    #[serde(default)]
     mm2_chain: bool,
     #[serde(default)]
     prefix_input: Option<PathBuf>,
@@ -393,6 +395,9 @@ fn main() -> Result<()> {
     if request.retention_audit && request.game != "metroid" {
         return Err("replacement-pair observation currently requires Metroid".into());
     }
+    if request.metroid_terminal.is_some() && request.game != "metroid" {
+        return Err("Metroid terminal policy requires the Metroid adapter".into());
+    }
     match request.game.as_str() {
         "smb" | "metroid"
             if request.level.is_some()
@@ -513,7 +518,15 @@ fn main() -> Result<()> {
         "metroid" => evaluate(
             &{
                 let game = MetroidGame::new(&rom, p, h)
-                    .with_milestone_input_dir(out.join("milestone-inputs"));
+                    .with_milestone_input_dir(out.join("milestone-inputs"))
+                    .with_terminal_policy(
+                        nes_workload::metroid::target::MetroidTerminalPolicy::parse(
+                            request
+                                .metroid_terminal
+                                .as_deref()
+                                .unwrap_or("death_or_ending_v2"),
+                        )?,
+                    );
                 if request.retention_audit {
                     game.with_retention_audit(out.join("retention-audit.json"))
                 } else {

@@ -16,6 +16,19 @@ source addresses and meanings are documented beside their constants in
 identifier is `death_or_ending_v2`, correcting the prototype's stale
 `death_only_v1` label without changing that prototype's predicate.
 
+The opt-in `metroid_terminal: death_or_bcd_underflow_or_ending_v3` evaluation
+policy also marks decoded health >=8000 as terminal. Bank07's damage routine
+stores a BCD subtraction before testing borrow and clearing lethal damage; a
+video-frame boundary can expose that intermediate value. A development witness
+reported 9800 for one frame, then zero under neutral input. Such a state must
+not displace living alternatives as an apparent health improvement. This policy
+keeps raw health unchanged and changes only terminal observation/admission.
+The historical v2 policy remains the default and replays with its original
+semantics; campaign headers distinguish the policies and mismatches fail.
+This correction is separate from capability keys and experimental retention.
+See the [research ledger](../../../../benchmarks/search/alternative-futures/README.md)
+for the causal probe and qualification limits.
+
 `archive.rs` records the experimental adapter policy explicitly. It pools
 16-pixel positions through 32-pixel cells, 128-pixel regions, map cells, and
 inventory counts. Posture and door-transition state distinguish possible
