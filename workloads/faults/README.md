@@ -74,8 +74,9 @@ harmony search --package faults IMAGE.oci --kernel vmlinux --backend consonance 
 
 Both modes write `report.json` ([`package`](src/package.rs)) with the pinned
 image, kernel and agent hashes, the execution identity, the run bounds, and
-either the bugs found or the replay outcomes. Search also writes the campaign
-summary, its stream, and one `bug-N.json` per recorded bug
+either the bugs found or the replay outcomes. Search also writes
+`campaign-summary.json`, `stream.jsonl`, `progress.jsonl`,
+`first-bug-input.json`, and one `bug-N.json` per recorded bug
 ([`report`](src/report.rs)); each of those carries the action list and the
 encoded window list that reproduces it.
 

@@ -225,23 +225,33 @@ mod live {
     use std::{error::Error, io::BufWriter, time::Instant};
 
     use searcher::search::{
-        archive::{RetentionPolicy, SelectorPolicy},
+        archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy, RetireThresholds, SelectorPolicy},
         campaign::CampaignOrigin,
         draw::{DrawMixture, SuffixShape},
     };
+    use serde_json::json;
 
     use super::{Artifacts, BugSummary, Options, ReplaySummary, Report, sha256_hex};
-
-    /// Retained archive entries in a search. The archive holds one entry per
-    /// distinct endpoint key, and the key space is bounded by the bundle.
-    const ARCHIVE_ENTRY_LIMIT: usize = 4096;
     use crate::{
         bundle::FaultVocabulary,
         campaign::{FaultCampaignConfig, FaultGame, run_fault_campaign_checkpointed},
         consonance::{FaultConfig, FaultTarget, identity},
-        report::write_bug_reports,
+        report::{BugReport, write_bug_reports},
         target::{ActionWindows, FaultAction},
     };
+
+    /// Logical memory the live search structures may hold. A worker's guest
+    /// RAM dwarfs this, so the search side is bounded well below it.
+    const MEMORY_BUDGET_MIB: usize = 512;
+
+    /// Draws one entry takes without a retained descendant before it retires,
+    /// and the pooled thresholds for the group depths above it.
+    fn retire_thresholds() -> RetireThresholds {
+        RetireThresholds {
+            entry: 3,
+            groups: vec![6, 2],
+        }
+    }
 
     fn config(options: &Options) -> FaultConfig {
         FaultConfig {
@@ -278,37 +288,54 @@ mod live {
             wall_budget: options
                 .wall_minutes
                 .map(|minutes| std::time::Duration::from_secs(minutes.saturating_mul(60))),
-            archive_entry_limit: ARCHIVE_ENTRY_LIMIT,
-            memory_budget_mib: None,
+            archive_entry_limit: MAX_ARCHIVE_ENTRIES,
+            memory_budget_mib: Some(MEMORY_BUDGET_MIB),
             materialize_final_artifacts: true,
-            retention: RetentionPolicy::default(),
-            selector: SelectorPolicy::default(),
-            suffix: SuffixShape::default(),
-            mixture: DrawMixture::default(),
-            victory_input_path: Some(options.output.join("victory-input.json")),
+            retention: RetentionPolicy::AdmitAlive,
+            selector: SelectorPolicy::EnergyFrontierCheapest(retire_thresholds()),
+            suffix: SuffixShape::OneToSix,
+            mixture: DrawMixture::AlphabetOnly,
+            victory_input_path: Some(options.output.join("first-bug-input.json")),
         };
         let started = Instant::now();
         let mut stream =
             BufWriter::new(std::fs::File::create(options.output.join("stream.jsonl"))?);
+        let mut progress = std::fs::File::create(options.output.join("progress.jsonl"))?;
         let (campaign_report, _checkpoint) = run_fault_campaign_checkpointed(
             &game,
             &campaign,
             &CampaignOrigin::Genesis,
             &mut stream,
-            None,
+            Some(&mut progress),
         )?;
-        serde_json::to_writer_pretty(
-            std::fs::File::create(options.output.join("campaign.json"))?,
-            &campaign_report,
-        )?;
+        let archive = &campaign_report.campaign.archive;
         let windows = ActionWindows {
-            root_seal: game.root_seal().unwrap_or_default(),
-            horizon_nanos: config.horizon_nanos,
+            root_seal: archive.root_seal,
+            horizon_nanos: archive.horizon_nanos,
         };
-        let written = write_bug_reports(
-            windows,
-            &campaign_report.campaign.archive.bugs,
-            &options.output,
+        let written = write_bug_reports(windows, &archive.bugs, &options.output)?;
+        let summary = json!({
+            "mode": "faultlab_campaign",
+            "image": game.image_identity(),
+            "horizon_nanos": archive.horizon_nanos,
+            "root_seal": archive.root_seal,
+            "vocabulary": vocabulary.identifier(),
+            "campaign_seed": campaign_report.campaign.campaign_seed,
+            "workers": campaign_report.campaign.workers,
+            "execution_budget": campaign_report.campaign.execution_budget,
+            "executions": campaign_report.campaign.executions_completed,
+            "horizons": campaign_report.campaign.frames_emulated,
+            "stream_sha256": campaign_report.campaign.stream_sha256,
+            "archive_entries": archive.entries.len(),
+            "progress": archive.progress_watermark,
+            "milestones": archive.milestones,
+            "bugs_found": campaign_report.bugs_found,
+            "executions_to_first_bug": campaign_report.executions_to_first_bug,
+            "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),
+        });
+        std::fs::write(
+            options.output.join("campaign-summary.json"),
+            serde_json::to_vec_pretty(&summary)?,
         )?;
         report.executions = campaign_report.campaign.executions_completed;
         report.horizons_clocked = campaign_report.campaign.frames_emulated;

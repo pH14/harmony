@@ -43,8 +43,9 @@ searching. Both modes write `report.json`.
 `--seed`, `--workers`, `--executions`, and `--actions` bound the campaign's logical
 work. `--out` selects a fresh output directory. Every package writes
 `stream.jsonl` and `report.json`, retaining campaign choices and results; NES
-adds `prepared.json` and `checkpoint.json`, and faults adds `campaign.json` and
-one `bug-N.json` per bug. An explicit backend selection is checked before
+adds `prepared.json` and `checkpoint.json`, and faults adds
+`campaign-summary.json`, `progress.jsonl`, `first-bug-input.json`, and one
+`bug-N.json` per bug. An explicit backend selection is checked before
 execution.
 
 ## OCI execution
