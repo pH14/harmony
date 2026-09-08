@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Historical bugs
+name: Benchmarks / Historical bugs
 
 # Runs the historical-bug cases on GitHub-hosted runners with nested KVM. The
 # only case wired up so far is the PostgreSQL CREATE INDEX CONCURRENTLY
@@ -442,12 +442,15 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  roster:
-    name: Render the historical-bug roster
-    needs: [probe, witness, search]
+  report:
+    name: report
+    needs: [manifest, guest, images, tools, probe, witness, search]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
       # A run where every replay died before writing a report still renders the
@@ -475,3 +478,8 @@ jobs:
           path: bugs/historical/README.md
           if-no-files-found: warn
           retention-days: 30
+      - uses: actions/github-script@v7
+        if: always()
+        with:
+          script: |
+            await require('./.github/scripts/benchmark-report.cjs')({github, context, core});
