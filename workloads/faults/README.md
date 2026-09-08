@@ -15,8 +15,8 @@ in the fault agent's bundle format:
 |---|---|
 | `node <id> <name> <argv...>` | one workload process the agent supervises |
 | `hook <id> <argv...>` | a command the search can run at any moment |
+| `setup <argv...>` | runs once, before any node starts |
 | `ready <argv...>` | must pass before the run's setup point is sealed |
-| `setup <argv...>` | runs once, after the nodes start, before readiness |
 
 [`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
 alphabet, and assembles a guest initramfs: the base image, the OCI rootfs, and
