@@ -279,8 +279,8 @@ else
         (cd "$linux_dir" && ./test-harmony-serialization.sh)
     fi
     # The fault-library profile: the same series and pinned source, built
-    # single-processor with ring-3 counter reads left to the host, so stock
-    # database binaries run. It carries its own reviewed counter-opcode
+    # with ring-3 counter reads left to the host, so stock database binaries
+    # run, and with the task park. It carries its own reviewed counter-opcode
     # baseline because its call sites sit at different offsets. Built after
     # everything above: the other profiles keep the object-directory sequence
     # they were reproduced under, and the serialization test seeds its KUnit
