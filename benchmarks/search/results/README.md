@@ -57,6 +57,15 @@ actual continuation dispatch counts; SMB dispatches none because its policy
 reports no strict same-slot preference improvements. These are development
 results; the full candidate comparison uses a separate seed panel.
 
+[`count-continuation-005.json`](count-continuation-005.json) then adds entry
+counts to continuation replay, keeping the same panel. Relative to continuation
+alone, median frame costs change by −9.1% for SMB, +42.5% for Metal Man, +36.8%
+for Nova level 1, and +28.9% for STB Hard. All previously solved cases still
+pass, but whole-game Nova reaches 7/7/6 clear flags rather than 7/7/7. Metroid
+retains its plateau, observing 60/60/61 map cells. This does not support adding
+counts to the general candidate; the qualified SMB reference is a separate
+resource condition.
+
 ## Qualified SMB reference
 
 [`smb-reference-005.json`](smb-reference-005.json) records four development
