@@ -84,7 +84,7 @@ pages, so a build's heap scans take longer than one churn cycle.
 | ready | `pg_isready` on the unix socket |
 | hook 1 | HOT-update churn: the seeded `churn` procedure re-updates a small set of rows spread across the table, one short transaction per slice |
 | hook 2 | `DROP INDEX` + `CREATE INDEX CONCURRENTLY` round |
-| hook 3 | `pg_amcheck --heapallindexed`; `@always 2 0` when it reports a heap tuple with no index entry, silent when it could not run (server down, connection lost, no valid index) |
+| hook 3 | `pg_amcheck --heapallindexed`; `@reachable 24` on every verdict it reached and `@always 2 0` when it reports a heap tuple with no index entry; silent when it could not run (server down, connection lost, no valid index) |
 | hook 4 | `VACUUM`; `@sometimes 25` so a pruned state is a search goal |
 
 The churn updates a column that is not in the index being built, so the updates
@@ -135,12 +135,24 @@ campaign.
 `ubuntu-24.04` runners with nested KVM. Three checks:
 
 - **probe** — replay `probe.json` twice on 14.3 and once on 14.4. Both 14.3
-  replays must report the bug; the 14.4 replay must not.
+  replays must violate assertion 2, and the 14.4 replay must apply every action
+  and report point 24 with no violation: the check ran and passed. A crash, a
+  different assertion, or a run whose detector never reached a verdict fails the
+  arm it appears on. Each run must also execute in the guest as many horizons as
+  it applied actions, which is what says the replay ran the input rather than
+  restoring a snapshot of it.
 - **witness** — the same rule for `case.json`'s `witness`, when it has one.
 - **search** — a fresh campaign on 14.3 with the budget in `case.json`, and one
-  on 14.4 as a control. A 14.3 miss fails the job: this bug is expected to be
-  found, so a miss is a regression in the machinery rather than a null result.
-  A 14.4 hit fails it too.
+  on 14.4 as a control. The 14.3 campaign must record a bug that violates
+  assertion 2, carries point 24, and reproduced when replayed. A miss fails the
+  job: this bug is expected to be found, so a miss is a regression in the
+  machinery rather than a null result. A 14.4 hit fails it too. The control
+  campaign's own report carries no per-execution oracle record, so the control's
+  oracle is shown to run and pass by the probe replay.
+
+`.github/scripts/historical-oracle.sh` holds these rules and reads the two ids
+from `case.json`; `.github/scripts/historical-oracle.test.sh` exercises them
+against synthetic reports in quality CI.
 
 The earlier reproduction in the fault-library work — a campaign that reported
 the corruption at execution 476 with 8 workers at 500 ms horizons — was found
@@ -153,7 +165,7 @@ Hosted runners have stock KVM, not the counter-exiting build. On stock KVM the
 `faultlab` kernel lets user space read the host's timestamp counter directly,
 so the raw host counter reaches guest memory and two runs of one input can end
 on different state hashes. What CI claims is therefore about the oracle and the
-search, not about bit-identical replay: the oracle trips on 14.3, stays silent
-on 14.4, and a campaign finds a tripping input within budget. Each job reports
+search, not about bit-identical replay: the oracle trips on 14.3, runs and
+passes on 14.4, and a campaign finds a tripping input within budget. Each job reports
 whether the state hashes across repeats agreed, as evidence, and does not
 require it.
