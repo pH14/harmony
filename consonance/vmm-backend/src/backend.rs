@@ -354,16 +354,10 @@ mod tests {
     /// default fail-closed contract, and the boxed forward to that default,
     /// directly observable.
     #[derive(Default)]
-    struct DefaultRetireBackend {
-        latch: Option<Arc<AtomicBool>>,
-    }
+    struct DefaultRetireBackend;
 
     impl Backend for DefaultRetireBackend {
         type A = X86;
-
-        fn cancellation_flag(&self) -> Option<Arc<AtomicBool>> {
-            self.latch.clone()
-        }
 
         fn set_policy(&mut self, _policy: &X86Policy) -> Result<()> {
             Ok(())
@@ -441,7 +435,7 @@ mod tests {
 
     #[test]
     fn default_retirement_is_fail_closed_and_box_forwards_it() {
-        let mut plain = DefaultRetireBackend::default();
+        let mut plain = DefaultRetireBackend;
         assert!(matches!(
             plain.retire_pending_completion(),
             Err(BackendError::Unsupported {
@@ -449,7 +443,7 @@ mod tests {
             })
         ));
 
-        let mut boxed: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend::default());
+        let mut boxed: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend);
         assert!(matches!(
             boxed.retire_pending_completion(),
             Err(BackendError::Unsupported {
@@ -459,15 +453,19 @@ mod tests {
     }
 
     #[test]
-    fn box_forwards_the_backend_cancellation_latch_unchanged() {
+    fn a_backend_without_a_latch_reports_none_through_a_box_too() {
+        assert!(DefaultRetireBackend.cancellation_flag().is_none());
+        let without: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend);
+        assert!(without.cancellation_flag().is_none());
+    }
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn box_forwards_the_backend_latch_unchanged() {
         let latch = Arc::new(AtomicBool::new(false));
-        let boxed: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend {
-            latch: Some(Arc::clone(&latch)),
-        });
+        let boxed: Box<dyn Backend<A = X86>> =
+            Box::new(crate::MockBackend::new().with_cancellation_flag(Arc::clone(&latch)));
         let forwarded = boxed.cancellation_flag().expect("latch forwarded");
         assert!(Arc::ptr_eq(&forwarded, &latch));
-
-        let without: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend::default());
-        assert!(without.cancellation_flag().is_none());
     }
 }

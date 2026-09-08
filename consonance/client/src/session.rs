@@ -678,7 +678,12 @@ where
         if settled >= max_settle {
             return Err(SessionError::Settle { allowance: settled }.into());
         }
+        // A zero step would loop without moving the guest, so it ends the
+        // settling as an exhausted allowance instead.
         let step = settle_step.min(max_settle - settled);
+        if step == 0 {
+            return Err(SessionError::Settle { allowance: settled }.into());
+        }
         last = Some(advance(context, step)?);
         settled += step;
     }
