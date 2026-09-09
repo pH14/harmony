@@ -7,6 +7,11 @@ sources and response identity. [The full feedback](fable-5-1-feedback.md) is an
 external model's advice, not established evidence. [GOAL.md](GOAL.md) is the
 adopted, bounded research objective.
 
+Start with the [completed tranche summary](SUMMARY.md) and
+[paired-panel figure](paired-panels.png). The unchanged selection-cost ablation
+passed development and independent confirmation for an early Metroid milestone;
+the bounded MM2 transfer failed. The deeper research goal remains unachieved.
+
 ## Decisions adopted
 
 - Calibrate the frozen ordinary control before spending more on mechanism
@@ -192,7 +197,50 @@ walk in both selectors. First stage victory supplies an exact admitted-cost
 endpoint; post-budget drain events do not count as budgeted hits. Three strict
 wins, a 15% mean restricted-cost reduction, and the fixed resource gate remain
 necessary. Both-censored pairs are ties. Its maximum 40M nominal search frames
-fit the remaining tranche allowance. No transfer result is yet available.
+fit the remaining tranche allowance. Its completed result is recorded below.
 Stage victories stop cells early, so T01's CPU/elapsed ratios compare total
 event-stopped panel cost, including finishing and replay. They are not
 fixed-admitted-frame throughput estimates; both arms retain identical hard caps.
+
+## T01 transfer outcome and final allocation
+
+[T01's raw record](t01-results.json) and [independent audit](t01-analysis.json)
+fail the registered gate. The first three pairs produced one strict win and two
+both-censored ties. Even winning the fourth pair could not supply the required
+three wins, so the registered runner stopped without running seed 2344522873.
+The service completed normally at 2026-09-09 17:08:06 UTC; the scientific result
+is negative, not an infrastructure failure.
+
+| Seed | Control first-stage victory | Candidate first-stage victory | Result |
+| --- | ---: | ---: | --- |
+| 1916272911 | Not attained by 5M | 4,939,007 frames | Win |
+| 2118083943 | Not attained by 5M | Not attained by 5M | Tie |
+| 2191615824 | Not attained by 5M | Not attained by 5M | Tie |
+| 2344522873 | Unrun | Unrun | Unmeasured |
+
+The single win saves 60,993 restricted frames. No four-pair mean or resource
+ratio is reported for the incomplete panel. This does not rule out an effect at
+another horizon, but it supplies no positive transfer qualification at 5M. T01
+used 29,945,199 admitted frames, including 5,255 beyond frame caps, and 121,048
+twice-replayed witness frames. The successful cell also admitted 937 frames
+after its first victory; these remain charged and are not frame-cap overshoot.
+
+The [final ledger](work-ledger-after-t01.json) accounts for 489,962,470 admitted
+search frames, including 22,526 beyond registered frame caps, and 28,815,743
+known auxiliary frame charges. Setup, unadmitted worker work and physical
+reconstruction gaps remain explicitly unmeasured. Approximately 10M search
+frames remain; auxiliary allowance is not available for performance searches.
+That remainder cannot fund another calibrated four-pair Metroid panel or the
+required deeper qualification. No further native search was allocated.
+
+A [retrospective secondary-milestone audit](secondary-milestones.json) finds one
+energy-tank discovery in the S01 candidate arm and none in R01. Neither Metroid
+panel reports Bombs, Kraid/Ridley area entry or a boss defeat. These observations
+do not replace the registered primary endpoint. Untouched validation is unrun.
+
+`plot_panels.py` reads the frozen registrations, results and analyses, verifies
+their hashes, and produces the [figure](paired-panels.png) with a
+[provenance sidecar](paired-panels-provenance.json). With Matplotlib installed,
+run `python3 benchmarks/search/continuation-yield/plot_panels.py` from the repo
+root. Panels retain separate horizons and endpoints; marker whiskers show
+observation timing, not statistical uncertainty. Reproduction uses no emulator.

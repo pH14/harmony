@@ -1,0 +1,21 @@
+{
+  "matplotlib_version": "3.11.1",
+  "panels": {
+    "s01": {
+      "results_sha256": "a14316175b8bf664239457df29b3cc11d43aecdebb459bdf07ec3de82739b13c",
+      "registration_sha256": "1b338951642a9a40a6d944dad7bdcc72738534ebdd9841a1bcb5a7e015be9009",
+      "analysis_sha256": "9022107017d3876d7f56c94f9c90dbc40fdd601716b7a8378d5f5465dcabb25b"
+    },
+    "r01": {
+      "results_sha256": "70068c90a31b504bd3060cc52bdcc3a22ecc894d1b2c8561cd4d43793d530327",
+      "registration_sha256": "e603fde072183c37c023e89d80f48c0cd5ccf4b424782d7a1e0044d6515b7143",
+      "analysis_sha256": "60f6faf98f1020cbe5eaf20d645bb3b87e993dac78b87cf0fa69ed3e2b726f89"
+    },
+    "t01": {
+      "results_sha256": "c19288c6be4e3a16b9b4086e3496f5f5698e6a437d11c7e7af1b70ef25fcdcfd",
+      "registration_sha256": "a1a1e40bbae9b38f534b6f479660533ed8fd01150143608a5644e5ea88bf00de",
+      "analysis_sha256": "850580eb448ed866605f5619fce737a44457fd29efc92945cea8de3d8f11915f"
+    }
+  },
+  "plotter_sha256": "3666194d6a486d07ea8c64b4f8edbfca2647d8b569f9148012f991fee0d75d7c"
+}
