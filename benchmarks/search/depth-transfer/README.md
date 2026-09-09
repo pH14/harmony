@@ -139,7 +139,7 @@ four measurements passed. Actual admitted work including drain is 173,654,997
 frames, with 711,296 known twice-replayed witness frames. This qualifies the
 endpoint for allocation; it does not compare selectors or guarantee power.
 
-[D01](d01-registration.json) freezes four fresh paired seeds on ms02 CPUs 0–3,
+[D01](d01-registration.json) froze four fresh paired seeds on ms02 CPUs 0–3,
 50M frames per arm, with balanced sequential arm order and no concurrent
 performance job on that host. Three strict wins, at least 15% lower mean
 restricted cost, and CPU/elapsed ratios at most 1.25 are required. The complete
@@ -147,9 +147,19 @@ eight-cell wall bound is reserved before launch. Retention, terminal policy,
 actions and endpoint remain unchanged. A passing result earns independent
 confirmation on msr1; an impossible win count stops further pair dispatch.
 
-Completed new work now totals 173,654,997 admitted search frames and 2,247,093
-known auxiliary frames, plus the disclosed unmeasured gaps. D01 has its own
-400M nominal ceiling and no result yet. All new work remains in PR #287.
+[D01 failed its allocation gate](d01-analysis.json) after two complete pairs:
+
+| Paired seed | Control restricted cost | Candidate restricted cost | Result |
+| --- | --- | --- | --- |
+| 1695811351 | 50M, censored | 50M, censored | Tie |
+| 1437316129 | 48,303,571, hit | 50M, censored | Loss |
+
+Three wins became impossible, so the runner stopped the remaining two pairs.
+Actual admitted work was 198,308,020 frames, plus 546,224 known witness frames.
+The four-pair cost/resource result is unmeasured; independent confirmation was
+not earned. This does not negate the separately replicated first-missile
+precursor result or establish population equivalence. It stops this later-depth
+allocation under the unchanged endpoint and horizon.
 
 ## Native diagnostic correction
 
@@ -160,11 +170,20 @@ dense mode adds 29,911 area frames while preserving all-frame hashes, emulator
 endpoints and all three replay comparisons. It spent 767,592 physical frames
 including setup. The hit-state regression and all-feature probe Clippy pass.
 The new source/build stays separate from D01's frozen performance binary.
-Completed auxiliary work is now 3,014,685 known frames before D01 witnesses.
+This qualification adds 767,592 known auxiliary frames to the ledger.
 
-[B01](b01-registration.json) reserves one longer architecture check after D01
-finishes: replay C01's already known control-1 on x86 at a fixed 35M horizon.
-It must reproduce the known 33,896,740-frame event, total admitted work and
-action tapes. This deliberately reused control is qualification only; its
-entire work is charged to a 36M auxiliary ceiling and supplies no new sample to
-the selector comparison. No performance job may share its host while it runs.
+[B01 passed](b01-analysis.json) after D01 finished. C01's deliberately reused
+control-1 on x86, at a fixed 35M horizon, reproduced the known 33,896,740-frame
+event and 33,897,593 total admitted frames exactly. Main and milestone action
+tapes and replayed semantic observations match across hosts. Its 34,099,797
+known frames, including witness replay, are qualification work and add no fresh
+performance sample. This is a longer platform check, not universal cross-host
+identity or a cross-host resource comparison.
+
+The [completed ledger](ledger.json) totals **371,963,017 admitted search frames**
+and **37,660,706 known auxiliary frames** for this renewed block. Failed-F01
+advancement, setup and unadmitted-work gaps remain explicit. The next
+[goal step](GOAL.md) is to qualify encounter/lifetime observation across restore
+boundaries and use bounded existing-tape evidence before another search family
+or larger allocation. The original boss/Wily breakthrough remains unachieved.
+All work remains in PR #287.

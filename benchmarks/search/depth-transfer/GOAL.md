@@ -66,3 +66,56 @@ recorded next decision, not repeated parameter sweeps or another untouched panel
 Publish concise results, exact provenance, actual costs, failures and open gaps
 in the existing PR. Mark the research goal achieved only with the original
 matched-control and untouched boss/Wily evidence, not because a stage or CI ends.
+
+## Decision after the completed block
+
+C01 passed with three of four energy-tank hits. D01 then stopped at its
+registered futility gate after one censored tie and one loss: zero strict wins
+in two pairs. The remaining pairs and independent confirmation were not earned.
+B01 reproduced the known long ARM control on x86 at exactly the same admitted
+event, work, action tapes and replayed semantic observations. Do not reopen this
+selector's depth allocation from the earlier first-missile improvement or treat
+the stopped screen as proof of population equivalence.
+
+The renewed block has spent 371,963,017 admitted search frames and 37,660,706
+known auxiliary frames; the ledger retains unmeasured gaps and all older totals.
+The original breakthrough objective remains unmet. Unused compute is not a
+reason for another selector, retention or duration sweep.
+
+The next priority is reporting-only encounter and partial-fight qualification
+under issue #281. F02 supplies a direct counterexample: all 98 HP decreases in
+two complete reference fights happen with both the loader and special tag
+absent. Native NQ01 qualifies the optional full-area trace while preserving
+legacy bytes and emulator state. These are measurement results, not search wins.
+
+1. Derive a small observer contract from the pinned loader, hit, retirement and
+   slot-reuse routines. Decide whether a snapshot-local active type/status
+   predicate can identify a boss through hit states, or whether an anchor must
+   remain bound to the exact restored snapshot. Do not assume route-history
+   identity survives an arbitrary restore. No room target or action guidance
+   may enter the searcher.
+2. Give each restored target a fresh HP baseline. Report a decrease only within
+   one justified lifetime and continuous observation interval. Restore/reset,
+   frame gaps, inactive reuse, area/type changes and unexplained HP increases
+   must reset or invalidate the comparison. An unqualified starting state is
+   unavailable evidence, not zero damage. Never sum inherited prefix damage
+   repeatedly across search branches.
+3. Use the stored positive F02 traces and planted reset, gap, slot-reuse and
+   stale-byte counterexamples before any emulator allocation. Require the real
+   hit frames to survive and fabricated cross-boundary deltas to disappear.
+   This analysis requires no new physical frames. Then qualify any optional
+   native observer with at most 2M known auxiliary frames, exact default-byte
+   compatibility and unchanged search/input/retention behavior.
+4. Freeze at most eight already searched development tapes before inspecting
+   their new encounter outcomes. Replay at most 250k route frames per tape and
+   three passes, within a separately recorded 6.1M auxiliary ceiling including
+   setup. Respect the remaining block balance before dispatch. The purpose is
+   to distinguish failure to reach an encounter from failure during combat;
+   neither a few negative tapes nor a public reference establishes the whole
+   campaign's behavior. No new large search allocation precedes that decision.
+
+Native app state: its saved goal still reports the earlier blocked tranche.
+The available goal tools cannot edit or resume that state, and automated access
+to Codex's own controls is denied. The user's renewed authorization governs the
+work recorded here; the app's Resume control is needed for automatic continuation
+after the current turn. Do not falsely mark the original goal complete.

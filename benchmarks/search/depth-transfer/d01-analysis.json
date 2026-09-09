@@ -1,0 +1,174 @@
+{
+  "format": "depth-transfer-d01-analysis-v1",
+  "analyzed_utc": "2026-09-09T21:40:55.323424+00:00",
+  "registration_sha256": "4eb4ef7feebe34830b674e0f9a2dc4de505f54ea14b2bd507db6ddd7167f0c28",
+  "results_sha256": "30e7d938932396e8f4e643f2a96958d3964987d403c6935cba9be3dc81c86e6b",
+  "screen_scorer_sha256": "507e727de3bccb1f6b791433def8f258b762f34809432a6176263e82b3b86036",
+  "decision": "stop_depth_transfer_line",
+  "registered_score": {
+    "decision": "fail_impossible_win_count",
+    "completed_pairs": 2,
+    "strict_wins": 0,
+    "remaining_pairs": 2,
+    "candidate_to_control_cost_ratio_interval": null,
+    "candidate_to_control_resource_ratios": null,
+    "pairs": [
+      {
+        "seed": 1695811351,
+        "control": [
+          50000000,
+          50000000
+        ],
+        "candidate": [
+          50000000,
+          50000000
+        ],
+        "strict_win": false,
+        "difference_interval": [
+          0,
+          0
+        ]
+      },
+      {
+        "seed": 1437316129,
+        "control": [
+          48303571,
+          48303571
+        ],
+        "candidate": [
+          50000000,
+          50000000
+        ],
+        "strict_win": false,
+        "difference_interval": [
+          1696429,
+          1696429
+        ]
+      }
+    ],
+    "interpretation": "Exploratory compute-allocation gate, not statistical significance or independent confirmation."
+  },
+  "executed_cells": 4,
+  "unrun_cell_ids": [
+    "pair-2-control",
+    "pair-2-candidate",
+    "pair-3-candidate",
+    "pair-3-control"
+  ],
+  "cells": [
+    {
+      "id": "pair-0-control",
+      "seed": 1695811351,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": null,
+        "observed_through_frames": 50001236,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          50000000,
+          50000000
+        ]
+      },
+      "actual_admitted_frames": 50001236,
+      "frames_after_event_or_horizon": 1236,
+      "known_auxiliary_frames": 105540,
+      "cpu_seconds": 1123.0848,
+      "elapsed_seconds": 355.29248922201805,
+      "summary_sha256": "02f104c5e0d79ca325769a99ebdb5f9f4155024c6ee2c5f67bf6fc1e4fc3b35d"
+    },
+    {
+      "id": "pair-0-candidate",
+      "seed": 1695811351,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": null,
+        "observed_through_frames": 50001370,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          50000000,
+          50000000
+        ]
+      },
+      "actual_admitted_frames": 50001370,
+      "frames_after_event_or_horizon": 1370,
+      "known_auxiliary_frames": 116534,
+      "cpu_seconds": 1134.263109,
+      "elapsed_seconds": 359.2168064699508,
+      "summary_sha256": "270637a5b1915166084d8bbfff217ce668c9c52386631666e1d694b6ea142c88"
+    },
+    {
+      "id": "pair-1-candidate",
+      "seed": 1437316129,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": null,
+        "observed_through_frames": 50001075,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          50000000,
+          50000000
+        ]
+      },
+      "actual_admitted_frames": 50001075,
+      "frames_after_event_or_horizon": 1075,
+      "known_auxiliary_frames": 118576,
+      "cpu_seconds": 1135.954968,
+      "elapsed_seconds": 359.18580821703654,
+      "summary_sha256": "51ad8208219b0a2a6bb4cb85ba0bc2b9b3c8bb3920e713079d1d7d9177b27882"
+    },
+    {
+      "id": "pair-1-control",
+      "seed": 1437316129,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": 48303571,
+        "observed_through_frames": 48304339,
+        "observed_full_budget": false,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          48303571,
+          48303571
+        ]
+      },
+      "actual_admitted_frames": 48304339,
+      "frames_after_event_or_horizon": 768,
+      "known_auxiliary_frames": 205574,
+      "cpu_seconds": 1099.4344030000002,
+      "elapsed_seconds": 350.1690143289743,
+      "summary_sha256": "838e166f9db48f270571308d1e99ff77036eb59b322a10a9851caec5a4222c21"
+    }
+  ],
+  "actual_admitted_search_frames": 198308020,
+  "known_auxiliary_frames": 546224,
+  "four_pair_resource_gate": "unmeasured because the registered win gate became impossible after two pairs",
+  "independent_confirmation": "unrun; not earned",
+  "meaning": "The unchanged selector does not earn deeper transfer allocation at this endpoint/horizon. This small stopped screen does not establish population equivalence or negate the separately replicated first-missile precursor effect.",
+  "next_decision": "Complete the registered known-control platform bridge, then prioritize encounter and damage measurement with explicit lifetime/reset boundaries before another search family or budget increase."
+}
