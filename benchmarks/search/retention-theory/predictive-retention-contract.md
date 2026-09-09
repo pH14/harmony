@@ -85,11 +85,21 @@ frames under the same allowance; dying early is not an efficiency improvement.
 Any candidate using probes must beat its control under a total physical-work
 budget that includes those probes, as well as under the archive-memory budget.
 
-The next bounded diagnostic should therefore capture the complete local-rule
-survivor proposal at an actual competition, replay identical suffixes from every
-member, and report the proposed replacement's gained events, lost events,
-survival and physical costs. A new independent suffix suite should test a frozen
-proposal before it earns fresh-search compute. That design addresses
-[#286](https://github.com/pH14/harmony/issues/286); it does not authorize another
-long campaign in this tranche. A callback before global eviction does not certify
-the final globally active set; that boundary must remain explicit in the result.
+The completed [U01 diagnostic](u01-analysis.json) captures the complete local-rule
+proposal and applies this union comparison. [H02](h02-analysis-with-reference.json)
+preserves the action and horizon conditions, showing losses within ordinary
+one-to-six-action jobs. Every measured triple has a two-state subset covering
+its offered positive-event union, including all short and long horizons jointly.
+That is an exact hindsight result on the selected bank; it does not identify a
+cheap online predictor or show that two representatives always suffice.
+
+The next design must freeze its available features, predicted conditional
+outcomes, replacement decision and total cost before an independent diagnostic
+suite. Predicting a discarded state's usefulness alone is insufficient: measure
+what the proposed survivors lose as well as gain. Existing trajectory fragments
+may reduce data-collection cost, but their adaptive selection does not make them
+an independent confirmation set. Preserve the original milestone gate before
+allocating fresh-search compute. This addresses
+[#286](https://github.com/pH14/harmony/issues/286); it authorizes no further long
+campaign in this tranche. A callback before global eviction does not certify
+the final globally active set; that boundary remains explicit in the result.

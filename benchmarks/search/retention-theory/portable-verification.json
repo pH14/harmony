@@ -48,13 +48,13 @@
     "note": "Local telemetry reader now closes its file explicitly; frozen R05 package remains unchanged."
   },
   "research_ci_contracts": {
-    "passed": 22,
+    "passed": 27,
     "emulator_work": false,
     "command": "python3 -m unittest discover -s benchmarks/search/retention-theory -p 'test_*.py'",
     "workflow": ".github/workflows/search-eval.yml",
-    "log_sha256": "6fc62f00ce446b842bcad949850a26493b332915a1cb13f75c1e05f220713e25",
+    "log_sha256": "33abc81953b754022d201dd87c5b37bb020e22515d7a2775683d353e27414611",
     "scope": "exact CI command passed locally; no hosted-CI claim",
-    "includes": "two chain-limit, five R05 gate, six exposure, five survivor-union and four finite-cover contracts"
+    "includes": "two chain-limit, five R05 gate, six exposure, five survivor-union, four finite-cover and five horizon contracts"
   },
   "complete_survivor_audit": {
     "implementation_commit": "8d503c28",
@@ -95,5 +95,21 @@
     },
     "scope": "local portable checks and two exact ARM search-stream/audit-byte qualifications passed; no new search-performance claim",
     "arm_qualification_sha256": "ad0c424ca7d1bde20a248177a2288eb42fbf8a1e8c7defa0fb1992717cdf609e"
+  },
+  "h02_prefix_observer": {
+    "implementation_commit": "cc0202b4",
+    "focused_prefix_tests": "passed in default and all-feature builds",
+    "strict_clippy": "default and all-feature bin/test targets passed",
+    "formatting": "NES manifest passed",
+    "full_24_action_outputs": "summary, outcomes and suffix bank byte-identical to frozen U01",
+    "logs_sha256": {
+      "harmony-prefix-probe-test.log": "0cbd32fbf673713a1a8f9b9244a5ce8926d8f1b887052db62f579bcc504cea5d",
+      "harmony-prefix-probe-clippy.log": "4f68bbf90f0c40e77fd9a50683a92c0ad6e4973c32f22a4869bec439923891cd",
+      "harmony-prefix-probe-all-features-clippy.log": "5f5c8f9a83bb5236b85fc38f968356a56d1ae42e73e3d304b728ec5a50d0a2aa",
+      "harmony-prefix-probe-all-features-test.log": "53301e17362ceff379c218055fd43173a768ad519628096a550730bdb6a182e8"
+    },
+    "physical_frames": 431144,
+    "elapsed_seconds": 23.01705313497223,
+    "joint_cover_certificate_check_sha256": "439033234cb8c9b62732f0c138c3b3a1e6b8aca44c9cd1f7db6e952e60f9b184"
   }
 }

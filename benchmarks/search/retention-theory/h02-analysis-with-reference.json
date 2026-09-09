@@ -1,0 +1,10001 @@
+{
+  "format": "h02-search-horizon-diagnostic-v2",
+  "horizons": [
+    {
+      "horizon": 1,
+      "totals": {
+        "map_events": {
+          "unretained_only": 1,
+          "pairwise_unique_before_union": 1,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 1,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "capability_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 0,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "survival": {
+          "unretained_alive": 112,
+          "any_retained_alive": 110,
+          "unretained_only_survives": 2,
+          "retained_only_survives": 0
+        }
+      },
+      "competitions": [
+        {
+          "source_sample": 2,
+          "execution": 2350,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 14,
+              "unretained_only_survives": 2,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 3,
+          "execution": 235,
+          "candidate_admitted": true,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 4,
+          "execution": 4546,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 6,
+          "execution": 4853,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 1,
+              "pairwise_unique_before_union": 1,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 1,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 8,
+          "execution": 4603,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 9,
+          "execution": 4963,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 10,
+          "execution": 2039,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 1,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        }
+      ],
+      "minimum_cover_histogram": {
+        "1": 7
+      },
+      "current_proposals_missing_events": 2,
+      "avoidable_with_two": 2
+    },
+    {
+      "horizon": 2,
+      "totals": {
+        "map_events": {
+          "unretained_only": 1,
+          "pairwise_unique_before_union": 2,
+          "covered_by_other_survivor": 1,
+          "retained_union_only": 2,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "capability_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 0,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "survival": {
+          "unretained_alive": 112,
+          "any_retained_alive": 107,
+          "unretained_only_survives": 5,
+          "retained_only_survives": 0
+        }
+      },
+      "competitions": [
+        {
+          "source_sample": 2,
+          "execution": 2350,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 11,
+              "unretained_only_survives": 5,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 3,
+          "execution": 235,
+          "candidate_admitted": true,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 4,
+          "execution": 4546,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 6,
+          "execution": 4853,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 1,
+              "pairwise_unique_before_union": 2,
+              "covered_by_other_survivor": 1,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 1,
+          "trials_with_pairwise_map_difference_covered_by_union": 1
+        },
+        {
+          "source_sample": 8,
+          "execution": 4603,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 9,
+          "execution": 4963,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 10,
+          "execution": 2039,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 2,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        }
+      ],
+      "minimum_cover_histogram": {
+        "1": 7
+      },
+      "current_proposals_missing_events": 2,
+      "avoidable_with_two": 2
+    },
+    {
+      "horizon": 3,
+      "totals": {
+        "map_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 2,
+          "covered_by_other_survivor": 2,
+          "retained_union_only": 2,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "capability_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 0,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "survival": {
+          "unretained_alive": 112,
+          "any_retained_alive": 102,
+          "unretained_only_survives": 10,
+          "retained_only_survives": 0
+        }
+      },
+      "competitions": [
+        {
+          "source_sample": 2,
+          "execution": 2350,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 6,
+              "unretained_only_survives": 10,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 3,
+          "execution": 235,
+          "candidate_admitted": true,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 4,
+          "execution": 4546,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 6,
+          "execution": 4853,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 2,
+              "covered_by_other_survivor": 2,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 2
+        },
+        {
+          "source_sample": 8,
+          "execution": 4603,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 9,
+          "execution": 4963,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 10,
+          "execution": 2039,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 2,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        }
+      ],
+      "minimum_cover_histogram": {
+        "1": 7
+      },
+      "current_proposals_missing_events": 1,
+      "avoidable_with_two": 1
+    },
+    {
+      "horizon": 4,
+      "totals": {
+        "map_events": {
+          "unretained_only": 2,
+          "pairwise_unique_before_union": 2,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 2,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "capability_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 0,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "survival": {
+          "unretained_alive": 112,
+          "any_retained_alive": 98,
+          "unretained_only_survives": 14,
+          "retained_only_survives": 0
+        }
+      },
+      "competitions": [
+        {
+          "source_sample": 2,
+          "execution": 2350,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 1,
+              "pairwise_unique_before_union": 1,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 2,
+              "unretained_only_survives": 14,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 1,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 3,
+          "execution": 235,
+          "candidate_admitted": true,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 4,
+          "execution": 4546,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 6,
+          "execution": 4853,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 1,
+              "pairwise_unique_before_union": 1,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 1,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 8,
+          "execution": 4603,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 9,
+          "execution": 4963,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 10,
+          "execution": 2039,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 2,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        }
+      ],
+      "minimum_cover_histogram": {
+        "1": 7
+      },
+      "current_proposals_missing_events": 2,
+      "avoidable_with_two": 2
+    },
+    {
+      "horizon": 5,
+      "totals": {
+        "map_events": {
+          "unretained_only": 1,
+          "pairwise_unique_before_union": 1,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 2,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "capability_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 0,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "survival": {
+          "unretained_alive": 112,
+          "any_retained_alive": 98,
+          "unretained_only_survives": 14,
+          "retained_only_survives": 0
+        }
+      },
+      "competitions": [
+        {
+          "source_sample": 2,
+          "execution": 2350,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 1,
+              "pairwise_unique_before_union": 1,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 2,
+              "unretained_only_survives": 14,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 1,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 3,
+          "execution": 235,
+          "candidate_admitted": true,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 4,
+          "execution": 4546,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 6,
+          "execution": 4853,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 8,
+          "execution": 4603,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 9,
+          "execution": 4963,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 10,
+          "execution": 2039,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 2,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        }
+      ],
+      "minimum_cover_histogram": {
+        "1": 7
+      },
+      "current_proposals_missing_events": 1,
+      "avoidable_with_two": 1
+    },
+    {
+      "horizon": 6,
+      "totals": {
+        "map_events": {
+          "unretained_only": 4,
+          "pairwise_unique_before_union": 7,
+          "covered_by_other_survivor": 3,
+          "retained_union_only": 2,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "capability_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 0,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "survival": {
+          "unretained_alive": 112,
+          "any_retained_alive": 97,
+          "unretained_only_survives": 15,
+          "retained_only_survives": 0
+        }
+      },
+      "competitions": [
+        {
+          "source_sample": 2,
+          "execution": 2350,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 2,
+              "pairwise_unique_before_union": 2,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 1,
+              "unretained_only_survives": 15,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 2,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 3,
+          "execution": 235,
+          "candidate_admitted": true,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 4,
+          "execution": 4546,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 1,
+              "pairwise_unique_before_union": 1,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 1,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 6,
+          "execution": 4853,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 1,
+              "pairwise_unique_before_union": 2,
+              "covered_by_other_survivor": 1,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 1,
+          "trials_with_pairwise_map_difference_covered_by_union": 1
+        },
+        {
+          "source_sample": 8,
+          "execution": 4603,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 0
+        },
+        {
+          "source_sample": 9,
+          "execution": 4963,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 1,
+              "covered_by_other_survivor": 1,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 1
+        },
+        {
+          "source_sample": 10,
+          "execution": 2039,
+          "candidate_admitted": false,
+          "totals": {
+            "map_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 1,
+              "covered_by_other_survivor": 1,
+              "retained_union_only": 2,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "capability_events": {
+              "unretained_only": 0,
+              "pairwise_unique_before_union": 0,
+              "covered_by_other_survivor": 0,
+              "retained_union_only": 0,
+              "actual_local_replacement_gained": 0,
+              "actual_local_replacement_lost": 0
+            },
+            "survival": {
+              "unretained_alive": 16,
+              "any_retained_alive": 16,
+              "unretained_only_survives": 0,
+              "retained_only_survives": 0
+            }
+          },
+          "trials_with_unretained_map_events": 0,
+          "trials_with_pairwise_map_difference_covered_by_union": 1
+        }
+      ],
+      "minimum_cover_histogram": {
+        "1": 6,
+        "2": 1
+      },
+      "current_proposals_missing_events": 3,
+      "avoidable_with_two": 3
+    }
+  ],
+  "uniform_length_mean_totals": {
+    "map_events": {
+      "unretained_only": 1.5,
+      "pairwise_unique_before_union": 2.5,
+      "covered_by_other_survivor": 1.0,
+      "retained_union_only": 1.8333333333333333,
+      "actual_local_replacement_gained": 0.0,
+      "actual_local_replacement_lost": 0.0
+    },
+    "capability_events": {
+      "unretained_only": 0.0,
+      "pairwise_unique_before_union": 0.0,
+      "covered_by_other_survivor": 0.0,
+      "retained_union_only": 0.0,
+      "actual_local_replacement_gained": 0.0,
+      "actual_local_replacement_lost": 0.0
+    },
+    "survival": {
+      "unretained_alive": 112.0,
+      "any_retained_alive": 102.0,
+      "unretained_only_survives": 10.0,
+      "retained_only_survives": 0.0
+    }
+  },
+  "mean_scope": "average of the six horizon totals across the same selected competitors and suffix bank; not a population estimate",
+  "joint_horizon_cover": {
+    "format": "u01-retrospective-finite-cover-v1",
+    "scope": "exact hindsight cover of fixed measured positive events; not an online policy or behavioral equivalence",
+    "minimum_representatives_histogram": {
+      "1": 6,
+      "2": 1
+    },
+    "current_proposals_missing_events": 3,
+    "missing_events_avoidable_with_two_of_offered_three": 3,
+    "competitions": [
+      {
+        "source_sample": 2,
+        "execution": 2350,
+        "state_roles": [
+          "candidate",
+          "incumbent_3140",
+          "incumbent_3189"
+        ],
+        "event_dictionary": [
+          [
+            "alive",
+            0
+          ],
+          [
+            "alive",
+            1
+          ],
+          [
+            "alive",
+            2
+          ],
+          [
+            "alive",
+            3
+          ],
+          [
+            "alive",
+            4
+          ],
+          [
+            "alive",
+            5
+          ],
+          [
+            "alive",
+            6
+          ],
+          [
+            "alive",
+            7
+          ],
+          [
+            "alive",
+            8
+          ],
+          [
+            "alive",
+            9
+          ],
+          [
+            "alive",
+            10
+          ],
+          [
+            "alive",
+            11
+          ],
+          [
+            "alive",
+            12
+          ],
+          [
+            "alive",
+            13
+          ],
+          [
+            "alive",
+            14
+          ],
+          [
+            "alive",
+            15
+          ],
+          [
+            "alive",
+            16
+          ],
+          [
+            "alive",
+            17
+          ],
+          [
+            "alive",
+            18
+          ],
+          [
+            "alive",
+            19
+          ],
+          [
+            "alive",
+            20
+          ],
+          [
+            "alive",
+            21
+          ],
+          [
+            "alive",
+            22
+          ],
+          [
+            "alive",
+            23
+          ],
+          [
+            "alive",
+            24
+          ],
+          [
+            "alive",
+            25
+          ],
+          [
+            "alive",
+            26
+          ],
+          [
+            "alive",
+            27
+          ],
+          [
+            "alive",
+            28
+          ],
+          [
+            "alive",
+            29
+          ],
+          [
+            "alive",
+            30
+          ],
+          [
+            "alive",
+            31
+          ],
+          [
+            "alive",
+            32
+          ],
+          [
+            "alive",
+            33
+          ],
+          [
+            "alive",
+            34
+          ],
+          [
+            "alive",
+            35
+          ],
+          [
+            "alive",
+            36
+          ],
+          [
+            "alive",
+            37
+          ],
+          [
+            "alive",
+            38
+          ],
+          [
+            "alive",
+            39
+          ],
+          [
+            "alive",
+            40
+          ],
+          [
+            "alive",
+            41
+          ],
+          [
+            "alive",
+            42
+          ],
+          [
+            "alive",
+            43
+          ],
+          [
+            "alive",
+            44
+          ],
+          [
+            "alive",
+            45
+          ],
+          [
+            "alive",
+            46
+          ],
+          [
+            "alive",
+            47
+          ],
+          [
+            "alive",
+            48
+          ],
+          [
+            "alive",
+            49
+          ],
+          [
+            "alive",
+            50
+          ],
+          [
+            "alive",
+            51
+          ],
+          [
+            "alive",
+            52
+          ],
+          [
+            "alive",
+            53
+          ],
+          [
+            "alive",
+            54
+          ],
+          [
+            "alive",
+            55
+          ],
+          [
+            "alive",
+            56
+          ],
+          [
+            "alive",
+            57
+          ],
+          [
+            "alive",
+            58
+          ],
+          [
+            "alive",
+            59
+          ],
+          [
+            "alive",
+            60
+          ],
+          [
+            "alive",
+            61
+          ],
+          [
+            "alive",
+            62
+          ],
+          [
+            "alive",
+            63
+          ],
+          [
+            "alive",
+            64
+          ],
+          [
+            "alive",
+            65
+          ],
+          [
+            "alive",
+            66
+          ],
+          [
+            "alive",
+            67
+          ],
+          [
+            "alive",
+            68
+          ],
+          [
+            "alive",
+            69
+          ],
+          [
+            "alive",
+            70
+          ],
+          [
+            "alive",
+            71
+          ],
+          [
+            "alive",
+            72
+          ],
+          [
+            "alive",
+            73
+          ],
+          [
+            "alive",
+            74
+          ],
+          [
+            "alive",
+            75
+          ],
+          [
+            "alive",
+            76
+          ],
+          [
+            "alive",
+            77
+          ],
+          [
+            "alive",
+            78
+          ],
+          [
+            "alive",
+            79
+          ],
+          [
+            "alive",
+            80
+          ],
+          [
+            "alive",
+            81
+          ],
+          [
+            "alive",
+            82
+          ],
+          [
+            "alive",
+            83
+          ],
+          [
+            "alive",
+            84
+          ],
+          [
+            "alive",
+            85
+          ],
+          [
+            "alive",
+            86
+          ],
+          [
+            "alive",
+            87
+          ],
+          [
+            "alive",
+            88
+          ],
+          [
+            "alive",
+            89
+          ],
+          [
+            "alive",
+            90
+          ],
+          [
+            "alive",
+            91
+          ],
+          [
+            "alive",
+            92
+          ],
+          [
+            "alive",
+            93
+          ],
+          [
+            "alive",
+            94
+          ],
+          [
+            "alive",
+            95
+          ],
+          [
+            "map",
+            54,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            70,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            86,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            93,
+            16,
+            8,
+            14
+          ]
+        ],
+        "state_feature_masks_hex": [
+          "0xfffffffffffffffffffffffff",
+          "0x40004002400258265f2e5fff",
+          "0x40004002400258265fae5fff"
+        ],
+        "minimum_representatives_for_measured_positive_events": 1,
+        "minimum_cover_subsets": [
+          [
+            0
+          ]
+        ],
+        "current_survivor_indices": [
+          1,
+          2
+        ],
+        "current_covers_all_measured_positive_events": false,
+        "current_missed_by_category": {
+          "alive": 60,
+          "map": 4
+        },
+        "three_state_necessity_certificate": []
+      },
+      {
+        "source_sample": 3,
+        "execution": 235,
+        "state_roles": [
+          "incumbent_413",
+          "candidate",
+          "incumbent_284"
+        ],
+        "event_dictionary": [
+          [
+            "alive",
+            0
+          ],
+          [
+            "alive",
+            1
+          ],
+          [
+            "alive",
+            2
+          ],
+          [
+            "alive",
+            3
+          ],
+          [
+            "alive",
+            4
+          ],
+          [
+            "alive",
+            5
+          ],
+          [
+            "alive",
+            6
+          ],
+          [
+            "alive",
+            7
+          ],
+          [
+            "alive",
+            8
+          ],
+          [
+            "alive",
+            9
+          ],
+          [
+            "alive",
+            10
+          ],
+          [
+            "alive",
+            11
+          ],
+          [
+            "alive",
+            12
+          ],
+          [
+            "alive",
+            13
+          ],
+          [
+            "alive",
+            14
+          ],
+          [
+            "alive",
+            15
+          ],
+          [
+            "alive",
+            16
+          ],
+          [
+            "alive",
+            17
+          ],
+          [
+            "alive",
+            18
+          ],
+          [
+            "alive",
+            19
+          ],
+          [
+            "alive",
+            20
+          ],
+          [
+            "alive",
+            21
+          ],
+          [
+            "alive",
+            22
+          ],
+          [
+            "alive",
+            23
+          ],
+          [
+            "alive",
+            24
+          ],
+          [
+            "alive",
+            25
+          ],
+          [
+            "alive",
+            26
+          ],
+          [
+            "alive",
+            27
+          ],
+          [
+            "alive",
+            28
+          ],
+          [
+            "alive",
+            29
+          ],
+          [
+            "alive",
+            30
+          ],
+          [
+            "alive",
+            31
+          ],
+          [
+            "alive",
+            32
+          ],
+          [
+            "alive",
+            33
+          ],
+          [
+            "alive",
+            34
+          ],
+          [
+            "alive",
+            35
+          ],
+          [
+            "alive",
+            36
+          ],
+          [
+            "alive",
+            37
+          ],
+          [
+            "alive",
+            38
+          ],
+          [
+            "alive",
+            39
+          ],
+          [
+            "alive",
+            40
+          ],
+          [
+            "alive",
+            41
+          ],
+          [
+            "alive",
+            42
+          ],
+          [
+            "alive",
+            43
+          ],
+          [
+            "alive",
+            44
+          ],
+          [
+            "alive",
+            45
+          ],
+          [
+            "alive",
+            46
+          ],
+          [
+            "alive",
+            47
+          ],
+          [
+            "alive",
+            48
+          ],
+          [
+            "alive",
+            49
+          ],
+          [
+            "alive",
+            50
+          ],
+          [
+            "alive",
+            51
+          ],
+          [
+            "alive",
+            52
+          ],
+          [
+            "alive",
+            53
+          ],
+          [
+            "alive",
+            54
+          ],
+          [
+            "alive",
+            55
+          ],
+          [
+            "alive",
+            56
+          ],
+          [
+            "alive",
+            57
+          ],
+          [
+            "alive",
+            58
+          ],
+          [
+            "alive",
+            59
+          ],
+          [
+            "alive",
+            60
+          ],
+          [
+            "alive",
+            61
+          ],
+          [
+            "alive",
+            62
+          ],
+          [
+            "alive",
+            63
+          ],
+          [
+            "alive",
+            64
+          ],
+          [
+            "alive",
+            65
+          ],
+          [
+            "alive",
+            66
+          ],
+          [
+            "alive",
+            67
+          ],
+          [
+            "alive",
+            68
+          ],
+          [
+            "alive",
+            69
+          ],
+          [
+            "alive",
+            70
+          ],
+          [
+            "alive",
+            71
+          ],
+          [
+            "alive",
+            72
+          ],
+          [
+            "alive",
+            73
+          ],
+          [
+            "alive",
+            74
+          ],
+          [
+            "alive",
+            75
+          ],
+          [
+            "alive",
+            76
+          ],
+          [
+            "alive",
+            77
+          ],
+          [
+            "alive",
+            78
+          ],
+          [
+            "alive",
+            79
+          ],
+          [
+            "alive",
+            80
+          ],
+          [
+            "alive",
+            81
+          ],
+          [
+            "alive",
+            82
+          ],
+          [
+            "alive",
+            83
+          ],
+          [
+            "alive",
+            84
+          ],
+          [
+            "alive",
+            85
+          ],
+          [
+            "alive",
+            86
+          ],
+          [
+            "alive",
+            87
+          ],
+          [
+            "alive",
+            88
+          ],
+          [
+            "alive",
+            89
+          ],
+          [
+            "alive",
+            90
+          ],
+          [
+            "alive",
+            91
+          ],
+          [
+            "alive",
+            92
+          ],
+          [
+            "alive",
+            93
+          ],
+          [
+            "alive",
+            94
+          ],
+          [
+            "alive",
+            95
+          ],
+          [
+            "map",
+            13,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            16,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            20,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            22,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            29,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            32,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            35,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            36,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            38,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            39,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            40,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            41,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            42,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            45,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            47,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            48,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            51,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            52,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            54,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            55,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            56,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            57,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            58,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            59,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            61,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            63,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            64,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            67,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            68,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            70,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            71,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            72,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            73,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            74,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            75,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            77,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            79,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            80,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            82,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            83,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            84,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            86,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            87,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            88,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            89,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            90,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            91,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            93,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            95,
+            16,
+            3,
+            14
+          ]
+        ],
+        "state_feature_masks_hex": [
+          "0x1ffffffffffffffffffffffffffffffffffff",
+          "0x1ffffffffffffffffffffffffffffffffffff",
+          "0x1ffffffffffffffffffffffffffffffffffff"
+        ],
+        "minimum_representatives_for_measured_positive_events": 1,
+        "minimum_cover_subsets": [
+          [
+            0
+          ],
+          [
+            1
+          ],
+          [
+            2
+          ]
+        ],
+        "current_survivor_indices": [
+          1,
+          2
+        ],
+        "current_covers_all_measured_positive_events": true,
+        "current_missed_by_category": {},
+        "three_state_necessity_certificate": []
+      },
+      {
+        "source_sample": 4,
+        "execution": 4546,
+        "state_roles": [
+          "candidate",
+          "incumbent_3578",
+          "incumbent_5267"
+        ],
+        "event_dictionary": [
+          [
+            "alive",
+            0
+          ],
+          [
+            "alive",
+            1
+          ],
+          [
+            "alive",
+            2
+          ],
+          [
+            "alive",
+            3
+          ],
+          [
+            "alive",
+            4
+          ],
+          [
+            "alive",
+            5
+          ],
+          [
+            "alive",
+            6
+          ],
+          [
+            "alive",
+            7
+          ],
+          [
+            "alive",
+            8
+          ],
+          [
+            "alive",
+            9
+          ],
+          [
+            "alive",
+            10
+          ],
+          [
+            "alive",
+            11
+          ],
+          [
+            "alive",
+            12
+          ],
+          [
+            "alive",
+            13
+          ],
+          [
+            "alive",
+            14
+          ],
+          [
+            "alive",
+            15
+          ],
+          [
+            "alive",
+            16
+          ],
+          [
+            "alive",
+            17
+          ],
+          [
+            "alive",
+            18
+          ],
+          [
+            "alive",
+            19
+          ],
+          [
+            "alive",
+            20
+          ],
+          [
+            "alive",
+            21
+          ],
+          [
+            "alive",
+            22
+          ],
+          [
+            "alive",
+            23
+          ],
+          [
+            "alive",
+            24
+          ],
+          [
+            "alive",
+            25
+          ],
+          [
+            "alive",
+            26
+          ],
+          [
+            "alive",
+            27
+          ],
+          [
+            "alive",
+            28
+          ],
+          [
+            "alive",
+            29
+          ],
+          [
+            "alive",
+            30
+          ],
+          [
+            "alive",
+            31
+          ],
+          [
+            "alive",
+            32
+          ],
+          [
+            "alive",
+            33
+          ],
+          [
+            "alive",
+            34
+          ],
+          [
+            "alive",
+            35
+          ],
+          [
+            "alive",
+            36
+          ],
+          [
+            "alive",
+            37
+          ],
+          [
+            "alive",
+            38
+          ],
+          [
+            "alive",
+            39
+          ],
+          [
+            "alive",
+            40
+          ],
+          [
+            "alive",
+            41
+          ],
+          [
+            "alive",
+            42
+          ],
+          [
+            "alive",
+            43
+          ],
+          [
+            "alive",
+            44
+          ],
+          [
+            "alive",
+            45
+          ],
+          [
+            "alive",
+            46
+          ],
+          [
+            "alive",
+            47
+          ],
+          [
+            "alive",
+            48
+          ],
+          [
+            "alive",
+            49
+          ],
+          [
+            "alive",
+            50
+          ],
+          [
+            "alive",
+            51
+          ],
+          [
+            "alive",
+            52
+          ],
+          [
+            "alive",
+            53
+          ],
+          [
+            "alive",
+            54
+          ],
+          [
+            "alive",
+            55
+          ],
+          [
+            "alive",
+            56
+          ],
+          [
+            "alive",
+            57
+          ],
+          [
+            "alive",
+            58
+          ],
+          [
+            "alive",
+            59
+          ],
+          [
+            "alive",
+            60
+          ],
+          [
+            "alive",
+            61
+          ],
+          [
+            "alive",
+            62
+          ],
+          [
+            "alive",
+            63
+          ],
+          [
+            "alive",
+            64
+          ],
+          [
+            "alive",
+            65
+          ],
+          [
+            "alive",
+            66
+          ],
+          [
+            "alive",
+            67
+          ],
+          [
+            "alive",
+            68
+          ],
+          [
+            "alive",
+            69
+          ],
+          [
+            "alive",
+            70
+          ],
+          [
+            "alive",
+            71
+          ],
+          [
+            "alive",
+            72
+          ],
+          [
+            "alive",
+            73
+          ],
+          [
+            "alive",
+            74
+          ],
+          [
+            "alive",
+            75
+          ],
+          [
+            "alive",
+            76
+          ],
+          [
+            "alive",
+            77
+          ],
+          [
+            "alive",
+            78
+          ],
+          [
+            "alive",
+            79
+          ],
+          [
+            "alive",
+            80
+          ],
+          [
+            "alive",
+            81
+          ],
+          [
+            "alive",
+            82
+          ],
+          [
+            "alive",
+            83
+          ],
+          [
+            "alive",
+            84
+          ],
+          [
+            "alive",
+            85
+          ],
+          [
+            "alive",
+            86
+          ],
+          [
+            "alive",
+            87
+          ],
+          [
+            "alive",
+            88
+          ],
+          [
+            "alive",
+            89
+          ],
+          [
+            "alive",
+            90
+          ],
+          [
+            "alive",
+            91
+          ],
+          [
+            "alive",
+            92
+          ],
+          [
+            "alive",
+            93
+          ],
+          [
+            "alive",
+            94
+          ],
+          [
+            "alive",
+            95
+          ],
+          [
+            "map",
+            93,
+            16,
+            3,
+            14
+          ]
+        ],
+        "state_feature_masks_hex": [
+          "0x1ffffffffffffffffffffffff",
+          "0xffffffffffffffffffffffff",
+          "0xffffffffffffffffffffffff"
+        ],
+        "minimum_representatives_for_measured_positive_events": 1,
+        "minimum_cover_subsets": [
+          [
+            0
+          ]
+        ],
+        "current_survivor_indices": [
+          1,
+          2
+        ],
+        "current_covers_all_measured_positive_events": false,
+        "current_missed_by_category": {
+          "map": 1
+        },
+        "three_state_necessity_certificate": []
+      },
+      {
+        "source_sample": 6,
+        "execution": 4853,
+        "state_roles": [
+          "candidate",
+          "incumbent_5817",
+          "incumbent_5818"
+        ],
+        "event_dictionary": [
+          [
+            "alive",
+            0
+          ],
+          [
+            "alive",
+            1
+          ],
+          [
+            "alive",
+            2
+          ],
+          [
+            "alive",
+            3
+          ],
+          [
+            "alive",
+            4
+          ],
+          [
+            "alive",
+            5
+          ],
+          [
+            "alive",
+            6
+          ],
+          [
+            "alive",
+            7
+          ],
+          [
+            "alive",
+            8
+          ],
+          [
+            "alive",
+            9
+          ],
+          [
+            "alive",
+            10
+          ],
+          [
+            "alive",
+            11
+          ],
+          [
+            "alive",
+            12
+          ],
+          [
+            "alive",
+            13
+          ],
+          [
+            "alive",
+            14
+          ],
+          [
+            "alive",
+            15
+          ],
+          [
+            "alive",
+            16
+          ],
+          [
+            "alive",
+            17
+          ],
+          [
+            "alive",
+            18
+          ],
+          [
+            "alive",
+            19
+          ],
+          [
+            "alive",
+            20
+          ],
+          [
+            "alive",
+            21
+          ],
+          [
+            "alive",
+            22
+          ],
+          [
+            "alive",
+            23
+          ],
+          [
+            "alive",
+            24
+          ],
+          [
+            "alive",
+            25
+          ],
+          [
+            "alive",
+            26
+          ],
+          [
+            "alive",
+            27
+          ],
+          [
+            "alive",
+            28
+          ],
+          [
+            "alive",
+            29
+          ],
+          [
+            "alive",
+            30
+          ],
+          [
+            "alive",
+            31
+          ],
+          [
+            "alive",
+            32
+          ],
+          [
+            "alive",
+            33
+          ],
+          [
+            "alive",
+            34
+          ],
+          [
+            "alive",
+            35
+          ],
+          [
+            "alive",
+            36
+          ],
+          [
+            "alive",
+            37
+          ],
+          [
+            "alive",
+            38
+          ],
+          [
+            "alive",
+            39
+          ],
+          [
+            "alive",
+            40
+          ],
+          [
+            "alive",
+            41
+          ],
+          [
+            "alive",
+            42
+          ],
+          [
+            "alive",
+            43
+          ],
+          [
+            "alive",
+            44
+          ],
+          [
+            "alive",
+            45
+          ],
+          [
+            "alive",
+            46
+          ],
+          [
+            "alive",
+            47
+          ],
+          [
+            "alive",
+            48
+          ],
+          [
+            "alive",
+            49
+          ],
+          [
+            "alive",
+            50
+          ],
+          [
+            "alive",
+            51
+          ],
+          [
+            "alive",
+            52
+          ],
+          [
+            "alive",
+            53
+          ],
+          [
+            "alive",
+            54
+          ],
+          [
+            "alive",
+            55
+          ],
+          [
+            "alive",
+            56
+          ],
+          [
+            "alive",
+            57
+          ],
+          [
+            "alive",
+            58
+          ],
+          [
+            "alive",
+            59
+          ],
+          [
+            "alive",
+            60
+          ],
+          [
+            "alive",
+            61
+          ],
+          [
+            "alive",
+            62
+          ],
+          [
+            "alive",
+            63
+          ],
+          [
+            "alive",
+            64
+          ],
+          [
+            "alive",
+            65
+          ],
+          [
+            "alive",
+            66
+          ],
+          [
+            "alive",
+            67
+          ],
+          [
+            "alive",
+            68
+          ],
+          [
+            "alive",
+            69
+          ],
+          [
+            "alive",
+            70
+          ],
+          [
+            "alive",
+            71
+          ],
+          [
+            "alive",
+            72
+          ],
+          [
+            "alive",
+            73
+          ],
+          [
+            "alive",
+            74
+          ],
+          [
+            "alive",
+            75
+          ],
+          [
+            "alive",
+            76
+          ],
+          [
+            "alive",
+            77
+          ],
+          [
+            "alive",
+            78
+          ],
+          [
+            "alive",
+            79
+          ],
+          [
+            "alive",
+            80
+          ],
+          [
+            "alive",
+            81
+          ],
+          [
+            "alive",
+            82
+          ],
+          [
+            "alive",
+            83
+          ],
+          [
+            "alive",
+            84
+          ],
+          [
+            "alive",
+            85
+          ],
+          [
+            "alive",
+            86
+          ],
+          [
+            "alive",
+            87
+          ],
+          [
+            "alive",
+            88
+          ],
+          [
+            "alive",
+            89
+          ],
+          [
+            "alive",
+            90
+          ],
+          [
+            "alive",
+            91
+          ],
+          [
+            "alive",
+            92
+          ],
+          [
+            "alive",
+            93
+          ],
+          [
+            "alive",
+            94
+          ],
+          [
+            "alive",
+            95
+          ],
+          [
+            "map",
+            13,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            15,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            16,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            17,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            29,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            31,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            32,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            33,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            38,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            39,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            41,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            45,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            47,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            48,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            49,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            50,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            51,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            53,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            54,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            55,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            57,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            58,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            59,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            60,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            61,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            63,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            64,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            65,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            66,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            67,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            69,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            70,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            71,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            73,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            74,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            75,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            76,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            77,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            79,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            80,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            81,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            82,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            83,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            84,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            85,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            86,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            87,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            88,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            89,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            90,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            91,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            92,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            93,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            95,
+            16,
+            5,
+            14
+          ]
+        ],
+        "state_feature_masks_hex": [
+          "0x3fffffffffffffffffffffffffffffffffffff",
+          "0x3f77ffffdffe66ffffffffffffffffffffffff",
+          "0x3ff7ffffdffff6ffffffffffffffffffffffff"
+        ],
+        "minimum_representatives_for_measured_positive_events": 1,
+        "minimum_cover_subsets": [
+          [
+            0
+          ]
+        ],
+        "current_survivor_indices": [
+          1,
+          2
+        ],
+        "current_covers_all_measured_positive_events": false,
+        "current_missed_by_category": {
+          "map": 4
+        },
+        "three_state_necessity_certificate": []
+      },
+      {
+        "source_sample": 8,
+        "execution": 4603,
+        "state_roles": [
+          "candidate",
+          "incumbent_3686",
+          "incumbent_5302"
+        ],
+        "event_dictionary": [
+          [
+            "alive",
+            0
+          ],
+          [
+            "alive",
+            1
+          ],
+          [
+            "alive",
+            2
+          ],
+          [
+            "alive",
+            3
+          ],
+          [
+            "alive",
+            4
+          ],
+          [
+            "alive",
+            5
+          ],
+          [
+            "alive",
+            6
+          ],
+          [
+            "alive",
+            7
+          ],
+          [
+            "alive",
+            8
+          ],
+          [
+            "alive",
+            9
+          ],
+          [
+            "alive",
+            10
+          ],
+          [
+            "alive",
+            11
+          ],
+          [
+            "alive",
+            12
+          ],
+          [
+            "alive",
+            13
+          ],
+          [
+            "alive",
+            14
+          ],
+          [
+            "alive",
+            15
+          ],
+          [
+            "alive",
+            16
+          ],
+          [
+            "alive",
+            17
+          ],
+          [
+            "alive",
+            18
+          ],
+          [
+            "alive",
+            19
+          ],
+          [
+            "alive",
+            20
+          ],
+          [
+            "alive",
+            21
+          ],
+          [
+            "alive",
+            22
+          ],
+          [
+            "alive",
+            23
+          ],
+          [
+            "alive",
+            24
+          ],
+          [
+            "alive",
+            25
+          ],
+          [
+            "alive",
+            26
+          ],
+          [
+            "alive",
+            27
+          ],
+          [
+            "alive",
+            28
+          ],
+          [
+            "alive",
+            29
+          ],
+          [
+            "alive",
+            30
+          ],
+          [
+            "alive",
+            31
+          ],
+          [
+            "alive",
+            32
+          ],
+          [
+            "alive",
+            33
+          ],
+          [
+            "alive",
+            34
+          ],
+          [
+            "alive",
+            35
+          ],
+          [
+            "alive",
+            36
+          ],
+          [
+            "alive",
+            37
+          ],
+          [
+            "alive",
+            38
+          ],
+          [
+            "alive",
+            39
+          ],
+          [
+            "alive",
+            40
+          ],
+          [
+            "alive",
+            41
+          ],
+          [
+            "alive",
+            42
+          ],
+          [
+            "alive",
+            43
+          ],
+          [
+            "alive",
+            44
+          ],
+          [
+            "alive",
+            45
+          ],
+          [
+            "alive",
+            46
+          ],
+          [
+            "alive",
+            47
+          ],
+          [
+            "alive",
+            48
+          ],
+          [
+            "alive",
+            49
+          ],
+          [
+            "alive",
+            50
+          ],
+          [
+            "alive",
+            51
+          ],
+          [
+            "alive",
+            52
+          ],
+          [
+            "alive",
+            53
+          ],
+          [
+            "alive",
+            54
+          ],
+          [
+            "alive",
+            55
+          ],
+          [
+            "alive",
+            56
+          ],
+          [
+            "alive",
+            57
+          ],
+          [
+            "alive",
+            58
+          ],
+          [
+            "alive",
+            59
+          ],
+          [
+            "alive",
+            60
+          ],
+          [
+            "alive",
+            61
+          ],
+          [
+            "alive",
+            62
+          ],
+          [
+            "alive",
+            63
+          ],
+          [
+            "alive",
+            64
+          ],
+          [
+            "alive",
+            65
+          ],
+          [
+            "alive",
+            66
+          ],
+          [
+            "alive",
+            67
+          ],
+          [
+            "alive",
+            68
+          ],
+          [
+            "alive",
+            69
+          ],
+          [
+            "alive",
+            70
+          ],
+          [
+            "alive",
+            71
+          ],
+          [
+            "alive",
+            72
+          ],
+          [
+            "alive",
+            73
+          ],
+          [
+            "alive",
+            74
+          ],
+          [
+            "alive",
+            75
+          ],
+          [
+            "alive",
+            76
+          ],
+          [
+            "alive",
+            77
+          ],
+          [
+            "alive",
+            78
+          ],
+          [
+            "alive",
+            79
+          ],
+          [
+            "alive",
+            80
+          ],
+          [
+            "alive",
+            81
+          ],
+          [
+            "alive",
+            82
+          ],
+          [
+            "alive",
+            83
+          ],
+          [
+            "alive",
+            84
+          ],
+          [
+            "alive",
+            85
+          ],
+          [
+            "alive",
+            86
+          ],
+          [
+            "alive",
+            87
+          ],
+          [
+            "alive",
+            88
+          ],
+          [
+            "alive",
+            89
+          ],
+          [
+            "alive",
+            90
+          ],
+          [
+            "alive",
+            91
+          ],
+          [
+            "alive",
+            92
+          ],
+          [
+            "alive",
+            93
+          ],
+          [
+            "alive",
+            94
+          ],
+          [
+            "alive",
+            95
+          ]
+        ],
+        "state_feature_masks_hex": [
+          "0xffffffffffffffffffffffff",
+          "0xffffffffffffffffffffffff",
+          "0xffffffffffffffffffffffff"
+        ],
+        "minimum_representatives_for_measured_positive_events": 1,
+        "minimum_cover_subsets": [
+          [
+            0
+          ],
+          [
+            1
+          ],
+          [
+            2
+          ]
+        ],
+        "current_survivor_indices": [
+          1,
+          2
+        ],
+        "current_covers_all_measured_positive_events": true,
+        "current_missed_by_category": {},
+        "three_state_necessity_certificate": []
+      },
+      {
+        "source_sample": 9,
+        "execution": 4963,
+        "state_roles": [
+          "candidate",
+          "incumbent_1844",
+          "incumbent_1845"
+        ],
+        "event_dictionary": [
+          [
+            "alive",
+            0
+          ],
+          [
+            "alive",
+            1
+          ],
+          [
+            "alive",
+            2
+          ],
+          [
+            "alive",
+            3
+          ],
+          [
+            "alive",
+            4
+          ],
+          [
+            "alive",
+            5
+          ],
+          [
+            "alive",
+            6
+          ],
+          [
+            "alive",
+            7
+          ],
+          [
+            "alive",
+            8
+          ],
+          [
+            "alive",
+            9
+          ],
+          [
+            "alive",
+            10
+          ],
+          [
+            "alive",
+            11
+          ],
+          [
+            "alive",
+            12
+          ],
+          [
+            "alive",
+            13
+          ],
+          [
+            "alive",
+            14
+          ],
+          [
+            "alive",
+            15
+          ],
+          [
+            "alive",
+            16
+          ],
+          [
+            "alive",
+            17
+          ],
+          [
+            "alive",
+            18
+          ],
+          [
+            "alive",
+            19
+          ],
+          [
+            "alive",
+            20
+          ],
+          [
+            "alive",
+            21
+          ],
+          [
+            "alive",
+            22
+          ],
+          [
+            "alive",
+            23
+          ],
+          [
+            "alive",
+            24
+          ],
+          [
+            "alive",
+            25
+          ],
+          [
+            "alive",
+            26
+          ],
+          [
+            "alive",
+            27
+          ],
+          [
+            "alive",
+            28
+          ],
+          [
+            "alive",
+            29
+          ],
+          [
+            "alive",
+            30
+          ],
+          [
+            "alive",
+            31
+          ],
+          [
+            "alive",
+            32
+          ],
+          [
+            "alive",
+            33
+          ],
+          [
+            "alive",
+            34
+          ],
+          [
+            "alive",
+            35
+          ],
+          [
+            "alive",
+            36
+          ],
+          [
+            "alive",
+            37
+          ],
+          [
+            "alive",
+            38
+          ],
+          [
+            "alive",
+            39
+          ],
+          [
+            "alive",
+            40
+          ],
+          [
+            "alive",
+            41
+          ],
+          [
+            "alive",
+            42
+          ],
+          [
+            "alive",
+            43
+          ],
+          [
+            "alive",
+            44
+          ],
+          [
+            "alive",
+            45
+          ],
+          [
+            "alive",
+            46
+          ],
+          [
+            "alive",
+            47
+          ],
+          [
+            "alive",
+            48
+          ],
+          [
+            "alive",
+            49
+          ],
+          [
+            "alive",
+            50
+          ],
+          [
+            "alive",
+            51
+          ],
+          [
+            "alive",
+            52
+          ],
+          [
+            "alive",
+            53
+          ],
+          [
+            "alive",
+            54
+          ],
+          [
+            "alive",
+            55
+          ],
+          [
+            "alive",
+            56
+          ],
+          [
+            "alive",
+            57
+          ],
+          [
+            "alive",
+            58
+          ],
+          [
+            "alive",
+            59
+          ],
+          [
+            "alive",
+            60
+          ],
+          [
+            "alive",
+            61
+          ],
+          [
+            "alive",
+            62
+          ],
+          [
+            "alive",
+            63
+          ],
+          [
+            "alive",
+            64
+          ],
+          [
+            "alive",
+            65
+          ],
+          [
+            "alive",
+            66
+          ],
+          [
+            "alive",
+            67
+          ],
+          [
+            "alive",
+            68
+          ],
+          [
+            "alive",
+            69
+          ],
+          [
+            "alive",
+            70
+          ],
+          [
+            "alive",
+            71
+          ],
+          [
+            "alive",
+            72
+          ],
+          [
+            "alive",
+            73
+          ],
+          [
+            "alive",
+            74
+          ],
+          [
+            "alive",
+            75
+          ],
+          [
+            "alive",
+            76
+          ],
+          [
+            "alive",
+            77
+          ],
+          [
+            "alive",
+            78
+          ],
+          [
+            "alive",
+            79
+          ],
+          [
+            "alive",
+            80
+          ],
+          [
+            "alive",
+            81
+          ],
+          [
+            "alive",
+            82
+          ],
+          [
+            "alive",
+            83
+          ],
+          [
+            "alive",
+            84
+          ],
+          [
+            "alive",
+            85
+          ],
+          [
+            "alive",
+            86
+          ],
+          [
+            "alive",
+            87
+          ],
+          [
+            "alive",
+            88
+          ],
+          [
+            "alive",
+            89
+          ],
+          [
+            "alive",
+            90
+          ],
+          [
+            "alive",
+            91
+          ],
+          [
+            "alive",
+            92
+          ],
+          [
+            "alive",
+            93
+          ],
+          [
+            "alive",
+            94
+          ],
+          [
+            "alive",
+            95
+          ],
+          [
+            "map",
+            93,
+            16,
+            3,
+            14
+          ]
+        ],
+        "state_feature_masks_hex": [
+          "0x1ffffffffffffffffffffffff",
+          "0xffffffffffffffffffffffff",
+          "0x1ffffffffffffffffffffffff"
+        ],
+        "minimum_representatives_for_measured_positive_events": 1,
+        "minimum_cover_subsets": [
+          [
+            0
+          ],
+          [
+            2
+          ]
+        ],
+        "current_survivor_indices": [
+          1,
+          2
+        ],
+        "current_covers_all_measured_positive_events": true,
+        "current_missed_by_category": {},
+        "three_state_necessity_certificate": []
+      },
+      {
+        "source_sample": 10,
+        "execution": 2039,
+        "state_roles": [
+          "candidate",
+          "incumbent_1995",
+          "incumbent_2385"
+        ],
+        "event_dictionary": [
+          [
+            "alive",
+            0
+          ],
+          [
+            "alive",
+            1
+          ],
+          [
+            "alive",
+            2
+          ],
+          [
+            "alive",
+            3
+          ],
+          [
+            "alive",
+            4
+          ],
+          [
+            "alive",
+            5
+          ],
+          [
+            "alive",
+            6
+          ],
+          [
+            "alive",
+            7
+          ],
+          [
+            "alive",
+            8
+          ],
+          [
+            "alive",
+            9
+          ],
+          [
+            "alive",
+            10
+          ],
+          [
+            "alive",
+            11
+          ],
+          [
+            "alive",
+            12
+          ],
+          [
+            "alive",
+            13
+          ],
+          [
+            "alive",
+            14
+          ],
+          [
+            "alive",
+            15
+          ],
+          [
+            "alive",
+            16
+          ],
+          [
+            "alive",
+            17
+          ],
+          [
+            "alive",
+            18
+          ],
+          [
+            "alive",
+            19
+          ],
+          [
+            "alive",
+            20
+          ],
+          [
+            "alive",
+            21
+          ],
+          [
+            "alive",
+            22
+          ],
+          [
+            "alive",
+            23
+          ],
+          [
+            "alive",
+            24
+          ],
+          [
+            "alive",
+            25
+          ],
+          [
+            "alive",
+            26
+          ],
+          [
+            "alive",
+            27
+          ],
+          [
+            "alive",
+            28
+          ],
+          [
+            "alive",
+            29
+          ],
+          [
+            "alive",
+            30
+          ],
+          [
+            "alive",
+            31
+          ],
+          [
+            "alive",
+            32
+          ],
+          [
+            "alive",
+            33
+          ],
+          [
+            "alive",
+            34
+          ],
+          [
+            "alive",
+            35
+          ],
+          [
+            "alive",
+            36
+          ],
+          [
+            "alive",
+            37
+          ],
+          [
+            "alive",
+            38
+          ],
+          [
+            "alive",
+            39
+          ],
+          [
+            "alive",
+            40
+          ],
+          [
+            "alive",
+            41
+          ],
+          [
+            "alive",
+            42
+          ],
+          [
+            "alive",
+            43
+          ],
+          [
+            "alive",
+            44
+          ],
+          [
+            "alive",
+            45
+          ],
+          [
+            "alive",
+            46
+          ],
+          [
+            "alive",
+            47
+          ],
+          [
+            "alive",
+            48
+          ],
+          [
+            "alive",
+            49
+          ],
+          [
+            "alive",
+            50
+          ],
+          [
+            "alive",
+            51
+          ],
+          [
+            "alive",
+            52
+          ],
+          [
+            "alive",
+            53
+          ],
+          [
+            "alive",
+            54
+          ],
+          [
+            "alive",
+            55
+          ],
+          [
+            "alive",
+            56
+          ],
+          [
+            "alive",
+            57
+          ],
+          [
+            "alive",
+            58
+          ],
+          [
+            "alive",
+            59
+          ],
+          [
+            "alive",
+            60
+          ],
+          [
+            "alive",
+            61
+          ],
+          [
+            "alive",
+            62
+          ],
+          [
+            "alive",
+            63
+          ],
+          [
+            "alive",
+            64
+          ],
+          [
+            "alive",
+            65
+          ],
+          [
+            "alive",
+            66
+          ],
+          [
+            "alive",
+            67
+          ],
+          [
+            "alive",
+            68
+          ],
+          [
+            "alive",
+            69
+          ],
+          [
+            "alive",
+            70
+          ],
+          [
+            "alive",
+            71
+          ],
+          [
+            "alive",
+            72
+          ],
+          [
+            "alive",
+            73
+          ],
+          [
+            "alive",
+            74
+          ],
+          [
+            "alive",
+            75
+          ],
+          [
+            "alive",
+            76
+          ],
+          [
+            "alive",
+            77
+          ],
+          [
+            "alive",
+            78
+          ],
+          [
+            "alive",
+            79
+          ],
+          [
+            "alive",
+            80
+          ],
+          [
+            "alive",
+            81
+          ],
+          [
+            "alive",
+            82
+          ],
+          [
+            "alive",
+            83
+          ],
+          [
+            "alive",
+            84
+          ],
+          [
+            "alive",
+            85
+          ],
+          [
+            "alive",
+            86
+          ],
+          [
+            "alive",
+            87
+          ],
+          [
+            "alive",
+            88
+          ],
+          [
+            "alive",
+            89
+          ],
+          [
+            "alive",
+            90
+          ],
+          [
+            "alive",
+            91
+          ],
+          [
+            "alive",
+            92
+          ],
+          [
+            "alive",
+            93
+          ],
+          [
+            "alive",
+            94
+          ],
+          [
+            "alive",
+            95
+          ],
+          [
+            "map",
+            5,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            18,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            21,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            34,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            37,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            50,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            53,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            66,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            69,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            70,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            82,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            85,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            86,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            94,
+            16,
+            2,
+            14
+          ]
+        ],
+        "state_feature_masks_hex": [
+          "0x3200ffffffffffffffffffffffff",
+          "0x3200ffffffffffffffffffffffff",
+          "0x1fffffffffffffffffffffffffff"
+        ],
+        "minimum_representatives_for_measured_positive_events": 2,
+        "minimum_cover_subsets": [
+          [
+            0,
+            2
+          ],
+          [
+            1,
+            2
+          ]
+        ],
+        "current_survivor_indices": [
+          1,
+          2
+        ],
+        "current_covers_all_measured_positive_events": true,
+        "current_missed_by_category": {},
+        "three_state_necessity_certificate": []
+      }
+    ],
+    "qualifies_longer_search": false,
+    "limitations": [
+      "Every suffix remains a distinct condition; pooling across actions would answer a different question.",
+      "Coverage preserves observed positive events, not all transitions, costs or unobserved future outcomes.",
+      "The candidate set is exactly the three offered states; another unobserved state could cover more.",
+      "This is retrospective after U01 outcomes, with no fresh performance or statistical confirmation claim.",
+      "An oracle's subset choice does not supply a cheap, generalizable way to choose that subset online.",
+      "Local proposals precede global eviction; all retained-memory and probing costs remain separate obligations."
+    ],
+    "condition_mapping": "virtual_trial = (horizon-1)*16 + original_trial; six dependent prefixes, not96 independent trials"
+  },
+  "joint_with_24_action_reference": {
+    "format": "u01-retrospective-finite-cover-v1",
+    "scope": "exact hindsight cover of fixed measured positive events; not an online policy or behavioral equivalence",
+    "minimum_representatives_histogram": {
+      "1": 5,
+      "2": 2
+    },
+    "current_proposals_missing_events": 5,
+    "missing_events_avoidable_with_two_of_offered_three": 5,
+    "competitions": [
+      {
+        "source_sample": 2,
+        "execution": 2350,
+        "state_roles": [
+          "candidate",
+          "incumbent_3140",
+          "incumbent_3189"
+        ],
+        "event_dictionary": [
+          [
+            "alive",
+            0
+          ],
+          [
+            "alive",
+            1
+          ],
+          [
+            "alive",
+            2
+          ],
+          [
+            "alive",
+            3
+          ],
+          [
+            "alive",
+            4
+          ],
+          [
+            "alive",
+            5
+          ],
+          [
+            "alive",
+            6
+          ],
+          [
+            "alive",
+            7
+          ],
+          [
+            "alive",
+            8
+          ],
+          [
+            "alive",
+            9
+          ],
+          [
+            "alive",
+            10
+          ],
+          [
+            "alive",
+            11
+          ],
+          [
+            "alive",
+            12
+          ],
+          [
+            "alive",
+            13
+          ],
+          [
+            "alive",
+            14
+          ],
+          [
+            "alive",
+            15
+          ],
+          [
+            "alive",
+            16
+          ],
+          [
+            "alive",
+            17
+          ],
+          [
+            "alive",
+            18
+          ],
+          [
+            "alive",
+            19
+          ],
+          [
+            "alive",
+            20
+          ],
+          [
+            "alive",
+            21
+          ],
+          [
+            "alive",
+            22
+          ],
+          [
+            "alive",
+            23
+          ],
+          [
+            "alive",
+            24
+          ],
+          [
+            "alive",
+            25
+          ],
+          [
+            "alive",
+            26
+          ],
+          [
+            "alive",
+            27
+          ],
+          [
+            "alive",
+            28
+          ],
+          [
+            "alive",
+            29
+          ],
+          [
+            "alive",
+            30
+          ],
+          [
+            "alive",
+            31
+          ],
+          [
+            "alive",
+            32
+          ],
+          [
+            "alive",
+            33
+          ],
+          [
+            "alive",
+            34
+          ],
+          [
+            "alive",
+            35
+          ],
+          [
+            "alive",
+            36
+          ],
+          [
+            "alive",
+            37
+          ],
+          [
+            "alive",
+            38
+          ],
+          [
+            "alive",
+            39
+          ],
+          [
+            "alive",
+            40
+          ],
+          [
+            "alive",
+            41
+          ],
+          [
+            "alive",
+            42
+          ],
+          [
+            "alive",
+            43
+          ],
+          [
+            "alive",
+            44
+          ],
+          [
+            "alive",
+            45
+          ],
+          [
+            "alive",
+            46
+          ],
+          [
+            "alive",
+            47
+          ],
+          [
+            "alive",
+            48
+          ],
+          [
+            "alive",
+            49
+          ],
+          [
+            "alive",
+            50
+          ],
+          [
+            "alive",
+            51
+          ],
+          [
+            "alive",
+            52
+          ],
+          [
+            "alive",
+            53
+          ],
+          [
+            "alive",
+            54
+          ],
+          [
+            "alive",
+            55
+          ],
+          [
+            "alive",
+            56
+          ],
+          [
+            "alive",
+            57
+          ],
+          [
+            "alive",
+            58
+          ],
+          [
+            "alive",
+            59
+          ],
+          [
+            "alive",
+            60
+          ],
+          [
+            "alive",
+            61
+          ],
+          [
+            "alive",
+            62
+          ],
+          [
+            "alive",
+            63
+          ],
+          [
+            "alive",
+            64
+          ],
+          [
+            "alive",
+            65
+          ],
+          [
+            "alive",
+            66
+          ],
+          [
+            "alive",
+            67
+          ],
+          [
+            "alive",
+            68
+          ],
+          [
+            "alive",
+            69
+          ],
+          [
+            "alive",
+            70
+          ],
+          [
+            "alive",
+            71
+          ],
+          [
+            "alive",
+            72
+          ],
+          [
+            "alive",
+            73
+          ],
+          [
+            "alive",
+            74
+          ],
+          [
+            "alive",
+            75
+          ],
+          [
+            "alive",
+            76
+          ],
+          [
+            "alive",
+            77
+          ],
+          [
+            "alive",
+            78
+          ],
+          [
+            "alive",
+            79
+          ],
+          [
+            "alive",
+            80
+          ],
+          [
+            "alive",
+            81
+          ],
+          [
+            "alive",
+            82
+          ],
+          [
+            "alive",
+            83
+          ],
+          [
+            "alive",
+            84
+          ],
+          [
+            "alive",
+            85
+          ],
+          [
+            "alive",
+            86
+          ],
+          [
+            "alive",
+            87
+          ],
+          [
+            "alive",
+            88
+          ],
+          [
+            "alive",
+            89
+          ],
+          [
+            "alive",
+            90
+          ],
+          [
+            "alive",
+            91
+          ],
+          [
+            "alive",
+            92
+          ],
+          [
+            "alive",
+            93
+          ],
+          [
+            "alive",
+            94
+          ],
+          [
+            "alive",
+            95
+          ],
+          [
+            "alive",
+            101
+          ],
+          [
+            "alive",
+            104
+          ],
+          [
+            "alive",
+            105
+          ],
+          [
+            "alive",
+            106
+          ],
+          [
+            "alive",
+            107
+          ],
+          [
+            "alive",
+            108
+          ],
+          [
+            "map",
+            54,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            70,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            86,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            93,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            96,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            97,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            98,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            99,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            100,
+            16,
+            6,
+            14
+          ],
+          [
+            "map",
+            101,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            102,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            103,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            104,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            105,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            108,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            109,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            110,
+            16,
+            8,
+            14
+          ],
+          [
+            "map",
+            111,
+            16,
+            8,
+            14
+          ]
+        ],
+        "state_feature_masks_hex": [
+          "0xffffffffffffffffffffffffffffff",
+          "0x40004002400258265f2e5fff",
+          "0x40004002400258265fae5fff"
+        ],
+        "minimum_representatives_for_measured_positive_events": 1,
+        "minimum_cover_subsets": [
+          [
+            0
+          ]
+        ],
+        "current_survivor_indices": [
+          1,
+          2
+        ],
+        "current_covers_all_measured_positive_events": false,
+        "current_missed_by_category": {
+          "alive": 66,
+          "map": 18
+        },
+        "three_state_necessity_certificate": []
+      },
+      {
+        "source_sample": 3,
+        "execution": 235,
+        "state_roles": [
+          "incumbent_413",
+          "candidate",
+          "incumbent_284"
+        ],
+        "event_dictionary": [
+          [
+            "alive",
+            0
+          ],
+          [
+            "alive",
+            1
+          ],
+          [
+            "alive",
+            2
+          ],
+          [
+            "alive",
+            3
+          ],
+          [
+            "alive",
+            4
+          ],
+          [
+            "alive",
+            5
+          ],
+          [
+            "alive",
+            6
+          ],
+          [
+            "alive",
+            7
+          ],
+          [
+            "alive",
+            8
+          ],
+          [
+            "alive",
+            9
+          ],
+          [
+            "alive",
+            10
+          ],
+          [
+            "alive",
+            11
+          ],
+          [
+            "alive",
+            12
+          ],
+          [
+            "alive",
+            13
+          ],
+          [
+            "alive",
+            14
+          ],
+          [
+            "alive",
+            15
+          ],
+          [
+            "alive",
+            16
+          ],
+          [
+            "alive",
+            17
+          ],
+          [
+            "alive",
+            18
+          ],
+          [
+            "alive",
+            19
+          ],
+          [
+            "alive",
+            20
+          ],
+          [
+            "alive",
+            21
+          ],
+          [
+            "alive",
+            22
+          ],
+          [
+            "alive",
+            23
+          ],
+          [
+            "alive",
+            24
+          ],
+          [
+            "alive",
+            25
+          ],
+          [
+            "alive",
+            26
+          ],
+          [
+            "alive",
+            27
+          ],
+          [
+            "alive",
+            28
+          ],
+          [
+            "alive",
+            29
+          ],
+          [
+            "alive",
+            30
+          ],
+          [
+            "alive",
+            31
+          ],
+          [
+            "alive",
+            32
+          ],
+          [
+            "alive",
+            33
+          ],
+          [
+            "alive",
+            34
+          ],
+          [
+            "alive",
+            35
+          ],
+          [
+            "alive",
+            36
+          ],
+          [
+            "alive",
+            37
+          ],
+          [
+            "alive",
+            38
+          ],
+          [
+            "alive",
+            39
+          ],
+          [
+            "alive",
+            40
+          ],
+          [
+            "alive",
+            41
+          ],
+          [
+            "alive",
+            42
+          ],
+          [
+            "alive",
+            43
+          ],
+          [
+            "alive",
+            44
+          ],
+          [
+            "alive",
+            45
+          ],
+          [
+            "alive",
+            46
+          ],
+          [
+            "alive",
+            47
+          ],
+          [
+            "alive",
+            48
+          ],
+          [
+            "alive",
+            49
+          ],
+          [
+            "alive",
+            50
+          ],
+          [
+            "alive",
+            51
+          ],
+          [
+            "alive",
+            52
+          ],
+          [
+            "alive",
+            53
+          ],
+          [
+            "alive",
+            54
+          ],
+          [
+            "alive",
+            55
+          ],
+          [
+            "alive",
+            56
+          ],
+          [
+            "alive",
+            57
+          ],
+          [
+            "alive",
+            58
+          ],
+          [
+            "alive",
+            59
+          ],
+          [
+            "alive",
+            60
+          ],
+          [
+            "alive",
+            61
+          ],
+          [
+            "alive",
+            62
+          ],
+          [
+            "alive",
+            63
+          ],
+          [
+            "alive",
+            64
+          ],
+          [
+            "alive",
+            65
+          ],
+          [
+            "alive",
+            66
+          ],
+          [
+            "alive",
+            67
+          ],
+          [
+            "alive",
+            68
+          ],
+          [
+            "alive",
+            69
+          ],
+          [
+            "alive",
+            70
+          ],
+          [
+            "alive",
+            71
+          ],
+          [
+            "alive",
+            72
+          ],
+          [
+            "alive",
+            73
+          ],
+          [
+            "alive",
+            74
+          ],
+          [
+            "alive",
+            75
+          ],
+          [
+            "alive",
+            76
+          ],
+          [
+            "alive",
+            77
+          ],
+          [
+            "alive",
+            78
+          ],
+          [
+            "alive",
+            79
+          ],
+          [
+            "alive",
+            80
+          ],
+          [
+            "alive",
+            81
+          ],
+          [
+            "alive",
+            82
+          ],
+          [
+            "alive",
+            83
+          ],
+          [
+            "alive",
+            84
+          ],
+          [
+            "alive",
+            85
+          ],
+          [
+            "alive",
+            86
+          ],
+          [
+            "alive",
+            87
+          ],
+          [
+            "alive",
+            88
+          ],
+          [
+            "alive",
+            89
+          ],
+          [
+            "alive",
+            90
+          ],
+          [
+            "alive",
+            91
+          ],
+          [
+            "alive",
+            92
+          ],
+          [
+            "alive",
+            93
+          ],
+          [
+            "alive",
+            94
+          ],
+          [
+            "alive",
+            95
+          ],
+          [
+            "alive",
+            96
+          ],
+          [
+            "alive",
+            97
+          ],
+          [
+            "alive",
+            98
+          ],
+          [
+            "alive",
+            99
+          ],
+          [
+            "alive",
+            100
+          ],
+          [
+            "alive",
+            101
+          ],
+          [
+            "alive",
+            102
+          ],
+          [
+            "alive",
+            103
+          ],
+          [
+            "alive",
+            104
+          ],
+          [
+            "alive",
+            105
+          ],
+          [
+            "alive",
+            106
+          ],
+          [
+            "alive",
+            107
+          ],
+          [
+            "alive",
+            108
+          ],
+          [
+            "alive",
+            109
+          ],
+          [
+            "alive",
+            110
+          ],
+          [
+            "alive",
+            111
+          ],
+          [
+            "map",
+            13,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            16,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            20,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            22,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            29,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            32,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            35,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            36,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            38,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            39,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            40,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            41,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            42,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            45,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            47,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            48,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            51,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            52,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            54,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            55,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            56,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            57,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            58,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            59,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            61,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            63,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            64,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            67,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            68,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            70,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            71,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            72,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            73,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            74,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            75,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            77,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            79,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            80,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            82,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            83,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            84,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            86,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            87,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            88,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            89,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            90,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            91,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            93,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            95,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            96,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            96,
+            16,
+            4,
+            14
+          ],
+          [
+            "map",
+            97,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            98,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            98,
+            16,
+            4,
+            14
+          ],
+          [
+            "map",
+            99,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            99,
+            16,
+            4,
+            14
+          ],
+          [
+            "map",
+            100,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            102,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            102,
+            16,
+            4,
+            14
+          ],
+          [
+            "map",
+            103,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            104,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            105,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            106,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            107,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            108,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            109,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            110,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            111,
+            16,
+            3,
+            14
+          ]
+        ],
+        "state_feature_masks_hex": [
+          "0xffb5bffffffffffffffffffffffffffffffffffffffff",
+          "0xfffdfffffffffffffffffffffffffffffffffffffffff",
+          "0xfff7bffffffffffffffffffffffffffffffffffffffff"
+        ],
+        "minimum_representatives_for_measured_positive_events": 2,
+        "minimum_cover_subsets": [
+          [
+            1,
+            2
+          ]
+        ],
+        "current_survivor_indices": [
+          1,
+          2
+        ],
+        "current_covers_all_measured_positive_events": true,
+        "current_missed_by_category": {},
+        "three_state_necessity_certificate": []
+      },
+      {
+        "source_sample": 4,
+        "execution": 4546,
+        "state_roles": [
+          "candidate",
+          "incumbent_3578",
+          "incumbent_5267"
+        ],
+        "event_dictionary": [
+          [
+            "alive",
+            0
+          ],
+          [
+            "alive",
+            1
+          ],
+          [
+            "alive",
+            2
+          ],
+          [
+            "alive",
+            3
+          ],
+          [
+            "alive",
+            4
+          ],
+          [
+            "alive",
+            5
+          ],
+          [
+            "alive",
+            6
+          ],
+          [
+            "alive",
+            7
+          ],
+          [
+            "alive",
+            8
+          ],
+          [
+            "alive",
+            9
+          ],
+          [
+            "alive",
+            10
+          ],
+          [
+            "alive",
+            11
+          ],
+          [
+            "alive",
+            12
+          ],
+          [
+            "alive",
+            13
+          ],
+          [
+            "alive",
+            14
+          ],
+          [
+            "alive",
+            15
+          ],
+          [
+            "alive",
+            16
+          ],
+          [
+            "alive",
+            17
+          ],
+          [
+            "alive",
+            18
+          ],
+          [
+            "alive",
+            19
+          ],
+          [
+            "alive",
+            20
+          ],
+          [
+            "alive",
+            21
+          ],
+          [
+            "alive",
+            22
+          ],
+          [
+            "alive",
+            23
+          ],
+          [
+            "alive",
+            24
+          ],
+          [
+            "alive",
+            25
+          ],
+          [
+            "alive",
+            26
+          ],
+          [
+            "alive",
+            27
+          ],
+          [
+            "alive",
+            28
+          ],
+          [
+            "alive",
+            29
+          ],
+          [
+            "alive",
+            30
+          ],
+          [
+            "alive",
+            31
+          ],
+          [
+            "alive",
+            32
+          ],
+          [
+            "alive",
+            33
+          ],
+          [
+            "alive",
+            34
+          ],
+          [
+            "alive",
+            35
+          ],
+          [
+            "alive",
+            36
+          ],
+          [
+            "alive",
+            37
+          ],
+          [
+            "alive",
+            38
+          ],
+          [
+            "alive",
+            39
+          ],
+          [
+            "alive",
+            40
+          ],
+          [
+            "alive",
+            41
+          ],
+          [
+            "alive",
+            42
+          ],
+          [
+            "alive",
+            43
+          ],
+          [
+            "alive",
+            44
+          ],
+          [
+            "alive",
+            45
+          ],
+          [
+            "alive",
+            46
+          ],
+          [
+            "alive",
+            47
+          ],
+          [
+            "alive",
+            48
+          ],
+          [
+            "alive",
+            49
+          ],
+          [
+            "alive",
+            50
+          ],
+          [
+            "alive",
+            51
+          ],
+          [
+            "alive",
+            52
+          ],
+          [
+            "alive",
+            53
+          ],
+          [
+            "alive",
+            54
+          ],
+          [
+            "alive",
+            55
+          ],
+          [
+            "alive",
+            56
+          ],
+          [
+            "alive",
+            57
+          ],
+          [
+            "alive",
+            58
+          ],
+          [
+            "alive",
+            59
+          ],
+          [
+            "alive",
+            60
+          ],
+          [
+            "alive",
+            61
+          ],
+          [
+            "alive",
+            62
+          ],
+          [
+            "alive",
+            63
+          ],
+          [
+            "alive",
+            64
+          ],
+          [
+            "alive",
+            65
+          ],
+          [
+            "alive",
+            66
+          ],
+          [
+            "alive",
+            67
+          ],
+          [
+            "alive",
+            68
+          ],
+          [
+            "alive",
+            69
+          ],
+          [
+            "alive",
+            70
+          ],
+          [
+            "alive",
+            71
+          ],
+          [
+            "alive",
+            72
+          ],
+          [
+            "alive",
+            73
+          ],
+          [
+            "alive",
+            74
+          ],
+          [
+            "alive",
+            75
+          ],
+          [
+            "alive",
+            76
+          ],
+          [
+            "alive",
+            77
+          ],
+          [
+            "alive",
+            78
+          ],
+          [
+            "alive",
+            79
+          ],
+          [
+            "alive",
+            80
+          ],
+          [
+            "alive",
+            81
+          ],
+          [
+            "alive",
+            82
+          ],
+          [
+            "alive",
+            83
+          ],
+          [
+            "alive",
+            84
+          ],
+          [
+            "alive",
+            85
+          ],
+          [
+            "alive",
+            86
+          ],
+          [
+            "alive",
+            87
+          ],
+          [
+            "alive",
+            88
+          ],
+          [
+            "alive",
+            89
+          ],
+          [
+            "alive",
+            90
+          ],
+          [
+            "alive",
+            91
+          ],
+          [
+            "alive",
+            92
+          ],
+          [
+            "alive",
+            93
+          ],
+          [
+            "alive",
+            94
+          ],
+          [
+            "alive",
+            95
+          ],
+          [
+            "alive",
+            96
+          ],
+          [
+            "alive",
+            97
+          ],
+          [
+            "alive",
+            98
+          ],
+          [
+            "alive",
+            99
+          ],
+          [
+            "alive",
+            100
+          ],
+          [
+            "alive",
+            101
+          ],
+          [
+            "alive",
+            102
+          ],
+          [
+            "alive",
+            103
+          ],
+          [
+            "alive",
+            104
+          ],
+          [
+            "alive",
+            105
+          ],
+          [
+            "alive",
+            106
+          ],
+          [
+            "alive",
+            107
+          ],
+          [
+            "alive",
+            108
+          ],
+          [
+            "alive",
+            109
+          ],
+          [
+            "alive",
+            110
+          ],
+          [
+            "alive",
+            111
+          ],
+          [
+            "map",
+            93,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            99,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            109,
+            16,
+            3,
+            14
+          ]
+        ],
+        "state_feature_masks_hex": [
+          "0x7ffffffffffffffffffffffffffff",
+          "0xffffffffffffffffffffffffffff",
+          "0x2ffffffffffffffffffffffffffff"
+        ],
+        "minimum_representatives_for_measured_positive_events": 1,
+        "minimum_cover_subsets": [
+          [
+            0
+          ]
+        ],
+        "current_survivor_indices": [
+          1,
+          2
+        ],
+        "current_covers_all_measured_positive_events": false,
+        "current_missed_by_category": {
+          "map": 2
+        },
+        "three_state_necessity_certificate": []
+      },
+      {
+        "source_sample": 6,
+        "execution": 4853,
+        "state_roles": [
+          "candidate",
+          "incumbent_5817",
+          "incumbent_5818"
+        ],
+        "event_dictionary": [
+          [
+            "alive",
+            0
+          ],
+          [
+            "alive",
+            1
+          ],
+          [
+            "alive",
+            2
+          ],
+          [
+            "alive",
+            3
+          ],
+          [
+            "alive",
+            4
+          ],
+          [
+            "alive",
+            5
+          ],
+          [
+            "alive",
+            6
+          ],
+          [
+            "alive",
+            7
+          ],
+          [
+            "alive",
+            8
+          ],
+          [
+            "alive",
+            9
+          ],
+          [
+            "alive",
+            10
+          ],
+          [
+            "alive",
+            11
+          ],
+          [
+            "alive",
+            12
+          ],
+          [
+            "alive",
+            13
+          ],
+          [
+            "alive",
+            14
+          ],
+          [
+            "alive",
+            15
+          ],
+          [
+            "alive",
+            16
+          ],
+          [
+            "alive",
+            17
+          ],
+          [
+            "alive",
+            18
+          ],
+          [
+            "alive",
+            19
+          ],
+          [
+            "alive",
+            20
+          ],
+          [
+            "alive",
+            21
+          ],
+          [
+            "alive",
+            22
+          ],
+          [
+            "alive",
+            23
+          ],
+          [
+            "alive",
+            24
+          ],
+          [
+            "alive",
+            25
+          ],
+          [
+            "alive",
+            26
+          ],
+          [
+            "alive",
+            27
+          ],
+          [
+            "alive",
+            28
+          ],
+          [
+            "alive",
+            29
+          ],
+          [
+            "alive",
+            30
+          ],
+          [
+            "alive",
+            31
+          ],
+          [
+            "alive",
+            32
+          ],
+          [
+            "alive",
+            33
+          ],
+          [
+            "alive",
+            34
+          ],
+          [
+            "alive",
+            35
+          ],
+          [
+            "alive",
+            36
+          ],
+          [
+            "alive",
+            37
+          ],
+          [
+            "alive",
+            38
+          ],
+          [
+            "alive",
+            39
+          ],
+          [
+            "alive",
+            40
+          ],
+          [
+            "alive",
+            41
+          ],
+          [
+            "alive",
+            42
+          ],
+          [
+            "alive",
+            43
+          ],
+          [
+            "alive",
+            44
+          ],
+          [
+            "alive",
+            45
+          ],
+          [
+            "alive",
+            46
+          ],
+          [
+            "alive",
+            47
+          ],
+          [
+            "alive",
+            48
+          ],
+          [
+            "alive",
+            49
+          ],
+          [
+            "alive",
+            50
+          ],
+          [
+            "alive",
+            51
+          ],
+          [
+            "alive",
+            52
+          ],
+          [
+            "alive",
+            53
+          ],
+          [
+            "alive",
+            54
+          ],
+          [
+            "alive",
+            55
+          ],
+          [
+            "alive",
+            56
+          ],
+          [
+            "alive",
+            57
+          ],
+          [
+            "alive",
+            58
+          ],
+          [
+            "alive",
+            59
+          ],
+          [
+            "alive",
+            60
+          ],
+          [
+            "alive",
+            61
+          ],
+          [
+            "alive",
+            62
+          ],
+          [
+            "alive",
+            63
+          ],
+          [
+            "alive",
+            64
+          ],
+          [
+            "alive",
+            65
+          ],
+          [
+            "alive",
+            66
+          ],
+          [
+            "alive",
+            67
+          ],
+          [
+            "alive",
+            68
+          ],
+          [
+            "alive",
+            69
+          ],
+          [
+            "alive",
+            70
+          ],
+          [
+            "alive",
+            71
+          ],
+          [
+            "alive",
+            72
+          ],
+          [
+            "alive",
+            73
+          ],
+          [
+            "alive",
+            74
+          ],
+          [
+            "alive",
+            75
+          ],
+          [
+            "alive",
+            76
+          ],
+          [
+            "alive",
+            77
+          ],
+          [
+            "alive",
+            78
+          ],
+          [
+            "alive",
+            79
+          ],
+          [
+            "alive",
+            80
+          ],
+          [
+            "alive",
+            81
+          ],
+          [
+            "alive",
+            82
+          ],
+          [
+            "alive",
+            83
+          ],
+          [
+            "alive",
+            84
+          ],
+          [
+            "alive",
+            85
+          ],
+          [
+            "alive",
+            86
+          ],
+          [
+            "alive",
+            87
+          ],
+          [
+            "alive",
+            88
+          ],
+          [
+            "alive",
+            89
+          ],
+          [
+            "alive",
+            90
+          ],
+          [
+            "alive",
+            91
+          ],
+          [
+            "alive",
+            92
+          ],
+          [
+            "alive",
+            93
+          ],
+          [
+            "alive",
+            94
+          ],
+          [
+            "alive",
+            95
+          ],
+          [
+            "alive",
+            98
+          ],
+          [
+            "alive",
+            99
+          ],
+          [
+            "alive",
+            100
+          ],
+          [
+            "alive",
+            102
+          ],
+          [
+            "alive",
+            103
+          ],
+          [
+            "alive",
+            104
+          ],
+          [
+            "alive",
+            106
+          ],
+          [
+            "alive",
+            110
+          ],
+          [
+            "alive",
+            111
+          ],
+          [
+            "map",
+            13,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            15,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            16,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            17,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            29,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            31,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            32,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            33,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            38,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            39,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            41,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            45,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            47,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            48,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            49,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            50,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            51,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            53,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            54,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            55,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            57,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            58,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            59,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            60,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            61,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            63,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            64,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            65,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            66,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            67,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            69,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            70,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            71,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            73,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            74,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            75,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            76,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            77,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            79,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            80,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            81,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            82,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            83,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            84,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            85,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            86,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            87,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            88,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            89,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            90,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            91,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            92,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            93,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            95,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            96,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            97,
+            16,
+            4,
+            14
+          ],
+          [
+            "map",
+            97,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            98,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            99,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            100,
+            16,
+            4,
+            14
+          ],
+          [
+            "map",
+            100,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            101,
+            16,
+            4,
+            14
+          ],
+          [
+            "map",
+            101,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            102,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            103,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            104,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            105,
+            16,
+            4,
+            14
+          ],
+          [
+            "map",
+            105,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            106,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            107,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            108,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            109,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            110,
+            16,
+            5,
+            14
+          ],
+          [
+            "map",
+            111,
+            16,
+            5,
+            14
+          ]
+        ],
+        "state_feature_masks_hex": [
+          "0x7ffffffffffffffffffffffffffffffffffffffffffff",
+          "0x7fffffeefffffbffccdffffffffffffffffffffffffff",
+          "0x7f7ffffefffffbfffedffffffffffffffffffffffffff"
+        ],
+        "minimum_representatives_for_measured_positive_events": 1,
+        "minimum_cover_subsets": [
+          [
+            0
+          ]
+        ],
+        "current_survivor_indices": [
+          1,
+          2
+        ],
+        "current_covers_all_measured_positive_events": false,
+        "current_missed_by_category": {
+          "map": 4
+        },
+        "three_state_necessity_certificate": []
+      },
+      {
+        "source_sample": 8,
+        "execution": 4603,
+        "state_roles": [
+          "candidate",
+          "incumbent_3686",
+          "incumbent_5302"
+        ],
+        "event_dictionary": [
+          [
+            "alive",
+            0
+          ],
+          [
+            "alive",
+            1
+          ],
+          [
+            "alive",
+            2
+          ],
+          [
+            "alive",
+            3
+          ],
+          [
+            "alive",
+            4
+          ],
+          [
+            "alive",
+            5
+          ],
+          [
+            "alive",
+            6
+          ],
+          [
+            "alive",
+            7
+          ],
+          [
+            "alive",
+            8
+          ],
+          [
+            "alive",
+            9
+          ],
+          [
+            "alive",
+            10
+          ],
+          [
+            "alive",
+            11
+          ],
+          [
+            "alive",
+            12
+          ],
+          [
+            "alive",
+            13
+          ],
+          [
+            "alive",
+            14
+          ],
+          [
+            "alive",
+            15
+          ],
+          [
+            "alive",
+            16
+          ],
+          [
+            "alive",
+            17
+          ],
+          [
+            "alive",
+            18
+          ],
+          [
+            "alive",
+            19
+          ],
+          [
+            "alive",
+            20
+          ],
+          [
+            "alive",
+            21
+          ],
+          [
+            "alive",
+            22
+          ],
+          [
+            "alive",
+            23
+          ],
+          [
+            "alive",
+            24
+          ],
+          [
+            "alive",
+            25
+          ],
+          [
+            "alive",
+            26
+          ],
+          [
+            "alive",
+            27
+          ],
+          [
+            "alive",
+            28
+          ],
+          [
+            "alive",
+            29
+          ],
+          [
+            "alive",
+            30
+          ],
+          [
+            "alive",
+            31
+          ],
+          [
+            "alive",
+            32
+          ],
+          [
+            "alive",
+            33
+          ],
+          [
+            "alive",
+            34
+          ],
+          [
+            "alive",
+            35
+          ],
+          [
+            "alive",
+            36
+          ],
+          [
+            "alive",
+            37
+          ],
+          [
+            "alive",
+            38
+          ],
+          [
+            "alive",
+            39
+          ],
+          [
+            "alive",
+            40
+          ],
+          [
+            "alive",
+            41
+          ],
+          [
+            "alive",
+            42
+          ],
+          [
+            "alive",
+            43
+          ],
+          [
+            "alive",
+            44
+          ],
+          [
+            "alive",
+            45
+          ],
+          [
+            "alive",
+            46
+          ],
+          [
+            "alive",
+            47
+          ],
+          [
+            "alive",
+            48
+          ],
+          [
+            "alive",
+            49
+          ],
+          [
+            "alive",
+            50
+          ],
+          [
+            "alive",
+            51
+          ],
+          [
+            "alive",
+            52
+          ],
+          [
+            "alive",
+            53
+          ],
+          [
+            "alive",
+            54
+          ],
+          [
+            "alive",
+            55
+          ],
+          [
+            "alive",
+            56
+          ],
+          [
+            "alive",
+            57
+          ],
+          [
+            "alive",
+            58
+          ],
+          [
+            "alive",
+            59
+          ],
+          [
+            "alive",
+            60
+          ],
+          [
+            "alive",
+            61
+          ],
+          [
+            "alive",
+            62
+          ],
+          [
+            "alive",
+            63
+          ],
+          [
+            "alive",
+            64
+          ],
+          [
+            "alive",
+            65
+          ],
+          [
+            "alive",
+            66
+          ],
+          [
+            "alive",
+            67
+          ],
+          [
+            "alive",
+            68
+          ],
+          [
+            "alive",
+            69
+          ],
+          [
+            "alive",
+            70
+          ],
+          [
+            "alive",
+            71
+          ],
+          [
+            "alive",
+            72
+          ],
+          [
+            "alive",
+            73
+          ],
+          [
+            "alive",
+            74
+          ],
+          [
+            "alive",
+            75
+          ],
+          [
+            "alive",
+            76
+          ],
+          [
+            "alive",
+            77
+          ],
+          [
+            "alive",
+            78
+          ],
+          [
+            "alive",
+            79
+          ],
+          [
+            "alive",
+            80
+          ],
+          [
+            "alive",
+            81
+          ],
+          [
+            "alive",
+            82
+          ],
+          [
+            "alive",
+            83
+          ],
+          [
+            "alive",
+            84
+          ],
+          [
+            "alive",
+            85
+          ],
+          [
+            "alive",
+            86
+          ],
+          [
+            "alive",
+            87
+          ],
+          [
+            "alive",
+            88
+          ],
+          [
+            "alive",
+            89
+          ],
+          [
+            "alive",
+            90
+          ],
+          [
+            "alive",
+            91
+          ],
+          [
+            "alive",
+            92
+          ],
+          [
+            "alive",
+            93
+          ],
+          [
+            "alive",
+            94
+          ],
+          [
+            "alive",
+            95
+          ],
+          [
+            "alive",
+            96
+          ],
+          [
+            "alive",
+            97
+          ],
+          [
+            "alive",
+            98
+          ],
+          [
+            "alive",
+            99
+          ],
+          [
+            "alive",
+            100
+          ],
+          [
+            "alive",
+            101
+          ],
+          [
+            "alive",
+            102
+          ],
+          [
+            "alive",
+            103
+          ],
+          [
+            "alive",
+            104
+          ],
+          [
+            "alive",
+            105
+          ],
+          [
+            "alive",
+            106
+          ],
+          [
+            "alive",
+            107
+          ],
+          [
+            "alive",
+            108
+          ],
+          [
+            "alive",
+            109
+          ],
+          [
+            "alive",
+            110
+          ],
+          [
+            "alive",
+            111
+          ],
+          [
+            "map",
+            99,
+            16,
+            3,
+            14
+          ]
+        ],
+        "state_feature_masks_hex": [
+          "0x1ffffffffffffffffffffffffffff",
+          "0xffffffffffffffffffffffffffff",
+          "0xffffffffffffffffffffffffffff"
+        ],
+        "minimum_representatives_for_measured_positive_events": 1,
+        "minimum_cover_subsets": [
+          [
+            0
+          ]
+        ],
+        "current_survivor_indices": [
+          1,
+          2
+        ],
+        "current_covers_all_measured_positive_events": false,
+        "current_missed_by_category": {
+          "map": 1
+        },
+        "three_state_necessity_certificate": []
+      },
+      {
+        "source_sample": 9,
+        "execution": 4963,
+        "state_roles": [
+          "candidate",
+          "incumbent_1844",
+          "incumbent_1845"
+        ],
+        "event_dictionary": [
+          [
+            "alive",
+            0
+          ],
+          [
+            "alive",
+            1
+          ],
+          [
+            "alive",
+            2
+          ],
+          [
+            "alive",
+            3
+          ],
+          [
+            "alive",
+            4
+          ],
+          [
+            "alive",
+            5
+          ],
+          [
+            "alive",
+            6
+          ],
+          [
+            "alive",
+            7
+          ],
+          [
+            "alive",
+            8
+          ],
+          [
+            "alive",
+            9
+          ],
+          [
+            "alive",
+            10
+          ],
+          [
+            "alive",
+            11
+          ],
+          [
+            "alive",
+            12
+          ],
+          [
+            "alive",
+            13
+          ],
+          [
+            "alive",
+            14
+          ],
+          [
+            "alive",
+            15
+          ],
+          [
+            "alive",
+            16
+          ],
+          [
+            "alive",
+            17
+          ],
+          [
+            "alive",
+            18
+          ],
+          [
+            "alive",
+            19
+          ],
+          [
+            "alive",
+            20
+          ],
+          [
+            "alive",
+            21
+          ],
+          [
+            "alive",
+            22
+          ],
+          [
+            "alive",
+            23
+          ],
+          [
+            "alive",
+            24
+          ],
+          [
+            "alive",
+            25
+          ],
+          [
+            "alive",
+            26
+          ],
+          [
+            "alive",
+            27
+          ],
+          [
+            "alive",
+            28
+          ],
+          [
+            "alive",
+            29
+          ],
+          [
+            "alive",
+            30
+          ],
+          [
+            "alive",
+            31
+          ],
+          [
+            "alive",
+            32
+          ],
+          [
+            "alive",
+            33
+          ],
+          [
+            "alive",
+            34
+          ],
+          [
+            "alive",
+            35
+          ],
+          [
+            "alive",
+            36
+          ],
+          [
+            "alive",
+            37
+          ],
+          [
+            "alive",
+            38
+          ],
+          [
+            "alive",
+            39
+          ],
+          [
+            "alive",
+            40
+          ],
+          [
+            "alive",
+            41
+          ],
+          [
+            "alive",
+            42
+          ],
+          [
+            "alive",
+            43
+          ],
+          [
+            "alive",
+            44
+          ],
+          [
+            "alive",
+            45
+          ],
+          [
+            "alive",
+            46
+          ],
+          [
+            "alive",
+            47
+          ],
+          [
+            "alive",
+            48
+          ],
+          [
+            "alive",
+            49
+          ],
+          [
+            "alive",
+            50
+          ],
+          [
+            "alive",
+            51
+          ],
+          [
+            "alive",
+            52
+          ],
+          [
+            "alive",
+            53
+          ],
+          [
+            "alive",
+            54
+          ],
+          [
+            "alive",
+            55
+          ],
+          [
+            "alive",
+            56
+          ],
+          [
+            "alive",
+            57
+          ],
+          [
+            "alive",
+            58
+          ],
+          [
+            "alive",
+            59
+          ],
+          [
+            "alive",
+            60
+          ],
+          [
+            "alive",
+            61
+          ],
+          [
+            "alive",
+            62
+          ],
+          [
+            "alive",
+            63
+          ],
+          [
+            "alive",
+            64
+          ],
+          [
+            "alive",
+            65
+          ],
+          [
+            "alive",
+            66
+          ],
+          [
+            "alive",
+            67
+          ],
+          [
+            "alive",
+            68
+          ],
+          [
+            "alive",
+            69
+          ],
+          [
+            "alive",
+            70
+          ],
+          [
+            "alive",
+            71
+          ],
+          [
+            "alive",
+            72
+          ],
+          [
+            "alive",
+            73
+          ],
+          [
+            "alive",
+            74
+          ],
+          [
+            "alive",
+            75
+          ],
+          [
+            "alive",
+            76
+          ],
+          [
+            "alive",
+            77
+          ],
+          [
+            "alive",
+            78
+          ],
+          [
+            "alive",
+            79
+          ],
+          [
+            "alive",
+            80
+          ],
+          [
+            "alive",
+            81
+          ],
+          [
+            "alive",
+            82
+          ],
+          [
+            "alive",
+            83
+          ],
+          [
+            "alive",
+            84
+          ],
+          [
+            "alive",
+            85
+          ],
+          [
+            "alive",
+            86
+          ],
+          [
+            "alive",
+            87
+          ],
+          [
+            "alive",
+            88
+          ],
+          [
+            "alive",
+            89
+          ],
+          [
+            "alive",
+            90
+          ],
+          [
+            "alive",
+            91
+          ],
+          [
+            "alive",
+            92
+          ],
+          [
+            "alive",
+            93
+          ],
+          [
+            "alive",
+            94
+          ],
+          [
+            "alive",
+            95
+          ],
+          [
+            "alive",
+            96
+          ],
+          [
+            "alive",
+            97
+          ],
+          [
+            "alive",
+            98
+          ],
+          [
+            "alive",
+            99
+          ],
+          [
+            "alive",
+            100
+          ],
+          [
+            "alive",
+            101
+          ],
+          [
+            "alive",
+            102
+          ],
+          [
+            "alive",
+            103
+          ],
+          [
+            "alive",
+            104
+          ],
+          [
+            "alive",
+            105
+          ],
+          [
+            "alive",
+            106
+          ],
+          [
+            "alive",
+            107
+          ],
+          [
+            "alive",
+            108
+          ],
+          [
+            "alive",
+            109
+          ],
+          [
+            "alive",
+            110
+          ],
+          [
+            "alive",
+            111
+          ],
+          [
+            "map",
+            93,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            99,
+            16,
+            3,
+            14
+          ],
+          [
+            "map",
+            109,
+            16,
+            3,
+            14
+          ]
+        ],
+        "state_feature_masks_hex": [
+          "0x5ffffffffffffffffffffffffffff",
+          "0x2ffffffffffffffffffffffffffff",
+          "0x7ffffffffffffffffffffffffffff"
+        ],
+        "minimum_representatives_for_measured_positive_events": 1,
+        "minimum_cover_subsets": [
+          [
+            2
+          ]
+        ],
+        "current_survivor_indices": [
+          1,
+          2
+        ],
+        "current_covers_all_measured_positive_events": true,
+        "current_missed_by_category": {},
+        "three_state_necessity_certificate": []
+      },
+      {
+        "source_sample": 10,
+        "execution": 2039,
+        "state_roles": [
+          "candidate",
+          "incumbent_1995",
+          "incumbent_2385"
+        ],
+        "event_dictionary": [
+          [
+            "alive",
+            0
+          ],
+          [
+            "alive",
+            1
+          ],
+          [
+            "alive",
+            2
+          ],
+          [
+            "alive",
+            3
+          ],
+          [
+            "alive",
+            4
+          ],
+          [
+            "alive",
+            5
+          ],
+          [
+            "alive",
+            6
+          ],
+          [
+            "alive",
+            7
+          ],
+          [
+            "alive",
+            8
+          ],
+          [
+            "alive",
+            9
+          ],
+          [
+            "alive",
+            10
+          ],
+          [
+            "alive",
+            11
+          ],
+          [
+            "alive",
+            12
+          ],
+          [
+            "alive",
+            13
+          ],
+          [
+            "alive",
+            14
+          ],
+          [
+            "alive",
+            15
+          ],
+          [
+            "alive",
+            16
+          ],
+          [
+            "alive",
+            17
+          ],
+          [
+            "alive",
+            18
+          ],
+          [
+            "alive",
+            19
+          ],
+          [
+            "alive",
+            20
+          ],
+          [
+            "alive",
+            21
+          ],
+          [
+            "alive",
+            22
+          ],
+          [
+            "alive",
+            23
+          ],
+          [
+            "alive",
+            24
+          ],
+          [
+            "alive",
+            25
+          ],
+          [
+            "alive",
+            26
+          ],
+          [
+            "alive",
+            27
+          ],
+          [
+            "alive",
+            28
+          ],
+          [
+            "alive",
+            29
+          ],
+          [
+            "alive",
+            30
+          ],
+          [
+            "alive",
+            31
+          ],
+          [
+            "alive",
+            32
+          ],
+          [
+            "alive",
+            33
+          ],
+          [
+            "alive",
+            34
+          ],
+          [
+            "alive",
+            35
+          ],
+          [
+            "alive",
+            36
+          ],
+          [
+            "alive",
+            37
+          ],
+          [
+            "alive",
+            38
+          ],
+          [
+            "alive",
+            39
+          ],
+          [
+            "alive",
+            40
+          ],
+          [
+            "alive",
+            41
+          ],
+          [
+            "alive",
+            42
+          ],
+          [
+            "alive",
+            43
+          ],
+          [
+            "alive",
+            44
+          ],
+          [
+            "alive",
+            45
+          ],
+          [
+            "alive",
+            46
+          ],
+          [
+            "alive",
+            47
+          ],
+          [
+            "alive",
+            48
+          ],
+          [
+            "alive",
+            49
+          ],
+          [
+            "alive",
+            50
+          ],
+          [
+            "alive",
+            51
+          ],
+          [
+            "alive",
+            52
+          ],
+          [
+            "alive",
+            53
+          ],
+          [
+            "alive",
+            54
+          ],
+          [
+            "alive",
+            55
+          ],
+          [
+            "alive",
+            56
+          ],
+          [
+            "alive",
+            57
+          ],
+          [
+            "alive",
+            58
+          ],
+          [
+            "alive",
+            59
+          ],
+          [
+            "alive",
+            60
+          ],
+          [
+            "alive",
+            61
+          ],
+          [
+            "alive",
+            62
+          ],
+          [
+            "alive",
+            63
+          ],
+          [
+            "alive",
+            64
+          ],
+          [
+            "alive",
+            65
+          ],
+          [
+            "alive",
+            66
+          ],
+          [
+            "alive",
+            67
+          ],
+          [
+            "alive",
+            68
+          ],
+          [
+            "alive",
+            69
+          ],
+          [
+            "alive",
+            70
+          ],
+          [
+            "alive",
+            71
+          ],
+          [
+            "alive",
+            72
+          ],
+          [
+            "alive",
+            73
+          ],
+          [
+            "alive",
+            74
+          ],
+          [
+            "alive",
+            75
+          ],
+          [
+            "alive",
+            76
+          ],
+          [
+            "alive",
+            77
+          ],
+          [
+            "alive",
+            78
+          ],
+          [
+            "alive",
+            79
+          ],
+          [
+            "alive",
+            80
+          ],
+          [
+            "alive",
+            81
+          ],
+          [
+            "alive",
+            82
+          ],
+          [
+            "alive",
+            83
+          ],
+          [
+            "alive",
+            84
+          ],
+          [
+            "alive",
+            85
+          ],
+          [
+            "alive",
+            86
+          ],
+          [
+            "alive",
+            87
+          ],
+          [
+            "alive",
+            88
+          ],
+          [
+            "alive",
+            89
+          ],
+          [
+            "alive",
+            90
+          ],
+          [
+            "alive",
+            91
+          ],
+          [
+            "alive",
+            92
+          ],
+          [
+            "alive",
+            93
+          ],
+          [
+            "alive",
+            94
+          ],
+          [
+            "alive",
+            95
+          ],
+          [
+            "alive",
+            96
+          ],
+          [
+            "alive",
+            97
+          ],
+          [
+            "alive",
+            98
+          ],
+          [
+            "alive",
+            99
+          ],
+          [
+            "alive",
+            100
+          ],
+          [
+            "alive",
+            101
+          ],
+          [
+            "alive",
+            102
+          ],
+          [
+            "alive",
+            103
+          ],
+          [
+            "alive",
+            104
+          ],
+          [
+            "alive",
+            105
+          ],
+          [
+            "alive",
+            106
+          ],
+          [
+            "alive",
+            107
+          ],
+          [
+            "alive",
+            108
+          ],
+          [
+            "alive",
+            109
+          ],
+          [
+            "alive",
+            110
+          ],
+          [
+            "alive",
+            111
+          ],
+          [
+            "map",
+            5,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            18,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            21,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            34,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            37,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            50,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            53,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            66,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            69,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            70,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            82,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            85,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            86,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            94,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            98,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            98,
+            16,
+            4,
+            14
+          ],
+          [
+            "map",
+            99,
+            16,
+            4,
+            14
+          ],
+          [
+            "map",
+            100,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            101,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            102,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            104,
+            16,
+            4,
+            14
+          ],
+          [
+            "map",
+            105,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            108,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            109,
+            16,
+            2,
+            14
+          ],
+          [
+            "map",
+            110,
+            16,
+            2,
+            14
+          ]
+        ],
+        "state_feature_masks_hex": [
+          "0x1ffb200ffffffffffffffffffffffffffff",
+          "0x1ff3200ffffffffffffffffffffffffffff",
+          "0x1ff5fffffffffffffffffffffffffffffff"
+        ],
+        "minimum_representatives_for_measured_positive_events": 2,
+        "minimum_cover_subsets": [
+          [
+            0,
+            2
+          ]
+        ],
+        "current_survivor_indices": [
+          1,
+          2
+        ],
+        "current_covers_all_measured_positive_events": false,
+        "current_missed_by_category": {
+          "map": 1
+        },
+        "three_state_necessity_certificate": []
+      }
+    ],
+    "qualifies_longer_search": false,
+    "limitations": [
+      "Every suffix remains a distinct condition; pooling across actions would answer a different question.",
+      "Coverage preserves observed positive events, not all transitions, costs or unobserved future outcomes.",
+      "The candidate set is exactly the three offered states; another unobserved state could cover more.",
+      "This is retrospective after U01 outcomes, with no fresh performance or statistical confirmation claim.",
+      "An oracle's subset choice does not supply a cheap, generalizable way to choose that subset online.",
+      "Local proposals precede global eviction; all retained-memory and probing costs remain separate obligations."
+    ],
+    "condition_mapping": "virtual_trial = horizon_index*16 + original_trial; horizon_index0\u20136 denotes horizons1,2,3,4,5,6,24"
+  },
+  "reference_cover_scope": "retrospective extension after prefix outcomes; no additional emulation or allocation gate",
+  "qualifies_longer_search": false,
+  "limitations": [
+    "Actual search length distribution is uniform1\u20136, but these are selected development states.",
+    "Nested horizons and repeated competitors are dependent; no confidence interval is claimed.",
+    "Positive-event cover does not prove behavioral equivalence, cheap predictability or improved adaptive search.",
+    "Prefix frame fields are cumulative; physical work is recorded once in the full-run summary."
+  ],
+  "source_sha256": {
+    "registration": "5062c0dd65883f2e94929a7fd8d3010b029177d2e7cf2ae64ce1eb636ceb1192",
+    "full_outcomes": "2fe0e9e4dcc8602cb9c54d8a88f45d6fb8542a66d8cfbccddd5f7b590e9cf8f8",
+    "prefixes": "3f55782973f00476f287c98728dfd1c81cd882484f315220b45277291e90e02b"
+  }
+}

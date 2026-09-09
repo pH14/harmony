@@ -1220,3 +1220,66 @@ executions,23,690,070 full-replay admitted frames,2,556,048 reported witness-suf
 frames and7,407,354 standalone probe frames. The26,580.8 summed search-phase
 seconds include overlapping cells and are not wall/CPU time. Setup, export,
 bridge, unadmitted and incomplete work can add cost. Native work is stopped.
+
+## H02: useful-future losses are visible within actual job horizons
+
+A [read-only input comparison](u01-input-relations.json) establishes that none
+of the four rejected candidates with U01 map losses is a strict continuation of
+either survivor's recorded input. Samples 3 and 6 have short prefix relations but
+no unretained map events at 24 actions. This does not establish other-route
+reachability or a waiting-state mechanism.
+
+Source inspection also identified an interpretation gap: the actual search
+suffix length is uniform 1–6, while the competitor probes used 24 actions. H02
+was registered at 2fedd728 after the earlier U01 implementation had qualified.
+It is a distinct bounded diagnostic, not an extension of a failed retention
+campaign. The new standalone prefix recorder and initial analyzer were frozen
+at cc0202b4. Default and all-feature focused tests pass, along with strict bin/test
+Clippy and formatting. Five Python horizon counterexamples bring research CI
+to 27 passing contracts. They include later catch-up hiding an early loss,
+terminal padding, and incompatible short/long minimum covers.
+
+The single ARM run uses the exact U01 expanded audit, 16 × 24 bank, terminal v3 and
+seed 20261215, observing cumulative outcomes after actions 1–6 without executing
+extra actions. The full summary, outcome log and suffix bank are byte-identical
+to U01. It completed in 23.017s/431,144 physical frames before 08:29 UTC, within the
+08:35 cutoff, 120s watchdog, 3,474,703 worst-case frame bound and 64 MiB output cap.
+Prefix frame counters are cumulative observations, not additional work. Frozen
+source/build identities and output hashes are in [H02 results](h02-results.json).
+No capability gain was observed and no fresh search or validation was run.
+
+| Prefix actions | Unretained-only map/suffix events | Unretained survives, both survivors die |
+|---|---:|---:|
+|1|1|2|
+|2|1|5|
+|3|0|10|
+|4|2|14|
+|5|1|14|
+|6|4|15|
+
+All 112 unretained continuations are alive at each short horizon. The horizons
+are nested, and competitors are selected development states; these counts are
+not independent successes or a population estimate. The average over the
+actual uniform length mixture is 1.5 unretained-only map events and 10 exclusive
+surviving endpoints across the fixed 112 comparisons. The initial [frozen
+analysis](h02-analysis.json) preserves each horizon separately.
+
+A separately labeled [retrospective extension](h02-analysis-with-reference.json)
+retains horizon as an explicit event condition and combines 1–6 with the original
+24-action reference. Six of seven triples need one representative and one needs
+two for the short horizons jointly. Across short and long horizons together,
+five need one and two need two; all five observed coverage gaps are avoidable
+within the same capacity in hindsight. Separate integer-mask enumeration
+verifies both public certificates without private assets. The extension adds
+no emulator work and no allocation gate. It does not provide an online predictor,
+prove equivalence, or establish improved adaptive discovery.
+
+The result rejects the claim that these losses matter only beyond a normal job's
+length. It supports investigating cheap immediate-outcome prediction before any
+new retention or local-exploration campaign. All previously failed families
+remain stopped. Native H02 service is inactive/successful.
+
+[Accounting after H02](work-accounting-after-h02.json) still has 76 complete
+cells/two errors and 1,310,131,730 admitted frames. Standalone probe work rises
+to 7,838,498 physical frames, charging the prefix-observing replay exactly once.
+The other scope limitations in the accountant remain unchanged.

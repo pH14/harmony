@@ -98,3 +98,28 @@ exactly user-supplied pH14/harmony, authenticated owner pH14 has ADMIN access,
 and the user-supplied AGENTS requires commits/PR history. After those checks,
 the same push was approved and succeeded. That block is resolved. The separate
 optional private E02 witness transfer remains unapproved; do not conflate them.
+
+H02 completed before08:29UTC. A source check found actual job length1–6 versus
+24-action probes; this distinct bounded diagnostic was registered2fedd728 and
+implemented/frozencc0202b4 after the prior U01 implementation qualified. One
+23.017s/431,144-frame replay observes prefix outcomes1–6. Full summary, outcomes
+and suffix bank remain byte-identical to U01. Service harmony-h02-prefix-001 is
+inactive/successful, source-prefix-001 and builds/prefix-probe-001 frozen onmsr1.
+All112 unretained continuations survive through6 actions, whereas both local
+survivors die on15 suffixes at horizon6; four unretained-only map events remain.
+Across horizons1–6 plus24, all five observed gaps are avoidable with capacity2
+in hindsight;5 triples need1 state and2 need2. No capability gain/fresh search.
+The new read-only input relation evidence shows no strict survivor→candidate
+prefix for the four U01 map-loss cases. This does not prove waiting or other
+route reachability.27 Python contracts pass, plus focused default/all-feature
+Rust prefix tests and strict Clippy. Both public joint-horizon certificates pass
+independent integer-mask verification. No longer-job or retention gate reopened.
+Updated work-accounting-after-h02.json: standalone probes7,838,498 frames;
+all evaluation counts otherwise unchanged. Enter reserved consolidation now.
+
+Current Git/PR state supersedes the historical publication notes above. CI watch
+session92297 and log/private/tmp/harmony-pr287-ci-watch-32edf56f.log refer to
+32edf56f until the H02 evidence is pushed; verify live process/head before relying
+on them. At08:12,26 checks passed and only four replay replicas remained.
+The broader breakthrough goal remains ACTIVE and unfulfilled. Do not mark it
+complete merely because the diagnostic tranche or CI finishes.

@@ -53,12 +53,19 @@ def analyze_prefixes(registration, full_rows, prefix_rows):
     joint_cover = cover_analysis(combined, joint)
     n = registration["trials_per_competition"]
     joint_cover["condition_mapping"] = f"virtual_trial = (horizon-1)*{n} + original_trial; six dependent prefixes, not{6*n} independent trials"
+    reference_rows = [{**row, "trial": 6*n + row["trial"]} for row in full_rows]
+    with_reference = copy.deepcopy(registration)
+    with_reference["trials_per_competition"] *= 7
+    reference_cover = cover_analysis(with_reference, joint + reference_rows)
+    reference_cover["condition_mapping"] = f"virtual_trial = horizon_index*{n} + original_trial; horizon_index0–6 denotes horizons1,2,3,4,5,6,24"
     means = {category: {key: sum(r["totals"][category][key] for r in records)/6
                         for key in records[0]["totals"][category]} for category in records[0]["totals"]}
-    return {"format": "h02-search-horizon-diagnostic-v1", "horizons": records,
+    return {"format": "h02-search-horizon-diagnostic-v2", "horizons": records,
             "uniform_length_mean_totals": means,
             "mean_scope": "average of the six horizon totals across the same selected competitors and suffix bank; not a population estimate",
-            "joint_horizon_cover": joint_cover, "qualifies_longer_search": False,
+            "joint_horizon_cover": joint_cover, "joint_with_24_action_reference": reference_cover,
+            "reference_cover_scope": "retrospective extension after prefix outcomes; no additional emulation or allocation gate",
+            "qualifies_longer_search": False,
             "limitations": ["Actual search length distribution is uniform1–6, but these are selected development states.",
                             "Nested horizons and repeated competitors are dependent; no confidence interval is claimed.",
                             "Positive-event cover does not prove behavioral equivalence, cheap predictability or improved adaptive search.",

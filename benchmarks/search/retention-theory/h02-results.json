@@ -1,0 +1,118 @@
+{
+  "format": "h02-prefix-probe-execution-v1",
+  "complete": true,
+  "registration_sha256": "5062c0dd65883f2e94929a7fd8d3010b029177d2e7cf2ae64ce1eb636ceb1192",
+  "scope": "same frozen development competitors; no fresh search",
+  "build": {
+    "format": "harmony-diagnostic-build-v1",
+    "source_tree_sha256": "5e4b52385ad35b62acefd1c548327fc492b86ff2b0aa5ee2538a9370a7a58cd1",
+    "revision": null,
+    "dirty": null,
+    "files": 450,
+    "source_commit": "cc0202b4",
+    "binary": "metroid-retention-probe",
+    "binary_sha256": "c1d945d4b2b4af4016d37fc8709292f6ae8031880902d81c97816e571279aa42",
+    "features": "",
+    "locked": true,
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)"
+  },
+  "elapsed_seconds": 23.01705313497223,
+  "full_output_sha256": {
+    "summary.json": "2d3fa4bf10b9d1cebe0e7ff1a809e857c1758074f63c5752c32351ffd2329f90",
+    "outcomes.jsonl": "2fe0e9e4dcc8602cb9c54d8a88f45d6fb8542a66d8cfbccddd5f7b590e9cf8f8",
+    "suffixes.json": "7d3c0dcb69c1ac7c70dda88a0b3e9386a4c3d25b090d6510bdb25de8cfe8793d"
+  },
+  "summary": {
+    "actions_per_trial": 24,
+    "audit_sha256": "051df1c0cb73b43920b7ae61f45b77736b84fde9a382ef64e2b814f56049f95f",
+    "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+    "equal_work_rule": "identical pre-sampled action suffixes and frame allowances; terminal branches stop early, actual frames reported separately",
+    "format": "metroid-equal-suffix-probe-v2",
+    "limitations": [
+      "cached incumbent sample only",
+      "finite matching suffixes do not prove equivalence",
+      "map exit is local reach evidence, not a boss or new global coverage claim",
+      "resource gain is relative to each starting state"
+    ],
+    "pairs": 14,
+    "prefix_and_gain_export_frames": 78795,
+    "probe_frames_discarded_survivor": [
+      186008,
+      166341
+    ],
+    "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+    "scope": "development-discovered competitors; diagnostic, not fresh search",
+    "seed": 20261215,
+    "suffix_sha256": "7d3c0dcb69c1ac7c70dda88a0b3e9386a4c3d25b090d6510bdb25de8cfe8793d",
+    "terminal_policy": "death_or_bcd_underflow_or_ending_v3",
+    "totals_by_stratum": [
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        224,
+        0,
+        0,
+        37,
+        8,
+        12
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    ],
+    "totals_columns": [
+      "trials",
+      "discarded_only_gain",
+      "survivor_only_gain",
+      "discarded_only_living_map_exit",
+      "survivor_only_living_map_exit",
+      "discarded_survives_survivor_dies"
+    ],
+    "trials_per_pair": 16
+  },
+  "prefix_metadata": {
+    "cost_scope": "prefix counters are cumulative observations of the single full run; do not sum them as additional physical work",
+    "format": "metroid-equal-suffix-prefix-observations-v1",
+    "generated_actions_per_trial": 24,
+    "prefix_horizons": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "suffix_sha256": "7d3c0dcb69c1ac7c70dda88a0b3e9386a4c3d25b090d6510bdb25de8cfe8793d",
+    "terminal_rule": "later horizons repeat the first terminal outcome and its unchanged frame count"
+  },
+  "physical_frames": 431144,
+  "full_outputs_unchanged": true
+}

@@ -166,7 +166,7 @@ After an early terminal, later horizons repeat its outcome and frame count.
 These counters observe the single run; summing them would double-count physical
 work. Full-horizon outputs retain their historical format and default calls
 produce no prefix sidecar. This permits checking the actual one-to-six-action
-job horizon without replacing the frozen24-action diagnostic bank.
+job horizon without replacing the frozen 24-action diagnostic bank.
 
 The opt-in Cargo feature `metroid-refined-archive` builds a separate experimental
 v9 key policy. It uses 8-pixel retention positions and raw pose, while preserving

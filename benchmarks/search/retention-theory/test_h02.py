@@ -56,6 +56,19 @@ class HorizonContracts(unittest.TestCase):
         with self.assertRaises(AssertionError):
             analyze_prefixes(registration, full, prefixes)
 
+    def test_separate_short_and_long_covers_need_not_share_a_two_state_cover(self):
+        first, second, third = (1, 2, 0), (1, 2, 1), (1, 2, 2)
+        registration, full, prefixes = fixture([
+            [outcome([first]) for _ in range(6)],
+            [outcome() for _ in range(6)],
+            [outcome() for _ in range(6)],
+        ])
+        full[0]["survivor"]["reached_maps"] = [list(first), list(second)]
+        full[1]["survivor"]["reached_maps"] = [list(first), list(third)]
+        result = analyze_prefixes(registration, full, prefixes)
+        self.assertEqual(result["joint_horizon_cover"]["minimum_representatives_histogram"], {1: 1})
+        self.assertEqual(result["joint_with_24_action_reference"]["minimum_representatives_histogram"], {3: 1})
+
 
 if __name__ == "__main__":
     unittest.main()

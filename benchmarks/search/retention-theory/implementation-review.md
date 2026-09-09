@@ -77,3 +77,16 @@ are corrected in the ledger; historical RSS and outcome evidence are preserved.
 Default/all-feature NES and strict Clippy checks were rerun for this change.
 No further production change or experiment is planned beyond addressing a
 specific failure in the remaining required CI checks.
+
+### Prefix-horizon diagnostic
+
+The optional standalone recorder observes outcomes after each requested action
+without additional emulation, RNG draws or snapshots. Default calls retain old
+outputs. After a terminal, padding repeats state, events and cumulative frames.
+Actual-ROM qualification requires byte-identical full summary/outcomes/suffix
+bank against U01; it passed before any prefix interpretation. The analyzer
+checks the complete paired grid, repeated unretained outcomes, cumulative frame
+and map-set consistency, and terminal non-continuation. Joint cover keeps
+horizon in the condition; its public masks pass independent integer enumeration.
+The uniform length average is descriptive under the existing search's length
+mixture, not a new success rate or confidence statement. No policy gate changed.
