@@ -1367,3 +1367,29 @@ CPUs16–19 during T04. The four-worker100k Metroid and5k Wily1 compatibility
 campaigns wait until validation frees a campaign slot; they do not become a
 fifth concurrent campaign. All focused fixes passed and independent verification
 found no substantive fix-induced regression; native compatibility is still pending.
+
+Q33 native single-target checks pass: the bounded paired probe preserves the
+exact P03 suffix/outcome hashes, and the raw MM2 inspector reproduces every I05
+field except elapsed time. New binaries033–035 share source
+1aac8e5c651f1302a61805146f32e32808a8471243306b6727d9941cfd69c7db.
+CLI fixtures with missing/empty assets also fail at the intended input bounds,
+proving the preflight is wired before emulator access rather than only testing
+a detached helper. Four-worker stream checks still await a free campaign slot.
+
+Current main advanced to f50f65ee through the separate fault-corpus PR. It merged
+cleanly as952b20e2; all24 reviewed implementation `.rs`/`.py` files are byte-identical
+to ed358fe2. The native dependencies changed only in guest-image ownership support
+and optional client lock metadata among the inspected NES dependency paths.
+Post-integration checks use the registered10m focused bounds; prior tests cannot
+alone qualify the changed dependency snapshot. The T04 binary/source remain frozen.
+
+## Q36 preregistration — current-main native build
+
+After merged-main focused checks pass, freeze one new evaluator from the integrated
+source onCPUs16–19. Reuse Q33's planned audited100k legacy and5k Wily1 compatibility
+fixtures with this evaluator once a campaign slot is free; do not run duplicate
+033 and036 copies. This checks both reviewed guards and dependency integration
+against the same frozen hashes at their existing5m bounds. Keep builds033–035
+for their already completed diagnostic proofs. Require the current evaluator's
+SMB reference and Nova/STB companion checks at the final candidate checkpoint;
+SMB uses the whole host only once validation has released all campaign CPUs.
