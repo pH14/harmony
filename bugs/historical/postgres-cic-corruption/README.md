@@ -115,10 +115,10 @@ table), `faultlab.churn_slices` (default 2 transactions per cycle) and
 them from `/proc/cmdline`, so `--knobs` varies them without a rebuild.
 
 The guest kernel is the `faultlab` profile of `nix run .#guest-images`, which
-lands beside the default kernel as `x86_64/bzImage-faultlab`. glibc's dynamic
-loader reads the timestamp counter before `main`, so every PostgreSQL binary
-faults on the default kernel; the profile turns the user counter traps off
-and carries the task-park fault. The same build writes
+lands beside the default kernel as `x86_64/bzImage-faultlab`. Both production
+profiles serve glibc's and PostgreSQL's userspace `RDTSC`/`RDTSCP` reads from
+Harmony's virtual clock; the fault-library profile additionally carries the
+task-park fault. The same build writes
 `x86_64/initramfs.cpio.gz`, the package-neutral base image `--base-initramfs`
 names; preparation appends the workload rootfs and the fault agent to it.
 
@@ -162,11 +162,9 @@ not carried here as a witness. `witness.json` is the input the search job
 found on a hosted runner (run 34223876479: seed 1, 4 workers, execution 221 of
 224, 38 s of wall time), replayed from a fresh session before it was recorded.
 
-Hosted runners have stock KVM, not the counter-exiting build. On stock KVM the
-`faultlab` kernel lets user space read the host's timestamp counter directly,
-so the raw host counter reaches guest memory and two runs of one input can end
-on different state hashes. What CI claims is therefore about the oracle and the
-search, not about bit-identical replay: the oracle trips on 14.3, runs and
-passes on 14.4, and a campaign finds a tripping input within budget. Each job reports
-whether the state hashes across repeats agreed, as evidence, and does not
-require it.
+Hosted runners use stock KVM. The `faultlab` kernel emulates userspace counter
+reads from Harmony's virtual clock there, so a host timestamp cannot enter
+guest memory through `RDTSC` or `RDTSCP`. The historical-bug oracle remains the
+criterion for the defect itself: it trips on 14.3, runs and passes on 14.4, and
+a campaign finds a tripping input within budget. Each replay also reports
+whether state hashes agreed, providing a separate determinism diagnostic.

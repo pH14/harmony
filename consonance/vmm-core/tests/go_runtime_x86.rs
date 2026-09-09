@@ -37,6 +37,14 @@ fn contains(bytes: &[u8], marker: &[u8]) -> bool {
     bytes.windows(marker.len()).any(|window| window == marker)
 }
 
+fn final_state_hash(log: &NormalizedLog, label: &str) -> [u8; 32] {
+    log.events
+        .iter()
+        .rev()
+        .find_map(|event| event.state_hash)
+        .unwrap_or_else(|| panic!("{label}: no full-state checkpoint"))
+}
+
 fn boot(kernel: &[u8], initramfs: &[u8], label: &str) -> (NormalizedLog, [u8; 32]) {
     let mut vmm = boot_linux_stock_virtual_time(kernel, initramfs, RAM, CMDLINE, SEED)
         .expect("stock-KVM virtual-time boot");
@@ -99,7 +107,7 @@ fn boot(kernel: &[u8], initramfs: &[u8], label: &str) -> (NormalizedLog, [u8; 32
 
 #[test]
 #[ignore = "requires stock x86 KVM and Nix-built Go/kernel guest artifacts"]
-fn uninstrumented_go_repeats_on_both_production_kernels() {
+fn uninstrumented_go_repeats_on_production_kernels_and_rejects_traps_off() {
     let initramfs = artifact("initramfs-go-runtime.cpio.gz");
     for profile in ["bzImage", "bzImage-faultlab"] {
         let kernel = artifact(profile);
@@ -112,4 +120,28 @@ fn uninstrumented_go_repeats_on_both_production_kernels() {
             assert_eq!(digest, observed_digest, "{profile}: digest coverage");
         }
     }
+
+    // This is a planted control for the proof above. With CR4.TSD disabled,
+    // Go's ordinary runtime counter reads expose the host TSC. The workload
+    // still completes, but the full guest state and therefore the normalized
+    // trace must not repeat. A passing production-profile run cannot be
+    // credited unless this kernel is observably different.
+    let traps_off = artifact("bzImage-n6-traps-off");
+    let (first, first_digest) = boot(&traps_off, &initramfs, "bzImage-n6-traps-off-1");
+    let (second, second_digest) = boot(&traps_off, &initramfs, "bzImage-n6-traps-off-2");
+    let first_hash = final_state_hash(&first, "bzImage-n6-traps-off-1");
+    let second_hash = final_state_hash(&second, "bzImage-n6-traps-off-2");
+    assert_ne!(
+        first_hash, second_hash,
+        "traps-off control leaked no host-counter value into full guest state"
+    );
+    assert!(
+        compare_normalized_logs(&first, &second).is_err(),
+        "traps-off control unexpectedly repeated its normalized trace"
+    );
+    assert_ne!(
+        first_digest, second_digest,
+        "traps-off control unexpectedly repeated its digest"
+    );
+    eprintln!("GO_RUNTIME_TRAPS_OFF_REJECTED first={first_hash:02x?} second={second_hash:02x?}");
 }
