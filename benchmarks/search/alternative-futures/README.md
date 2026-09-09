@@ -1612,3 +1612,61 @@ SMB/Nova/STB checks after host release. Preserve final native proof, assessment,
 compute, rejected hypotheses, and follow-ups in one final evidence publication;
 inspect CI on that exact head. Consolidation begins06:56 UTC and the tranche ends
 08:26 UTC without an extension or a new search family.
+
+Final evidence collection is read-only and follows completion of Q36, avoiding
+competition with its sole-host SMB reference. On reserved CPU16, run the frozen-
+plan assessor, export all20 validation labels with `collect_checkpoint.py
+--scope validation`, and export the four Q36 qualification labels. Each serial
+process has a300s process-tree watchdog; preserve logs and stop on any failure.
+This answers whether the complete reported outcomes and replay provenance match
+the registered panel and integrated gates; earlier partial snapshots cannot
+answer final completeness. Record exporter CPU and peak child RSS, then take the
+final accounting snapshot including those measured processes. It adds no emulated
+search work and does not change or repeat any validation cell.
+
+## Final experimental outcome and consolidation — 2026-09-09 06:56 UTC
+
+T04 finished at06:44:46 UTC, before its cutoff. All20 cells completed3M executions
+and two ordinary-genesis witness replays; there were no censored cells, replaced
+seeds, retries, watchdog kills, or changes to the frozen plan. Both correction and
+control have0/10 boss successes. The Metroid breakthrough threshold is unmet.
+The final pair also favors control for Bombs/Kraid/Ridley discovery, although
+correction adds Long Beam. Across common frame boundaries, correction/control
+attainment is9/10 versus10/10 for Bombs,8/10 versus10/10 for Kraid area,2/10 versus
+4/10 for Ridley area, and6/10 versus2/10 for Long Beam. Coverage improves on three
+seeds and regresses on seven. Keep campaign observations distinct from verified
+single trajectories and do not infer combat progress from area entry.
+
+The terminal correction excludes all eligible underflow endpoints in the panel,
+while controls record87. This verifies the mechanical intervention but does not
+support a general search-quality improvement. The short/long development gains
+did not become repeatable boss success. Both fresh own-prefix MM2 chains remain
+stopped at Wily1 after obtaining all eight weapons, and no candidate qualified
+its five-seed untouched panel. Neither requested breakthrough was achieved.
+The reproducible paired continuation-loss counterexample and the bounded negative
+retention, selection, and local-exploration interventions are the useful research
+result. The untested R-plus-T interaction and the corrected parent-credit inference
+remain explicit limits; follow-up #286 and existing #281/#283 preserve next steps.
+
+Q36 ran only after validation released the host, from06:44:51 to06:49:16 UTC.
+All four gate groups passed their original watchdogs without retries. Integrated
+build036 exactly matches audited100k Metroid,5k Wily1, Nova1/full, and STB Hard
+reference streams and work. Sole-host24-worker SMB reproduces its solved reference
+at301,688 executions and42,017,148 frames, with the same stream hash. Its elapsed
+runner time is118.69 seconds. Full Rust/Cargo sources remain unchanged since the
+qualified build. `results/q36-gates.json` and `checkpoint-final-qualification.json`
+preserve the exact outcomes, hashes, and replay evidence.
+
+The final read-only exports passed in26.18 seconds on CPU16, with24.55 CPU-seconds
+and836.8MiB peak child RSS. The final accounting snapshot includes that measured
+CPU and records12,017,907,190 admitted frames,93,842,197 executions, and at least
+319,743.69 CPU-seconds (88.82 CPU-hours). Paired probes contribute7,155,153 physical
+frames separately. All earlier cost exclusions remain explicit; these totals are
+not a full physical emulation or machine-usage bill. The complete assessment and
+compact validation export verify the frozen plan and every completed outcome.
+
+Consolidation now prepares the final evidence head and PR assessment. No further
+search campaign or algorithm change is planned in this tranche. Preserve the
+remaining90-minute window for report review, publication, and exact-head CI;
+end at08:26 UTC without extending. Source-backed conclusions and next experiments
+are in `SUMMARY.md` and `FOLLOW_UPS.md`; the acceptance criteria remain open.

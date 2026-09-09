@@ -1,0 +1,11 @@
+{
+  "exit_code": 0,
+  "elapsed_seconds": 26.17561088304501,
+  "user_seconds": 21.413799,
+  "system_seconds": 3.138947,
+  "peak_child_rss_bytes": 877457408,
+  "cpu_set": [
+    16
+  ],
+  "scope": "serial read-only final assessor and compact evidence exporters"
+}

@@ -1,0 +1,2192 @@
+{
+  "format": "alternative-futures-validation-assessment-v1",
+  "time_utc": "2026-09-09T06:50:45.443771+00:00",
+  "plan_id": "t04-terminal-validation",
+  "limits": [
+    "Incomplete cells are neither failures nor completed successes.",
+    "The frozen evaluator replays each named witness twice on independent ordinary-genesis targets before reporting complete.",
+    "Milestone admitted work is bounded by adjacent progress samples; route duration is not search work.",
+    "A boss whose work bound overlaps the admitted-frame limit is preserved as a verified witness but is not counted as an in-budget success.",
+    "Common-frame measurements use the last completed sample at or below the stated boundary.",
+    "Capability and coverage counts are campaign-wide observations, not necessarily one trajectory."
+  ],
+  "panel_complete": true,
+  "completed_by_arm": {
+    "control": 10,
+    "corrected": 10
+  },
+  "completed_boss_successes_by_arm": {
+    "control": 0,
+    "corrected": 0
+  },
+  "cells": [
+    {
+      "label": "t04-validation-control-s2089362731",
+      "seed": 2089362731,
+      "arm": "control",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "5419ab7597f1a6914f1885f7cd07d064fb9b55c3b5018a7524df17b5f455b667",
+      "execution_sha256": "ea313231a982994f502fe6167a28839a62adc1b9fc1949b9196d5c84bcd99c9f",
+      "executions": 3000000,
+      "admitted_frames": 374844261,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "e1d27cce25c48fbe119781fee47702ab57cbec1ab73cb72e5c466ae0ffcebda6",
+      "milestones": {
+        "bombs": {
+          "first_execution": 1067854,
+          "admitted_frames_lower": 135262792,
+          "admitted_frames_upper": 135277100,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "a22a201286149748b2cdf8fb3b1f947674f5e707c6f1388e36bf38fd2904f43e"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 10,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "f3461f1a7dcf2b3b64ed458b320c8dd39990b21f044edccf9a53e31edb4f99c6"
+        },
+        "energy_tank": {
+          "first_execution": 330308,
+          "admitted_frames_lower": 40214905,
+          "admitted_frames_upper": 40228287,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "f3394d4f399a13d2f86119fa4009042ca9b69cd5ed30fee0de6487052ebed9b0"
+        },
+        "kraid_area": {
+          "first_execution": 1194017,
+          "admitted_frames_lower": 150807132,
+          "admitted_frames_upper": 150819360,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "e320dfe28b0b7607b7392b32013c9e4c16a2e97fa941415d8569b1a8bef9afe3"
+        },
+        "missile_capacity": {
+          "first_execution": 95342,
+          "admitted_frames_lower": 13081626,
+          "admitted_frames_upper": 13093391,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "fadc8190bd3a744335f620dee282838c10c5e94bdbf61195e6ea0c23343ecb6e"
+        },
+        "morph_ball": {
+          "first_execution": 273,
+          "admitted_frames_lower": 29010,
+          "admitted_frames_upper": 43927,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "0ab96572c48a99c62d8ae6e93540f3776fc3216766b73ff6a39d968d99d10e2f"
+        },
+        "norfair": {
+          "first_execution": 97768,
+          "admitted_frames_lower": 13341065,
+          "admitted_frames_upper": 13354327,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "7aabeaf9eb68fc97904951c32d70e6ba459312fcaf63be38cc84f9866464e8f9"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 189,
+      "max_missile_capacity": 25,
+      "max_energy_tanks": 2,
+      "cpu_seconds": 9375.874692,
+      "peak_process_tree_rss_bytes_sampled": 5590061056
+    },
+    {
+      "label": "t04-validation-corrected-s2089362731",
+      "seed": 2089362731,
+      "arm": "corrected",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "1ddf01ab7cc012771080eef9ffc1ea7f21f831589a15dc39bb8d6a2a22daf5c6",
+      "execution_sha256": "3605f5ca0cebd16e22de12e699640064f0ce1404b0851ef5b0008d09d4ae1ff6",
+      "executions": 3000000,
+      "admitted_frames": 372464671,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "a6a9855319b28d2d2a943b9955e035cd27eae8f1b25be5e35b5d1d4f37b00a4a",
+      "milestones": {
+        "bombs": {
+          "first_execution": 982907,
+          "admitted_frames_lower": 124381472,
+          "admitted_frames_upper": 124396969,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "346db1417277d2876246f2cb0968526c7796b6ae14966ee1e42906139bed9bdb"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 10,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "f3461f1a7dcf2b3b64ed458b320c8dd39990b21f044edccf9a53e31edb4f99c6"
+        },
+        "energy_tank": {
+          "first_execution": 245289,
+          "admitted_frames_lower": 30368351,
+          "admitted_frames_upper": 30380238,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "95a2850dc9ab2e773e54f3a8e16fd6ec366d567648d1952e24b3acfb7fe5da6b"
+        },
+        "kraid_area": {
+          "first_execution": 1095912,
+          "admitted_frames_lower": 137995933,
+          "admitted_frames_upper": 138008806,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "ee01f9cc89e145d0abb7b3c45f8ae66b19dfbed7cff9849c1a3b557513102fb9"
+        },
+        "missile_capacity": {
+          "first_execution": 95342,
+          "admitted_frames_lower": 13081626,
+          "admitted_frames_upper": 13093391,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "fadc8190bd3a744335f620dee282838c10c5e94bdbf61195e6ea0c23343ecb6e"
+        },
+        "morph_ball": {
+          "first_execution": 273,
+          "admitted_frames_lower": 29010,
+          "admitted_frames_upper": 43927,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "0ab96572c48a99c62d8ae6e93540f3776fc3216766b73ff6a39d968d99d10e2f"
+        },
+        "norfair": {
+          "first_execution": 97768,
+          "admitted_frames_lower": 13341065,
+          "admitted_frames_upper": 13354327,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "7aabeaf9eb68fc97904951c32d70e6ba459312fcaf63be38cc84f9866464e8f9"
+        },
+        "ridley_area": {
+          "first_execution": 1348118,
+          "admitted_frames_lower": 168063448,
+          "admitted_frames_upper": 168077652,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "ca4c480384ad958f0702cb01ea0bcfa61fe9f12b2e180690a7b32bf012bc37e5"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 244,
+      "max_missile_capacity": 25,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 9163.050599999999,
+      "peak_process_tree_rss_bytes_sampled": 5574688768
+    },
+    {
+      "label": "t04-validation-corrected-s1154364703",
+      "seed": 1154364703,
+      "arm": "corrected",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "bb39734c0b8eca9c8c1b5fa90947844ca0313d8946bb9cfa63b6da23af116f15",
+      "execution_sha256": "3e4361bfb48e2e5c4f2b41510125a5f6e58e315b89eb4fa9a8739866739bcf1e",
+      "executions": 3000000,
+      "admitted_frames": 378940307,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "78ca3d85897d2a7048066a713211a2e1461ccc2170fb8dd8618de9784f4bbe0c",
+      "milestones": {
+        "bombs": {
+          "first_execution": 2534644,
+          "admitted_frames_lower": 323375942,
+          "admitted_frames_upper": 323388980,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "5bbea4020b86c5bcc77cf33df9272ebe3dfee3c4fb1f770b06ebb4ae15daa39a"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 181,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "b2b44dfd1ddc94fb89608523f2dfae339e64798d8b7663b31e2320a2838b66dd"
+        },
+        "energy_tank": {
+          "first_execution": 433167,
+          "admitted_frames_lower": 53396917,
+          "admitted_frames_upper": 53410805,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "8479f187a34ebbca63e49b1bf2a2078db872b7bbf3661c569a1f891f431c1e4a"
+        },
+        "kraid_area": {
+          "first_execution": 2600281,
+          "admitted_frames_lower": 331160939,
+          "admitted_frames_upper": 331173323,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "4f9e4b2c127bd3fa445786741f673fe0248cbbaa8d2a0071fcdb51512e98cb6c"
+        },
+        "long_beam": {
+          "first_execution": 1077392,
+          "admitted_frames_lower": 139183831,
+          "admitted_frames_upper": 139196306,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "f1c55c8c6c7a57d3441e1659d03fec7749916214d7666acc19185cb3f483aa98"
+        },
+        "missile_capacity": {
+          "first_execution": 155794,
+          "admitted_frames_lower": 21573104,
+          "admitted_frames_upper": 21585882,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "b2aff11158770f06c97e053429a0a0b07a2141a5fe13688f1d6430152dccd3a4"
+        },
+        "morph_ball": {
+          "first_execution": 288,
+          "admitted_frames_lower": 28820,
+          "admitted_frames_upper": 41923,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "c1af74f004b46849ad733d0e679c94dc2f39b1943b3f2e05a8ee9d8470e14117"
+        },
+        "norfair": {
+          "first_execution": 164399,
+          "admitted_frames_lower": 22590668,
+          "admitted_frames_upper": 22605638,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "c75c480170f66415fa8ba2f76a7e25eacd535e59d4f247b2e69b518ad7570caa"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 162,
+      "max_missile_capacity": 15,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 11445.491154,
+      "peak_process_tree_rss_bytes_sampled": 5173207040
+    },
+    {
+      "label": "t04-validation-control-s1154364703",
+      "seed": 1154364703,
+      "arm": "control",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "1e27b4585a294db1c1ce74c66825a3bb59084ce5188f1861e3c292f003963879",
+      "execution_sha256": "cc27c78fe4d07772dfac481c2620494769c02cb482f9ff7966aba3d549eb1e92",
+      "executions": 3000000,
+      "admitted_frames": 374627120,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "6c2f6dd934808bc9abbb788df3e2cde4beb838f0470b0f3309d90bd039e6a00b",
+      "milestones": {
+        "bombs": {
+          "first_execution": 1125384,
+          "admitted_frames_lower": 142506586,
+          "admitted_frames_upper": 142519795,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "48d0bc100966971ed532e7e74ce83dd9fc0a7a344d65cf8e166c9f34e68a5882"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 181,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "b2b44dfd1ddc94fb89608523f2dfae339e64798d8b7663b31e2320a2838b66dd"
+        },
+        "energy_tank": {
+          "first_execution": 601760,
+          "admitted_frames_lower": 75723420,
+          "admitted_frames_upper": 75734626,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "97ce504005c81b9bf62ab3b67d845095538bd2388a047ff94e8e1f819ce6af92"
+        },
+        "kraid_area": {
+          "first_execution": 1214646,
+          "admitted_frames_lower": 153216881,
+          "admitted_frames_upper": 153231217,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "e4b9ab1c3d853be26a5028078d36aede0a8a820315fdc133abeac2a2bec05a5f"
+        },
+        "missile_capacity": {
+          "first_execution": 230377,
+          "admitted_frames_lower": 32346414,
+          "admitted_frames_upper": 32360708,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "82101cb5964d81830c679703ac96fad6f569bb1f1ff117efb72ae4c9566a7295"
+        },
+        "morph_ball": {
+          "first_execution": 288,
+          "admitted_frames_lower": 28820,
+          "admitted_frames_upper": 41923,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "c1af74f004b46849ad733d0e679c94dc2f39b1943b3f2e05a8ee9d8470e14117"
+        },
+        "norfair": {
+          "first_execution": 235927,
+          "admitted_frames_lower": 32984668,
+          "admitted_frames_upper": 32999678,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "772ccd464782815965e1d9a5c6559cbb8238ac4c361db7de80a7aeeb1335950a"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 194,
+      "max_missile_capacity": 25,
+      "max_energy_tanks": 2,
+      "cpu_seconds": 11256.954715,
+      "peak_process_tree_rss_bytes_sampled": 5000916992
+    },
+    {
+      "label": "t04-validation-control-s2037612408",
+      "seed": 2037612408,
+      "arm": "control",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "95e16012d015bc7255f4a4b4d98f7a48f69871885c856bc4f71214259c8b681e",
+      "execution_sha256": "2c447e1eb04d99f7cfcdb1f013fbdcdbca7c5d0c8e52347e16c1c6e60c14f38c",
+      "executions": 3000000,
+      "admitted_frames": 364178538,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "bbcd155cfdee303a33a978387d6db02c906889118e2d4f7e1a51addbe6ce4e86",
+      "milestones": {
+        "bombs": {
+          "first_execution": 1299665,
+          "admitted_frames_lower": 161203915,
+          "admitted_frames_upper": 161216886,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "f12192cb64cec70ecc6ee5a2868738146ab15567bd02ff2121203c64bdc3ed9e"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 285,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "232a88c6b8f7ae34b44096f130c3a119678f247945ec7810360d78ba6c880de6"
+        },
+        "energy_tank": {
+          "first_execution": 625878,
+          "admitted_frames_lower": 75850133,
+          "admitted_frames_upper": 75861591,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "56b71523d2e9307ea57a641a7a83c352f5ca506f38924d818c8b9f4e4502d91b"
+        },
+        "kraid_area": {
+          "first_execution": 1394274,
+          "admitted_frames_lower": 172442922,
+          "admitted_frames_upper": 172455415,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "4e1fb8234a58a07f654f560328cae48c55182d9947aa1edcecb4106d824306bb"
+        },
+        "missile_capacity": {
+          "first_execution": 170736,
+          "admitted_frames_lower": 23046566,
+          "admitted_frames_upper": 23057232,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "de7c3d13a925a4097e649b9c8bda039119a9121357c64cfc6ae0f60870fe33ad"
+        },
+        "morph_ball": {
+          "first_execution": 149,
+          "admitted_frames_lower": 13603,
+          "admitted_frames_upper": 29783,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "83bca883b999ff5b3444a53493803004fbfd55fd5121d43c74f773511d1554d4"
+        },
+        "norfair": {
+          "first_execution": 182351,
+          "admitted_frames_lower": 24314751,
+          "admitted_frames_upper": 24326782,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "5d31f3ba3b9f66c51e92843452f8232085699566f7f502413a1c7d4bc830ab9d"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 201,
+      "max_missile_capacity": 25,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 8907.140719,
+      "peak_process_tree_rss_bytes_sampled": 5317132288
+    },
+    {
+      "label": "t04-validation-corrected-s2037612408",
+      "seed": 2037612408,
+      "arm": "corrected",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "fd6882aac1fa7fd184f15127b698455db9fbca814264ec87f77191cb6aa46fb6",
+      "execution_sha256": "c9991b4783c16fe7b97cb151a4b6f62bd32de957d6529e26b0fbcf85250bd339",
+      "executions": 3000000,
+      "admitted_frames": 371994473,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "fa8e9cddb1ed121bd796f3a2ac217baee4b181dbf7d2d6ac4e438ba58edbe52b",
+      "milestones": {
+        "bombs": {
+          "first_execution": 2251793,
+          "admitted_frames_lower": 281470850,
+          "admitted_frames_upper": 281484050,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "38a1f2161fa0cbb8766864c532473b5b656cb7835b2b02383368ecdd9713b7b9"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 285,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "232a88c6b8f7ae34b44096f130c3a119678f247945ec7810360d78ba6c880de6"
+        },
+        "energy_tank": {
+          "first_execution": 325804,
+          "admitted_frames_lower": 39069486,
+          "admitted_frames_upper": 39083444,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "4db8f0da718b53adbf475bf4f80b890be6c8bc0b09761c0efde2ed9d863b4d9a"
+        },
+        "kraid_area": {
+          "first_execution": 2339412,
+          "admitted_frames_lower": 292279907,
+          "admitted_frames_upper": 292294077,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "cebe3d5c6385835bda509ad567e2bb814d7ae341e2e3ee8df56bf56bc0696d1f"
+        },
+        "long_beam": {
+          "first_execution": 1239467,
+          "admitted_frames_lower": 157191024,
+          "admitted_frames_upper": 157204302,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "e0e21dac61e723e88c24fa8d81129cce6d72b884d76dc99dbce7240d7bb3c2e8"
+        },
+        "missile_capacity": {
+          "first_execution": 64044,
+          "admitted_frames_lower": 8596557,
+          "admitted_frames_upper": 8608099,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "904f501d7e200986ebf700db8f8a089ccb7f07f21a7b581f271202131e71e526"
+        },
+        "morph_ball": {
+          "first_execution": 149,
+          "admitted_frames_lower": 13603,
+          "admitted_frames_upper": 29783,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "83bca883b999ff5b3444a53493803004fbfd55fd5121d43c74f773511d1554d4"
+        },
+        "norfair": {
+          "first_execution": 67778,
+          "admitted_frames_lower": 9003239,
+          "admitted_frames_upper": 9016295,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "707343c484a3b6083a23b1546ec4f2f88d5e204152da760c1c9c0deaf827fdae"
+        },
+        "ridley_area": {
+          "first_execution": 2946067,
+          "admitted_frames_lower": 365399090,
+          "admitted_frames_upper": 365413130,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "73ee7b461a28f59562f99c0006345891a85c3be745ebb47994e392b900d09008"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 192,
+      "max_missile_capacity": 15,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 9372.454021,
+      "peak_process_tree_rss_bytes_sampled": 5735469056
+    },
+    {
+      "label": "t04-validation-corrected-s4163552957",
+      "seed": 4163552957,
+      "arm": "corrected",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "3cd0245f0a93768b5be831388172666bd59948f99f4cd046ff1e784c51a3d21c",
+      "execution_sha256": "f79a4f0c5a42ea164ec1a03033351b03338981425ce90a4463bd65d62fee66b2",
+      "executions": 3000000,
+      "admitted_frames": 378736645,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "1fa4711783e0d213aebb98c2fcfa9bc1e6d50172f78a89c6e057fb3c445fa6de",
+      "milestones": {
+        "bombs": {
+          "first_execution": 2178336,
+          "admitted_frames_lower": 278632167,
+          "admitted_frames_upper": 278645891,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "d3611e284d1e7757785a16bf7184a5cef59e2e400efd8c90197be50093439fe7"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 82,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "558239b21a9bef22835891dec1068747545617f36b999d0b7b111783960285fe"
+        },
+        "energy_tank": {
+          "first_execution": 411107,
+          "admitted_frames_lower": 50930014,
+          "admitted_frames_upper": 50943562,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "7deb17b79fb8b2b86894a4284da7225aa28987e58763b9131f084803ef5ac771"
+        },
+        "kraid_area": {
+          "first_execution": 2268271,
+          "admitted_frames_lower": 289571873,
+          "admitted_frames_upper": 289584521,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "9f06e7dbaba877b27f327afa17dd5d52fce2d0e5a2e7c0ab726e3062f3b23cb2"
+        },
+        "long_beam": {
+          "first_execution": 1431970,
+          "admitted_frames_lower": 184321730,
+          "admitted_frames_upper": 184334617,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "5066957a6f6de64b04de9940c5326a95e8082b0aa41f6aa3d7f2979fe505ec6d"
+        },
+        "missile_capacity": {
+          "first_execution": 67008,
+          "admitted_frames_lower": 9262953,
+          "admitted_frames_upper": 9274766,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "5f548737b31302485e7499bb9850ff9ad81f1340a908a4629bb479a264657516"
+        },
+        "morph_ball": {
+          "first_execution": 562,
+          "admitted_frames_lower": 73496,
+          "admitted_frames_upper": 89609,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "d737a6131fbd1b4608220ffe17d8ca4bddee84f6f2827e3d133bdc1370760b50"
+        },
+        "norfair": {
+          "first_execution": 74220,
+          "admitted_frames_lower": 10133869,
+          "admitted_frames_upper": 10146734,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "29436b83e998a41f4e16c5435bab260fe40a267e9dda7247ed606d326504681d"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 159,
+      "max_missile_capacity": 15,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 11412.172785,
+      "peak_process_tree_rss_bytes_sampled": 5534826496
+    },
+    {
+      "label": "t04-validation-control-s4163552957",
+      "seed": 4163552957,
+      "arm": "control",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "21daaee9e79b383dd494688bf817c1680bf56cd1c284e87564197e30a44e36cb",
+      "execution_sha256": "cae53f6104f2e39afc900088be9893c825a1885eb3735c3a6d5e12f0ecd8d1d9",
+      "executions": 3000000,
+      "admitted_frames": 363889417,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "6956200b43d1582954e206ee432f1d5532f37780034db99f9e2dc5e71c444042",
+      "milestones": {
+        "bombs": {
+          "first_execution": 1746513,
+          "admitted_frames_lower": 214837307,
+          "admitted_frames_upper": 214851985,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "39678946b12a9f8acd345dc178f8cb25639a903501f4898d9498840328b2bd2c"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 82,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "558239b21a9bef22835891dec1068747545617f36b999d0b7b111783960285fe"
+        },
+        "energy_tank": {
+          "first_execution": 413413,
+          "admitted_frames_lower": 50427876,
+          "admitted_frames_upper": 50440335,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "e76c10218dc1082dc7f1b9065a74064fc438143febb8ccf60188d2b5a91c5eea"
+        },
+        "kraid_area": {
+          "first_execution": 1851212,
+          "admitted_frames_lower": 227480459,
+          "admitted_frames_upper": 227494124,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "77644666db593fd1db55b85ba85d6f1877dd557f9a85f54f55336cd7aa9d1db7"
+        },
+        "long_beam": {
+          "first_execution": 1212606,
+          "admitted_frames_lower": 150961807,
+          "admitted_frames_upper": 150975019,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "86d51225a4810e175a6beca965d1cce0ce2219384f12df8d8dcb49b27b37ce9c"
+        },
+        "missile_capacity": {
+          "first_execution": 67008,
+          "admitted_frames_lower": 9262953,
+          "admitted_frames_upper": 9274766,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "5f548737b31302485e7499bb9850ff9ad81f1340a908a4629bb479a264657516"
+        },
+        "morph_ball": {
+          "first_execution": 562,
+          "admitted_frames_lower": 73496,
+          "admitted_frames_upper": 89609,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "d737a6131fbd1b4608220ffe17d8ca4bddee84f6f2827e3d133bdc1370760b50"
+        },
+        "norfair": {
+          "first_execution": 74220,
+          "admitted_frames_lower": 10133869,
+          "admitted_frames_upper": 10146734,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "29436b83e998a41f4e16c5435bab260fe40a267e9dda7247ed606d326504681d"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 209,
+      "max_missile_capacity": 25,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 11006.08221,
+      "peak_process_tree_rss_bytes_sampled": 5856272384
+    },
+    {
+      "label": "t04-validation-control-s3001028078",
+      "seed": 3001028078,
+      "arm": "control",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "01dea522c63bb6d099bfbc689807f824c7e3a5c14b6322e9cfe49227c5921de1",
+      "execution_sha256": "df63fa31c123dddbbcdac276f0c5a2f47e3ae6fce101a78c428bcce8cdc7099a",
+      "executions": 3000000,
+      "admitted_frames": 372734179,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "8ced77a59f9d11ea123c5e74953c78ecf7b4d9da7439c6370da372a55459f2f1",
+      "milestones": {
+        "bombs": {
+          "first_execution": 1569551,
+          "admitted_frames_lower": 198472826,
+          "admitted_frames_upper": 198487802,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "74a595690542795e8e8f5bc0beb254d508edca9575d78e6f6d0afc50a7af32e5"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 189,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "731d40fb64ac977d784464c45842bf726cd95656ff561f6324dc48f92ee7d1ee"
+        },
+        "energy_tank": {
+          "first_execution": 629951,
+          "admitted_frames_lower": 79411417,
+          "admitted_frames_upper": 79424733,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "c4aa33e1ef095e9152b3df2b750194741924ce1b82ed8e8018e56824f114f068"
+        },
+        "kraid_area": {
+          "first_execution": 1672212,
+          "admitted_frames_lower": 210882014,
+          "admitted_frames_upper": 210895939,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "fd210a7a9fcce63f92a3263bb2cfe1e47ff8dddec9431cc9701367e57b4f5853"
+        },
+        "missile_capacity": {
+          "first_execution": 254333,
+          "admitted_frames_lower": 35615316,
+          "admitted_frames_upper": 35625470,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "6f3197edee679d40d01d1daffe6c2d6a015c90b60d379aa1906a2ece39c7cf47"
+        },
+        "morph_ball": {
+          "first_execution": 379,
+          "admitted_frames_lower": 42198,
+          "admitted_frames_upper": 56920,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "0f507d03dba9ab4e4fe36e4d9a246aa2932b44378289350ffea8e1e49d1b55fe"
+        },
+        "norfair": {
+          "first_execution": 275024,
+          "admitted_frames_lower": 38062817,
+          "admitted_frames_upper": 38076649,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "042123485d6a21c1d3ea97aa739a4fc0b955d192058bffb3b3d49cef9a00b61c"
+        },
+        "ridley_area": {
+          "first_execution": 2034850,
+          "admitted_frames_lower": 254099344,
+          "admitted_frames_upper": 254114046,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "e1406ce49f2fad3c1bf6a0c84d731e6b3a2b98e9e49ceddb7d88fb9642320f65"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 218,
+      "max_missile_capacity": 20,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 9144.845347,
+      "peak_process_tree_rss_bytes_sampled": 4860186624
+    },
+    {
+      "label": "t04-validation-corrected-s3001028078",
+      "seed": 3001028078,
+      "arm": "corrected",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "11adee77c93cdc63d4530c351af947fd08184e16bdc5ef406909362c983ea132",
+      "execution_sha256": "cfaca574029d52d804c7008d65549cc92856a1a42065cd60cac9e7e548c8f94b",
+      "executions": 3000000,
+      "admitted_frames": 370990972,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "b659bdc75e28fffd26d7e7b1dcf786c93d9b82fbaa908a1afe254874ca1411e0",
+      "milestones": {
+        "bombs": {
+          "first_execution": 1443348,
+          "admitted_frames_lower": 181364738,
+          "admitted_frames_upper": 181378440,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "db09483d43d94f5a57dd3c7cbce4aafb1ba4206fe26f2b98992dfa2c03786c5b"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 189,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "731d40fb64ac977d784464c45842bf726cd95656ff561f6324dc48f92ee7d1ee"
+        },
+        "energy_tank": {
+          "first_execution": 690899,
+          "admitted_frames_lower": 86724444,
+          "admitted_frames_upper": 86735981,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "6a103bfb10ad17e4a9660603a1ae61d20c7e7d173c795ed94dcbcfaacd6cda68"
+        },
+        "kraid_area": {
+          "first_execution": 1516262,
+          "admitted_frames_lower": 190169932,
+          "admitted_frames_upper": 190186119,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "248bf39f22a8bd8c8cdab66bd0ecd861e6a758957258a59db1d8ff944e8dbc0b"
+        },
+        "missile_capacity": {
+          "first_execution": 254333,
+          "admitted_frames_lower": 35615316,
+          "admitted_frames_upper": 35625470,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "6f3197edee679d40d01d1daffe6c2d6a015c90b60d379aa1906a2ece39c7cf47"
+        },
+        "morph_ball": {
+          "first_execution": 379,
+          "admitted_frames_lower": 42198,
+          "admitted_frames_upper": 56920,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "0f507d03dba9ab4e4fe36e4d9a246aa2932b44378289350ffea8e1e49d1b55fe"
+        },
+        "norfair": {
+          "first_execution": 275024,
+          "admitted_frames_lower": 38062817,
+          "admitted_frames_upper": 38076649,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "042123485d6a21c1d3ea97aa739a4fc0b955d192058bffb3b3d49cef9a00b61c"
+        },
+        "ridley_area": {
+          "first_execution": 2134379,
+          "admitted_frames_lower": 263765521,
+          "admitted_frames_upper": 263779722,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "8a05d7f5344fa8621541c9dd4ed6fc69cdbee3c63e60d6ede66de091456970c3"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 229,
+      "max_missile_capacity": 20,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 9299.612067999999,
+      "peak_process_tree_rss_bytes_sampled": 5427482624
+    },
+    {
+      "label": "t04-validation-corrected-s3860178203",
+      "seed": 3860178203,
+      "arm": "corrected",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "77e035787588cb0ed46b7892afa7dacd35513b4795e25398922a4916eccd29d4",
+      "execution_sha256": "8b0f475d6954209424b0656c2af5954473f8845b8a120ea67156b53802407e5e",
+      "executions": 3000000,
+      "admitted_frames": 378302076,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "c96c9cf4d2074a8948aba072f9a5998c821f9084c34cf98e05ff26cb6254e756",
+      "milestones": {
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 126,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "7bc7d05936eb61e9bf7bf3d596ad168ac2b9efa593697d34d519da89a2b46c4d"
+        },
+        "energy_tank": {
+          "first_execution": 320091,
+          "admitted_frames_lower": 39042198,
+          "admitted_frames_upper": 39053154,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "75fff50a36718bef79df047e753b1f77017dd1235df910da60ecc189c51c4087"
+        },
+        "long_beam": {
+          "first_execution": 1107861,
+          "admitted_frames_lower": 138620204,
+          "admitted_frames_upper": 138632652,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "61cb9eba2c63e48f75c5a7d58097ae5f86093c21f61030cc25a67891056e55e2"
+        },
+        "missile_capacity": {
+          "first_execution": 93366,
+          "admitted_frames_lower": 12488854,
+          "admitted_frames_upper": 12500933,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "08400f1d230463540c4d504baac1bcbcaf939f1721190a70b7710c2be519c739"
+        },
+        "morph_ball": {
+          "first_execution": 52,
+          "admitted_frames_lower": 126,
+          "admitted_frames_upper": 14167,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "06edb2c905053bcc2957121b265f6cb54c1bad3d5d8a7b31c16d143cb6b42ccc"
+        },
+        "norfair": {
+          "first_execution": 94601,
+          "admitted_frames_lower": 12631368,
+          "admitted_frames_upper": 12644876,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "1c1a9b8ba16f7e17cc1dda7520d897a32da422497a961f8b6d8a2ccc4c665cc8"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 109,
+      "max_missile_capacity": 10,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 11451.834148,
+      "peak_process_tree_rss_bytes_sampled": 3756122112
+    },
+    {
+      "label": "t04-validation-control-s3860178203",
+      "seed": 3860178203,
+      "arm": "control",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "4590d8526100dda09d9f526b2d0c742025c1dbd49f46cdf4e634f69afbcc5b40",
+      "execution_sha256": "c4feec630460be2a4616b033a72d96712fec7b8aba7c14d8407bf1f79e5fc852",
+      "executions": 3000000,
+      "admitted_frames": 374166059,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "9b9e1b67362246002cc2be92856f5b426a75e96bb57aeb2f428ac98ad6a91656",
+      "milestones": {
+        "bombs": {
+          "first_execution": 2550191,
+          "admitted_frames_lower": 320252542,
+          "admitted_frames_upper": 320265626,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "48f104828b9f84671a0e04f4635db9cd49c8ab9ad5db233c23174bdad3c8939c"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 126,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "7bc7d05936eb61e9bf7bf3d596ad168ac2b9efa593697d34d519da89a2b46c4d"
+        },
+        "energy_tank": {
+          "first_execution": 357985,
+          "admitted_frames_lower": 43885442,
+          "admitted_frames_upper": 43896209,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "92f499539e82f23cfe0b5a32d267c2750690af87c06c39b51ba763a120f99b97"
+        },
+        "kraid_area": {
+          "first_execution": 2668347,
+          "admitted_frames_lower": 334468282,
+          "admitted_frames_upper": 334481047,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "68f82b709294eca5f330f730ef9a76df622a9cb7d63a3bac20d3c0dc5e571598"
+        },
+        "long_beam": {
+          "first_execution": 1059020,
+          "admitted_frames_lower": 132699076,
+          "admitted_frames_upper": 132712801,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "e11d6d14881c27da4cab2534caa77c363add1a5d8c9e1b0263377d2ae05269f3"
+        },
+        "missile_capacity": {
+          "first_execution": 130651,
+          "admitted_frames_lower": 17607363,
+          "admitted_frames_upper": 17619558,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "f9aa16738e7189c0a09877057af200e06ab339afdaab1151a7728300efe2cdb5"
+        },
+        "morph_ball": {
+          "first_execution": 52,
+          "admitted_frames_lower": 126,
+          "admitted_frames_upper": 14167,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "06edb2c905053bcc2957121b265f6cb54c1bad3d5d8a7b31c16d143cb6b42ccc"
+        },
+        "norfair": {
+          "first_execution": 136209,
+          "admitted_frames_lower": 18266181,
+          "admitted_frames_upper": 18279634,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "1db45aacad5886a925bb8410ab3c92c6359d55ca70c08e4101bb3825f238cfa8"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 161,
+      "max_missile_capacity": 15,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 11274.498556,
+      "peak_process_tree_rss_bytes_sampled": 5221588992
+    },
+    {
+      "label": "t04-validation-control-s3217532177",
+      "seed": 3217532177,
+      "arm": "control",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "07452e992a99627f7ef8aa77e6b6471d152eb69ebdcc70b4b76342458de41e7b",
+      "execution_sha256": "12764fc90e5274e542987a17bd561bb86913d1aa57d503ba32cc9137311a5175",
+      "executions": 3000000,
+      "admitted_frames": 377205445,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "af6ffeb14af1651cdcba3e971d046b8a6038a0936528a0d94dbca550db9a5858",
+      "milestones": {
+        "bombs": {
+          "first_execution": 1696924,
+          "admitted_frames_lower": 217436766,
+          "admitted_frames_upper": 217449529,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "9d6c7f205cfe81e81e2f731cc83c5a454325c00b292a438c5b4136b8b535d2dc"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 13,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "6909a92e026b75dabe4c2557155ed3093b5fd9cdea567f9d727b68467a0ae7fb"
+        },
+        "energy_tank": {
+          "first_execution": 418956,
+          "admitted_frames_lower": 51441186,
+          "admitted_frames_upper": 51454670,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "9394cdf5d4926846630f1365f8fcbdc909b59ee7912f9f42c28506e27e3fdd53"
+        },
+        "kraid_area": {
+          "first_execution": 1777437,
+          "admitted_frames_lower": 227238884,
+          "admitted_frames_upper": 227252093,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "7f2a57a8f6e65c99ebfbdf10fd5476cf52ff1c30ea0e35de5d20bcc46f6b7d9c"
+        },
+        "missile_capacity": {
+          "first_execution": 104815,
+          "admitted_frames_lower": 14717665,
+          "admitted_frames_upper": 14729008,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "51233581be48dd404d59186e57daef382be98889e66524fcaeabb9ca88f01b52"
+        },
+        "morph_ball": {
+          "first_execution": 378,
+          "admitted_frames_lower": 44298,
+          "admitted_frames_upper": 59742,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "20b3e9f7f3dfb5cd353177bb8290890e1821e0a8a9dc8ab67867910ed022dac0"
+        },
+        "norfair": {
+          "first_execution": 107385,
+          "admitted_frames_lower": 15004775,
+          "admitted_frames_upper": 15020466,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "94ec085c83eb21d6e22439ae14cd5a01ed928d34258568eeedb54957db059534"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 204,
+      "max_missile_capacity": 20,
+      "max_energy_tanks": 2,
+      "cpu_seconds": 9297.0167,
+      "peak_process_tree_rss_bytes_sampled": 5275340800
+    },
+    {
+      "label": "t04-validation-corrected-s3217532177",
+      "seed": 3217532177,
+      "arm": "corrected",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "54272d2b49f7cc9d256929133eba5a2a581e38d41cc8c0c79158523583f64766",
+      "execution_sha256": "9ca2f9eb82e2e19a7bd764c37d0d2bc732bbe33b2287d0689b2baa5965f6898a",
+      "executions": 3000000,
+      "admitted_frames": 371567102,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "d4aead225653e998233d13c2f8bf0bc77d231f4400f093fe260735d6771fe35f",
+      "milestones": {
+        "bombs": {
+          "first_execution": 1696924,
+          "admitted_frames_lower": 217436755,
+          "admitted_frames_upper": 217449518,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "9d6c7f205cfe81e81e2f731cc83c5a454325c00b292a438c5b4136b8b535d2dc"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 13,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "6909a92e026b75dabe4c2557155ed3093b5fd9cdea567f9d727b68467a0ae7fb"
+        },
+        "energy_tank": {
+          "first_execution": 418956,
+          "admitted_frames_lower": 51441186,
+          "admitted_frames_upper": 51454670,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "9394cdf5d4926846630f1365f8fcbdc909b59ee7912f9f42c28506e27e3fdd53"
+        },
+        "kraid_area": {
+          "first_execution": 1777437,
+          "admitted_frames_lower": 227238873,
+          "admitted_frames_upper": 227252082,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "7f2a57a8f6e65c99ebfbdf10fd5476cf52ff1c30ea0e35de5d20bcc46f6b7d9c"
+        },
+        "missile_capacity": {
+          "first_execution": 104815,
+          "admitted_frames_lower": 14717665,
+          "admitted_frames_upper": 14729008,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "51233581be48dd404d59186e57daef382be98889e66524fcaeabb9ca88f01b52"
+        },
+        "morph_ball": {
+          "first_execution": 378,
+          "admitted_frames_lower": 44298,
+          "admitted_frames_upper": 59742,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "20b3e9f7f3dfb5cd353177bb8290890e1821e0a8a9dc8ab67867910ed022dac0"
+        },
+        "norfair": {
+          "first_execution": 107385,
+          "admitted_frames_lower": 15004775,
+          "admitted_frames_upper": 15020466,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "94ec085c83eb21d6e22439ae14cd5a01ed928d34258568eeedb54957db059534"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 210,
+      "max_missile_capacity": 25,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 9313.566933,
+      "peak_process_tree_rss_bytes_sampled": 5230714880
+    },
+    {
+      "label": "t04-validation-corrected-s781462287",
+      "seed": 781462287,
+      "arm": "corrected",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "9a0a4987f8aa7664b1715d4c93b5194553cb73da0dee0bc329b472a9f8ddc30f",
+      "execution_sha256": "0866d354616cde6589089977cca278dcf3aa1a57758f741df3a68df7dd40b5d8",
+      "executions": 3000000,
+      "admitted_frames": 375852713,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "269680999c88e50b4b1969198ef5fe2b24164f5f2d27fe577f6ecb3fe89baf28",
+      "milestones": {
+        "bombs": {
+          "first_execution": 2814046,
+          "admitted_frames_lower": 352812802,
+          "admitted_frames_upper": 352826372,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "0cc2e431519e380a6416d438578282e12b3411f66ed28bf499794e75334eee0b"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 265,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "33b02b2bc6b9cf4a4c686e3f650dc6cab71b567214f8df7ebc30d3e0c0be6081"
+        },
+        "energy_tank": {
+          "first_execution": 392823,
+          "admitted_frames_lower": 48657416,
+          "admitted_frames_upper": 48672048,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "e92a7ca4c8e05326f187ca6fb3fa6db50b9e6eac39dbb6811d9f7025d799a9bb"
+        },
+        "kraid_area": {
+          "first_execution": 2912441,
+          "admitted_frames_lower": 364864880,
+          "admitted_frames_upper": 364878753,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "d20bccc208dd4af2fad4c9686455b17c1e29cec46f50ac0e4be23e043ed251d9"
+        },
+        "long_beam": {
+          "first_execution": 1140799,
+          "admitted_frames_lower": 145376000,
+          "admitted_frames_upper": 145389991,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "f9df1675e889679816c2ced2f54020d34354778b2db33b304ad0b4ee0d2790c7"
+        },
+        "missile_capacity": {
+          "first_execution": 109473,
+          "admitted_frames_lower": 14856382,
+          "admitted_frames_upper": 14868448,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "31d0dc2c35bc7535ef76c3dd1e6974007d7657907abd7003033a03a924d7110c"
+        },
+        "morph_ball": {
+          "first_execution": 122,
+          "admitted_frames_lower": 15367,
+          "admitted_frames_upper": 31093,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "765bd8fc32611292d4c40029e79186e64467e5c8fbbb82c943fe564d1416cb86"
+        },
+        "norfair": {
+          "first_execution": 115806,
+          "admitted_frames_lower": 15565901,
+          "admitted_frames_upper": 15579192,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "b941af8833db524b4a298960031320872c1dcf253c85bbc540069bb29b3c1272"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 140,
+      "max_missile_capacity": 10,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 11287.783552,
+      "peak_process_tree_rss_bytes_sampled": 4340822016
+    },
+    {
+      "label": "t04-validation-control-s781462287",
+      "seed": 781462287,
+      "arm": "control",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "b9bc01a288708f24d065a25ec00fa9d55406feb131c79bfe515db156148c9513",
+      "execution_sha256": "cbe5f17b8de10dc2fa81642abf43a1c1a6a960ee705f5a4e61f733473f5125a5",
+      "executions": 3000000,
+      "admitted_frames": 360979790,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "e7e42d553f25a444d99c47cbe9215fea2a937a015c41eed476adebf10fce3bb9",
+      "milestones": {
+        "bombs": {
+          "first_execution": 1136633,
+          "admitted_frames_lower": 140428705,
+          "admitted_frames_upper": 140442359,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "f209d78106a1211653eb950b6fbdf2d387ba8846d4f18fe1992ad350b6c206b3"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 265,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "33b02b2bc6b9cf4a4c686e3f650dc6cab71b567214f8df7ebc30d3e0c0be6081"
+        },
+        "energy_tank": {
+          "first_execution": 436691,
+          "admitted_frames_lower": 51591310,
+          "admitted_frames_upper": 51602734,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "4e1d6631b76e662650f3d4fa16278ed374e449cab1495550906f6ffc603a811d"
+        },
+        "kraid_area": {
+          "first_execution": 1282947,
+          "admitted_frames_lower": 157893894,
+          "admitted_frames_upper": 157908823,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "b8e7549969443b4699c4b514ecd20d263fe90f330543153804857e7fc8c1564d"
+        },
+        "missile_capacity": {
+          "first_execution": 81134,
+          "admitted_frames_lower": 11019082,
+          "admitted_frames_upper": 11031163,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "985744ce4fdf314a53e43b3db4e1c678081b398528b178319b2aad875226001d"
+        },
+        "morph_ball": {
+          "first_execution": 122,
+          "admitted_frames_lower": 15367,
+          "admitted_frames_upper": 31093,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "765bd8fc32611292d4c40029e79186e64467e5c8fbbb82c943fe564d1416cb86"
+        },
+        "norfair": {
+          "first_execution": 83502,
+          "admitted_frames_lower": 11282128,
+          "admitted_frames_upper": 11296049,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "8c16d9ce380b34c1424966472b88256a91b164b40c7098428769902d4ee673eb"
+        },
+        "ridley_area": {
+          "first_execution": 1798575,
+          "admitted_frames_lower": 219419045,
+          "admitted_frames_upper": 219431148,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "83a4e2a1f9a0bf8e74cb117a7d4caa647e90afdb73ebba41482c9105fe1fb3d3"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 219,
+      "max_missile_capacity": 30,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 10829.536524,
+      "peak_process_tree_rss_bytes_sampled": 5503127552
+    },
+    {
+      "label": "t04-validation-control-s2825471318",
+      "seed": 2825471318,
+      "arm": "control",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "59da03d529ab6e26d57dd5211a7e6c19d9e1d58175040cfe52b36eea3dcce937",
+      "execution_sha256": "846733b2eac69982ff64cd7636627cbd2d90bcbd5a98ffa17b7c3b6ef51852a9",
+      "executions": 3000000,
+      "admitted_frames": 376921855,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "82066670b38f709dee5335621e6c4e9e4a2012f1a03743405331e88d45bc1b9c",
+      "milestones": {
+        "bombs": {
+          "first_execution": 1087905,
+          "admitted_frames_lower": 139602975,
+          "admitted_frames_upper": 139616545,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "3505a0a9ad7da16d5c40090c76587b58bc1223d500709f8d47fc32ffaaeeaed7"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 15,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "3a5a0f6d3b79c41ad6514bbe33a5d13ea251151a0fa31985976ee8d5f90d74d8"
+        },
+        "energy_tank": {
+          "first_execution": 459615,
+          "admitted_frames_lower": 56027869,
+          "admitted_frames_upper": 56040954,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "5b39a2ab1e2bc4fad7181f4b8cbc482bc7f36494c45cbc29ba79d447aff516c5"
+        },
+        "kraid_area": {
+          "first_execution": 1189499,
+          "admitted_frames_lower": 151971408,
+          "admitted_frames_upper": 151985615,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "9c6628ed67a05ea22e341734b0d62391a4e600438dd476a246d9cc9289dfc604"
+        },
+        "missile_capacity": {
+          "first_execution": 111505,
+          "admitted_frames_lower": 15193382,
+          "admitted_frames_upper": 15204582,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "542656251cf50c2962514b7ed897d5e8634a8fa59968313b761eff4ced323b95"
+        },
+        "morph_ball": {
+          "first_execution": 1995,
+          "admitted_frames_lower": 270880,
+          "admitted_frames_upper": 285558,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "61cb0aa1951ca11bbcfbc1fed63beb08bd636b9c251d97d2d3267649920a825b"
+        },
+        "norfair": {
+          "first_execution": 119152,
+          "admitted_frames_lower": 16088617,
+          "admitted_frames_upper": 16103910,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "14ab58096668451e3c8d88af7d89da7d4c43359ca841978515ec8699bed02b1f"
+        },
+        "ridley_area": {
+          "first_execution": 1539998,
+          "admitted_frames_lower": 193504575,
+          "admitted_frames_upper": 193515070,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "8bdd3572a2f94cbed194e31a9fa3d0a89a1e5b532c54a9f72c8e83a12e900a84"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 227,
+      "max_missile_capacity": 20,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 9275.807188,
+      "peak_process_tree_rss_bytes_sampled": 4697612288
+    },
+    {
+      "label": "t04-validation-corrected-s2825471318",
+      "seed": 2825471318,
+      "arm": "corrected",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "87b55148989c2b98e8ddbcda05a0c06ddb840c561e7cf3cc741871f3a0077e62",
+      "execution_sha256": "f1682cd403a447bd2b5bdd218fede05b469ddabbd882c9507d371d280c85e84d",
+      "executions": 3000000,
+      "admitted_frames": 365625794,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "4713717a7af964034c089f2b1735d81098cba43afdd164d2f7c5c6f50708afdb",
+      "milestones": {
+        "bombs": {
+          "first_execution": 1351187,
+          "admitted_frames_lower": 167478269,
+          "admitted_frames_upper": 167490885,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "a78611900731d843c2389c8a052572e46e37c93786f58817ed41b586fd983cbe"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 15,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "3a5a0f6d3b79c41ad6514bbe33a5d13ea251151a0fa31985976ee8d5f90d74d8"
+        },
+        "energy_tank": {
+          "first_execution": 819341,
+          "admitted_frames_lower": 99738924,
+          "admitted_frames_upper": 99752030,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "795918667560a6d3ef05255f414053ba6c7b31b631cc9ad6eb917b256bbd6abc"
+        },
+        "kraid_area": {
+          "first_execution": 1473852,
+          "admitted_frames_lower": 181961516,
+          "admitted_frames_upper": 181976862,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "7ab53729868c0e99d74f4ab9fb471e1fe57e20993380d4965140cfea042896a4"
+        },
+        "missile_capacity": {
+          "first_execution": 119816,
+          "admitted_frames_lower": 16007302,
+          "admitted_frames_upper": 16018874,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "e07b16642bf72bae67d56764885615d54b24abfa1b39746db2c60497599116f7"
+        },
+        "morph_ball": {
+          "first_execution": 1995,
+          "admitted_frames_lower": 270880,
+          "admitted_frames_upper": 285558,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "61cb0aa1951ca11bbcfbc1fed63beb08bd636b9c251d97d2d3267649920a825b"
+        },
+        "norfair": {
+          "first_execution": 124552,
+          "admitted_frames_lower": 16507101,
+          "admitted_frames_upper": 16520521,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "bc5c8f563f0b9087638c47859506525a62e8455d833352d10ff02fd68ad6f05b"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 186,
+      "max_missile_capacity": 25,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 9078.386602,
+      "peak_process_tree_rss_bytes_sampled": 4755451904
+    },
+    {
+      "label": "t04-validation-corrected-s2955146978",
+      "seed": 2955146978,
+      "arm": "corrected",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "3f0d213c5ff1bc12f7075939bb181072fbc9f22111b46fae0a65d7dfd2cac3bb",
+      "execution_sha256": "b9d5d64601cea955d373e5008032eb6a6bbe5dc37cc5686ae2886f4bc2fa9282",
+      "executions": 3000000,
+      "admitted_frames": 371814477,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "d0a6163662780ccaec34e9e7dd439ea5331fefcee2dd8de5a4ea65795b41ad05",
+      "milestones": {
+        "bombs": {
+          "first_execution": 2510470,
+          "admitted_frames_lower": 312979412,
+          "admitted_frames_upper": 312992874,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "35a1f04af0f775a4549a297201949894edf7ee12d189252a6770ad343525287b"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 52,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "8e5f4e04edf54a0d3725aa65b5e279308b964060188acd1eb154e848ce7507ff"
+        },
+        "energy_tank": {
+          "first_execution": 337074,
+          "admitted_frames_lower": 41454202,
+          "admitted_frames_upper": 41466567,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "b42588a947d525601bc8cd6998b7ebeb8736d24f6cc20c283e5cab25d17e24b1"
+        },
+        "kraid_area": {
+          "first_execution": 2810924,
+          "admitted_frames_lower": 348980259,
+          "admitted_frames_upper": 348994122,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "1a61dff25978f1bb30497743a17f5d63b4d93fea1f2cddeb1801aedcd6f93bde"
+        },
+        "long_beam": {
+          "first_execution": 1387458,
+          "admitted_frames_lower": 176260187,
+          "admitted_frames_upper": 176274690,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "a62ce172efac53524c4d6596a8b3c0ab0deb384db10b5a683ca4f531c13a3f3b"
+        },
+        "missile_capacity": {
+          "first_execution": 134817,
+          "admitted_frames_lower": 18152186,
+          "admitted_frames_upper": 18164514,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "8773640650626597126a26463a8378fbfa346c55e93d0d3ff18360188ed28eb1"
+        },
+        "morph_ball": {
+          "first_execution": 36,
+          "admitted_frames_lower": 52,
+          "admitted_frames_upper": 12842,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "0cdb5294a69ed89fb721b677fbffcc1669f41e854799aa3904f7dc34e602e676"
+        },
+        "norfair": {
+          "first_execution": 138020,
+          "admitted_frames_lower": 18524076,
+          "admitted_frames_upper": 18538025,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "e991e2ed135138f339e904ac6e9accee98a9ed0dcbeffea9a098a3519e9a51f9"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 154,
+      "max_missile_capacity": 15,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 10492.280267999999,
+      "peak_process_tree_rss_bytes_sampled": 5209948160
+    },
+    {
+      "label": "t04-validation-control-s2955146978",
+      "seed": 2955146978,
+      "arm": "control",
+      "anchor_complete": true,
+      "runner_status": "complete",
+      "launcher_status": "runner_complete",
+      "failure": {
+        "exit_code": 0
+      },
+      "identity_available": true,
+      "summary_sha256": "6f289ad11a6a84fa6f6726f7ef2b6f246d9af5202763a000f2099c8e9c288354",
+      "execution_sha256": "6463fe863e096de22d9e2ba52fc08fd567c030d2916ef0b737cde031f6041cb6",
+      "executions": 3000000,
+      "admitted_frames": 363310771,
+      "stop_reason": "execution_limit",
+      "stream_sha256": "e15936ddda31d586f4483c92fcff94ff34c1f928150bf3a7b9c865321dac5121",
+      "milestones": {
+        "bombs": {
+          "first_execution": 1256500,
+          "admitted_frames_lower": 154067347,
+          "admitted_frames_upper": 154080068,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "26559be0d44e2bf84ea23f533154eddbe4e65a238ce842ff0b030ba3d5c2c589"
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "admitted_frames_lower": 0,
+          "admitted_frames_upper": 52,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "8e5f4e04edf54a0d3725aa65b5e279308b964060188acd1eb154e848ce7507ff"
+        },
+        "energy_tank": {
+          "first_execution": 684234,
+          "admitted_frames_lower": 82656130,
+          "admitted_frames_upper": 82668690,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "d20171a489cb38d9ac3482ada701fc2e777767be1742233c0d47547e52969390"
+        },
+        "kraid_area": {
+          "first_execution": 1321361,
+          "admitted_frames_lower": 161795251,
+          "admitted_frames_upper": 161808659,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "8a998eaf4741e0962ed52ea818f5ef5e31fb455e97dc3ef4860e90314dc533ba"
+        },
+        "missile_capacity": {
+          "first_execution": 134817,
+          "admitted_frames_lower": 18152186,
+          "admitted_frames_upper": 18164514,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "8773640650626597126a26463a8378fbfa346c55e93d0d3ff18360188ed28eb1"
+        },
+        "morph_ball": {
+          "first_execution": 36,
+          "admitted_frames_lower": 52,
+          "admitted_frames_upper": 12842,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "0cdb5294a69ed89fb721b677fbffcc1669f41e854799aa3904f7dc34e602e676"
+        },
+        "norfair": {
+          "first_execution": 138020,
+          "admitted_frames_lower": 18524076,
+          "admitted_frames_upper": 18538025,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "e991e2ed135138f339e904ac6e9accee98a9ed0dcbeffea9a098a3519e9a51f9"
+        },
+        "ridley_area": {
+          "first_execution": 1894140,
+          "admitted_frames_lower": 230132275,
+          "admitted_frames_upper": 230147084,
+          "verified_by_completed_runner": true,
+          "within_registered_work": true,
+          "input_sha256": "7a1369b13417bffb509820020dbd812faf4f2856799c9f7ee4d5b5d02089c8ed"
+        }
+      },
+      "verified_bosses": [],
+      "completed_boss_success": false,
+      "map_cells_observed": 213,
+      "max_missile_capacity": 25,
+      "max_energy_tanks": 1,
+      "cpu_seconds": 10219.835047,
+      "peak_process_tree_rss_bytes_sampled": 5698043904
+    }
+  ],
+  "paired_common_work": [
+    {
+      "seed": 2089362731,
+      "both_anchor_complete": true,
+      "common_admitted_frame_boundary": 372464671,
+      "at_common_frame_work": {
+        "control": {
+          "executions": 2979200,
+          "frames_emulated": 372459531,
+          "map_cells_observed": 189,
+          "max_missile_capacity": 25,
+          "max_energy_tanks": 2,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "missile_capacity",
+            "morph_ball",
+            "norfair"
+          ]
+        },
+        "corrected": {
+          "executions": 3000000,
+          "frames_emulated": 372464671,
+          "map_cells_observed": 244,
+          "max_missile_capacity": 25,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "missile_capacity",
+            "morph_ball",
+            "norfair",
+            "ridley_area"
+          ]
+        }
+      }
+    },
+    {
+      "seed": 1154364703,
+      "both_anchor_complete": true,
+      "common_admitted_frame_boundary": 374627120,
+      "at_common_frame_work": {
+        "corrected": {
+          "executions": 2964400,
+          "frames_emulated": 374621390,
+          "map_cells_observed": 161,
+          "max_missile_capacity": 15,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "long_beam",
+            "missile_capacity",
+            "morph_ball",
+            "norfair"
+          ]
+        },
+        "control": {
+          "executions": 3000000,
+          "frames_emulated": 374627120,
+          "map_cells_observed": 194,
+          "max_missile_capacity": 25,
+          "max_energy_tanks": 2,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "missile_capacity",
+            "morph_ball",
+            "norfair"
+          ]
+        }
+      }
+    },
+    {
+      "seed": 2037612408,
+      "both_anchor_complete": true,
+      "common_admitted_frame_boundary": 364178538,
+      "at_common_frame_work": {
+        "control": {
+          "executions": 3000000,
+          "frames_emulated": 364178538,
+          "map_cells_observed": 201,
+          "max_missile_capacity": 25,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "missile_capacity",
+            "morph_ball",
+            "norfair"
+          ]
+        },
+        "corrected": {
+          "executions": 2935700,
+          "frames_emulated": 364170766,
+          "map_cells_observed": 176,
+          "max_missile_capacity": 15,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "long_beam",
+            "missile_capacity",
+            "morph_ball",
+            "norfair"
+          ]
+        }
+      }
+    },
+    {
+      "seed": 4163552957,
+      "both_anchor_complete": true,
+      "common_admitted_frame_boundary": 363889417,
+      "at_common_frame_work": {
+        "corrected": {
+          "executions": 2879400,
+          "frames_emulated": 363884977,
+          "map_cells_observed": 157,
+          "max_missile_capacity": 15,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "long_beam",
+            "missile_capacity",
+            "morph_ball",
+            "norfair"
+          ]
+        },
+        "control": {
+          "executions": 3000000,
+          "frames_emulated": 363889417,
+          "map_cells_observed": 209,
+          "max_missile_capacity": 25,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "long_beam",
+            "missile_capacity",
+            "morph_ball",
+            "norfair"
+          ]
+        }
+      }
+    },
+    {
+      "seed": 3001028078,
+      "both_anchor_complete": true,
+      "common_admitted_frame_boundary": 370990972,
+      "at_common_frame_work": {
+        "control": {
+          "executions": 2986400,
+          "frames_emulated": 370985428,
+          "map_cells_observed": 218,
+          "max_missile_capacity": 20,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "missile_capacity",
+            "morph_ball",
+            "norfair",
+            "ridley_area"
+          ]
+        },
+        "corrected": {
+          "executions": 3000000,
+          "frames_emulated": 370990972,
+          "map_cells_observed": 229,
+          "max_missile_capacity": 20,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "missile_capacity",
+            "morph_ball",
+            "norfair",
+            "ridley_area"
+          ]
+        }
+      }
+    },
+    {
+      "seed": 3860178203,
+      "both_anchor_complete": true,
+      "common_admitted_frame_boundary": 374166059,
+      "at_common_frame_work": {
+        "corrected": {
+          "executions": 2969300,
+          "frames_emulated": 374165030,
+          "map_cells_observed": 109,
+          "max_missile_capacity": 10,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "brinstar",
+            "energy_tank",
+            "long_beam",
+            "missile_capacity",
+            "morph_ball",
+            "norfair"
+          ]
+        },
+        "control": {
+          "executions": 3000000,
+          "frames_emulated": 374166059,
+          "map_cells_observed": 161,
+          "max_missile_capacity": 15,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "long_beam",
+            "missile_capacity",
+            "morph_ball",
+            "norfair"
+          ]
+        }
+      }
+    },
+    {
+      "seed": 3217532177,
+      "both_anchor_complete": true,
+      "common_admitted_frame_boundary": 371567102,
+      "at_common_frame_work": {
+        "control": {
+          "executions": 2952200,
+          "frames_emulated": 371564293,
+          "map_cells_observed": 197,
+          "max_missile_capacity": 20,
+          "max_energy_tanks": 2,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "missile_capacity",
+            "morph_ball",
+            "norfair"
+          ]
+        },
+        "corrected": {
+          "executions": 3000000,
+          "frames_emulated": 371567102,
+          "map_cells_observed": 210,
+          "max_missile_capacity": 25,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "missile_capacity",
+            "morph_ball",
+            "norfair"
+          ]
+        }
+      }
+    },
+    {
+      "seed": 781462287,
+      "both_anchor_complete": true,
+      "common_admitted_frame_boundary": 360979790,
+      "at_common_frame_work": {
+        "corrected": {
+          "executions": 2881100,
+          "frames_emulated": 360965693,
+          "map_cells_observed": 113,
+          "max_missile_capacity": 10,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "long_beam",
+            "missile_capacity",
+            "morph_ball",
+            "norfair"
+          ]
+        },
+        "control": {
+          "executions": 3000000,
+          "frames_emulated": 360979790,
+          "map_cells_observed": 219,
+          "max_missile_capacity": 30,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "missile_capacity",
+            "morph_ball",
+            "norfair",
+            "ridley_area"
+          ]
+        }
+      }
+    },
+    {
+      "seed": 2825471318,
+      "both_anchor_complete": true,
+      "common_admitted_frame_boundary": 365625794,
+      "at_common_frame_work": {
+        "control": {
+          "executions": 2911500,
+          "frames_emulated": 365615569,
+          "map_cells_observed": 227,
+          "max_missile_capacity": 20,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "missile_capacity",
+            "morph_ball",
+            "norfair",
+            "ridley_area"
+          ]
+        },
+        "corrected": {
+          "executions": 3000000,
+          "frames_emulated": 365625794,
+          "map_cells_observed": 186,
+          "max_missile_capacity": 25,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "missile_capacity",
+            "morph_ball",
+            "norfair"
+          ]
+        }
+      }
+    },
+    {
+      "seed": 2955146978,
+      "both_anchor_complete": true,
+      "common_admitted_frame_boundary": 363310771,
+      "at_common_frame_work": {
+        "corrected": {
+          "executions": 2930300,
+          "frames_emulated": 363300120,
+          "map_cells_observed": 154,
+          "max_missile_capacity": 15,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "long_beam",
+            "missile_capacity",
+            "morph_ball",
+            "norfair"
+          ]
+        },
+        "control": {
+          "executions": 3000000,
+          "frames_emulated": 363310771,
+          "map_cells_observed": 213,
+          "max_missile_capacity": 25,
+          "max_energy_tanks": 1,
+          "observed_named_milestones": [
+            "bombs",
+            "brinstar",
+            "energy_tank",
+            "kraid_area",
+            "missile_capacity",
+            "morph_ball",
+            "norfair",
+            "ridley_area"
+          ]
+        }
+      }
+    }
+  ],
+  "plan_sha256": "22aeeb57d4ff9a1e6d12d1edb97332f3cd2676c07beeaf5fc0e1a3b917f0d87f"
+}

@@ -1,9 +1,10 @@
 # Follow-up scope for the next tranche
 
-The tranche remains active. Behavioral-retention follow-up #286 has been
-published with PR #285 and the frozen paired-probe evidence. Updates to the depth
-issues await the final validation assessment. Existing issues remain open unless
-their stated acceptance criteria are actually met.
+The final depth result is negative: corrected Metroid and control each have 0/10
+verified boss successes, and neither fresh MM2 chain reaches Wily 4. Behavioral-
+retention follow-up #286 is published with PR #285 and frozen paired-probe evidence.
+Existing depth and broader mechanism issues remain open because their acceptance
+criteria are unmet.
 
 ## #271: capability identity and resource retention
 
@@ -51,9 +52,13 @@ which reachable, living archive states can still produce useful continuations,
 without importing a historical solution or encoding route guidance.
 
 Metroid's terminal correction excludes a mechanically verified BCD underflow
-endpoint. Attach the completed untouched T04 outcome here before making any
-search-quality promotion claim. Keep boss attainment, late capability discovery,
-archive coverage, and single-trajectory resource maxima separate. The remaining
+endpoint. The complete untouched T04 panel has 0/10 boss successes in each arm.
+At common admitted work, correction reaches Bombs on9/10 versus10/10 controls,
+Kraid area on8/10 versus10/10, and Ridley area on2/10 versus4/10. Long Beam improves
+from2/10 to6/10, but these mixed secondary results do not establish better depth.
+Keep the policy versioned and do not change defaults on this evidence. Boss
+attainment, late capability discovery, coverage, and single-trajectory resource
+maxima remain separate. The remaining
 boss and Wily 4 acceptance criteria cannot be satisfied by local diagnostics,
 prior tapes, or the infrastructure repair alone.
 
