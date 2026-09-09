@@ -381,3 +381,13 @@ representation from dilution of exploration. Mixed semantic results permit
 the same small replication, never a default promotion. Longer depth runs need
 a useful-progress win on at least two of the three development seeds; untouched
 validation is still required for a breakthrough claim.
+
+B02 passed both fixed-work cells: 691,673 frames at 5k jobs with full replay,
+and 13,629,183 frames at 100k jobs with repeated witness verification. The
+new corrected builds were compiled with Rust 1.97.1; the original baseline
+used 1.97.0. Both comparison arms use the same new compiler and source;
+legacy stream compatibility remains an explicit gate. The refined corrected
+5k qualification exercised two real underflow endpoints, neither eligible
+for admission, and passed full report/checkpoint replay. At this small budget
+refinement retains 4,837 states versus 2,047, with the same ten observed maps;
+this establishes activity and cost, not improved discovery.
