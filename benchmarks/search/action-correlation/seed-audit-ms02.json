@@ -1,0 +1,34 @@
+{
+  "recorded_utc": "2026-09-09T23:47:14.851221+00:00",
+  "seeds": [
+    3192859461,
+    3735135754,
+    2625380762,
+    2798373971
+  ],
+  "roots": [
+    "/root/harmony",
+    "/root/harmony-pr253-trace-repeat",
+    "/root/harmony-255",
+    "/root/harmony-alternative-futures-followup-20260909",
+    "/root/harmony-search-eval",
+    "/root/harmony-pr253-diag",
+    "/root/harmony-fault-library",
+    "/root/harmony-at-old",
+    "/root/harmony-at-guest",
+    "/root/harmony-depth-transfer-20260909",
+    "/root/harmony-at-api-target",
+    "/root/harmony-at-fixes",
+    "/root/harmony-alternative-futures-20260908",
+    "/root/harmony-searcher-scaling",
+    "/root/harmony-at-fixture",
+    "/root/harmony-roms",
+    "/root/harmony-pr253-soak",
+    "/root/harmony-pr253-trace-bounded",
+    "/root/harmony-at-guest-seeded",
+    "/root/harmony-fault-corpus"
+  ],
+  "files_checked": 1883,
+  "matches": [],
+  "scope": "Saved summary.json and named registration JSON under existing /root/harmony* trees, excluding build caches/assets. Unknown unrecorded past uses cannot be certified."
+}

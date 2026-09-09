@@ -1,0 +1,24 @@
+{
+  "recorded_utc": "2026-09-09T23:47:20.376428+00:00",
+  "seeds": [
+    3192859461,
+    3735135754,
+    2625380762,
+    2798373971
+  ],
+  "roots": [
+    "/root/harmony-searcher-over-consonance-ci-13f46607-fix3",
+    "/root/harmony-searcher-over-consonance-runs",
+    "/root/harmony-retention-theory-20260908",
+    "/root/harmony-nested-validation-20260904",
+    "/root/harmony-searcher-over-consonance",
+    "/root/harmony-searcher-over-consonance-ci-ada0-fix2",
+    "/root/harmony-searcher-over-consonance-ci-e88dd329-loop",
+    "/root/harmony-roms",
+    "/root/harmony-item5-fullchord-target",
+    "/root/harmony-smb-completion-evidence"
+  ],
+  "files_checked": 260,
+  "matches": [],
+  "scope": "Saved summary.json and named registration JSON under existing /root/harmony* trees, excluding build caches/assets. Unknown unrecorded past uses cannot be certified."
+}
