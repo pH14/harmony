@@ -6,6 +6,13 @@ import json
 from pathlib import Path
 
 
+def validate_header(header, game):
+    formats = {"metroid": "metroid-quicknes-campaign-stream-v4", "mm2": "mm2-quicknes-campaign-stream-v1"}
+    assert header["format"] == formats[game], "unsupported workload stream identity"
+    assert header["origin_kind"] == "genesis" and header["resume_actions"] == 0
+    assert header.get("origin_path") is None and header.get("origin_archive_sha256") is None
+
+
 def summarize(records):
     born, later_boundary, jobs, skips = set(), set(), set(), set()
     executions = skip_records = 0
@@ -63,8 +70,8 @@ def analyze(root):
         assert digest == summary["result"]["stream_sha256"], "stream differs from verified evidence"
         lines = raw.splitlines()
         header = json.loads(lines[0])
-        assert header["format"].endswith("campaign-stream-v4") and header["origin_kind"] == "genesis"
-        assert header["resume_actions"] == 0 and len(lines) <= 100_001
+        validate_header(header, summary["search_request"]["game"])
+        assert len(lines) <= 100_001
         result = summarize(json.loads(line) for line in lines[1:])
         assert result["executed_admitted_jobs"] == summary["result"]["executions"] == 5000
         rows.append({"label": label, "stream_sha256": digest, "stream_path": str(path.relative_to(root)),

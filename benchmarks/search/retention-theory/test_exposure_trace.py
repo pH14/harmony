@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Trace witnesses distinguish selection bookkeeping from known continuation."""
 import unittest
-from analyze_exposure_trace import summarize
+from analyze_exposure_trace import summarize, validate_header
 
 
 def job(sequence, parent, decisions):
@@ -13,6 +13,17 @@ def retained(identity):
 
 
 class ExposureTrace(unittest.TestCase):
+    def test_workload_specific_verified_formats_are_explicit(self):
+        for game, version in [("metroid", 4), ("mm2", 1)]:
+            validate_header({"format": f"{game}-quicknes-campaign-stream-v{version}",
+                             "origin_kind": "genesis", "resume_actions": 0}, game)
+
+    def test_a_new_format_or_imported_origin_is_not_silently_accepted(self):
+        for format_, origin in [("mm2-quicknes-campaign-stream-v4", "genesis"),
+                                ("mm2-quicknes-campaign-stream-v1", "archive")]:
+            with self.subTest(format=format_, origin=origin), self.assertRaises(AssertionError):
+                validate_header({"format": format_, "origin_kind": origin, "resume_actions": 0}, "mm2")
+
     def test_birth_continuation_and_skip_only_selection_are_distinct(self):
         result = summarize([job(1, 0, [retained(1), retained(2)]), job(2, 2, [retained(3)]),
                             {"event": "skip", "parent_id": 3}])
