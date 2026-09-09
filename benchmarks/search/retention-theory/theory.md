@@ -122,6 +122,25 @@ is short. It also excludes removed, exhausted, or horizon-ineligible entries;
 deterministic seeded execution alone supplies no probabilistic guarantee.
 Do not mistake a positive asymptotic probability for adequate finite exposure.
 
+Nor is zero parent selections proof of zero executed continuations. A worker
+can execute A then B in one suffix job; admission retains both boundaries,
+but selection bookkeeping credits only the original job parent. The new
+`zero_parent_selections_does_not_mean_no_executed_continuation` fixture runs
+the production rollout and coordinator and confirms that A's retained state
+has zero selected/productive counts despite an executed, retained descendant.
+Therefore `removed_never_selected` and `removed_never_productive` do not count
+all unexplored states or all states without useful outgoing work. They describe
+job-parent allocation. A scheduler intervention needs either a distinguishing
+probe or exposure accounting that also covers continuation within birth jobs.
+
+There is a second timing distinction: normal parent selections are credited
+after ordered job admission. A pending job may already have executed from a
+state when an earlier admitted job removes that state. The removal-time census
+can therefore record zero selections even though the later admitted job raises
+that inactive entry's selection count. A second production-coordinator fixture
+exercises that exact order. Treat the lifecycle census as removal-time admitted
+parent accounting, not a complete measure of physical exploration starvation.
+
 ## Predictions that decide the next experiment
 
 Observation validity precedes these abstraction claims. The parallel research

@@ -4564,6 +4564,104 @@ mod tests {
     }
 
     #[test]
+    fn zero_parent_selections_does_not_mean_no_executed_continuation() {
+        let (game, _run, mut core, mut target) = test_core();
+        let action = TestAction::new(1, 1);
+        let mut rollout = TestRollout::new(&mut target);
+        let result = execute_suffix(
+            &mut rollout,
+            0,
+            (),
+            &[action, action],
+            8,
+            RetentionPolicy::AdmitAlive,
+        )
+        .expect("execute both actions from the selected genesis parent");
+        assert_eq!(rollout.target.value, 2);
+        assert_eq!(result.actions[0].candidate.as_ref().unwrap().snapshot, 1);
+        assert_eq!(result.actions[1].candidate.as_ref().unwrap().snapshot, 2);
+        let (_, decisions) = core.admit_job(&game, 0, result).expect("admit one job");
+        assert_eq!(
+            decisions,
+            vec![
+                CampaignAdmissionDecision::Retained { id: 1 },
+                CampaignAdmissionDecision::Retained { id: 2 },
+            ]
+        );
+        core.archive.record_selection(
+            0,
+            &SelectorDraw {
+                path: SelectorPath::Uniform,
+                classes_skipped: 0,
+                counter_reset: false,
+                concentration: None,
+            },
+        );
+        core.archive.record_selection_outcome(0, true, true, true);
+        let (report, _) = core.into_archive_report_and_snapshots(&game, 0, true);
+        assert_eq!(report.entries[0].selector.unwrap().selected, 1);
+        assert_eq!(report.entries[1].selector.unwrap().selected, 0);
+        assert_eq!(report.entries[1].selector.unwrap().productive, 0);
+        assert_eq!(report.entries[2].parent_id, Some(1));
+        assert_eq!(
+            report.entries[1].created_execution,
+            report.entries[2].created_execution
+        );
+        assert_eq!(report.entries[2].input.actions, vec![action, action]);
+    }
+
+    #[test]
+    fn removal_exposure_precedes_a_pending_parent_jobs_accounting() {
+        let (game, _run, mut core, _target) = test_core();
+        let execute = |value, action| {
+            let mut target = TestTarget { value, frames: 0 };
+            execute_suffix(
+                &mut TestRollout::new(&mut target),
+                0,
+                (),
+                &[action],
+                8,
+                RetentionPolicy::AdmitAlive,
+            )
+            .unwrap()
+        };
+        // Fill the fixture's two-route slot, then add a cheap route to state 2.
+        assert_eq!(TestKey::slot_capacity(), 2);
+        core.admit_job(&game, 0, execute(0, TestAction::new(1, 9)))
+            .unwrap();
+        core.admit_job(&game, 0, execute(0, TestAction::new(1, 8)))
+            .unwrap();
+        core.admit_job(&game, 0, execute(0, TestAction::new(2, 1)))
+            .unwrap();
+        // State 1's parent job has actually executed. Ordered admission waits
+        // for an earlier job, which replaces state 1 through the cheaper route.
+        let pending = execute(1, TestAction::new(4, 1));
+        assert_eq!(pending.actions[0].candidate.as_ref().unwrap().snapshot, 5);
+        core.admit_job(&game, 3, execute(2, TestAction::new(255, 1)))
+            .unwrap();
+        assert!(!core.archive.active[1]);
+        assert_eq!(core.archive.retention_diagnostics.removed, 1);
+        assert_eq!(core.archive.retention_diagnostics.removed_never_selected, 1);
+        core.admit_job(&game, 1, pending).unwrap();
+        core.archive.record_selection(
+            1,
+            &SelectorDraw {
+                path: SelectorPath::Uniform,
+                classes_skipped: 0,
+                counter_reset: false,
+                concentration: None,
+            },
+        );
+        core.archive.record_selection_outcome(1, true, true, true);
+        // The lifecycle census captures removal-time state; it is not revised
+        // when a previously dispatched job receives its admission accounting.
+        assert_eq!(core.archive.retention_diagnostics.removed_never_selected, 1);
+        let (report, _) = core.into_archive_report_and_snapshots(&game, 0, true);
+        assert_eq!(report.entries[1].selector.unwrap().selected, 1);
+        assert_eq!(report.entries[1].selector.unwrap().productive, 1);
+    }
+
+    #[test]
     fn rollout_stops_on_an_already_terminal_parent() {
         let mut target = TestTarget::default();
         let mut rollout = TestRollout::new(&mut target);

@@ -1,0 +1,23 @@
+{
+  "scope": "Small tooling qualification from an in-progress development audit; not the final P03 sample",
+  "source_audit_sha256": "111fb4860818b2a20282fd325134f0748c28b212ddd4c2a93cb5ec492f6ab070",
+  "selected_executions": [
+    27750,
+    27640
+  ],
+  "build": {
+    "format": "harmony-diagnostic-build-v1",
+    "source_commit": "a864291e",
+    "source": {
+      "source_tree_sha256": "85918a462a8ec9f0c4022011333334ace0742d93857943b55cd9275bead9429e",
+      "revision": null,
+      "dirty": null,
+      "files": 334
+    },
+    "binary_sha256": "20f0255bc4002d4e43ffecbfd9e0efc053c7656c2b06272bc4fbc16e7eff9672",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+    "features": "",
+    "profile": "release",
+    "locked": true
+  }
+}

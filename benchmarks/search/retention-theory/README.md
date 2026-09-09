@@ -424,3 +424,28 @@ Follow-up [#281](https://github.com/pH14/harmony/issues/281) records the missing
 distinction between boss-area entry, actual encounter, and partial fight
 progress. Its source-labelled observations require their own qualification
 and must not alter search policy merely because no boss was defeated.
+
+K01 completed without wall censoring: both arms finished 500k jobs. Default
+used 60,731,080 frames and refined 59,348,941; the shared comparison ends at
+59,348,941. Both replay Morph Ball, missiles, Norfair, and one energy tank;
+neither defeats a boss. Refined obtains the tank at 49.59–49.60M frames versus
+59.16–59.17M, about 16% earlier. Missiles and Norfair are slightly later under
+refinement. No additional final named milestone or 20% arrival improvement
+passes the registered gate. Do not extend this key family to longer campaigns.
+It retains 161,829 states versus 42,543, with 87 versus 84 cached map cells.
+Results and conservative arrival intervals are in `k01-analysis.json`; full
+paired provenance is in `k01-development-results.json`.
+
+The P03 tooling qualification passed: two exact endpoint pairs, four suffixes
+of eight actions, 8,342 prefix frames and 7,368 probe frames. The final P03
+sample uses sixteen equal-preference pairs and a different registered seed.
+Three sampled candidates are explicit continuations of their incumbents.
+
+Two production-coordinator fixtures clarify exposure interpretation. A state
+can be extended inside its birth job while retaining zero parent-selection
+counts. Also, a previously executed pending job may receive its parent credit
+only after an earlier admission removed that parent. Both fixtures pass;
+comments and `theory.md` now state that removal counters capture admitted
+parent accounting at removal time. They cannot alone establish lost first
+exploration opportunities. No scheduler change is justified solely by K01's
+larger unselected-removal fraction.

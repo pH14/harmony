@@ -874,9 +874,11 @@ pub struct RetentionDiagnostics {
     pub removed: u64,
     /// Removed incumbents never exposed in the recency window.
     pub removed_never_in_window: u64,
-    /// Removed incumbents never selected.
+    /// Removed incumbents with no admitted parent selection at removal time.
+    /// Excludes pending jobs and continuation within the birth job.
     pub removed_never_selected: u64,
-    /// Removed incumbents never produced a retained extension.
+    /// Removed incumbents with no productive parent selection. Later actions
+    /// in the birth job can already have extended such an incumbent.
     pub removed_never_productive: u64,
     /// Sum of admitted selections received by removed incumbents.
     pub removed_selections: u64,
