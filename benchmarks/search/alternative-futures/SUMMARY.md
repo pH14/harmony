@@ -11,7 +11,8 @@ has not turned that loss into deeper fresh search. A separate Metroid terminal
 classification defect admitted a transient BCD health underflow as an excellent
 living state. Correcting that defect has a clear mechanical justification and
 mixed but promising late development results. Its frozen untouched comparison is
-running; completed validation outcomes are not yet available.
+running. The first five completed held-out pairs have no boss defeats in either
+arm; this partial result does not replace the full-panel assessment.
 
 | Explanation or mechanism | Controlled observation | Decision so far |
 | --- | --- | --- |
@@ -40,7 +41,7 @@ See #283 for the separate measurement needed before a stronger starvation claim;
 
 ## Depth and transfer
 
-All fresh Metroid comparisons retain four workers, 8 GiB logical memory,
+Long fresh Metroid anchor comparisons retain four workers, 8 GiB logical memory,
 3M executions / 400M admitted frames, 4096 actions, and the recorded baseline
 sampling policies except the explicitly isolated intervention. Diagnostic starts
 are labeled separately and use only inputs discovered in this tranche.
@@ -76,8 +77,10 @@ bounded campaigns reproduce frozen control hashes and replay changed behavior.
 Every saved named Metroid witness and final champion is replayed twice on
 independent targets from ordinary genesis. A trajectory witness is distinct
 from observed or retained archive unions. The qualified SMB reference and
-Nova/STB companions have passed at prior candidate checkpoints; final checks
-remain to be consolidated.
+Nova/STB companions have passed at prior candidate checkpoints. All 31 CI checks
+passed on published revision `42d9e3ad`; integrated native regression gates wait
+for the frozen validation panel to release the host. Final-head verification
+remains to be consolidated.
 
 Only compact measurements and provenance belong in this repository. Licensed
 assets, large streams, snapshots, images, and controller tapes remain on ms02.

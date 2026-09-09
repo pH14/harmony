@@ -1525,3 +1525,45 @@ is conditional on its tested predicate; a matched R-plus-T campaign remains
 unqualified. Keep that missing interaction explicit in the synthesis and #286
 before attributing all resource-policy failure to an inadequate behavioral
 representation. The frozen T04 panel isolates T alone and is not changed.
+
+## Eight-hour checkpoint — 2026-09-09 04:26 UTC
+
+New facts: five of ten frozen held-out pairs have completed both 3M-execution
+anchors and witness verification. Neither arm has defeated a boss (0/5 completed
+per arm; the remaining five pairs are not failures or successes). The fifth
+pair, seed3001028078, reaches Bombs at181.365–181.378M admitted frames under the
+correction versus198.473–198.488M for control, and Kraid area at190.170–190.186M
+versus210.882–210.896M. Ridley area instead arrives later:263.766–263.780M versus
+254.099–254.114M. At the common370.991M-frame boundary, observed coverage is
+229 versus218 cells, with equal maximum capacity20 and one energy tank. These
+are campaign-wide observations, not a claim that all resources coexist on a
+single trajectory. The first five pairs show mixed secondary outcomes, including
+substantial regressions; the development gate has not established a general
+search-quality improvement. Area entry still does not establish a boss encounter.
+
+Rejected interpretations: the physical-starvation conclusion from zero admitted
+parent-job credit has been withdrawn after checking admission order and birth
+suffixes. The negative resource result remains conditional on historical
+terminal semantics; the R-plus-T campaign interaction is untested. Neither
+correction changes the isolated negative selection interventions or the paired
+continuation-loss counterexample. No candidate or validation condition was tuned.
+T remains the sole active family; R, E, S, S04, and L remain parked.
+
+Compute through04:26:22 UTC is8,735,773,936 admitted search frames and67,370,309
+executions, including partial active cells and preserved failed work. Measured
+completed-process CPU is at least215,426.66 seconds (59.84 CPU-hours), excluding
+active-process CPU, compilation/tests, and unlogged external reconstruction.
+Paired-probe physical work remains7,155,153 frames and is separate from admitted
+search frames. Four active native evaluators remain within their allocated CPU
+sets and logical memory limits; progress is fresh, with no hung-process evidence.
+`results/accounting-0800.json`, `validation-health-0800.json`, and
+`t04-assessment-0800.json` preserve the snapshot and reporting boundaries.
+
+All31 CI checks passed on published revision42d9e3ad, including the whole-VM
+Consonance replicas. The compact early evidence export adds22 completed cells and
+the original failed chain-export cell with its provenance; it performs no new
+search. Q36 remains armed behind validation for integrated native compatibility,
+companion, and sole-host SMB gates. Next decision: finish the frozen ten-pair
+panel without replacement seeds or retries, assess boss attainment first and
+secondary discovery work separately, then consolidate at06:56 UTC. The final
+90-minute reservation and08:26 UTC stop remain unchanged.
