@@ -12,7 +12,10 @@ set -euo pipefail
 : "${CASE_ID:?}" "${ARM:?}" "${WORKLOAD_VERSION:?}" "${IMAGE_PREFIX:?}"
 : "${SOFTWARE_NAME:?}" "${HORIZON_MS:?}" "${RAM_MIB:?}"
 : "${SEED:?}" "${WORKERS:?}" "${ACTIONS:?}" "${EXECUTIONS:?}" "${WALL_MINUTES:?}"
-: "${KNOBS:?}" "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
+# An empty value is the locked no-knobs configuration. Keep it distinct from
+# an omitted required variable so the case can prove it needs no tuning.
+: "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
+knobs=${KNOBS-}
 
 case "${ARM}" in
     vulnerable) want=true ;;
@@ -49,7 +52,7 @@ timeout -k 60 "$(( (WALL_MINUTES + 20) * 60 ))" \
     --actions "${ACTIONS}" \
     --horizon-ms "${HORIZON_MS}" \
     --ram-mib "${RAM_MIB}" \
-    --knobs "${KNOBS}" \
+    --knobs "${knobs}" \
     --wall-minutes "${WALL_MINUTES}" \
     --out "${out}" >"${console}" 2>&1 || status=$?
 tail -n 80 "${console}" || true

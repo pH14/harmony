@@ -1,10 +1,11 @@
 {
   "actions": [
-    {"Hook": 1},
-    "Wait",
-    {"Restart": 0},
-    "Wait",
-    {"Hook": 2},
-    "Wait"
+      {"Hook": 1},
+      "Wait",
+      {"Restart": 0},
+      "Wait",
+      "Wait",
+      {"Hook": 2},
+      "Wait"
   ]
 }
