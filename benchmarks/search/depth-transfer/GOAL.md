@@ -77,8 +77,8 @@ event, work, action tapes and replayed semantic observations. Do not reopen this
 selector's depth allocation from the earlier first-missile improvement or treat
 the stopped screen as proof of population equivalence.
 
-The renewed block has spent 371,963,017 admitted search frames and 37,901,786
-known auxiliary frames (ledger-after-f03.json); the ledger retains unmeasured gaps and all older totals.
+The renewed block has spent 371,963,017 admitted search frames and 40,787,243
+known auxiliary frames (ledger-after-e03.json); the ledger retains unmeasured gaps and all older totals.
 The original breakthrough objective remains unmet. Unused compute is not a
 reason for another selector, retention or duration sweep.
 
@@ -125,3 +125,32 @@ Native app state was verified active on 2026-09-09 at 22:13:02 UTC. The original
 expired tranche text remains historical; the user's renewed authorization and
 this separately bounded decision block govern current work. Automatic goal
 continuation is available again. The breakthrough objective remains unmet.
+
+
+## Decision after F03, NQ02 and E03
+
+The bounded observer phase is complete. All eight selected development tapes
+replay, but none supplies a classified encounter; two reach Kraid area. This
+suggests a reach question on those tapes, not evidence about all attempted
+branches. Stop this observer/reference-replay line unless a new concrete
+counterexample requires correction. No more auxiliary qualification is earned
+merely by a negative result.
+
+Before another code change or emulator allocation, use one bounded theory and
+existing-evidence pass to choose a distinct, falsifiable intervention. Keep the
+failed no-cost depth/transfer gates and prior retention/duration evidence in
+view. Distinguish a proved conditional mechanism from unmeasured adaptive
+utility. Consult primary literature only where it supplies a specific prediction
+or design, and identify a cheap counterexample that would reject the candidate.
+Do not recycle the already established conditional reweighting identity as new
+scientific evidence. Do not claim capability-state allocation from maxima or
+aggregate selector distances; the saved C01 sidecar lacks the needed labels.
+
+Prefer a narrowly justified action-distribution or continuation-reuse hypothesis
+if it survives this review; neither is preapproved as efficacious. If a missing
+measurement is essential, state the precise decision it can change and its
+cheapest executable check before building it. Do not commission another broad
+instrumentation framework or reconstruct discarded full campaigns. A new
+performance panel still needs a frozen endpoint, paired seeds, resource bounds,
+futility gate and a favorable preceding qualification. The original matched
+boss/Wily and untouched-validation objective remains active and unachieved.

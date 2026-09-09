@@ -211,3 +211,49 @@ qualification must finish before examining another frozen development tape set.
 The [additive F03 ledger](ledger-after-f03.json) records **37,901,786 known
 auxiliary frames**; admitted search stays **371,963,017**. Historical files and
 unknown physical-work gaps remain preserved.
+
+
+## Native restore qualification and eight development tapes
+
+[NQ02 passed](nq02-results.json), spending 1,535,184 known physical frames.
+Default and `boss-area` reports/traces equal NQ01 byte for byte. Context and
+restore modes preserve all prior fields and project exactly to the old area
+trace. Their complete raw/context hashes, outputs and endpoints agree after
+62 real self-restores. Python independently checks 59,820 retained intervals.
+The reused route has no classified boss states: positive classification remains
+qualified on reference-emulator bytes, not a positive QuickNES fight. All twelve
+NQ02/E03 services terminated normally; [journals](nq02-e03-service-journals.json)
+retain their CPU and memory costs. CPU placement differs, so these jobs make no
+relative-performance claim.
+
+[E03](e03-registration.json) then froze six R01 resource/control development
+tapes and both L04 seed-3 anchor tapes by existing panel identity. These are
+heterogeneous surviving witnesses, not random campaign samples or fresh seeds.
+All eight three-pass replays [completed](e03-results.json), spending 1,350,273
+known physical frames:
+
+| Selected tapes | Boss-area gameplay frames | Classified encounter | Comparable HP change |
+| --- | --- | --- | --- |
+| R01 control/resource, seeds 3/4/5 (six tapes) | 0 | None observed | Unavailable |
+| L04 control seed 3 | 13,985 in Kraid area | None observed | Unavailable |
+| L04 middle-duration seed 3 | 2,795 in Kraid area | None observed | Unavailable |
+
+There are no guarded defeat transitions. This rejects an encounter claim for
+these tapes based solely on area entry. It does not establish campaign-wide
+absence or explain the causal effect of a selector or duration policy. No tape
+becomes a search origin or an action guide. No additional reference replay,
+unchanged duration sweep, or observer extension is earned by these negatives.
+
+The [latest additive ledger](ledger-after-e03.json) totals **371,963,017 admitted
+search frames** and **40,787,243 known auxiliary frames** in the renewed block,
+leaving 9,212,757 under its known-auxiliary ceiling. This turn's F03/NQ02/E03
+operations used 3,126,537 known auxiliary frames and no new search frames.
+Earlier ledgers and unmeasured setup/failure gaps remain intact.
+
+A read-only audit of C01 control-0's artifact schema found that full execution
+streams were generated and hashed but not retained under witness verification.
+Its progress sidecar reports maxima, totals and conditional selector distances;
+it does not label attempts by their producing capability state. Therefore these
+files cannot identify how much work capable states received, and they do not
+justify a claim of capability starvation. Do not reconstruct tens of millions
+of physical frames merely to supply that missing retrospective statistic.
