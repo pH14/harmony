@@ -9,9 +9,10 @@ bounded U01 measurement completed. Do not silently extend or mark the goal won.
 
 Worktree `/private/tmp/harmony-retention-theory-msr1-20260908`, branch
 `codex/retention-theory-msr1-20260908`; user main checkout and the other ms02
-research effort remain untouched. Draft PR#287 exists, last pushed headd0b794f0.
-Local headca08e518 plus uncommitted U01 evidence/docs/accounting updates need a
-consolidated commit/push and PR-body update. PR body file:
+research effort remain untouched. Draft PR#287 exists, published head9ab52e48 (read actual Git/PR state).
+The consolidated9ab52e48 head was pushed and its PR body updated. A later
+capacity repair d7d83518 is qualified; this checkpoint/evidence commit needs
+one final consolidated push and PR-body update. PR body file:
 `/private/tmp/harmony-retention-pr-body.md`. Root hook explicitly allows skipping
 its convenience root tests; standalone package checks are complete. Hosted CI
 must be read on the pushed head; do not claim it passed for a later local head.
@@ -78,3 +79,22 @@ observed gaps are avoidable at capacity2 in hindsight. Public masks/dictionaries
 in u01-finite-cover.json pass separate integer-mask verification with no private
 inputs. This is not an online policy or behavioral-equivalence proof. No more
 emulator work is justified by this diagnostic.
+
+Capacity repair completed before08:02UTC. Source d7d83518, digest
+0c22c6e9e5102b7cca4f8b32cba11398e6b79c38e990073de7f85262222a450b.
+Default binary ba6fa7199eccfba5f8a882b22c75c8cd2d0f611d648201b7585958458b20abb1;
+motion/complete binary e877ebe02aaad803d91021f095b4ad1839f845c9eba3d9fefb6c4e695d91174f.
+Default and complete-quality5000-job streams AND audit files are byte-identical
+to qualification001. The strict retained-capacity bound now holds after Vec
+compaction; old inputs/outcomes are unchanged.126 default NES/140 all-feature
+NES tests, strict Clippy and formatting pass. Service harmony-survivor-audit-002
+is inactive/successful. Updated accounting:76 complete,2 errors,1,310,131,730
+admitted frames;23,690,070 full-replay admitted;2,556,048 witness suffix;
+7,407,354 standalone probe physical frames. No more native runs are queued.
+
+An initial push of9ab52e48 was auto-review rejected for unestablished GitHub
+ownership/publication authorization. Read-only checks established that origin is
+exactly user-supplied pH14/harmony, authenticated owner pH14 has ADMIN access,
+and the user-supplied AGENTS requires commits/PR history. After those checks,
+the same push was approved and succeeded. That block is resolved. The separate
+optional private E02 witness transfer remains unapproved; do not conflate them.

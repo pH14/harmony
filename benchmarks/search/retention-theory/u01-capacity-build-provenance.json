@@ -1,0 +1,44 @@
+{
+  "format": "u01-capacity-repair-provenance-v1",
+  "source_commit": "d7d83518",
+  "source_tree_sha256": "0c22c6e9e5102b7cca4f8b32cba11398e6b79c38e990073de7f85262222a450b",
+  "qualification_sha256": "ad0c424ca7d1bde20a248177a2288eb42fbf8a1e8c7defa0fb1992717cdf609e",
+  "all_search_streams_and_audit_bytes_unchanged": true,
+  "admitted_frames": 1388639,
+  "full_replay_admitted_frames": 1388639,
+  "elapsed_seconds_sum": 87.09427274297923,
+  "builds": {
+    "default-metroid": {
+      "format": "harmony-search-build-v1",
+      "source_tree_sha256": "0c22c6e9e5102b7cca4f8b32cba11398e6b79c38e990073de7f85262222a450b",
+      "revision": null,
+      "dirty": null,
+      "files": 443,
+      "source_commit": "d7d83518",
+      "features": "",
+      "binary_sha256": "ba6fa7199eccfba5f8a882b22c75c8cd2d0f611d648201b7585958458b20abb1",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+      "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+      "profile": "release",
+      "locked": true,
+      "rustflags": "",
+      "target_cache": "/root/harmony-retention-theory-20260908/target"
+    },
+    "quality": {
+      "format": "harmony-search-build-v1",
+      "source_tree_sha256": "0c22c6e9e5102b7cca4f8b32cba11398e6b79c38e990073de7f85262222a450b",
+      "revision": null,
+      "dirty": null,
+      "files": 443,
+      "source_commit": "d7d83518",
+      "features": "metroid-motion-context,metroid-complete-retention-audit",
+      "binary_sha256": "e877ebe02aaad803d91021f095b4ad1839f845c9eba3d9fefb6c4e695d91174f",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+      "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+      "profile": "release",
+      "locked": true,
+      "rustflags": "",
+      "target_cache": "/root/harmony-retention-theory-20260908/target"
+    }
+  }
+}

@@ -65,3 +65,15 @@ its unused exposure fields are labeled placeholders. Analysis distinguishes
 rejected opportunities from actual replacement loss. No sampled utility or
 success gate was selected from these outcomes. Relevant checks and hashes are
 recorded in the portable verification and U01 qualification artifacts.
+
+### Capacity defect found during consolidation
+
+A later review found that input-length checks did not bound retained Vec
+capacity after appending a candidate suffix. The d7d83518 repair compacts all
+stored sampled inputs; an overallocated maximum-length regression checks the
+capacity and serialization contract. Two fresh ARM qualifications preserve both
+complete audit files and search streams exactly. Earlier strict capacity claims
+are corrected in the ledger; historical RSS and outcome evidence are preserved.
+Default/all-feature NES and strict Clippy checks were rerun for this change.
+No further production change or experiment is planned beyond addressing a
+specific failure in the remaining required CI checks.

@@ -1194,3 +1194,29 @@ selection losses under the existing capacity, while the previous proxy-based
 rules failed fresh-search replication. The missing component is a cheap,
 generalizable predictor of which measured futures a state contributes. The
 finite oracle supplies neither that predictor nor permission for longer runs.
+
+## Audit capacity repair: qualifications preserve the evidence
+
+Consolidation review found that suffix appends could leave candidate vectors
+with capacity above the accepted input-length bound. Thus the earlier declared
+2.5/5MiB fields did not enforce that strict retained-capacity bound in the worst
+case; recorded input actions and separately measured process RSS are unchanged.
+The [repair](audit-capacity-repair.md), source d7d83518, compacts every stored
+sample input. A deliberately overallocated maximum-length regression requires
+bounded capacity and identical serialization. Default NES126/all-feature NES140
+tests, strict all-feature Clippy and formatting pass.
+
+Two new frozen ARM builds reproduced the exact default and complete-quality
+search streams **and complete audit bytes** from U01 qualification001. The
+scientific results and the public finite-cover certificates are therefore
+unchanged. Both5000-job cells finished within their120s/1GiB bounds, using
+1,388,639 admitted frames plus full replay and87.09s summed elapsed time.
+Earlier source/build/run bundles were preserved. See [provenance](u01-capacity-build-provenance.json)
+and [qualification](u01-capacity-qualification-results.json).
+
+[Consolidated accounting](work-accounting-after-capacity-repair.json) now records
+76 completed cells and two errors,1,310,131,730 admitted frames,10,232,892
+executions,23,690,070 full-replay admitted frames,2,556,048 reported witness-suffix
+frames and7,407,354 standalone probe frames. The26,580.8 summed search-phase
+seconds include overlapping cells and are not wall/CPU time. Setup, export,
+bridge, unadmitted and incomplete work can add cost. Native work is stopped.

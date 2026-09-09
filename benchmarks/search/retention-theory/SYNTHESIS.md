@@ -76,6 +76,9 @@ covering every measured positive event; five need only one. All four observed
 coverage gaps were therefore avoidable within the same slot capacity on this
 probe. This is a hindsight oracle, not an online selection rule or equivalence
 proof. Its public bit-mask certificates can be checked without ROMs or tapes.
+Because coverage holds separately for each measured suffix, it also preserves
+the offered union's utility for any nonnegative weighting of those measured
+positive events. This requires no fitted scalar objective.
 
 The [ledger](README.md) contains all favorable and adverse results, source and
 asset identities, work limits, actual costs and censoring. The positive
@@ -103,6 +106,12 @@ capability also opens additional cells. Splice and resume
 behavior with the metadata remain outside this qualification. On the fresh seed,
 context uses less memory while making less progress; lower RSS alone is also an
 insufficient success metric.
+
+A final [audit capacity repair](audit-capacity-repair.md) makes the declared
+stored-input bound enforce vector capacity rather than length alone. Two short
+ARM qualifications reproduce both search streams and complete audit bytes,
+leaving all scientific evidence unchanged. Historical process RSS remains
+reported separately; the earlier strict capacity interpretation was incorrect.
 
 [Portable checks](portable-verification.json) cover runner failures, chain
 limits, dependency ownership, generic replay, NES feature combinations, strict

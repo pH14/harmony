@@ -81,5 +81,19 @@
     "competitions": 7,
     "method": "separate integer-mask enumeration, without ROM/input tapes or emulator work",
     "log_sha256": "f757a89f4f874fd5d774eb9fdca73130ecfd1540952a06cdf471df2b0ac3a7e2"
+  },
+  "audit_capacity_repair": {
+    "implementation_commit": "d7d83518",
+    "default_nes_library_tests": 126,
+    "all_features_nes_tests": 140,
+    "nes_all_features_all_targets_release_strict_clippy": "passed",
+    "formatting": "NES manifest passed",
+    "logs_sha256": {
+      "harmony-audit-capacity-all-features-tests.log": "68b422368e6907c3e29ed27f8ef1e6959c7ec4b4d725b9a55d9a33c677a8a94b",
+      "harmony-audit-capacity-clippy.log": "91d6b03acb5f8900b7146c4612e8cd23e9278d975a38030ad11eeb48b61c5864",
+      "harmony-audit-capacity-default-tests.log": "4ae09242fb4af6bc999f9cc44290bd6c264d7207dd989357186f82898b21c409"
+    },
+    "scope": "local portable checks and two exact ARM search-stream/audit-byte qualifications passed; no new search-performance claim",
+    "arm_qualification_sha256": "ad0c424ca7d1bde20a248177a2288eb42fbf8a1e8c7defa0fb1992717cdf609e"
   }
 }

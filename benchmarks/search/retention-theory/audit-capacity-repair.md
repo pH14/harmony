@@ -24,3 +24,13 @@ quality-policy complete v2. Preserve the original requests, use sequential
 CPUs8–11 and the existing120s/1GiB external bounds. Both search streams and both
 complete audit files must be byte-identical to qualification001. Any mismatch
 blocks publication. No suffix experiment or failed retention family is reopened.
+
+The d7d83518 repair passed both ARM qualifications. Default Metroid retained
+stream9df5aefe… and audit70d6f23e…; complete quality retained stream2c9f8a8a…
+and audit03dfff25…. Full identities and build hashes are in
+[u01-capacity-build-provenance.json](u01-capacity-build-provenance.json) and
+[the cell evidence](u01-capacity-qualification-results.json). The two cells used
+1,388,639 admitted frames plus the same full-replay work,87.09s summed elapsed
+time, and no new suffix probes. Default NES tests now pass126 cases; all-feature
+release NES tests pass140, including the capacity regression. Strict Clippy and
+formatting pass. Both native qualification services are inactive/successful.
