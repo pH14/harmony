@@ -1429,3 +1429,25 @@ Next decision: complete the frozen untouched panel, then qualify integrated
 build 036 against the existing native stream and SMB/Nova/STB references as
 capacity frees. No new candidate family is active. Consolidation starts 06:56
 UTC and the tranche ends at 08:26 UTC.
+
+Q36 integrated evaluator froze successfully: binary
+`e5c363cc1fd6ae9ef6a8be44688c5e3daa512324581f5c9061849709fa51091b`,
+source `cd549ed7bdbd6b3b1c8a22b52c8c7e10d3f060851a2f2ffaade7a9792d380447`.
+The source archive includes the integrated tracked source and explicitly removes
+38 obsolete tracked paths from the previous main snapshot. No frozen build or
+validation input was removed. Compilation took 37 seconds on reserved cores.
+
+The read-only `summarize_validation.py ROOT PLAN OUTPUT` helper derives paired
+completion, replayed boss attainment, capability work brackets, and measurements
+at common admitted frames. It consumes existing evidence only. Five planted
+reporting tests cover missing replay, partial work, incomplete launchers, final
+witness exports, ambiguous frame-limit crossings, and future-sample exclusion.
+The first Python syntax check could not write macOS's default external bytecode
+cache; directing its cache to the owned temporary directory passed. The live
+assessment correctly reports no completed cells yet. It does not tune or replace
+validation seeds, and ambiguous in-budget boss evidence is not counted as success.
+
+Reporting verification also preserves the runner's normal infrastructure-error
+records with null identity/result instead of aborting the entire panel summary.
+The planted failure leaves its completed peer reportable; relabeling the same
+missing-provenance record as complete is rejected. All five tests pass.
