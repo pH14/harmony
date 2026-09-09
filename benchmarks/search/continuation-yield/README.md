@@ -133,3 +133,16 @@ qualification. TQ01 is reserved for a bounded replay smoke of the existing MM2
 action settings before any qualified transfer panel. Naming that budget class
 does not authorize it before R01 passes. Distinct completed summaries are counted
 once; unsummarized live work remains additional and unmeasured in each snapshot.
+
+## Reducing the cost of future milestone panels
+
+[Read-only post-endpoint accounting](post-endpoint-work.json) finds 121,030,688
+of D01/S01's 300,010,119 admitted frames occurred after a successful cell's first
+positive primary-endpoint checkpoint. This is an opportunity measurement, not
+observed savings from an implemented stop policy. The existing panels deliberately
+retain their full fixed-horizon resource measurements.
+
+[Follow-up #290](https://github.com/pH14/harmony/issues/290) specifies an opt-in
+milestone stop with complete event evidence, bounded drain, normal export and
+replay, preserved censoring, and a prospectively appropriate resource comparison.
+R01's registered stopping behavior remains in force.
