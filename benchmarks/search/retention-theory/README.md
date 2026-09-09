@@ -621,3 +621,15 @@ the wrong provider trait for target creation. Corrected `TargetExecution`
 import and strict Clippy pass. It will export both R03b victories and use the
 frozen progress helper to replay both Heat bridges twice, with physical work
 recorded. J01 itself still starts independently on development seed20261102.
+
+J01 first export qualification stopped before a bridge: the extra helper
+assertion required both an awarded boss and `dead == false`. Both R03b verified
+witnesses actually report victory and death simultaneously. Their award bit
+exists, but this does not yet qualify continued gameplay. The existing chain
+export has no living-endpoint assertion; it requires ordinary award/menu
+transition and then a separately replayed next-stage setup. Align the helper
+with that contract, retain the raw endpoint and death flag, and require two
+Heat replays with the Metal weapon retained before J01 may start. Do not change
+any search, death, or victory predicate. If the bridge fails, do not claim
+chainability or launch J01. Preserve the failed output and use new helper build
+`metal-export-002` and a new qualification directory for this changed check.

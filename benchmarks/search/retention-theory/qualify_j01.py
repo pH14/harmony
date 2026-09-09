@@ -8,11 +8,13 @@ import subprocess
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--experiment", type=Path, required=True)
+parser.add_argument("--out", type=Path)
+parser.add_argument("--build", type=Path)
 args = parser.parse_args()
 root = args.experiment.resolve()
-out = root / "runs/j01-export-qualification"
+out = args.out or root / "runs/j01-export-qualification"
 out.mkdir()
-build = root / "builds/metal-export-001"
+build = args.build or root / "builds/metal-export-001"
 metadata = json.loads((build / "build-info.json").read_text())
 digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
 assert digest(build / "mm2-metal-export") == metadata["binary_sha256"]

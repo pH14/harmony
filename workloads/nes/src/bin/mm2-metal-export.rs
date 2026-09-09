@@ -33,8 +33,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let before = target.frames_clocked();
     let physical = target.physical_input(&input)?;
     let export_frames = target.frames_clocked() - before;
-    if !target.defeated_a_boss() || target.is_dead() {
-        return Err("input is not a living searched victory".into());
+    if !target.defeated_a_boss() {
+        return Err("input does not retain the searched boss award".into());
     }
     let endpoint = target.mechanical_state();
     next.extend(physical.actions);
@@ -52,7 +52,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         "input_sha256":format!("{:x}",Sha256::digest(bytes)),
         "prefix_sha256":format!("{:x}",Sha256::digest(&prefix_bytes)),
         "core_sha256":core_hash,"rom_sha256":format!("{:x}",Sha256::digest(rom)),
-        "searched_victory_endpoint":endpoint,"new_target_setup_frames":game.setup_frame_count(),
+        "searched_victory_endpoint":endpoint,"reported_dead_at_award":target.is_dead(),
+        "new_target_setup_frames":game.setup_frame_count(),
         "physical_export_replay_frames":export_frames,"award_transition_physical_frames":transition_frames,
         "next_stage_bridge_verification":"required separately before use"});
     fs::write(
