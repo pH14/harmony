@@ -16,16 +16,23 @@ def main():
     p.add_argument('--suffix',default='one_to_six',choices=['one_to_six','one_to_six_within_3_longest_actions_full_hold'])
     p.add_argument('--executions',type=int,default=1000000);p.add_argument('--frames',type=int,default=120000000)
     p.add_argument('--stage-seconds',type=int,default=1080);p.add_argument('--chain-seconds',type=int,default=5400)
+    p.add_argument('--max-stages',type=int,choices=range(1,len(STAGES)+1),default=len(STAGES))
+    p.add_argument('--stage-frames',type=int,nargs='+',help='Optional fixed frame ceiling for each attempted stage')
     p.add_argument('--qualification',action='store_true');p.add_argument('--slot-retention')
-    a=p.parse_args();a.out.mkdir(parents=True,exist_ok=False)
+    a=p.parse_args()
+    count=1 if a.qualification else a.max_stages
+    if a.stage_frames is not None and (len(a.stage_frames)!=count or min(a.stage_frames)<=0):
+        p.error('--stage-frames must contain one positive ceiling per attempted stage')
+    a.out.mkdir(parents=True,exist_ok=False)
     started=time.monotonic();assets=json.loads(a.assets.read_text());prefix=None
     manifest={'format':'mm2-fresh-fixed-order-chain-v1','scope':'fresh chained search under recovered historical stage order; not unrestricted whole-game search','seed':a.seed,'order':[name for name,_ in STAGES]+['wily4 reach'],'attempts_per_stage':1,'external_gameplay_inputs':False,'limits':vars(a)|{'root':str(a.root),'out':str(a.out),'binary':str(a.binary),'build_info':str(a.build_info),'progress_binary':str(a.progress_binary),'assets':str(a.assets)},'binary_sha256':sha(a.binary),'progress_binary_sha256':sha(a.progress_binary),'stages':[],'status':'running'}
     write(a.out/'chain.json',manifest)
-    for index,(name,number) in enumerate(STAGES[:1] if a.qualification else STAGES):
+    for index,(name,number) in enumerate(STAGES[:count]):
         remaining=int(a.chain_seconds-(time.monotonic()-started))
         if remaining<=180:manifest['status']='chain_wall_limit';break
         cellroot=a.out/f'{index:02}-{name}'
         search={'executions':5000 if a.qualification else a.executions,'frames':a.frames,'actions':4096,'window':2,'result_slots':2,'wall_seconds':min(a.stage_seconds,remaining-120),'selector':a.selector,'suffix':a.suffix,'mixture':a.mixture,'verification':'campaign' if a.qualification else 'witness','mm2_chain':True}
+        if a.stage_frames is not None:search['frames']=a.stage_frames[index]
         if a.slot_retention:search['slot_retention']=a.slot_retention
         if prefix is not None:search.update(prefix_input=str(prefix),prefix_sha256=sha(prefix))
         suite={'format':'harmony-search-eval-v1','id':f'chain-{a.seed}-{index}-{name}','seeds':[a.seed],'workers':[4],'memory_mib':[8192],'search':search,'cases':[{'id':f'mm2-{name}','game':'mm2','stage':number,'origin':'fresh fixed-order chain; only prior victories from this chain','rom_sha256':assets['mm2']['sha256'],'search':{}}]}
@@ -46,6 +53,8 @@ def main():
         if result.returncode or not record.get('result',{}).get('solved'):
             manifest['status']=('infrastructure_error' if result.returncode or record['status']!='complete' else 'qualification_complete' if a.qualification else 'stage_not_solved')
             write(a.out/'chain.json',manifest);break
+        if a.stage_frames is not None and record['result']['frames_to_first_victory']>search['frames']:
+            manifest['status']='victory_after_frame_limit';write(a.out/'chain.json',manifest);break
         prefix=cell/'campaign/next-prefix.json'
         if not prefix.is_file():raise RuntimeError('solved stage did not produce its own fresh continuation')
         record['next_prefix_sha256']=sha(prefix)
@@ -63,6 +72,7 @@ def main():
         write(a.out/'chain.json',manifest)
     else:
         if a.qualification:manifest['status']='qualification_complete'
+        elif count<len(STAGES):manifest['status']='stage_limit'
         else:
             replay=manifest['stages'][-1]['bridge_replay']
             endpoint=replay['result']['endpoint']

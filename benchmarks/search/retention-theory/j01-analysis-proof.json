@@ -1,0 +1,22 @@
+{
+  "format": "j01-analysis-provenance-check-v1",
+  "real_completed_chain_passed": true,
+  "read_only_in_memory_mutations": [
+    {
+      "mutation": "parent_prefix",
+      "rejected": true,
+      "assertion": "assert record[\"parent_prefix_sha256\"] == expected_prefix"
+    },
+    {
+      "mutation": "weapon_bridge",
+      "rejected": true,
+      "assertion": "assert endpoint[\"weapons_obtained\"] == expected_weapons"
+    },
+    {
+      "mutation": "external_input",
+      "rejected": true,
+      "assertion": "assert manifest[\"external_gameplay_inputs\"] is False and manifest[\"attempts_per_stage\"] == 1"
+    }
+  ],
+  "source_files_modified": false
+}

@@ -1,11 +1,13 @@
-# Research checkpoint — September 9, 02:55 UTC
+# Research checkpoint — September 9, J01/L01 complete
 
 The goal remains active. No fresh Metroid boss or MM2 Wily 4 breakthrough has
 been established. The approved ROM transfer is complete and checksum verified.
 Three Metroid/retention development gates have failed. Job sampling produced a
-large MM2 Metal improvement; its fresh chain has now also solved Heat and Air.
-The control stopped at Heat's wall limit. Sampling's chain and a bounded
-shared-prefix Heat control are running on msr1. All
+large MM2 Metal improvement over coordinate extremes; its fresh chain also
+solved Heat and Air before stopping at Wood. The ordinary-retention Metal
+comparison was mixed, so a replicated production improvement is not established.
+A bounded shared-prefix Heat control is running, and a fresh ordinary chain
+with matched stage work is registered. All
 production defaults remain unchanged.
 
 ## Findings that changed the research direction
@@ -97,10 +99,20 @@ all eight weapons and twice-replayed entry, followed by untouched replication.
 Sampling's new Metal victory took2,488,346 frames versus7,672,364, replicating
 the earlier large first-stage improvement. It then defeated Heat at66,633,523
 frames and Air at39,646,633, with healthy next-stage bridges replayed twice.
-Wood is running. The control stopped unsolved at Heat after40,507,046 frames
+Wood stopped unsolved at72,056,120 frames and1200s. The control stopped
+unsolved at Heat after40,507,046 frames
 and1200s; at that common frame boundary neither had won. Consequently the
 greater chain depth is promising development evidence but does not establish
 a matched-work Heat improvement.
+
+J01's completed lineage analysis passed, including every carried input hash,
+twice-replayed expected stage, weapon mask and healthy bridge. Read-only planted
+errors in parent lineage, a bridge weapon mask and the external-input flag were
+each rejected at the intended assertion. Sampling used180,826,751 admitted
+frames; extremes48,180,376. Including recorded setup/export/bridge/replay gives
+physical-work lower bounds182,102,095 and48,421,033 respectively. These are
+unequal completed costs, not a matched-work total comparison. See
+[J01 analysis](j01-analysis.json) and [provenance checks](j01-analysis-proof.json).
 
 H01 isolates that question with one additional extremes control from exactly
 sampling's searched Metal prefix and the same seed/binary/configuration. It
@@ -110,11 +122,26 @@ or completed frame-budget lower bound, with no wall censoring. This is a
 registered diagnostic, not a fresh-chain result or untouched replication.
 The original J01 chain limits and all earlier failed gates remain intact.
 
+L01's ordinary controls both completed without censoring. Seed20261101 favors
+sampling1,444,334 versus5,012,486 frames; seed20261102 favors ordinary retention
+2,182,520 versus2,488,346. The two-seed production-improvement gate failed.
+J02 will answer the remaining chain question with a fresh ordinary seed20261102
+chain through Wood, reusing J01 sampling. Its fixed stage budgets equal the
+candidate's completed stage work, with a2400s stage watchdog to allow that work
+to finish and a90-minute chain cap. It cannot claim Wily4 and cannot continue
+after an out-of-budget victory. Two synthetic driver-contract checks passed.
+
 The standalone Metroid boss-memory probe also passed three replays of the D01
 Kraid-area route: ordinary holds and one-frame reads end in identical emulator
 bytes, with identical one-frame trace hashes. No boss loader/tag agreement was
 seen along that route. This is a verified negative control, not proof about
 all search routes or qualified partial-damage counters. See [E01](e01-results.json).
+
+E02's first later development route also passed three ARM replays:107,469 route
+frames and325,194 total physical frames, with zero guarded loader or active-tag
+agreement. The seed-5 witness transfer was rejected by automatic approval review;
+explicit approval for that private file was requested and no workaround attempted.
+It remains unexecuted, so [E02](e02-results.json) is a partial two-route check.
 
 No validation seed has been used. [The validation protocol](validation-protocol.md)
 separates operational repeatability, exact paired inference, censoring, and

@@ -125,6 +125,15 @@ A signal qualifies a larger paired diagnostic on late samples (20m bound).
 
 ### C01 — fresh chained MM2 development baseline
 
+`mm2_chain.py` can bound diagnostic comparisons with `--max-stages N` and
+`--stage-frames F1 ... FN`. It records an early completed endpoint as
+`stage_limit`, and a victory beyond a custom frame ceiling as
+`victory_after_frame_limit`; neither qualifies Wily4. The default still
+attempts the full historical order with one uniform `--frames` ceiling.
+`--suffix` records the selected existing suffix profile explicitly. It never
+accepts a supplied gameplay prefix. These driver controls do not alter the
+search executable or its policies.
+
 Question: can the current policy reproduce chained depth under the recovered
 stage order, and where does a fresh chain fail? Independent-stage and historical
 replay evidence cannot answer. Use new development seeds 20261001–20261003

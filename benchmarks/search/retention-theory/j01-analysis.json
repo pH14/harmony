@@ -1,0 +1,396 @@
+{
+  "format": "j01-fresh-chain-analysis-v1",
+  "seed": 20261102,
+  "scope": "one adaptive development seed; fixed historical stage order; not validation",
+  "arms": {
+    "sample": {
+      "status": "stage_not_solved",
+      "manifest_sha256": "4a644bc9bf2672b5fcc8e2a9f32af8db2f10441e4878d9c8ac396ae9a6fab362",
+      "stages": [
+        {
+          "stage": "metal",
+          "solved": true,
+          "stop_reason": "victory",
+          "frames": 2489148,
+          "jobs": 19277,
+          "first_victory_frames": 2488346,
+          "stream_sha256": "bb8653313295f957e43af9a659437803b374dbc6bcf97e0ccce612acf17bcc45",
+          "milestones": {
+            "defeated_boss": true,
+            "max_screen": 21,
+            "reached_boss": true
+          },
+          "peak_rss_bytes": 129134592,
+          "witness": {
+            "dead": true,
+            "diagnostics": null,
+            "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+            "milestones": {
+              "defeated_boss": true,
+              "max_screen": 21,
+              "reached_boss": true
+            },
+            "physical_suffix_frames": 14610,
+            "snapshot_sha256": "5aa8c0b43895df30cd30f16d0868ae0f64d1aa5e068fc06a0223d8e4da5d5fb5",
+            "victory": true
+          },
+          "summary_sha256": "93eccd3141205708e9a98bb500ed6ea8f873fed4b7b6a6d37750d8c8c9b09e1e",
+          "prefix_sha256": null,
+          "next_prefix_sha256": "98483c03561d44fb8d6f037b6dbec83a47853a8cee821334ec10a4a9f619c6a3",
+          "bridge_endpoint": {
+            "boss_health": 0,
+            "boss_phase": 0,
+            "camera_state": 0,
+            "enemy_damage": 0,
+            "equipped_energy": 0,
+            "health": 28,
+            "lives": 3,
+            "menu": 255,
+            "platforms": 0,
+            "player_state": 3,
+            "room": 0,
+            "screen": 0,
+            "stage": 0,
+            "weapon": 0,
+            "weapon_energy": 309,
+            "weapons_obtained": 64,
+            "x": 128,
+            "y": 164
+          },
+          "verified_bridge_replays": 2
+        },
+        {
+          "stage": "heat",
+          "solved": true,
+          "stop_reason": "victory",
+          "frames": 66634037,
+          "jobs": 512958,
+          "first_victory_frames": 66633523,
+          "stream_sha256": "5f56c95edcb1aa620f02ad54e18a7eedf0b6270b5deabf3acfe44cf56fc7198c",
+          "milestones": {
+            "defeated_boss": true,
+            "max_screen": 24,
+            "reached_boss": true
+          },
+          "peak_rss_bytes": 911233024,
+          "witness": {
+            "dead": false,
+            "diagnostics": null,
+            "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+            "milestones": {
+              "defeated_boss": true,
+              "max_screen": 23,
+              "reached_boss": true
+            },
+            "physical_suffix_frames": 13909,
+            "snapshot_sha256": "99a75fe7cb2afd46ba1c73017800eec118193cba9aa96ac0d192c2f48934da8a",
+            "victory": true
+          },
+          "summary_sha256": "91d52dc215a52ccab0fd1e085dcb651491838f36f2652f84aafb84596968709d",
+          "prefix_sha256": "98483c03561d44fb8d6f037b6dbec83a47853a8cee821334ec10a4a9f619c6a3",
+          "next_prefix_sha256": "c133b216c4e57a2aa94520512840c3f9700287960c9aa7ce76fe4f1ef81ca145",
+          "bridge_endpoint": {
+            "boss_health": 0,
+            "boss_phase": 0,
+            "camera_state": 0,
+            "enemy_damage": 0,
+            "equipped_energy": 0,
+            "health": 28,
+            "lives": 3,
+            "menu": 255,
+            "platforms": 0,
+            "player_state": 3,
+            "room": 0,
+            "screen": 0,
+            "stage": 1,
+            "weapon": 0,
+            "weapon_energy": 308,
+            "weapons_obtained": 65,
+            "x": 128,
+            "y": 116
+          },
+          "verified_bridge_replays": 2
+        },
+        {
+          "stage": "air",
+          "solved": true,
+          "stop_reason": "victory",
+          "frames": 39647446,
+          "jobs": 351336,
+          "first_victory_frames": 39646633,
+          "stream_sha256": "ab77e7e3552aced9d36552e6f989baa538aaa915adb6cd9465f7ad7456ee999d",
+          "milestones": {
+            "defeated_boss": true,
+            "max_screen": 22,
+            "reached_boss": true
+          },
+          "peak_rss_bytes": 1609814016,
+          "witness": {
+            "dead": false,
+            "diagnostics": null,
+            "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+            "milestones": {
+              "defeated_boss": true,
+              "max_screen": 21,
+              "reached_boss": true
+            },
+            "physical_suffix_frames": 12173,
+            "snapshot_sha256": "148c45ce0feb28c72bcd19cea9b94638b81808cd51d9020571926ba256dc4ca0",
+            "victory": true
+          },
+          "summary_sha256": "5b44ea777a0a3c22f6f0f4aa07510e166e279ac136643e93175858e42efc1ae6",
+          "prefix_sha256": "c133b216c4e57a2aa94520512840c3f9700287960c9aa7ce76fe4f1ef81ca145",
+          "next_prefix_sha256": "95e336d749659c9c4e4d7ed2c9c0790f3504e08f05eb454223b150530736fc19",
+          "bridge_endpoint": {
+            "boss_health": 0,
+            "boss_phase": 0,
+            "camera_state": 0,
+            "enemy_damage": 0,
+            "equipped_energy": 0,
+            "health": 28,
+            "lives": 3,
+            "menu": 255,
+            "platforms": 0,
+            "player_state": 3,
+            "room": 0,
+            "screen": 0,
+            "stage": 2,
+            "weapon": 0,
+            "weapon_energy": 308,
+            "weapons_obtained": 67,
+            "x": 128,
+            "y": 180
+          },
+          "verified_bridge_replays": 2
+        },
+        {
+          "stage": "wood",
+          "solved": false,
+          "stop_reason": "wall_limit",
+          "frames": 72056120,
+          "jobs": 480830,
+          "first_victory_frames": null,
+          "stream_sha256": "147096f167da935993630eb788f835bfb2d10b479b6d61061fde23bc273f2788",
+          "milestones": {
+            "defeated_boss": false,
+            "max_screen": 23,
+            "reached_boss": false
+          },
+          "peak_rss_bytes": 2483527680,
+          "witness": {
+            "dead": false,
+            "diagnostics": null,
+            "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+            "milestones": {
+              "defeated_boss": false,
+              "max_screen": 23,
+              "reached_boss": false
+            },
+            "physical_suffix_frames": 9767,
+            "snapshot_sha256": "11ae8490364f3196cc9045901efbf8a33e5b9c059cd4d4cd3640ce4e742f6ac2",
+            "victory": false
+          },
+          "summary_sha256": "4b056b65991dc6e2b097df6d8e59ebb4d2723bc8242dfa00bab6ed9aa5830238",
+          "prefix_sha256": "95e336d749659c9c4e4d7ed2c9c0790f3504e08f05eb454223b150530736fc19"
+        }
+      ],
+      "solved_stages": [
+        "metal",
+        "heat",
+        "air"
+      ],
+      "admitted_frames": 180826751,
+      "accounted_physical_frames_lower_bound": 182102095,
+      "cost_limitations": "Missing/incomplete stage results and full campaign verification have incomplete physical accounting, never zero-cost successes. The lower bound includes admitted search, successful target setup, physical export, bridges, and two witness suffixes; failed target construction and campaign replay work may be missing.",
+      "wily4_all_weapons": false
+    },
+    "extremes": {
+      "status": "stage_not_solved",
+      "manifest_sha256": "13a6e5ca76783ced737166ed739a2fb49847ba4514c7838fd18d2fcae94b3495",
+      "stages": [
+        {
+          "stage": "metal",
+          "solved": true,
+          "stop_reason": "victory",
+          "frames": 7673330,
+          "jobs": 58085,
+          "first_victory_frames": 7672364,
+          "stream_sha256": "29431f5ddfb36ea6313f0c7a33f4b057857c5fe901aec3831ca084634fd1c2e1",
+          "milestones": {
+            "defeated_boss": true,
+            "max_screen": 21,
+            "reached_boss": true
+          },
+          "peak_rss_bytes": 117673984,
+          "witness": {
+            "dead": true,
+            "diagnostics": null,
+            "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+            "milestones": {
+              "defeated_boss": true,
+              "max_screen": 21,
+              "reached_boss": true
+            },
+            "physical_suffix_frames": 13012,
+            "snapshot_sha256": "d13c89ea3f54bf3e4dff45964f44d91ae463cb7905e564dc7f575e311021c25f",
+            "victory": true
+          },
+          "summary_sha256": "3da08ffbdfade1464ce7cfd061175aad32f38424cb37ca9ce142a9236c00965f",
+          "prefix_sha256": null,
+          "next_prefix_sha256": "81f2fa1842c9740b8cf6ba5a98064379ec1fc5067ce87ffa3967ea5f380e6282",
+          "bridge_endpoint": {
+            "boss_health": 0,
+            "boss_phase": 0,
+            "camera_state": 0,
+            "enemy_damage": 0,
+            "equipped_energy": 0,
+            "health": 28,
+            "lives": 3,
+            "menu": 255,
+            "platforms": 0,
+            "player_state": 3,
+            "room": 0,
+            "screen": 0,
+            "stage": 0,
+            "weapon": 0,
+            "weapon_energy": 308,
+            "weapons_obtained": 64,
+            "x": 128,
+            "y": 164
+          },
+          "verified_bridge_replays": 2
+        },
+        {
+          "stage": "heat",
+          "solved": false,
+          "stop_reason": "wall_limit",
+          "frames": 40507046,
+          "jobs": 329067,
+          "first_victory_frames": null,
+          "stream_sha256": "9d596dbeb62f472cdd806860e25f8c2ae6f105fe18a84160c29d389afe3d4dfd",
+          "milestones": {
+            "defeated_boss": false,
+            "max_screen": 17,
+            "reached_boss": false
+          },
+          "peak_rss_bytes": 353406976,
+          "witness": {
+            "dead": false,
+            "diagnostics": null,
+            "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+            "milestones": {
+              "defeated_boss": false,
+              "max_screen": 17,
+              "reached_boss": false
+            },
+            "physical_suffix_frames": 6102,
+            "snapshot_sha256": "7f29078224c8ac50e7fb4f2b24ef836a22e7eea252f530915ce16da3c5a72feb",
+            "victory": false
+          },
+          "summary_sha256": "65a440a0f855fbc79fca49ed72faaf15c2ff7c43578cc2d95b385da696cb9e83",
+          "prefix_sha256": "81f2fa1842c9740b8cf6ba5a98064379ec1fc5067ce87ffa3967ea5f380e6282"
+        }
+      ],
+      "solved_stages": [
+        "metal"
+      ],
+      "admitted_frames": 48180376,
+      "accounted_physical_frames_lower_bound": 48421033,
+      "cost_limitations": "Missing/incomplete stage results and full campaign verification have incomplete physical accounting, never zero-cost successes. The lower bound includes admitted search, successful target setup, physical export, bridges, and two witness suffixes; failed target construction and campaign replay work may be missing.",
+      "wily4_all_weapons": false
+    }
+  },
+  "common_stages": [
+    {
+      "stage": "metal",
+      "common_frame_ceiling": 2489148,
+      "sample_at_or_before_ceiling": {
+        "frames_emulated": 2489148,
+        "executions": 19277,
+        "milestones": {
+          "defeated_boss": true,
+          "max_screen": 21,
+          "reached_boss": true
+        },
+        "progress": {
+          "boss_damage": 28,
+          "bosses": 1,
+          "enemy_damage": 0,
+          "room": 21,
+          "screen": 21,
+          "stage": 6,
+          "x": 24,
+          "y": 252
+        }
+      },
+      "extremes_at_or_before_ceiling": {
+        "frames_emulated": 2482595,
+        "executions": 19000,
+        "milestones": {
+          "defeated_boss": false,
+          "max_screen": 12,
+          "reached_boss": false
+        },
+        "progress": {
+          "boss_damage": 0,
+          "bosses": 0,
+          "enemy_damage": 0,
+          "room": 12,
+          "screen": 12,
+          "stage": 6,
+          "x": 216,
+          "y": 132
+        }
+      },
+      "wall_censored_arms": [],
+      "scope": "isolated fresh retention comparison"
+    },
+    {
+      "stage": "heat",
+      "common_frame_ceiling": 40507046,
+      "sample_at_or_before_ceiling": {
+        "frames_emulated": 40503078,
+        "executions": 318900,
+        "milestones": {
+          "defeated_boss": false,
+          "max_screen": 16,
+          "reached_boss": false
+        },
+        "progress": {
+          "boss_damage": 0,
+          "bosses": 1,
+          "enemy_damage": 0,
+          "room": 16,
+          "screen": 16,
+          "stage": 0,
+          "x": 205,
+          "y": 200
+        }
+      },
+      "extremes_at_or_before_ceiling": {
+        "frames_emulated": 40507046,
+        "executions": 329067,
+        "milestones": {
+          "defeated_boss": false,
+          "max_screen": 17,
+          "reached_boss": false
+        },
+        "progress": {
+          "boss_damage": 0,
+          "bosses": 1,
+          "enemy_damage": 0,
+          "room": 17,
+          "screen": 17,
+          "stage": 0,
+          "x": 139,
+          "y": 201
+        }
+      },
+      "wall_censored_arms": [
+        "extremes"
+      ],
+      "scope": "end-to-end own-prefix comparison; starting emulator states differ"
+    }
+  ],
+  "qualifies_breakthrough": false
+}

@@ -729,3 +729,55 @@ one-frame traces to agree, as in E01. This does not assert ARM/x86 snapshot-byte
 identity. A positive loader/slot episode would qualify closer lifecycle
 inspection; an empty trace remains evidence only about these selected routes.
 Do not infer campaign-wide absence or extend any failed search from it.
+
+E02 transfer status: the seed-3 witness copied successfully and its SHA256
+matches. Automatic approval review separately rejected the seed-5 transfer,
+stating that broad experimentation permission did not explicitly authorize
+that private payload transfer between remote destinations. Explicit approval
+was requested for that file; no indirect transfer is attempted. The approved
+seed-3 diagnostic runs independently. Until the second route is available,
+E02 is a partial two-route check, not two negative observations.
+
+### J02: an ordinary-retention chain at the observed candidate stage budgets
+
+L01 completed both Metal comparisons without censoring. Sampling beat ordinary
+retention on seed 20261101 (1,444,334 versus 5,012,486 frames), but lost on seed
+20261102 (2,488,346 versus 2,182,520). Its two-seed production-improvement gate
+failed. Do not describe the two resource-control wins as replicated production
+improvement, or run a longer candidate chain on that basis.
+
+The outstanding question is whether J01's greater chain depth survives an
+ordinary-retention comparator at the same per-stage work. Register one fresh
+ordinary chain on seed 20261102, through Wood only. Reuse the completed J01
+candidate. Set fixed Metal/Heat/Air/Wood frame ceilings to its observed admitted
+work: 2,489,148 / 66,634,037 / 39,647,446 / 72,056,120. Preserve one attempt per
+stage, no supplied starting prefix, its own searched/replayed bridges, the same
+frozen binary, full-hold suffix, selector, mixture, 1M jobs, four workers and
+8GiB. CPUs8–11 match J01 sampling's placement. Allow up to 2400s per stage to
+complete prescribed work; a 5400s total/5460s outer limit still applies.
+
+The chain driver now supports an explicit stage-count cap and fixed per-stage
+frame ceilings; defaults preserve the full chain and uniform frame limit.
+With custom ceilings, a victory first observed beyond its stage limit is
+recorded but cannot carry the chain forward as an in-budget result. Stop at
+the first unsolved or late-solved stage, or after the Wood bridge. Never call
+that early endpoint Wily4. This adaptive budget was chosen from observed J01
+work before seeing the new control's Heat/Air/Wood outcomes, so the comparison
+is development evidence, not independent confirmation. Require equal search
+and asset identities apart from retention, own prefixes and stopping limits.
+Report wall censoring separately. If ordinary retention matches or exceeds
+sampling's three in-budget awards, the claimed deeper-chain advantage over
+production is not established and no longer sampling chains are justified by
+J01. A sample-only stage success would justify a new bounded fresh replication,
+not a default change or breakthrough claim.
+
+J01 finished at its original limits: sampling solved Metal/Heat/Air and stopped
+at Wood after 72,056,120 stage frames; extremes stopped at Heat. Total admitted
+work is 180,826,751 versus 48,180,376 frames; physical-work lower bounds are
+182,102,095 versus 48,421,033. The lineage analyzer passed every stage and
+rejected three in-memory planted provenance errors. E02 seed 3 passed three
+replays using 325,194 physical frames and produced no boss-memory episode.
+The second E02 route remains pending approval, not a negative observation.
+The new chain-stage controls passed two synthetic runner-contract checks:
+early completion cannot claim Wily4 or start a third stage, and a late victory
+is preserved without producing a carried bridge. These checks use no emulator.
