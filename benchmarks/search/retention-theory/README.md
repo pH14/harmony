@@ -449,3 +449,60 @@ comments and `theory.md` now state that removal counters capture admitted
 parent accounting at removal time. They cannot alone establish lost first
 exploration opportunities. No scheduler change is justified solely by K01's
 larger unselected-removal fraction.
+
+P03 completed within its bound using 1,885,036 physical frames including
+prefixes. Across 1,024 paired suffix trials there were 66 discarded-only and
+86 survivor-only living exits, with 48 cases where only the discarded state
+survived. No new capability or boss was found. Fourteen of sixteen equal-resource
+pairs have a useful disagreement; the compiled refinement separates six and
+still merges eight. This is new evidence against interchangeability, not an
+endorsement of either endpoint or of finer keys. `p03-analysis.json` retains
+pair-level results and source hashes. Follow-up #283 records the exposure
+accounting distinction established by the two coordinator fixtures.
+
+### R03: ordinary representative plus job-ranked sample
+
+Use `representative_job_sample_2_v1`: retain the existing best representative
+plus the best candidate from the lowest-ranked creation job. The fixed rank
+uses existing metadata and no search RNG; at most two entries share the same
+byte budget. It works at equal resources and needs no finer Metroid key or
+resource axes. The exact fixed-stream extrema invariant, idealized sampling
+calculation and limits are in `theory.md`. Test loss cases as well as successes.
+
+First qualify fixed-stream prefixes, same-cohort replacement, no-resource keys,
+and full campaign/checkpoint replay with real alternative admission, pressure,
+and continuation dispatch. Run generic and NES library checks and strict Clippy
+under ten-minute bounds. Freeze one default-key ARM binary (20m build bound).
+Require corrected Metroid legacy-policy 5k compatibility against K01, then 5k
+full replay for the sample policy on Metroid and MM2. Actual alternative
+admissions must occur. Qualify resource-extremes on the same executable as the
+matched-capacity control.
+
+Only after these checks, compare job sampling and resource extremes on fresh
+Metroid development seed 3, terminal v3, legacy v8 key, unchanged semantic
+selector/alphabet-only suffixes, 4 workers/8 GiB, 500k jobs/50M frames and
+1800+120s per cell. The two arms use the same binary and disjoint big CPU sets;
+sample uses 0–3 and extremes 8–11. Score last logged observations at or below
+50M, with conservative milestone-arrival intervals and repeated witness replay.
+The existing K01 default is an additional descriptive baseline, not a rerun.
+An additional final named capability/area or a conservative 20% later-milestone
+arrival improvement qualifies seeds 4 and 5; longer runs need wins on two of
+three development seeds. Map/cell count alone does not qualify escalation.
+A full search victory would be primary evidence but still needs fresh validation.
+Do not interpret a censored full-work cell as a mechanism failure or success.
+
+The transfer diagnostic is fresh MM2 Metal on seed 20261101, sampling versus
+extremes under the same binary, 100k jobs/12M frames, 4 workers/8 GiB, existing
+energy-splice vocabulary and 600+120s per cell. Run it after the Metroid pair
+so no more than two four-worker campaigns overlap. A Metal result alone cannot
+qualify Wily-depth recovery. Further chain work requires a useful matched-work
+result and preserves the already recorded failed coverage/extremes ablations.
+
+R03 local qualification: all 132 generic and 122 NES library tests passed;
+strict generic all-target and NES library/runner Clippy passed. The updated
+optional-policy fixture exercises real admissions, eviction, continuation,
+and complete stream/checkpoint replay. The first focused compile missed a
+test-only helper import; fixed before these checks. A duplicated full check
+was needed because the previous tool response lost its completion status;
+the logged repeat completed in under a minute. `analyze_p03.py` reproduces
+`p03-analysis.json` byte for byte from the private raw output.

@@ -98,3 +98,9 @@ joint resource-threshold coverage, allowing a useful intermediate tradeoff to
 survive. It uses the same axes and archive budget. Total weapon energy remains
 a scalar proxy; it does not encode weapon-specific future requirements. Both
 policies require matched fresh-search evaluation before promotion.
+
+`representative_job_sample_2_v1` instead keeps the ordinary best representative
+and the best state from the lowest-ranked creation job. Its fixed job ranking
+uses no search RNG and needs no resource axes. It retains at most two states
+under the same archive byte budget, including when resources tie. This is a
+research option; the ranking gives no guarantee of useful future behavior.

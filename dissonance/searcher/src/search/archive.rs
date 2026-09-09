@@ -106,6 +106,8 @@ pub enum SlotRetentionPolicy {
     ResourceExtremes2,
     /// At most two representatives maximizing covered integer resource thresholds.
     ResourceCoverage2,
+    /// Ordinary best representative plus the best from the lowest-ranked job.
+    RepresentativeJobSample2,
 }
 
 impl SlotRetentionPolicy {
@@ -116,6 +118,7 @@ impl SlotRetentionPolicy {
             Self::Representative => None,
             Self::ResourceExtremes2 => Some("resource_extremes_2_v1"),
             Self::ResourceCoverage2 => Some("resource_coverage_2_v1"),
+            Self::RepresentativeJobSample2 => Some("representative_job_sample_2_v1"),
         }
     }
 
@@ -128,9 +131,20 @@ impl SlotRetentionPolicy {
             None => Ok(Self::Representative),
             Some("resource_extremes_2_v1") => Ok(Self::ResourceExtremes2),
             Some("resource_coverage_2_v1") => Ok(Self::ResourceCoverage2),
+            Some("representative_job_sample_2_v1") => Ok(Self::RepresentativeJobSample2),
             Some(value) => Err(format!("unknown slot retention policy {value}").into()),
         }
     }
+}
+
+/// Fixed, bijective mixing of recorded job cohorts; no campaign RNG draws or
+/// additional replay state. This is a deterministic rank, not a claim of
+/// independent random priorities on an adaptively generated search stream.
+fn retention_job_rank(execution: u64) -> u64 {
+    let value = execution ^ 0x7265_7465_6e74_696f;
+    let value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    let value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
 }
 
 /// Entries one retention slot holds before candidates must displace.
@@ -866,7 +880,7 @@ pub struct RetentionObservation<'a, A: Ord, K, S> {
 pub struct RetentionDiagnostics {
     /// Full-slot competitions (excluding duplicate inputs).
     pub competitions: u64,
-    /// Accepted candidates that preserved at least one competing resource extreme.
+    /// Optional-policy admissions that preserved a competing representative.
     pub alternative_admissions: u64,
     /// Resource-aware decisions, including rejected candidates.
     pub resource_decisions: u64,
@@ -2891,8 +2905,57 @@ where
             Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
             Ordering::Less => false,
         });
-        let replacements = if self.slot_retention != SlotRetentionPolicy::Representative
-            && key.retention_resources().is_some()
+        let replacements = if self.slot_retention == SlotRetentionPolicy::RepresentativeJobSample2 {
+            let new_id = self.entries.len();
+            let attributes = |id: usize| {
+                if id == new_id {
+                    (key, candidate_time_in_group, self.next_entry_id, execution)
+                } else {
+                    let entry = &self.entries[id];
+                    (
+                        entry.key,
+                        self.time_in_group[id],
+                        entry.id,
+                        entry.created_execution,
+                    )
+                }
+            };
+            let quality = |left: usize, right: usize| {
+                let (a, ac, ai, _) = attributes(left);
+                let (b, bc, bi, _) = attributes(right);
+                a.preference_cmp(b)
+                    .then_with(|| bc.cmp(&ac))
+                    .then_with(|| bi.cmp(&ai))
+            };
+            let candidates = || slot.iter().copied().chain(std::iter::once(new_id));
+            let representative = candidates()
+                .max_by(|a, b| quality(*a, *b))
+                .expect("candidate makes nonempty competition");
+            let sampled = candidates()
+                .min_by(|a, b| {
+                    retention_job_rank(attributes(*a).3)
+                        .cmp(&retention_job_rank(attributes(*b).3))
+                        .then_with(|| quality(*b, *a))
+                })
+                .expect("candidate makes nonempty competition");
+            let keep = [representative, sampled];
+            if keep.contains(&new_id) {
+                if slot.iter().any(|id| keep.contains(id)) {
+                    self.retention_diagnostics.alternative_admissions += 1;
+                }
+                Some(
+                    slot.iter()
+                        .copied()
+                        .filter(|id| !keep.contains(id))
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            }
+        } else if matches!(
+            self.slot_retention,
+            SlotRetentionPolicy::ResourceExtremes2 | SlotRetentionPolicy::ResourceCoverage2
+        ) && key.retention_resources().is_some()
             && slot
                 .iter()
                 .all(|id| self.entries[*id].key.retention_resources().is_some())
@@ -4355,7 +4418,7 @@ mod tests {
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, HISTORY_COMPACTION_MIN_DROPS, Input,
         InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, RetireThresholds,
         SELECTION_EXHAUSTION_THRESHOLD, SelectorAccounting, SelectorDraw, SelectorPath,
-        SelectorPolicy, SlotRetentionPolicy, selector_policy_from_identifier,
+        SelectorPolicy, SlotRetentionPolicy, retention_job_rank, selector_policy_from_identifier,
     };
     use crate::search::rand::RomuDuoJrRand;
     use serde::{Deserialize, Serialize};
@@ -4806,6 +4869,36 @@ mod tests {
             assert_eq!(archive.entries[archive.slots[&7][0]].key.quality, 4);
             assert_eq!(archive.retention_diagnostics.resource_decisions, 0);
         }
+    }
+
+    #[test]
+    fn job_sample_preserves_an_alternative_without_resource_axes() {
+        let later = (1..1024)
+            .find(|job| retention_job_rank(*job) < retention_job_rank(0))
+            .unwrap();
+        let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+        archive.slot_retention = SlotRetentionPolicy::RepresentativeJobSample2;
+        for (execution, input) in [(0, vec![1]), (later, vec![2, 2, 2])] {
+            archive
+                .insert(
+                    None,
+                    execution,
+                    ArchiveCandidate {
+                        suffix: input,
+                        key: PreferredKey {
+                            slot: 7,
+                            quality: 0,
+                        },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(archive.active_count(), 2);
+        assert_eq!(archive.retention_diagnostics.resource_decisions, 0);
+        assert_eq!(archive.retention_diagnostics.alternative_admissions, 1);
     }
 
     #[test]

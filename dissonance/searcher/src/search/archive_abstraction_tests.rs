@@ -130,10 +130,20 @@ impl ArchiveKey for Key {
 type ToyArchive = Archive<u8, Key, (), usize>;
 
 fn offer(archive: &mut ToyArchive, state: usize, key: Key, cost: usize) -> Option<usize> {
+    offer_in_job(archive, state, key, cost, u64::try_from(state).unwrap())
+}
+
+fn offer_in_job(
+    archive: &mut ToyArchive,
+    state: usize,
+    key: Key,
+    cost: usize,
+    execution: u64,
+) -> Option<usize> {
     archive
         .insert(
             None,
-            u64::try_from(state).unwrap(),
+            execution,
             ArchiveCandidate {
                 // Unique ordinary inputs avoid the archive's exact-input dedup path.
                 suffix: vec![u8::try_from(state).unwrap(); cost],
@@ -426,4 +436,72 @@ fn local_coverage_optimum_can_forget_a_later_useful_complement() {
         }
         assert_eq!(retained_can_reach(&archive, &model, 1), expected_reach);
     }
+}
+
+#[test]
+fn job_sample_preserves_both_extrema_of_every_fixed_stream_prefix() {
+    let mut archive = ToyArchive::new(|_| 1);
+    archive.slot_retention = SlotRetentionPolicy::RepresentativeJobSample2;
+    let mut seen = Vec::new();
+    for state in 0..64 {
+        let key = Key {
+            slot: 0,
+            resources: [u64::try_from((state * 13) % 17).unwrap(), 0],
+        };
+        let cost = 1 + state % 7;
+        offer(&mut archive, state, key, cost);
+        seen.push((state, key.resources, cost));
+        let best = seen
+            .iter()
+            .max_by_key(|(id, r, c)| (r[1], r[0], Reverse(c), Reverse(id)))
+            .unwrap()
+            .0;
+        let sampled = seen
+            .iter()
+            .min_by_key(|(id, _, _)| retention_job_rank(u64::try_from(*id).unwrap()))
+            .unwrap()
+            .0;
+        let actual: BTreeSet<_> = archive
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(id, _)| archive.active[*id])
+            .map(|(_, entry)| *entry.snapshot.as_deref().unwrap())
+            .collect();
+        assert_eq!(actual, BTreeSet::from([best, sampled]));
+        assert!(archive.active_count() <= 2);
+    }
+}
+
+#[test]
+fn job_sample_can_lose_a_useful_state_within_one_cohort() {
+    let model = Model {
+        labels: vec![0; 3],
+        edges: vec![[edge(2, 1); 2], [edge(2, 0); 2], [edge(2, 0); 2]],
+    };
+    let mut archive = ToyArchive::new(|_| 1);
+    archive.slot_retention = SlotRetentionPolicy::RepresentativeJobSample2;
+    offer_in_job(
+        &mut archive,
+        0,
+        Key {
+            slot: 0,
+            resources: [1, 1],
+        },
+        1,
+        7,
+    );
+    assert!(retained_can_reach(&archive, &model, 1));
+    offer_in_job(
+        &mut archive,
+        1,
+        Key {
+            slot: 0,
+            resources: [2, 2],
+        },
+        2,
+        7,
+    );
+    assert_eq!(archive.active_count(), 1);
+    assert!(!retained_can_reach(&archive, &model, 1));
 }

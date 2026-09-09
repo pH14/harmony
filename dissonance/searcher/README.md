@@ -179,7 +179,9 @@ selection exposure, and lazy reconstruction of both inputs. Observers must
 bound their storage and account for reconstruction separately; observer input
 materialization never changes deterministic reconstruction counters. The
 constant-size `retention_diagnostics` sidecar census counts removal before
-window exposure, selection, and productive extension. It is not replay state.
+window exposure and admitted parent-selection/productivity credit. It excludes
+pending jobs and continuation within the birth job, so zero credit does not
+prove that no outgoing action was executed. It is not replay state.
 The evaluator flushes/disables campaign sampling before verification replay.
 
 The opt-in `resource_extremes_2_v1` slot policy keeps at most two resource
@@ -200,6 +202,18 @@ within-group cost/stable-id pairs. Exact integer arithmetic covers the entire
 u64 axis range. Missing axes use ordinary retention. The same memory budget,
 parent selector, continuation behavior and recorded replay rules apply; the
 resource coverage proxy does not prove behavioral dominance or task success.
+
+`representative_job_sample_2_v1` instead retains the ordinary best representative
+and the best candidate from the job cohort with the lowest fixed mixed rank.
+The rank uses the already recorded creation execution, consumes no campaign RNG,
+and adds no persistent per-entry state. Equal cohort ranks prefer ordinary
+quality, group cost and stable id. Coincident winners need one entry; otherwise
+the slot holds two under the same archive budget. This policy needs no resource
+axes. Between external evictions it preserves these two extrema of the seen
+stream, assuming a stable total quality order. It is not uniform sampling of
+physical states: candidates within a job share a rank, the hash is fixed, and
+search arrivals depend on earlier retention. Imports and evictions further
+limit any sampling interpretation. The parent selector remains unchanged.
 
 Retention lifecycle diagnostics reuse existing selector exposure vectors and add
 only fixed counters, reported by `retention_diagnostic_memory_bytes`. Existing

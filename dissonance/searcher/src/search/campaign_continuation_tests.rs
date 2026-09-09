@@ -525,11 +525,12 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
 }
 
 #[test]
-fn resource_policies_replay_alternatives_eviction_and_continuations() {
+fn optional_slot_policies_replay_alternatives_eviction_and_continuations() {
     use crate::search::archive::SlotRetentionPolicy;
     for policy in [
         SlotRetentionPolicy::ResourceExtremes2,
         SlotRetentionPolicy::ResourceCoverage2,
+        SlotRetentionPolicy::RepresentativeJobSample2,
     ] {
         let config = CampaignConfig {
             campaign_seed: 947,

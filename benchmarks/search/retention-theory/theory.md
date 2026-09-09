@@ -167,3 +167,42 @@ correctness premise, not evidence that the finer key improves boss attainment.
 The intended loop is: claim, assumptions, smallest counterexample, distinguishing
 probe, mechanism-specific prediction, bounded experiment, then fresh validation.
 The theory pass ends after two hours even if no useful guarantee was found.
+
+## R03: a best representative and a job-ranked sample
+
+P03 supplies new counterexamples at equal health, missiles, equipment and
+capacity: 14/16 pairs have distinguishing local exits or survival, and the
+refined key separates only six of those pairs. It does not identify a feature
+that reliably ranks their unknown futures. A bounded alternative is to retain
+one ordinary quality representative and one representative selected by a
+separate ordering over job cohorts.
+
+For a fixed stream in one slot, let Q be the existing total quality order
+(opaque preference, lower group cost, earlier identity). Give every candidate
+from creation execution j the same rank r(j). Keep the Q-maximum candidate
+and the Q-maximum candidate in the minimum-rank cohort. These may coincide.
+Updating from the current winners plus one candidate preserves both extrema
+of the entire seen stream by induction: max over a union and min over a union
+can each be computed from their previous winner and the new value. No cohort
+count, per-entry random state, or extra archive dimension is required. This
+claim assumes no external eviction/import boundary and stable quality values.
+The tests check every prefix of a fixed stream and an explicit within-cohort
+counterexample where the better-ranked resource state loses a useful future.
+
+Under an ideal independent continuous rank assignment to n fixed cohorts,
+each cohort is the minimum with probability 1/n. If m cohorts have a useful
+Q-best member, the sampled representative is useful with probability m/n;
+the additional global Q-best representative cannot reduce retained coverage.
+This is a model calculation, not a probability guarantee for the implementation.
+The implementation uses a fixed bijective integer mixer on recorded execution
+numbers, and the search adaptively generates later candidates. Neither
+independent random ranks nor an exogenous stream is established in live search.
+It also samples cohort representatives, not all physical states. Keeping a
+sampled state does not ensure the selector spends enough work on its future.
+
+The construction uses the minimum-rank idea in
+[Cohen and Kaplan's bottom-k sketches](https://www.cs.tau.ac.il/~haimk/papers/p225-cohen.pdf).
+Hash-family assumptions matter for probabilistic claims, as emphasized by
+[Thorup's analysis](https://arxiv.org/abs/1303.5479); a fast deterministic mixer
+is not substituted into those theorems without their hypotheses. R03's exact
+extrema invariant and its empirical search effect are separate claims.

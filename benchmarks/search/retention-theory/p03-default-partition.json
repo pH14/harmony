@@ -1,0 +1,108 @@
+{
+  "all_coarser_groups_equal": true,
+  "format": "metroid-compiled-key-audit-v1",
+  "input_sha256": "34e553742afd9692b04bf55942533a3e45ca82e5fd98bde64442f87044c67a0a",
+  "key_policy": "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8",
+  "pairs": 16,
+  "retention_splits": 0,
+  "rows": [
+    {
+      "coarser_groups_equal": true,
+      "execution": 471442,
+      "pair": 0,
+      "retention_split": false
+    },
+    {
+      "coarser_groups_equal": true,
+      "execution": 489616,
+      "pair": 1,
+      "retention_split": false
+    },
+    {
+      "coarser_groups_equal": true,
+      "execution": 394437,
+      "pair": 2,
+      "retention_split": false
+    },
+    {
+      "coarser_groups_equal": true,
+      "execution": 387001,
+      "pair": 3,
+      "retention_split": false
+    },
+    {
+      "coarser_groups_equal": true,
+      "execution": 75710,
+      "pair": 4,
+      "retention_split": false
+    },
+    {
+      "coarser_groups_equal": true,
+      "execution": 335695,
+      "pair": 5,
+      "retention_split": false
+    },
+    {
+      "coarser_groups_equal": true,
+      "execution": 281626,
+      "pair": 6,
+      "retention_split": false
+    },
+    {
+      "coarser_groups_equal": true,
+      "execution": 41415,
+      "pair": 7,
+      "retention_split": false
+    },
+    {
+      "coarser_groups_equal": true,
+      "execution": 463048,
+      "pair": 8,
+      "retention_split": false
+    },
+    {
+      "coarser_groups_equal": true,
+      "execution": 352611,
+      "pair": 9,
+      "retention_split": false
+    },
+    {
+      "coarser_groups_equal": true,
+      "execution": 319804,
+      "pair": 10,
+      "retention_split": false
+    },
+    {
+      "coarser_groups_equal": true,
+      "execution": 120305,
+      "pair": 11,
+      "retention_split": false
+    },
+    {
+      "coarser_groups_equal": true,
+      "execution": 315708,
+      "pair": 12,
+      "retention_split": false
+    },
+    {
+      "coarser_groups_equal": true,
+      "execution": 499559,
+      "pair": 13,
+      "retention_split": false
+    },
+    {
+      "coarser_groups_equal": true,
+      "execution": 351779,
+      "pair": 14,
+      "retention_split": false
+    },
+    {
+      "coarser_groups_equal": true,
+      "execution": 300909,
+      "pair": 15,
+      "retention_split": false
+    }
+  ],
+  "scope": "offline numeric endpoint partition; no emulator execution or future-equivalence claim",
+  "source_audit_sha256": "c310985ec09f24a35f1f8e755a44ecc934f5bc2eba355207f80d74efe85b5120"
+}
