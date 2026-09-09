@@ -24,8 +24,10 @@ loss; the terminal-corrected rerun reproduces the same results. Preserve the
 source/probe hashes, distinguish correlated suffix trials from independent seeds,
 and qualify a small behavioral-retention mechanism at equal total memory and
 physical probe work before any long campaign. Do not treat resource dominance,
-endpoint inequality, or a locally novel exit as global utility. A useful next
-experiment must show that its retained alternative actually receives exploration
+endpoint inequality, or a locally novel exit as global utility. Before attributing the resource-policy failure to its representation, isolate
+the untested interaction between resource retention and corrected terminal
+semantics; the completed resource campaigns used the historical predicate.
+A useful next experiment must show that its retained alternative actually receives exploration
 and produces an outcome the matched representative arm misses.
 
 ## #270: remaining location-order bias

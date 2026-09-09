@@ -1516,3 +1516,12 @@ search-source overlay has SHA256
 `aaecde5aae245985769a665e2e091f75b8878bf96c10db0e68bd2069a6078552`.
 `results/q36-source-package-proof.json` retains the per-file hashes and archive
 relationship. Both source archives stay on ms02; licensed assets are separate.
+
+Interpretation boundary for R: its completed fresh and local campaign ablations
+used historical terminal semantics. P03 establishes that the sampled paired
+continuation difference survives terminal correction, but it does not establish
+the campaign effect of combining R with T. The resource-policy negative result
+is conditional on its tested predicate; a matched R-plus-T campaign remains
+unqualified. Keep that missing interaction explicit in the synthesis and #286
+before attributing all resource-policy failure to an inadequate behavioral
+representation. The frozen T04 panel isolates T alone and is not changed.

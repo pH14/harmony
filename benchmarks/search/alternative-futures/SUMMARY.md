@@ -32,6 +32,9 @@ Selection counters are censuses at removal. An intermediate state can already
 have outgoing actions in its birth suffix, and pending jobs receive parent credit
 only after ordered admission. Thus zero admitted parent-job credit does not mean
 zero physical exploration. The age histogram does not resolve this ambiguity.
+The resource-retention campaigns used historical terminal semantics. Their
+negative results do not rule out resource retention combined with the corrected
+terminal policy; that interaction has not received a matched campaign ablation.
 See #283 for the separate measurement needed before a stronger starvation claim;
 #281 tracks the missing distinction between boss-area entry and actual encounters.
 
