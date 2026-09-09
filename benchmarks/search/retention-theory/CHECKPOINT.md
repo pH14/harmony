@@ -63,7 +63,9 @@ summaries. Three arms run ordinary/context/quality, sequentially on8–11, same
 gameplay input. Both the capacity comparison and ordinary-retention comparison
 must pass the registered gate before specifying any longer pair.
 
-Active service: `harmony-r05-replication-002`, started05:30UTC. Drivers are frozen
+Active service: `harmony-r05-replication-002`, started05:30UTC. At06:00 ordinary
+and context have completed50M frames each without wall censoring; quality is
+running. No partial milestone outcome has changed the registration. Drivers are frozen
 from `c11f4a7f` at `harmony-r05-c11f4a7f/` under the owned msr1 root. Outputs:
 `runs/r05-results.json`, `runs/r05-analysis.json`, and the automatically generated
 `runs/work-accounting-after-r05.json`. The service cap is6000s/12GiB. No other
@@ -78,6 +80,25 @@ features can agree while action-conditioned futures reverse; and a candidate's
 pairwise novelty can already be covered by the other retained survivor. These
 are theory tests only; no production code or running policy changed. Existing follow-ups
 #270/#283/#286 cover ordering, exposure and behavioral-retention work.
+
+Draft [PR#287](https://github.com/pH14/harmony/pull/287) preserves the research
+branch; hosted CI is pending. The implementing agent's scoped
+[review](implementation-review.md) found no new retention correctness defect.
+[Work accounting](work-accounting-after-r04.json) records67 completed cells,
+two errors,1.156B admitted frames and4,473,093 standalone probe frames, with
+additional replay categories and explicit unknown costs. The revised accountant
+is also at msr1 root`account-runs-v2.py`; regenerate after R05 rather than relying
+on the frozen driver's earlier accounting schema.
+
+[The predictive-retention contract](predictive-retention-contract.md) derives
+complete-survivor marginal gain/loss and finite-sample assumptions. The reused
+P03 objective audit shows124 versus112 exclusive map/suffix events but326 versus
+353 surviving endpoints: objective choice reverses direction on the same data.
+No new emulator work or running-policy change. Five adversarial R05 gate tests
+pass; together with two chain-limit tests they are now explicitly wired into
+search-evaluation CI. The exact seven-test command passes locally in0.037s.
+It exposed an unclosed telemetry-reader handle, now closed explicitly in local
+source. The frozen R05 driver and its gate semantics remain unchanged.
 
 ## Findings that changed the research direction
 

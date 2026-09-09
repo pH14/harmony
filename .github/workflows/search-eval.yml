@@ -41,6 +41,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Runner failures and publication contracts
         run: python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
+      - name: Research allocation and chain-limit contracts
+        run: python3 -m unittest discover -s benchmarks/search/retention-theory -p 'test_*.py'
       - name: Generic search and deterministic replay
         run: cargo test --manifest-path dissonance/searcher/Cargo.toml --locked
       - name: Workload contracts without licensed ROMs
