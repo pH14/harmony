@@ -1,0 +1,148 @@
+{
+  "format": "F01-terminal-count-reconciliation-v1",
+  "source": "../alternative-futures/results/checkpoint-final-validation.json",
+  "rows": [
+    {
+      "seed": 2089362731,
+      "terminal": "death_or_ending_v2",
+      "observed_underflow_action_endpoints": 6,
+      "eligible_underflow_endpoints": 6,
+      "first_underflow_execution": 112752
+    },
+    {
+      "seed": 2089362731,
+      "terminal": "death_or_bcd_underflow_or_ending_v3",
+      "observed_underflow_action_endpoints": 364,
+      "eligible_underflow_endpoints": 0,
+      "first_underflow_execution": 8492
+    },
+    {
+      "seed": 1154364703,
+      "terminal": "death_or_bcd_underflow_or_ending_v3",
+      "observed_underflow_action_endpoints": 200,
+      "eligible_underflow_endpoints": 0,
+      "first_underflow_execution": 12253
+    },
+    {
+      "seed": 1154364703,
+      "terminal": "death_or_ending_v2",
+      "observed_underflow_action_endpoints": 9,
+      "eligible_underflow_endpoints": 9,
+      "first_underflow_execution": 78189
+    },
+    {
+      "seed": 2037612408,
+      "terminal": "death_or_ending_v2",
+      "observed_underflow_action_endpoints": 14,
+      "eligible_underflow_endpoints": 14,
+      "first_underflow_execution": 19221
+    },
+    {
+      "seed": 2037612408,
+      "terminal": "death_or_bcd_underflow_or_ending_v3",
+      "observed_underflow_action_endpoints": 266,
+      "eligible_underflow_endpoints": 0,
+      "first_underflow_execution": 2449
+    },
+    {
+      "seed": 4163552957,
+      "terminal": "death_or_bcd_underflow_or_ending_v3",
+      "observed_underflow_action_endpoints": 323,
+      "eligible_underflow_endpoints": 0,
+      "first_underflow_execution": 7813
+    },
+    {
+      "seed": 4163552957,
+      "terminal": "death_or_ending_v2",
+      "observed_underflow_action_endpoints": 10,
+      "eligible_underflow_endpoints": 10,
+      "first_underflow_execution": 113089
+    },
+    {
+      "seed": 3001028078,
+      "terminal": "death_or_ending_v2",
+      "observed_underflow_action_endpoints": 5,
+      "eligible_underflow_endpoints": 5,
+      "first_underflow_execution": 596090
+    },
+    {
+      "seed": 3001028078,
+      "terminal": "death_or_bcd_underflow_or_ending_v3",
+      "observed_underflow_action_endpoints": 377,
+      "eligible_underflow_endpoints": 0,
+      "first_underflow_execution": 2557
+    },
+    {
+      "seed": 3860178203,
+      "terminal": "death_or_bcd_underflow_or_ending_v3",
+      "observed_underflow_action_endpoints": 307,
+      "eligible_underflow_endpoints": 0,
+      "first_underflow_execution": 4211
+    },
+    {
+      "seed": 3860178203,
+      "terminal": "death_or_ending_v2",
+      "observed_underflow_action_endpoints": 10,
+      "eligible_underflow_endpoints": 10,
+      "first_underflow_execution": 76302
+    },
+    {
+      "seed": 3217532177,
+      "terminal": "death_or_ending_v2",
+      "observed_underflow_action_endpoints": 6,
+      "eligible_underflow_endpoints": 6,
+      "first_underflow_execution": 297268
+    },
+    {
+      "seed": 3217532177,
+      "terminal": "death_or_bcd_underflow_or_ending_v3",
+      "observed_underflow_action_endpoints": 311,
+      "eligible_underflow_endpoints": 0,
+      "first_underflow_execution": 25078
+    },
+    {
+      "seed": 781462287,
+      "terminal": "death_or_bcd_underflow_or_ending_v3",
+      "observed_underflow_action_endpoints": 338,
+      "eligible_underflow_endpoints": 0,
+      "first_underflow_execution": 7401
+    },
+    {
+      "seed": 781462287,
+      "terminal": "death_or_ending_v2",
+      "observed_underflow_action_endpoints": 11,
+      "eligible_underflow_endpoints": 11,
+      "first_underflow_execution": 16685
+    },
+    {
+      "seed": 2825471318,
+      "terminal": "death_or_ending_v2",
+      "observed_underflow_action_endpoints": 7,
+      "eligible_underflow_endpoints": 7,
+      "first_underflow_execution": 13485
+    },
+    {
+      "seed": 2825471318,
+      "terminal": "death_or_bcd_underflow_or_ending_v3",
+      "observed_underflow_action_endpoints": 425,
+      "eligible_underflow_endpoints": 0,
+      "first_underflow_execution": 9854
+    },
+    {
+      "seed": 2955146978,
+      "terminal": "death_or_bcd_underflow_or_ending_v3",
+      "observed_underflow_action_endpoints": 360,
+      "eligible_underflow_endpoints": 0,
+      "first_underflow_execution": 5889
+    },
+    {
+      "seed": 2955146978,
+      "terminal": "death_or_ending_v2",
+      "observed_underflow_action_endpoints": 9,
+      "eligible_underflow_endpoints": 9,
+      "first_underflow_execution": 288404
+    }
+  ],
+  "interpretation": "Counts describe different event stages and diverged trajectories. Observed is not retained; eligible is not proof of actual retention. Count ratios cannot establish predicate validity, causal depth improvement, or absence of an R+T interaction.",
+  "new_emulator_frames": 0
+}

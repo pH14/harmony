@@ -1,0 +1,9080 @@
+{
+  "format": "F02-execution-v1",
+  "build": {
+    "binary_sha256": "2d4af7703af055d39a2c0e76d7c3b25e97f96b68e819f2f3cddd15eeaa6ce2a4",
+    "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+    "dirty": null,
+    "files": 323,
+    "format": "harmony-search-build-v1",
+    "locked": true,
+    "profile": "release",
+    "revision": null,
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+    "rustflags": "",
+    "source_tree_sha256": "4b5e2ab93c46e6535877dd3b8edda3b9c2c14bd91c1431036de19ff50a83f220",
+    "target_cache": "/root/harmony-alternative-futures-20260908/target-native"
+  },
+  "runs": [
+    {
+      "label": "compatibility",
+      "exit_code": 0,
+      "wall_bound_seconds": 300,
+      "elapsed_seconds": 53.80245457799174,
+      "cpu_seconds": 53.786301,
+      "max_rss_kib": 17332,
+      "summary": {
+        "actions_per_trial": 24,
+        "audit_sha256": "cae156018d08bbe61364442f936224528bbf7a151b7319a2209cc8c6a0d48b46",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "equal_work_rule": "identical pre-sampled action suffixes and frame allowances; terminal branches stop early, actual frames reported separately",
+        "format": "metroid-equal-suffix-probe-v1",
+        "limitations": [
+          "cached incumbent sample only",
+          "finite matching suffixes do not prove equivalence",
+          "map exit is local reach evidence, not a boss or new global coverage claim",
+          "resource gain is relative to each starting state"
+        ],
+        "pairs": 16,
+        "prefix_and_gain_export_frames": 898376,
+        "probe_frames_discarded_survivor": [
+          707878,
+          489897
+        ],
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "scope": "development-discovered competitors; diagnostic, not fresh search",
+        "terminal_policy": "death_or_bcd_underflow_or_ending_v3",
+        "totals_by_stratum": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            1024,
+            0,
+            0,
+            156,
+            42,
+            197
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "totals_columns": [
+          "trials",
+          "discarded_only_gain",
+          "survivor_only_gain",
+          "discarded_only_living_map_exit",
+          "survivor_only_living_map_exit",
+          "discarded_survives_survivor_dies"
+        ],
+        "trials_per_pair": 64
+      },
+      "outcomes_sha256": "c79df7524bbb28d0dc3ebc8a86f7028b60380469f5df03a29f4b66cd137bc945",
+      "suffixes_sha256": "4e408f2397801eb5a3946a6b7e5ebfda8954669b87f87ec65478e7a7cb94646d"
+    },
+    {
+      "label": "matched-a",
+      "exit_code": 0,
+      "wall_bound_seconds": 300,
+      "elapsed_seconds": 105.20108845504001,
+      "cpu_seconds": 105.166195,
+      "max_rss_kib": 18056,
+      "summary": {
+        "actions_per_trial": 24,
+        "audit_sha256": "cae156018d08bbe61364442f936224528bbf7a151b7319a2209cc8c6a0d48b46",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "format": "metroid-fixed-work-probe-v1",
+        "frames_per_side": 100000,
+        "limitations": [
+          "Source paths bound prior observed map coverage from below; absence is unknown against the complete campaign.",
+          "Equal physical frame budgets give early-terminal sources more attempts; final action is clipped at the cap.",
+          "Witness exports are unverified until independent ordinary-genesis replay.",
+          "Source sampling is conditional on cached snapshots and bounded input history; one development campaign."
+        ],
+        "outcomes_sha256": "4b0d0057cca74c34fc78247d4e4eb51e3e995c3f4b0658108ea66ead83fccbb8",
+        "pairs": [
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 120,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 93,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  19,
+                  7
+                ],
+                [
+                  16,
+                  21,
+                  7
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 414040,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                7
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                7
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                7
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                7
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                7
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                7
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                7
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                7
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                7
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                16,
+                23,
+                7
+              ],
+              [
+                16,
+                24,
+                7
+              ],
+              [
+                16,
+                25,
+                7
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 0,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 211,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 210,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  19,
+                  7
+                ],
+                [
+                  16,
+                  21,
+                  7
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": true,
+            "discarded": {
+              "attempts": 105,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  22,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 19,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  22,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p1-incumbent-t1.json",
+                "witness-s2-p1-incumbent-t8.json"
+              ]
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 437887,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ]
+            ],
+            "pair": 1,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 107,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  22,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 28,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  22,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p1-candidate-t0.json",
+                "witness-s2-p1-candidate-t1.json"
+              ]
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 108,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 23,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [
+              [
+                16,
+                22,
+                11
+              ]
+            ],
+            "execution": 290923,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 2,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 180,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 143,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 102,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 4,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  21,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p3-candidate-t22.json"
+              ]
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 298341,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 3,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 103,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 6,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  21,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p3-incumbent-t10.json"
+              ]
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 110,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 31,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 252677,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 4,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 172,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 139,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 150,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 117,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  14,
+                  11
+                ],
+                [
+                  16,
+                  16,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 414113,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                7
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                7
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                7
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                7
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                7
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                7
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                7
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                7
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                7
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                16,
+                23,
+                7
+              ],
+              [
+                16,
+                24,
+                7
+              ],
+              [
+                16,
+                25,
+                7
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 5,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 874,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 869,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  14,
+                  11
+                ],
+                [
+                  16,
+                  16,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": true,
+            "discarded": {
+              "attempts": 130,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 71,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 303644,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 6,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 254,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 229,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  13
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": [
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ]
+            ]
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 126,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 63,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p7-candidate-t1.json"
+              ]
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 344926,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 7,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 131,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ],
+                [
+                  17,
+                  24,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 74,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ],
+                [
+                  17,
+                  24,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p7-incumbent-t1.json",
+                "witness-s2-p7-incumbent-t22.json"
+              ]
+            },
+            "survivor_only_beyond_known": [
+              [
+                17,
+                24,
+                14
+              ]
+            ],
+            "survivor_only_maps": [
+              [
+                17,
+                24,
+                14
+              ]
+            ]
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 142,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 91,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  16,
+                  11
+                ],
+                [
+                  16,
+                  18,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 251966,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 8,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 252,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 216,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  16,
+                  11
+                ],
+                [
+                  16,
+                  18,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 204,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 158,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [
+              [
+                16,
+                22,
+                11
+              ]
+            ],
+            "execution": 233725,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 9,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 986,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 978,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 159,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 112,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p10-candidate-t0.json"
+              ]
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 267000,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 10,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 188,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 145,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p10-incumbent-t0.json"
+              ]
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 1073,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 1073,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 258630,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ],
+              [
+                17,
+                23,
+                14
+              ],
+              [
+                17,
+                24,
+                14
+              ]
+            ],
+            "pair": 11,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 1044,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 1044,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 105,
+              "beyond_known_source_maps": [
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  13
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 17,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ],
+                [
+                  16,
+                  21,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  13
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p12-candidate-t1.json"
+              ]
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 151014,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ]
+            ],
+            "pair": 12,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 107,
+              "beyond_known_source_maps": [
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  13
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 21,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ],
+                [
+                  16,
+                  21,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  13
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p12-incumbent-t1.json"
+              ]
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 443,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 441,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  19,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 349473,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 13,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 1556,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 1556,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  19,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 133,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 79,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  17,
+                  20,
+                  14
+                ],
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p14-candidate-t1.json"
+              ]
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [
+              [
+                17,
+                20,
+                14
+              ]
+            ],
+            "execution": 288844,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 14,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 143,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 89,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p14-incumbent-t1.json"
+              ]
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 234,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 201,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  16,
+                  11
+                ],
+                [
+                  16,
+                  18,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [
+              [
+                16,
+                18,
+                11
+              ]
+            ],
+            "execution": 257556,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 15,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 776,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 758,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  16,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          }
+        ],
+        "prefix_including_bootstrap_frames": 898376,
+        "probe_frames": 3200000,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "scope": "development source-pair counterfactual, not fresh search or full-archive novelty",
+        "suffix_bank_trials": 4096,
+        "suffixes_sha256": "adc00acb2c6ad58fadf8f60e9556d54d30a9f8d2764881f54bf68a3aef7565e0",
+        "terminal_policy": "death_or_bcd_underflow_or_ending_v3",
+        "two_source_snapshot_serialized_bytes_peak": 44263
+      },
+      "outcomes_sha256": "4b0d0057cca74c34fc78247d4e4eb51e3e995c3f4b0658108ea66ead83fccbb8",
+      "suffixes_sha256": "adc00acb2c6ad58fadf8f60e9556d54d30a9f8d2764881f54bf68a3aef7565e0"
+    },
+    {
+      "label": "matched-b",
+      "exit_code": 0,
+      "wall_bound_seconds": 300,
+      "elapsed_seconds": 105.2124620899558,
+      "cpu_seconds": 105.17214,
+      "max_rss_kib": 21888,
+      "summary": {
+        "actions_per_trial": 24,
+        "audit_sha256": "cae156018d08bbe61364442f936224528bbf7a151b7319a2209cc8c6a0d48b46",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "format": "metroid-fixed-work-probe-v1",
+        "frames_per_side": 100000,
+        "limitations": [
+          "Source paths bound prior observed map coverage from below; absence is unknown against the complete campaign.",
+          "Equal physical frame budgets give early-terminal sources more attempts; final action is clipped at the cap.",
+          "Witness exports are unverified until independent ordinary-genesis replay.",
+          "Source sampling is conditional on cached snapshots and bounded input history; one development campaign."
+        ],
+        "outcomes_sha256": "4b0d0057cca74c34fc78247d4e4eb51e3e995c3f4b0658108ea66ead83fccbb8",
+        "pairs": [
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 120,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 93,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  19,
+                  7
+                ],
+                [
+                  16,
+                  21,
+                  7
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 414040,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                7
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                7
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                7
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                7
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                7
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                7
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                7
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                7
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                7
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                16,
+                23,
+                7
+              ],
+              [
+                16,
+                24,
+                7
+              ],
+              [
+                16,
+                25,
+                7
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 0,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 211,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 210,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  19,
+                  7
+                ],
+                [
+                  16,
+                  21,
+                  7
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": true,
+            "discarded": {
+              "attempts": 105,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  22,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 19,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  22,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p1-incumbent-t1.json",
+                "witness-s2-p1-incumbent-t8.json"
+              ]
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 437887,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ]
+            ],
+            "pair": 1,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 107,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  22,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 28,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  22,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p1-candidate-t0.json",
+                "witness-s2-p1-candidate-t1.json"
+              ]
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 108,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 23,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [
+              [
+                16,
+                22,
+                11
+              ]
+            ],
+            "execution": 290923,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 2,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 180,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 143,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 102,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 4,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  21,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p3-candidate-t22.json"
+              ]
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 298341,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 3,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 103,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 6,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  21,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p3-incumbent-t10.json"
+              ]
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 110,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 31,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 252677,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 4,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 172,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 139,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 150,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 117,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  14,
+                  11
+                ],
+                [
+                  16,
+                  16,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 414113,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                7
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                7
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                7
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                7
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                7
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                7
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                7
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                7
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                7
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                16,
+                23,
+                7
+              ],
+              [
+                16,
+                24,
+                7
+              ],
+              [
+                16,
+                25,
+                7
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 5,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 874,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 869,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  14,
+                  11
+                ],
+                [
+                  16,
+                  16,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": true,
+            "discarded": {
+              "attempts": 130,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 71,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 303644,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 6,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 254,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 229,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  13
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": [
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ]
+            ]
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 126,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 63,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p7-candidate-t1.json"
+              ]
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 344926,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 7,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 131,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ],
+                [
+                  17,
+                  24,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 74,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ],
+                [
+                  17,
+                  24,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p7-incumbent-t1.json",
+                "witness-s2-p7-incumbent-t22.json"
+              ]
+            },
+            "survivor_only_beyond_known": [
+              [
+                17,
+                24,
+                14
+              ]
+            ],
+            "survivor_only_maps": [
+              [
+                17,
+                24,
+                14
+              ]
+            ]
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 142,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 91,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  16,
+                  11
+                ],
+                [
+                  16,
+                  18,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 251966,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 8,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 252,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 216,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  16,
+                  11
+                ],
+                [
+                  16,
+                  18,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 204,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 158,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [
+              [
+                16,
+                22,
+                11
+              ]
+            ],
+            "execution": 233725,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 9,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 986,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 978,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 159,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 112,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p10-candidate-t0.json"
+              ]
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 267000,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 10,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 188,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 145,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p10-incumbent-t0.json"
+              ]
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 1073,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 1073,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 258630,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ],
+              [
+                17,
+                23,
+                14
+              ],
+              [
+                17,
+                24,
+                14
+              ]
+            ],
+            "pair": 11,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 1044,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 1044,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 105,
+              "beyond_known_source_maps": [
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  13
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 17,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ],
+                [
+                  16,
+                  21,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  13
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p12-candidate-t1.json"
+              ]
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 151014,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ]
+            ],
+            "pair": 12,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 107,
+              "beyond_known_source_maps": [
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  13
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 21,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  20,
+                  11
+                ],
+                [
+                  16,
+                  21,
+                  11
+                ],
+                [
+                  16,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  12
+                ],
+                [
+                  17,
+                  22,
+                  13
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p12-incumbent-t1.json"
+              ]
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 443,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 441,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  19,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [],
+            "execution": 349473,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 13,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 1556,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 1556,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  19,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 133,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 79,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  17,
+                  20,
+                  14
+                ],
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p14-candidate-t1.json"
+              ]
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [
+              [
+                17,
+                20,
+                14
+              ]
+            ],
+            "execution": 288844,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 14,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 143,
+              "beyond_known_source_maps": [
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 89,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  17,
+                  21,
+                  14
+                ],
+                [
+                  17,
+                  23,
+                  14
+                ]
+              ],
+              "witness_files": [
+                "witness-s2-p14-incumbent-t1.json"
+              ]
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          },
+          {
+            "candidate_replaces": false,
+            "discarded": {
+              "attempts": 234,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 201,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  16,
+                  11
+                ],
+                [
+                  16,
+                  18,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "discarded_only_beyond_known": [],
+            "discarded_only_maps": [
+              [
+                16,
+                18,
+                11
+              ]
+            ],
+            "execution": 257556,
+            "known_source_maps": [
+              [
+                16,
+                2,
+                14
+              ],
+              [
+                16,
+                3,
+                14
+              ],
+              [
+                16,
+                4,
+                14
+              ],
+              [
+                16,
+                5,
+                14
+              ],
+              [
+                16,
+                6,
+                14
+              ],
+              [
+                16,
+                7,
+                14
+              ],
+              [
+                16,
+                8,
+                14
+              ],
+              [
+                16,
+                9,
+                14
+              ],
+              [
+                16,
+                10,
+                14
+              ],
+              [
+                16,
+                11,
+                7
+              ],
+              [
+                16,
+                11,
+                8
+              ],
+              [
+                16,
+                11,
+                9
+              ],
+              [
+                16,
+                11,
+                10
+              ],
+              [
+                16,
+                11,
+                11
+              ],
+              [
+                16,
+                11,
+                12
+              ],
+              [
+                16,
+                11,
+                13
+              ],
+              [
+                16,
+                11,
+                14
+              ],
+              [
+                16,
+                12,
+                7
+              ],
+              [
+                16,
+                13,
+                7
+              ],
+              [
+                16,
+                13,
+                8
+              ],
+              [
+                16,
+                13,
+                9
+              ],
+              [
+                16,
+                13,
+                10
+              ],
+              [
+                16,
+                13,
+                11
+              ],
+              [
+                16,
+                14,
+                11
+              ],
+              [
+                16,
+                15,
+                11
+              ],
+              [
+                16,
+                16,
+                11
+              ],
+              [
+                16,
+                17,
+                11
+              ],
+              [
+                16,
+                18,
+                11
+              ],
+              [
+                16,
+                19,
+                11
+              ],
+              [
+                16,
+                20,
+                11
+              ],
+              [
+                16,
+                21,
+                11
+              ],
+              [
+                16,
+                22,
+                11
+              ],
+              [
+                16,
+                22,
+                12
+              ],
+              [
+                17,
+                18,
+                14
+              ],
+              [
+                17,
+                19,
+                14
+              ],
+              [
+                17,
+                20,
+                14
+              ],
+              [
+                17,
+                21,
+                14
+              ],
+              [
+                17,
+                22,
+                12
+              ],
+              [
+                17,
+                22,
+                13
+              ],
+              [
+                17,
+                22,
+                14
+              ]
+            ],
+            "pair": 15,
+            "stratum": 2,
+            "survivor": {
+              "attempts": 776,
+              "beyond_known_source_maps": [],
+              "boss_gain": false,
+              "capacity_gain": false,
+              "dead_endpoints": 758,
+              "equipment_gained": 0,
+              "frames": 100000,
+              "reached_maps": [
+                [
+                  16,
+                  16,
+                  11
+                ]
+              ],
+              "witness_files": []
+            },
+            "survivor_only_beyond_known": [],
+            "survivor_only_maps": []
+          }
+        ],
+        "prefix_including_bootstrap_frames": 898376,
+        "probe_frames": 3200000,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "scope": "development source-pair counterfactual, not fresh search or full-archive novelty",
+        "suffix_bank_trials": 4096,
+        "suffixes_sha256": "adc00acb2c6ad58fadf8f60e9556d54d30a9f8d2764881f54bf68a3aef7565e0",
+        "terminal_policy": "death_or_bcd_underflow_or_ending_v3",
+        "two_source_snapshot_serialized_bytes_peak": 44263
+      },
+      "outcomes_sha256": "4b0d0057cca74c34fc78247d4e4eb51e3e995c3f4b0658108ea66ead83fccbb8",
+      "suffixes_sha256": "adc00acb2c6ad58fadf8f60e9556d54d30a9f8d2764881f54bf68a3aef7565e0"
+    }
+  ]
+}

@@ -32,6 +32,9 @@ struct Audit {
 const MAX_AUDIT_BYTES: u64 = 64 * 1024 * 1024;
 
 fn validate_audit(audit: &Audit) -> Result<(), Box<dyn Error>> {
+    validate_audit_limit(audit, MAX_ACTIONS)
+}
+fn validate_audit_limit(audit: &Audit, action_limit: usize) -> Result<(), Box<dyn Error>> {
     if audit.format != "metroid-retention-audit-v1" || audit.samples.len() != STRATA {
         return Err("unsupported audit format or category count".into());
     }
@@ -41,8 +44,8 @@ fn validate_audit(audit: &Audit) -> Result<(), Box<dyn Error>> {
         }
         for pair in pairs {
             if pair.stratum != stratum
-                || pair.candidate_input.actions.len() > MAX_ACTIONS
-                || pair.incumbent_input.actions.len() > MAX_ACTIONS
+                || pair.candidate_input.actions.len() > action_limit
+                || pair.incumbent_input.actions.len() > action_limit
             {
                 return Err("audit pair category or input exceeds bounds".into());
             }
@@ -52,6 +55,9 @@ fn validate_audit(audit: &Audit) -> Result<(), Box<dyn Error>> {
 }
 
 fn read_audit(path: &Path) -> Result<(Audit, Vec<u8>), Box<dyn Error>> {
+    read_audit_limit(path, MAX_ACTIONS)
+}
+fn read_audit_limit(path: &Path, action_limit: usize) -> Result<(Audit, Vec<u8>), Box<dyn Error>> {
     let file = fs::File::open(path)?;
     if file.metadata()?.len() > MAX_AUDIT_BYTES {
         return Err("audit exceeds 64 MiB".into());
@@ -62,7 +68,11 @@ fn read_audit(path: &Path) -> Result<(Audit, Vec<u8>), Box<dyn Error>> {
         return Err("audit exceeds 64 MiB".into());
     }
     let audit: Audit = serde_json::from_slice(&bytes)?;
-    validate_audit(&audit)?;
+    if action_limit == MAX_ACTIONS {
+        validate_audit(&audit)?;
+    } else {
+        validate_audit_limit(&audit, action_limit)?;
+    }
     Ok((audit, bytes))
 }
 
@@ -77,6 +87,7 @@ struct Outcome {
     // Living action-interior map visits beyond the shared starting map.
     reached_maps: BTreeSet<(u8, u8, u8)>,
 }
+#[allow(clippy::too_many_arguments)]
 fn prepare(
     core: &Path,
     rom: &[u8],
@@ -84,16 +95,28 @@ fn prepare(
     input: &MetroidInput,
     expected: MetroidMechanicalState,
     policy: MetroidTerminalPolicy,
+    mut known_maps: Option<&mut BTreeSet<(u8, u8, u8)>>,
+    map_from_action: usize,
 ) -> Result<(MetroidTarget, MetroidSnapshot, u64), Box<dyn Error>> {
     let mut target =
         MetroidTarget::from_rom_bytes_headless(rom, core, hash)?.with_terminal_policy(policy);
-    for action in &input.actions {
+    if map_from_action == 0
+        && let Some(known) = known_maps.as_deref_mut()
+    {
+        record_living_maps(&target, policy, known);
+    }
+    for (index, action) in input.actions.iter().enumerate() {
         if target.is_dead() || target.is_victory() {
             return Err("sample input continues after terminal".into());
         }
         target.apply(action);
         if target.exit_kind() != ExitKind::Ok {
             return Err("sample replay emulator failure".into());
+        }
+        if index >= map_from_action
+            && let Some(known) = known_maps.as_deref_mut()
+        {
+            record_living_maps(&target, policy, known);
         }
     }
     if target.mechanical_state() != expected {
@@ -103,12 +126,37 @@ fn prepare(
     let frames = target.frames_clocked();
     Ok((target, snapshot, frames))
 }
+fn record_living_maps(
+    target: &MetroidTarget,
+    policy: MetroidTerminalPolicy,
+    maps: &mut BTreeSet<(u8, u8, u8)>,
+) {
+    for observation in target.last_action_observations() {
+        let state = observation.decoded;
+        if state.in_play() && !policy.is_dead(state) {
+            maps.insert((state.area, state.map_x, state.map_y));
+        }
+    }
+}
+fn capped_action(action: ButtonChord, remaining: u64) -> Option<ButtonChord> {
+    let hold = u64::from(action.bounded_hold_frames()).min(remaining);
+    (hold > 0).then(|| ButtonChord::new(action.buttons, hold as u8))
+}
 fn extend(
     target: &mut MetroidTarget,
     snapshot: &MetroidSnapshot,
     suffix: &[ButtonChord],
     policy: MetroidTerminalPolicy,
 ) -> Result<Outcome, Box<dyn Error>> {
+    Ok(extend_budget(target, snapshot, suffix, policy, u64::MAX)?.0)
+}
+fn extend_budget(
+    target: &mut MetroidTarget,
+    snapshot: &MetroidSnapshot,
+    suffix: &[ButtonChord],
+    policy: MetroidTerminalPolicy,
+    frame_budget: u64,
+) -> Result<(Outcome, Vec<ButtonChord>), Box<dyn Error>> {
     target.restore(snapshot)?;
     let start = target.mechanical_state();
     let mut outcome = Outcome {
@@ -121,11 +169,17 @@ fn extend(
         reached_maps: BTreeSet::new(),
     };
     let before = target.frames_clocked();
+    let mut applied = Vec::new();
     for action in suffix {
         if target.is_dead() || target.is_victory() {
             break;
         }
-        target.apply(action);
+        let remaining = frame_budget.saturating_sub(target.frames_clocked() - before);
+        let Some(action) = capped_action(*action, remaining) else {
+            break;
+        };
+        target.apply(&action);
+        applied.push(action);
         if target.exit_kind() != ExitKind::Ok {
             return Err("probe emulator failure".into());
         }
@@ -146,13 +200,310 @@ fn extend(
     outcome.frames = target.frames_clocked() - before;
     outcome.dead = target.is_dead();
     outcome.endpoint = target.mechanical_state();
-    Ok(outcome)
+    Ok((outcome, applied))
 }
+fn validate_fixed_work(audit: &Audit, budget: u64) -> Result<(), Box<dyn Error>> {
+    let pairs = audit.samples.iter().map(Vec::len).sum::<usize>();
+    if pairs == 0 || pairs > 16 || budget == 0 || budget > 100_000 {
+        return Err("fixed-work probe exceeds 16 pairs or 100k frames per side".into());
+    }
+    if audit.samples.iter().flatten().any(|p| {
+        (p.candidate.area, p.candidate.map_x, p.candidate.map_y)
+            != (p.incumbent.area, p.incumbent.map_x, p.incumbent.map_y)
+    }) {
+        return Err("fixed-work competitors must share their starting map".into());
+    }
+    let frames: u64 = audit
+        .samples
+        .iter()
+        .flatten()
+        .flat_map(|p| {
+            p.candidate_input
+                .actions
+                .iter()
+                .chain(&p.incumbent_input.actions)
+        })
+        .map(|a| u64::from(a.bounded_hold_frames()))
+        .sum();
+    if frames > 2_000_000 {
+        return Err("fixed-work source reconstruction exceeds 2M action frames".into());
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct FixedSide {
+    frames: u64,
+    attempts: usize,
+    dead_endpoints: usize,
+    reached_maps: BTreeSet<(u8, u8, u8)>,
+    beyond_known_source_maps: BTreeSet<(u8, u8, u8)>,
+    equipment_gained: u8,
+    capacity_gain: bool,
+    boss_gain: bool,
+    witness_files: Vec<String>,
+}
+
+// All probe work is outside campaign search and reported separately.
+#[allow(clippy::too_many_arguments)]
+fn fixed_side(
+    target: &mut MetroidTarget,
+    snapshot: &MetroidSnapshot,
+    prefix: &MetroidInput,
+    known: &BTreeSet<(u8, u8, u8)>,
+    suffixes: &[Vec<ButtonChord>],
+    policy: MetroidTerminalPolicy,
+    budget: u64,
+    out: &Path,
+    label: &str,
+    log: &mut BufWriter<fs::File>,
+) -> Result<FixedSide, Box<dyn Error>> {
+    let mut result = FixedSide {
+        frames: 0,
+        attempts: 0,
+        dead_endpoints: 0,
+        reached_maps: BTreeSet::new(),
+        beyond_known_source_maps: BTreeSet::new(),
+        equipment_gained: 0,
+        capacity_gain: false,
+        boss_gain: false,
+        witness_files: Vec::new(),
+    };
+    for (trial, suffix) in suffixes.iter().enumerate() {
+        if result.frames == budget {
+            break;
+        }
+        let (outcome, applied) =
+            extend_budget(target, snapshot, suffix, policy, budget - result.frames)?;
+        if outcome.frames == 0 || outcome.frames > budget - result.frames {
+            return Err("fixed-work side made no progress or exceeded physical budget".into());
+        }
+        let unknown: BTreeSet<_> = outcome.reached_maps.difference(known).copied().collect();
+        let new_unknown = unknown
+            .difference(&result.beyond_known_source_maps)
+            .next()
+            .is_some();
+        let new_gain = outcome.equipment_gained & !result.equipment_gained != 0
+            || (outcome.capacity_gain && !result.capacity_gain)
+            || (outcome.boss_gain && !result.boss_gain);
+        if new_unknown || new_gain {
+            if result.witness_files.len() >= 32 {
+                return Err("fixed-work witness export exceeds 32 per side".into());
+            }
+            let mut input = prefix.clone();
+            input.actions.extend(applied);
+            let file = format!("witness-{label}-t{trial}.json");
+            let input_bytes = serde_json::to_vec(&input)?;
+            let producer_snapshot = target.snapshot().ok_or("witness snapshot failed")?;
+            fs::write(out.join(&file), &input_bytes)?;
+            fs::write(
+                out.join(format!("{file}.proof.json")),
+                serde_json::to_vec_pretty(&json!({
+                    "terminal_policy":policy.identifier(),"prefix_actions":prefix.actions.len(),
+                    "input_sha256":format!("{:x}",Sha256::digest(input_bytes)),
+                    "producer_snapshot_sha256":format!("{:x}",Sha256::digest(postcard::to_allocvec(&producer_snapshot)?)),
+                    "suffix_living_maps":outcome.reached_maps,"endpoint":outcome.endpoint
+                }))?,
+            )?;
+            result.witness_files.push(file);
+        }
+        result.frames += outcome.frames;
+        result.attempts += 1;
+        result.dead_endpoints += usize::from(outcome.dead);
+        result.reached_maps.extend(&outcome.reached_maps);
+        result.beyond_known_source_maps.extend(unknown);
+        result.equipment_gained |= outcome.equipment_gained;
+        result.capacity_gain |= outcome.capacity_gain;
+        result.boss_gain |= outcome.boss_gain;
+        writeln!(
+            log,
+            "{}",
+            json!({"side":label,"trial":trial,"cumulative_frames":result.frames,"outcome":outcome})
+        )?;
+        log.flush()?;
+    }
+    if result.frames != budget {
+        return Err("fixed-work suffix bank exhausted before matched physical budget".into());
+    }
+    Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fixed_work(
+    audit: &Audit,
+    audit_bytes: &[u8],
+    core: &Path,
+    rom: &[u8],
+    core_hash: &str,
+    out: &Path,
+    suffixes: &[Vec<ButtonChord>],
+    policy: MetroidTerminalPolicy,
+    budget: u64,
+) -> Result<(), Box<dyn Error>> {
+    let mut log = BufWriter::new(fs::File::create(out.join("outcomes.jsonl"))?);
+    let mut rows = Vec::new();
+    let mut prefix_frames = 0;
+    let mut snapshot_bytes_peak = 0;
+    for (stratum, pairs) in audit.samples.iter().enumerate() {
+        for (index, pair) in pairs.iter().enumerate() {
+            let mut known = BTreeSet::new();
+            let (mut candidate, cs, cf) = prepare(
+                core,
+                rom,
+                core_hash,
+                &pair.candidate_input,
+                pair.candidate,
+                policy,
+                Some(&mut known),
+                0,
+            )?;
+            let (mut incumbent, is, inf) = prepare(
+                core,
+                rom,
+                core_hash,
+                &pair.incumbent_input,
+                pair.incumbent,
+                policy,
+                Some(&mut known),
+                0,
+            )?;
+            prefix_frames += cf + inf;
+            snapshot_bytes_peak = snapshot_bytes_peak
+                .max(postcard::to_allocvec(&cs)?.len() + postcard::to_allocvec(&is)?.len());
+            let c = fixed_side(
+                &mut candidate,
+                &cs,
+                &pair.candidate_input,
+                &known,
+                suffixes,
+                policy,
+                budget,
+                out,
+                &format!("s{stratum}-p{index}-candidate"),
+                &mut log,
+            )?;
+            let i = fixed_side(
+                &mut incumbent,
+                &is,
+                &pair.incumbent_input,
+                &known,
+                suffixes,
+                policy,
+                budget,
+                out,
+                &format!("s{stratum}-p{index}-incumbent"),
+                &mut log,
+            )?;
+            let (discarded, survivor) = if pair.replaces { (i, c) } else { (c, i) };
+            rows.push(json!({"stratum":stratum,"pair":index,"execution":pair.execution,
+                "candidate_replaces":pair.replaces,"known_source_maps":known,
+                "discarded_only_maps":discarded.reached_maps.difference(&survivor.reached_maps).collect::<Vec<_>>(),
+                "survivor_only_maps":survivor.reached_maps.difference(&discarded.reached_maps).collect::<Vec<_>>(),
+                "discarded_only_beyond_known":discarded.beyond_known_source_maps.difference(&survivor.beyond_known_source_maps).collect::<Vec<_>>(),
+                "survivor_only_beyond_known":survivor.beyond_known_source_maps.difference(&discarded.beyond_known_source_maps).collect::<Vec<_>>(),
+                "discarded":discarded,"survivor":survivor}));
+            fs::write(
+                out.join("completed-pairs.json"),
+                serde_json::to_vec_pretty(&rows)?,
+            )?;
+        }
+    }
+    let report = json!({"format":"metroid-fixed-work-probe-v1","terminal_policy":policy.identifier(),
+        "scope":"development source-pair counterfactual, not fresh search or full-archive novelty",
+        "rom_sha256":format!("{:x}",Sha256::digest(rom)),"core_sha256":core_hash,
+        "audit_sha256":format!("{:x}",Sha256::digest(audit_bytes)),
+        "suffixes_sha256":format!("{:x}",Sha256::digest(fs::read(out.join("suffixes.json"))?)),
+        "outcomes_sha256":format!("{:x}",Sha256::digest(fs::read(out.join("outcomes.jsonl"))?)),
+        "frames_per_side":budget,"suffix_bank_trials":suffixes.len(),"actions_per_trial":suffixes[0].len(),
+        "prefix_including_bootstrap_frames":prefix_frames,"probe_frames":2*budget*rows.len() as u64,
+        "two_source_snapshot_serialized_bytes_peak":snapshot_bytes_peak,"pairs":rows,
+        "limitations":["Source paths bound prior observed map coverage from below; absence is unknown against the complete campaign.",
+        "Equal physical frame budgets give early-terminal sources more attempts; final action is clipped at the cap.",
+        "Witness exports are unverified until independent ordinary-genesis replay.",
+        "Source sampling is conditional on cached snapshots and bounded input history; one development campaign."]});
+    fs::write(
+        out.join("summary.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    println!(
+        "{}",
+        json!({"format":"metroid-fixed-work-probe-v1","pairs":report["pairs"].as_array().map(Vec::len),"probe_frames":report["probe_frames"],"prefix_frames":prefix_frames})
+    );
+    Ok(())
+}
+
+fn verify_sources(args: &[String]) -> Result<(), Box<dyn Error>> {
+    if args.len() != 5 {
+        return Err("usage: metroid-retention-probe --verify-sources CORE ROM AUDIT OUTPUT".into());
+    }
+    let (audit, bytes) = read_audit_limit(Path::new(&args[3]), MAX_ACTIONS + 128)?;
+    let offsets: Vec<[usize; 2]> = serde_json::from_value(
+        serde_json::from_slice::<serde_json::Value>(&bytes)?["verification_prefix_actions"].clone(),
+    )?;
+    let pair_count = audit.samples.iter().map(Vec::len).sum::<usize>();
+    if offsets.len() != pair_count
+        || audit.samples.iter().flatten().zip(&offsets).any(|(p, o)| {
+            o[0] > p.candidate_input.actions.len() || o[1] > p.incumbent_input.actions.len()
+        })
+    {
+        return Err("verification map window count or action offset is invalid".into());
+    }
+    validate_fixed_work(&audit, 1)?;
+    let core = Path::new(&args[1]);
+    let rom = fs::read(&args[2])?;
+    let core_hash = format!("{:x}", Sha256::digest(fs::read(core)?));
+    let out = Path::new(&args[4]);
+    fs::create_dir(out)?;
+    let mut rows = Vec::new();
+    let mut physical_frames = 0;
+    for (stratum, pairs) in audit.samples.iter().enumerate() {
+        for (index, pair) in pairs.iter().enumerate() {
+            let mut sides = Vec::new();
+            for (side, (input, state)) in [
+                (&pair.candidate_input, pair.candidate),
+                (&pair.incumbent_input, pair.incumbent),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut maps = BTreeSet::new();
+                let (target, snapshot, frames) = prepare(
+                    core,
+                    &rom,
+                    &core_hash,
+                    input,
+                    state,
+                    MetroidTerminalPolicy::BcdUnderflow,
+                    Some(&mut maps),
+                    offsets[rows.len()][side],
+                )?;
+                physical_frames += frames;
+                sides.push(json!({"endpoint":target.mechanical_state(),"dead":target.is_dead(),"map_from_action":offsets[rows.len()][side],"living_maps":maps,"physical_frames":frames,"snapshot_sha256":format!("{:x}", Sha256::digest(postcard::to_allocvec(&snapshot)?))}));
+            }
+            rows.push(json!({"stratum":stratum,"pair":index,"sides":sides}));
+            fs::write(
+                out.join("completed-pairs.json"),
+                serde_json::to_vec_pretty(&rows)?,
+            )?;
+        }
+    }
+    let result = json!({"format":"metroid-source-replay-v2","terminal_policy":MetroidTerminalPolicy::BcdUnderflow.identifier(),"audit_sha256":format!("{:x}",Sha256::digest(bytes)),"core_sha256":core_hash,"rom_sha256":format!("{:x}",Sha256::digest(rom)),"physical_frames":physical_frames,"pairs":rows});
+    fs::write(
+        out.join("summary.json"),
+        serde_json::to_vec_pretty(&result)?,
+    )?;
+    println!("{}", json!({"physical_frames":physical_frames}));
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if !(6..=7).contains(&args.len()) {
+    if args.first().is_some_and(|v| v == "--verify-sources") {
+        return verify_sources(&args);
+    }
+    if !(6..=8).contains(&args.len()) {
         return Err(
-            "usage: metroid-retention-probe CORE ROM AUDIT OUT TRIALS ACTIONS [TERMINAL_POLICY]"
+            "usage: metroid-retention-probe CORE ROM AUDIT OUT TRIALS ACTIONS [TERMINAL_POLICY] [FRAMES_PER_SIDE]"
                 .into(),
         );
     }
@@ -163,8 +514,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let out = Path::new(&args[3]);
     let trials: usize = args[4].parse()?;
     let actions: usize = args[5].parse()?;
-    if trials == 0 || trials > 256 || actions == 0 || actions > 128 {
+    let frame_budget = args.get(7).map(|v| v.parse::<u64>()).transpose()?;
+    let max_trials = if frame_budget.is_some() { 4096 } else { 256 };
+    if trials == 0 || trials > max_trials || actions == 0 || actions > 128 {
         return Err("probe limits exceed bounded diagnostic".into());
+    }
+    if let Some(budget) = frame_budget {
+        validate_fixed_work(&audit, budget)?;
     }
     let rom = fs::read(&args[1])?;
     fs::create_dir(out)?;
@@ -174,6 +530,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(|_| (0..actions).map(|_| sample_chord(&mut rng)).collect())
         .collect::<Result<_, _>>()?;
     fs::write(out.join("suffixes.json"), serde_json::to_vec(&suffixes)?)?;
+    if let Some(budget) = frame_budget {
+        return fixed_work(
+            &audit, &bytes, core, &rom, &core_hash, out, &suffixes, policy, budget,
+        );
+    }
     let mut log = BufWriter::new(fs::File::create(out.join("outcomes.jsonl"))?);
     let mut totals = vec![[0u64; 6]; audit.samples.len()];
     let mut prefix_frames = 0u64;
@@ -188,6 +549,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &pair.candidate_input,
                 pair.candidate,
                 policy,
+                None,
+                0,
             )?;
             let (mut incumbent, is, inf) = prepare(
                 core,
@@ -196,6 +559,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &pair.incumbent_input,
                 pair.incumbent,
                 policy,
+                None,
+                0,
             )?;
             prefix_frames += cf + inf;
             pair_count += 1;
@@ -294,6 +659,69 @@ mod tests {
             candidate_input: MetroidInput { actions: vec![] },
             incumbent_input: MetroidInput { actions: vec![] },
         }
+    }
+
+    #[test]
+    fn verification_allows_only_the_bounded_suffix_beyond_source_limit() {
+        use super::validate_audit_limit;
+        let mut p = pair();
+        p.candidate_input.actions = vec![ButtonChord::new(0, 1); MAX_ACTIONS + 128];
+        let mut audit = Audit {
+            format: "metroid-retention-audit-v1".into(),
+            samples: vec![vec![]; STRATA],
+        };
+        audit.samples[0].push(p);
+        assert!(validate_audit(&audit).is_err());
+        assert!(validate_audit_limit(&audit, MAX_ACTIONS + 128).is_ok());
+        audit.samples[0][0]
+            .candidate_input
+            .actions
+            .push(ButtonChord::new(0, 1));
+        assert!(validate_audit_limit(&audit, MAX_ACTIONS + 128).is_err());
+    }
+
+    #[test]
+    fn fixed_work_requires_a_shared_start_map() {
+        use super::validate_fixed_work;
+        let mut p = pair();
+        p.incumbent.map_x = 1;
+        let mut audit = Audit {
+            format: "metroid-retention-audit-v1".into(),
+            samples: vec![vec![]; STRATA],
+        };
+        audit.samples[0].push(p);
+        assert!(validate_fixed_work(&audit, 100).is_err());
+    }
+
+    #[test]
+    fn physical_budget_never_normalizes_zero_into_an_extra_frame() {
+        use super::capped_action;
+        let action = ButtonChord::new(0x83, 120);
+        assert!(capped_action(action, 0).is_none());
+        assert_eq!(capped_action(action, 1), Some(ButtonChord::new(0x83, 1)));
+        assert_eq!(
+            capped_action(action, 119),
+            Some(ButtonChord::new(0x83, 119))
+        );
+        assert_eq!(capped_action(action, 121), Some(action));
+    }
+
+    #[test]
+    fn fixed_work_rejects_aggregate_prefix_work_before_replay() {
+        use super::validate_fixed_work;
+        let mut audit = Audit {
+            format: "metroid-retention-audit-v1".into(),
+            samples: vec![vec![]; STRATA],
+        };
+        assert!(validate_fixed_work(&audit, 100_000).is_err());
+        audit.samples[0].push(pair());
+        assert!(validate_fixed_work(&audit, 100_000).is_ok());
+        assert!(validate_fixed_work(&audit, 100_001).is_err());
+        audit.samples[0][0].candidate_input.actions = vec![ButtonChord::new(0, 120); MAX_ACTIONS];
+        audit.samples[0][0].incumbent_input.actions = vec![ButtonChord::new(0, 120); MAX_ACTIONS];
+        let second = audit.samples[0][0].clone();
+        audit.samples[0].push(second);
+        assert!(validate_fixed_work(&audit, 100_000).is_err());
     }
 
     #[test]

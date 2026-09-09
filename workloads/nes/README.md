@@ -114,3 +114,32 @@ The local Metroid diagnostic uses the same option named `duration`.
 The ablation `stratified_two_band_mean_matched_v1` retains the two historical
 bands but chooses short holds with probability 131/231, matching the three-band
 mean of 121/3 frames. It tests average duration separately from middle-band support.
+
+`metroid-retention-probe` accepts an optional final `FRAMES_PER_SIDE` argument
+following the terminal policy. This development-only mode gives each source
+exactly the same physical suffix work, resampling after death and clipping the
+last hold at the cap. It records map reach against the union of both source
+trajectories, a lower bound on prior campaign coverage. Absence from that union
+is not global novelty. Inputs, suffix banks, work limits, and unverified witness
+exports are explicit; no probe feedback enters a campaign. See the
+[follow-up protocol](../../benchmarks/search/alternative-futures-followup/README.md).
+
+`mm2-future-probe REQUEST OUTPUT` samples bounded frontier and calibration
+boundaries from a supplied own-chain Wily1 trajectory, then executes ordinary
+suffixes with explicit physical work and snapshot accounting. The request pins
+both the chain prefix and trajectory input hashes. Its cell novelty is relative
+to that trajectory, not the complete archive. Neither diagnostic changes search
+keys, retention, selection, or controller generation.
+
+Fixed-work Metroid witness sidecars bind the input, terminal policy, suffix start,
+and producing snapshot hash. Source-only verification uses
+`--verify-sources CORE ROM AUDIT OUTPUT`; its audit additionally carries a top-level
+`verification_prefix_actions` array, containing one
+`[candidate_offset, incumbent_offset]` entry per sample in stratum order. Only observations after those action offsets count as
+suffix evidence. Verification allows the 8,192-action source plus at most 128
+suffix actions and retains the aggregate work bound. The fixed verification
+policy is recorded in the result.
+
+The MM2 diagnostic request also requires `source_snapshot_sha256`, taken from
+the producing chain's witness record. Its result explicitly reports missing
+calibration rather than inventing a replacement source.

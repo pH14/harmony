@@ -1,0 +1,103 @@
+{
+  "format": "alternative-futures-followup-accounting-v2",
+  "physical_emulator_frames": 19631012,
+  "cpu_seconds_lower_bound": 500.57844399999993,
+  "components": [
+    {
+      "evidence": "f02-execution.json",
+      "record": "runs[0]",
+      "label": "compatibility",
+      "prefix_and_bootstrap_frames": 898376,
+      "probe_frames": 1197775,
+      "physical_frames": 2096151,
+      "cpu_seconds": 53.786301
+    },
+    {
+      "evidence": "f02-execution.json",
+      "record": "runs[1]",
+      "label": "matched-a",
+      "prefix_and_bootstrap_frames": 898376,
+      "probe_frames": 3200000,
+      "physical_frames": 4098376,
+      "cpu_seconds": 105.166195
+    },
+    {
+      "evidence": "f02-execution.json",
+      "record": "runs[2]",
+      "label": "matched-b",
+      "prefix_and_bootstrap_frames": 898376,
+      "probe_frames": 3200000,
+      "physical_frames": 4098376,
+      "cpu_seconds": 105.17214
+    },
+    {
+      "evidence": "f04-metroid-execution.json",
+      "record": "runs[0]",
+      "label": "compatibility",
+      "prefix_and_bootstrap_frames": 898376,
+      "probe_frames": 1197775,
+      "physical_frames": 2096151,
+      "cpu_seconds": 53.773818
+    },
+    {
+      "evidence": "f04-metroid-execution.json",
+      "record": "runs[1]",
+      "label": "matched",
+      "prefix_and_bootstrap_frames": 898376,
+      "probe_frames": 3200000,
+      "physical_frames": 4098376,
+      "cpu_seconds": 105.277613
+    },
+    {
+      "evidence": "f02-witness-proof.json",
+      "label": "30 independent witness replays",
+      "physical_frames": 714358,
+      "cpu_seconds": 18.831964
+    },
+    {
+      "evidence": "f04-witness-proof.json",
+      "label": "30 independent witness replays",
+      "physical_frames": 714358,
+      "cpu_seconds": 18.695548000000002
+    },
+    {
+      "evidence": "f03-execution.json",
+      "record": "runs[0]",
+      "label": "c02-chain-s20261001",
+      "prefix_and_bootstrap_frames": 145799,
+      "probe_frames": 251315,
+      "physical_frames": 397114,
+      "cpu_seconds": 9.078536999999999
+    },
+    {
+      "evidence": "f03-execution.json",
+      "record": "runs[1]",
+      "label": "c03-chain-s20261001",
+      "prefix_and_bootstrap_frames": 146910,
+      "probe_frames": 313409,
+      "physical_frames": 460319,
+      "cpu_seconds": 10.877734
+    },
+    {
+      "evidence": "f04-mm2-execution.json",
+      "record": "runs[0]",
+      "label": "c02-chain-s20261001",
+      "prefix_and_bootstrap_frames": 145799,
+      "probe_frames": 251315,
+      "physical_frames": 397114,
+      "cpu_seconds": 9.094660000000001
+    },
+    {
+      "evidence": "f04-mm2-execution.json",
+      "record": "runs[1]",
+      "label": "c03-chain-s20261001",
+      "prefix_and_bootstrap_frames": 146910,
+      "probe_frames": 313409,
+      "physical_frames": 460319,
+      "cpu_seconds": 10.823934
+    }
+  ],
+  "exclusions": "Compilation, unit tests, Clippy, CI, file analysis/export and Fable inference excluded. CPU is measured completed native diagnostic work, not all project work. F01 artifact reanalysis uses zero emulator frames.",
+  "registered_frame_ceiling": 25000000,
+  "registered_cpu_seconds_ceiling": 14400
+}
