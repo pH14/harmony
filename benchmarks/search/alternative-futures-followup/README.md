@@ -208,3 +208,27 @@ This rejects the proposed archive-new-map benefit for these discarded sources
 under the registered local sampler and work. It does not prove long-horizon
 behavioral equivalence, reject all retention mechanisms, or establish global
 novelty for the survivor. No retention implementation or fresh panel is qualified.
+
+## F04 preregistration: verification qualification after review
+
+The scientific outcome remains supported. Tighten the evidence binding: producer
+snapshot hashes and prefix action offsets on every Metroid witness; verify maps
+only after that offset, compare both independent replay snapshots to the producer,
+and require the exact witness count. Record the fixed v3 verification policy.
+Allow the source horizon plus at most128 suffix actions in source-only verification.
+Require fixed-work competitors to share a starting map (all frozen16 already do).
+
+For MM2, assert a single stage request, pin the already observed input hash, bind
+its replay endpoint to the original chain witness snapshot, assert reset-origin
+identity, report missing calibration explicitly, and bind any future gain input
+to its own-chain prefix. Reset restores the emulator snapshot without clocking
+frames; no omitted prefix re-emulation was found. Preserve the upper-median rule
+and test its two-screen missing-calibration case; no existing sample set changes.
+
+Qualification: focused tests and all-target Clippy <=10m, native builds separate.
+Then original P03 compatibility, one exact F02 equal-work repeat, all15 witnesses
+replayed twice with producer/suffix binding, and both F03 chains again. Each native
+cell <=5m onCPU16 (Metroid) or17 (MM2), immutable F04 outputs. Require the previous
+outcome hashes exactly; no new seeds, suffix bank, starts, work limits, or candidate
+policy. Expected additional physical work7,766,318 frames, cumulative19,631,012,
+below25M. Stop on any discrepancy and diagnose rather than silently rebaseline.

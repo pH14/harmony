@@ -35,6 +35,7 @@ struct Request {
     prefix_sha256: String,
     input: PathBuf,
     input_sha256: String,
+    source_snapshot_sha256: String,
 }
 fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -175,18 +176,34 @@ fn main() -> Result<()> {
         }
     }
     let endpoint = target.mechanical_state();
+    let endpoint_snapshot = target.snapshot().ok_or("source endpoint snapshot failed")?;
+    let source_snapshot_sha256 = hash(&postcard::to_allocvec(&endpoint_snapshot)?);
+    if source_snapshot_sha256 != request.source_snapshot_sha256 {
+        return Err("source endpoint differs from the frozen chain witness snapshot".into());
+    }
     let selected = choose(&boundaries);
     if selected.is_empty() {
         return Err("no eligible source boundaries".into());
     }
+    let frontier_sources = selected
+        .iter()
+        .filter(|(label, _)| label == "frontier")
+        .count();
+    let calibration_sources = selected.len() - frontier_sources;
+    let missing_calibration = calibration_sources == 0;
     fs::write(
         out.join("sources.json"),
         serde_json::to_vec_pretty(
-            &json!({"origin":origin,"endpoint":endpoint,"eligible_boundaries":boundaries,"selected":selected,"known_trajectory_cells":known}),
+            &json!({"origin":origin,"endpoint":endpoint,"source_snapshot_sha256":source_snapshot_sha256,"missing_calibration":missing_calibration,"frontier_sources":frontier_sources,"calibration_sources":calibration_sources,"eligible_boundaries":boundaries,"selected":selected,"known_trajectory_cells":known}),
         )?,
     )?;
     let wanted: BTreeSet<_> = selected.iter().map(|(_, b)| b.actions).collect();
+    // Mm2Target::reset calls QuickNesMachine::replay, which restores a snapshot
+    // without running emulator frames. The second traversal is charged below.
     target.reset();
+    if target.exit_kind() != ExitKind::Ok || target.mechanical_state() != origin {
+        return Err("reset did not restore the recorded origin".into());
+    }
     let mut snapshots: BTreeMap<usize, Mm2Snapshot> = BTreeMap::new();
     if wanted.contains(&0) {
         snapshots.insert(0, target.snapshot().ok_or("snapshot failed")?);
@@ -266,9 +283,17 @@ fn main() -> Result<()> {
                     actions: source.actions[..boundary.actions].to_vec(),
                 };
                 witness.actions.extend(&suffix[..used]);
+                let file = format!("gain-a{}-t{trial}.json", boundary.actions);
+                let witness_bytes = serde_json::to_vec(&witness)?;
+                fs::write(out.join(&file), &witness_bytes)?;
                 fs::write(
-                    out.join(format!("gain-a{}-t{trial}.json", boundary.actions)),
-                    serde_json::to_vec(&witness)?,
+                    out.join(format!("{file}.proof.json")),
+                    serde_json::to_vec_pretty(&json!({
+                        "prefix_sha256":request.prefix_sha256,"input_sha256":hash(&witness_bytes),
+                        "source_input_sha256":request.input_sha256,"source_actions":boundary.actions,
+                        "core_sha256":core_hash,"rom_sha256":hash(&rom),"stage":"wily1",
+                        "verification":"unverified composed own-chain input"
+                    }))?,
                 )?;
             }
             writeln!(
@@ -284,7 +309,7 @@ fn main() -> Result<()> {
             serde_json::to_vec_pretty(&reports)?,
         )?;
     }
-    let report = json!({"format":"mm2-trajectory-future-probe-v1","request_sha256":hash(&bytes),"core_sha256":core_hash,"rom_sha256":hash(&rom),"prefix_sha256":request.prefix_sha256,"input_sha256":request.input_sha256,"suffixes_sha256":hash(&suffix_bytes),"origin":origin,"endpoint":endpoint,"reconstruction_frames_including_bootstrap":reconstruction_frames,"probe_frames":spent-reconstruction_frames,"total_physical_frames":spent,"snapshot_serialized_bytes":snapshot_bytes,"sources":reports,"limitations":["Trajectory-conditioned starts, not a complete retained-archive sample.","Source-path absence is unknown against the whole campaign.","Sparse scrolling observations are not frame durations or proof of control availability.","Equal suffix allowances, early terminal stops: actual work differs across sources.","Boss/stage gains need independent ordinary-genesis witness verification."]});
+    let report = json!({"format":"mm2-trajectory-future-probe-v2","request_sha256":hash(&bytes),"core_sha256":core_hash,"rom_sha256":hash(&rom),"prefix_sha256":request.prefix_sha256,"input_sha256":request.input_sha256,"suffixes_sha256":hash(&suffix_bytes),"origin":origin,"endpoint":endpoint,"source_snapshot_sha256":source_snapshot_sha256,"missing_calibration":missing_calibration,"frontier_sources":frontier_sources,"calibration_sources":calibration_sources,"reconstruction_frames_including_bootstrap":reconstruction_frames,"probe_frames":spent-reconstruction_frames,"total_physical_frames":spent,"snapshot_serialized_bytes":snapshot_bytes,"sources":reports,"limitations":["Trajectory-conditioned starts, not a complete retained-archive sample.","Source-path absence is unknown against the whole campaign.","Sparse scrolling observations are not frame durations or proof of control availability.","Equal suffix allowances, early terminal stops: actual work differs across sources.","Boss/stage gains need independent ordinary-genesis witness verification."]});
     fs::write(
         out.join("summary.json"),
         serde_json::to_vec_pretty(&report)?,
@@ -298,6 +323,30 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn two_screens_have_an_explicit_missing_upper_median_calibration() {
+        let bs = [
+            Boundary {
+                actions: 0,
+                state: Mm2MechanicalState {
+                    screen: 1,
+                    ..Default::default()
+                },
+            },
+            Boundary {
+                actions: 1,
+                state: Mm2MechanicalState {
+                    screen: 2,
+                    ..Default::default()
+                },
+            },
+        ];
+        let selected = choose(&bs);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].0, "frontier");
+        assert_eq!(selected[0].1.state.screen, 2);
+        assert!(!selected.iter().any(|(label, _)| label == "calibration"));
+    }
     #[test]
     fn source_selection_deduplicates_cells_and_keeps_calibration_separate() {
         let mut bs = Vec::new();

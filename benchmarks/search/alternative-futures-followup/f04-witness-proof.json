@@ -1,0 +1,594 @@
+{
+  "format": "F02-witness-verification-v2",
+  "build": {
+    "binary_sha256": "6906a651d67cdf539e40ab8a549c4c95ad08b8034cb789adb48881ebfbc6cc4b",
+    "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+    "dirty": null,
+    "files": 324,
+    "format": "harmony-search-build-v1",
+    "locked": true,
+    "profile": "release",
+    "revision": null,
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+    "rustflags": "",
+    "source_tree_sha256": "7158224f6d0f9388d678dbf333b494030c6fe0300910b70ac4458c281b60b0f2",
+    "target_cache": "/root/harmony-alternative-futures-20260908/target-native"
+  },
+  "resources": {
+    "exit_code": 0,
+    "elapsed_seconds": 18.701222133007832,
+    "cpu_seconds": 18.695548000000002,
+    "max_rss_kib": 23084,
+    "wall_bound_seconds": 300
+  },
+  "audit_sha256": "bdac3d058af305636c383f6d709ae3533c2dec0a25191a8877579748625c1d8d",
+  "result_sha256": "50d3558ec52bb4faa4580e41a805f81c34928d86a3de2131ae5f76dd30447970",
+  "physical_frames": 714358,
+  "witnesses": [
+    {
+      "file": "witness-s2-p1-incumbent-t1.json",
+      "input_sha256": "e2b611462298fbdf0bed7f0c8dc271711b8d0ee0a8c500f5751e9c53493103ce",
+      "endpoint": {
+        "area": 17,
+        "bosses": 0,
+        "door": 0,
+        "ending": false,
+        "energy_tanks": 0,
+        "equipment": 16,
+        "health": 0,
+        "map_x": 23,
+        "map_y": 14,
+        "missile_capacity": 5,
+        "missiles": 0,
+        "mode": 3,
+        "pose": 7,
+        "x": 84,
+        "y": 118
+      },
+      "dead": true,
+      "snapshot_sha256": "78caeef983ac9565d1305e949e5fbbb8230c44890a0fc9c787cb922784fdb463",
+      "producer_snapshot_sha256": "78caeef983ac9565d1305e949e5fbbb8230c44890a0fc9c787cb922784fdb463",
+      "prefix_actions": 486,
+      "required_living_suffix_maps": [
+        [
+          17,
+          22,
+          14
+        ],
+        [
+          17,
+          23,
+          14
+        ]
+      ],
+      "verified_replays": 2,
+      "physical_frames": 38094
+    },
+    {
+      "file": "witness-s2-p1-incumbent-t8.json",
+      "input_sha256": "03d235f7f3087736bcc02ac399a026a7bbec42dc2e60fa97e16ac9781c7939f0",
+      "endpoint": {
+        "area": 17,
+        "bosses": 0,
+        "door": 0,
+        "ending": false,
+        "energy_tanks": 0,
+        "equipment": 16,
+        "health": 0,
+        "map_x": 21,
+        "map_y": 14,
+        "missile_capacity": 5,
+        "missiles": 0,
+        "mode": 3,
+        "pose": 7,
+        "x": 176,
+        "y": 117
+      },
+      "dead": true,
+      "snapshot_sha256": "d46fc5dc30c32655445962807b49352c040da73d70d95788072574333700fe5b",
+      "producer_snapshot_sha256": "d46fc5dc30c32655445962807b49352c040da73d70d95788072574333700fe5b",
+      "prefix_actions": 486,
+      "required_living_suffix_maps": [
+        [
+          17,
+          21,
+          14
+        ],
+        [
+          17,
+          22,
+          14
+        ]
+      ],
+      "verified_replays": 2,
+      "physical_frames": 37780
+    },
+    {
+      "file": "witness-s2-p1-candidate-t0.json",
+      "input_sha256": "3a2bb5336cf84d8620e7ab66831b52f987ef9b065952acb11c64edcfc20a636f",
+      "endpoint": {
+        "area": 17,
+        "bosses": 0,
+        "door": 0,
+        "ending": false,
+        "energy_tanks": 0,
+        "equipment": 16,
+        "health": 0,
+        "map_x": 21,
+        "map_y": 14,
+        "missile_capacity": 5,
+        "missiles": 2,
+        "mode": 3,
+        "pose": 7,
+        "x": 174,
+        "y": 118
+      },
+      "dead": true,
+      "snapshot_sha256": "c2b9b441aecac10b51901d4216e2db7b85622ca57001ad6920d3aec3907c719d",
+      "producer_snapshot_sha256": "c2b9b441aecac10b51901d4216e2db7b85622ca57001ad6920d3aec3907c719d",
+      "prefix_actions": 503,
+      "required_living_suffix_maps": [
+        [
+          17,
+          21,
+          14
+        ],
+        [
+          17,
+          22,
+          14
+        ]
+      ],
+      "verified_replays": 2,
+      "physical_frames": 37812
+    },
+    {
+      "file": "witness-s2-p1-candidate-t1.json",
+      "input_sha256": "d9f050c781a2d4336c71bd1eb09a26c61310b8eaa7608e07d8b1ba8ba256335f",
+      "endpoint": {
+        "area": 17,
+        "bosses": 0,
+        "door": 0,
+        "ending": false,
+        "energy_tanks": 0,
+        "equipment": 16,
+        "health": 0,
+        "map_x": 23,
+        "map_y": 14,
+        "missile_capacity": 5,
+        "missiles": 0,
+        "mode": 3,
+        "pose": 7,
+        "x": 78,
+        "y": 115
+      },
+      "dead": true,
+      "snapshot_sha256": "5f3af5478b2da3d373c757188e3750ba2c749ebfa560f2b2cffdc475a9e9d30c",
+      "producer_snapshot_sha256": "5f3af5478b2da3d373c757188e3750ba2c749ebfa560f2b2cffdc475a9e9d30c",
+      "prefix_actions": 503,
+      "required_living_suffix_maps": [
+        [
+          17,
+          22,
+          14
+        ],
+        [
+          17,
+          23,
+          14
+        ]
+      ],
+      "verified_replays": 2,
+      "physical_frames": 38774
+    },
+    {
+      "file": "witness-s2-p3-candidate-t22.json",
+      "input_sha256": "a92668a46201118ac4590ed08cf9fb48f8225580d5e12d6b3bbc9b447db694ef",
+      "endpoint": {
+        "area": 17,
+        "bosses": 0,
+        "door": 0,
+        "ending": false,
+        "energy_tanks": 0,
+        "equipment": 16,
+        "health": 100,
+        "map_x": 23,
+        "map_y": 14,
+        "missile_capacity": 10,
+        "missiles": 0,
+        "mode": 3,
+        "pose": 1,
+        "x": 132,
+        "y": 225
+      },
+      "dead": false,
+      "snapshot_sha256": "6b1bd990c329eb95f63a1a49bf7fd2c394ae023ca35d9b42d527e32a9bead912",
+      "producer_snapshot_sha256": "6b1bd990c329eb95f63a1a49bf7fd2c394ae023ca35d9b42d527e32a9bead912",
+      "prefix_actions": 753,
+      "required_living_suffix_maps": [
+        [
+          17,
+          22,
+          14
+        ],
+        [
+          17,
+          23,
+          14
+        ]
+      ],
+      "verified_replays": 2,
+      "physical_frames": 58560
+    },
+    {
+      "file": "witness-s2-p3-incumbent-t10.json",
+      "input_sha256": "59109cd143a26beeb1a2c57ab08ea52268b41476c26e37ec1bc618fd4b679124",
+      "endpoint": {
+        "area": 17,
+        "bosses": 0,
+        "door": 0,
+        "ending": false,
+        "energy_tanks": 0,
+        "equipment": 16,
+        "health": 72,
+        "map_x": 23,
+        "map_y": 14,
+        "missile_capacity": 10,
+        "missiles": 0,
+        "mode": 3,
+        "pose": 4,
+        "x": 35,
+        "y": 105
+      },
+      "dead": false,
+      "snapshot_sha256": "cbb834382d90e1d522db1ea96817d6e3575816b5d21e4994569e74e5503c23de",
+      "producer_snapshot_sha256": "cbb834382d90e1d522db1ea96817d6e3575816b5d21e4994569e74e5503c23de",
+      "prefix_actions": 626,
+      "required_living_suffix_maps": [
+        [
+          17,
+          22,
+          14
+        ],
+        [
+          17,
+          23,
+          14
+        ]
+      ],
+      "verified_replays": 2,
+      "physical_frames": 47986
+    },
+    {
+      "file": "witness-s2-p7-candidate-t1.json",
+      "input_sha256": "9b0394e31dc30671c2cf221e84fa12049d587058126da20d35d70c9c28f98bc0",
+      "endpoint": {
+        "area": 17,
+        "bosses": 0,
+        "door": 0,
+        "ending": false,
+        "energy_tanks": 0,
+        "equipment": 16,
+        "health": 0,
+        "map_x": 23,
+        "map_y": 14,
+        "missile_capacity": 10,
+        "missiles": 0,
+        "mode": 3,
+        "pose": 7,
+        "x": 77,
+        "y": 115
+      },
+      "dead": true,
+      "snapshot_sha256": "a1b2e4f323dc294684622219a4bbfe7409aa7bc43f6af788be4f07b1e123a35b",
+      "producer_snapshot_sha256": "a1b2e4f323dc294684622219a4bbfe7409aa7bc43f6af788be4f07b1e123a35b",
+      "prefix_actions": 609,
+      "required_living_suffix_maps": [
+        [
+          17,
+          23,
+          14
+        ]
+      ],
+      "verified_replays": 2,
+      "physical_frames": 47158
+    },
+    {
+      "file": "witness-s2-p7-incumbent-t1.json",
+      "input_sha256": "b81e67d60c1c2f94d5de3bb4cfa20d9eda23cf5b29a100c2fdeb19ce94026c32",
+      "endpoint": {
+        "area": 17,
+        "bosses": 0,
+        "door": 0,
+        "ending": false,
+        "energy_tanks": 0,
+        "equipment": 16,
+        "health": 0,
+        "map_x": 23,
+        "map_y": 14,
+        "missile_capacity": 10,
+        "missiles": 0,
+        "mode": 3,
+        "pose": 7,
+        "x": 128,
+        "y": 225
+      },
+      "dead": true,
+      "snapshot_sha256": "4034def365963bf332650b78256973edcc4a1221aab27b3f2412df1d3be085d8",
+      "producer_snapshot_sha256": "4034def365963bf332650b78256973edcc4a1221aab27b3f2412df1d3be085d8",
+      "prefix_actions": 788,
+      "required_living_suffix_maps": [
+        [
+          17,
+          23,
+          14
+        ]
+      ],
+      "verified_replays": 2,
+      "physical_frames": 61694
+    },
+    {
+      "file": "witness-s2-p7-incumbent-t22.json",
+      "input_sha256": "060b2a9a2304df362d889540d27c09e2d9a829b86f30d408cda6a2e640275756",
+      "endpoint": {
+        "area": 17,
+        "bosses": 0,
+        "door": 0,
+        "ending": false,
+        "energy_tanks": 0,
+        "equipment": 16,
+        "health": 0,
+        "map_x": 24,
+        "map_y": 14,
+        "missile_capacity": 10,
+        "missiles": 0,
+        "mode": 3,
+        "pose": 7,
+        "x": 7,
+        "y": 226
+      },
+      "dead": true,
+      "snapshot_sha256": "7aef8f80246d76351487e938b50b36fbfed442eaa2aa219d373adbaf230aeaf0",
+      "producer_snapshot_sha256": "7aef8f80246d76351487e938b50b36fbfed442eaa2aa219d373adbaf230aeaf0",
+      "prefix_actions": 788,
+      "required_living_suffix_maps": [
+        [
+          17,
+          23,
+          14
+        ],
+        [
+          17,
+          24,
+          14
+        ]
+      ],
+      "verified_replays": 2,
+      "physical_frames": 60728
+    },
+    {
+      "file": "witness-s2-p10-candidate-t0.json",
+      "input_sha256": "39541fb14152817cc681e4a9e608156b8d54ea3c05b4edf8396df2ba342569e4",
+      "endpoint": {
+        "area": 17,
+        "bosses": 0,
+        "door": 0,
+        "ending": false,
+        "energy_tanks": 0,
+        "equipment": 16,
+        "health": 142,
+        "map_x": 22,
+        "map_y": 14,
+        "missile_capacity": 10,
+        "missiles": 0,
+        "mode": 3,
+        "pose": 0,
+        "x": 28,
+        "y": 113
+      },
+      "dead": false,
+      "snapshot_sha256": "564b164ac3cd1e508340414c2770d5298c41c2d269015d83197c95fc139a4349",
+      "producer_snapshot_sha256": "564b164ac3cd1e508340414c2770d5298c41c2d269015d83197c95fc139a4349",
+      "prefix_actions": 753,
+      "required_living_suffix_maps": [
+        [
+          17,
+          23,
+          14
+        ]
+      ],
+      "verified_replays": 2,
+      "physical_frames": 58666
+    },
+    {
+      "file": "witness-s2-p10-incumbent-t0.json",
+      "input_sha256": "0deb87af6e18131ed4efd8a84ba6648a29fbaf75d0171c6e3cb6c95682158654",
+      "endpoint": {
+        "area": 17,
+        "bosses": 0,
+        "door": 0,
+        "ending": false,
+        "energy_tanks": 0,
+        "equipment": 16,
+        "health": 72,
+        "map_x": 22,
+        "map_y": 14,
+        "missile_capacity": 10,
+        "missiles": 2,
+        "mode": 3,
+        "pose": 0,
+        "x": 28,
+        "y": 113
+      },
+      "dead": false,
+      "snapshot_sha256": "51502acc7bf63794dec4f4cce6a7a0c0d13aa039ad10be32f9a512e7ba85b228",
+      "producer_snapshot_sha256": "51502acc7bf63794dec4f4cce6a7a0c0d13aa039ad10be32f9a512e7ba85b228",
+      "prefix_actions": 617,
+      "required_living_suffix_maps": [
+        [
+          17,
+          23,
+          14
+        ]
+      ],
+      "verified_replays": 2,
+      "physical_frames": 46972
+    },
+    {
+      "file": "witness-s2-p12-candidate-t1.json",
+      "input_sha256": "b99fc43e4b956792c6df237152acca9994d93ec609de69b94a5529871118a837",
+      "endpoint": {
+        "area": 17,
+        "bosses": 0,
+        "door": 0,
+        "ending": false,
+        "energy_tanks": 0,
+        "equipment": 16,
+        "health": 72,
+        "map_x": 22,
+        "map_y": 12,
+        "missile_capacity": 5,
+        "missiles": 0,
+        "mode": 3,
+        "pose": 9,
+        "x": 128,
+        "y": 218
+      },
+      "dead": false,
+      "snapshot_sha256": "e96b2139d44e5b258c5d3c967c365daa7061d3954497932e29af136732e7664c",
+      "producer_snapshot_sha256": "e96b2139d44e5b258c5d3c967c365daa7061d3954497932e29af136732e7664c",
+      "prefix_actions": 483,
+      "required_living_suffix_maps": [
+        [
+          16,
+          22,
+          12
+        ],
+        [
+          17,
+          22,
+          12
+        ],
+        [
+          17,
+          22,
+          13
+        ]
+      ],
+      "verified_replays": 2,
+      "physical_frames": 37530
+    },
+    {
+      "file": "witness-s2-p12-incumbent-t1.json",
+      "input_sha256": "3f83f12a96e25297584f87d35a2a2e60e7701cbf7984caaead306b72ee27c0d2",
+      "endpoint": {
+        "area": 17,
+        "bosses": 0,
+        "door": 0,
+        "ending": false,
+        "energy_tanks": 0,
+        "equipment": 16,
+        "health": 22,
+        "map_x": 22,
+        "map_y": 12,
+        "missile_capacity": 5,
+        "missiles": 2,
+        "mode": 3,
+        "pose": 9,
+        "x": 128,
+        "y": 218
+      },
+      "dead": false,
+      "snapshot_sha256": "dc51c9cf7edca1554e39e01d0d8752e819a4971f7fdd202456302ac8b5222839",
+      "producer_snapshot_sha256": "dc51c9cf7edca1554e39e01d0d8752e819a4971f7fdd202456302ac8b5222839",
+      "prefix_actions": 474,
+      "required_living_suffix_maps": [
+        [
+          16,
+          22,
+          12
+        ],
+        [
+          17,
+          22,
+          12
+        ],
+        [
+          17,
+          22,
+          13
+        ]
+      ],
+      "verified_replays": 2,
+      "physical_frames": 37116
+    },
+    {
+      "file": "witness-s2-p14-candidate-t1.json",
+      "input_sha256": "c885331f0f8a35974e9e1e2b39a25027569b8b258a540c6dec95187ca421fdcb",
+      "endpoint": {
+        "area": 17,
+        "bosses": 0,
+        "door": 0,
+        "ending": false,
+        "energy_tanks": 0,
+        "equipment": 16,
+        "health": 114,
+        "map_x": 23,
+        "map_y": 14,
+        "missile_capacity": 10,
+        "missiles": 0,
+        "mode": 3,
+        "pose": 1,
+        "x": 129,
+        "y": 225
+      },
+      "dead": false,
+      "snapshot_sha256": "cca9ffeaf69553df1d01acb7eae9346b64cbe914b0f0f564c0c41c6795cfa6c0",
+      "producer_snapshot_sha256": "cca9ffeaf69553df1d01acb7eae9346b64cbe914b0f0f564c0c41c6795cfa6c0",
+      "prefix_actions": 753,
+      "required_living_suffix_maps": [
+        [
+          17,
+          23,
+          14
+        ]
+      ],
+      "verified_replays": 2,
+      "physical_frames": 58510
+    },
+    {
+      "file": "witness-s2-p14-incumbent-t1.json",
+      "input_sha256": "54ce02da23af8b5453e6e57a4f38faaffa6f8e374b5042988b289a53158443b2",
+      "endpoint": {
+        "area": 17,
+        "bosses": 0,
+        "door": 0,
+        "ending": false,
+        "energy_tanks": 0,
+        "equipment": 16,
+        "health": 44,
+        "map_x": 23,
+        "map_y": 14,
+        "missile_capacity": 10,
+        "missiles": 0,
+        "mode": 3,
+        "pose": 1,
+        "x": 128,
+        "y": 225
+      },
+      "dead": false,
+      "snapshot_sha256": "104073d7076b155618cbf42d359267d630449d7fa9a9ace36abe3410e12570bc",
+      "producer_snapshot_sha256": "104073d7076b155618cbf42d359267d630449d7fa9a9ace36abe3410e12570bc",
+      "prefix_actions": 614,
+      "required_living_suffix_maps": [
+        [
+          17,
+          23,
+          14
+        ]
+      ],
+      "verified_replays": 2,
+      "physical_frames": 46978
+    }
+  ]
+}

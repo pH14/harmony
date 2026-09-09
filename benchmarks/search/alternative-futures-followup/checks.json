@@ -1,31 +1,38 @@
 {
-  "format": "followup-verification-v1",
+  "format": "followup-verification-v2",
   "checks": {
     "nes_library_tests": {
       "passed": 125
     },
     "metroid_probe_tests": {
-      "passed": 4
+      "passed": 6
     },
     "mm2_probe_tests": {
-      "passed": 1
+      "passed": 2
     },
     "nes_all_target_clippy": "passed",
     "nes_fmt": "passed",
-    "python_syntax": "passed"
+    "python_syntax": "passed",
+    "witness_verifier_planted_failure_tests": {
+      "passed": 5
+    },
+    "root_python_tests": {
+      "passed": 22
+    }
   },
   "no_shared_production_code_changes": true,
   "reference_reuse_base": "ca85b3fa8e8e1b70cd98ccd85903d29dfdfe9409",
   "notes": [
     "Initial Metroid test borrow-check error and MM2 stage parser compile error were fixed before tests/builds/experiments.",
     "Python syntax command initially could not write the host default cache; rerun with a writable temporary cache passed.",
-    "F02 native research build predates source-only verification helper; its exact build is embedded in f02-execution.json. Final helper and F03 share the later source identity.",
-    "Build source identity also hashes reports; evolving local report files differ. All 383 Rust/Cargo/toolchain inputs match the native tree exactly."
+    "Original F02 and F03 build identities remain in their execution records. F04 qualifies the final review fixes against the unchanged original outcomes and ties replay snapshots to their producers.",
+    "Build source identity also hashes reports; evolving local report files differ. All 383 Rust/Cargo/toolchain inputs match the native tree exactly.",
+    "The 125 NES library tests are reused from the preceding passing check because library inputs are unchanged; both diagnostic binaries and all-target Clippy were checked after the final Rust fixes."
   ],
   "native_rust_cargo_identity": {
     "files": 383,
     "differences": [],
-    "manifest_sha256": "0100914f2993487fc321f3a5f2b10b4eb86059ccfd0d307a07c34d588603d551"
+    "manifest_sha256": "b7029100a5532ac17f6ceedd2f5f98a870c9e42e2fb4105fdc8abfb5cbe43598"
   },
-  "native_build_source_identity": "502b2b3b87e6d588f3c2f29745764d74171486f86926925c0adfd567b0838f5f"
+  "native_build_source_identity": "7158224f6d0f9388d678dbf333b494030c6fe0300910b70ac4458c281b60b0f2"
 }
