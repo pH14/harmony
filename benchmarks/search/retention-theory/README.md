@@ -648,3 +648,29 @@ replay. Its16,819 additional frames are inferred from the identical unchanged
 setup/replay path (2,253+14,566), not measured by the failed helper itself.
 Including that explicitly labelled inference gives160,399 qualification frames;
 the failed command is not treated as free.
+
+### H01: isolate retention at the newly solved Heat origin
+
+J01 sampling has replayed Metal, Heat and Air awards and their bridges. The
+extremes chain stopped at Heat's original20-minute wall limit with40,507,046
+frames; sampling's Heat victory needed66,633,523. At40.5M frames neither had
+won (screen maxima16 versus17), so the apparent depth gain does not establish
+a matched-work Heat improvement. The ongoing sampling chain keeps its original
+limits. No control stage is resumed or relabelled.
+
+Register one new conditional diagnostic before observing it: run extremes
+from exactly J01 sampling's Metal prefix, seed20261102, same frozen binary,
+selector, full-hold suffix, mixture, workers,8GiB and1M jobs. Reuse the completed
+sampling Heat result instead of rerunning it. Stop at victory or85M frames,
+with3000s search,120s finish and3180s outer watchdog, CPUs0–3. The larger wall
+cap permits comparable work on the slower CPU set; it is not a chain extension.
+Only policy and stopping limits differ, and the analyzer requires all other
+request and semantic identity fields to agree. Bounds do not seed search RNG.
+
+The question is whether retention improves Heat conditional on this specific
+searched prefix. A20% frame improvement requires5×66,633,523 <=4× the control's
+victory cost or completed85M budget. Wall censoring fails this allocation gate.
+A control win earlier than that threshold rejects the20% claim. Preserve any
+control bridge, but never count this supplied-prefix run as a fresh chain or
+an untouched validation seed. This is an adaptive diagnostic prompted by J01,
+not an independent replication. No further work is licensed by screens alone.
