@@ -113,3 +113,12 @@ context and use ordinary retention for that policy. Motion metadata changes
 neither retention-slot geometry nor selector groups. Both comparison arms must
 use the same feature build, resource limits and recorded terminal semantics.
 No experimental policy or feature is a production default.
+
+Build `nes-eval` with `--features selector-cost-audit` to forward the generic
+searcher's observation-only cost-rank diagnostic into progress sidecars. This
+can be combined with `metroid-motion-context`; comparison arms must use the same
+feature build. The separate selector identifier
+`room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2` removes selection-side
+historical group-time ranks. Its use does not change workload retention or the
+controller vocabulary. See the [searcher policy contract](../../dissonance/searcher/README.md)
+and [registered research](../../benchmarks/search/continuation-yield/README.md).

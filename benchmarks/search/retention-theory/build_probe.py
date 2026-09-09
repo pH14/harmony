@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Freeze a diagnostic executable with before/after source attestation."""
+"""Freeze a research executable with before/after source attestation."""
 import argparse
 import importlib.util
 import json
@@ -11,7 +11,7 @@ import subprocess
 parser = argparse.ArgumentParser(description=__doc__)
 for name in ["root", "out", "target"]:
     parser.add_argument(name, type=Path)
-parser.add_argument("binary", choices=["metroid-boss-probe", "mm2-metal-export", "metroid-kinematics-probe"])
+parser.add_argument("binary", choices=["metroid-boss-probe", "mm2-metal-export", "metroid-kinematics-probe", "nes-eval"])
 parser.add_argument("--source-commit", required=True)
 parser.add_argument("--features", default="")
 args = parser.parse_args()

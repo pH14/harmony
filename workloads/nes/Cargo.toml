@@ -23,6 +23,8 @@ metroid-refined-archive = []
 metroid-motion-context = []
 # Reporting-only complete local-survivor samples; legacy audits stay v1 by default.
 metroid-complete-retention-audit = []
+# Generic selector diagnostics in the progress sidecar only.
+selector-cost-audit = ["searcher/selector-cost-audit"]
 
 [[bin]]
 name = "nova-consonance-campaign"

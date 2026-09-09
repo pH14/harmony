@@ -47,3 +47,28 @@ four pre-listed fresh controls at a fixed 25M-frame budget if those records are
 insufficient. Metroid's first missile-capacity acquisition is the fixed primary
 endpoint. No candidate is selected from this calibration's favorable seeds.
 All subsequent mechanism-screen seeds must be separately frozen.
+
+## Completed calibration and selection decision
+
+[D01's frozen registration](d01-registration.json) preceded all four new controls.
+[Results](d01-results.json) and [interval analysis](d01-analysis.json) report four
+attainments at 25M frames, with mean first-missile cost in
+[18,167,834, 18,180,118.75] admitted frames. Individual arrival intervals span
+14.086M–24.855M. The sample-CV interval is 0.2549–0.2559; it is descriptive,
+not a confidence interval or power calculation. The 100M nominal allocation used
+100,002,831 admitted frames including 2,831 frames of bounded in-flight drain.
+All four stopped at the frame bound. Measured witness replay consumed 283615 additional
+frames. Genesis/setup and unadmitted physical search work remain unmeasured.
+No failed earlier retention comparison is reopened by these controls.
+
+A [focused second Fable consultation](fable-selection-feedback.md), with
+[recorded provenance](selection-consultation-provenance.json), recommends removing
+selection-side historical cost ranks rather than adding a second yield estimator.
+Existing barren counters already adapt to new-cell descendant yield. Entry-count
+weighting is an existing, separate factor. The chosen ablation is specified in
+[selection-hypothesis.md](selection-hypothesis.md).
+
+The new selector has passed generic deterministic/replay/resource checks. Native
+qualification must preserve the first D01 control's complete campaign stream and
+exercise the candidate with full replay before a fresh paired panel. The panel
+is not yet run and no performance gain is claimed.

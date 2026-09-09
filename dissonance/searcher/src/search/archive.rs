@@ -299,6 +299,10 @@ pub enum SelectorPolicy {
     /// Cost selection using semantic progress without entry-count weighting.
     /// Equal-progress locations share frontier rank regardless of map identity.
     EnergyProgressCheapest(RetireThresholds),
+    /// Semantic-progress energy and novelty without historical group-time ranks.
+    /// The cost-sorted order remains only to preserve random coupling when all
+    /// old weights were equal; it does not change the uniform within-cell law.
+    EnergyProgressNoCost(RetireThresholds),
 }
 
 /// The recorded identifier of a parent selector.
@@ -323,6 +327,10 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
         }
         SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => format!(
             "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:{}",
+            threshold_values(scales)
+        ),
+        SelectorPolicy::EnergyProgressNoCost(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_progress_no_cost_v1:{}",
             threshold_values(scales)
         ),
         SelectorPolicy::EnergyProgressCheapest(scales) => format!(
@@ -372,6 +380,7 @@ pub fn selector_policy_from_identifier(
     let energy_prefix = format!("{SELECTOR_IDENTIFIER}_energy:");
     let frontier_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier:");
     let key_count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:");
+    let no_cost_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_no_cost_v1:");
     let semantic_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_v1:");
     let progress_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_count_v1:");
     let count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:");
@@ -383,6 +392,7 @@ pub fn selector_policy_from_identifier(
         EnergyFrontierCheapest,
         EnergyFrontierCheapestCount,
         EnergyProgressCheapest,
+        EnergyProgressNoCost,
         EnergyProgressCheapestCount,
         EnergyFrontierCheapestKeyCount,
     }
@@ -390,6 +400,8 @@ pub fn selector_policy_from_identifier(
         (values, Parsed::Retire)
     } else if let Some(values) = identifier.strip_prefix(&key_count_prefix) {
         (values, Parsed::EnergyFrontierCheapestKeyCount)
+    } else if let Some(values) = identifier.strip_prefix(&no_cost_prefix) {
+        (values, Parsed::EnergyProgressNoCost)
     } else if let Some(values) = identifier.strip_prefix(&semantic_prefix) {
         (values, Parsed::EnergyProgressCheapest)
     } else if let Some(values) = identifier.strip_prefix(&progress_prefix) {
@@ -427,6 +439,7 @@ pub fn selector_policy_from_identifier(
         Parsed::EnergyFrontierCheapestKeyCount => {
             SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
         }
+        Parsed::EnergyProgressNoCost => SelectorPolicy::EnergyProgressNoCost(thresholds),
         Parsed::EnergyProgressCheapest => SelectorPolicy::EnergyProgressCheapest(thresholds),
         Parsed::EnergyProgressCheapestCount => {
             SelectorPolicy::EnergyProgressCheapestCount(thresholds)
@@ -945,6 +958,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     pub max_entries: usize,
     /// Reporting-only lifecycle census; fixed size, no search feedback.
     pub retention_diagnostics: RetentionDiagnostics,
+    #[cfg(feature = "selector-cost-audit")]
+    selector_cost_audit: super::selector_cost::SelectorCostAudit,
     /// Recorded optional same-slot retention mechanism.
     pub slot_retention: SlotRetentionPolicy,
     /// Retained entries in insertion order.
@@ -1542,6 +1557,8 @@ where
         Self {
             max_entries: MAX_ARCHIVE_ENTRIES,
             retention_diagnostics: RetentionDiagnostics::default(),
+            #[cfg(feature = "selector-cost-audit")]
+            selector_cost_audit: super::selector_cost::SelectorCostAudit::default(),
             slot_retention: SlotRetentionPolicy::default(),
             entries: Vec::new(),
             id_to_index: BTreeMap::new(),
@@ -3495,10 +3512,26 @@ where
         )
     }
 
+    fn ignores_selection_cost(&self) -> bool {
+        matches!(
+            self.selector_policy,
+            SelectorPolicy::EnergyProgressNoCost(_)
+        )
+    }
+
+    #[cfg(feature = "selector-cost-audit")]
+    fn audits_selection_cost(&self) -> bool {
+        matches!(
+            self.selector_policy,
+            SelectorPolicy::EnergyProgressCheapest(_) | SelectorPolicy::EnergyProgressNoCost(_)
+        )
+    }
+
     fn semantic_progress(&self) -> bool {
         matches!(
             self.selector_policy,
             SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressNoCost(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         )
     }
@@ -3807,6 +3840,7 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(scales)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales)
             | SelectorPolicy::EnergyProgressCheapest(scales)
+            | SelectorPolicy::EnergyProgressNoCost(scales)
             | SelectorPolicy::EnergyProgressCheapestCount(scales) => (scales, true),
             _ => return Ok(rand.below(count)),
         };
@@ -3852,6 +3886,12 @@ where
             _ => (Vec::new(), Vec::new()),
         };
         let mut weights = Vec::with_capacity(groups.len());
+        #[cfg(feature = "selector-cost-audit")]
+        let mut ranked_weights = Vec::with_capacity(groups.len());
+        #[cfg(feature = "selector-cost-audit")]
+        let mut cost_free_weights = Vec::with_capacity(groups.len());
+        #[cfg(feature = "selector-cost-audit")]
+        let mut capped_cost_terms = 0;
         for (index, group) in groups.iter().enumerate() {
             let barren = self
                 .group_barren
@@ -3865,7 +3905,7 @@ where
                 weights.push(energy);
                 continue;
             }
-            let (rank, span) = match (frontier, cells) {
+            let (rank, span, cost_free_rank) = match (frontier, cells) {
                 (Some(frontier), _) => {
                     let ahead = if self.semantic_progress() {
                         ranked
@@ -3879,7 +3919,7 @@ where
                         let behind = ranked.partition_point(|band| *band <= frontier[index]);
                         ranked.len().saturating_sub(behind)
                     };
-                    (ahead, 16)
+                    (ahead, 16, ahead)
                 }
                 (None, Some(cells)) => {
                     let (opened, cost) = cells[index];
@@ -3896,11 +3936,35 @@ where
                     let costlier = cost.map_or(0, |cost| {
                         cheapest.partition_point(|cheaper| *cheaper < cost) / CHEAPEST_RANK_SCALE
                     });
-                    (novelty.saturating_add(costlier), 16)
+                    let rank = novelty.saturating_add(costlier);
+                    #[cfg(feature = "selector-cost-audit")]
+                    if costlier > 0 && rank >= 16 {
+                        capped_cost_terms += 1;
+                    }
+                    (rank, 16, novelty)
                 }
-                (None, None) => (0, 8),
+                (None, None) => (0, 8, 0),
             };
-            weights.push((energy << span) >> rank.min(span));
+            let actual_rank = if self.ignores_selection_cost() {
+                cost_free_rank
+            } else {
+                rank
+            };
+            weights.push((energy << span) >> actual_rank.min(span));
+            #[cfg(feature = "selector-cost-audit")]
+            {
+                ranked_weights.push((energy << span) >> rank.min(span));
+                cost_free_weights.push((energy << span) >> cost_free_rank.min(span));
+            }
+        }
+        #[cfg(feature = "selector-cost-audit")]
+        if frontier.is_none() && cells.is_some() && self.audits_selection_cost() {
+            self.selector_cost_audit.between_cells.record(
+                &ranked_weights,
+                &cost_free_weights,
+                capped_cost_terms,
+                0,
+            );
         }
         let total = NonZeroUsize::new(weights.iter().sum()).ok_or("energy weights sum to zero")?;
         let mut draw = rand.below(total);
@@ -3927,6 +3991,7 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
             | SelectorPolicy::EnergyProgressCheapest(thresholds)
+            | SelectorPolicy::EnergyProgressNoCost(thresholds)
             | SelectorPolicy::EnergyProgressCheapestCount(thresholds) => {
                 self.since_retained[id] < thresholds.entry
             }
@@ -3944,6 +4009,7 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
             | SelectorPolicy::EnergyProgressCheapest(_)
+            | SelectorPolicy::EnergyProgressNoCost(_)
             | SelectorPolicy::EnergyProgressCheapestCount(_) => true,
             SelectorPolicy::Retire(thresholds) => {
                 thresholds
@@ -4002,6 +4068,7 @@ where
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
                 | SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressNoCost(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             let mut ranked = window
@@ -4029,11 +4096,28 @@ where
                         };
                         let draws = usize::try_from(count).unwrap_or(usize::MAX);
                         ((65_536_usize >> halvings) / draws.saturating_add(1)).max(1)
+                    } else if self.ignores_selection_cost() {
+                        256
                     } else {
                         256_usize >> halvings
                     }
                 })
                 .collect::<Vec<_>>();
+            #[cfg(feature = "selector-cost-audit")]
+            if self.audits_selection_cost() {
+                let cost_weights = (0..ranked.len())
+                    .map(|rank| 256_usize >> (rank / CHEAPEST_RANK_SCALE).min(8))
+                    .collect::<Vec<_>>();
+                let cost_free = vec![256; ranked.len()];
+                let ties = (1..ranked.len())
+                    .filter(|index| {
+                        index % CHEAPEST_RANK_SCALE == 0 && ranked[*index].0 == ranked[*index - 1].0
+                    })
+                    .count();
+                self.selector_cost_audit
+                    .within_cells
+                    .record(&cost_weights, &cost_free, 0, ties);
+            }
             let total =
                 NonZeroUsize::new(weights.iter().sum()).ok_or("cheapest weights sum to zero")?;
             let mut draw = rand.below(total);
@@ -4056,6 +4140,18 @@ where
                 entered_window,
             },
         ))
+    }
+
+    /// Optional observation-only conditional cost-rank statistics.
+    pub(crate) fn selector_cost_diagnostics(&self) -> Option<serde_json::Value> {
+        #[cfg(feature = "selector-cost-audit")]
+        {
+            Some(self.selector_cost_audit.snapshot())
+        }
+        #[cfg(not(feature = "selector-cost-audit"))]
+        {
+            None
+        }
     }
 
     /// Whether entry `id` was the first to occupy its retention slot.
@@ -4337,6 +4433,7 @@ where
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
                 | SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressNoCost(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
@@ -4414,6 +4511,7 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
             | SelectorPolicy::EnergyProgressCheapest(_)
+            | SelectorPolicy::EnergyProgressNoCost(_)
             | SelectorPolicy::EnergyProgressCheapestCount(_) => new_cell_descendant,
             SelectorPolicy::GroupUniform => false,
         };
@@ -4449,6 +4547,7 @@ where
         | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
         | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
         | SelectorPolicy::EnergyProgressCheapest(thresholds)
+        | SelectorPolicy::EnergyProgressNoCost(thresholds)
         | SelectorPolicy::EnergyProgressCheapestCount(thresholds) = &self.selector_policy
         {
             let entries_over_threshold = u64::try_from(
@@ -5174,6 +5273,121 @@ mod tests {
                 .expect("retain flat entry");
         }
         archive
+    }
+
+    fn cost_ablation_policy(remove_cost: bool) -> SelectorPolicy {
+        let thresholds = RetireThresholds {
+            entry: 1024,
+            groups: vec![6, 12, 2],
+        };
+        if remove_cost {
+            SelectorPolicy::EnergyProgressNoCost(thresholds)
+        } else {
+            SelectorPolicy::EnergyProgressCheapest(thresholds)
+        }
+    }
+
+    #[test]
+    fn cost_ablation_preserves_exact_draws_when_the_rank_bonus_is_inactive() {
+        let keys: Vec<_> = (0..super::CHEAPEST_RANK_SCALE)
+            .map(|id| [u16::try_from(id).unwrap(), 0, 0, 0])
+            .collect();
+        let mut old = flat_archive::<5>(&keys);
+        let mut new = flat_archive::<5>(&keys);
+        old.selector_policy = cost_ablation_policy(false);
+        new.selector_policy = cost_ablation_policy(true);
+        for id in 0..keys.len() {
+            old.time_in_group[id] = (keys.len() - id) as u64;
+            new.time_in_group[id] = old.time_in_group[id];
+        }
+        let identifier = super::selector_policy_identifier(&new.selector_policy);
+        assert_eq!(
+            super::selector_policy_from_identifier(&identifier, 3).unwrap(),
+            new.selector_policy
+        );
+        let mut a = RomuDuoJrRand::with_seed(193);
+        let mut b = RomuDuoJrRand::with_seed(193);
+        for _ in 0..1024 {
+            assert_eq!(
+                old.select_parent(&mut a, 64).unwrap(),
+                new.select_parent(&mut b, 64).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn cost_ablation_changes_a_planted_exit_and_its_mirror_in_opposite_directions() {
+        // Static one-step opportunity: the expensive half holds the only useful
+        // exit, or in the mirror the cheap half does. Exercise the actual full
+        // parent selector, including its uniform quarter. No universal gain is
+        // implied: which half contains useful futures is the empirical question.
+        let keys: Vec<_> = (0..128).map(|id| [id, 0, 0, 0]).collect();
+        let mut expensive_counts = [0_u64; 2];
+        for (arm, remove_cost) in [false, true].into_iter().enumerate() {
+            let mut archive = flat_archive::<5>(&keys);
+            archive.selector_policy = cost_ablation_policy(remove_cost);
+            for id in 0..keys.len() {
+                archive.time_in_group[id] = id as u64;
+            }
+            let mut rand = RomuDuoJrRand::with_seed(194);
+            for _ in 0..16_384 {
+                let (id, _) = archive.select_parent(&mut rand, 64).unwrap();
+                expensive_counts[arm] += u64::from(id >= 64);
+            }
+        }
+        assert!(expensive_counts[1] > expensive_counts[0] * 2);
+        assert!((7000..9500).contains(&expensive_counts[1]));
+        let cheap_old = 16_384 - expensive_counts[0];
+        let cheap_new = 16_384 - expensive_counts[1];
+        assert!(
+            cheap_old > cheap_new * 3 / 2,
+            "the mirror must favor the old prior"
+        );
+    }
+
+    #[test]
+    fn cost_ablation_removes_between_cell_cost_but_preserves_novelty_and_energy() {
+        let keys: Vec<_> = (0..32).map(|id| [0, id, 0, 0]).collect();
+        let mut old = flat_archive::<5>(&keys);
+        let mut new = flat_archive::<5>(&keys);
+        old.selector_policy = cost_ablation_policy(false);
+        new.selector_policy = cost_ablation_policy(true);
+        let groups = keys;
+        let band = super::CHEAPEST_RANK_SCALE;
+        let costs: Vec<_> = (0..2 * band).map(|id| (None, Some(id as u64))).collect();
+        let mut old_rand = RomuDuoJrRand::with_seed(195);
+        let mut new_rand = RomuDuoJrRand::with_seed(195);
+        let mut counts = [0_u64; 2];
+        for _ in 0..8192 {
+            counts[0] += u64::from(
+                old.draw_group_index(&mut old_rand, 1, &groups[..2 * band], None, Some(&costs))
+                    .unwrap()
+                    >= band,
+            );
+            counts[1] += u64::from(
+                new.draw_group_index(&mut new_rand, 1, &groups[..2 * band], None, Some(&costs))
+                    .unwrap()
+                    >= band,
+            );
+        }
+        assert!((2400..3100).contains(&counts[0]));
+        assert!((3700..4500).contains(&counts[1]));
+
+        // With tied between-cell costs, only the old novelty and barren terms
+        // distinguish cells. Keep them, their ordering, and their RNG coupling.
+        let tied: Vec<_> = (0..32).map(|id| (Some(id), Some(5))).collect();
+        old.group_barren[0].insert(groups[0], 18);
+        new.group_barren[0].insert(groups[0], 18);
+        let mut old_rand = RomuDuoJrRand::with_seed(196);
+        let mut new_rand = RomuDuoJrRand::with_seed(196);
+        for _ in 0..1024 {
+            assert_eq!(
+                old.draw_group_index(&mut old_rand, 1, &groups, None, Some(&tied))
+                    .unwrap(),
+                new.draw_group_index(&mut new_rand, 1, &groups, None, Some(&tied))
+                    .unwrap()
+            );
+        }
     }
 
     #[test]

@@ -2465,6 +2465,9 @@ pub struct CampaignProgressRecord<K> {
     /// Final active-key context census; excludes inactive snapshot anchors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_context_census: Option<serde_json::Value>,
+    /// Optional conditional selector weight census; never replay or decision state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector_cost_diagnostics: Option<serde_json::Value>,
     /// Objective workload evidence, independent of the selector's deepest key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<serde_json::Value>,
@@ -2586,6 +2589,7 @@ fn write_live_progress<G: Game>(
         retention_context_census: final_census
             .then(|| core.archive.retention_context_census())
             .flatten(),
+        selector_cost_diagnostics: core.archive.selector_cost_diagnostics(),
         coordinator: coordinator_profile
             .enabled
             .then(|| serde_json::to_value(coordinator_profile))

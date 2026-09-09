@@ -12,3 +12,5 @@ pub mod parallel;
 pub mod rand;
 mod resource_coverage;
 pub mod rollout;
+#[cfg(feature = "selector-cost-audit")]
+mod selector_cost;

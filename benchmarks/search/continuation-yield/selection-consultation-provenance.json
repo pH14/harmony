@@ -1,0 +1,28 @@
+{
+  "model_requested": "claude-fable-5-1",
+  "effort_requested": "xhigh",
+  "elapsed_seconds": 208.427640914917,
+  "exit_code": 0,
+  "timeout": false,
+  "verified_response_model": "claude-fable-5-1",
+  "reviewer_had_tools": false,
+  "public_sources": [
+    {
+      "url": "https://raw.githubusercontent.com/pH14/harmony/ee76a317b2c7709d14742eefd760a979e626fa1e/dissonance/searcher/src/search/archive.rs",
+      "sha256": "d63963e52de7ac29e71ebd19049fb6e187a0a726e6885472901604460a66f96e",
+      "fetched_without_authentication": true
+    },
+    {
+      "url": "https://raw.githubusercontent.com/pH14/harmony/ee76a317b2c7709d14742eefd760a979e626fa1e/dissonance/searcher/README.md",
+      "sha256": "bb92b427172992ea33b3be62c76cefa5c1d479f1528d179ff0a532ff38081924",
+      "fetched_without_authentication": true
+    },
+    {
+      "url": "https://raw.githubusercontent.com/pH14/harmony/ee76a317b2c7709d14742eefd760a979e626fa1e/benchmarks/search/retention-theory/k01-smoke.json",
+      "sha256": "0f453b7f982cead3a2e51f45ab9ac5a178428f702a1e0336b8dba08b799cbeee",
+      "fetched_without_authentication": true
+    }
+  ],
+  "response_sha256": "a6b839ba9f85343bc96f8eb05105353c593430569fc8bd2d8e41bb8c93968dcb",
+  "feedback_sha256": "6800b7d533329f7c0bad5e98f5c9bf429a3e2230cb5f97bc1b1fa0050e8e31dd"
+}

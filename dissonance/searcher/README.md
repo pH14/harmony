@@ -171,6 +171,31 @@ not the full historical cross-location preference/Pareto implementation, and
 it does not restore the prototype's improvement-replay queues. Its separate
 identifier permits an ablation without changing any existing selector's behavior.
 
+`room_cell_uniform_128_energy_progress_no_cost_v1:<thresholds>` is an ablation of
+`energy_progress_cheapest_v1`. It removes the between-cell historical cost rank
+and makes the newest sampleable within-cell window uniform. It preserves the
+semantic class walk, novelty ranks, barren energy, entry exhaustion, uniform
+quarter, retention and suffix generation. Here cost is elapsed execution time
+since entering the coarsest group, not global route length or snapshot replay
+work. The existing `(time_in_group, id)` order still couples random draws when
+weights match; the new within-cell distribution is uniform even across cost
+ties. Removing cost also removes its age tiebreak and changes the effect of
+novelty where the old combined rank reached its cap. This is one combined cost
+rank ablation, not an attribution between those effects.
+
+The optional `selector-cost-audit` feature emits `selector_cost_diagnostics` in
+progress sidecars for the uncoun-ted semantic cost/no-cost comparison. It compares
+the two normalized weight vectors at encountered between-cell and within-cell
+selection stages using exact integer arithmetic, reporting total variation
+rounded down to millionths, nonzero-change counts, cap terms and equal-cost rank
+boundaries. Counters include dispatched work not yet admitted. They never alter
+weights, random draws, reports or campaign streams. Persistent counters occupy
+112 bytes; transient vectors are bounded by the existing group/window lengths
+and are additional to the historical logical archive budget. Process RSS includes
+their physical cost. Conditional differences describe one encountered archive;
+they are not a bound on an adaptive campaign's improvement. Feature-off sidecars
+omit this optional field.
+
 ## Retention diagnostics
 
 `Reporting::observe_retention` can inspect a same-slot competition before the

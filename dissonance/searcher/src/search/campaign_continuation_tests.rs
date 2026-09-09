@@ -349,6 +349,8 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         (4, false, true, 1),
         (1, false, false, 2),
         (4, false, false, 2),
+        (1, true, false, 3),
+        (4, true, false, 3),
     ] {
         let config = CampaignConfig {
             campaign_seed: 947,
@@ -370,7 +372,12 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
                 _ => DrawMixture::EnergySpliceContinuation { scale: 6 },
             },
             retention: RetentionPolicy::AdmitAlive,
-            selector: if persistent {
+            selector: if mode == 3 {
+                SelectorPolicy::EnergyProgressNoCost(RetireThresholds {
+                    entry: 3,
+                    groups: vec![],
+                })
+            } else if persistent {
                 SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
                     entry: 3,
                     groups: vec![],
