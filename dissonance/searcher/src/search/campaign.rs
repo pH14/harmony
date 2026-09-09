@@ -110,6 +110,27 @@ pub struct CampaignExecutionOptions {
     pub result_buffering: ResultBuffering,
     /// Optional versioned retention mechanism; changes deterministic campaign bytes.
     pub slot_retention: super::archive::SlotRetentionPolicy,
+    /// Stop reserving after this workload-owned milestone is first admitted.
+    /// Resolve runtime names with `Evaluation::named_milestone` first.
+    pub stop_after_milestone: Option<&'static str>,
+}
+
+/// Workload-owned meaning of an opt-in campaign endpoint.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CampaignMilestoneCondition {
+    /// Canonical milestone name; never a navigation instruction.
+    pub name: String,
+    /// Version of the workload's observation semantics.
+    pub observation_policy: String,
+}
+
+/// Work charged through the first admission that reports the endpoint.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CampaignMilestoneObservation {
+    /// Ordered execution; zero denotes an observed supplied origin.
+    pub execution: u64,
+    /// Bootstrap and job frames through that admission, before window drain.
+    pub frames_emulated: u64,
 }
 
 /// Reservations held ahead of ordered admission per logical worker when the
@@ -576,6 +597,16 @@ pub trait TargetExecution: CampaignTypes {
 
 /// Outcome classification, archive keys, and retained evidence owned by a workload.
 pub trait Evaluation: CampaignTypes {
+    /// Resolve a supported milestone to its canonical name and observation
+    /// policy version. The default supports no milestone stopping.
+    fn named_milestone(&self, _name: &str) -> Option<(&'static str, &'static str)> {
+        None
+    }
+    /// First execution where this run's admitted evidence observed a milestone.
+    /// Historical aggregate evidence must not be reported as a new observation.
+    fn milestone_first_execution(&self, _evidence: &Self::Evidence, _name: &str) -> Option<u64> {
+        None
+    }
     /// Whether the target is dead or failed, ending an imported walk.
     fn is_terminal(&self, target: &Self::Target) -> bool;
     /// Whether the target satisfies any terminal condition recorded by this run.
@@ -884,6 +915,9 @@ pub struct CampaignStreamHeader<T> {
     /// deterministic reservation window drains and may overshoot the limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_budget: Option<u64>,
+    /// Optional workload-owned milestone stopping criterion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub milestone_stop: Option<CampaignMilestoneCondition>,
     /// Versioned same-slot mechanism; omitted for historical representative behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot_retention: Option<String>,
@@ -1136,6 +1170,12 @@ pub struct CampaignModeReport<A: Ord, R> {
     /// deterministic reservation window drains and may overshoot the limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_budget: Option<u64>,
+    /// Optional workload-owned milestone stopping criterion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub milestone_stop: Option<CampaignMilestoneCondition>,
+    /// First admitted endpoint evidence; subsequent in-flight work remains charged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_milestone: Option<CampaignMilestoneObservation>,
     /// Versioned same-slot mechanism; omitted for historical representative behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot_retention: Option<String>,
@@ -2026,6 +2066,22 @@ fn resolve_origin<G: Game>(
     })
 }
 
+fn resolve_milestone_condition<G: Evaluation + ?Sized>(
+    game: &G,
+    name: &str,
+) -> Result<CampaignMilestoneCondition, Box<dyn Error>> {
+    let (name, policy) = game
+        .named_milestone(name)
+        .ok_or("workload does not support this milestone stop")?;
+    if name.is_empty() || policy.is_empty() {
+        return Err("milestone name and observation policy must be nonempty".into());
+    }
+    Ok(CampaignMilestoneCondition {
+        name: name.to_owned(),
+        observation_policy: policy.to_owned(),
+    })
+}
+
 fn stream_header<G: Game>(
     game: &G,
     config: &CampaignConfig<G>,
@@ -2048,6 +2104,7 @@ fn stream_header<G: Game>(
         resume_actions: origin.resume_actions,
         execution_budget: config.execution_budget,
         frame_budget: None,
+        milestone_stop: None,
         slot_retention: None,
         wall_budget_seconds: config.wall_budget.map(|budget| budget.as_secs()),
         action_limit: config.action_limit,
@@ -2107,6 +2164,7 @@ struct CampaignCounters {
     job_frames: u64,
     frames_to_first_victory: Option<u64>,
     executions_to_first_victory: Option<u64>,
+    first_milestone: Option<CampaignMilestoneObservation>,
     duplicates_skipped: u64,
     draw_state_memory_bytes: usize,
     jobs_per_worker: Vec<u64>,
@@ -2182,6 +2240,28 @@ fn profile_elapsed(started: Option<Instant>) -> u128 {
 }
 
 impl CampaignCounters {
+    fn note_milestone<G: Game>(
+        &mut self,
+        game: &G,
+        evidence: &G::Evidence,
+        condition: Option<&CampaignMilestoneCondition>,
+        sequence: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        if self.first_milestone.is_none()
+            && let Some(condition) = condition
+            && let Some(first) = game.milestone_first_execution(evidence, &condition.name)
+        {
+            if first != sequence {
+                return Err("milestone evidence was not reported at its first admission".into());
+            }
+            self.first_milestone = Some(CampaignMilestoneObservation {
+                execution: sequence,
+                frames_emulated: self.bootstrap_frames.saturating_add(self.job_frames),
+            });
+        }
+        Ok(())
+    }
+
     /// Record the ordered admission that first reached the success
     /// predicate, in its sequence position and in the frames run to reach
     /// it. Jobs reserved before that admission keep draining afterwards and
@@ -2201,6 +2281,7 @@ impl CampaignCounters {
             job_frames: 0,
             frames_to_first_victory: None,
             executions_to_first_victory: None,
+            first_milestone: None,
             duplicates_skipped: 0,
             draw_state_memory_bytes: 0,
             jobs_per_worker: vec![0; workers as usize],
@@ -2265,6 +2346,8 @@ fn build_report<G: Game>(
         origin,
         execution_budget: header.execution_budget,
         frame_budget: header.frame_budget,
+        milestone_stop: header.milestone_stop.clone(),
+        first_milestone: counters.first_milestone,
         slot_retention: header.slot_retention.clone(),
         executions_completed,
         executions_to_first_victory: counters.executions_to_first_victory,
@@ -2775,6 +2858,10 @@ where
 {
     let frame_budget = options.frame_budget;
     let result_limit = options.result_buffering.capacity();
+    let milestone_stop = options
+        .stop_after_milestone
+        .map(|name| resolve_milestone_condition(game, name))
+        .transpose()?;
     if frame_budget == Some(0) {
         return Err("frame budget must be nonzero".into());
     }
@@ -2818,6 +2905,7 @@ where
     }
     let mut header = stream_header(game, config, &origin_record, draw_table_header);
     header.frame_budget = frame_budget;
+    header.milestone_stop = milestone_stop;
     header.slot_retention = options.slot_retention.identifier().map(str::to_owned);
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
@@ -2843,6 +2931,7 @@ where
     counters.bootstrap_frames = game
         .frames_clocked(&bootstrap_target)
         .saturating_sub(frames_before);
+    counters.note_milestone(game, &core.evidence, header.milestone_stop.as_ref(), 0)?;
     drop(bootstrap_target);
     let bootstrap_memory_bytes = core
         .archive
@@ -2916,6 +3005,7 @@ where
                           worker: u32|
              -> Result<Option<SelectedJob<G>>, Box<dyn Error>> {
                 if *reserved >= config.execution_budget
+                    || counters.first_milestone.is_some()
                     || frame_budget.is_some_and(|budget| {
                         counters
                             .bootstrap_frames
@@ -3364,6 +3454,12 @@ where
                     counters.jobs_per_worker[worker_index] =
                         counters.jobs_per_worker[worker_index].saturating_add(1);
                     counters.job_frames = counters.job_frames.saturating_add(frames);
+                    counters.note_milestone(
+                        game,
+                        &core.evidence,
+                        header.milestone_stop.as_ref(),
+                        sequence,
+                    )?;
                     if victories_before == 0 && core.victories > 0 {
                         counters.note_first_victory(sequence);
                     }
@@ -3631,6 +3727,11 @@ where
     if header.frame_budget == Some(0) {
         return Err("recorded frame budget must be nonzero".into());
     }
+    if let Some(condition) = &header.milestone_stop
+        && resolve_milestone_condition(game, &condition.name)? != *condition
+    {
+        return Err("recorded milestone observation policy is not recognized".into());
+    }
     let record_lines = lines.collect::<Vec<_>>();
     let mut required_draw_versions = BTreeSet::new();
     let mut recorded_snapshot_uses = BTreeMap::<u64, u32>::new();
@@ -3827,6 +3928,7 @@ where
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
+    counters.note_milestone(game, &core.evidence, header.milestone_stop.as_ref(), 0)?;
     let bootstrap_memory_bytes = core
         .archive
         .resident_memory_bytes()
@@ -3886,6 +3988,9 @@ where
         let record: CampaignStreamRecord = serde_json::from_str(line)?;
         match record {
             CampaignStreamRecord::Skip(skip) => {
+                if counters.first_milestone.is_some() {
+                    return Err("recorded selection after the milestone stop".into());
+                }
                 let parent_index = core
                     .archive
                     .index_of_id(skip.parent_id)
@@ -4141,10 +4246,28 @@ where
                 counters.jobs_per_worker[worker] =
                     counters.jobs_per_worker[worker].saturating_add(1);
                 counters.job_frames = counters.job_frames.saturating_add(frames);
+                counters.note_milestone(
+                    game,
+                    &core.evidence,
+                    header.milestone_stop.as_ref(),
+                    sequence,
+                )?;
                 if victories_before == 0 && core.victories > 0 {
                     counters.note_first_victory(sequence);
                 }
             }
+        }
+    }
+    if let Some(first) = counters.first_milestone {
+        let last_allowed = if first.execution == 0 {
+            0
+        } else {
+            first
+                .execution
+                .saturating_add(u64::try_from(replay_window_depth)?.saturating_sub(1))
+        };
+        if core.sequence > last_allowed {
+            return Err("recorded jobs exceed the milestone stop's bounded drain".into());
         }
     }
     core.archive.preserve_inactive_snapshots(false)?;

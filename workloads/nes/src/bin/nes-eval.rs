@@ -47,7 +47,7 @@ fn telemetry_now() -> Instant {
     Instant::now()
 }
 
-fn victory_within_budget(first_victory_frames: Option<u64>, budget: Option<u64>) -> bool {
+fn event_within_budget(first_victory_frames: Option<u64>, budget: Option<u64>) -> bool {
     first_victory_frames.is_some_and(|frames| budget.is_none_or(|limit| frames <= limit))
 }
 
@@ -63,6 +63,8 @@ struct Request {
     retention_audit: bool,
     #[serde(default)]
     slot_retention: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stop_after_milestone: Option<String>,
     #[serde(default)]
     metroid_terminal: Option<String>,
     #[serde(default)]
@@ -241,10 +243,19 @@ where
         2 => ResultBuffering::TwoPerWorker,
         _ => return Err("result_slots must be 1 or 2".into()),
     };
-    write_json(
-        &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "selector":request.selector, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification, "retention_audit":request.retention_audit,"slot_retention":request.slot_retention,"mm2_chain":request.mm2_chain,"prefix_sha256":request.prefix_sha256}),
-    )?;
+    let stop_after_milestone = request
+        .stop_after_milestone
+        .as_deref()
+        .map(|name| {
+            game.named_milestone(name)
+                .ok_or("workload does not support this milestone stop")
+        })
+        .transpose()?;
+    let mut identity = json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "selector":request.selector, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification, "retention_audit":request.retention_audit,"slot_retention":request.slot_retention,"mm2_chain":request.mm2_chain,"prefix_sha256":request.prefix_sha256});
+    if let Some((name, policy)) = stop_after_milestone {
+        identity["milestone_stop"] = json!({"name":name,"observation_policy":policy});
+    }
+    write_json(&out.join("identity.json"), &identity)?;
     let mut stream = StreamDigest {
         file: if full {
             Some(BufWriter::new(fs::File::create(out.join("stream.jsonl"))?))
@@ -266,6 +277,7 @@ where
         Some(&mut progress),
         CampaignExecutionOptions {
             frame_budget: request.frames,
+            stop_after_milestone: stop_after_milestone.map(|(name, _)| name),
             result_buffering,
             slot_retention: nes_workload::search::archive::SlotRetentionPolicy::from_identifier(
                 request.slot_retention.as_deref(),
@@ -343,22 +355,29 @@ where
         }
     }
     let verification_seconds = verify_started.elapsed().as_secs_f64();
-    let solved = victory_within_budget(report.frames_to_first_victory, request.frames);
-    write_json(
-        &out.join("result.json"),
-        &json!({"format":"nes-eval-result-v1", "status":"complete", "solved":solved,
-            "victory_observed":report.victories>0,
-            "frame_budget_overshoot":request.frames.map(|limit| report.frames_emulated.saturating_sub(limit)),
-            "executions": report.executions_completed, "frames_emulated":report.frames_emulated,
-            "frames_to_first_victory":report.frames_to_first_victory, "executions_to_first_victory":report.executions_to_first_victory,
-            "preparation_seconds":preparation_seconds, "search_seconds":search_seconds, "executions_per_second":report.executions_completed as f64 / search_seconds,
-            "progress":value["archive"]["progress_watermark"], "milestones":value["archive"]["milestones"], "frames_per_second": report.frames_emulated as f64 / search_seconds,
-            "export_seconds":export_seconds, "verification_seconds":verification_seconds,
-            "verification":request.verification, "witness":first, "milestone_witnesses":milestone_witnesses,
-            "stream_sha256":format!("{:x}",stream.digest.finalize()), "stream_bytes_generated":stream.bytes, "stream_retained":full,
-            "stop_reason":if solved {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.frames_emulated >= limit) {"frame_limit"} else {"wall_limit"}
-        }),
-    )?;
+    let solved = event_within_budget(report.frames_to_first_victory, request.frames);
+    let milestone_reached = event_within_budget(
+        report.first_milestone.map(|event| event.frames_emulated),
+        request.frames,
+    );
+    let mut result = json!({"format":"nes-eval-result-v1", "status":"complete", "solved":solved,
+        "victory_observed":report.victories>0,
+        "frame_budget_overshoot":request.frames.map(|limit| report.frames_emulated.saturating_sub(limit)),
+        "executions": report.executions_completed, "frames_emulated":report.frames_emulated,
+        "frames_to_first_victory":report.frames_to_first_victory, "executions_to_first_victory":report.executions_to_first_victory,
+        "preparation_seconds":preparation_seconds, "search_seconds":search_seconds, "executions_per_second":report.executions_completed as f64 / search_seconds,
+        "progress":value["archive"]["progress_watermark"], "milestones":value["archive"]["milestones"], "frames_per_second": report.frames_emulated as f64 / search_seconds,
+        "export_seconds":export_seconds, "verification_seconds":verification_seconds,
+        "verification":request.verification, "witness":first, "milestone_witnesses":milestone_witnesses,
+        "stream_sha256":format!("{:x}",stream.digest.finalize()), "stream_bytes_generated":stream.bytes, "stream_retained":full,
+        "stop_reason":if solved {"victory"} else if milestone_reached {"milestone"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.frames_emulated >= limit) {"frame_limit"} else {"wall_limit"}
+    });
+    if let Some(condition) = &report.milestone_stop {
+        result["milestone_stop"] = serde_json::to_value(condition)?;
+        result["first_milestone"] = serde_json::to_value(report.first_milestone)?;
+        result["milestone_within_budget"] = json!(milestone_reached);
+    }
+    write_json(&out.join("result.json"), &result)?;
     phase(out, "done", started)
 }
 
@@ -559,13 +578,13 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::victory_within_budget;
+    use super::event_within_budget;
 
     #[test]
     fn a_victory_in_the_drained_window_does_not_pass_the_frame_gate() {
-        assert!(victory_within_budget(Some(128), Some(128)));
-        assert!(!victory_within_budget(Some(129), Some(128)));
-        assert!(victory_within_budget(Some(129), None));
-        assert!(!victory_within_budget(None, Some(128)));
+        assert!(event_within_budget(Some(128), Some(128)));
+        assert!(!event_within_budget(Some(129), Some(128)));
+        assert!(event_within_budget(Some(129), None));
+        assert!(!event_within_budget(None, Some(128)));
     }
 }

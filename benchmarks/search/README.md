@@ -158,6 +158,18 @@ The watchdog kills only its own process group after the search wall budget plus
 `--disk-limit-gib`. The search itself stops issuing reservations at its wall
 limit, then drains admitted work and verifies evidence.
 
+Metroid first-event studies may set `search.stop_after_milestone` to an existing
+named milestone, for example `energy_tank`. The request and identity record the
+criterion; the stream also records its observation-policy version. A successful
+endpoint stop has `stop_reason: milestone`, `first_milestone` with the exact
+admitted job cost, and `milestone_within_budget: true`. This does not set `solved`
+or imply game victory. Post-budget drain discoveries remain in the report with
+`milestone_within_budget: false`. Unattained endpoints must reach the registered
+frame cap to count as censored observations. Total CPU/elapsed cost for these
+event-stopped cells is not a fixed-work throughput comparison; register its
+interpretation and gate before running a performance panel. Unsupported games
+or names are rejected, and the default stopping behavior is unchanged.
+
 - **Search quality:** verified completion, first-victory executions and emulator
   frames, objective progress/milestones, deaths and retained novelty cells. The
   novelty ledger is compacted under memory pressure and is not cumulative world

@@ -855,6 +855,25 @@ impl TargetExecution for MetroidGame {
 }
 
 impl Evaluation for MetroidGame {
+    fn named_milestone(&self, name: &str) -> Option<(&'static str, &'static str)> {
+        NamedProgress::default()
+            .first_seen
+            .get_key_value(name)
+            .map(|(name, _)| (*name, super::progress::NAMED_PROGRESS_POLICY))
+    }
+
+    fn milestone_first_execution(
+        &self,
+        evidence: &MetroidCampaignEvidence,
+        name: &str,
+    ) -> Option<u64> {
+        evidence
+            .named_progress
+            .first_seen
+            .get(name)?
+            .map(|seen| seen.execution)
+    }
+
     fn is_terminal(&self, target: &MetroidTarget) -> bool {
         target.is_dead() || target.is_victory() || target.exit_kind() != ExitKind::Ok
     }

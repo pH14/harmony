@@ -22,7 +22,7 @@ import sys
 import time
 
 SCHEMA = 'harmony-search-eval-v1'
-ALLOWED_SEARCH = {'seed','workers','executions','frames','actions','memory_mib','window','result_slots','wall_seconds','selector','suffix','mixture','verification','retention_audit','mm2_chain','prefix_input','prefix_sha256','slot_retention','metroid_terminal'}
+ALLOWED_SEARCH = {'seed','workers','executions','frames','actions','memory_mib','window','result_slots','wall_seconds','selector','suffix','mixture','verification','retention_audit','mm2_chain','prefix_input','prefix_sha256','slot_retention','metroid_terminal','stop_after_milestone'}
 
 
 def valid_id(value):
@@ -145,6 +145,7 @@ def expand_suite(suite, selected=None):
                 if type(val) is not int or val<0 or (field!='seed' and val==0): raise ValueError('invalid '+field)
             if request.get('frames') is not None and (type(request['frames']) is not int or request['frames'] <= 0): raise ValueError('invalid frames')
             if type(request.get('result_slots',1)) is not int or request.get('result_slots',1) not in (1, 2): raise ValueError('result_slots must be 1 or 2')
+            if request.get('stop_after_milestone') is not None and (not isinstance(request['stop_after_milestone'], str) or not request['stop_after_milestone']): raise ValueError('stop_after_milestone must be a nonempty name')
             cell=f'{name}-s{seed}-w{workers}-m{memory}'
             jobs.append({'id':cell,'case':case,'request':request})
     if selected and set(selected)-names: raise ValueError('unknown selected case')
@@ -320,7 +321,9 @@ def aggregates(results):
     groups = {}
     for item in results:
         request = item.get('search_request', {})
-        key = (item['case'], request.get('workers'), request.get('memory_mib'))
+        stop = (item.get('identity') or {}).get('milestone_stop') or {}
+        key = (item['case'], request.get('workers'), request.get('memory_mib'),
+               stop.get('name', request.get('stop_after_milestone')), stop.get('observation_policy'))
         groups.setdefault(key, []).append(item)
     rows = []
     for key, items in sorted(groups.items(), key=lambda x: str(x[0])):
@@ -335,6 +338,10 @@ def aggregates(results):
                      'median_frames_to_victory_among_successes': statistics.median([x['result']['frames_to_first_victory'] for x in solved]) if solved else None,
                      'throughput_trials': len(rates),
                      'median_search_frames_per_second': statistics.median(rates) if rates else None})
+        if key[3] is not None:
+            rows[-1]['milestone_stop'] = {'name': key[3], 'observation_policy': key[4]}
+            rows[-1]['milestone_hits_within_budget'] = sum(
+                x['result'].get('milestone_within_budget') is True for x in valid)
         known = [named_progress(item) for item in valid if named_progress(item) is not None]
         if known:
             rows[-1]['metroid_milestones'] = {
@@ -368,7 +375,9 @@ def compare(base, candidate):
             continue
         if a['identity']['policies'] != b['identity']['policies']:
             raise ValueError('adapter policy changed: ' + cell)
-        for key in ('game', 'level', 'stage', 'ai', 'whole_game', 'seed', 'workers', 'memory_mib', 'window', 'actions', 'executions', 'frames', 'wall_seconds', 'rom_sha256', 'core_sha256', 'verification'):
+        if a['identity'].get('milestone_stop') != b['identity'].get('milestone_stop'):
+            raise ValueError('milestone stopping policy changed: ' + cell)
+        for key in ('game', 'level', 'stage', 'ai', 'whole_game', 'seed', 'workers', 'memory_mib', 'window', 'actions', 'executions', 'frames', 'wall_seconds', 'rom_sha256', 'core_sha256', 'verification', 'stop_after_milestone'):
             if a['search_request'].get(key) != b['search_request'].get(key):
                 raise ValueError('comparison changed ' + key + ': ' + cell)
         row = {'cell': cell, 'comparable': True, 'baseline_status': a['status'], 'candidate_status': b['status'],
@@ -388,6 +397,9 @@ def compare(base, candidate):
                           'peak_rss': value.get('max_process_rss_bytes'), 'peak_disk': value.get('peak_disk_logical_bytes_sampled'),
                           'progress': r.get('progress', progress.get('progress')),
                           'workload_diagnostics': progress.get('workload_diagnostics')}
+            if value['search_request'].get('stop_after_milestone') is not None:
+                row[label].update({key: r.get(key) for key in
+                    ('milestone_stop', 'first_milestone', 'milestone_within_budget', 'stop_reason')})
         hashes = [row[label]['stream_sha256'] for label in ('baseline', 'candidate')]
         row['same_recorded_search'] = hashes[0] == hashes[1] if all(hashes) else None
         rows.append(row)
@@ -486,15 +498,18 @@ def report_html(results, title):
         cell = html.escape(item['cell'])
         rows.append('<tr>' + ''.join('<td>' + str(x) + '</td>' for x in [
             f'<a href="{cell}/summary.json">{cell}</a>', html.escape(item['status']),
+            html.escape(str(r.get('stop_reason', 'unavailable'))),
+            html.escape(str((r.get('milestone_stop') or {}).get('name', 'none'))),
+            number((r.get('first_milestone') or {}).get('frames_emulated')),
             'yes' if r.get('solved') else 'no' if r else 'unavailable', number(r.get('frames_to_first_victory')),
             number(r.get('frames_emulated')), number(r.get('frames_per_second')), number(r.get('search_seconds'))])
             + resource_cells(item) + '</tr>')
     panels = ''.join('<li>' + html.escape(json.dumps(row, sort_keys=True)) + '</li>' for row in aggregates(results))
     return '''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>''' + html.escape(title) + '''</title><style>body{font:15px/1.55 system-ui;margin:2rem;color:#162132;background:#f7f9fc}table{border-collapse:collapse;background:white;white-space:nowrap}th,td{padding:.55rem;text-align:right;border-bottom:1px solid #dce3ef}th:first-child,td:first-child{text-align:left}a{color:#1356a0}li{margin:.8rem 0;overflow-wrap:anywhere}.scroll{overflow:auto}h1{font-size:1.6rem}</style>
-<h1>''' + html.escape(title) + '''</h1><p>Fresh search runs with frozen workload policies. Independent stage and level fixtures are separate from whole-game completion. Missing victories are censored at the recorded budget; failures remain visible.</p>
+<h1>''' + html.escape(title) + '''</h1><p>Fresh search runs with frozen workload policies. Independent stage and level fixtures are separate from whole-game completion. Missing events are observed only through the recorded stop. A milestone stop or incomplete run does not establish victory nonattainment through the full requested budget; failures remain visible. Milestone cost includes the first admitting job; events observed during drain beyond the frame budget do not pass the budget gate.</p>
 <p>Frames include admitted emulator work and replay/probes inside search. Throughput excludes witness verification and external export. Peak RSS is the operating system's process maximum; disk peaks sample the cell output directory. Shared assets/builds and temporary files outside that directory are excluded. See each summary for phase measurements, process-group RSS, logical archive memory, I/O and provenance.</p>
-<div class="scroll"><table><thead><tr><th>Cell</th><th>Status</th><th>Solved</th><th>Frames to victory</th><th>Total frames</th><th>Frames/s</th><th>Search s</th>''' + RESOURCE_HEADERS + '</tr></thead><tbody>' + ''.join(rows) + '''</tbody></table></div>
+<div class="scroll"><table><thead><tr><th>Cell</th><th>Status</th><th>Stop reason</th><th>Milestone target</th><th>Frames to milestone</th><th>Solved</th><th>Frames to victory</th><th>Total frames</th><th>Frames/s</th><th>Search s</th>''' + RESOURCE_HEADERS + '</tr></thead><tbody>' + ''.join(rows) + '''</tbody></table></div>
 ''' + metroid_html(results) + '''<h2>Seed panels</h2><p>Wilson 95% intervals describe uncertainty in solve fractions. Time-to-victory medians include successes only and are not estimates for censored runs. Three-seed pilots are exploratory.</p><ul>''' + panels + '''</ul><p><a href="results.json">Results JSON</a> · <a href="suite.json">Frozen matrix</a> · <a href="matrix.json">Build and host</a> · <a href="checksums.json">SHA-256 manifest</a></p></html>'''
 
 

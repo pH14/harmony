@@ -32,6 +32,20 @@ memory is outside the archive's logical budget and must be measured in host RSS.
 Benchmark callers record this physical execution choice in their run identity.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 
+For first-event studies, `CampaignExecutionOptions::stop_after_milestone` accepts
+a canonical name returned by `Evaluation::named_milestone`. The workload owns
+the vocabulary, observation-policy version and first admitted execution. The
+coordinator records that criterion in the header, stops new reservations after
+the first observed admission, and drains already-reserved jobs normally. It
+does not change rollout termination, selection, retention or pre-event decisions.
+`first_milestone.frames_emulated` charges bootstrap and complete jobs through
+that admission; it is not an exact within-job event timestamp. The final frame
+total includes the remaining drain. Replay reconstructs the same event cost,
+checks the observation-policy version and rejects jobs beyond the allowed drain.
+Absent options preserve the previous stream/report fields and stopping behavior.
+Callers must compare the event cost with their frame cap: an event in post-budget
+drain is observed evidence, not a budgeted hit.
+
 ## Workload boundary
 
 `searcher` is independently buildable. Workload packages implement its typed

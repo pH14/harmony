@@ -78,8 +78,15 @@ observed it; `route_action_end_frame` is the action endpoint on that discovered
 input, **not** cumulative emulator work. Cartridge RAM is read after a held
 controller action, so this is not an exact within-action pickup timestamp.
 The finite vocabulary bounds observer memory and the number of saved tapes.
-These fields are reporting-only: they do not change keys, rewards, input draws,
-champion ordering, or continuation scheduling.
+These fields do not change keys, rewards, input draws or champion ordering.
+The common evaluator can opt into `stop_after_milestone` with one existing name,
+such as `energy_tank`. That criterion stops new campaign reservations after its
+first admitted observation and preserves normal drain, export and replay. Its
+observation-policy version is recorded; the default remains a full-budget run.
+The resulting `first_milestone` reports cumulative admitted work through the
+event's job, distinct from the route coordinate in `first_seen`. A milestone
+first observed beyond the frame cap is retained as evidence but is not a
+budgeted endpoint hit. No item order, route or action policy is supplied.
 
 The common runner saves each first-discovery input under `milestone-inputs/`
 and replays it on two independent targets, checking both the named milestone

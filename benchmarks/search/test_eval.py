@@ -225,13 +225,43 @@ class EvaluationTests(unittest.TestCase):
         original = self.matrix(a)
         self.matrix(b)
         self.assertTrue(eval.compare(a, b)['pairs'][0]['comparable'])
-        for field, key, value in [('identity', 'policies', {'key': 'hinted'}), ('search_request', 'memory_mib', 32), ('search_request', 'frames', 100)]:
+        for field, key, value in [('identity', 'policies', {'key': 'hinted'}), ('search_request', 'memory_mib', 32), ('search_request', 'frames', 100),
+                                  ('identity', 'milestone_stop', {'name': 'morph_ball', 'observation_policy': 'v1'}),
+                                  ('search_request', 'stop_after_milestone', 'morph_ball')]:
             changed = copy.deepcopy(original)
             changed[field][key] = value
             eval.write_json(b/'results.json', [changed])
             with self.assertRaises(ValueError): eval.compare(a, b)
         eval.write_json(b/'results.json', [])
         with self.assertRaises(ValueError): eval.compare(a, b)
+
+    def test_milestone_stops_remain_separate_in_reports_and_comparisons(self):
+        a, b = self.root/'a', self.root/'b'
+        ordinary = self.matrix(a)
+        stopped = self.matrix(b)
+        stopped['search_request']['stop_after_milestone'] = 'morph_ball'
+        condition = {'name': 'morph_ball', 'observation_policy': 'metroid-named-progress-v2'}
+        stopped['identity']['milestone_stop'] = condition
+        stopped['result'].update(solved=False, milestone_stop=condition, stop_reason='milestone',
+                                 first_milestone={'execution': 2, 'frames_emulated': 9},
+                                 milestone_within_budget=True)
+        rows = eval.aggregates([ordinary, stopped])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(next(row for row in rows if 'milestone_stop' in row)['milestone_hits_within_budget'], 1)
+        text = eval.report_html([stopped], 'qualification')
+        self.assertIn('Milestone target', text)
+        self.assertIn('does not establish victory nonattainment', text)
+        for path in (a, b): eval.write_json(path/'results.json', [stopped])
+        pair = eval.compare(a, b)['pairs'][0]
+        self.assertEqual(pair['candidate']['first_milestone']['frames_emulated'], 9)
+        changed = copy.deepcopy(stopped)
+        changed['identity']['milestone_stop']['observation_policy'] = 'changed'
+        eval.write_json(b/'results.json', [changed])
+        with self.assertRaisesRegex(ValueError, 'stopping policy changed'): eval.compare(a, b)
+        for invalid in ('', True, 1, []):
+            suite = copy.deepcopy(self.suite)
+            suite['search']['stop_after_milestone'] = invalid
+            with self.assertRaises(ValueError): eval.expand_suite(suite)
 
     def test_export_is_allowlisted_and_checksummed(self):
         private, public = self.root/'private', self.root/'public'
