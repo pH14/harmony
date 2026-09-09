@@ -54,3 +54,10 @@ Physical chain exports expand the adapter's automatic award-idle frames into
 explicit zero-button holds. Concatenating the originally sampled holds alone
 omits that executed work and can fail the next-stage replay. `physical_input`
 replays and expands those holds without changing campaign action semantics.
+
+`mm2-metal-export CORE ROM VICTORY.json OUT` qualifies the existing chain
+export path from a searched Metal victory without repeating search. It uses
+the adapter's physical-input expansion and ordinary award/menu transition,
+records their frame costs, and writes a private next-stage prefix. A separate
+twice-replayed next-stage bridge remains required. It does not make a supplied
+victory into a fresh chain result.

@@ -13,6 +13,7 @@ def main():
     p.add_argument('--progress-binary',type=pathlib.Path,required=True);p.add_argument('--assets',type=pathlib.Path,required=True)
     p.add_argument('--seed',type=int,required=True);p.add_argument('--mixture',default='energy_splice:6')
     p.add_argument('--selector',default='room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2')
+    p.add_argument('--suffix',default='one_to_six',choices=['one_to_six','one_to_six_within_3_longest_actions_full_hold'])
     p.add_argument('--executions',type=int,default=1000000);p.add_argument('--frames',type=int,default=120000000)
     p.add_argument('--stage-seconds',type=int,default=1080);p.add_argument('--chain-seconds',type=int,default=5400)
     p.add_argument('--qualification',action='store_true');p.add_argument('--slot-retention')
@@ -24,7 +25,7 @@ def main():
         remaining=int(a.chain_seconds-(time.monotonic()-started))
         if remaining<=180:manifest['status']='chain_wall_limit';break
         cellroot=a.out/f'{index:02}-{name}'
-        search={'executions':5000 if a.qualification else a.executions,'frames':a.frames,'actions':4096,'window':2,'result_slots':2,'wall_seconds':min(a.stage_seconds,remaining-120),'selector':a.selector,'suffix':'one_to_six','mixture':a.mixture,'verification':'campaign' if a.qualification else 'witness','mm2_chain':True}
+        search={'executions':5000 if a.qualification else a.executions,'frames':a.frames,'actions':4096,'window':2,'result_slots':2,'wall_seconds':min(a.stage_seconds,remaining-120),'selector':a.selector,'suffix':a.suffix,'mixture':a.mixture,'verification':'campaign' if a.qualification else 'witness','mm2_chain':True}
         if a.slot_retention:search['slot_retention']=a.slot_retention
         if prefix is not None:search.update(prefix_input=str(prefix),prefix_sha256=sha(prefix))
         suite={'format':'harmony-search-eval-v1','id':f'chain-{a.seed}-{index}-{name}','seeds':[a.seed],'workers':[4],'memory_mib':[8192],'search':search,'cases':[{'id':f'mm2-{name}','game':'mm2','stage':number,'origin':'fresh fixed-order chain; only prior victories from this chain','rom_sha256':assets['mm2']['sha256'],'search':{}}]}

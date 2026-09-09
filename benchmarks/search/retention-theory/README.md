@@ -562,9 +562,62 @@ encounter or partial-damage counters.
 R03 Metroid completed the full50M-frame comparison without censoring.
 Sampling has no additional final milestone or20% arrival improvement, and
 misses the control energy tank. Its Metroid escalation gate failed. Do not
-run longer sample campaigns. Full results are preserved on msr1.
+run longer Metroid sample campaigns. Full results are preserved on msr1.
 Both MM2 starts failed immediately because the driver incorrectly passed
 the Metroid-only replacement-pair audit option. No emulator search ran.
 Remove that unsupported diagnostic option, preserve failed outputs unchanged,
 and run the same registered transfer conditions under new run ID `r03b`.
 The binary, policies, seeds, budgets, vocabulary and selection stay frozen.
+
+R03b MM2 completed with both victories replayed. Sampling used1,444,334 frames/
+11,862 jobs; extremes used7,349,785 frames/57,310 jobs. The approximately80%
+frame reduction passes the registered transfer gate. Both arms use the full-hold
+suffix profile inherited from B01, `one_to_six_within_3_longest_actions_full_hold`.
+This differs from C01's `one_to_six`; do not compare their resource-control costs
+as if policy were the only difference. The R03b within-pair comparison is isolated.
+
+E01 completed three replays of the searched92,904-frame Kraid-area tape, using
+281,499 physical frames including setup. Ordinary and one-frame cadence ended
+in identical emulator bytes/state; both one-frame hashes match. No loader or
+active miniboss-tag agreement was observed. This is a qualified negative route
+control only. No campaign encounter/damage counter or extra search is justified
+by its empty trace. Raw source/input/build provenance remains private on msr1;
+compact numeric results will be preserved here.
+
+### J01: new-seed fresh MM2 chain after the R03b transfer gate
+
+Question: does the strong Metal improvement generalize to a second development
+seed and produce useful fresh chained depth? Use new development seed20261102
+in two fresh chains, sampling versus extremes. No earlier gameplay input is
+accepted. Every later stage uses only its own chain's searched victory and
+replays the carried bridge twice. Keep R03b's full-hold suffix profile and
+energy_splice:6 vocabulary, selector, four workers/8GiB,4096 actions and2/2
+window/result slots; freeze the same `job-sample-001` executable. A driver
+argument records the suffix explicitly while preserving its historical default.
+
+Fixed stage order: Metal, Heat, Air, Wood, Bubble, Quick, Flash, Crash, Wily1–3,
+then verify Wily4 entry with all eight weapons. Per stage:1M jobs/120M admitted
+frames,1200s search+120s finish; each complete chain stops after5400s, outer
+watchdog5460s. No retries of a failed stage or imported rescue prefix. Stop a
+chain at its first unsolved stage. Run sample on8–11 and extremes on0–3, swapping
+the prior placement; at most two campaigns. Wall throughput remains descriptive.
+
+The first stage is a replication, later prefixes differ by their own search
+histories, so later-stage comparisons are end-to-end chain evidence. Record
+all setup/export/bridge/verification work separately. An earlier Metal win
+without greater chained attainment or substantially cheaper common attainment
+does not justify a longer chain. If both stop at the same stage, inspect their
+completed common-work evidence before allocating another run. A Wily4 result
+still requires the untouched repetition panel; this is development only.
+
+Before J01, qualify the existing post-victory export for both completed R03b
+victories without rerunning search, or use the already qualified chain export
+path with a small full-replay chain-mode smoke if an independent export cannot
+reuse those results. Bound extra qualification at5m per arm, preserve every
+failed check, and keep all previously failed Metroid/coverage/refinement gates.
+
+J01 export helper reuses existing adapter methods; the first compile named
+the wrong provider trait for target creation. Corrected `TargetExecution`
+import and strict Clippy pass. It will export both R03b victories and use the
+frozen progress helper to replay both Heat bridges twice, with physical work
+recorded. J01 itself still starts independently on development seed20261102.
