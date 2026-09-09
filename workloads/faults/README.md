@@ -20,7 +20,12 @@ in the fault agent's bundle format:
 
 [`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
 alphabet, and assembles a guest initramfs: the base image, the OCI rootfs, and
-a control member holding the static fault agent and this package's init. The
+a control member holding the static fault agent and this package's init. It
+also derives Park places from syscall instructions in executable ELF payloads;
+this works for stripped binaries and means a workload gets useful execution
+boundaries without a symbol file or a workload-specific address list. An
+explicit `--places` file remains an optional override for a deliberate
+experiment. The
 init mounts the pseudo-filesystems, binds and chroots into the workload rootfs,
 and execs the agent. The control member is appended after the compressed
 members and padded to four bytes, which Linux initramfs requires before a raw
@@ -45,8 +50,9 @@ time ([`target`](src/target.rs)):
 `KillAt` is the generic crash-coordinate primitive. Its coordinate is part of
 the action and is sampled over the complete deterministic window, so the same
 fault policy can search a narrow crash interval without adding workload timing
-knobs. A future event, breakpoint, or storage boundary can resolve to the same
-coordinate without changing the campaign or replay format.
+knobs. Automatically resolved Park places add deterministic event boundaries
+for stripped binaries; a future breakpoint or storage boundary can use the
+same action and replay format.
 
 Every action but `Interrupt` becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the agent's
