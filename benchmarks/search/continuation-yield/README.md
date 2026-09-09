@@ -72,3 +72,26 @@ The new selector has passed generic deterministic/replay/resource checks. Native
 qualification must preserve the first D01 control's complete campaign stream and
 exercise the candidate with full replay before a fresh paired panel. The panel
 is not yet run and no performance gain is claimed.
+
+## Native qualification and paired screen
+
+[D02 analysis](d02-analysis.json) combines the successful old-policy compatibility
+check and Metroid candidate replay with the corrected MM2 replay in
+[D02r](d02r-results.json). The initial MM2 invocation rejected a Metroid-only
+audit flag before game dispatch; [its failed record](d02-results.json) is retained.
+The corrected smoke is separately registered. No successful cell was repeated.
+
+The old policy reproduced the entire 25,000,911-frame/193,760-execution stream
+exactly. Between-cell conditional distributions differed at 124,702 of 145,455
+encountered draws (85.73%), with mean conditional TV about 0.281. Within-cell
+laws did not differ on any of those draws. This establishes an operative
+between-cell intervention on this baseline path, not an adaptive improvement.
+Both candidate smoke cases exactly replayed their reports and checkpoints.
+
+[S01's fixed protocol](s01-protocol.md) and [registration](s01-registration.json)
+freeze four fresh paired seeds and the same qualified build. The screen needs
+three strict wins and a 15% interval-robust mean restricted-cost improvement,
+with matched hard resource bounds and CPU/elapsed tolerance. It stops after
+completed pairs if three strict wins become impossible. No screening result is
+available at registration; no long campaign or validation panel is authorized by
+qualification alone.

@@ -31,6 +31,13 @@ def main():
     binary = build / "nes-eval"
     assert sha(binary) == registration["binary_sha256"]
     assert sha(build / "build-info.json") == registration["build_info_sha256"]
+    for required in registration.get("required_evidence", []):
+        evidence_path = root / required["path"]
+        assert sha(evidence_path) == required["sha256"], "qualification evidence changed"
+        evidence = json.loads(evidence_path.read_text())
+        for cell_id in required["passed_cells"]:
+            matching = [row for row in evidence["records"] if row["id"] == cell_id]
+            assert len(matching) == 1 and matching[0].get("checks_passed"), "missing qualification"
     deadline = datetime.fromisoformat(registration["deadline_utc"])
     if "screen" in registration:
         seeds = [pair["seed"] for pair in registration["screen"]["pairs"]]
