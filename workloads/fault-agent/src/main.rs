@@ -243,10 +243,6 @@ mod real {
         await_ready_probe(argv, ready_ticks, clock)
     }
 
-    /// Run a readiness probe after a node start as well as at boot. A restart
-    /// is not complete when `execve` succeeds: hooks must not race a node that
-    /// is still recovering durable state. Reusing the bundle's probe keeps
-    /// this generic and avoids workload-specific sleep or recovery knobs.
     fn await_ready_probe(
         argv: &[String],
         ready_ticks: u32,
@@ -298,8 +294,6 @@ mod real {
                     &mut launches,
                     &args.hook_dir,
                     tick,
-                    args.ready_ticks,
-                    clock,
                 )?;
             }
             watch_parks(nodes, &mut supervisor, tick);
@@ -366,8 +360,6 @@ mod real {
         launches: &mut u64,
         hook_dir: &Path,
         tick: u64,
-        ready_ticks: u32,
-        clock: &mut SleepClock,
     ) -> Result<(), String> {
         match action {
             Action::Kill(node) => {
@@ -381,12 +373,14 @@ mod real {
             Action::Stop(node) => signal_node(nodes, node, libc::SIGSTOP),
             Action::Cont(node) => signal_node(nodes, node, libc::SIGCONT),
             Action::Start(node) => {
+                // Do not synchronously run the readiness command here. A
+                // recovery probe can take longer than this action's V-time
+                // window under emulation; blocking would stop standing polls
+                // and make later fault windows disappear. Hooks that need a
+                // live service must treat readiness as part of their oracle.
                 if let Some(entry) = nodes.get_mut(usize::from(node)) {
                     entry.park = None;
                     entry.child = Some(spawn_node(&entry.spec)?);
-                }
-                if let Some(ready) = bundle.ready.as_deref() {
-                    await_ready_probe(ready, ready_ticks, clock)?;
                 }
             }
             Action::Park(node, park) => {

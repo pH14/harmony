@@ -51,6 +51,13 @@ cargo run --manifest-path workloads/fault-agent/Cargo.toml -- \
   --check-bundle --bundle path/to/bundle
 ```
 
+The readiness command is enforced before the setup point is sealed. A
+post-restart probe is not run synchronously by the poll loop: recovery can take
+longer than one virtual fault window under emulation, and blocking there would
+make later standing-fault edges disappear. Hooks that depend on a recovered
+service perform their own conservative readiness check before publishing an
+oracle verdict.
+
 ## Hook directives
 
 A hook reports its own assertions by writing one directive per stdout line,
