@@ -31,23 +31,83 @@ env:
   CASE_DIR: bugs/historical/etcd-3.5-inconsistency
   SOFTWARE_NAME: etcd
   IMAGE_PREFIX: etcd
-  VULNERABLE_VERSION: 3.5.2
-  CONTROL_VERSION: 3.5.3
-  VULNERABLE_SHA256: 256cad725542d6fd463e81b8a19b86ead4cdfe113f7fb8a1eabc6c32c25d068b
-  CONTROL_SHA256: e13e119ff9b28234561738cd261c2a031eb1c8688079dcf96d8035b3ad19ca58
-  HORIZON_MS: 500
-  RAM_MIB: 512
-  SEED: 1
-  WORKERS: 4
-  ACTIONS: 24
-  WALL_MINUTES: 150
-  KNOBS: ""
-  ORACLE_ASSERTION: 1
-  ORACLE_EVIDENCE: 11
 
 jobs:
+  manifest:
+    name: Read the locked etcd case manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      case_id: ${{ steps.read.outputs.case_id }}
+      horizon_ms: ${{ steps.read.outputs.horizon_ms }}
+      ram_mib: ${{ steps.read.outputs.ram_mib }}
+      seed: ${{ steps.read.outputs.seed }}
+      workers: ${{ steps.read.outputs.workers }}
+      actions: ${{ steps.read.outputs.actions }}
+      executions: ${{ steps.read.outputs.executions }}
+      wall_minutes: ${{ steps.read.outputs.wall_minutes }}
+      knobs: ${{ steps.read.outputs.knobs }}
+      oracle_assertion: ${{ steps.read.outputs.oracle_assertion }}
+      oracle_evidence: ${{ steps.read.outputs.oracle_evidence }}
+      vulnerable_version: ${{ steps.read.outputs.vulnerable_version }}
+      vulnerable_sha256: ${{ steps.read.outputs.vulnerable_sha256 }}
+      control_version: ${{ steps.read.outputs.control_version }}
+      control_sha256: ${{ steps.read.outputs.control_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate and read case.json
+        id: read
+        env:
+          DISPATCH_EXECUTIONS: ${{ inputs.executions }}
+        run: |
+          set -euo pipefail
+          case_json="${CASE_DIR}/case.json"
+          jq -e '
+            .id == "etcd-3.5-inconsistency"
+            and (.run.knobs == {})
+            and (.arms.vulnerable.archive_sha256 | type == "string" and length == 64)
+            and (.arms.control.archive_sha256 | type == "string" and length == 64)
+            and (.oracle | has("assertion") and has("evidence"))
+          ' "${case_json}" >/dev/null
+          emit() { printf '%s=%s\n' "$1" "$2" >>"${GITHUB_OUTPUT}"; }
+          emit case_id "$(jq -r .id "${case_json}")"
+          emit horizon_ms "$(jq -r .run.horizon_ms "${case_json}")"
+          emit ram_mib "$(jq -r .run.ram_mib "${case_json}")"
+          emit seed "$(jq -r .search.seed "${case_json}")"
+          emit workers "$(jq -r .search.workers "${case_json}")"
+          emit actions "$(jq -r .search.actions "${case_json}")"
+          emit wall_minutes "$(jq -r .search.wall_minutes "${case_json}")"
+          emit vulnerable_version "$(jq -r .arms.vulnerable.version "${case_json}")"
+          emit vulnerable_sha256 "$(jq -r .arms.vulnerable.archive_sha256 "${case_json}")"
+          emit control_version "$(jq -r .arms.control.version "${case_json}")"
+          emit control_sha256 "$(jq -r .arms.control.archive_sha256 "${case_json}")"
+          emit oracle_assertion "$(jq -r .oracle.assertion "${case_json}")"
+          emit oracle_evidence "$(jq -r .oracle.evidence "${case_json}")"
+          emit knobs ""
+          executions="$(jq -r .search.executions "${case_json}")"
+          if [[ -n "${DISPATCH_EXECUTIONS}" ]]; then executions="${DISPATCH_EXECUTIONS}"; fi
+          emit executions "${executions}"
+      - name: Summarize the manifest
+        run: |
+          set -euo pipefail
+          {
+            echo "## Case manifest"
+            echo
+            jq -r '
+              ["id", .id],
+              ["vulnerable", .arms.vulnerable.version],
+              ["control", .arms.control.version],
+              ["oracle", "@\(.oracle.kind) \(.oracle.assertion) — \(.oracle.detector)"],
+              ["oracle verdict evidence", "@reachable \(.oracle.evidence)"],
+              ["knobs", "none"],
+              ["status", .status]
+              | "| \(.[0]) | \(.[1]) |"
+            ' "${CASE_DIR}/case.json"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
   guest:
     name: Build the locked faultlab guest
+    needs: manifest
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -68,6 +128,7 @@ jobs:
 
   images:
     name: Build pinned etcd workload images
+    needs: manifest
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -84,8 +145,10 @@ jobs:
               --tag "harmony-etcd:${version}" "${CASE_DIR}/image"
             docker save --output "oci-images/${IMAGE_PREFIX}-${version}.oci" "harmony-etcd:${version}"
           }
-          build_arm "${VULNERABLE_VERSION}" "${VULNERABLE_SHA256}"
-          build_arm "${CONTROL_VERSION}" "${CONTROL_SHA256}"
+          build_arm "${{ needs.manifest.outputs.vulnerable_version }}" \
+            "${{ needs.manifest.outputs.vulnerable_sha256 }}"
+          build_arm "${{ needs.manifest.outputs.control_version }}" \
+            "${{ needs.manifest.outputs.control_sha256 }}"
       - uses: actions/upload-artifact@v4
         with:
           name: etcd-images-${{ github.run_id }}
@@ -95,6 +158,7 @@ jobs:
 
   tools:
     name: Build Harmony and the static fault agent
+    needs: manifest
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -123,7 +187,7 @@ jobs:
 
   probe:
     name: Probe replay on both pinned arms
-    needs: [guest, images, tools]
+    needs: [manifest, guest, images, tools]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -147,7 +211,14 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Replay deterministic probe
         env:
-          CASE_ID: etcd-3.5-inconsistency
+          CASE_ID: ${{ needs.manifest.outputs.case_id }}
+          HORIZON_MS: ${{ needs.manifest.outputs.horizon_ms }}
+          RAM_MIB: ${{ needs.manifest.outputs.ram_mib }}
+          VULNERABLE_VERSION: ${{ needs.manifest.outputs.vulnerable_version }}
+          CONTROL_VERSION: ${{ needs.manifest.outputs.control_version }}
+          KNOBS: ${{ needs.manifest.outputs.knobs }}
+          ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}
+          ORACLE_EVIDENCE: ${{ needs.manifest.outputs.oracle_evidence }}
         run: .github/scripts/historical-replay.sh probe "${CASE_DIR}/probe.json"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -160,7 +231,7 @@ jobs:
   search:
     name: Discover the bug on affected and fixed arms
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    needs: [guest, images, tools]
+    needs: [manifest, guest, images, tools]
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     strategy:
@@ -188,10 +259,19 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Run discovery campaign
         env:
-          CASE_ID: etcd-3.5-inconsistency
+          CASE_ID: ${{ needs.manifest.outputs.case_id }}
           ARM: ${{ matrix.arm }}
-          WORKLOAD_VERSION: ${{ matrix.arm == 'vulnerable' && env.VULNERABLE_VERSION || env.CONTROL_VERSION }}
-          EXECUTIONS: ${{ inputs.executions || 4000 }}
+          WORKLOAD_VERSION: ${{ matrix.arm == 'vulnerable' && needs.manifest.outputs.vulnerable_version || needs.manifest.outputs.control_version }}
+          HORIZON_MS: ${{ needs.manifest.outputs.horizon_ms }}
+          RAM_MIB: ${{ needs.manifest.outputs.ram_mib }}
+          SEED: ${{ needs.manifest.outputs.seed }}
+          WORKERS: ${{ needs.manifest.outputs.workers }}
+          ACTIONS: ${{ needs.manifest.outputs.actions }}
+          EXECUTIONS: ${{ needs.manifest.outputs.executions }}
+          WALL_MINUTES: ${{ needs.manifest.outputs.wall_minutes }}
+          KNOBS: ${{ needs.manifest.outputs.knobs }}
+          ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}
+          ORACLE_EVIDENCE: ${{ needs.manifest.outputs.oracle_evidence }}
         run: .github/scripts/historical-search.sh
       - uses: actions/upload-artifact@v4
         if: always()
