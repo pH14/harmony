@@ -237,9 +237,21 @@ mod real {
         ready_ticks: u32,
         clock: &mut SleepClock,
     ) -> Result<(), String> {
-        let Some(argv) = &bundle.ready else {
+        let Some(argv) = bundle.ready.as_deref() else {
             return Ok(());
         };
+        await_ready_probe(argv, ready_ticks, clock)
+    }
+
+    /// Run a readiness probe after a node start as well as at boot. A restart
+    /// is not complete when `execve` succeeds: hooks must not race a node that
+    /// is still recovering durable state. Reusing the bundle's probe keeps
+    /// this generic and avoids workload-specific sleep or recovery knobs.
+    fn await_ready_probe(
+        argv: &[String],
+        ready_ticks: u32,
+        clock: &mut SleepClock,
+    ) -> Result<(), String> {
         for _ in 0..ready_ticks {
             match command(argv)
                 .stdout(Stdio::null())
@@ -286,6 +298,8 @@ mod real {
                     &mut launches,
                     &args.hook_dir,
                     tick,
+                    args.ready_ticks,
+                    clock,
                 )?;
             }
             watch_parks(nodes, &mut supervisor, tick);
@@ -352,6 +366,8 @@ mod real {
         launches: &mut u64,
         hook_dir: &Path,
         tick: u64,
+        ready_ticks: u32,
+        clock: &mut SleepClock,
     ) -> Result<(), String> {
         match action {
             Action::Kill(node) => {
@@ -368,6 +384,9 @@ mod real {
                 if let Some(entry) = nodes.get_mut(usize::from(node)) {
                     entry.park = None;
                     entry.child = Some(spawn_node(&entry.spec)?);
+                }
+                if let Some(ready) = bundle.ready.as_deref() {
+                    await_ready_probe(ready, ready_ticks, clock)?;
                 }
             }
             Action::Park(node, park) => {
