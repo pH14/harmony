@@ -1249,3 +1249,57 @@ Metroid parent IDs (first job25) and4,905/5,000 MM2 (first job26), zero-based.
 Build031/032 share source09a8fb4fc9363ce9d1111cb0f0499366abc2729783527a590c38a99f4a584690.
 The registered local probes now run sequentially onCPUs4–7. Corrected collector
 output includes both empty mask and populated MM2 player-state idle summaries.
+
+S04's launcher also logged outer CPU for native evaluation cells. Exclude those
+outer measurements when per-cell summaries already exist, while retaining both
+measurements with an explicit inclusion flag. This prevents double counting in
+the upcoming six-hour ledger; the earlier four-hour snapshot predates these
+outer measurements and is unaffected. Local/raw probes remain separately counted.
+
+## T04 conditional registration — untouched terminal-correction panel
+
+If the completed T03 panel retains substantial earlier late-capability discovery
+on at least two development seeds, freeze T017 unchanged and compare ten
+untouched seeds against its legacy-terminal control at the exact3M/400M anchor.
+The short panel missed the late effect; development seeds alone cannot establish
+repeatability. This panel tests boss attainment and generalization of the late
+capability effect, not a presumption that corrected terminal detection solves a boss.
+Both arms share original duration, semantic selection, alphabet_only, ordinary
+retention, four workers,8GiB,4096 actions, window/result2, and audit overhead.
+Only the explicit terminal policy differs. Record paired boss counts, first
+capability and area attainment, common-frame coverage, resource ceilings, and
+verified single-trajectory witnesses separately. Boss breakthrough still requires
+at least3/10 corrected successes plus matched-control improvement.
+
+Freeze the exact seed list, binary/source/assets and manifests before launching;
+exclude every previously observed seed and forbid tuning during the panel.
+Alternate arm order per seed and use four disjoint CPU groups0–3,4–7,8–11,12–15
+with at most four campaigns and40GiB total allocation including overhead.
+Each cell has5100s search+240s finish and a5400s process-tree watchdog. A separate
+06:50UTC panel deadline preserves the final90m consolidation window; any censored
+or unstarted cell stays explicitly incomplete, never a failed seed or a pass.
+No changed work budgets, replacement seeds, or repeated failed cells are allowed.
+Before launch, qualify the Linux watchdog with a session-creating child fixture
+(<=30s), verify pair manifests differ only in terminal policy, and check the
+frozen binary hash. The watchdog tracks process ancestry/birth times so it can
+kill native child groups even when they created independent sessions.
+If T03 does not satisfy the development gate, do not launch this panel. A null
+or mixed validation result keeps terminal correction experimental for search
+quality, even though its mechanics correction has direct causal evidence.
+
+S04 finishes Metroid103,716 jobs/12,001,164 frames,46 cells, capacity15,
+no boss; control44 cells/capacity15. MM2 finishes125,389 jobs/50,000,940 frames,
+maxscreen36, no boss reach,55,525/85,101 removals never selected (65.2%).
+The distinct selection change did not deliver substantial useful progress in
+either registered local comparison. Park S04; T is now the sole active family.
+No automatic fresh expansion or extra local budget follows this negative result.
+
+T03 seed4 completes3M/380,102,776 frames, Bombs2,772,507/Kraid2,834,909,
+later than its frozen control2,393,367/2,443,424. It has capacity15, one tank,
+and no boss. Seed5 still runs; its earlier Bombs/Ridley/Kraid discoveries are
+already observed but the final panel decision awaits completion.
+
+T04 seed-audit preflight initially failed while decoding an AppleDouble `._`
+sidecar as JSON. Exclude those binary filesystem metadata sidecars, retaining
+all actual benchmark/manifest/request JSON in the audit. No plan was written
+and no validation search ran before this correction; no seeds were replaced.

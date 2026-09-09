@@ -1,0 +1,900 @@
+{
+  "format": "alternative-futures-untouched-panel-v1",
+  "id": "t04-terminal-validation",
+  "created_utc": "2026-09-09T01:42:52.945012+00:00",
+  "scope": "untouched Metroid validation, conditional on completed T03 development gate; no seed replacement or tuning",
+  "remote_root": "/root/harmony-alternative-futures-20260908",
+  "assets": "/root/harmony-search-eval/assets.json",
+  "assets_sha256": "caad486bfe4a315726a5c890cf690d84ca41e7c12185db29e767d2e60c1da546",
+  "build": "terminal-017",
+  "binary_sha256": "abbd936ea4aa60bb9af809349817aac64fde7798e92e2832e67c25cb5aead9ca",
+  "source_tree_sha256": "6d0213f1883f20daf4a65d6c2ba414efdc62324d359e15a2ee1b870a82b1d56b",
+  "build_info_sha256": "cc8335519fc5437b344d0f0144ded23aefc1d7046f5432122ec822dd82bed6d9",
+  "deadline_utc": "2026-09-09T06:50:00+00:00",
+  "cpu_sets": [
+    [
+      0,
+      1,
+      2,
+      3
+    ],
+    [
+      4,
+      5,
+      6,
+      7
+    ],
+    [
+      8,
+      9,
+      10,
+      11
+    ],
+    [
+      12,
+      13,
+      14,
+      15
+    ]
+  ],
+  "seeds": [
+    2089362731,
+    1154364703,
+    2037612408,
+    4163552957,
+    3001028078,
+    3860178203,
+    3217532177,
+    781462287,
+    2825471318,
+    2955146978
+  ],
+  "seed_derivation": "first four SHA256 bytes, big endian, of harmony-alternative-futures-t04-20260909-{i}, i=1..10",
+  "previously_observed_seeds": [
+    1,
+    3,
+    4,
+    5,
+    20260905,
+    20260906,
+    20260907,
+    20260908,
+    20260909,
+    20260910,
+    20260911,
+    20260912,
+    20260913,
+    20260914,
+    20260920,
+    20260921,
+    20260922,
+    20260923,
+    20260924,
+    20260930,
+    20261001
+  ],
+  "seed_audit_files": 1045,
+  "success_rule": "At least one independently verified boss defeat on at least3/10 corrected seeds and improvement over matched control attainment or work; incomplete/censored cells are not failures or passes. Also report paired named capability/area attainment and coverage at common frames.",
+  "cells": [
+    {
+      "label": "t04-validation-control-s2089362731",
+      "seed": 2089362731,
+      "arm": "control",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-control-s2089362731",
+        "seeds": [
+          2089362731
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_ending_v2"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-corrected-s2089362731",
+      "seed": 2089362731,
+      "arm": "corrected",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-corrected-s2089362731",
+        "seeds": [
+          2089362731
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-corrected-s1154364703",
+      "seed": 1154364703,
+      "arm": "corrected",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-corrected-s1154364703",
+        "seeds": [
+          1154364703
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-control-s1154364703",
+      "seed": 1154364703,
+      "arm": "control",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-control-s1154364703",
+        "seeds": [
+          1154364703
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_ending_v2"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-control-s2037612408",
+      "seed": 2037612408,
+      "arm": "control",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-control-s2037612408",
+        "seeds": [
+          2037612408
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_ending_v2"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-corrected-s2037612408",
+      "seed": 2037612408,
+      "arm": "corrected",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-corrected-s2037612408",
+        "seeds": [
+          2037612408
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-corrected-s4163552957",
+      "seed": 4163552957,
+      "arm": "corrected",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-corrected-s4163552957",
+        "seeds": [
+          4163552957
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-control-s4163552957",
+      "seed": 4163552957,
+      "arm": "control",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-control-s4163552957",
+        "seeds": [
+          4163552957
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_ending_v2"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-control-s3001028078",
+      "seed": 3001028078,
+      "arm": "control",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-control-s3001028078",
+        "seeds": [
+          3001028078
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_ending_v2"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-corrected-s3001028078",
+      "seed": 3001028078,
+      "arm": "corrected",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-corrected-s3001028078",
+        "seeds": [
+          3001028078
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-corrected-s3860178203",
+      "seed": 3860178203,
+      "arm": "corrected",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-corrected-s3860178203",
+        "seeds": [
+          3860178203
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-control-s3860178203",
+      "seed": 3860178203,
+      "arm": "control",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-control-s3860178203",
+        "seeds": [
+          3860178203
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_ending_v2"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-control-s3217532177",
+      "seed": 3217532177,
+      "arm": "control",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-control-s3217532177",
+        "seeds": [
+          3217532177
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_ending_v2"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-corrected-s3217532177",
+      "seed": 3217532177,
+      "arm": "corrected",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-corrected-s3217532177",
+        "seeds": [
+          3217532177
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-corrected-s781462287",
+      "seed": 781462287,
+      "arm": "corrected",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-corrected-s781462287",
+        "seeds": [
+          781462287
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-control-s781462287",
+      "seed": 781462287,
+      "arm": "control",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-control-s781462287",
+        "seeds": [
+          781462287
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_ending_v2"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-control-s2825471318",
+      "seed": 2825471318,
+      "arm": "control",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-control-s2825471318",
+        "seeds": [
+          2825471318
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_ending_v2"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-corrected-s2825471318",
+      "seed": 2825471318,
+      "arm": "corrected",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-corrected-s2825471318",
+        "seeds": [
+          2825471318
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-corrected-s2955146978",
+      "seed": 2955146978,
+      "arm": "corrected",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-corrected-s2955146978",
+        "seeds": [
+          2955146978
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    },
+    {
+      "label": "t04-validation-control-s2955146978",
+      "seed": 2955146978,
+      "arm": "control",
+      "suite": {
+        "format": "harmony-search-eval-v1",
+        "id": "t04-validation-control-s2955146978",
+        "seeds": [
+          2955146978
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 3000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 5100,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "frames": 400000000,
+          "retention_audit": true,
+          "metroid_terminal": "death_or_ending_v2"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      }
+    }
+  ]
+}

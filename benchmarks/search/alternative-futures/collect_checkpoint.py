@@ -10,6 +10,7 @@ p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('root', type=Path)
 p.add_argument('output', type=Path)
 p.add_argument('runs', nargs='+')
+p.add_argument('--scope', choices=['development', 'validation'], default='development')
 a = p.parse_args()
 
 
@@ -81,7 +82,7 @@ for name in a.runs:
                 state_field = 'player_state' if values and 'player_state' in values[0]['state'] else 'pose'
                 row[key + '_summary'] = {'observations': len(values), 'health_counts': dict(Counter(v['state']['health'] for v in values)), state_field + '_counts': dict(Counter(v['state'][state_field] for v in values))}
         diagnostics.append(row)
-output = {'format': 'alternative-futures-checkpoint-v1', 'scope': 'explicit registered development and qualification runs; not untouched validation', 'remote_host': 'ms02', 'runs': a.runs, 'cells': cells, 'diagnostics': diagnostics, 'chains': chains}
+output = {'format': 'alternative-futures-checkpoint-v1', 'scope': ('explicit registered development and qualification runs; not untouched validation' if a.scope == 'development' else 'frozen untouched validation panel; consult its preregistered plan and completeness before interpreting outcomes'), 'remote_host': 'ms02', 'runs': a.runs, 'cells': cells, 'diagnostics': diagnostics, 'chains': chains}
 if a.output.exists():
     raise FileExistsError('checkpoint outputs are immutable')
 a.output.write_text(json.dumps(output, indent=2) + '\n')

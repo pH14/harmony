@@ -56,7 +56,11 @@ for path in sorted((a.root / 'runs').rglob('progress.jsonl')):
 resources = []
 for path in sorted(a.root.glob('*-resources.json')):
     d = read(path)
+    run = a.root / 'runs' / path.name.removesuffix('-resources.json')
+    overlaps_cells = any(run.rglob('summary.json')) if run.is_dir() else False
     resources.append({'file': path.name, 'exit_code': d.get('exit_code'),
+                      'included_in_total': not overlaps_cells,
+                      'exclusion_reason': 'encloses separately counted evaluation cells' if overlaps_cells else None,
                       'observed_cpu_seconds': d.get('user_seconds', 0) + d.get('system_seconds', 0)})
 probes = []
 for path in sorted((a.root / 'probes').glob('*/summary.json')):
@@ -69,11 +73,12 @@ value = {'format': 'alternative-futures-accounting-snapshot-v1',
          'limits': ['Admitted search work counts each evaluation cell once, including nested chain stages.',
                     'Local diagnostic search work is separate from source and witness replay.',
                     'CPU is a measured lower bound: completed evaluation cells plus separately logged diagnostic processes.',
+                    'Outer process measurements enclosing counted evaluation cells are retained but excluded from the CPU total.',
                     'Active-process CPU, compilation/tests, and unlogged external prefix/bridge work are excluded.',
                     'Paired-probe physical work is reported separately, not added to admitted campaign work.'],
          'admitted_search_frames': sum(x['admitted_frames'] for x in rows),
          'search_executions': sum(x['executions'] for x in rows),
-         'observed_cpu_seconds_lower_bound': sum(x['observed_cpu_seconds'] for x in rows + resources),
+         'observed_cpu_seconds_lower_bound': sum(x['observed_cpu_seconds'] for x in rows) + sum(x['observed_cpu_seconds'] for x in resources if x['included_in_total']),
          'paired_probe_physical_frames': sum(x['physical_frames'] for x in probes),
          'rows': rows, 'diagnostic_process_resources': resources, 'paired_probes': probes}
 if a.output.exists():
