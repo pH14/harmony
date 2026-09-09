@@ -10,4 +10,5 @@ exec /opt/etcd/etcd \
   --initial-advertise-peer-urls=http://127.0.0.1:2380 \
   --initial-cluster=default=http://127.0.0.1:2380 \
   --initial-cluster-state=new \
-  --initial-cluster-token=harmony-etcd-v35
+  --initial-cluster-token=harmony-etcd-v35 \
+  >>/tmp/etcd/node.log 2>&1

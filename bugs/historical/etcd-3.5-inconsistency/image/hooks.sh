@@ -64,6 +64,12 @@ case "$1" in
     echo '@sometimes 12'
     [ -s "${journal}" ] || exit 0
     echo '@sometimes 13'
+    ready_count=$(grep -c 'ready to serve client requests' /tmp/etcd/node.log 2>/dev/null || true)
+    if [ "${ready_count}" -ge 2 ]; then
+      echo '@sometimes 17'
+    else
+      echo '@sometimes 18'
+    fi
     # A failed read means the member is still down or restarting. That is not
     # evidence of corruption; only a successful readback can publish a verdict.
     ready=0
