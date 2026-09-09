@@ -14,6 +14,7 @@ def main():
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--archive-sha256', required=True)
     parser.add_argument('--source-commit', required=True)
+    parser.add_argument('--toolchain', default='1.97.1')
     args = parser.parse_args()
     root = args.root.resolve()
     source = root / 'source-action-correlation-001'
@@ -25,7 +26,7 @@ def main():
     out = root / 'builds/action-correlation-001'
     out.mkdir(parents=True, exist_ok=False)
     env = {**os.environ, 'PATH': '/root/.cargo/bin:' + os.environ['PATH'],
-           'RUSTUP_TOOLCHAIN': '1.97.1', 'HARMONY_SEARCH_SOURCE_SHA256': identity['source_tree_sha256']}
+           'RUSTUP_TOOLCHAIN': args.toolchain, 'HARMONY_SEARCH_SOURCE_SHA256': identity['source_tree_sha256']}
     command = ['cargo', 'build', '--release', '--locked', '--manifest-path',
                str(source / 'workloads/nes/Cargo.toml'), '--bin', 'nes-eval',
                '--features', 'metroid-motion-context,selector-cost-audit',
