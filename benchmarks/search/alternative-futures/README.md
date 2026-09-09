@@ -1477,3 +1477,17 @@ searcher README and synthesis to state this boundary. Reuse #283 for future
 measurement work instead of opening a duplicate. Issue #281 separately tracks
 boss-encounter/partial-damage observation, which this tranche does not establish
 from an area-entry or failed-defeat report.
+
+Q36 handover is explicit: `final_qualification.py` waits for the frozen panel's
+`finished.json` and refuses to start if any native evaluator remains alive. If
+validation has not released the host by 06:52 UTC, it stops for inspection. It
+then runs the existing audited100k Metroid and5k Wily1 fixtures sequentially
+under300s process-tree bounds, the three existing Nova/STB companion cells under
+a300s aggregate bound, and the sole-host24-worker SMB reference under its prior
+750s bound (600s search plus verification allowance). No search budget changes.
+The shorter fixtures use their unchanged4-worker8GiB or2-worker512MiB archive
+limits; SMB remains24-worker2GiB. Exact stream, work, and solved fields must match
+the frozen references. Any timeout, runner failure, missing cell, or mismatch
+stops this gate sequence with logs and partial proof preserved; no automatic
+retry or changed bound follows. Waiting and each process tree are bounded, so
+this registered sequence fits inside the reserved consolidation window.

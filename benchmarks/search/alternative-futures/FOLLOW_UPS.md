@@ -1,8 +1,9 @@
 # Follow-up scope for the next tranche
 
-These are publication drafts while the current tranche is active. Link the final
-PR and validation assessment before updating GitHub. Existing issues remain open
-unless their stated acceptance criteria are actually met.
+The tranche remains active. Behavioral-retention follow-up #286 has been
+published with PR #285 and the frozen paired-probe evidence. Updates to the depth
+issues await the final validation assessment. Existing issues remain open unless
+their stated acceptance criteria are actually met.
 
 ## #271: capability identity and resource retention
 
@@ -16,7 +17,7 @@ capabilities relative to representative retention. The two tested fresh MM2 chai
 both acquired eight weapons and failed at Wily 1. Record this bounded negative
 result without closing the broader identity question.
 
-A new, narrower follow-up should ask whether **observed continuation differences**
+Follow-up #286 asks whether **observed continuation differences**
 can guide bounded retention better than health/missile extremes. The paired probe
 provides concrete source pairs and shared suffixes that expose local living-exit
 loss; the terminal-corrected rerun reproduces the same results. Preserve the
