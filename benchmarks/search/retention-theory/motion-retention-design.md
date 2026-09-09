@@ -112,3 +112,30 @@ then context sequentially. This avoids spending roughly twice as long on the
 slower group, without changing the seed, executable, work, memory, wall limits,
 arm order or scientific gate. Qualification remains on 0–3. The driver records
 placement explicitly; no fresh-development outcome informed this change.
+
+## R05: one fresh seed with both controls
+
+R04b passed at common 50M work: context retention found a replayed energy tank
+in (36,975,176, 36,987,803] frames; quality retention found none. Neither arm
+lost another named milestone or hit a wall limit. This qualifies one new
+development seed, 20261210, absent from both committed research ledgers; the
+launcher additionally rejects any existing msr1 evaluation summary with that
+seed. This remains development, not held-out validation.
+
+Run three fresh arms in fixed order ordinary/context/quality, sequentially on
+cores8–11. All use the identical attested `context-002` executable, ordinary
+16-pixel geometry, corrected terminal v3, alphabet-only/one-to-six draws,
+4096 actions, four workers,8GiB,500k jobs/50M frames/1800s per arm, plus120s
+finishing allowance and4GiB output cap. No imported gameplay input or resumed
+archive is allowed. The added ordinary-retention arm checks whether the
+replicated effect matters against production retention, while matching motion
+metadata across all arms. Total service cap6000s/12GiB; no retries on a negative.
+
+Evaluate all three at their common completed frame boundary, at most50M.
+Against each control require an additional replayed named milestone or a
+conservative20% reduction to a common missile/Norfair/tank milestone, with no
+lost control milestone and no wall-censored arm. Report capacity replication
+and ordinary-control advantage separately. Only passing both comparisons
+qualifies specifying one longer development pair; its budget must be registered
+before it starts. Otherwise stop longer motion-retention campaigns in this
+tranche. This single fresh seed never establishes the breakthrough threshold.
