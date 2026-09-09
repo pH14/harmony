@@ -1360,3 +1360,10 @@ hashes, paired outcome/suffix hashes, raw endpoints and physical costs, allowing
 only diagnostic elapsed time to differ. A mismatch requires diagnosis; do not
 reinterpret validation or rerun an unchanged failure. These are implementation
 checks, not new candidate families or fresh validation successes.
+
+Q33 allocation clarification before native launch: preserve the four-campaign
+ceiling. Compilation and single-target P03/I05 diagnostic replays use reserved
+CPUs16–19 during T04. The four-worker100k Metroid and5k Wily1 compatibility
+campaigns wait until validation frees a campaign slot; they do not become a
+fifth concurrent campaign. All focused fixes passed and independent verification
+found no substantive fix-induced regression; native compatibility is still pending.
