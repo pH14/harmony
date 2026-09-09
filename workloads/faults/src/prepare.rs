@@ -123,6 +123,14 @@ echo "FAULT_INIT_STAGE=$stage" >&2
 $BB mount --bind "$ROOT" "$ROOT"
 stage=bind-pseudo-filesystems
 echo "FAULT_INIT_STAGE=$stage" >&2
+# The OCI rootfs is unpacked into the initramfs ramfs.  Keep the standard
+# writable container paths on tmpfs so workloads can use their normal
+# filesystem layout without depending on the size of the boot archive.  This
+# also makes /tmp and /run behave the same way on every host and architecture.
+$BB mount -t tmpfs tmpfs "$ROOT/tmp"
+$BB mount -t tmpfs tmpfs "$ROOT/run"
+$BB mkdir -p "$ROOT/run/fault-agent"
+$BB chmod 1777 "$ROOT/tmp"
 for directory in dev proc sys; do
     $BB mkdir -p "$ROOT/$directory"
     $BB mount --bind "/$directory" "$ROOT/$directory"
@@ -194,6 +202,10 @@ ready /usr/bin/etcdctl endpoint health
         assert!(contains(b"|| true").is_none());
         assert!(contains(b"stage=mount-proc").is_some());
         assert!(contains(b"$BB mount --bind \"$ROOT\" \"$ROOT\"").is_some());
+        let tmpfs_tmp =
+            contains(b"$BB mount -t tmpfs tmpfs \"$ROOT/tmp\"").expect("workload /tmp tmpfs mount");
+        let tmpfs_run =
+            contains(b"$BB mount -t tmpfs tmpfs \"$ROOT/run\"").expect("workload /run tmpfs mount");
         let bind_rootfs = contains(b"stage=bind-rootfs").expect("bind-rootfs stage");
         let bind_pseudo =
             contains(b"stage=bind-pseudo-filesystems").expect("bind-pseudo-filesystems stage");
@@ -202,6 +214,9 @@ ready /usr/bin/etcdctl endpoint health
             bind_rootfs < bind_pseudo,
             "root bind must precede child mounts"
         );
+        assert!(bind_rootfs < tmpfs_tmp, "root bind must precede /tmp mount");
+        assert!(tmpfs_tmp < tmpfs_run, "/tmp mount must precede /run mount");
+        assert!(tmpfs_run < chroot, "writable mounts must precede chroot");
         assert!(bind_pseudo < chroot, "child mounts must precede chroot");
         assert!(contains(b"FAULT_INIT_EXIT stage=$stage rc=$rc").is_some());
         assert!(
