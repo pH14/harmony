@@ -107,3 +107,48 @@ A whole-command matched control is required before attributing any gain to
 component correlation; an ordinary-control comparison and independent
 confirmation remain necessary for useful-search claims. Boss/Wily validation
 retains the original untouched-seed criteria. The full goal is still active.
+
+## Native qualification and registered development
+
+The implementation at `2fb37f9c` passes exhaustive transition checks, 137 NES
+library tests and the evaluator test, strict all-feature Clippy, and 23 Python
+evaluation-runner tests. Nondefault policy identities must match during replay;
+every suffix starts independently of previous expansions.
+
+| Check | Result | Known auxiliary frames |
+| --- | --- | --- |
+| Q01, two historical defaults on msr1 | Exact stream, campaign and checkpoint bytes; full replay | 1,045,660 |
+| Q02, both policies × both games × two buffer sizes | All eight replay; every buffer pair has identical artifacts | 826,696 |
+| QX01, six reused fixtures on ms02 | Exact ARM post-header event streams, semantic results and local replay | 1,459,008 |
+
+These are correctness checks on a reused seed, not performance samples. The
+short correlation cases cap trajectories at 64 actions. Full replay work is
+inferred from admitted work; setup, reconstruction and unadmitted work remain
+additional unknowns. The [updated ledger](ledger-after-qualification.json)
+contains **371,963,017 performance-search frames and 44,118,607 known auxiliary
+frames** in the renewed block. Compressed raw panel records and their analyses
+are stored beside each registration. The Q02 dispatch label accidentally used
+`HEAD-registered-q02`; QX01 records its exact binding to commit `676ee62e` and the
+registered content hash, without rewriting the original result.
+
+[D01](d01-registration.json) freezes four fresh development seeds and three arms:
+ordinary independent commands, component refresh, and matched whole-command
+persistence. It tests first energy-tank acquisition at a 50M-frame horizon,
+using the already calibrated ordinary selector and identical other settings.
+Within every triplet, all arms run sequentially on one host and CPU set; two
+triplets run concurrently across msr1 and ms02. Arm order is fixed in advance.
+The source archive, architecture-specific binaries, all identities, seeds,
+20-minute search limits, finishing limits, process memory and output bounds
+are registered before dispatch.
+
+The first wave contains seeds 0 and 1. Only if both comparison gates remain
+attainable does the second wave launch seeds 2 and 3. Each comparison requires
+three strict wins, at least 15% lower mean restricted cost, and candidate
+CPU/elapsed totals at most 1.25 times that control. Both-censored pairs tie.
+These are compute-allocation rules, not statistical significance. The maximum
+is 600M nominal search frames plus the bounded in-flight drain; known auxiliary
+replay has a separate 5M allowance within the remaining block balance.
+
+At registration, no performance outcome has been inspected. Passing both gates
+would earn independent confirmation and same-policy MM2 transfer; neither a
+qualification nor a precursor win completes the original boss/Wily goal.

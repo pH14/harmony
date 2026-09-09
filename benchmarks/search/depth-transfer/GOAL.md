@@ -164,3 +164,20 @@ special taps, starts fresh at every suffix, and shares one parameter setting
 between Metroid and MM2. It earns bounded native compatibility/replay
 qualification only. No fresh performance panel or extra frame allocation is
 implied by the constructed-task result.
+
+Q01/Q02/QX01 action-correlation native qualification subsequently passed on
+both hosts. The exact default artifacts, buffering invariance, full replay and
+cross-host event streams agree. Qualification adds 3,331,364 known auxiliary
+frames; the current ledger is ../action-correlation/ledger-after-qualification.json.
+
+The prospectively frozen action-correlation D01 panel now tests the calibrated
+energy-tank endpoint with four fresh three-arm triplets. It compares the fixed
+component kernel separately against ordinary actions and matched whole-command
+persistence, retaining the ordinary selector and all other policies. See
+../action-correlation/d01-registration.json for the exact complete allocation:
+600M nominal search frames, at most 5M known auxiliary, all host/CPU assignments,
+and a 2026-09-10 02:30 UTC deadline. Only two triplets launch initially, one per
+host. Stop further dispatch if either three-win criterion becomes impossible,
+measurement fails, or resources fail. No replacement seeds or parameter sweep
+follow. A pass earns a new independent confirmation decision; it does not make
+the original breakthrough objective complete.
