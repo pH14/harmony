@@ -79,8 +79,8 @@ Sampling retains4 lives and extremes3; the exporter preserves that difference.
 The first helper incorrectly demanded a living award endpoint, then was aligned
 with the existing production export contract. No search predicate changed.
 [Bridge evidence](j01-export-qualification-results.json) records the raw flags,
-qualified endpoints and143,580 additional physical frames across both exports
-and bridge checks.
+qualified endpoints and143,580 physical frames for the successful qualification.
+The earlier failed helper adds an inferred16,819 frames, recorded separately.
 
 J01 now starts two new fresh chains on development seed20261102, with no
 imported gameplay input. It retains R03b's full-hold profile and swaps CPU

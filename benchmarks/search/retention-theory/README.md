@@ -641,3 +641,10 @@ C01 victories have the same simultaneous death/victory flags and already
 qualified their bridges; the extra living-endpoint assertion was inappropriate
 for this existing export contract. J01 launched on the fixed new seed20261102
 with its required binary and bridge gates, separate CPU sets, and watchdog.
+
+Work-accounting note:143,580 counts the successful r2 bridge qualification.
+The earlier sample export stopped after target setup and physical victory
+replay. Its16,819 additional frames are inferred from the identical unchanged
+setup/replay path (2,253+14,566), not measured by the failed helper itself.
+Including that explicitly labelled inference gives160,399 qualification frames;
+the failed command is not treated as free.

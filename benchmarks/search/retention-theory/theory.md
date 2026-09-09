@@ -177,8 +177,11 @@ that reliably ranks their unknown futures. A bounded alternative is to retain
 one ordinary quality representative and one representative selected by a
 separate ordering over job cohorts.
 
-For a fixed stream in one slot, let Q be the existing total quality order
-(opaque preference, lower group cost, earlier identity). Give every candidate
+For a fixed stream of nonduplicate candidates in one slot, let Q order opaque
+preference, lower group cost, then earlier stream arrival. Stable retained-entry
+IDs implement that last comparison: every current entry predates the fresh
+candidate, and retained IDs preserve their arrival order. Rejected candidates
+need no persistent ID for this interpretation. Give every candidate
 from creation execution j the same rank r(j). Keep the Q-maximum candidate
 and the Q-maximum candidate in the minimum-rank cohort. These may coincide.
 Updating from the current winners plus one candidate preserves both extrema
@@ -186,6 +189,8 @@ of the entire seen stream by induction: max over a union and min over a union
 can each be computed from their previous winner and the new value. No cohort
 count, per-entry random state, or extra archive dimension is required. This
 claim assumes no external eviction/import boundary and stable quality values.
+The unchanged exact-input deduplication path is outside this candidate stream;
+repeatedly offering the same already-known input is not a new sampled cohort.
 The tests check every prefix of a fixed stream and an explicit within-cohort
 counterexample where the better-ranked resource state loses a useful future.
 
