@@ -1070,3 +1070,23 @@ and [driver hashes](p05-driver-provenance.json) make the procedure reviewable.
 at70 completed evaluation cells and1,306,085,764 admitted frames. Standalone
 probe work increases to6,976,210 physical frames. Other replay categories and
 unknown setup/bridge/export/unadmitted costs remain separately identified.
+
+## Exposure trace audit: a verified lower bound
+
+`analyze_exposure_trace.py` reads the five fully replay-verified R04b5000-job
+streams. It pins Metroid streamv4 and MM2 streamv1 separately, rejects imports,
+and checks each source SHA against its verified summary. A retained decision
+is the last decision for its action; a later candidate decision in that same
+job proves a later action continued the retained intermediate state. Parent
+references include both executed jobs and pre-execution duplicate skips.
+
+Among newly created entries never referenced as a parent by stream end, the
+proven birth-continuation counts are1194/1663 (default Metroid),237/363 (MM2),
+1767/2399 (job sample),2471/3443 (quality) and2153/2967 (context). These are
+lower bounds, not removal-time or adequate-exploration measures. No emulator
+work was added. Six adversarial reader contracts pass; the complete research
+CI command now passes13 tests. The first read-only attempt rejected MM2v1
+because it assumed Metroidv4; the corrected reader explicitly pins each
+workload format. No data or frozen campaign changed. See
+[the numeric evidence](exposure-trace-analysis.json) and
+[the next bounded measurement design](survivor-audit-design.md).

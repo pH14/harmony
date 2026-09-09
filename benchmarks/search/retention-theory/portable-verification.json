@@ -48,11 +48,12 @@
     "note": "Local telemetry reader now closes its file explicitly; frozen R05 package remains unchanged."
   },
   "research_ci_contracts": {
-    "passed": 7,
+    "passed": 13,
     "emulator_work": false,
     "command": "python3 -m unittest discover -s benchmarks/search/retention-theory -p 'test_*.py'",
     "workflow": ".github/workflows/search-eval.yml",
-    "log_sha256": "62f4decbacb2e031de4e76f2bc96caa7cf3ec498967ced4083e0885df723cc1e",
-    "scope": "exact CI command passed locally; no hosted-CI claim"
+    "log_sha256": "ba4aad699e532fed69331fc1da28feab1a47050f7394977a07c95996ea8a0c8b",
+    "scope": "exact CI command passed locally; no hosted-CI claim",
+    "includes": "two chain-limit, five R05 allocation-gate and six exposure-reader contracts"
   }
 }

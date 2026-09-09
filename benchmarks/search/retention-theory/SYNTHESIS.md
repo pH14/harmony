@@ -26,6 +26,13 @@ actions. Each claim now has an executable counterexample or a checked actual
 campaign reconstruction. [The literature update](literature-update.md) connects
 these obligations to predictive representations and later Go-Explore work.
 
+The [verified-stream exposure audit](exposure-trace-analysis.json) finds that
+65–74% of newly retained states never subsequently referenced as a parent were
+already continued inside their birth job, across five short qualification
+streams. This is a lower bound from visible decision ordering, not a measure of
+adequate exploration or a deep-search population estimate. It rules out using
+“never selected” as synonymous with “never explored.”
+
 ## What the experiments decided
 
 | Candidate | Controlled result | Allocation decision |

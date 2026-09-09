@@ -1,12 +1,20 @@
+<!-- Current supplement: P05 completed in143s/2,503,117 physical frames with
+6/8 useful differences in both matching and differing motion-context groups.
+No capability gain, no gate reopened. Exposure-reader lower bounds are65–74%
+across five verified short streams;13 Python research contracts pass.
+Local b38ff2db includes the explicit Metroidv4/MM2v1 format correction.
+No native experiment is running. Complete-survivor audit implementation
+has an08:16UTC stop and needs stream qualification before suffix probes. -->
+
 # Research checkpoint — September 9, R05 fails; longer campaigns stopped
 
 The goal remains active. No fresh Metroid boss or MM2 Wily4 breakthrough has
 been established. ROM transfer is complete and checksum verified. The initial
 12-hour tranche ends10:16UTC;08:46UTC remains reserved for consolidation. Current
-time is about06:37UTC. Do not silently extend or mark the breakthrough achieved.
+time is about07:19UTC. Do not silently extend or mark the breakthrough achieved.
 
-No owned msr1 search campaign is running or queued. The separately registered
-P05 replay-only diagnostic is running (details below). R05 finished around06:14UTC;
+No owned msr1 search campaign is running or queued. P05 is complete; the separately registered
+complete-survivor audit is in implementation (see survivor-audit-design.md). R05 finished around06:14UTC;
 service`harmony-r05-replication-002` is inactive. All tested retention families
 have failed their registered escalation gates. Do not rescue them with longer
 runs, extra seeds or altered thresholds in this tranche.
@@ -29,10 +37,10 @@ Figure was rendered with Matplotlib3.11.1 in temporary environment
 `/private/tmp/harmony-retention-plot-env`; PNG was visually inspected. Source
 analysis hashes are in`motion-development-figure.json`.
 
-[Updated accounting](work-accounting-after-r05.json) counts70 completed cells
+[Updated accounting](work-accounting-after-p05.json) counts70 completed cells
 and two errors,1,306,085,764 admitted frames,10,202,892 executions,19,644,104
-full-replay admitted frames,2,529,008 reported witness-suffix frames and4,473,093
-standalone probe frames. Summed search time26,511.8s is not tranche wall time.
+full-replay admitted frames,2,529,008 reported witness-suffix frames and6,976,210
+standalone probe frames after P05. Summed search time26,511.8s is not tranche wall time.
 Setup, exports, bridges, unadmitted and incomplete work can add cost. Outputs
 occupy about6.3GiB. Revised accountant is msr1 root`account-runs-v2.py`; output
 `runs/work-accounting-after-r05-v2.json`. The frozen R05 accountant is older.
