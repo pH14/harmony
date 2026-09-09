@@ -1,4 +1,4 @@
-# Research checkpoint — September 9, J03 stopped and R04b development
+# Research checkpoint — September 9, R04b passes and R05 runs
 
 The goal remains active. No fresh Metroid boss or MM2 Wily 4 breakthrough has
 been established. The approved ROM transfer is complete and checksum verified.
@@ -45,15 +45,30 @@ All keys carry contexts. The cached-context check also matches the original P04
 motion, endpoints and snapshot hashes exactly. The post-correction 126 NES
 tests plus evaluator and strict generic/default-NES Clippy passed.
 
-`harmony-r04b-development-002` is now active on msr1: quality then context,
+R04b completed on msr1: quality then context,
 same frozen `context-002` executable (source `4e3f0255`), seed3, four workers,
 8GiB, alphabet-only, corrected terminal v3, and 50M-frame/500k-job/1800s limits
 per arm. Both use the released fast cores8–11; that placement amendment was
 committed before any development data. Launcher `run-r04b-57bdffdd.py`, frozen
 analyzer in `source-context-002`, outputs `runs/r04b-development-results.json`
-and `runs/r04b-development-analysis.json`. The latter is generated automatically
-after both cells complete. No repeat seed, longer run or validation is allowed
-unless [the design's gate](motion-retention-design.md) passes.
+and `runs/r04b-development-analysis.json`. The frozen analyzer passed: context
+found and replayed an energy tank by36,987,803 frames; quality found none at50M.
+No lost control milestone, wall censoring or underflow eligibility. Both
+completed50M. Sampled RSS1.735GB quality versus2.520GB context, within8GiB.
+
+That pass authorizes R05 only: fresh development seed20261210, absent from both
+committed research ledgers and rejected by the launcher if already in msr1
+summaries. Three arms run ordinary/context/quality, sequentially on8–11, same
+`context-002` binary and50M-frame/500k-job/1800s/8GiB per-arm limits. No resumed
+gameplay input. Both the capacity comparison and ordinary-retention comparison
+must pass the registered gate before specifying any longer pair.
+
+Active service: `harmony-r05-replication-002`, started05:30UTC. Drivers are frozen
+from `c11f4a7f` at `harmony-r05-c11f4a7f/` under the owned msr1 root. Outputs:
+`runs/r05-results.json`, `runs/r05-analysis.json`, and the automatically generated
+`runs/work-accounting-after-r05.json`. The service cap is6000s/12GiB. No other
+search campaign is running. [The design](motion-retention-design.md) preserves
+the exact registration; no validation seed has been used.
 
 A bounded [literature update](literature-update.md) was completed during the
 run. It covers Intelligent Go-Explore, a July2026 preliminary topology report

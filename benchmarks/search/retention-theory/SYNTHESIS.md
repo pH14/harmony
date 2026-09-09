@@ -2,9 +2,9 @@
 
 The work has established an executable method for evaluating archive designs
 and rejected several expensive directions. It has **not established a fresh
-Metroid boss or MM2 Wily 4 breakthrough**. R04b's motion-retention development
-pair is the only pending experiment; this synthesis will incorporate its frozen
-decision when both arms finish.
+Metroid boss or MM2 Wily 4 breakthrough**. Motion retention passed its first
+matched development comparison. A single fresh-seed replication with both
+ordinary-retention and capacity controls is now running.
 
 ## What is now rigorous
 
@@ -32,7 +32,7 @@ these obligations to predictive representations and later Go-Explore work.
 | Finer Metroid position/pose key | Same named milestones; tank about 16% earlier, below the 20% gate, with nearly four times as many active states. | Stop this family. |
 | Quality plus job-ranked sample, Metroid | No added milestone or qualifying speedup; misses the control's tank at 50M frames. | Stop this family on Metroid. |
 | Quality plus job-ranked sample, MM2 | Favorable earlier depth result failed its prospective replication: ordinary retention cleared four stages; sampling failed Heat at the full 85M ceiling. | Stop longer sampling chains. |
-| Two distinct motion contexts, Metroid | Real motion distinctions and full replay qualification pass; the matched top-two-quality development comparison is pending. | Follow only its frozen gate. |
+| Two distinct motion contexts, Metroid | Replayed tank at about37M frames; top-two-quality control has none at50M. No lost control milestone or wall censoring. | One fresh seed against both controls is running. |
 
 The [ledger](README.md) contains all favorable and adverse results, source and
 asset identities, work limits, actual costs and censoring. The positive
@@ -52,8 +52,11 @@ still differs. This is a candidate descriptor with a demonstrated limit.
 The optional motion feature and two-representative policies are implemented,
 versioned and tested. Qualification reproduced five exact search streams,
 checked cached motion against direct RAM and original snapshot hashes, and
-verified that the active archive obeys the intended context rule. Its success
-as a search mechanism remains a separate empirical question. Splice and resume
+verified that the active archive obeys the intended context rule. The initial
+development result adds a tank at matched work, but needs fresh replication.
+Sampled process-tree RSS was about2.35GiB for context retention versus1.62GiB
+for quality retention under the common8GiB archive budget; the newly reached
+capability also opens additional cells. Splice and resume
 behavior with the metadata remain outside this qualification.
 
 [Portable checks](portable-verification.json) cover runner failures, chain

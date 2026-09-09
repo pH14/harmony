@@ -950,3 +950,29 @@ features/targets; generic strict Clippy and both manifest formatting checks
 also passed. [portable-verification.json](portable-verification.json) records
 the scope and preserved-log digest. These are local checks, not CI or workload
 performance claims.
+
+### R04b development passed; R05 registered and launched
+
+At common50M frames, context retention adds a replayed energy tank absent from
+the capacity control: its arrival lies in (36,975,176,36,987,803] frames.
+Both arms also reach Morph Ball, missiles and Norfair. There is no lost control
+milestone or wall censoring; the registered additional-milestone gate passes.
+This remains one adaptively investigated development seed, not a boss result.
+
+Quality admitted50,000,664 frames/416,388 jobs in869.7 search seconds; context
+admitted50,000,675 frames/407,716 jobs in870.9s. Recorded physical lower bounds,
+including final/milestone suffix replays, are50,115,898 and50,213,167 respectively,
+with setup and unadmitted work additional. Sampled process-tree RSS is1,735,016,448
+versus2,520,289,280 bytes. Active entries67,066 versus100,132 reflect their
+different discovered archives; both obey the8GiB budget and unchanged geometry.
+[The analysis](r04b-development-analysis.json) and [both full cell summaries](r04b-development-results.json)
+preserve costs, endpoints, conservative arrival intervals and exact identities.
+
+R05 (driver source`c11f4a7f`) registers exactly one new development seed,
+20261210, with ordinary-retention, context and top-two-quality arms in that fixed
+order, sequential on8–11. It uses the same `context-002` executable and all
+R04b per-arm work/memory/action limits. The ordinary arm tests relevance to the
+production retention policy while matching experimental motion metadata.
+The [design](motion-retention-design.md) requires a qualifying advantage against
+both controls at their common completed work boundary; otherwise longer motion
+campaigns stop. No held-out validation or budget extension is preapproved.
