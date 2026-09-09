@@ -193,7 +193,7 @@ OP	arm64	arm64-exclusive-monitor	execute	5/8	STXR
 OP	arm64	arm64-exclusive-monitor	execute	6/8	STLXR
 OP	arm64	arm64-exclusive-monitor	execute	7/8	STXP
 OP	arm64	arm64-exclusive-monitor	execute	8/8	STLXP
-ARCH	x86_64	rows=9	operations=166
+ARCH	x86_64	rows=10	operations=174
 OP	x86_64	x86-cpuid	execute	1/144	CPUID EAX=0x00000000 ECX=0x00000000
 OP	x86_64	x86-cpuid	execute	2/144	CPUID EAX=0x00000001 ECX=0x00000000
 OP	x86_64	x86-cpuid	execute	3/144	CPUID EAX=0x00000002 ECX=0x00000000
@@ -338,8 +338,16 @@ OP	x86_64	x86-cpuid	execute	141/144	CPUID EAX=0x80000006 ECX=0x00000000
 OP	x86_64	x86-cpuid	execute	142/144	CPUID EAX=0x80000007 ECX=0x00000000
 OP	x86_64	x86-cpuid	execute	143/144	CPUID EAX=0x80000008 ECX=0x00000000
 OP	x86_64	x86-cpuid	execute	144/144	CPUID EAX=0xffffffff ECX=0x00000000
-OP	x86_64	x86-tsc	execute	1/2	RDTSC
-OP	x86_64	x86-tsc	execute	2/2	RDTSCP
+OP	x86_64	x86-tsc	execute	1/9	RDTSC
+OP	x86_64	x86-tsc	execute	2/9	RDTSCP
+OP	x86_64	x86-tsc	execute	3/9	RDTSC (66 prefix)
+OP	x86_64	x86-tsc	execute	4/9	RDTSCP (66 prefix)
+OP	x86_64	x86-tsc	execute	5/9	RDTSC preserves RCX
+OP	x86_64	x86-tsc	execute	6/9	RDTSCP returns TSC_AUX
+OP	x86_64	x86-tsc	execute	7/9	RDTSC/RDTSCP pair progresses
+OP	x86_64	x86-tsc	execute	8/9	RDTSC upper halves zero
+OP	x86_64	x86-tsc	execute	9/9	RDTSCP upper halves zero
+OP	x86_64	x86-unrelated-gp	execute	1/1	RDMSR from ring 3
 OP	x86_64	x86-pmu	execute	1/1	RDPMC
 OP	x86_64	x86-entropy	mask-and-audit	1/2	RDRAND
 OP	x86_64	x86-entropy	mask-and-audit	2/2	RDSEED

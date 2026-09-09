@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Hardware-RNG (rdrand/rdseed) per-site allowlist for the fault-library guest
-# kernel, the task-park build (FAULTLAB_TRAPS_OFF=1 ./build-kernel.sh) under
+# kernel, the task-park build (FAULTLAB=1 ./build-kernel.sh) under
 # the pinned nix toolchain;
 # the other kernels' baseline is rdrand-allowlist-gha.txt. Every entry is a site the
 # review confirmed sits

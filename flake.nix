@@ -103,6 +103,7 @@
               elfutils
               elfutils.dev
               gcc13
+              go
               glibc.static
               openssl
               openssl.dev
