@@ -11,7 +11,7 @@ import subprocess
 parser = argparse.ArgumentParser(description=__doc__)
 for name in ["root", "out", "target"]:
     parser.add_argument(name, type=Path)
-parser.add_argument("binary", choices=["metroid-boss-probe", "mm2-metal-export"])
+parser.add_argument("binary", choices=["metroid-boss-probe", "mm2-metal-export", "metroid-kinematics-probe"])
 parser.add_argument("--source-commit", required=True)
 args = parser.parse_args()
 spec = importlib.util.spec_from_file_location("evaluation", args.root / "benchmarks/search/eval.py")

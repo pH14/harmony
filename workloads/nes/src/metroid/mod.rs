@@ -5,6 +5,7 @@
 pub mod archive;
 pub mod boss_probe;
 pub mod campaign;
+pub mod kinematics_probe;
 pub mod progress;
 pub mod target;
 

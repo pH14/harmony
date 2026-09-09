@@ -544,6 +544,14 @@ impl MetroidTarget {
         super::boss_probe::decode(&self.machine.read_wram()?, &self.cartridge()?)
     }
 
+    /// Read motion bytes for standalone replay diagnostics. This does not
+    /// change clocks, observations, snapshots, archive keys or search policy.
+    pub fn diagnostic_kinematics(
+        &self,
+    ) -> Result<super::kinematics_probe::Kinematics, MachineError> {
+        Ok(super::kinematics_probe::decode(&self.machine.read_wram()?))
+    }
+
     /// Read the cartridge work RAM window the decoder needs.
     fn cartridge(&self) -> Result<Vec<u8>, MachineError> {
         self.machine.read_save_ram()

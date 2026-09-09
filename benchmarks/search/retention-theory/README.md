@@ -781,3 +781,35 @@ The second E02 route remains pending approval, not a negative observation.
 The new chain-stage controls passed two synthetic runner-contract checks:
 early completion cannot claim Wily4 or start a third stage, and a late victory
 is preserved without producing a carried bridge. These checks use no emulator.
+
+### P04: inspect motion state in existing equal-observation counterexamples
+
+P03 already established useful continuation differences in fourteen pairs, eight
+of which remain merged by the finer position/pose key. Before another retention
+design, reconstruct the exact same sixteen recorded pairs and read omitted
+motion bytes. Pinned disassembly `4270d57f` names facing at `$4D`, vertical and
+horizontal speed at `$0308/$0309`, jump displacement at `$030F`, gravity at
+`$0314`, horizontal acceleration at `$0315` and speed maximum at `$0316`.
+These are input-independent diagnostic reads; no value enters fresh search.
+
+Freeze two descriptors before observing the bytes: the coarse tuple is
+`(facing, sign(signed horizontal speed), sign(signed vertical speed))`; the
+full seven-byte tuple is descriptive only. The existing P03 suffixes and
+outcomes are reused without new trials. A memory-bounded retention design is
+worth specifying only if the coarse tuple separates at least six of the eight
+still-merged useful pairs, including a pair with identical recorded mechanical
+state and an existing distinguishing suffix. The seven-byte tuple cannot
+rescue a failed coarse gate. Even a pass does not yet authorize a fresh campaign:
+it needs a bounded policy, a finite counterexample and a distinguishing pilot.
+Motion covaries with other hidden state, so a partition association is not a
+causal explanation or proof of sufficient Markov state.
+
+Use exactly the P03 selected audit SHA256
+`c310985ec09f24a35f1f8e755a44ecc934f5bc2eba355207f80d74efe85b5120`.
+Each of 32 endpoints is reconstructed twice under terminal v3, checked against
+the recorded mechanical endpoint, and snapshotted before/after the read to
+prove noninterference. Cap all physical replay at 2M frames, each input at
+8,192 actions/250k frames, runtime at600s and memory at4GiB on little CPU4.
+The standalone diagnostic and analysis are frozen before execution. The
+existing Metroid coverage, finer-key and job-sampling campaign gates remain
+failed; P04 neither resumes nor extends those campaigns.

@@ -175,3 +175,20 @@ byte can change during combat or remain in an inactive slot. The report keeps
 loader, slot status, tag and HP separate; it does not infer damage totals,
 encounter identity or defeat from them. An empty existing-route trace is only
 a negative control, not evidence about every route in its source campaign.
+
+## Retrospective motion descriptors
+
+`metroid-kinematics-probe CORE ROM AUDIT.json OUT` reconstructs at most sixteen
+recorded replacement pairs and reads facing, signed-speed bytes and four motion
+accumulators from the same pinned disassembly. Each endpoint is replayed twice,
+must match its recorded mechanical state, and must retain identical snapshot
+bytes before and after the read. The complete run is capped at 2M physical
+frames; each input is bounded at 8,192 actions and 250k route frames.
+`pairs.jsonl` retains completed per-pair evidence if a later check fails.
+
+The probe uses terminal v3 and runs no suffix trials or fresh search. No field
+is added to search observations, snapshots, keys or policies. Comparing these
+descriptors with existing continuation outcomes can refute a proposed grouping;
+it cannot establish that motion alone causes the difference or that keeping
+its groups improves discovery. The coarse descriptor and design gate are
+registered in the [P04 ledger](../../../../benchmarks/search/retention-theory/README.md).
