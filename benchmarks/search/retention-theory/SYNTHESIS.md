@@ -59,6 +59,17 @@ No capability gain was observed. [P05](p05-analysis.json) preserves the fixed
 sample, both objective directions and its limited descriptive scope; it does
 not reopen the failed search gate.
 
+The new [complete-survivor audit](u01-analysis.json) resolves a second measurement
+ambiguity. Four rejected candidates expose17 map-and-suffix events absent from
+both retained incumbents; one survives six suffixes where both incumbents die.
+Three other apparent pairwise differences are already covered by the second
+survivor. The one sampled actual replacement gains two map events and loses
+none; rejected opportunities are a different category. These are seven fixed
+competitions ×16 suffixes,431,144 physical frames in23 seconds, with no capability
+gain. Four exact ARM stream checks and unchanged default audit bytes qualify
+the reporting change. The callback measures local-rule proposals before global
+eviction, not the final global archive or an improved search policy.
+
 The [ledger](README.md) contains all favorable and adverse results, source and
 asset identities, work limits, actual costs and censoring. The positive
 shared-prefix Heat diagnostic is conditional on a selected origin; it does not
@@ -104,3 +115,12 @@ out gained versus lost event coverage and finite-sample assumptions. On the
 same existing P03 suffixes, map-event counts favor discarded states while final
 survival favors survivors. That objective reversal is another reason to freeze
 task utility before selecting a heuristic. It changes no running policy or gate.
+
+The [probe-cost scenario](u01-probe-cost-scenario.json) also constrains the next
+design. Even removing duplicate replay and prefix reconstruction, these selected
+three-state probes consume about37k suffix frames per competition. Under an
+explicit naive-cost assumption, keeping probes at5% of admitted search plus
+probe frames would allow roughly one per14k competitions in the short quality
+cell. This is an illustrative scenario, not a population estimate or complete
+physical baseline. It argues for testing sparse probes or reusing already
+executed continuations before proposing blanket behavioral probing.

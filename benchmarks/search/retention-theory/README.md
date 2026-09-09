@@ -1090,3 +1090,79 @@ because it assumed Metroidv4; the corrected reader explicitly pins each
 workload format. No data or frozen campaign changed. See
 [the numeric evidence](exposure-trace-analysis.json) and
 [the next bounded measurement design](survivor-audit-design.md).
+
+## U01: complete local-survivor measurement qualified
+
+The [bounded design](survivor-audit-design.md) was committed at1dbfc62f; production
+observer and feature source8d503c28 exposes a lazy complete local-slot view.
+It records stable ids, optional cached snapshots, untracked reconstructed inputs
+and local keep/remove proposals. No allocation occurs unless the view is
+requested. The callback precedes global population/memory eviction. The opt-in
+`metroid-complete-retention-audit` feature writes v2-local-survivors records at
+the same independent sample indices; default audit v1 is preserved. Extra action
+payload is bounded at5MiB, excluding temporary reconstruction and I/O buffers.
+
+Generic counterexamples now inspect the full survivor view. Rejection,
+replacement, missing snapshots, unchanged counters and the pairwise-versus-union
+counterexample pass through the actual archive. All139 generic tests, the
+interface contract,125 default NES library tests,139 all-feature release NES
+tests, strict generic/all-feature NES Clippy and formatting pass. Five Python
+union/work-bound contracts bring the research CI command to18 passing tests.
+
+The frozen ARM source digest is
+`9ac8c23a7d6e206972bd5808f6a8922e7e32fa96a3fc67a91d4bcf9a5d79ddb0`.
+Default binary`0337d330f6975507322c2597449366911c33293f7f14d710228babd8a9282d83`
+and motion/complete-audit binary
+`7934cffc0bbf201dd59f6d7774e08849f9c9a59ecc513170e9234ef43785cb9f`
+are attested in [build provenance](u01-build-provenance.json).
+Four5000-job cells reproduced the exact R04b default Metroid, default MM2,
+quality and context streams. Default Metroid also reproduced the exact v1 audit
+bytes. Quality supplied32 complete two-incumbent records; context supplied32
+complete records,31 with two incumbents. All extra incomplete counters are zero.
+Each cell finished under its120s external watchdog. Qualification cost:
+2,657,327 admitted frames plus the same full-replay admitted work; summed cell
+elapsed time167.17s. Setup, witness and unadmitted work remain additional.
+
+The [suffix registration](u01-registration.md) and driver/analyzer were frozen
+at a6ea5498 before inspecting complete samples. Twelve equal-preference records
+were eligible. The fixed first-eight prefix was shortened to seven to fit the
+4M physical ceiling; no expensive early sample was replaced by a later sample.
+Exact source indices2,3,4,6,8,9,10 and the3,474,703-frame worst-case bound were
+committed atca08e518 before execution. The bound reserves both pairwise copies,
+all setup and every possible gain export. See [frozen metadata](u01-frozen-sample.json).
+No private action tape was added to Git.
+
+The diagnostic used the existing frozen probe-001 binary, terminalv3,
+seed20261215,16 shared suffixes of24 actions,CPU8,120s and64MiB bounds. It
+completed in23.024s using431,144 physical frames:78,795 prefix frames plus
+186,008 repeated-unretained and166,341 survivor suffix frames. No gain export
+was produced. Exact repeated unretained outcomes agree for every suffix before
+forming the complete union. Suffix hash:
+`7d3c0dcb69c1ac7c70dda88a0b3e9386a4c3d25b090d6510bdb25de8cfe8793d`.
+
+[Fixed analysis](u01-analysis.json) finds17 unretained-only map/suffix events in
+four rejected candidates. Source sample2 contributes14 and survives six suffixes
+where both incumbents die. Three additional pairwise differences (samples4,6,9)
+are already covered by another survivor. The one actual replacement (sample3)
+gains two map events and loses none against the old incumbent union. Rejected
+candidates leave that union unchanged: their missed opportunities are not actual
+replacement losses. No capability gain occurred. This is a small selected local
+measurement, not evidence of improved adaptive search or a population frequency.
+No failed retention family or longer-search allocation gate is reopened.
+
+Removing the verified duplicate unretained replay gives259,345 suffix frames
+for seven three-state comparisons, excluding all prefix reconstruction. An
+[explicit naive-cost scenario](u01-probe-cost-scenario.json) uses this selected
+average and the short quality cell's696,966 admitted frames/13,902 competitions.
+For probe fraction q, per-probe cost c, reference search frames F and N
+competitions, a probe share rho of combined frames requires
+`q <= rho*F / ((1-rho)*N*c)`. At rho=5%, the conditional rate is about one probe
+per14,041 competitions. This is not a complete physical baseline, a population
+extrapolation, or a lower bound on algorithms that reuse more existing work.
+
+[Updated tranche accounting](work-accounting-after-u01.json) records74 completed
+cells, two errors,1,308,743,091 admitted frames,10,222,892 executions,
+22,301,431 full-replay admitted frames,2,548,096 reported witness-suffix frames
+and7,407,354 standalone physical probe frames. Search-phase seconds sum to
+26,557.17 across overlapping cells; that is not elapsed tranche time. All owned
+native experiment services are now inactive. No validation seed was used.

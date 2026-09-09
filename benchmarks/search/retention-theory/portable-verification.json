@@ -1,7 +1,7 @@
 {
   "format": "retention-portable-verification-v1",
   "tested_implementation_commit": "4e3f0255",
-  "subsequent_changes": "documentation, committed evidence, analysis scripts and explicit launcher CPU placement only",
+  "subsequent_changes": "Policy implementation remains frozen at4e3f0255; a reporting-only complete-slot view and opt-in audit were added at8d503c28, separately tested and ARM-qualified below. Other later changes are evidence, theory fixtures and bounded analysis drivers.",
   "local_toolchain": "rustc 1.97.0",
   "runner_contract_tests": 22,
   "chain_limit_contract_tests": 2,
@@ -48,12 +48,32 @@
     "note": "Local telemetry reader now closes its file explicitly; frozen R05 package remains unchanged."
   },
   "research_ci_contracts": {
-    "passed": 13,
+    "passed": 22,
     "emulator_work": false,
     "command": "python3 -m unittest discover -s benchmarks/search/retention-theory -p 'test_*.py'",
     "workflow": ".github/workflows/search-eval.yml",
-    "log_sha256": "ba4aad699e532fed69331fc1da28feab1a47050f7394977a07c95996ea8a0c8b",
+    "log_sha256": "6fc62f00ce446b842bcad949850a26493b332915a1cb13f75c1e05f220713e25",
     "scope": "exact CI command passed locally; no hosted-CI claim",
-    "includes": "two chain-limit, five R05 allocation-gate and six exposure-reader contracts"
+    "includes": "two chain-limit, five R05 gate, six exposure, five survivor-union and four finite-cover contracts"
+  },
+  "complete_survivor_audit": {
+    "implementation_commit": "8d503c28",
+    "generic_tests": 139,
+    "interface_tests": 1,
+    "default_nes_library_tests": 125,
+    "all_features_nes_tests": 139,
+    "generic_strict_clippy": "passed",
+    "nes_all_features_all_targets_release_strict_clippy": "passed",
+    "formatting": "both manifests passed",
+    "logs_sha256": {
+      "harmony-complete-slot-default-nes-tests.log": "30e0e0c7b8a20eb223f610e924f9c29ac8b5e3685ab65f469bf896b7cd412fe4",
+      "harmony-complete-slot-nes-clippy.log": "947ed47452a288cb783ed54a18ea77faf45d1723f7ef3fcb59c7c4787c963b2d",
+      "harmony-complete-slot-interface.log": "15fdb9542d5a13e9ffa8959f5a32c73836aa7e88ab786f18bbc673b90cd26913",
+      "harmony-complete-slot-generic-tests.log": "b6e93e659dcf420de6d328cd8cadda1cb758702c5b5db97758d1915e1fdb14ac",
+      "harmony-complete-slot-nes-tests.log": "d5f3a73057e1b2bef5bd391b1946f2127a083878b4f9b8ebce350622808235f1",
+      "harmony-complete-slot-all-features-clippy.log": "34405f31d2949ef03b4515ea4fba8c2e92a1937c86c2b305fc5b75f39ee7929f",
+      "harmony-complete-slot-generic-clippy.log": "a82b9296744bc19c639640a0f9f989b4baaeda1e30416adc9e57f377457993c5"
+    },
+    "scope": "local portable checks; ARM qualification separately attested"
   }
 }

@@ -46,3 +46,22 @@ it supplies no confidence interval for the selected deterministic P03 data.
 The nearby Metroid README now describes the stable qualification boundary and
 links to the ledger instead of retaining an obsolete numeric probe prediction.
 Frozen sources and running experiments were not modified during this review.
+
+## Complete-survivor audit review
+
+Reporting source8d503c28 adds a lazy full-slot view. The view returns all existing
+members, including missing cached snapshots; stable stream ids are distinct from
+compact indices. Keep/remove flags use the already computed local proposal.
+They deliberately do not certify subsequent global eviction. The default
+callback does not invoke the closure, and materialization uses the existing
+untracked reconstruction path without RNG or deterministic-counter changes.
+
+The NES feature samples at the unchanged indices, caps extra members at two,
+limits stored inputs and keeps explicit counters for incomplete records. It
+leaves the default serialization layout behind compile-time guards. Four actual
+ARM campaign/replay streams and the default v1 audit bytes match the old build.
+The suffix adapter verifies repeated unretained outcomes before union analysis;
+its unused exposure fields are labeled placeholders. Analysis distinguishes
+rejected opportunities from actual replacement loss. No sampled utility or
+success gate was selected from these outcomes. Relevant checks and hashes are
+recorded in the portable verification and U01 qualification artifacts.

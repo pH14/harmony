@@ -1,0 +1,27 @@
+{
+  "format": "u01-probe-cost-scenario-v1",
+  "scope": "illustrative naive cached-probe scenario using admitted search frames as reference; not complete physical baseline or a population extrapolation",
+  "inputs_sha256": {
+    "u01-results.json": "48f5f3bee60034e0678425293bd73379d867f79314e0a3de64b187ea8731be52",
+    "u01-analysis.json": "6a284519f1d688307ca86ccb64561fd36e6e5b5b35dca736eec606246cd1cb56",
+    "u01-qualification-results.json": "9fe85a14fbc2eb7ca726545ce246ad1962368ad0c1b66bf765a3bbbae69ce7c3"
+  },
+  "measured_diagnostic_physical_frames": 431144,
+  "measured_prefix_and_export_frames": 78795,
+  "measured_suffix_frames": 352349,
+  "suffix_frames_if_duplicate_unretained_replays_removed": 259345,
+  "competitions": 7,
+  "naive_cached_suffix_frames_per_competition": 37049.28571428572,
+  "reference_admitted_search_frames": 696966,
+  "reference_local_competitions": 13902,
+  "assumed_probe_share_of_search_plus_probe_frames": 0.05,
+  "formula": "q <= rho*F / ((1-rho)*N*c), where q is the sampled competition fraction",
+  "conditional_maximum_competition_fraction": 7.12198193707173e-05,
+  "conditional_competitions_per_probe": 14041.035330274362,
+  "limitations": [
+    "Selected early-development competitors need not represent later average probe cost.",
+    "Removing duplicated unretained suffixes is exact for these verified rows; other reuse could reduce costs further.",
+    "This scenario excludes prefix replay, snapshot/restore time, storage and unadmitted baseline work.",
+    "No automatic allocation or online retention policy follows from this scenario."
+  ]
+}

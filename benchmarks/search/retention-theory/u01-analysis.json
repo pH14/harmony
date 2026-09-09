@@ -1,0 +1,258 @@
+{
+  "format": "u01-complete-local-survivor-analysis-v1",
+  "scope": "selected development competitions; local proposals before global eviction",
+  "competitions": [
+    {
+      "source_sample": 2,
+      "execution": 2350,
+      "candidate_admitted": false,
+      "totals": {
+        "map_events": {
+          "unretained_only": 14,
+          "pairwise_unique_before_union": 14,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "capability_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 0,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "survival": {
+          "unretained_alive": 6,
+          "any_retained_alive": 0,
+          "unretained_only_survives": 6,
+          "retained_only_survives": 0
+        }
+      },
+      "trials_with_unretained_map_events": 14,
+      "trials_with_pairwise_map_difference_covered_by_union": 0
+    },
+    {
+      "source_sample": 3,
+      "execution": 235,
+      "candidate_admitted": true,
+      "totals": {
+        "map_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 0,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 4,
+          "actual_local_replacement_gained": 2,
+          "actual_local_replacement_lost": 0
+        },
+        "capability_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 0,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "survival": {
+          "unretained_alive": 16,
+          "any_retained_alive": 16,
+          "unretained_only_survives": 0,
+          "retained_only_survives": 0
+        }
+      },
+      "trials_with_unretained_map_events": 0,
+      "trials_with_pairwise_map_difference_covered_by_union": 0
+    },
+    {
+      "source_sample": 4,
+      "execution": 4546,
+      "candidate_admitted": false,
+      "totals": {
+        "map_events": {
+          "unretained_only": 1,
+          "pairwise_unique_before_union": 2,
+          "covered_by_other_survivor": 1,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "capability_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 0,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "survival": {
+          "unretained_alive": 16,
+          "any_retained_alive": 16,
+          "unretained_only_survives": 0,
+          "retained_only_survives": 0
+        }
+      },
+      "trials_with_unretained_map_events": 1,
+      "trials_with_pairwise_map_difference_covered_by_union": 1
+    },
+    {
+      "source_sample": 6,
+      "execution": 4853,
+      "candidate_admitted": false,
+      "totals": {
+        "map_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 1,
+          "covered_by_other_survivor": 1,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "capability_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 0,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "survival": {
+          "unretained_alive": 9,
+          "any_retained_alive": 9,
+          "unretained_only_survives": 0,
+          "retained_only_survives": 0
+        }
+      },
+      "trials_with_unretained_map_events": 0,
+      "trials_with_pairwise_map_difference_covered_by_union": 1
+    },
+    {
+      "source_sample": 8,
+      "execution": 4603,
+      "candidate_admitted": false,
+      "totals": {
+        "map_events": {
+          "unretained_only": 1,
+          "pairwise_unique_before_union": 1,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "capability_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 0,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "survival": {
+          "unretained_alive": 16,
+          "any_retained_alive": 16,
+          "unretained_only_survives": 0,
+          "retained_only_survives": 0
+        }
+      },
+      "trials_with_unretained_map_events": 1,
+      "trials_with_pairwise_map_difference_covered_by_union": 0
+    },
+    {
+      "source_sample": 9,
+      "execution": 4963,
+      "candidate_admitted": false,
+      "totals": {
+        "map_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 1,
+          "covered_by_other_survivor": 1,
+          "retained_union_only": 1,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "capability_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 0,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "survival": {
+          "unretained_alive": 16,
+          "any_retained_alive": 16,
+          "unretained_only_survives": 0,
+          "retained_only_survives": 0
+        }
+      },
+      "trials_with_unretained_map_events": 0,
+      "trials_with_pairwise_map_difference_covered_by_union": 1
+    },
+    {
+      "source_sample": 10,
+      "execution": 2039,
+      "candidate_admitted": false,
+      "totals": {
+        "map_events": {
+          "unretained_only": 1,
+          "pairwise_unique_before_union": 1,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 1,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "capability_events": {
+          "unretained_only": 0,
+          "pairwise_unique_before_union": 0,
+          "covered_by_other_survivor": 0,
+          "retained_union_only": 0,
+          "actual_local_replacement_gained": 0,
+          "actual_local_replacement_lost": 0
+        },
+        "survival": {
+          "unretained_alive": 16,
+          "any_retained_alive": 16,
+          "unretained_only_survives": 0,
+          "retained_only_survives": 0
+        }
+      },
+      "trials_with_unretained_map_events": 1,
+      "trials_with_pairwise_map_difference_covered_by_union": 0
+    }
+  ],
+  "totals": {
+    "map_events": {
+      "unretained_only": 17,
+      "pairwise_unique_before_union": 20,
+      "covered_by_other_survivor": 3,
+      "retained_union_only": 6,
+      "actual_local_replacement_gained": 2,
+      "actual_local_replacement_lost": 0
+    },
+    "capability_events": {
+      "unretained_only": 0,
+      "pairwise_unique_before_union": 0,
+      "covered_by_other_survivor": 0,
+      "retained_union_only": 0,
+      "actual_local_replacement_gained": 0,
+      "actual_local_replacement_lost": 0
+    },
+    "survival": {
+      "unretained_alive": 95,
+      "any_retained_alive": 89,
+      "unretained_only_survives": 6,
+      "retained_only_survives": 0
+    }
+  },
+  "qualifies_longer_search": false,
+  "limitations": [
+    "Shared suffixes preserve action conditions; finite failures do not certify equivalence.",
+    "Local-rule proposal only; the audit callback precedes global population and memory eviction.",
+    "Map events are local living visits relative to each start, not new global search coverage.",
+    "Capability event categories and endpoint survival remain separate; no utility weights were fitted.",
+    "Rejected-candidate opportunity loss is distinct from an actual replacement of an incumbent.",
+    "A fixed, availability/work-limited development sample supplies no population or breakthrough estimate."
+  ],
+  "registration_sha256": "5062c0dd65883f2e94929a7fd8d3010b029177d2e7cf2ae64ce1eb636ceb1192",
+  "outcomes_sha256": "2fe0e9e4dcc8602cb9c54d8a88f45d6fb8542a66d8cfbccddd5f7b590e9cf8f8"
+}
