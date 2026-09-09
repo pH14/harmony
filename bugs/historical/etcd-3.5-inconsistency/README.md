@@ -1,6 +1,7 @@
 # etcd v3.5.0–3.5.2 — silent data inconsistency after untimely crash
 
-**Status: spec only — workload not yet built.**
+**Status: workload and pinned arms built; the dedicated CI workflow is ready for its first
+discovery run.**
 
 ## The bug
 
@@ -27,31 +28,33 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
 
 ## The triple
 
-- **Workload**: etcd v3.5.2 (single member to start; 3-member once net faults exist), driven by
-  a sustained high-rate write client with many concurrent applies — the upstream repro is
-  "high stress + random SIGKILL". Build FROM the pinned release binary; no source patching.
-- **Fault surface**: kill/restart at a Moment — the window between CI persistence (periodic
-  batch-tx commit) and the corresponding entry applies. Upstream needed *random* SIGKILLs under
-  load and memory pressure to land in the window; Harmony searches Moments directly, which is
-  the point of the entry.
-- **Oracle** (in strength order):
-  1. Single-member ground truth: after restart, independently replay the WAL and compare
-     against bbolt contents (upstream had **no tool** for this — the postmortem notes
-     single-member corruption was undetectable; our harness sees both sides).
-     Practical proxy: client-side journal of acked writes → read-back after restart; any
-     acked-but-missing key is a hit.
-  2. Multi-member: cross-member `HashKV` / revision comparison (what
-     `--experimental-initial-corrupt-check` does; added v3.5.3, on-by-default later).
-     Symptoms per #13766: revision lag, differing dbSize, same key independently updatable
-     per endpoint.
+- **Workload**: one supervised etcd member, driven by four concurrent clients. Each client
+  records every acknowledged put in a journal outside etcd and keeps applying entries while
+  Harmony explores faults. The same image, bundle, hook sequence, and search budget run against
+  v3.5.2 and v3.5.3; only the pinned release archive changes. There are no correctness,
+  portability, batch, or timing knobs.
+- **Fault surface**: a hard process kill followed by the normal supervisor restart, while the
+  clients are applying entries. This targets the small interval between consistent-index
+  persistence and the corresponding entry apply. Upstream needed *random* SIGKILLs under load
+  and memory pressure; Harmony searches the kill Moment directly.
+- **Oracle**: the hook journals each acknowledged put outside etcd, then after a deterministic
+  restart reads every journaled key from the recovered member. An acknowledged-but-missing or
+  changed value is the case's only failing assertion. A down member, empty journal, or failed
+  readback is silent, so a crash alone cannot be mistaken for corruption. This single-member
+  oracle is stronger than the original report's observability: it compares the acknowledged
+  client record with the recovered database state.
 
-## Difficulty / knobs
+## Discovery contract
 
-- Expected branches-to-find: unknown until measured — upstream's window is narrow (they needed
-  OOM-scale chaos to hit it). Knobs: write rate, bbolt batch interval/limit
-  (`--backend-batch-interval`, `--backend-batch-limit`) widen or shrink the CI-ahead-of-data
-  window. Record measured branches-to-find here once run.
-- **Nominal control**: same workload, clean shutdowns (SIGTERM + wait) — must never diverge.
+The case has one locked execution profile. CI runs the probe on both arms for every relevant
+change, then runs the bounded search campaign on a schedule or on demand. The vulnerable arm
+must find and replay assertion 1 with evidence point 11; the v3.5.3 control must run the same
+recorded actions without either assertion. A search miss is a regression in the test machinery,
+not a request to tune the workload.
+
+The only expected difference between the arms is the upstream etcd fix. Performance experiments
+may add separate profiles later, but they cannot alter the correctness or portability contract
+of this case.
 
 ## Why this entry is first
 

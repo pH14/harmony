@@ -1,0 +1,55 @@
+{
+  "format": "harmony-historical-case-v1",
+  "id": "etcd-3.5-inconsistency",
+  "title": "etcd v3.5 consistent-index data loss after crash",
+  "software": "etcd",
+  "sources": {
+    "issue": "https://github.com/etcd-io/etcd/issues/13766",
+    "fix_commit": "https://github.com/etcd-io/etcd/pull/13854",
+    "postmortem": "https://github.com/etcd-io/etcd/blob/main/Documentation/postmortems/v3.5-data-inconsistency.md"
+  },
+  "versions": {
+    "affected": "3.5.2",
+    "fixed": "3.5.3"
+  },
+  "arms": {
+    "vulnerable": {
+      "version": "3.5.2",
+      "archive_sha256": "256cad725542d6fd463e81b8a19b86ead4cdfe113f7fb8a1eabc6c32c25d068b"
+    },
+    "control": {
+      "version": "3.5.3",
+      "archive_sha256": "e13e119ff9b28234561738cd261c2a031eb1c8688079dcf96d8035b3ad19ca58"
+    }
+  },
+  "image": {
+    "context": "bugs/historical/etcd-3.5-inconsistency/image",
+    "dockerfile": "bugs/historical/etcd-3.5-inconsistency/image/Dockerfile"
+  },
+  "kernel_profile": "faultlab",
+  "oracle": {
+    "assertion": 1,
+    "evidence": 11,
+    "kind": "always",
+    "hook": 2,
+    "detector": "client journal versus recovered etcd reads",
+    "fires_on": "an acknowledged key is missing or has a different value after restart",
+    "silent_when": ["the node is down", "the journal is empty", "the readback hook cannot reach etcd"]
+  },
+  "actions": ["Wait", "Kill", "Pause", "Restart", "Hook"],
+  "run": {
+    "horizon_ms": 500,
+    "ram_mib": 512,
+    "knobs": {}
+  },
+  "search": {
+    "seed": 1,
+    "workers": 4,
+    "executions": 4000,
+    "actions": 24,
+    "wall_minutes": 150
+  },
+  "probe": "bugs/historical/etcd-3.5-inconsistency/probe.json",
+  "discovery_mode": "guided",
+  "status": "planned"
+}

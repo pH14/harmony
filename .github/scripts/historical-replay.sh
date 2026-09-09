@@ -17,7 +17,8 @@ mode=$1
 input=$2
 
 : "${CASE_ID:?}" "${HORIZON_MS:?}" "${RAM_MIB:?}"
-: "${VULNERABLE_VERSION:?}" "${CONTROL_VERSION:?}"
+: "${VULNERABLE_VERSION:?}" "${CONTROL_VERSION:?}" "${IMAGE_PREFIX:?}"
+: "${SOFTWARE_NAME:?}"
 : "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
 
 # The knobs reach the workload on the guest command line, so a replay only
@@ -57,7 +58,7 @@ replay_arm() {
     # timeout and leave the other arm unrun.
     local status=0
     timeout -k 30 1800 "${harmony}" search --package faults \
-        "oci-images/pgcic-${version}.oci" \
+        "oci-images/${IMAGE_PREFIX}-${version}.oci" \
         --backend consonance \
         --kernel "${kernel}" \
         --base-initramfs "${base_initramfs}" \
@@ -98,7 +99,7 @@ replay_arm control "${CONTROL_VERSION}" "${control_repeats}" false
 {
     echo "## ${mode} replay — ${input}"
     echo
-    echo "| arm | PostgreSQL | repeats | runs violating assertion ${ORACLE_ASSERTION} |\
+    echo "| arm | ${SOFTWARE_NAME} | repeats | runs violating assertion ${ORACLE_ASSERTION} |\
  runs reaching the oracle verdict | violation expected | state hashes agree | verdict |"
     echo "|---|---|---|---|---|---|---|---|"
     printf '%s\n' "${rows[@]}"

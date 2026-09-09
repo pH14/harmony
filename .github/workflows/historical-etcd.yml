@@ -1,0 +1,246 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Benchmarks / Historical etcd v3.5 bug
+
+on:
+  pull_request:
+    paths:
+      - .github/scripts/historical-*.sh
+      - .github/workflows/historical-etcd.yml
+      - bugs/historical/etcd-3.5-inconsistency/**
+      - cli/**
+      - consonance/harmony-linux/**
+      - workloads/fault-agent/**
+      - workloads/fault-policy/**
+  workflow_dispatch:
+    inputs:
+      executions:
+        description: Search execution ceiling
+        required: false
+        type: string
+  schedule:
+    - cron: "30 6 * * *"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CASE_DIR: bugs/historical/etcd-3.5-inconsistency
+  SOFTWARE_NAME: etcd
+  IMAGE_PREFIX: etcd
+  VULNERABLE_VERSION: 3.5.2
+  CONTROL_VERSION: 3.5.3
+  VULNERABLE_SHA256: 256cad725542d6fd463e81b8a19b86ead4cdfe113f7fb8a1eabc6c32c25d068b
+  CONTROL_SHA256: e13e119ff9b28234561738cd261c2a031eb1c8688079dcf96d8035b3ad19ca58
+  HORIZON_MS: 500
+  RAM_MIB: 512
+  SEED: 1
+  WORKERS: 4
+  ACTIONS: 24
+  WALL_MINUTES: 150
+  KNOBS: ""
+  ORACLE_ASSERTION: 1
+  ORACLE_EVIDENCE: 11
+
+jobs:
+  guest:
+    name: Build the locked faultlab guest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Build guest images
+        run: nix run .#guest-images -- --output "$PWD/guest"
+      - name: Verify guest manifest
+        run: (cd guest && sha256sum -c MANIFEST.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: etcd-guest-${{ github.run_id }}
+          path: |
+            guest/x86_64/bzImage-faultlab
+            guest/x86_64/initramfs.cpio.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  images:
+    name: Build pinned etcd workload images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build both release images
+        run: |
+          set -euo pipefail
+          mkdir -p oci-images
+          build_arm() {
+            local version="$1" sha="$2"
+            docker build --pull \
+              --build-arg "ETCD_VERSION=${version}" \
+              --build-arg "ETCD_SHA256=${sha}" \
+              --tag "harmony-etcd:${version}" "${CASE_DIR}/image"
+            docker save --output "oci-images/${IMAGE_PREFIX}-${version}.oci" "harmony-etcd:${version}"
+          }
+          build_arm "${VULNERABLE_VERSION}" "${VULNERABLE_SHA256}"
+          build_arm "${CONTROL_VERSION}" "${CONTROL_SHA256}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: etcd-images-${{ github.run_id }}
+          path: oci-images
+          if-no-files-found: error
+          retention-days: 1
+
+  tools:
+    name: Build Harmony and the static fault agent
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install musl
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
+          rustup target add x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: Build tools
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p harmony-cli
+          cargo build --locked --release --manifest-path workloads/fault-agent/Cargo.toml \
+            --target x86_64-unknown-linux-musl
+          mkdir -p tools
+          cp target/release/harmony tools/harmony
+          cp workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent tools/fault-agent
+      - uses: actions/upload-artifact@v4
+        with:
+          name: etcd-tools-${{ github.run_id }}
+          path: tools
+          if-no-files-found: error
+          retention-days: 1
+
+  probe:
+    name: Probe replay on both pinned arms
+    needs: [guest, images, tools]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-guest-${{ github.run_id }}
+          path: guest
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-images-${{ github.run_id }}
+          path: oci-images
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-tools-${{ github.run_id }}
+          path: tools
+      - name: Grant nested KVM access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Replay deterministic probe
+        env:
+          CASE_ID: etcd-3.5-inconsistency
+        run: .github/scripts/historical-replay.sh probe "${CASE_DIR}/probe.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: etcd-probe-${{ github.run_id }}
+          path: reports
+          if-no-files-found: warn
+          retention-days: 30
+
+  search:
+    name: Discover the bug on affected and fixed arms
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: [guest, images, tools]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [vulnerable, control]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-guest-${{ github.run_id }}
+          path: guest
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-images-${{ github.run_id }}
+          path: oci-images
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-tools-${{ github.run_id }}
+          path: tools
+      - name: Grant nested KVM access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run discovery campaign
+        env:
+          CASE_ID: etcd-3.5-inconsistency
+          ARM: ${{ matrix.arm }}
+          WORKLOAD_VERSION: ${{ matrix.arm == 'vulnerable' && env.VULNERABLE_VERSION || env.CONTROL_VERSION }}
+          EXECUTIONS: ${{ inputs.executions || 4000 }}
+        run: .github/scripts/historical-search.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: etcd-search-${{ matrix.arm }}-${{ github.run_id }}
+          path: reports
+          if-no-files-found: warn
+          retention-days: 30
+
+  report:
+    name: Render the etcd museum entry
+    needs: [probe, search]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: etcd-probe-${{ github.run_id }}
+          path: reports
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: etcd-search-vulnerable-${{ github.run_id }}
+          path: reports
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: etcd-search-control-${{ github.run_id }}
+          path: reports
+      - name: Render the roster from this run's reports
+        run: |
+          set -euo pipefail
+          python3 scripts/render-historical-bugs.py --reports reports
+          {
+            echo "## Historical etcd roster"
+            echo
+            sed -n '/render-historical-bugs:begin/,/render-historical-bugs:end/p' \
+              bugs/historical/README.md | grep -v render-historical-bugs
+          } >>"${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: etcd-roster-${{ github.run_id }}
+          path: bugs/historical/README.md
+          if-no-files-found: warn
+          retention-days: 30

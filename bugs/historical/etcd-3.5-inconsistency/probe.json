@@ -1,0 +1,10 @@
+{
+  "actions": [
+    {"Hook": 1},
+    "Wait",
+    {"Kill": 0},
+    "Wait",
+    {"Hook": 2},
+    "Wait"
+  ]
+}

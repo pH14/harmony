@@ -9,7 +9,8 @@
 # miss says the machinery regressed rather than saying nothing.
 set -euo pipefail
 
-: "${CASE_ID:?}" "${ARM:?}" "${PG_VERSION:?}" "${HORIZON_MS:?}" "${RAM_MIB:?}"
+: "${CASE_ID:?}" "${ARM:?}" "${WORKLOAD_VERSION:?}" "${IMAGE_PREFIX:?}"
+: "${SOFTWARE_NAME:?}" "${HORIZON_MS:?}" "${RAM_MIB:?}"
 : "${SEED:?}" "${WORKERS:?}" "${ACTIONS:?}" "${EXECUTIONS:?}" "${WALL_MINUTES:?}"
 : "${KNOBS:?}" "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
 
@@ -37,7 +38,7 @@ rm -rf "${out}"
 status=0
 timeout -k 60 "$(( (WALL_MINUTES + 20) * 60 ))" \
     "${harmony}" search --package faults \
-    "oci-images/pgcic-${PG_VERSION}.oci" \
+    "oci-images/${IMAGE_PREFIX}-${WORKLOAD_VERSION}.oci" \
     --backend consonance \
     --kernel "${kernel}" \
     --base-initramfs "${base_initramfs}" \
@@ -59,7 +60,7 @@ verdict=0
 
 if [[ "${status}" -ne 0 ]] || [[ ! -s "${report}" ]]; then
     {
-        echo "## Search campaign — ${ARM} (PostgreSQL ${PG_VERSION})"
+        echo "## Search campaign — ${ARM} (${SOFTWARE_NAME} ${WORKLOAD_VERSION})"
         echo
         echo "The campaign produced no report; the CLI exited ${status}."
     } >>"${summary}"
@@ -69,7 +70,7 @@ fi
 outcome=$("${oracle}" search "${report}" "${ARM}") || verdict=1
 
 {
-    echo "## Search campaign — ${ARM} (PostgreSQL ${PG_VERSION})"
+    echo "## Search campaign — ${ARM} (${SOFTWARE_NAME} ${WORKLOAD_VERSION})"
     echo
     echo "| field | value |"
     echo "|---|---|"
