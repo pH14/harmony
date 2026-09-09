@@ -24,11 +24,20 @@ def main():
     registration = json.loads(args.registration.read_text())
     assert sha(Path(__file__)) == registration["runner_sha256"]
     assert sha(Path(__file__).with_name("audit_controls.py")) == registration["analyzer_sha256"]
+    if "screen" in registration:
+        from score_screen import score_screen
+        assert sha(Path(__file__).with_name("score_screen.py")) == registration["screen_scorer_sha256"]
     build = root / registration["build"]
     binary = build / "nes-eval"
     assert sha(binary) == registration["binary_sha256"]
     assert sha(build / "build-info.json") == registration["build_info_sha256"]
     deadline = datetime.fromisoformat(registration["deadline_utc"])
+    if "screen" in registration:
+        seeds = [pair["seed"] for pair in registration["screen"]["pairs"]]
+        assert len(seeds) == len(set(seeds)) == 4
+        for path in (root / "runs").rglob("summary.json"):
+            used = json.loads(path.read_text()).get("search_request", {}).get("seed")
+            assert used not in seeds, "paired development seed has already been used"
     out = root / registration["output"]
     out.mkdir(parents=True, exist_ok=False)
     report_path = out / "results.json"
@@ -102,6 +111,13 @@ def main():
             record["finished_utc"] = datetime.now(timezone.utc).isoformat()
             save()
         print(json.dumps({"completed": cell["id"], "frames": summary["result"]["frames_emulated"]}), flush=True)
+        if "screen" in registration:
+            report["screen"] = score_screen(report["records"], registration)
+            save()
+            if report["screen"]["decision"] == "fail_impossible_win_count":
+                report["allocation_stop"] = "registered strict-win criterion is mathematically unattainable"
+                save()
+                return
     report["execution_complete"] = True
     save()
 
