@@ -197,7 +197,7 @@ The optional `metroid-motion-context` feature adds `motion_context: Option<u16>`
 to the archive key. Actual candidate and reconstructed-origin keys derive it
 from the target's already cached endpoint RAM; numeric-only key construction
 leaves it absent. It encodes raw facing and the signs of both signed speeds,
-without preferring a direction. Group identity, opaque quality, observations
+without preferring a direction in the retention rule. Group identity, opaque quality, observations
 and emulator snapshots remain unchanged. Both arms of a motion-retention
 comparison use this same metadata and memory accounting.
 
@@ -210,3 +210,9 @@ Feature-disabled builds retain their old key layout and digest identifier.
 quality-ranked contexts; `quality_representatives_2_v1` is its capacity control.
 The motion probe additionally checks cached context against direct RAM and,
 when feature-enabled, checks the actual campaign key, without running search.
+
+R04 qualifies alphabet-only fresh search. The complete key's deterministic
+ordering includes the new metadata; generic splice-donor and resume comparisons
+that use that ordering can therefore change when the feature is enabled.
+Splice and resume behavior require separate qualification. Matching the feature
+in both R04 arms holds that metadata constant in the policy comparison.

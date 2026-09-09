@@ -232,6 +232,11 @@ only fixed counters, reported by `retention_diagnostic_memory_bytes`. Existing
 vectors remain covered by archive metadata charging. Measured process RSS also
 includes workload-owned audit storage. The final census reads only cached
 active endpoints; missing payloads are counted and never reconstructed.
+The final `retention_context_census` separately counts active retained keys,
+including keys whose snapshot payload is missing. It excludes historical
+snapshot anchors and reports same/distinct-context pairs per slot. Its temporary
+grouping storage is proportional to active keys, used only for final telemetry;
+it does not affect selection or imply useful future coverage.
 
 The abstraction fixtures in `src/search/archive_abstraction_tests.rs` use exact
 finite transition systems with the production admission rules. They distinguish

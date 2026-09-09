@@ -24,13 +24,21 @@ capacity control, finite positive and adverse examples, and a versioned optional
 Metroid motion key. Generic tests (135 plus one interface), feature NES tests
 (126 plus evaluator), default NES tests (125), and strict Clippy passed.
 
-R04 qualification is dispatched: exact old default and job-sample streams;
-cached/direct motion and actual campaign-key agreement on original P04 pairs
-0/2/12; and two 5k-job full-replay feature cells with a resident-context census.
-The predeclared census gate and subsequent 50M-frame development-pair gate are
-in [motion-retention-design.md](motion-retention-design.md). No R04 progress
-result exists yet. The source and binaries are frozen in msr1's owned research
-directory; the active qualification service is `harmony-r04-qualify-001`.
+R04's five 5k-job full-replay cells completed, including exact old default and
+job-sample streams. Cached/direct motion and actual campaign-key agreement
+passed on original P04 pairs 0/2/12, costing 378,316 physical frames. The census
+gate failed because resident snapshots include historical reconstruction anchors
+and are not the active retention set. All original results are preserved in
+[r04-original-qualify-results.json](r04-original-qualify-results.json): 3,361,554
+admitted frames and 249.4s total cell elapsed time, plus full-replay work.
+
+Commit `4e3f0255` corrects the census to use active keys and adds a historical-
+entry exclusion check. R04b reruns the same five short cells, also requiring
+both feature streams to match R04 exactly. All 135 generic tests and strict NES
+Clippy pass after the correction. No policy, descriptor or numerical gate was
+changed. `harmony-r04b-qualify-002` is active on msr1; no larger R04 campaign is
+running. [The design](motion-retention-design.md) preserves both registrations
+and the subsequent 50M-frame development gate.
 
 ## Findings that changed the research direction
 
