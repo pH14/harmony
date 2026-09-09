@@ -22,7 +22,8 @@ def names(row):
 def load(path):
     summary = json.loads(path.read_text())
     assert summary["status"] == "complete" and summary["result"]["verification"] == "witness"
-    rows = [json.loads(line) for line in (path.parent / "campaign/progress.jsonl").open()]
+    with (path.parent / "campaign/progress.jsonl").open() as progress:
+        rows = [json.loads(line) for line in progress]
     assert rows and all(a["frames_emulated"] <= b["frames_emulated"] for a, b in zip(rows, rows[1:]))
     intervals = {}
     previous = 0

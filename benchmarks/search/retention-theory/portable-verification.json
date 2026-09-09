@@ -33,5 +33,18 @@
       "harmony-survivor-union-test.log": "b7f60cb014970690712a21656ec140931f840a0da2121d7abc842b2a8ddc79a5",
       "harmony-theory-fixtures-clippy.log": "365f6babc4736462aa56ed279026e82b7383fbe14ba469486e094be53d7510a0"
     }
+  },
+  "r05_allocation_gate_fixtures": {
+    "passed": 5,
+    "emulator_work": false,
+    "cases": [
+      "positive_requires_both_controls_no_breakthrough",
+      "lost_control_milestone",
+      "conservative_arrival_intervals",
+      "wall_censoring",
+      "source_mismatch_and_missing_witness"
+    ],
+    "log_sha256": "78eef06a986d8417523e74a16d2bb14e35ab64ab86924c647f2bc690902433d9",
+    "note": "Local telemetry reader now closes its file explicitly; frozen R05 package remains unchanged."
   }
 }
