@@ -538,6 +538,12 @@ impl MetroidTarget {
         &self.action_observations
     }
 
+    /// Read raw boss-related bytes for standalone replay diagnostics. Search
+    /// never invokes this method; it changes no clocks, observations or policy.
+    pub fn diagnostic_boss_memory(&self) -> Result<super::boss_probe::BossMemory, MachineError> {
+        super::boss_probe::decode(&self.machine.read_wram()?, &self.cartridge()?)
+    }
+
     /// Read the cartridge work RAM window the decoder needs.
     fn cartridge(&self) -> Result<Vec<u8>, MachineError> {
         self.machine.read_save_ram()

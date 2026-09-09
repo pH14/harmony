@@ -3,6 +3,7 @@
 //! Metroid adapter over the game-neutral Dissonance searcher.
 
 pub mod archive;
+pub mod boss_probe;
 pub mod campaign;
 pub mod progress;
 pub mod target;

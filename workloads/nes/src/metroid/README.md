@@ -157,3 +157,21 @@ with distinguishing local exits or survival outcomes. More slots consume the
 same archive byte budget, and retained alternatives may still receive too little
 work. Actual-ROM replay and matched fresh search must qualify it before use.
 See the [research ledger](../../../../benchmarks/search/retention-theory/README.md).
+
+## Standalone boss-memory diagnostics
+
+`metroid-boss-probe CORE ROM INPUT.json OUT` reads raw loader and enemy-slot
+bytes while replaying an existing searched tape. It compares ordinary chords
+with two independent one-frame replays, requiring equal final emulator bytes
+and decoded state plus identical frame-trace hashes. Inputs are bounded at
+8,192 actions/250k route frames; private trace output is capped at32MiB.
+No probe value changes search observations, snapshots, retention or termination.
+The standalone probe uses corrected terminal v3 and stops on a terminal tape.
+
+The raw addresses come from the pinned
+[disassembly](https://github.com/nmikstas/metroid-disassembly/tree/4270d57f9468daebdeea485686e31e26218a780c):
+`Metroid_Defines.asm` and Bank07 loader, slot, HP and hit routines. A special
+byte can change during combat or remain in an inactive slot. The report keeps
+loader, slot status, tag and HP separate; it does not infer damage totals,
+encounter identity or defeat from them. An empty existing-route trace is only
+a negative control, not evidence about every route in its source campaign.

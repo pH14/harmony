@@ -535,3 +535,26 @@ R03 remaining portable checks passed: generic interface test, NES evaluator
 binary test, all 22 Python runner contract tests, and dependency-boundary check.
 The exact paired-tail examples in `validation-protocol.md` agree with exhaustive
 enumeration for every success threshold and discordant sample size up to ten.
+
+### E01: read-only boss-memory trace qualification
+
+The current area labels do not establish that a boss was loaded or fought.
+Before adding campaign counters, qualify a standalone diagnostic from existing
+searched routes. It reads loader presence, six enemy slots (status, data index,
+special byte, HP and position), and persistent defeat bytes. No value enters
+archive identity, preference, selection, termination or fresh search.
+Pinned disassembly `4270d57f` documents the loader and HP stores; its combat
+code also overwrites the special byte. Therefore record raw bytes and sampled
+loader/slot agreement, not an assumed permanent bit or a damage counter.
+
+Use the already searched D01 Kraid-area tape only as a labelled diagnostic
+input, never as a fresh-search origin. At most 8,192 actions/250k route frames.
+Replay at ordinary chord boundaries, then twice with one-frame holds and
+read-only memory inspection; require equal final emulator bytes and mechanical
+state across all three runs and identical one-frame trace hashes. Stop on
+terminal before applying any remaining tape. Build on little cores under20m;
+run under300s, 4GiB and32MiB output. Record actual frames including setup.
+The route may contain no boss encounter; that qualifies a negative control
+only. Do not infer whole-campaign encounter absence or start longer searches
+from an empty trace. A positive episode is required before proposing campaign
+encounter or partial-damage counters.

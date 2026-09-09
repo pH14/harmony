@@ -125,9 +125,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     if trials == 0 || trials > 256 || actions == 0 || actions > 128 {
         return Err("probe limits exceed bounded diagnostic".into());
     }
-    let terminal_policy = MetroidTerminalPolicy::parse(
-        args.get(6).map_or("death_or_ending_v2", String::as_str),
-    )?;
+    let terminal_policy =
+        MetroidTerminalPolicy::parse(args.get(6).map_or("death_or_ending_v2", String::as_str))?;
     let seed = args
         .get(7)
         .map(|value| value.parse::<u64>())
