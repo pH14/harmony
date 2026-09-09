@@ -1,0 +1,14 @@
+{
+  "format": "continuation-yield-tq01-analysis-v1",
+  "results_sha256": "011c4ef0a1149ef8d14603a6c07796ab7a0848a5d7710548f3f95027f9cc12ec",
+  "registration_sha256": "e45af16d950782592d5cd93157bf5c9d91a344c2d71f11ee7652897ff20e4892",
+  "qualified": true,
+  "full_report_checkpoint_replay": true,
+  "admitted_frames": 235672,
+  "inferred_full_replay_admitted_frames": 235672,
+  "twice_replayed_witness_suffix_frames": 3842,
+  "stream_sha256": "d2a0c8dbcc49490aea16c0f6aa0952e9ccb8648c1aef83a3a9c96d13737532f0",
+  "elapsed_seconds": 15.251885864010546,
+  "cpu_seconds": 22.656238,
+  "scope": "Settings qualification only; the reused smoke seed is not an independent performance observation. Physical setup and unadmitted work may be additional."
+}

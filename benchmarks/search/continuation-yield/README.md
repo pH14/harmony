@@ -145,7 +145,7 @@ retain their full fixed-horizon resource measurements.
 [Follow-up #290](https://github.com/pH14/harmony/issues/290) specifies an opt-in
 milestone stop with complete event evidence, bounded drain, normal export and
 replay, preserved censoring, and a prospectively appropriate resource comparison.
-R01's registered stopping behavior remains in force.
+All panels retain their registered stopping behavior.
 
 ## R01 confirmation outcome
 
@@ -181,5 +181,15 @@ unchanged MM2 candidate with the existing evaluation's 8,192-action limit,
 `one_to_six_within_3_longest_actions_full_hold` suffix and `energy_splice:6`
 mixture. It reuses the D02r qualification seed without claiming an independent
 performance observation. Its runner requires R01's frozen positive result before
-dispatch. A successful check permits the prewritten four-pair, 5M-per-arm T01
-transfer allocation; it does not itself establish transfer.
+dispatch. [The check passed](tq01-analysis.json): 235,672 admitted frames with
+complete report/checkpoint replay, plus 3,842 twice-replayed witness frames.
+[The raw record](tq01-results.json) completed successfully at
+2026-09-09 16:52:55 UTC. It establishes configuration qualification, not transfer.
+
+[T01's registration](t01-registration.json) freezes four new paired seeds at
+5M frames per arm, using the qualified MM2 configuration and the same semantic
+walk in both selectors. First stage victory supplies an exact admitted-cost
+endpoint; post-budget drain events do not count as budgeted hits. Three strict
+wins, a 15% mean restricted-cost reduction, and the fixed resource gate remain
+necessary. Both-censored pairs are ties. Its maximum 40M nominal search frames
+fit the remaining tranche allowance. No transfer result is yet available.
