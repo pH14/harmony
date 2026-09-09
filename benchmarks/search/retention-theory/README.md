@@ -868,3 +868,23 @@ less admitted work to a common third-stage victory. If those conditions fail,
 J01's production-depth advantage is not replicated and does not justify longer
 sampling chains. Wall/total-budget censoring is unresolved, not a completed
 matched-work failure. This remains development work, not the Wily4 seed panel.
+
+### R04: bounded motion-context retention
+
+Source commit `e29ee221` adds `quality_representatives_2_v1` and
+`context_representatives_2_v1`. The second retains the two best distinct context
+maxima, with the exact fixed-stream induction and finite counterexamples in
+[motion-retention-design.md](motion-retention-design.md). The optional Metroid
+feature obtains its context from already cached RAM, preserves group geometry,
+and versions both key and result digest. Missing contexts use ordinary
+competition. All 135 generic tests plus the interface check, 126 feature NES
+tests plus evaluator check, 125 default NES tests, and strict Clippy passed.
+
+[R04's registered runner](run_r04.py) first checks three historical 5k streams
+and two full-replay feature cells on msr1, sequentially on cores 0–3. A separate
+bounded replay of existing P04 pairs 0/2/12 checks cached context and actual
+campaign keys against direct motion reads. The resident-snapshot census checks
+the policies make distinct retention choices; it does not measure useful
+future coverage. The design document fixes its quantitative gate and the
+subsequent one-seed, 50M-frame development comparison before ARM data. No
+held-out seed or longer campaign is authorized by a census alone.

@@ -1,4 +1,4 @@
-# Research checkpoint — September 9, J01/L01 complete
+# Research checkpoint — September 9, J03 and R04 qualification
 
 The goal remains active. No fresh Metroid boss or MM2 Wily 4 breakthrough has
 been established. The approved ROM transfer is complete and checksum verified.
@@ -6,9 +6,31 @@ Three Metroid/retention development gates have failed. Job sampling produced a
 large MM2 Metal improvement over coordinate extremes; its fresh chain also
 solved Heat and Air before stopping at Wood. The ordinary-retention Metal
 comparison was mixed, so a replicated production improvement is not established.
-A bounded shared-prefix Heat control is running, and a fresh ordinary chain
-with matched stage work is registered. All
-production defaults remain unchanged.
+The shared-prefix Heat control completed 85M frames without a victory, while
+the reused sample arm won at 66.63M: a positive conditional diagnostic. J02's
+ordinary fresh chain stopped at Heat after its full 66.63M-frame ceiling;
+sampling's reused J01 chain had cleared three stages. Those adaptively chosen
+budgets authorized J03, a new prospective development seed through Wood.
+J03 uses ordinary then sampling on the same CPU group and predeclared stage
+ceilings. Its ordinary arm has already cleared all four stages; sampling is
+running. All production defaults remain unchanged.
+
+P04's frozen motion descriptor separated six of eight useful competitor pairs
+that even the finer spatial key merged, including one mechanically identical
+pair. Another useful pair shares all seven inspected motion bytes, so the
+descriptor is not sufficient state. This passed the registered design gate.
+Commit `e29ee221` implements at most two best context maxima, a top-two-quality
+capacity control, finite positive and adverse examples, and a versioned optional
+Metroid motion key. Generic tests (135 plus one interface), feature NES tests
+(126 plus evaluator), default NES tests (125), and strict Clippy passed.
+
+R04 qualification is dispatched: exact old default and job-sample streams;
+cached/direct motion and actual campaign-key agreement on original P04 pairs
+0/2/12; and two 5k-job full-replay feature cells with a resident-context census.
+The predeclared census gate and subsequent 50M-frame development-pair gate are
+in [motion-retention-design.md](motion-retention-design.md). No R04 progress
+result exists yet. The source and binaries are frozen in msr1's owned research
+directory; the active qualification service is `harmony-r04-qualify-001`.
 
 ## Findings that changed the research direction
 
