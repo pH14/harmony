@@ -633,3 +633,11 @@ Heat replays with the Metal weapon retained before J01 may start. Do not change
 any search, death, or victory predicate. If the bridge fails, do not claim
 chainability or launch J01. Preserve the failed output and use new helper build
 `metal-export-002` and a new qualification directory for this changed check.
+
+J01 bridge qualification r2 passed for both R03b victories: twice-replayed
+Heat entry has health28, weapon mask64, and lives4(sample)/3(extremes).
+Additional export/setup/bridge work totals143,580 physical frames. Earlier
+C01 victories have the same simultaneous death/victory flags and already
+qualified their bridges; the extra living-endpoint assertion was inappropriate
+for this existing export contract. J01 launched on the fixed new seed20261102
+with its required binary and bridge gates, separate CPU sets, and watchdog.
