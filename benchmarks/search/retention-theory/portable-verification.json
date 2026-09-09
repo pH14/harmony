@@ -1,0 +1,24 @@
+{
+  "format": "retention-portable-verification-v1",
+  "tested_implementation_commit": "4e3f0255",
+  "subsequent_changes": "documentation, committed evidence, analysis scripts and explicit launcher CPU placement only",
+  "local_toolchain": "rustc 1.97.0",
+  "runner_contract_tests": 22,
+  "chain_limit_contract_tests": 2,
+  "dependency_boundaries": "passed",
+  "nes_release_all_features": {
+    "passed": 139,
+    "failed": 0,
+    "ignored": 0
+  },
+  "nes_release_all_features_all_targets_clippy": "passed with -D warnings",
+  "generic_tests": 135,
+  "generic_interface_test": 1,
+  "generic_all_targets_clippy": "passed with -D warnings",
+  "corrected_feature_nes_library_tests": 126,
+  "corrected_feature_evaluator_test": 1,
+  "formatting": "generic and NES manifest checks passed",
+  "log_sha256": "5e1edc33e198b123ceb0e78778d86ac3541b7ff65282887a3b4363e83c3d5845",
+  "scope": "local portable checks; not a CI or full-game performance claim",
+  "default_nes_library_tests_before_census_repair": 125
+}

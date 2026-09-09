@@ -941,3 +941,12 @@ registered conditions remain: fresh seed3, four workers,8GiB, corrected v3,
 alphabet-only,4096 actions,500k jobs/50M frames/1800s search per arm. The outer
 service caps the pair at4080s and12GiB; the analyzer runs after both cells stop.
 No validation seeds are consumed.
+
+Portable verification after the census correction passed 22 runner contracts,
+two chain-limit contracts, dependency boundaries, 135 generic tests plus the
+independent-interface test, and 139 release tests across the NES library and
+binaries with all features enabled. Strict release Clippy covered all NES
+features/targets; generic strict Clippy and both manifest formatting checks
+also passed. [portable-verification.json](portable-verification.json) records
+the scope and preserved-log digest. These are local checks, not CI or workload
+performance claims.
