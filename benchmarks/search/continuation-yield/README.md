@@ -193,3 +193,6 @@ endpoint; post-budget drain events do not count as budgeted hits. Three strict
 wins, a 15% mean restricted-cost reduction, and the fixed resource gate remain
 necessary. Both-censored pairs are ties. Its maximum 40M nominal search frames
 fit the remaining tranche allowance. No transfer result is yet available.
+Stage victories stop cells early, so T01's CPU/elapsed ratios compare total
+event-stopped panel cost, including finishing and replay. They are not
+fixed-admitted-frame throughput estimates; both arms retain identical hard caps.

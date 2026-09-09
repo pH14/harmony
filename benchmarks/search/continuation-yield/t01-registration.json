@@ -750,7 +750,8 @@
       }
     ],
     "resources": {
-      "max_candidate_to_control_ratio": 1.25
+      "max_candidate_to_control_ratio": 1.25,
+      "interpretation": "CPU and elapsed ratios compare total event-stopped panel cost, including finishing and verification. Because stage victories stop cells early, this is not a fixed-admitted-frame throughput estimate. Both arms retain identical hard resource caps."
     },
     "criterion": "At the fixed 5M horizon: three strict wins and >=15% lower mean restricted first-stage-victory cost, with the unchanged resource gate. Both-censored pairs are ties.",
     "early_stop": "Only after a completed pair when three strict wins are unattainable, or for infrastructure/resource failure."
