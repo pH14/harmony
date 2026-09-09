@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Raw motion bytes for retrospective diagnostics, never archive identity.
+//! Raw motion diagnostics and an optional opaque retention-context encoding.
 
 use serde::Serialize;
 
