@@ -105,3 +105,10 @@ both binaries and rerun only the same five short qualification cells under new
 output names. In addition to all historical stream hashes, require both new
 policy streams to match R04 exactly, proving that this measurement repair does
 not alter their search choices. The subsequent development pair remains gated.
+
+Before any development cell, J03 completed and released the faster cores 8–11.
+Amend only development placement to those cores for both arms, still quality
+then context sequentially. This avoids spending roughly twice as long on the
+slower group, without changing the seed, executable, work, memory, wall limits,
+arm order or scientific gate. Qualification remains on 0–3. The driver records
+placement explicitly; no fresh-development outcome informed this change.

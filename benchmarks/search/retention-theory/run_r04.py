@@ -17,7 +17,9 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--experiment", type=Path, required=True)
     p.add_argument("--phase", choices=["qualify", "development"], required=True)
+    p.add_argument("--cpus", choices=["0-3", "8-11"], default="0-3")
     a = p.parse_args()
+    assert a.phase == "development" or a.cpus == "0-3", "qualification placement is frozen"
     root = a.experiment.resolve()
     source = root / "source-context-002"
     research = source / "benchmarks/search/retention-theory"
@@ -25,7 +27,7 @@ def main():
     assert not out_path.exists(), "refusing to overwrite R04"
     report = {"format": "r04b-context-retention-v1", "phase": a.phase,
               "scope": "mechanism qualification" if a.phase == "qualify" else "one fresh development seed; not validation",
-              "cpus": "0-3", "records": [], "passed": False}
+              "cpus": a.cpus, "records": [], "passed": False}
 
     def save():
         out_path.write_text(json.dumps(report, indent=2) + "\n")
@@ -46,7 +48,7 @@ def main():
         out = root / f"runs/r04b-{a.phase}-{label}"
         assert not out.exists()
         manifest.write_text(json.dumps(suite, indent=2) + "\n")
-        subprocess.run(["taskset", "-c", "0-3", "python3", str(source / "benchmarks/search/eval.py"),
+        subprocess.run(["taskset", "-c", a.cpus, "python3", str(source / "benchmarks/search/eval.py"),
                         "run", str(manifest), "--assets", str(root / "assets.json"),
                         "--binary", str(build / "nes-eval"), "--build-info", str(build / "build-info.json"),
                         "--out", str(out), "--jobs", "1", "--cpus", "4",

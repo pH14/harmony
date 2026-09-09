@@ -888,3 +888,30 @@ the policies make distinct retention choices; it does not measure useful
 future coverage. The design document fixes its quantitative gate and the
 subsequent one-seed, 50M-frame development comparison before ARM data. No
 held-out seed or longer campaign is authorized by a census alone.
+
+All five original R04 cells completed full replay, costing 3,361,554 admitted
+frames plus verification. The census failed because resident snapshots include
+inactive reconstruction anchors. R04b (`4e3f0255`) uses actual active keys, with
+an executable historical-entry exclusion check. The same short cells and
+thresholds are repeated under new names; both feature streams must additionally
+match the original R04 streams exactly. No retention rule or descriptor changed.
+Original results are preserved in [r04-original-qualify-results.json](r04-original-qualify-results.json).
+
+### J03 result: depth advantage did not replicate
+
+The [frozen analyzer](analyze_j03.py) passed all source, asset, request and own-
+prefix lineage checks. On development seed 20261103, ordinary retention cleared
+Metal/Heat/Air/Wood at 2,565,160 / 50,285,649 / 38,810,609 / 29,600,933 frames
+to the first award in each stage. Sampling cleared Metal at 1,516,043, then
+failed Heat after 85,000,993 admitted frames, completing its prescribed ceiling
+without wall censoring. All awards and healthy next-stage bridges replayed.
+
+Both arms used cores 8–11 sequentially. Ordinary retention admitted 121,266,871
+frames across four stages (physical lower bound 122,846,409); sampling admitted
+86,517,905 across two attempts (physical lower bound 86,804,959). Their later
+stage starts are their own searched histories. Sampling neither improves depth
+nor reaches the common third-stage speed gate. The prospective escalation gate
+fails: **no longer sampling chains in this tranche**. The favorable J01/J02
+results remain valid development observations, but their production-depth
+advantage did not replicate. [j03-analysis.json](j03-analysis.json) preserves
+the complete evidence. No Wily 4 or held-out seed result is claimed.
