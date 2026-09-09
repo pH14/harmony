@@ -5,7 +5,7 @@ set -eu
 journal=/tmp/etcd/journal/acked
 
 ctl() {
-  /opt/etcd/etcdctl --endpoints=http://127.0.0.1:2379 "$@"
+  ETCDCTL_API=3 /opt/etcd/etcdctl --endpoints=http://127.0.0.1:2379 "$@"
 }
 
 writer() {
