@@ -66,6 +66,8 @@ struct Request {
     #[serde(default)]
     metroid_terminal: Option<String>,
     #[serde(default)]
+    nes_duration: Option<String>,
+    #[serde(default)]
     mm2_chain: bool,
     #[serde(default)]
     prefix_input: Option<PathBuf>,
@@ -369,6 +371,15 @@ fn main() -> Result<()> {
     }
     let started = telemetry_now();
     let request: Request = serde_json::from_slice(&fs::read(&args[0])?)?;
+    let duration = nes_workload::duration::NesDurationPolicy::parse(
+        request
+            .nes_duration
+            .as_deref()
+            .unwrap_or("stratified_short_or_long_v1"),
+    )?;
+    if request.nes_duration.is_some() && !matches!(request.game.as_str(), "metroid" | "mm2") {
+        return Err("experimental duration policy supports Metroid and MM2".into());
+    }
     let out = PathBuf::from(&args[1]);
     if out.exists() && fs::read_dir(&out)?.next().is_some() {
         return Err("output directory must be empty".into());
@@ -474,7 +485,8 @@ fn main() -> Result<()> {
             let game = match prefix {
                 Some(input) => Mm2Game::new_at_stage_after(&rom, p, h, input.actions, stage),
                 None => Mm2Game::new_at_stage(&rom, p, h, stage),
-            };
+            }
+            .with_duration_policy(duration);
             let outcome = evaluate(&game, Mm2CampaignRun, &request, &out, started);
             let mut chain_setup = json!({"format":"mm2-chain-stage-cost-v1", "new_target_setup_frames":game.setup_frame_count(), "stage":stage.name(), "prefix_sha256":request.prefix_sha256, "scope":"freshness established by enclosing chain manifest, not by this stage tool"});
             if request.mm2_chain {
@@ -518,6 +530,7 @@ fn main() -> Result<()> {
         "metroid" => evaluate(
             &{
                 let game = MetroidGame::new(&rom, p, h)
+                    .with_duration_policy(duration)
                     .with_milestone_input_dir(out.join("milestone-inputs"))
                     .with_terminal_policy(
                         nes_workload::metroid::target::MetroidTerminalPolicy::parse(

@@ -137,3 +137,11 @@ memory. `metroid-retention-probe` reconstructs each pair and applies the same
 sampled suffixes to both sides. It reports physical probe/prefix frames, gains,
 survival, and living map exits separately. These diagnostic starts never count
 as fresh validation; differing endpoints alone are not useful-future evidence.
+
+`nes-eval` optionally selects a versioned `nes_duration` distribution; legacy
+short/long sampling remains the default. The experimental middle-band policy
+and its mean-matched two-band ablation preserve controller-mask draws and
+special menu taps. Their identifiers are strict replay context; see the shared
+[NES policy documentation](../../README.md) for values and duration ranges.
+The paired-retention probe accepts an optional final terminal-policy identifier
+to isolate terminal classification on the same frozen pairs and sampled suffixes.

@@ -110,7 +110,9 @@ impl MetroidTerminalPolicy {
         }
     }
 
-    fn is_dead(self, state: MetroidMechanicalState) -> bool {
+    /// Classify a decoded state under these versioned terminal semantics.
+    #[must_use]
+    pub fn is_dead(self, state: MetroidMechanicalState) -> bool {
         // Bank07 $CED7 stores the BCD subtraction before $CEE4 checks borrow
         // and $CEEB clears health. A frame boundary can expose this intermediate
         // negative value. Six tanks cap normal health at 6999; the >=8000 sign

@@ -100,3 +100,13 @@ composed ordinary-genesis witness verification) and `nes-input-inspect`
 Their diagnostic origins never qualify fresh search. Requests, bounds, exact
 provenance and experimental policy comparisons are documented in the
 [alternative-futures research ledger](../../benchmarks/search/alternative-futures/README.md).
+
+`nes-eval` accepts `nes_duration` for Metroid and MM2. The default
+`stratified_short_or_long_v1` preserves historical holds of 2–12 or 48–120
+frames. Experimental `stratified_short_middle_long_v2` samples three equal
+bands (2–12, 13–47, 48–120), keeping button draws and special menu taps
+unchanged. The duration identity is part of strict campaign replay context.
+The local Metroid diagnostic uses the same option named `duration`.
+The ablation `stratified_two_band_mean_matched_v1` retains the two historical
+bands but chooses short holds with probability 131/231, matching the three-band
+mean of 121/3 frames. It tests average duration separately from middle-band support.

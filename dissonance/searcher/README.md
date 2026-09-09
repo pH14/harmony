@@ -77,6 +77,16 @@ cargo clippy --manifest-path dissonance/searcher/Cargo.toml --all-targets -- -D 
 The legacy selector identifiers retain their exact behavior. Search experiments
 use independent versioned identifiers:
 
+- `room_cell_uniform_128_energy_progress_first_exposure_v2:<thresholds>` keeps
+  semantic class/cell selection but first offers the oldest surviving cell member
+  that has neither been selected nor offered. The offer claims the existing
+  exposure bit at dispatch, so concurrent reservations can offer different
+  members. Once all members have had an offer, the ordinary cost-weighted newest
+  128 window resumes. This changes selection only and allocates no extra archive
+  storage. It consumes the usual one within-cell RNG draw, preserving mutation
+  draw cadence. Uniform draws remain available; the rule is experimental.
+  The qualification-only v1 prototype skipped that RNG step; replay it with
+  its frozen research build rather than interpreting it as v2.
 - `room_cell_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides
   each within-cell cost weight by one plus that entry's admitted selections.
   Cheap members get early attempts, while repeatedly sampled members yield some
@@ -195,3 +205,9 @@ only fixed counters, reported by `retention_diagnostic_memory_bytes`. Existing
 vectors remain covered by archive metadata charging. Measured process RSS also
 includes workload-owned audit storage. The final census reads only cached
 active endpoints; missing payloads are counted and never reconstructed.
+
+Replacement ages count admission-sequence differences in five bins: 0, 1–7,
+8–63, 64–511, and at least 512, with a second histogram for never-selected
+entries. Nonmonotonic caller sequences are counted as unknown. Whole-tree
+import rebuilds entries at execution zero, so ages measure the current campaign,
+including bootstrap replacements at zero. The fixed census occupies 160 bytes.

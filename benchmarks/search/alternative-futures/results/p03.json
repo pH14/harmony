@@ -1,0 +1,98 @@
+{
+  "actions_per_trial": 24,
+  "audit_sha256": "cae156018d08bbe61364442f936224528bbf7a151b7319a2209cc8c6a0d48b46",
+  "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+  "equal_work_rule": "identical pre-sampled action suffixes and frame allowances; terminal branches stop early, actual frames reported separately",
+  "format": "metroid-equal-suffix-probe-v1",
+  "limitations": [
+    "cached incumbent sample only",
+    "finite matching suffixes do not prove equivalence",
+    "map exit is local reach evidence, not a boss or new global coverage claim",
+    "resource gain is relative to each starting state"
+  ],
+  "pairs": 16,
+  "prefix_and_gain_export_frames": 898376,
+  "probe_frames_discarded_survivor": [
+    707878,
+    489897
+  ],
+  "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+  "scope": "development-discovered competitors; diagnostic, not fresh search",
+  "terminal_policy": "death_or_bcd_underflow_or_ending_v3",
+  "totals_by_stratum": [
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      1024,
+      0,
+      0,
+      156,
+      42,
+      197
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  ],
+  "totals_columns": [
+    "trials",
+    "discarded_only_gain",
+    "survivor_only_gain",
+    "discarded_only_living_map_exit",
+    "survivor_only_living_map_exit",
+    "discarded_survives_survivor_dies"
+  ],
+  "trials_per_pair": 64,
+  "build": {
+    "binary_sha256": "a72d9a8b65f0a215a1b7223fb3819d9ea9d6bff21e2d7ac278e5dbd4d3bfe1c3",
+    "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+    "dirty": null,
+    "files": 491,
+    "format": "harmony-search-build-v1",
+    "locked": true,
+    "profile": "release",
+    "revision": null,
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+    "rustflags": "",
+    "source_tree_sha256": "455ae3775f6bdc162b06ae8c61aeff06e2327ed1cc18e1987ddc09cbeb4eac8f",
+    "target_cache": "builds/diagnostic-001/target"
+  },
+  "resources": {
+    "exit_code": 0,
+    "elapsed": 47.28226769901812,
+    "user_seconds": 47.222578,
+    "system_seconds": 0.051996999999999995,
+    "max_rss_kib": 12284
+  },
+  "files": {
+    "suffixes.json": "4e408f2397801eb5a3946a6b7e5ebfda8954669b87f87ec65478e7a7cb94646d",
+    "outcomes.jsonl": "c79df7524bbb28d0dc3ebc8a86f7028b60380469f5df03a29f4b66cd137bc945"
+  }
+}

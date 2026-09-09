@@ -1,6 +1,7 @@
 # Alternative futures tranche — 2026-09-08
 
-Status: active research; no implementation or breakthrough is qualified.
+Status: active research; experimental mechanisms passed bounded replay qualification.
+No breakthrough is established; no default policy has changed.
 
 Start: 2026-09-08 20:26 UTC. Consolidation begins: 2026-09-09 06:56 UTC.
 Hard end: 2026-09-09 08:26 UTC. The attached request is preserved in `request.txt`.
@@ -647,3 +648,387 @@ explicit telemetry allowance and a collapsible conditional. Move only those
 clock reads into documented diagnostic helpers and simplify the conditional;
 these are reporting wrappers, not a campaign semantic change. Preserve the
 failed check log and rerun changed-target Clippy. Focused tests already passed.
+
+## S02 preregistration — first exposure within a chosen cell
+
+S01 removed 82,626 MM2 entries; 53,643 (64.9%) had never been selected and
+33,321 (40.3%) never entered its recency window. Code inspection shows the cell
+walk offers only the newest 128 entries, then halves weight every four ranks of
+route cost. This identifies a selection mechanism distinct from resource loss.
+Add one generic, experimental selector family S: preserve semantic class/cell
+selection and ordinary retention, but within a chosen cell first offer its
+oldest surviving entry that has neither been selected nor previously offered.
+Record the offer at dispatch using the existing exposure bit, so concurrent
+reservations do not all claim the same entry. Once all members have had an
+offer, fall back to the unchanged cost-weighted 128-entry window. Uniform draws
+and controller/continuation generation stay unchanged. No extra snapshots,
+archive cells, persistent vectors or memory allowance.
+
+Focused <=10m tests must reproduce recency starvation under continual arrivals,
+show the new rule offers older entries including concurrent reservations, and
+exercise replacement/eviction plus full campaign/checkpoint replay. Strict new
+selector identity; historical identifiers and frozen streams unchanged. Then
+<=5k actual MM2 Metal/full-replay qualification in each selector (<=5m/cell),
+with the same 4-worker/8-GiB condition and ordinary energy_splice:6. Qualify an
+actual changed-parent sequence, not merely a parsed policy header.
+
+If qualified, run one S02 Wily1 diagnostic from the same C02 own-chain prefix,
+50M admitted frames /500k jobs /1080s search +120s finish /1230s outer watchdog,
+4 workers/8GiB, ordinary retention and unchanged energy_splice:6. Compare S01's
+semantic selector at common work, using boss reach/clear, retained/cached
+capabilities and exposure before removal. This is not a fresh chain. Lower
+starvation without deeper progress distinguishes allocation from useful action
+generation; a boss reach qualifies a fresh chain. If neither exposure nor
+progress improves, park S instead of increasing work. Families active: T and S;
+R/E remain parked. No defaults change.
+
+S02 focused generic tests pass: 117 unit tests plus the interface test. The
+continuous-arrival fixture shows baseline leaves older entries outside its
+window while first exposure offers them, and concurrent offers do not repeat
+the same unadmitted member. The pressure fixture passes with actual alternatives,
+removal, snapshot eviction, continuation dispatch and exact report/checkpoint
+replay under both the old selector and first exposure.
+
+T02 fresh terminal-only development is not an efficacy win: seed3 energy tank
+moves 369,048→487,706 jobs and map coverage 87→84; seed4 loses its tank within
+500k and coverage falls 82→60; seed5 is work-identical with coverage 80. T02b
+crosses the known late admission: legacy 101,516 jobs /12,001,035 frames versus
+corrected 101,137 /12,001,172, coverage45/44, both cap15 and no boss. Legacy
+has3 candidate-eligible underflow endpoints; corrected has0. Corrected observes
+13 final semantic underflow events, some inside a held action where legacy
+continues to its later zero-health event, so raw event-count rates are not
+comparable. The eligibility count tests poisoning. The 8M pair's identical
+search did not mean no interior underflow; it preceded candidate-eligible poison.
+The correction improves endpoint validity, not demonstrated search depth. Keep
+it opt-in and do not spend a terminal-only long campaign absent a new question.
+
+I04 preregistration: inspect both T02b final champion inputs with the existing
+bounded raw-replay tool, five minutes per input, ordinary genesis and unchanged
+120-frame neutral observation tail (charged separately). The known underflow
+case also runs the existing 256 one-frame masks. This checks whether the
+corrected search's champion is an actually extendable endpoint, rather than
+claiming an advantage from its scalar health. Hash inputs, retain both outcomes,
+and make no new search start or route from the audit. Neither outcome changes
+T02b's recorded absence of bosses/capability improvement.
+
+I04 establishes a limited useful-future result: T02b legacy's champion is the
+9800-underflow state and dies under all 256 next-frame controls. Corrected's
+champion has health431 and stays at431 through the 120-frame neutral tail.
+Both hold the same cap15/equipment/tank state. This validates preservation of an
+extendable champion, without a boss or broader fresh-search improvement claim.
+
+S02 v1 actual-MM2 full replay passed in both arms, with different recorded
+streams. Design review before efficacy found an avoidable coupling: the forced
+first offer skipped the ordinary within-cell RNG draw and thereby shifted
+mutation seeds independently of parent choice. Preserve this prototype's build
+019 and source bundle for its replay; use a new v2 selector identifier that
+consumes exactly the usual one RNG step. Add a focused cadence assertion.
+No efficacy results have been inspected for v1 and no large v1 experiment was
+run. Requalify v2 before S02; all pre-tranche selector identifiers remain
+unchanged. This corrects experimental isolation, not an outcome-driven parameter.
+
+## S03 preregistration — primary-target selection ablation
+
+Question: does first exposure address the same allocation bottleneck at Metroid's
+own late development start, and is terminal correction still independently
+necessary? MM2's S02 stage cannot answer primary-target transfer. Use the same
+D01 first Kraid-area prefix and T02b's 12M-frame/150k-job/4-worker/8-GiB local
+condition. Compare first-exposure v2 with legacy terminal semantics and with T's
+corrected terminal semantics against the two frozen T02b controls. No retention
+or action-generation changes; same seed3/alphabet-only/one_to_six and total4096
+action horizon. Both arms get 1080s search and a 1200s process-group watchdog,
+on CPUs4–7 and12–15 respectively, alongside at most one4-worker MM2 probe.
+All results are diagnostic starts, never fresh validation.
+
+First run the vocabulary-aligned T01c 5k full-replay fixture under both combined
+policies (<=5m each) with actual underflow observations and changed parent offers;
+retain exact report/checkpoint replay and two ordinary-genesis witnesses. Compare
+removed-never-selected counts and fraction, boss/capability attainments and map
+coverage at common frame work. Window-entry fractions are descriptive because
+first offers contain one member while baseline windows offer up to128. A lower
+never-selected fraction establishes the allocation effect; without useful
+progress it does not establish better exploration. A capability/boss gain or
+clearer access to distinct living continuations qualifies a fresh development
+panel. If exposure improves but useful progress does not in both games, park S
+rather than automatically increasing budget.
+
+## D02 preregistration — replacement timing versus selection opportunity
+
+Question: how much of the never-selected population disappears inside the same
+admitted rollout, before any selector can offer it? D01's final bounded sample
+contains only four replacing competitions, all already selected, so it cannot
+estimate this population. The current aggregate counter conflates this case
+with genuine opportunity starvation. Add fixed-size generic age histograms for
+actual same-slot removals: creation→replacement admission delta buckets0,1–7,
+8–63,64–511,>=512, with a separate unknown-age counter when an imported creation
+sequence cannot be compared. Also histogram the never-selected subset. Read
+existing entry metadata only; no per-entry storage, snapshots, inputs or RNG.
+This is diagnostic-only and must leave deterministic streams unchanged.
+
+Focused tests (<=10m) distinguish same-admission removal from aged removal and
+unknown origins. Recheck the existing 5k MM2 semantic-control full replay/hash
+(<=5m); then run one10M-frame control probe from the same C02 Wily1 prefix,
+500k-job safety cap/240s search+60s finish/310s watchdog, 4workers/8GiB onCPUs8–11.
+No change to retention/selection/actions. If most never-selected replacements
+occur at age0, revise the starvation attribution toward within-rollout retention.
+If they persist across many admissions, investigate cell-level allocation rather
+than claiming the within-cell first-offer rule solved selection. Neither outcome
+qualifies a larger budget or a new candidate automatically.
+
+S02 v2 finishes at118,156 jobs /50,003,781 frames, no Wily1 boss reach/clear,
+maxscreen36. Removed-never-selected falls64.9%→61.4% (57,180/93,172), without a
+useful depth gain. S03 Metroid legacy/corrected first exposure gives46/47 map
+cells versus45/44 controls, cap15 and no boss throughout; unselected removal
+falls33.4/33.6%→27.5/27.0%. This establishes a limited allocation effect, not
+better capability attainment. Per registration, park S rather than run larger
+S campaigns. Its versioned implementation and negative evidence remain preserved.
+
+## L02 preregistration — missing middle-duration support
+
+Question: are ordinary local rollouts limited by the discontinuous hold-duration
+vocabulary? Both Metroid and MM2 sample ordinary holds2–12 or48–120 frames;
+13–47 are absent. The earlier bounded-suffix L01 comparison limited total rollout
+time but did not add those durations, so it cannot answer this question. Add a
+shared NES duration policy with three equal-probability bands2–12,13–47,48–120.
+Keep existing special menu-toggle taps unchanged. Consume exactly the same RNG
+steps as the legacy two-band policy so identical seeds produce identical button
+masks; only ordinary hold lengths change. No game-specific control sequences,
+route hints, state-conditioned duration choice, or generic-searcher game logic.
+The workload owns duration sampling; record a distinct duration-policy identifier
+and preserve legacy sampling/defaults and replay contexts.
+
+Families active: T (verified terminal correction, no depth gain) and L (duration
+exploration); R/E/S parked. Focused tests <=10m must prove mask/RNG alignment,
+legacy equivalence, middle-band support and strict replay-policy identities.
+Then 5k Metroid/MM2 full campaign/checkpoint qualification in control/candidate
+arms (<=5m/cell); actual changed actions must be replayed. Preserve the existing
+MM2 semantic-control golden hash. No expensive efficacy run until these pass.
+
+If qualified, compare from D01's own first Kraid-area prefix under corrected
+terminal semantics: ordinary retention/semantic selection/alphabet-only/one_to_six,
+4workers8GiB,12M admitted frames,150k-job safety cap,1080s search/1200s watchdog.
+Use T02b-corrected as the frozen local control. In parallel, compare from C02's
+own Wily1 prefix under the S01 semantic selector, ordinary retention and
+energy_splice:6:50M admitted frames,500k jobs,1080s search+120s finish/1230s
+watchdog. Prefix and physical export costs remain visible; neither is fresh
+search. Allocate Metroid4–7 and MM20–3, with at most four4-worker campaigns.
+A capability/boss gain or substantial new living coverage at equal work qualifies
+a fresh development panel; no gain in both games rejects this duration-support
+hypothesis at the tested work, with no automatic budget increase.
+
+D02 completed 10,005,418 frames: 22,658 replacements, 16,253 never selected.
+All-age bins were [220,239,937,2825,18437]; never-selected bins were
+[220,239,818,2391,12585], unknown0. Only 1.35% of never-selected removals
+occurred within the same admission; 77.4% survived >=512 admissions. This
+rejects within-rollout timing as the principal explanation here. Starvation
+persists beyond the within-cell allocation addressed by S. The 5k diagnostic
+qualification preserved the semantic-control golden stream exactly. No new
+selection candidate is activated by this census alone.
+
+L02 initial focused compilation failed because its new MM2 test used an enum
+variant for the stage wrapper; corrected to the existing parser. Before rerun,
+corrected a sampler-test expectation: only the middle third necessarily changes
+duration when the random draw is shared, so requiring over half to change was
+incorrect. Preserve `/private/tmp/l02-tests.log` as the initial failure log.
+
+L02 qualification passed 5k full campaign/checkpoint replay in both adapters
+and arms, with actual changed duration records; MM2 control kept the golden
+633,680-frame stream ec5a268d…. Frozen duration-024/local-duration-025 share
+source ecd3fe1db25e5b97a111abd019491fab34efde9cffa5139d5e06be7332f3afb8.
+Metroid middle-band local finished115,216 jobs/12,000,591 frames,54 map cells
+versus corrected-control44, missile capacity15 and no new capability/boss.
+Its composed champion (health444) replayed twice from ordinary genesis. This
+22.7% coverage increase qualifies a fresh development panel under L02's rule;
+it does not yet establish useful depth or a duration-support mechanism.
+
+## L03 preregistration — fresh transfer and mean-duration ablation
+
+Question: does L02's substantial local coverage gain transfer to fresh Metroid,
+and does adding duration support matter beyond shortening average holds?
+The local start cannot establish fresh depth; the old/middle ordinary hold
+means are45.5 and121/3 frames, so increased attempts per frame are a confound.
+Run middle-duration fresh Metroid seeds3/4/5, paired to frozen T02 corrected
+controls: 500k jobs/70M frames,4workers8GiB,4096 actions,window/result2,
+semantic selection,alphabet_only,one_to_six,corrected terminal policy.
+Search1080s+120s finish/1230s watchdog per cell; CPUs8–11,12–15,16–19,
+while L02 MM2 uses0–3. At most four campaigns/32GiB logical memory; retain
+at least CPUs20–23 and4–7 for OS/verification. Compare both common50M-frame
+checkpoints and final500k-job endpoints, marking any censored cell. Consistent
+fresh capability gain or useful coverage without capability regressions may
+qualify a3M-job anchor; mixed/negative outcomes do not automatically expand.
+
+Add a mean-matched two-band ablation: choose short2–12 with probability131/231
+and long48–120 with probability100/231. Its exact ordinary-hold mean is121/3,
+matching the three-band policy while excluding13–47. Preserve two RNG draws,
+button masks, menu taps, all other search policies, and a strict new identifier.
+Focused tests <=10m and 5k Metroid/MM2 full replay <=5m per cell must precede
+local efficacy. Then use the same12M-frame corrected Metroid start and50M-frame
+MM2 Wily1 start with L02 resource/time bounds. If the three-band gain survives
+mean matching, support distribution is implicated; if both improve similarly,
+attribute evidence only to the broader duration change. If neither transfers
+fresh or achieves useful progress, park L without a larger default budget.
+No new family is activated: T and L remain active; R/E/S remain parked.
+
+## P03 preregistration — terminal-corrected paired retention probe
+
+P02's 32 source endpoints have health22–1266, none in underflow; none of its
+2,048 suffix endpoints is in underflow either. This cheaply rules out direct
+poisoned starting representatives, but not action-interior classification effects.
+Replay exactly the same frozen16 pairs/64 suffixes/24 actions under corrected
+terminal semantics, without changing the sampled suffix RNG or resource rule.
+Add an optional terminal-policy argument to the bounded probe and reuse the
+workload's predicate for living-map observations. Preserve legacy CLI/default
+behavior; reject a source that no longer reaches its recorded endpoint.
+Focused tests/clippy <=10m; one corrected probe <=5m onCPU4 with a process-group
+watchdog. Report prefix and both sides' actual physical frames separately.
+If the discarded-only exit imbalance remains, terminal misclassification does
+not explain that sampled loss. If it vanishes, revise retention attribution.
+A source failure requires diagnosis, not silently dropping the pair. No search
+family or larger campaign is qualified by this check alone.
+
+P03 exactly preserves P02's paired totals and physical work under corrected
+terminal semantics: discarded-only exits156 vs survivor-only42, only discarded
+survives197, no capability/boss gains;707,878/489,897 probe frames and898,376
+prefix frames. All16 pairs replayed. Thus the sampled continuation loss persists
+independently of the terminal defect. Resource-extremes retention still failed
+to translate that loss into better fresh depth.
+
+L02 MM2 middle band completed113,450 jobs/50,006,190 frames with all8 weapons
+in its diagnostic prefix, maxscreen36, no Wily1 boss reach. It does not improve
+this MM2 bottleneck at the registered work. L03 fresh Metroid middle duration
+finished500k jobs in55,445,838/55,509,524/55,634,238 frames for seeds3/4/5.
+Final coverage97/87/93 versus corrected controls84/60/80, tanks1/1/1 vs1/0/1;
+missile cap10 throughout, no new equipment/boss. At common50M checkpoints,
+coverage96/84/93 vs70/30/80 and tanks1/1/1 vs0/0/1. Seed5's tank arrived later
+in jobs (365855 vs144673), so not every attainment-time comparison improves.
+These are development outcomes, not untouched validation or a breakthrough.
+
+## L04 preregistration — qualified long anchor and fresh duration ablation
+
+Question: does L03's consistent fresh coverage gain produce late capability or
+boss depth at the fixed anchor, and is its contribution distinct from T?
+Short runs cannot reach D01's late Bombs/Kraid discoveries; comparing to D01
+alone would confound duration with corrected terminal semantics. Run seed3
+corrected-terminal ordinary-duration control (terminal-017) and corrected
+three-band candidate (duration-024), fresh genesis,4workers8GiB,3M executions,
+400M admitted frames,4096 actions,window/result2,semantic selection,
+alphabet_only,one_to_six,ordinary retention. Search5100s+240s finish,
+5400s process-group watchdog,4GiB disk/cell; CPUs8–11 control,12–15 candidate.
+Compare first capability/boss costs, common frame checkpoints, final admitted
+work and retained/observed coverage. Witness every claimed milestone twice
+from ordinary genesis. A boss/capability gain qualifies repeated development
+and candidate freezing; a coverage-only gain leaves depth unestablished.
+A plateau is not a hang. A negative full anchor rejects deeper benefit on this
+seed without automatic budget enlargement.
+
+Also run mean-matched two-band fresh seeds3/4/5, with the exact L03 fresh
+500k/70M and20m/cell resource rules using duration-ablation-026. Qualification
+passed5k full replay in both games; the fresh ablation is necessary because
+local results alone cannot explain the observed fresh gain. Initially run
+these cells sequentially onCPUs16–19 while the two long anchors and MM2 mean
+probe use8–15 and0–3. Never exceed four campaigns/32GiB logical storage.
+Compare to both frozen T controls and L03 middle-band candidates at common50M
+frames and500k jobs. A comparable mean-only gain limits attribution to shorter
+holds; a consistent middle-band advantage supports the distribution hypothesis.
+No hold probabilities or seeds will be tuned within this development panel.
+
+L03 mean-matched local Metroid finished109,356 jobs/12,000,847 frames,
+39 map cells and missile cap10; corrected ordinary control44/cap15 and
+middle band54/cap15. This local ablation supports the support-distribution
+hypothesis beyond mean duration, pending fresh and long results. P03's suffix
+and outcome files are byte-identical to P02 (outcomes SHA256
+c79df7524bbb28d0dc3ebc8a86f7028b60380469f5df03a29f4b66cd137bc945).
+
+Implementation checkpoint: before committing S/D02/L policy work, rerun the
+repository's generic tests and NES library/runner checks, plus affected-target
+Clippy, each under a10m process-group watchdog. These consolidate changes since
+the last committed checkpoint; do not rerun native long campaigns for this
+purpose. Any failure blocks the implementation checkpoint and must be preserved
+and diagnosed. No unsafe code was introduced, so no new Miri obligation arises.
+
+Checkpoint generic/NES tests and22 Python harness tests passed; dependency
+boundaries passed. Generic all-target Clippy flagged a new fixture's
+`filter().next_back()` spelling. Replace it with equivalent `rfind()`, preserve
+the failed log, and rerun Clippy plus the changed pressure fixture. This is a
+test-only cleanup; frozen experiment binaries remain immutable.
+
+Review clarified D02 origin semantics: whole-tree import rebuilds entries with
+creation execution0, so the histogram measures age in the current campaign.
+The unknown counter guards nonmonotonic direct callers rather than ordinary
+imports; corrected its documentation/test name. This does not change any
+recorded age values or research outcomes.
+
+Completed S/D02/L evidence through L03 is preserved in
+`results/checkpoint-0315.json` and `results/checkpoint-0345.json`; P03 has its own
+compact result. `results/checks-04.json` records successful checks and hashes of
+failed/retried logs retained on ms02. `accounting_snapshot.py ROOT OUTPUT`
+counts nested chain stages once and reports admitted search work separately
+from paired probes, with explicit limits on CPU and prefix accounting.
+
+## G02 preregistration — compatibility at the duration checkpoint
+
+Question: did the generic selection/diagnostic additions or NES duration routing
+change unaffected companion defaults? Earlier G01 predates these additions;
+unit coverage cannot substitute for native full campaign/checkpoint replay.
+Reuse G01 control's exact500-job,2-worker,512-MiB Nova level1/full and STB Hard
+cells with duration-ablation-026 and no experimental policy selected. Run
+sequentially onCPUs0–3, <=5m/cell,300s aggregate watchdog, comparing each full
+stream hash and admitted frames to G01 control. These are compatibility checks,
+not new whole-game success claims. A difference blocks default compatibility
+until explained; exact matches permit reuse of unaffected evidence. G01's
+qualified sole-host SMB result remains preserved; any new full SMB checkpoint
+must wait until the host is otherwise idle rather than compete for all24 cores.
+
+G02 initial invocation was rejected before execution: its runner capacity1024MiB
+omitted the harness's per-cell overhead allowance. Preserve its manifest/log;
+retry as `g02-companion-control-retry` with2048MiB runner capacity, unchanged
+512MiB archive budget and all campaign settings. This corrects preflight
+accounting, not an algorithm or work-budget increase.
+
+## Four-hour checkpoint — 2026-09-09 00:26 UTC
+
+New facts: transient BCD underflow is a reproducible terminal-classification
+error; correcting it preserves a living champion where legacy prefers a doomed
+health9800 endpoint, but does not consistently improve fresh short depth.
+P03 reproduces P02 byte-for-byte under corrected semantics, so sampled useful
+continuation loss is independently real. R's two-resource-extremes rule failed
+the full anchor and fresh MM2 transfer; resource nondominance is insufficient.
+D02 shows most never-selected removals survive hundreds of admissions, and
+S improves exposure fractions without useful depth. Park R/E/S.
+
+T remains the frozen explicit correctness comparison; L duration distribution
+is the only promising current exploration candidate. Middle holds improve
+Metroid fresh50M-frame coverage on all3 development seeds, and its local
+mean-matched ablation is worse. Paired3M/400M long anchors are running; fresh
+mean-matched seeds are completing sequentially. Neither duration distribution
+reaches the MM2 Wily1 boss at50M frames. No Metroid boss or fresh Wily4 claim
+has been made, and untouched validation seeds remain unchosen/uninspected.
+
+Compute snapshot `results/accounting-0400.json`:78 completed evaluation cells,
+1 evaluation error,21 completed local searches and3 active/partial campaigns;
+2,981,201,589 admitted search frames /20,964,161 executions, plus5,059,002
+paired-probe physical frames. Measured CPU lower bound18.81h excludes active
+CPU, compilation/tests and unlogged external prefix/bridge work. Preflight,
+build and raw-diagnostic failures are preserved separately rather than counted
+as completed cells. At most four campaigns remain active, with explicit CPU
+sets and memory headroom. The host and time ceilings remain unchanged.
+
+Implementation checkpoint:118 generic unit+1 interface tests,124 NES library
+tests plus binary tests,22 Python runner tests and dependency boundaries pass.
+Generic all-target and affected NES Clippy pass after a test-only cleanup.
+G02 Nova level1/full and STB Hard full campaign/checkpoint replay exactly match
+G01 control hashes and frames (80,586/80,586/83,148). G02's failed preflight
+capacity declaration is preserved; its retry kept512MiB archive memory.
+The SMB G01 qualified reference remains intact.
+
+Next decision: assess long capability/boss depth and fresh mean-duration
+attribution before freezing any validation candidate. MM2's repeated unchanged
+bottleneck motivates a mutation-accounting diagnosis, not more duration budget.
+If long depth fails, retain the supported coverage/correctness improvements as
+experimental and redesign the next mechanism rather than claim a breakthrough.
+Consolidation still begins06:56 UTC; hard stop08:26 UTC. Next checkpoint02:26.
+
+The checkpoint commit's secret scanner misclassified three long artifact paths
+as high-entropy values. Store paths as structured components and retain the
+original remote accounting snapshot hash; no measured value changes and no
+scanner rule is bypassed.

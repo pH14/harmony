@@ -54,3 +54,9 @@ Physical chain exports expand the adapter's automatic award-idle frames into
 explicit zero-button holds. Concatenating the originally sampled holds alone
 omits that executed work and can fail the next-stage replay. `physical_input`
 replays and expands those holds without changing campaign action semantics.
+
+`nes-eval` optionally selects a versioned `nes_duration` distribution; legacy
+short/long sampling remains the default. The experimental middle-band policy
+and its mean-matched two-band ablation preserve controller-mask draws and
+special menu taps. Their identifiers are strict replay context; see the shared
+[NES policy documentation](../../README.md) for values and duration ranges.

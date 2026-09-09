@@ -15,11 +15,11 @@ use sha2::{Digest, Sha256};
 use crate::{
     mm2::{
         archive::{
-            DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MAX_MM2_ACTIONS, Mm2ArchiveKey,
-            Mm2ArchiveReport, Mm2MilestoneInputs, Mm2MilestoneTimes, Mm2Milestones,
-            Mm2ProgressWatermark, REPLACEMENT_IDENTIFIER, archive_key, chord_time,
-            merge_milestones, merge_progress_watermark, milestone_key, milestones,
-            progress_watermark, sample_chord,
+            KEY_POLICY_IDENTIFIER, MAX_MM2_ACTIONS, Mm2ArchiveKey, Mm2ArchiveReport,
+            Mm2MilestoneInputs, Mm2MilestoneTimes, Mm2Milestones, Mm2ProgressWatermark,
+            REPLACEMENT_IDENTIFIER, archive_key, chord_time, merge_milestones,
+            merge_progress_watermark, milestone_key, milestones, progress_watermark,
+            sample_chord_with_duration,
         },
         target::{
             ButtonChord, Mm2Input, Mm2Observations, Mm2Snapshot, Mm2Stage, Mm2Target,
@@ -66,6 +66,7 @@ pub struct Mm2NoTableHeader;
 
 /// ROM and emulator identity shared by Mega Man 2 workers.
 pub struct Mm2Game {
+    duration_policy: crate::duration::NesDurationPolicy,
     rom: Vec<u8>,
     core_path: PathBuf,
     core_sha256: String,
@@ -108,6 +109,7 @@ impl Mm2Game {
             prefix_digest.finalize(),
         );
         Self {
+            duration_policy: crate::duration::NesDurationPolicy::ShortOrLong,
             rom: rom.to_vec(),
             core_path: core_path.to_path_buf(),
             core_sha256: core_sha256.to_owned(),
@@ -124,6 +126,13 @@ impl Mm2Game {
     #[must_use]
     pub fn setup_frame_count(&self) -> u64 {
         self.setup_frames.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Select an explicit controller duration distribution without changing masks.
+    #[must_use]
+    pub fn with_duration_policy(mut self, policy: crate::duration::NesDurationPolicy) -> Self {
+        self.duration_policy = policy;
+        self
     }
 
     /// Write the champion input to `path` each time it improves, so a long
@@ -538,7 +547,7 @@ impl InputPolicy for Mm2Game {
                 CONTROLLER_VOCABULARY_IDENTIFIER,
             ),
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
-            (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
+            (DURATION_POLICY_FIELD, self.duration_policy.identifier()),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
             (TERMINAL_POLICY_FIELD, TERMINAL_POLICY_IDENTIFIER),
         ]
@@ -592,7 +601,7 @@ impl InputPolicy for Mm2Game {
             mixture.weight,
             mutation_seed,
             |_| Ok(None),
-            sample_chord,
+            |rand| sample_chord_with_duration(rand, self.duration_policy),
         )
     }
 
@@ -887,6 +896,35 @@ pub fn replay_mm2_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duration_policy_requires_a_matching_replay_context() {
+        let legacy = Mm2Game::new_at_stage(
+            &[0],
+            Path::new("unused"),
+            "test",
+            Mm2Stage::parse("metal").unwrap(),
+        );
+        let middle = Mm2Game::new_at_stage(
+            &[0],
+            Path::new("unused"),
+            "test",
+            Mm2Stage::parse("metal").unwrap(),
+        )
+        .with_duration_policy(crate::duration::NesDurationPolicy::ThreeBands);
+        let old = legacy.policies(&Mm2CampaignRun);
+        let new = middle.policies(&Mm2CampaignRun);
+        assert!(legacy.resolve_recorded(&old).is_ok());
+        assert!(middle.resolve_recorded(&new).is_ok());
+        assert!(legacy.resolve_recorded(&new).is_err());
+        assert!(middle.resolve_recorded(&old).is_err());
+        assert_eq!(
+            old.iter()
+                .filter(|(key, value)| new.get(*key) != Some(*value))
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn recorded_policy_set_is_exact_and_game_owned() {

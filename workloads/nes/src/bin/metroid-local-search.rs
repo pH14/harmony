@@ -44,6 +44,8 @@ struct Request {
     suffix: String,
     full_replay: bool,
     terminal: Option<String>,
+    selector: Option<String>,
+    duration: Option<String>,
 }
 fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -140,6 +142,12 @@ fn main() -> Result<()> {
         .ok_or("source cost missing")?;
     let game = MetroidGame::new(&rom, &request.core, &core_hash)
         .with_terminal_policy(policy)
+        .with_duration_policy(nes_workload::duration::NesDurationPolicy::parse(
+            request
+                .duration
+                .as_deref()
+                .unwrap_or("stratified_short_or_long_v1"),
+        )?)
         .with_milestone_input_dir(out.join("milestone-inputs"));
     let snapshots = SnapshotCheckpoint {
         format: game.checkpoint_format().into(),
@@ -180,7 +188,10 @@ fn main() -> Result<()> {
         mixture: DrawMixture::AlphabetOnly,
         retention: RetentionPolicy::AdmitAlive,
         selector: selector_policy_from_identifier(
-            "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+            request
+                .selector
+                .as_deref()
+                .unwrap_or("room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"),
             3,
         )?,
         victory_input_path: Some(out.join("local-victory-input.json")),

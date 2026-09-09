@@ -3,6 +3,7 @@
 //! NES workloads for deterministic search using native or Consonance execution.
 
 pub use searcher::{search, target};
+pub mod duration;
 pub mod nes_backend;
 pub mod nova;
 pub mod prepare;

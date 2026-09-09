@@ -15,11 +15,11 @@ use sha2::{Digest, Sha256};
 use crate::{
     metroid::{
         archive::{
-            DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MAX_METROID_ACTIONS, MetroidArchiveKey,
-            MetroidArchiveReport, MetroidMilestoneInputs, MetroidMilestoneTimes, MetroidMilestones,
+            KEY_POLICY_IDENTIFIER, MAX_METROID_ACTIONS, MetroidArchiveKey, MetroidArchiveReport,
+            MetroidMilestoneInputs, MetroidMilestoneTimes, MetroidMilestones,
             MetroidProgressWatermark, REPLACEMENT_IDENTIFIER, archive_key, chord_time,
             merge_milestones, merge_progress_watermark, milestone_key, milestones,
-            progress_watermark, sample_chord,
+            progress_watermark, sample_chord_with_duration,
         },
         progress::NamedProgress,
         target::{
@@ -63,6 +63,7 @@ pub struct MetroidNoTableHeader;
 
 /// ROM and emulator identity shared by Metroid workers.
 pub struct MetroidGame {
+    duration_policy: crate::duration::NesDurationPolicy,
     rom: Vec<u8>,
     core_path: PathBuf,
     core_sha256: String,
@@ -106,6 +107,7 @@ impl MetroidGame {
             prefix_digest.finalize(),
         );
         Self {
+            duration_policy: crate::duration::NesDurationPolicy::ShortOrLong,
             rom: rom.to_vec(),
             core_path: core_path.to_path_buf(),
             core_sha256: core_sha256.to_owned(),
@@ -122,6 +124,13 @@ impl MetroidGame {
     #[must_use]
     pub fn with_terminal_policy(mut self, policy: MetroidTerminalPolicy) -> Self {
         self.terminal_policy = policy;
+        self
+    }
+
+    /// Select an explicit controller duration distribution without changing masks.
+    #[must_use]
+    pub fn with_duration_policy(mut self, policy: crate::duration::NesDurationPolicy) -> Self {
+        self.duration_policy = policy;
         self
     }
 
@@ -652,7 +661,7 @@ impl InputPolicy for MetroidGame {
                 CONTROLLER_VOCABULARY_IDENTIFIER,
             ),
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
-            (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
+            (DURATION_POLICY_FIELD, self.duration_policy.identifier()),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
             (TERMINAL_POLICY_FIELD, self.terminal_policy.identifier()),
         ]
@@ -707,7 +716,7 @@ impl InputPolicy for MetroidGame {
             mixture.weight,
             mutation_seed,
             |_| Ok(None),
-            sample_chord,
+            |rand| sample_chord_with_duration(rand, self.duration_policy),
         )
     }
 
@@ -1035,6 +1044,25 @@ pub fn replay_metroid_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duration_policy_requires_a_matching_replay_context() {
+        let legacy = MetroidGame::new(&[0], Path::new("unused"), "test");
+        let middle = MetroidGame::new(&[0], Path::new("unused"), "test")
+            .with_duration_policy(crate::duration::NesDurationPolicy::ThreeBands);
+        let old = legacy.policies(&MetroidCampaignRun);
+        let new = middle.policies(&MetroidCampaignRun);
+        assert!(legacy.resolve_recorded(&old).is_ok());
+        assert!(middle.resolve_recorded(&new).is_ok());
+        assert!(legacy.resolve_recorded(&new).is_err());
+        assert!(middle.resolve_recorded(&old).is_err());
+        assert_eq!(
+            old.iter()
+                .filter(|(key, value)| new.get(*key) != Some(*value))
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn terminal_semantics_require_a_matching_replay_context() {
