@@ -76,3 +76,20 @@ and MM2. Only then register four separate fresh paired seeds, the fixed endpoint
 and unchanged 25M-frame/15-minute limits. At least three strict interval-robust
 wins and 15% lower mean restricted cost are needed for an exploratory pass.
 Independent confirmation and MM2 transfer remain necessary before escalation.
+
+## A limited deduction from D02
+
+The qualified control trace recorded 124,702 changed between-cell distributions
+across 145,455 such draws, and 32,715 offered terms whose positive cost rank
+reached the combined cap. Every draw affected by at least one such capped term
+contributes at least one to that term count. Therefore at least
+`124702 - 32715 = 91987` changed draws (63.24% of all between-cell draws, or
+73.77% of the changed draws) had no such capped term. This establishes that the
+intervention often changes the ordinary cost preference even away from the cap;
+its operation on this trace cannot be explained solely by changing novelty's
+behavior at the cap. Within-cell distributions were unchanged throughout D02.
+
+This is a counting bound on the encountered baseline trace. It does not apportion
+an adaptive performance gain between selection stages, establish useful futures,
+or extend to every archive visited by a different candidate trajectory. The
+registered S01 performance criterion is unchanged.
