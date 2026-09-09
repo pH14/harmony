@@ -130,7 +130,7 @@ enum SdkEventAction {
 #[derive(Debug, thiserror::Error)]
 pub enum VmmError {
     /// A `Backend` operation failed.
-    #[error("backend error")]
+    #[error("backend error: {0}")]
     Backend(#[from] vmm_backend::BackendError),
     /// A **vendor's boot stage** rejected the image: a malformed header, an image
     /// that does not fit the guest RAM, a bad entry state (x86: the Multiboot v1
@@ -2103,6 +2103,14 @@ where
         self.backend.exit_counts()
     }
 
+    /// Host-only cancellation latch; see [`Backend::cancellation_flag`]. A VM
+    /// whose latch has been set must be discarded rather than resumed.
+    ///
+    /// [`Backend::cancellation_flag`]: vmm_backend::Backend::cancellation_flag
+    pub fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        self.backend.cancellation_flag()
+    }
+
     /// The number of exact hypercall-doorbell rings since this VM was created.
     /// This host-only diagnostic counter is not part of state, hashes, or
     /// snapshots; it is narrower than [`Vmm::exit_counts`]'s I/O/MMIO totals.
@@ -3836,14 +3844,6 @@ where
     }
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-impl Vmm<vmm_backend::KvmBackend> {
-    /// Host-only cancellation latch; see `KvmBackend::cancellation_flag`.
-    pub fn kvm_cancellation_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
-        self.backend.cancellation_flag()
-    }
-}
-
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
 impl Vmm<vmm_backend::HvfBackend> {
     /// Handle for the host-only liveness monitor to abort a stuck HVF entry.
@@ -4069,6 +4069,7 @@ mod tests {
 
         fn respond(
             &mut self,
+            _moment: environment::Moment,
             _question: &channel::Question,
         ) -> Result<channel::ServiceResponse, channel::ChannelError> {
             self.calls = self.calls.saturating_add(1);
@@ -4114,6 +4115,7 @@ mod tests {
 
         fn respond(
             &mut self,
+            _moment: environment::Moment,
             _question: &channel::Question,
         ) -> Result<channel::ServiceResponse, channel::ChannelError> {
             Ok(channel::ServiceResponse::Answered(channel::Answer::Data(
@@ -4171,6 +4173,18 @@ mod tests {
 
     /// A configured MockBackend (so `run`/`step` pass the `NotConfigured` gate)
     /// pre-loaded with `exits`.
+    #[test]
+    fn cancellation_flag_is_the_backend_latch() {
+        let latch = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let backend = configured_mock(Vec::new()).with_cancellation_flag(latch.clone());
+        let vmm = Vmm::new(backend, GuestRam::new(0x1000).unwrap());
+        let reported = vmm.cancellation_flag().expect("mock reports its latch");
+        assert!(std::sync::Arc::ptr_eq(&reported, &latch));
+
+        let unbounded = Vmm::new(configured_mock(Vec::new()), GuestRam::new(0x1000).unwrap());
+        assert!(unbounded.cancellation_flag().is_none());
+    }
+
     fn configured_mock(exits: Vec<Exit<X86>>) -> MockBackend {
         let mut m = MockBackend::with_exits(exits);
         m.set_policy(&X86Policy {
@@ -4247,6 +4261,43 @@ mod tests {
                 .checkpoint_virtual_time_trace_at(254, expected)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn deferral_chosen_before_the_first_run_covers_that_run() {
+        let exits = || {
+            (0..256)
+                .map(|_| Exit::Arch(X86Exit::Rdmsr { index: 0x10 }))
+                .collect::<Vec<_>>()
+        };
+        // The order a composition root wires one VM in: snapshot hashing on,
+        // deferral chosen, and only then the guest runs.
+        let mut vmm = vtime_vmm(exits(), 11);
+        vmm.wire_snapshot_hashing();
+        vmm.defer_virtual_time_checkpoint_hashes().unwrap();
+        for _ in 0..256 {
+            assert_eq!(vmm.step().unwrap(), Step::Continued);
+        }
+        assert!(vmm.snapshot_hashing_wired());
+        assert_eq!(
+            vmm.virtual_time_trace().unwrap().normalized_log().events[255].state_hash,
+            None,
+            "the checkpoint the run itself reached was deferred"
+        );
+        let hash = vmm.state_hash().unwrap();
+        vmm.checkpoint_virtual_time_trace_at(255, hash).unwrap();
+        assert_eq!(
+            vmm.virtual_time_trace().unwrap().normalized_log().events[255].state_hash,
+            Some(hash),
+            "the deferred hash still materializes"
+        );
+
+        // Choosing it once the guest has run is refused, so a run that must not
+        // hash during it has to have the choice made before it starts.
+        let mut late = vtime_vmm(exits(), 11);
+        late.wire_snapshot_hashing();
+        assert_eq!(late.step().unwrap(), Step::Continued);
+        assert!(late.defer_virtual_time_checkpoint_hashes().is_err());
     }
 
     #[test]
@@ -6897,7 +6948,7 @@ mod tests {
         // one-shot leaves no future wake — the vCPU would be stuck warping V-time. Treat
         // it like IF==0: terminate, do NOT advance V-time or re-enter. (Deterministic, not
         // a determinism bug; Linux's timer is deliverable so runc/Postgres are unaffected
-        // — this hardens the keystone against adversarial guests.)
+        // — this hardens the keystone against misbehaving guests.)
         let w = |off: u64, val: u64| {
             Exit::Common(CommonExit::Mmio {
                 gpa: Gpa(APIC_MMIO_BASE + off),

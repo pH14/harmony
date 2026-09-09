@@ -493,6 +493,7 @@ pub fn vmm_backend::Arm64KvmBackend<K>::kvm(&self) -> &K
 pub fn vmm_backend::Arm64KvmBackend<K>::new(K) -> Self
 impl<K: vmm_backend::Arm64Kvm> vmm_backend::Backend for vmm_backend::Arm64KvmBackend<K>
 pub type vmm_backend::Arm64KvmBackend<K>::A = vmm_backend::arch::arm64::Arm64
+pub fn vmm_backend::Arm64KvmBackend<K>::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_backend::Arm64KvmBackend<K>::capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::arch::arm64::Arm64Caps>
 pub fn vmm_backend::Arm64KvmBackend<K>::complete_arch(&mut self, vmm_backend::arch::arm64::Arm64Completion) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::complete_fault(&mut self) -> vmm_backend::Result<()>
@@ -631,7 +632,6 @@ pub struct vmm_backend::IdRegModel
 pub vmm_backend::IdRegModel::regs: alloc::collections::btree::map::BTreeMap<u32, u64>
 pub struct vmm_backend::KvmBackend
 impl vmm_backend::KvmBackend
-pub fn vmm_backend::KvmBackend::cancellation_flag(&self) -> alloc::sync::Arc<core::sync::atomic::AtomicBool>
 pub fn vmm_backend::KvmBackend::new() -> vmm_backend::Result<vmm_backend::KvmBackend>
 pub fn vmm_backend::KvmBackend::read_guest(&self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::set_dirty_log_enabled(&mut self, bool)
@@ -640,6 +640,7 @@ impl core::ops::drop::Drop for vmm_backend::KvmBackend
 pub fn vmm_backend::KvmBackend::drop(&mut self)
 impl vmm_backend::Backend for vmm_backend::KvmBackend
 pub type vmm_backend::KvmBackend::A = vmm_backend::arch::x86::X86
+pub fn vmm_backend::KvmBackend::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_backend::KvmBackend::capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::arch::x86::X86Caps>
 pub fn vmm_backend::KvmBackend::complete_arch(&mut self, vmm_backend::arch::x86::X86Completion) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::complete_fault(&mut self) -> vmm_backend::Result<()>
@@ -689,6 +690,7 @@ impl core::default::Default for vmm_backend::MockArm64Backend
 pub fn vmm_backend::MockArm64Backend::default() -> Self
 impl vmm_backend::Backend for vmm_backend::MockArm64Backend
 pub type vmm_backend::MockArm64Backend::A = vmm_backend::arch::arm64::Arm64
+pub fn vmm_backend::MockArm64Backend::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_backend::MockArm64Backend::capabilities(&self) -> vmm_backend::MockArm64Caps
 pub fn vmm_backend::MockArm64Backend::complete_arch(&mut self, vmm_backend::arch::arm64::Arm64Completion) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::complete_fault(&mut self) -> vmm_backend::Result<()>
@@ -724,12 +726,14 @@ pub fn vmm_backend::MockBackend::push_exit(&mut self, vmm_backend::Exit<vmm_back
 pub fn vmm_backend::MockBackend::regions(&self) -> &[(vmm_backend::Gpa, usize)]
 pub fn vmm_backend::MockBackend::set_defer_accept(&mut self, bool) -> &mut Self
 pub fn vmm_backend::MockBackend::set_state(&mut self, vmm_backend::VcpuState) -> &mut Self
+pub fn vmm_backend::MockBackend::with_cancellation_flag(self, alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> Self
 pub fn vmm_backend::MockBackend::with_capabilities(vmm_backend::MockCaps) -> Self
 pub fn vmm_backend::MockBackend::with_exits(impl core::iter::traits::collect::IntoIterator<Item = vmm_backend::Exit<vmm_backend::arch::x86::X86>>) -> Self
 impl core::default::Default for vmm_backend::MockBackend
 pub fn vmm_backend::MockBackend::default() -> Self
 impl vmm_backend::Backend for vmm_backend::MockBackend
 pub type vmm_backend::MockBackend::A = vmm_backend::arch::x86::X86
+pub fn vmm_backend::MockBackend::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_backend::MockBackend::capabilities(&self) -> vmm_backend::MockCaps
 pub fn vmm_backend::MockBackend::complete_arch(&mut self, vmm_backend::arch::x86::X86Completion) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::complete_fault(&mut self) -> vmm_backend::Result<()>
@@ -930,6 +934,7 @@ pub fn vmm_backend::FakeKvm::vcpu_init(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::FakeKvm::write_mmio_data(&mut self, [u8; 8]) -> vmm_backend::Result<()>
 pub trait vmm_backend::Backend
 pub type vmm_backend::Backend::A: vmm_backend::arch::Arch
+pub fn vmm_backend::Backend::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_backend::Backend::capabilities(&self) -> vmm_backend::Capabilities<<Self::A as vmm_backend::arch::Arch>::Caps>
 pub fn vmm_backend::Backend::complete_arch(&mut self, <Self::A as vmm_backend::arch::Arch>::Completion) -> vmm_backend::Result<()>
 pub fn vmm_backend::Backend::complete_fault(&mut self) -> vmm_backend::Result<()>
@@ -950,6 +955,7 @@ pub fn vmm_backend::Backend::set_policy(&mut self, &<Self::A as vmm_backend::arc
 pub fn vmm_backend::Backend::take_accepted_interrupt(&mut self) -> core::option::Option<<Self::A as vmm_backend::arch::Arch>::IntId>
 impl vmm_backend::Backend for vmm_backend::KvmBackend
 pub type vmm_backend::KvmBackend::A = vmm_backend::arch::x86::X86
+pub fn vmm_backend::KvmBackend::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_backend::KvmBackend::capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::arch::x86::X86Caps>
 pub fn vmm_backend::KvmBackend::complete_arch(&mut self, vmm_backend::arch::x86::X86Completion) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::complete_fault(&mut self) -> vmm_backend::Result<()>
@@ -970,6 +976,7 @@ pub fn vmm_backend::KvmBackend::set_policy(&mut self, &vmm_backend::arch::x86::X
 pub fn vmm_backend::KvmBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
 impl vmm_backend::Backend for vmm_backend::MockArm64Backend
 pub type vmm_backend::MockArm64Backend::A = vmm_backend::arch::arm64::Arm64
+pub fn vmm_backend::MockArm64Backend::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_backend::MockArm64Backend::capabilities(&self) -> vmm_backend::MockArm64Caps
 pub fn vmm_backend::MockArm64Backend::complete_arch(&mut self, vmm_backend::arch::arm64::Arm64Completion) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::complete_fault(&mut self) -> vmm_backend::Result<()>
@@ -990,6 +997,7 @@ pub fn vmm_backend::MockArm64Backend::set_policy(&mut self, &vmm_backend::arch::
 pub fn vmm_backend::MockArm64Backend::take_accepted_interrupt(&mut self) -> core::option::Option<vmm_backend::arch::arm64::GicIntId>
 impl vmm_backend::Backend for vmm_backend::MockBackend
 pub type vmm_backend::MockBackend::A = vmm_backend::arch::x86::X86
+pub fn vmm_backend::MockBackend::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_backend::MockBackend::capabilities(&self) -> vmm_backend::MockCaps
 pub fn vmm_backend::MockBackend::complete_arch(&mut self, vmm_backend::arch::x86::X86Completion) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::complete_fault(&mut self) -> vmm_backend::Result<()>
@@ -1010,6 +1018,7 @@ pub fn vmm_backend::MockBackend::set_policy(&mut self, &vmm_backend::arch::x86::
 pub fn vmm_backend::MockBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
 impl<B: vmm_backend::Backend + ?core::marker::Sized> vmm_backend::Backend for alloc::boxed::Box<B>
 pub type alloc::boxed::Box<B>::A = <B as vmm_backend::Backend>::A
+pub fn alloc::boxed::Box<B>::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn alloc::boxed::Box<B>::capabilities(&self) -> vmm_backend::Capabilities<<Self::A as vmm_backend::arch::Arch>::Caps>
 pub fn alloc::boxed::Box<B>::complete_arch(&mut self, <Self::A as vmm_backend::arch::Arch>::Completion) -> vmm_backend::Result<()>
 pub fn alloc::boxed::Box<B>::complete_fault(&mut self) -> vmm_backend::Result<()>
@@ -1030,6 +1039,7 @@ pub fn alloc::boxed::Box<B>::set_policy(&mut self, &<Self::A as vmm_backend::arc
 pub fn alloc::boxed::Box<B>::take_accepted_interrupt(&mut self) -> core::option::Option<<Self::A as vmm_backend::arch::Arch>::IntId>
 impl<K: vmm_backend::Arm64Kvm> vmm_backend::Backend for vmm_backend::Arm64KvmBackend<K>
 pub type vmm_backend::Arm64KvmBackend<K>::A = vmm_backend::arch::arm64::Arm64
+pub fn vmm_backend::Arm64KvmBackend<K>::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_backend::Arm64KvmBackend<K>::capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::arch::arm64::Arm64Caps>
 pub fn vmm_backend::Arm64KvmBackend<K>::complete_arch(&mut self, vmm_backend::arch::arm64::Arm64Completion) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::complete_fault(&mut self) -> vmm_backend::Result<()>

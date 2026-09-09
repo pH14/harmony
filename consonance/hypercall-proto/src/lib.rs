@@ -1482,7 +1482,7 @@ mod host {
                     // Re-validate the decoded registration with the SAME
                     // alignment + RAM-containment rule `handle` enforces,
                     // against the blob's own `ram_len` (the size the source
-                    // validated against). A malformed or hostile state blob
+                    // validated against). A malformed state blob
                     // therefore cannot restore a registration `handle` would
                     // have rejected — an unaligned or out-of-RAM GPA that would
                     // later stamp outside the page window (cross-model r12 P2).

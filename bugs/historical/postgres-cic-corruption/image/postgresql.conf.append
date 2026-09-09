@@ -1,0 +1,16 @@
+
+# --- fault-library determinism overlay ---
+listen_addresses = ''            # unix socket only — no networking nondeterminism
+unix_socket_directories = '/tmp'
+fsync = on
+jit = off                        # no LLVM bitcode / runtime codegen variability
+log_timezone = 'UTC'
+timezone = 'UTC'
+log_line_prefix = ''
+log_statement = 'none'
+shared_buffers = 32MB
+max_connections = 16
+autovacuum = off                 # hook 4 is the only VACUUM, so pruning is scheduled
+max_wal_size = 48MB
+max_parallel_workers_per_gather = 0
+max_parallel_maintenance_workers = 0

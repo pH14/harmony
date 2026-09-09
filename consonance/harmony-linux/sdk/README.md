@@ -8,9 +8,9 @@ state registers, lifecycle points, and coverage-yield handshakes,
 and seeded entropy through the existing hypercall services.
 
 The SDK is hooks and transport only. It emits raw event identities and values;
-the host supplies timestamps and interprets `state_max`; optional fault packages
-resolve buggify through the separate `workloads/fault-sdk` adapter. The host
-turns lifecycle events into snapshot boundaries. Event IDs use an 8-bit
+the host supplies timestamps and interprets `state_max`; a workload package
+carries its own request codecs and reaches them through the opaque service
+request. The host turns lifecycle events into snapshot boundaries. Event IDs use an 8-bit
 namespace and 24-bit local identifier. The wire constants and payload builders
 live in `src/wire.rs`.
 

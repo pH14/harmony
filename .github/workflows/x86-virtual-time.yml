@@ -58,7 +58,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build probe
         run: cargo build -p vmm-backend --bin x86_kvm_probe
-      # Planted negative: with /dev/kvm unreadable the probe must fail closed
+      # Negative control: with /dev/kvm unreadable the probe must fail closed
       # with the kvm_open reason, never report PASS.
       - name: Probe fails closed without /dev/kvm access
         run: |
@@ -159,7 +159,7 @@ jobs:
           path: nix-guest-output
           if-no-files-found: error
 
-  # N6: the table-generated hostile JIT sweep. The traps-off kernel must be
+  # N6: the table-generated instruction sweep. The traps-off kernel must be
   # rejected first; only then may two same-seed traps-on boots receive credit.
   n6-instruction-sweep:
     needs: guest-image
@@ -189,7 +189,7 @@ jobs:
             cp "nix-guest-output/x86_64/$name" consonance/harmony-linux/build/
           done
           (cd nix-guest-output && sha256sum -c guest-image-report.txt)
-      - name: Run static N6 positives and planted negatives
+      - name: Run static N6 positives and negative controls
         run: |
           python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
           python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py

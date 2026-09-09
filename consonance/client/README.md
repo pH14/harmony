@@ -20,6 +20,52 @@ Sessions release completed host trace segments after successful branch/replay
 operations, keeping their evidence storage bounded by the active segment.
 Callers that archive normalized exit traces use the control server's trace API.
 
+A package that answers its own opaque service requests installs a resolver with
+`Session::set_service_factory` and branches with `branch_with_service`, which
+carries the package's `ServiceConfig` into the branch so the control server
+builds that handler. The handler is built before the live VM changes, so an
+uninstalled configuration fails the branch and leaves the session untouched.
+
+The same call carries the host-plane effects the run after the branch applies,
+each against the virtual moment it lands at, so a package stages a machine-level
+perturbation without reaching past the session boundary. The control server
+checks every effect against the branched snapshot before the live VM changes: a
+moment behind the snapshot, a moment already occupied, an out-of-range address,
+an interrupt identity the machine reserves, or a backend that cannot arm the
+exact-count arrival all fail the branch with the session untouched. One moment
+carries one effect, so a duplicate is reported rather than overwritten.
+
+`Session::run_until` runs to an absolute virtual-time deadline or an earlier
+stop. `Session::seal` snapshots the current stopped state, running the guest a
+further settle step whenever the control server cannot seal that point yet, and
+gives up once the caller's total settle allowance is spent. A guest that has
+crashed or gone quiescent advances no further, so its endpoint is offered one
+last seal and then reported rather than settled again.
+
+`SessionConfig::defer_virtual_time_checkpoint_hashes` moves sparse
+virtual-time checkpoint hashing out of the run that reaches a checkpoint. Each
+due checkpoint otherwise hashes all of guest RAM inside that run, which a
+gigabyte-class guest cannot afford during boot. The session applies the setting
+to every VM it boots, including the ones a restore boots from its factory, and
+before the guest runs, so the boot is covered. The setting is off by default,
+changes neither guest state nor the normalized event sequence, and stays
+outside the session identity; a composition root that wants the hashes installs
+them afterwards with `Vmm::checkpoint_virtual_time_trace_at`.
+
+`SessionConfig::wall_limit` bounds one run in host time. A guest spinning on a
+frozen virtual clock takes no exit, so it never reaches its virtual-time
+deadline and only the host clock notices it; past the bound the run is
+abandoned through the backend's cancellation latch and reported as
+`SessionError::Hung`. A canceled VM cannot be entered again, so every later
+request on that session reports `SessionError::Abandoned`. A backend with no
+cancellation latch can honor no such bound and reports
+`SessionError::Unboundable` on the first run rather than running unbounded. The
+limit is a host resource bound, so it is deliberately outside the session
+identity and the image identity. The `watchdog` module owns the mechanism — it
+reserves SIGUSR1 process-wide, so every composition that arms a host bound
+shares this one guard. A request that returns just before the bound expires
+claims the run and keeps its reply.
+
 `SparseSnapshot` is the explicit `consonance-whole-vm-v2` archive shape used
 by adapters that need page and sidecar sharing across related checkpoints.
 Its serde fields remain `base`, `image_identity`, `pages`, and `sidecar`; the

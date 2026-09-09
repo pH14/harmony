@@ -13,9 +13,15 @@
 //! into a fresh empty directory and merged from there, because `tar` follows
 //! a symlink that stands in a destination path and an image can carry one
 //! that points anywhere.
+//!
+//! File ownership travels beside the tree rather than on it. Every staged
+//! entry belongs to the staging user, root or not, and the owner each layer
+//! header records is kept in an [`Ownership`] map that the guest image writer
+//! reads back.
 
+use guest_image::Owner;
 use serde::Deserialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
@@ -55,10 +61,65 @@ pub struct RuntimeConfig {
     pub working_dir: Option<String>,
 }
 
-/// An image staged on disk: an unpacked rootfs and its runtime config.
+/// An image staged on disk: an unpacked rootfs, the owner of each of its
+/// entries, and its runtime config.
 pub struct StagedImage {
     pub rootfs: PathBuf,
+    pub owners: Ownership,
     pub config: RuntimeConfig,
+}
+
+/// The owner of every entry in a staged rootfs, keyed by the entry's path
+/// relative to the rootfs root. An entry no layer named an owner for is
+/// root's, which is also what a layer records for a file it ships as root.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Ownership {
+    owners: BTreeMap<PathBuf, Owner>,
+}
+
+impl Ownership {
+    /// The owner recorded for `path`, relative to the rootfs root.
+    #[must_use]
+    pub fn owner_of(&self, path: &Path) -> Owner {
+        self.owners
+            .get(&normalized(path))
+            .copied()
+            .unwrap_or(Owner::ROOT)
+    }
+
+    /// Give `path`, relative to the rootfs root, to `owner`.
+    pub fn record(&mut self, path: &Path, owner: Owner) {
+        let path = normalized(path);
+        if path.as_os_str().is_empty() {
+            return;
+        }
+        self.owners.insert(path, owner);
+    }
+
+    /// Forget `path` and everything below it.
+    fn remove_tree(&mut self, path: &Path) {
+        let path = normalized(path);
+        self.owners
+            .retain(|recorded, _| !recorded.starts_with(&path));
+    }
+
+    /// Forget everything below `path`, keeping `path` itself.
+    fn remove_below(&mut self, path: &Path) {
+        let path = normalized(path);
+        self.owners
+            .retain(|recorded, _| recorded == &path || !recorded.starts_with(&path));
+    }
+}
+
+/// `path` reduced to its `Normal` components, so `./a/`, `a/` and `a` name
+/// one entry.
+fn normalized(path: &Path) -> PathBuf {
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The first installed container tool, used for pull/save and for the
@@ -157,10 +218,15 @@ fn stage_from_path(input: &Path, stage_dir: &Path) -> Result<StagedImage, ImageE
     let config = parse_runtime_config(&config_blob)?;
     let rootfs = stage_dir.join("rootfs");
     std::fs::create_dir_all(&rootfs)?;
+    let mut owners = Ownership::default();
     for layer in &layers {
-        apply_layer(layer, &rootfs)?;
+        apply_layer(layer, &rootfs, &mut owners)?;
     }
-    Ok(StagedImage { rootfs, config })
+    Ok(StagedImage {
+        rootfs,
+        owners,
+        config,
+    })
 }
 
 #[derive(Deserialize)]
@@ -367,7 +433,7 @@ fn check_members(members: &[Member]) -> Result<(), ImageError> {
 }
 
 const TAR_BLOCK: usize = 512;
-/// Ceilings on what a hostile archive can make this reader allocate.
+/// Ceilings on what a malformed archive can make this reader allocate.
 const MAX_MEMBERS: usize = 1 << 20;
 const MAX_HEADER_DATA: u64 = 1 << 16;
 
@@ -382,6 +448,7 @@ const MAX_HEADER_DATA: u64 = 1 << 16;
 struct Member {
     name: Vec<u8>,
     is_dir: bool,
+    owner: Owner,
 }
 
 impl Member {
@@ -526,11 +593,18 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                 let Pax {
                     path,
                     size: pax_size,
+                    uid,
+                    gid,
                 } = std::mem::take(&mut pax);
                 let gnu_name = long_name.take();
+                let owner = Owner {
+                    uid: owner_id(uid, &block[108..116])?,
+                    gid: owner_id(gid, &block[116..124])?,
+                };
                 members.push(Member {
                     name: path.or(gnu_name).unwrap_or_else(|| ustar_name(&block)),
                     is_dir: typeflag == b'5',
+                    owner,
                 });
                 let size = pax_size.unwrap_or(size);
                 let data = size
@@ -645,6 +719,17 @@ fn parse_octal(field: &[u8]) -> Result<u64, ImageError> {
         .map_err(|_| ImageError::Tar("tar header field is not octal".into()))
 }
 
+/// A uid or gid: the pax record when one was given, else the header field.
+/// `chown` takes a 32-bit id, so a larger value cannot be what the image
+/// meant.
+fn owner_id(pax: Option<u64>, field: &[u8]) -> Result<u32, ImageError> {
+    let id = match pax {
+        Some(id) => id,
+        None => parse_octal(field)?,
+    };
+    u32::try_from(id).map_err(|_| ImageError::Tar("tar owner id is too large".into()))
+}
+
 /// The stored name of a ustar header: `prefix/name`. The prefix field only
 /// holds a name in the POSIX ustar format; the GNU format reuses those bytes
 /// for timestamps.
@@ -674,6 +759,8 @@ fn ustar_name(block: &[u8; TAR_BLOCK]) -> Vec<u8> {
 struct Pax {
     path: Option<Vec<u8>>,
     size: Option<u64>,
+    uid: Option<u64>,
+    gid: Option<u64>,
 }
 
 /// Merge one pax header's records into `pax`. Records are
@@ -714,6 +801,19 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
                     .and_then(|text| text.parse().ok())
                     .ok_or_else(|| ImageError::Tar("unreadable pax size record".into()))?;
                 pax.size = Some(size);
+            }
+            // An id an octal header field cannot hold is stored here, and
+            // `tar` applies it over the field.
+            b"uid" | b"gid" => {
+                let id = std::str::from_utf8(value)
+                    .ok()
+                    .and_then(|text| text.parse().ok())
+                    .ok_or_else(|| ImageError::Tar("unreadable pax owner record".into()))?;
+                if key == b"uid" {
+                    pax.uid = Some(id);
+                } else {
+                    pax.gid = Some(id);
+                }
             }
             // A sparse member's data is stored in a layout these records
             // describe, so a reader that ignores them skips the wrong bytes.
@@ -817,10 +917,17 @@ fn resolve_under(rootfs: &Path, relative: &Path) -> Result<Option<PathBuf>, Imag
     Ok(Some(real_parent.join(name)))
 }
 
+/// Extract `tarball` into `dest` with the modes the archive recorded and with
+/// every entry owned by the staging user. Without `-p`, `tar` masks each mode
+/// with the host umask, so the guest's file modes would depend on who staged
+/// the image. Without `--no-same-owner`, a root staging would apply the
+/// archive's owners on disk, and the tree would then say something different
+/// from the [`Ownership`] map that the image writer reads.
 fn untar(tarball: &Path, dest: &Path) -> Result<(), ImageError> {
     let out = Command::new("tar")
-        .arg("-xf")
+        .arg("-xpf")
         .arg(tarball)
+        .arg("--no-same-owner")
         .arg("-C")
         .arg(dest)
         .output()?;
@@ -840,14 +947,58 @@ fn untar(tarball: &Path, dest: &Path) -> Result<(), ImageError> {
 /// The layer is extracted into a fresh directory and merged in, never
 /// extracted over the rootfs directly: `tar` follows a symlink standing in a
 /// destination path, and a lower layer can leave one pointing anywhere.
-fn apply_layer(layer: &Path, rootfs: &Path) -> Result<(), ImageError> {
+fn apply_layer(layer: &Path, rootfs: &Path, owners: &mut Ownership) -> Result<(), ImageError> {
     let members = read_members(layer)?;
     check_members(&members)?;
     apply_whiteouts(&members, rootfs)?;
     let staging = rootfs.parent().unwrap_or(rootfs);
     let staged = tempfile::tempdir_in(staging)?;
     untar(layer, staged.path())?;
-    merge_layer(staged.path(), rootfs)
+    merge_layer(staged.path(), rootfs)?;
+    record_owners(&members, owners);
+    Ok(())
+}
+
+/// Record what this layer did to ownership, in the order the tree took it:
+/// whiteouts first, then the layer's own entries, each of which owns what it
+/// replaced. A file shipped over a directory takes the directory's children
+/// with it, as `merge_layer` does.
+fn record_owners(members: &[Member], owners: &mut Ownership) {
+    for member in members {
+        let path = member.path();
+        match whiteout(path) {
+            Some(Whiteout::Opaque(dir)) => owners.remove_below(dir),
+            Some(Whiteout::Entry(target)) => owners.remove_tree(&target),
+            None => {}
+        }
+    }
+    for member in members {
+        let path = member.path();
+        if whiteout(path).is_some() {
+            continue;
+        }
+        if !member.is_dir {
+            owners.remove_tree(path);
+        }
+        owners.record(path, member.owner);
+    }
+}
+
+enum Whiteout<'a> {
+    /// `.wh..wh..opq`: clear the directory's prior contents.
+    Opaque(&'a Path),
+    /// `.wh.<name>`: delete `<name>` from lower layers.
+    Entry(PathBuf),
+}
+
+fn whiteout(path: &Path) -> Option<Whiteout<'_>> {
+    let name = path.file_name()?.to_str()?;
+    if name == ".wh..wh..opq" {
+        Some(Whiteout::Opaque(path.parent().unwrap_or(Path::new(""))))
+    } else {
+        name.strip_prefix(".wh.")
+            .map(|hidden| Whiteout::Entry(path.with_file_name(hidden)))
+    }
 }
 
 /// Delete what this layer's whiteout entries mark, before its own content
@@ -1134,14 +1285,39 @@ mod tests {
     /// next block boundary. Building members by hand plants sequences no
     /// `tar` command will produce.
     fn raw_member(name: &[u8], typeflag: u8, linkname: &str, data: &[u8]) -> Vec<u8> {
+        raw_member_owned(name, typeflag, linkname, data, Owner::ROOT)
+    }
+
+    /// `raw_member` with the header's uid and gid fields set to `owner`.
+    fn raw_member_owned(
+        name: &[u8],
+        typeflag: u8,
+        linkname: &str,
+        data: &[u8],
+        owner: Owner,
+    ) -> Vec<u8> {
+        // A directory needs its search bit for the members below it to land.
+        let mode = if typeflag == b'5' { 0o755 } else { 0o644 };
+        raw_member_with_mode(name, typeflag, linkname, data, owner, mode)
+    }
+
+    /// `raw_member_owned` with the header's mode field set to `mode`.
+    fn raw_member_with_mode(
+        name: &[u8],
+        typeflag: u8,
+        linkname: &str,
+        data: &[u8],
+        owner: Owner,
+        mode: u32,
+    ) -> Vec<u8> {
         let mut header = [b'\0'; 512];
         let mut put = |offset: usize, bytes: &[u8]| {
             header[offset..offset + bytes.len()].copy_from_slice(bytes);
         };
         put(0, &name[..name.len().min(100)]);
-        put(100, b"0000644\0"); // mode
-        put(108, b"0000000\0"); // uid
-        put(116, b"0000000\0"); // gid
+        put(100, format!("{mode:07o}\0").as_bytes());
+        put(108, format!("{:07o}\0", owner.uid).as_bytes()); // uid
+        put(116, format!("{:07o}\0", owner.gid).as_bytes()); // gid
         put(124, format!("{:011o}\0", data.len()).as_bytes()); // size
         put(136, b"00000000000\0"); // mtime
         put(148, b"        "); // checksum field, spaces while summing
@@ -1228,7 +1404,7 @@ mod tests {
         .enumerate()
         {
             let layer = tar_with_raw_name(dir.path(), &format!("evil{n}.tar"), member);
-            let err = apply_layer(&layer, &rootfs).unwrap_err();
+            let err = apply_layer(&layer, &rootfs, &mut Ownership::default()).unwrap_err();
             assert!(
                 matches!(err, ImageError::UnsafePath(_)),
                 "{member} gave {err:?}"
@@ -1255,7 +1431,7 @@ mod tests {
             .enumerate()
         {
             let layer = tar_with_raw_name(dir.path(), &format!("sym{n}.tar"), member);
-            let err = apply_layer(&layer, &rootfs).unwrap_err();
+            let err = apply_layer(&layer, &rootfs, &mut Ownership::default()).unwrap_err();
             assert!(
                 matches!(err, ImageError::UnsafePath(_)),
                 "{member} gave {err:?}"
@@ -1277,7 +1453,7 @@ mod tests {
         std::os::unix::fs::symlink(&victim, rootfs.join("link")).unwrap();
 
         let layer = tar_with_raw_name(dir.path(), "wh-link.tar", ".wh.link");
-        apply_layer(&layer, &rootfs).unwrap();
+        apply_layer(&layer, &rootfs, &mut Ownership::default()).unwrap();
         assert!(std::fs::symlink_metadata(rootfs.join("link")).is_err());
         assert!(victim.join("sentinel").is_file());
         assert!(victim.is_dir());
@@ -1307,7 +1483,7 @@ mod tests {
                 .unwrap()
                 .success()
         );
-        apply_layer(&base, &rootfs).unwrap();
+        apply_layer(&base, &rootfs, &mut Ownership::default()).unwrap();
         assert!(
             std::fs::symlink_metadata(rootfs.join("link"))
                 .unwrap()
@@ -1316,7 +1492,7 @@ mod tests {
 
         // Upper layer: an ordinary file stored under that name.
         let upper = tar_layer(dir.path(), "upper", &[("link/pwn", b"owned")]);
-        let err = apply_layer(&upper, &rootfs).unwrap_err();
+        let err = apply_layer(&upper, &rootfs, &mut Ownership::default()).unwrap_err();
         assert!(matches!(err, ImageError::UnsafePath(_)), "{err:?}");
         assert!(!victim.join("pwn").exists(), "wrote outside the rootfs");
         assert!(victim.join("sentinel").is_file());
@@ -1343,7 +1519,7 @@ mod tests {
             ],
         );
         assert!(matches!(
-            apply_layer(&layer, &rootfs),
+            apply_layer(&layer, &rootfs, &mut Ownership::default()),
             Err(ImageError::UnsafePath(_))
         ));
         assert!(victim.join("sentinel").exists());
@@ -1366,7 +1542,7 @@ mod tests {
             ],
         );
         assert!(matches!(
-            apply_layer(&layer, &rootfs),
+            apply_layer(&layer, &rootfs, &mut Ownership::default()),
             Err(ImageError::UnsafePath(_))
         ));
         assert!(victim.join("sentinel").exists());
@@ -1385,7 +1561,7 @@ mod tests {
             &[("link/", b'2', "../../victim"), ("link/pwn", b'0', "")],
         );
         assert!(matches!(
-            apply_layer(&layer, &rootfs),
+            apply_layer(&layer, &rootfs, &mut Ownership::default()),
             Err(ImageError::UnsafePath(_))
         ));
         assert!(victim.join("sentinel").exists());
@@ -1436,7 +1612,7 @@ mod tests {
             ],
         );
         assert!(matches!(
-            apply_layer(&layer, &rootfs),
+            apply_layer(&layer, &rootfs, &mut Ownership::default()),
             Err(ImageError::UnsafePath(_))
         ));
         assert!(victim.join("sentinel").exists());
@@ -1491,7 +1667,7 @@ mod tests {
         .concat();
         let layer = write_archive(dir.path(), "longpath.tar", &body);
         assert!(matches!(
-            apply_layer(&layer, &rootfs),
+            apply_layer(&layer, &rootfs, &mut Ownership::default()),
             Err(ImageError::UnsafePath(_))
         ));
         assert!(victim.join("sentinel").exists());
@@ -1556,7 +1732,7 @@ mod tests {
             vec!["../../victim/pwn".to_string()]
         );
         assert!(matches!(
-            apply_layer(&layer, &rootfs),
+            apply_layer(&layer, &rootfs, &mut Ownership::default()),
             Err(ImageError::UnsafePath(_))
         ));
         assert!(victim.join("sentinel").exists());
@@ -1599,7 +1775,7 @@ mod tests {
             ]
         );
         assert!(matches!(
-            apply_layer(&layer, &rootfs),
+            apply_layer(&layer, &rootfs, &mut Ownership::default()),
             Err(ImageError::UnsafePath(_))
         ));
         assert!(victim.join("sentinel").exists());
@@ -1764,7 +1940,7 @@ mod tests {
         .enumerate()
         {
             let layer = raw_tar(dir.path(), &format!("same{n}.tar"), members);
-            let err = apply_layer(&layer, &rootfs).unwrap_err();
+            let err = apply_layer(&layer, &rootfs, &mut Ownership::default()).unwrap_err();
             assert!(
                 matches!(err, ImageError::UnsafePath(_)),
                 "{members:?}: {err:?}"
@@ -1798,7 +1974,7 @@ mod tests {
                 .unwrap()
                 .success()
         );
-        apply_layer(&layer, &rootfs).unwrap();
+        apply_layer(&layer, &rootfs, &mut Ownership::default()).unwrap();
         assert_eq!(std::fs::read(rootfs.join("bin/busybox")).unwrap(), b"elf");
         assert_eq!(
             std::fs::read_link(rootfs.join("bin/sh")).unwrap(),
@@ -1833,7 +2009,7 @@ mod tests {
                 .unwrap()
                 .success()
         );
-        apply_layer(&layer, &rootfs).unwrap();
+        apply_layer(&layer, &rootfs, &mut Ownership::default()).unwrap();
         assert_eq!(std::fs::read(rootfs.join("ro/x")).unwrap(), b"content");
         let mode = std::fs::symlink_metadata(rootfs.join("ro"))
             .unwrap()
@@ -1855,9 +2031,9 @@ mod tests {
         let rootfs = dir.path().join("rootfs");
         std::fs::create_dir_all(&rootfs).unwrap();
         let base = tar_layer(dir.path(), "one", &[("f", b"old"), ("d/x", b"x")]);
-        apply_layer(&base, &rootfs).unwrap();
+        apply_layer(&base, &rootfs, &mut Ownership::default()).unwrap();
         let upper = tar_layer(dir.path(), "two", &[("f", b"new"), ("d/y", b"y")]);
-        apply_layer(&upper, &rootfs).unwrap();
+        apply_layer(&upper, &rootfs, &mut Ownership::default()).unwrap();
         assert_eq!(std::fs::read(rootfs.join("f")).unwrap(), b"new");
         assert_eq!(std::fs::read(rootfs.join("d/x")).unwrap(), b"x");
         assert_eq!(std::fs::read(rootfs.join("d/y")).unwrap(), b"y");
@@ -1878,7 +2054,7 @@ mod tests {
                 ("d/old", b"old"),
             ],
         );
-        apply_layer(&base, &rootfs).unwrap();
+        apply_layer(&base, &rootfs, &mut Ownership::default()).unwrap();
         assert!(rootfs.join("keep.txt").is_file());
         assert!(rootfs.join("d/old").is_file());
 
@@ -1892,12 +2068,299 @@ mod tests {
                 ("d/new", b"new"),
             ],
         );
-        apply_layer(&upper, &rootfs).unwrap();
+        apply_layer(&upper, &rootfs, &mut Ownership::default()).unwrap();
         assert!(rootfs.join("keep.txt").is_file());
         assert!(!rootfs.join("gone.txt").exists());
         assert!(!rootfs.join("d/old").exists());
         assert_eq!(std::fs::read(rootfs.join("d/new")).unwrap(), b"new");
         assert!(!rootfs.join("d/.wh..wh..opq").exists());
+    }
+
+    const POSTGRES: Owner = Owner { uid: 70, gid: 70 };
+
+    /// The owner comes from the header's octal fields, and a pax record for
+    /// either id replaces its field the way `tar` applies it.
+    #[test]
+    fn read_members_reads_the_owner_of_each_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = [
+            raw_member_owned(b"data", b'5', "", b"", POSTGRES),
+            raw_member(b"etc", b'5', "", b""),
+            raw_member(
+                b"PaxHeaders/0",
+                b'x',
+                "",
+                [pax_record("uid", "70000"), pax_record("gid", "5")]
+                    .concat()
+                    .as_bytes(),
+            ),
+            raw_member_owned(b"wide", b'0', "", b"", Owner { uid: 1, gid: 1 }),
+        ]
+        .concat();
+        let members = read_members(&write_archive(dir.path(), "owned.tar", &body)).unwrap();
+        let owners: Vec<(String, Owner)> = members
+            .iter()
+            .map(|member| (member.shown(), member.owner))
+            .collect();
+        assert_eq!(
+            owners,
+            [
+                ("data".to_string(), POSTGRES),
+                ("etc".to_string(), Owner::ROOT),
+                ("wide".to_string(), Owner { uid: 70000, gid: 5 }),
+            ]
+        );
+    }
+
+    /// An owner id `chown` cannot take, or a pax owner record that is not a
+    /// number, is refused rather than folded into some other user.
+    #[test]
+    fn read_members_refuses_owners_it_cannot_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, record) in [
+            ("huge-uid.tar", pax_record("uid", "4294967296")),
+            ("text-gid.tar", pax_record("gid", "postgres")),
+        ] {
+            let mut body = raw_member(b"PaxHeaders/0", b'x', "", record.as_bytes());
+            body.extend_from_slice(&raw_member(b"file", b'0', "", b""));
+            let path = write_archive(dir.path(), name, &body);
+            assert!(
+                matches!(read_members(&path), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+        }
+    }
+
+    /// Ownership follows the tree through layers: a later layer's entry owns
+    /// what it replaced, a whiteout forgets what it deleted, an opaque
+    /// whiteout keeps the directory and forgets its children, and a file
+    /// shipped over a directory takes the directory's children with it.
+    #[test]
+    fn apply_layer_records_what_each_layer_did_to_ownership() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let mut owners = Ownership::default();
+
+        let base = [
+            raw_member_owned(b"data/", b'5', "", b"", POSTGRES),
+            raw_member_owned(b"data/conf", b'0', "", b"cfg", POSTGRES),
+            raw_member_owned(b"data/sub/", b'5', "", b"", POSTGRES),
+            raw_member_owned(b"data/sub/x", b'0', "", b"x", POSTGRES),
+            raw_member_owned(b"gone", b'0', "", b"gone", POSTGRES),
+            raw_member_owned(b"swap/", b'5', "", b"", POSTGRES),
+            raw_member_owned(b"swap/child", b'0', "", b"child", POSTGRES),
+            raw_member(b"etc", b'0', "", b"root"),
+        ]
+        .concat();
+        apply_layer(
+            &write_archive(dir.path(), "base.tar", &base),
+            &rootfs,
+            &mut owners,
+        )
+        .unwrap();
+        for path in [
+            "data",
+            "data/conf",
+            "data/sub",
+            "data/sub/x",
+            "gone",
+            "swap",
+            "swap/child",
+        ] {
+            assert_eq!(owners.owner_of(Path::new(path)), POSTGRES, "{path}");
+        }
+        assert_eq!(owners.owner_of(Path::new("etc")), Owner::ROOT);
+        assert_eq!(
+            owners.owner_of(Path::new("./data/")),
+            POSTGRES,
+            "one entry, however spelled"
+        );
+
+        let other = Owner { uid: 71, gid: 71 };
+        let upper = [
+            raw_member(b".wh.gone", b'0', "", b""),
+            raw_member(b"data/.wh..wh..opq", b'0', "", b""),
+            raw_member_owned(b"data/new", b'0', "", b"new", other),
+            raw_member(b"swap", b'0', "", b"file now"),
+            raw_member_owned(b"etc", b'0', "", b"taken", other),
+        ]
+        .concat();
+        apply_layer(
+            &write_archive(dir.path(), "upper.tar", &upper),
+            &rootfs,
+            &mut owners,
+        )
+        .unwrap();
+        assert_eq!(
+            owners.owner_of(Path::new("gone")),
+            Owner::ROOT,
+            "whiteout forgets the entry"
+        );
+        assert_eq!(
+            owners.owner_of(Path::new("data")),
+            POSTGRES,
+            "opaque keeps the directory"
+        );
+        assert_eq!(
+            owners.owner_of(Path::new("data/conf")),
+            Owner::ROOT,
+            "opaque forgets children"
+        );
+        assert_eq!(owners.owner_of(Path::new("data/sub/x")), Owner::ROOT);
+        assert_eq!(owners.owner_of(Path::new("data/new")), other);
+        assert_eq!(
+            owners.owner_of(Path::new("swap")),
+            Owner::ROOT,
+            "the file replacing the directory"
+        );
+        assert_eq!(
+            owners.owner_of(Path::new("swap/child")),
+            Owner::ROOT,
+            "and the children it took"
+        );
+        assert_eq!(
+            owners.owner_of(Path::new("etc")),
+            other,
+            "a later layer owns what it replaced"
+        );
+        // The tree agrees with the map.
+        assert!(!rootfs.join("gone").exists());
+        assert!(!rootfs.join("data/conf").exists());
+        assert!(rootfs.join("swap").is_file());
+        assert_eq!(std::fs::read(rootfs.join("data/new")).unwrap(), b"new");
+    }
+
+    /// A mode the archive recorded reaches the tree as written, whatever the
+    /// host umask: a shared file stays group-writable and a scratch directory
+    /// keeps its sticky bit.
+    #[test]
+    fn apply_layer_keeps_the_modes_the_layer_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let expected = [
+            ("tmp", b'5', 0o1777),
+            ("secret", b'5', 0o700),
+            ("secret/key", b'0', 0o600),
+            ("shared", b'0', 0o660),
+        ];
+        let layer: Vec<u8> = expected
+            .iter()
+            .flat_map(|(name, typeflag, mode)| {
+                raw_member_with_mode(name.as_bytes(), *typeflag, "", b"", Owner::ROOT, *mode)
+            })
+            .collect();
+        apply_layer(
+            &write_archive(dir.path(), "layer.tar", &layer),
+            &rootfs,
+            &mut Ownership::default(),
+        )
+        .unwrap();
+        for (name, _, mode) in expected {
+            let on_disk = std::fs::metadata(rootfs.join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777;
+            assert_eq!(on_disk, mode, "{name}");
+        }
+    }
+
+    /// One parsed newc cpio entry: its name, uid, gid, and the offset just
+    /// past it.
+    fn cpio_entry(bytes: &[u8], at: usize) -> (String, Owner, usize) {
+        let field = |i: usize| {
+            let text = std::str::from_utf8(&bytes[at + 6 + 8 * i..at + 6 + 8 * (i + 1)]).unwrap();
+            u32::from_str_radix(text, 16).unwrap()
+        };
+        assert_eq!(&bytes[at..at + 6], b"070701");
+        let (uid, gid, filesize, namesize) = (field(2), field(3), field(6), field(11));
+        let name_at = at + 110;
+        let name = std::str::from_utf8(&bytes[name_at..name_at + namesize as usize - 1])
+            .unwrap()
+            .to_string();
+        let data_at = (name_at + namesize as usize).next_multiple_of(4);
+        let next = (data_at + filesize as usize).next_multiple_of(4);
+        (name, Owner { uid, gid }, next)
+    }
+
+    /// The whole path an image takes: staged by some host user, whose tree on
+    /// disk belongs to that user, and written into the rootfs segment with
+    /// the owner the image's layer recorded. The guest applies the segment's
+    /// owner, so this is what decides whether a node that drops privileges
+    /// can open its own data.
+    #[test]
+    fn staging_carries_layer_ownership_into_the_rootfs_segment() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        let blobs = layout.join("blobs/sha256");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::write(
+            layout.join("index.json"),
+            br#"{"manifests":[{"digest":"sha256:m"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            blobs.join("m"),
+            br#"{"config":{"digest":"sha256:c"},"layers":[{"digest":"sha256:l"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(blobs.join("c"), br#"{"config":{"Cmd":["/node"]}}"#).unwrap();
+        let layer = [
+            raw_member_owned(b"var/", b'5', "", b"", Owner::ROOT),
+            raw_member_owned(b"var/data/", b'5', "", b"", POSTGRES),
+            raw_member_owned(b"var/data/conf", b'0', "", b"cfg", POSTGRES),
+            raw_member(b"node", b'0', "", b"#!/bin/sh"),
+        ]
+        .concat();
+        std::fs::write(blobs.join("l"), [layer, vec![0u8; 1024]].concat()).unwrap();
+
+        let stage_dir = dir.path().join("stage");
+        std::fs::create_dir_all(&stage_dir).unwrap();
+        let staged = stage(layout.to_str().unwrap(), &stage_dir).unwrap();
+        assert_eq!(staged.config.cmd, ["/node"]);
+        assert_eq!(staged.owners.owner_of(Path::new("var/data/conf")), POSTGRES);
+        assert_eq!(staged.owners.owner_of(Path::new("var")), Owner::ROOT);
+        // Nothing on disk says who the image meant; the map does. The tree
+        // belongs to whoever staged it, even when that is root or uid 70.
+        use std::os::unix::fs::MetadataExt as _;
+        let staging_user = std::fs::metadata(&stage_dir).unwrap().uid();
+        for path in ["var", "var/data", "var/data/conf", "node"] {
+            let on_disk = std::fs::metadata(staged.rootfs.join(path)).unwrap().uid();
+            assert_eq!(on_disk, staging_user, "{path}");
+        }
+
+        let segment =
+            super::super::bundle::build_rootfs_segment(&staged.rootfs, &staged.owners).unwrap();
+        let inflated = Command::new("gzip")
+            .arg("-dc")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write as _;
+                child.stdin.take().unwrap().write_all(&segment)?;
+                child.wait_with_output()
+            })
+            .unwrap();
+        assert!(inflated.status.success());
+        let cpio = inflated.stdout;
+        let mut at = 0;
+        let mut owners = BTreeMap::new();
+        loop {
+            let (name, owner, next) = cpio_entry(&cpio, at);
+            if name == "TRAILER!!!" {
+                break;
+            }
+            owners.insert(name, owner);
+            at = next;
+        }
+        assert_eq!(owners["harmony-oci/rootfs/var/data"], POSTGRES);
+        assert_eq!(owners["harmony-oci/rootfs/var/data/conf"], POSTGRES);
+        assert_eq!(owners["harmony-oci/rootfs/var"], Owner::ROOT);
+        assert_eq!(owners["harmony-oci/rootfs/node"], Owner::ROOT);
+        assert_eq!(owners["harmony-oci/rootfs"], Owner::ROOT);
     }
 }
 

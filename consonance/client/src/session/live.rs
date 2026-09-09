@@ -4,14 +4,21 @@
 //! This module is kept separate from the portable session/configuration types:
 //! it requires a real VMM composition and is exercised by Linux/KVM lanes.
 
-use std::{collections::BTreeMap, error::Error, fmt, path::Path};
+use std::{collections::BTreeMap, error::Error, fmt, path::Path, time::Duration};
 
 use control_proto::{
-    Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason, class_bit,
+    ControlError, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
+    class_bit,
 };
-use environment::input_spec::InputSpec;
+use environment::{
+    channel::Effect,
+    input_spec::{InputSpec, ServiceConfig, ServiceFactory},
+};
 use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, RestoreMode, VmmFactory, server_caps};
+use vmm_core::vmm::Vmm;
+
+use crate::watchdog::Watchdog;
 
 #[cfg(target_arch = "aarch64")]
 use vmm_backend::Arm64 as HostArch;
@@ -35,6 +42,9 @@ pub struct Session {
     image_identity: [u8; 32],
     config: SessionConfig,
     snapshot_times: BTreeMap<SnapId, u64>,
+    /// Set once a run exceeds the wall-clock bound. The VM was canceled, so no
+    /// later request may enter it.
+    abandoned: bool,
 }
 
 impl std::fmt::Debug for Session {
@@ -46,6 +56,7 @@ impl std::fmt::Debug for Session {
             .field("image_identity", &self.image_identity)
             .field("config", &self.config)
             .field("snapshot_times", &self.snapshot_times.len())
+            .field("abandoned", &self.abandoned)
             .finish_non_exhaustive()
     }
 }
@@ -91,6 +102,7 @@ impl Session {
         #[cfg(target_arch = "x86_64")]
         let seed = config.seed;
         let cmdline = config.cmdline.clone();
+        let defer_checkpoint_hashes = config.defer_virtual_time_checkpoint_hashes;
         let boot = move |kernel: &[u8], initramfs: &[u8]| {
             #[cfg(target_arch = "x86_64")]
             let mut vmm = boot_linux_stock_virtual_time(kernel, initramfs, ram, &cmdline, seed)
@@ -99,6 +111,13 @@ impl Session {
             let mut vmm = boot_selected_control(kernel, initramfs, &cmdline, ram)
                 .map_err(|error| format!("Consonance boot compose failed: {error:?}"))?;
             vmm.wire_snapshot_hashing();
+            // Before the guest runs, so the boot's own checkpoints are deferred
+            // too, and on every VM this closure builds, which includes the ones
+            // a restore boots from the session factory.
+            if defer_checkpoint_hashes {
+                vmm.defer_virtual_time_checkpoint_hashes()
+                    .map_err(|error| format!("defer virtual-time hashes: {error}"))?;
+            }
             Ok::<_, String>(vmm)
         };
 
@@ -116,7 +135,16 @@ impl Session {
 
         let genesis = snapshot_handle(&mut client, "genesis snapshot")?;
         branch_payload(&mut client, genesis.id, setup_payloads, config.seed)?;
-        let setup_stop = run_to_snapshot(&mut client, genesis.at, config.run_budget)?;
+        // A setup run that exceeds the bound fails construction outright, so
+        // the session this returns has never been abandoned.
+        let mut abandoned = false;
+        let setup_stop = run_to_snapshot(
+            &mut client,
+            genesis.at,
+            config.run_budget,
+            config.wall_limit,
+            &mut abandoned,
+        )?;
         let setup = snapshot_handle(&mut client, "setup snapshot")?;
         if setup_stop != setup.at {
             return Err(SessionError::Control(
@@ -131,6 +159,7 @@ impl Session {
             image_identity,
             config,
             snapshot_times: BTreeMap::from([(genesis.id, genesis.at), (setup.id, setup.at)]),
+            abandoned,
         })
     }
 
@@ -236,6 +265,130 @@ impl Session {
         branch_payload(&mut self.client, snapshot, payloads, self.config.seed)
     }
 
+    /// Install the composition's service implementation resolver, so a branch
+    /// carrying a package's service configuration builds that package's
+    /// handler for opaque SDK service requests. Held snapshots keep the
+    /// identity and configuration they recorded.
+    pub fn set_service_factory(&mut self, factory: ServiceFactory) {
+        self.client.transport_mut().set_service_factory(factory);
+    }
+
+    /// Branch from a held snapshot under a package's service configuration,
+    /// ordered payload records, and the host-plane effects to apply during the
+    /// run that follows, each at the virtual moment it is recorded against.
+    ///
+    /// The installed service factory builds the handler and the control server
+    /// checks every effect before the live VM changes, so a configuration whose
+    /// implementation is not installed — or an effect the machine cannot apply
+    /// at the moment given — fails the branch and leaves the session untouched.
+    pub fn branch_with_service(
+        &mut self,
+        snapshot: SnapId,
+        config: ServiceConfig,
+        payloads: Vec<Vec<u8>>,
+        effects: Vec<(u64, Effect)>,
+    ) -> Result<(), Box<dyn Error>> {
+        let spec = service_branch_spec(self.config.seed, config, payloads, effects)?;
+        branch_spec(&mut self.client, snapshot, &spec)
+    }
+
+    /// Run from the current state until virtual time reaches `deadline`, or
+    /// until the guest stops earlier on an SDK assertion, a crash, or
+    /// quiescence.
+    pub fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
+        let request = Request::Run {
+            until: StopConditions {
+                deadline: Some(control_proto::Moment(deadline)),
+                on: StopMask::NONE.arm(class_bit::ASSERTION),
+            },
+            resolve: None,
+        };
+        match self.drive(&request)? {
+            Reply::Stop(stop) => Ok(stop),
+            reply => Err(SessionError::Reply {
+                operation: "run until",
+                reply,
+            }
+            .into()),
+        }
+    }
+
+    /// Snapshot the current stopped state, running the guest a further
+    /// `settle_step` of virtual time whenever the control server cannot seal
+    /// that point yet, up to `max_settle` in total.
+    ///
+    /// Reports the snapshot, its V-time, and the stop reason of the last settle
+    /// run — absent when the point sealed with no settling.
+    pub fn seal(
+        &mut self,
+        settle_step: u64,
+        max_settle: u64,
+    ) -> Result<(SnapId, u64, Option<StopReason>), Box<dyn Error>> {
+        seal_after_settling(
+            self,
+            settle_step,
+            max_settle,
+            Self::try_seal,
+            Self::settle_step,
+        )
+    }
+
+    /// Seal the current point, or `None` when the server cannot seal it yet.
+    fn try_seal(&mut self) -> Result<Option<(SnapId, u64)>, Box<dyn Error>> {
+        let outcome = self.client.transport_mut().handle(&Request::Snapshot);
+        match outcome {
+            Ok(Ok(Reply::Snapshot {
+                id,
+                at,
+                tainted: false,
+                ..
+            })) => {
+                self.snapshot_times.insert(id, at.0);
+                Ok(Some((id, at.0)))
+            }
+            Ok(Ok(Reply::Snapshot {
+                id, tainted: true, ..
+            })) => {
+                // A tainted seal is still minted; release it before reporting.
+                let _ = drop_control_handle(&mut self.client, id);
+                Err(SessionError::Control("seal was tainted".into()).into())
+            }
+            Ok(Ok(reply)) => Err(SessionError::Reply {
+                operation: "seal",
+                reply,
+            }
+            .into()),
+            Ok(Err(ControlError::NotQuiescent)) => Ok(None),
+            Ok(Err(error)) => Err(SessionError::Control(error.to_string()).into()),
+            Err(error) => Err(SessionError::Control(error.to_string()).into()),
+        }
+    }
+
+    /// Run `step` further nanoseconds of virtual time from wherever the guest
+    /// currently stands.
+    fn settle_step(&mut self, step: u64) -> Result<StopReason, Box<dyn Error>> {
+        let now = self
+            .client
+            .transport()
+            .vmm()
+            .and_then(Vmm::effective_vns)
+            .ok_or_else(|| SessionError::Control("live VM has no virtual time".to_owned()))?;
+        let deadline = now
+            .checked_add(step)
+            .ok_or("Consonance settle deadline overflow")?;
+        self.run_until(deadline)
+    }
+
+    /// Issue one control request with the session's host wall-clock bound armed.
+    fn drive(&mut self, request: &Request) -> Result<Reply, Box<dyn Error>> {
+        drive_guarded(
+            &mut self.client,
+            self.config.wall_limit,
+            &mut self.abandoned,
+            request,
+        )
+    }
+
     /// Replay a held snapshot without staging any payloads.
     pub fn replay_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
         self.replay(snapshot)
@@ -247,10 +400,7 @@ impl Session {
         until: StopConditions,
         resolve: Option<control_proto::Resolution>,
     ) -> Result<StopReason, Box<dyn Error>> {
-        let reply = self
-            .client
-            .request(&Request::Run { until, resolve })
-            .map_err(|error| SessionError::Control(error.to_string()))?;
+        let reply = self.drive(&Request::Run { until, resolve })?;
         match reply {
             Reply::Stop(stop) => Ok(stop),
             reply => Err(SessionError::Reply {
@@ -288,7 +438,13 @@ impl Session {
 
     /// Run the fixed setup lifecycle point used by payload guests.
     pub fn run_to_snapshot(&mut self, floor: u64) -> Result<u64, Box<dyn Error>> {
-        run_to_snapshot(&mut self.client, floor, self.config.run_budget)
+        run_to_snapshot(
+            &mut self.client,
+            floor,
+            self.config.run_budget,
+            self.config.wall_limit,
+            &mut self.abandoned,
+        )
     }
 
     /// Set the VMM snapshot derive-chain bound for profiling experiments.
@@ -352,7 +508,13 @@ impl Session {
         let mut temporary_handles = vec![base];
         let result = (|| {
             branch_payload(&mut self.client, base, vec![payload], self.config.seed)?;
-            let stop_at = run_to_snapshot(&mut self.client, snapshot.at, self.config.run_budget)?;
+            let stop_at = run_to_snapshot(
+                &mut self.client,
+                snapshot.at,
+                self.config.run_budget,
+                self.config.wall_limit,
+                &mut self.abandoned,
+            )?;
             let target = snapshot_handle(&mut self.client, "action snapshot")?;
             temporary_handles.push(target.id);
             if stop_at != target.at {
@@ -560,6 +722,10 @@ fn branch_payload(
 ) -> Result<(), Box<dyn Error>> {
     let mut spec = InputSpec::seeded(seed);
     spec.set_payloads(Some(payloads));
+    branch_spec(client, snap, &spec)
+}
+
+fn branch_spec(client: &mut Server, snap: SnapId, spec: &InputSpec) -> Result<(), Box<dyn Error>> {
     let reply = client
         .request(&Request::Branch {
             snap,
@@ -574,6 +740,40 @@ fn branch_payload(
     Ok(())
 }
 
+/// Issue one control request, abandoning the guest if it spends more than
+/// `wall_limit` of host time inside the run without taking an exit.
+///
+/// The bound is measured against the host clock on purpose: a guest that stalls
+/// advances no virtual time, so nothing else can notice it. Once the guard
+/// expires the VM is unusable, so the request's own reply is discarded in favor
+/// of [`SessionError::Hung`] and `abandoned` is set, which turns every later
+/// request into [`SessionError::Abandoned`]. A request that returns first
+/// claims the run and keeps its reply.
+fn drive_guarded(
+    client: &mut Server,
+    wall_limit: Option<Duration>,
+    abandoned: &mut bool,
+    request: &Request,
+) -> Result<Reply, Box<dyn Error>> {
+    let cancel = client.transport().vmm().and_then(Vmm::cancellation_flag);
+    let Some((limit, cancel)) = guarded_run_plan(*abandoned, wall_limit, cancel)? else {
+        return client
+            .request(request)
+            .map_err(|error| SessionError::Control(error.to_string()).into());
+    };
+    let watchdog = Watchdog::start(limit, cancel).map_err(|error| {
+        SessionError::Control(format!("cannot arm the wall-clock bound: {error}"))
+    })?;
+    let reply = client.request(request);
+    let claimed = watchdog.claim();
+    drop(watchdog);
+    if !claimed {
+        *abandoned = true;
+        return Err(SessionError::Hung(limit).into());
+    }
+    reply.map_err(|error| SessionError::Control(error.to_string()).into())
+}
+
 // A session exposes observations and snapshots; it does not archive the control
 // server's normalized exit trace. Each restore closes the previous segment.
 // Release that host-only evidence at the same boundary so long campaigns retain
@@ -586,19 +786,21 @@ fn run_to_snapshot(
     client: &mut Server,
     floor: u64,
     run_budget: u64,
+    wall_limit: Option<Duration>,
+    abandoned: &mut bool,
 ) -> Result<u64, Box<dyn Error>> {
     let deadline = floor
         .checked_add(run_budget)
         .ok_or("Consonance run deadline overflow")?;
-    let reply = client
-        .request(&Request::Run {
-            until: StopConditions {
-                deadline: Some(control_proto::Moment(deadline)),
-                on: StopMask::NONE.arm(class_bit::SNAPSHOT_POINT),
-            },
-            resolve: None,
-        })
-        .map_err(|error| with_console(client, SessionError::Control(error.to_string()).into()))?;
+    let request = Request::Run {
+        until: StopConditions {
+            deadline: Some(control_proto::Moment(deadline)),
+            on: StopMask::NONE.arm(class_bit::SNAPSHOT_POINT),
+        },
+        resolve: None,
+    };
+    let reply = drive_guarded(client, wall_limit, abandoned, &request)
+        .map_err(|error| with_console(client, error))?;
     match reply {
         Reply::Stop(StopReason::SnapshotPoint { vtime }) => Ok(vtime.0),
         Reply::Stop(stop) => Err(with_console(client, SessionError::Stop(stop).into())),

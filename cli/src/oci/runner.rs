@@ -259,7 +259,10 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
     // Host deadline only; never used as guest time.
     #[allow(clippy::disallowed_methods)]
     let start = Instant::now();
-    let watchdog = super::watchdog::Watchdog::start(spec.wall_budget, vmm.kvm_cancellation_flag())
+    let cancel = vmm
+        .cancellation_flag()
+        .ok_or_else(|| RunError::Vmm("backend cannot be interrupted mid-run".into()))?;
+    let watchdog = consonance_client::watchdog::Watchdog::start(spec.wall_budget, cancel)
         .map_err(|e| RunError::Vmm(format!("cannot arm KVM timeout: {e}")))?;
     let outcome = drive(vmm, spec, start);
     drop(watchdog);

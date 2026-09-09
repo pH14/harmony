@@ -27,12 +27,31 @@ fetch_one() {
     # Every download is sha256-verified below, so retrying on transient
     # transport errors (kernel.org intermittently resets HTTP/2 streams) is
     # safe and keeps CI guest builds off the flake.
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$file.part" "$url"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q --tries=5 --waitretry=5 -O "$file.part" "$url"
-    else
-        echo "FAIL: need curl or wget to fetch $url" >&2
+    # Mirrors provide exactly the same pinned archive, never a replacement
+    # version. Bound connection retries before trying the optional mirror.
+    sources=("$url")
+    if [ -n "${3:-}" ]; then sources+=("$3"); fi
+    downloaded=false
+    for source_url in "${sources[@]}"; do
+        if command -v curl >/dev/null 2>&1; then
+            if curl -fsSL --connect-timeout 20 --retry 2 --retry-all-errors --retry-delay 5 \
+                -o "$file.part" "$source_url"; then
+                downloaded=true
+                break
+            fi
+        elif command -v wget >/dev/null 2>&1; then
+            if wget -q --connect-timeout=20 --tries=3 --waitretry=5 -O "$file.part" "$source_url"; then
+                downloaded=true
+                break
+            fi
+        else
+            echo "FAIL: need curl or wget to fetch $url" >&2
+            exit 1
+        fi
+    done
+    if [ "$downloaded" != true ]; then
+        rm -f "$file.part"
+        echo "FAIL: could not download $url from any configured source" >&2
         exit 1
     fi
     got=$(sha256_of "$file.part")
@@ -48,7 +67,8 @@ fetch_one() {
 }
 
 fetch_one "$KERNEL_URL" "$KERNEL_SHA256"
-fetch_one "$BUSYBOX_URL" "$BUSYBOX_SHA256"
+fetch_one "$BUSYBOX_URL" "$BUSYBOX_SHA256" \
+    "https://ftp.gwdg.de/pub/linux/gentoo/distfiles/e3/busybox-1.38.0.tar.bz2"
 fetch_one "$MUSL_URL" "$MUSL_SHA256"
 # PostgreSQL source for M3's native arm64 static container payload.
 fetch_one "$PG_SOURCE_URL" "$PG_SOURCE_SHA256"

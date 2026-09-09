@@ -86,9 +86,18 @@ impl DecisionClass {
         !self.is_supply()
     }
 
-    /// The wire discriminant.
-    pub(crate) fn as_u16(self) -> u16 {
+    /// The wire discriminant. Public because the standing-poll frame carries it
+    /// to the guest.
+    #[must_use]
+    pub fn as_u16(self) -> u16 {
         self as u16
+    }
+
+    /// Decode a wire discriminant, rejecting unknown values. Public because a
+    /// decoder of standing-fault bytes validates the class it names.
+    #[must_use]
+    pub fn from_wire(v: u16) -> Option<Self> {
+        Self::from_u16(v)
     }
 
     /// Decode a discriminant, rejecting unknown values.
@@ -346,6 +355,26 @@ pub enum Fault {
     /// (`16`) is disjoint from every earlier tag so a stale blob can never
     /// reinterpret into it.
     BuggifyFire,
+    /// Run the guest-side hook with this id once. A hook is a workload-defined
+    /// command the in-guest fault agent spawns; the `u32` is the id the guest's
+    /// bundle gives it. Under [`DecisionClass::Process`] because it perturbs the
+    /// node's process plane. Byte tag `17`.
+    RunHook(u32),
+    /// Hold a node at an execution place: the thread of the node that reaches
+    /// the instruction at `addr` for the `hits`-th time stops there, before the
+    /// instruction runs, for `hold` of V-time, then continues. The guest kernel
+    /// counts the hits and takes the hold, so the node sees no signal and no
+    /// tracer, only time. This reaches a race whose window is user code with no
+    /// system call in it, which a [`ProcPause`](Self::ProcPause) never lands in.
+    /// Byte tag `19`.
+    ProcPark {
+        /// User virtual address of the instruction in the node's process.
+        addr: u64,
+        /// The hit that parks, counted from 1 over every thread of the node.
+        hits: u32,
+        /// How long the thread is held.
+        hold: Span,
+    },
 }
 
 impl Fault {
@@ -360,7 +389,11 @@ impl Fault {
             Self::BlockEio | Self::BlockLatency(_) | Self::BlockTorn(_) | Self::BlockNospc => {
                 DecisionClass::BlockIo
             }
-            Self::ProcPause(_) | Self::ProcKill | Self::ProcRestart => DecisionClass::Process,
+            Self::ProcPause(_)
+            | Self::ProcKill
+            | Self::ProcRestart
+            | Self::RunHook(_)
+            | Self::ProcPark { .. } => DecisionClass::Process,
             Self::BuggifyFire => DecisionClass::Buggify,
         }
     }

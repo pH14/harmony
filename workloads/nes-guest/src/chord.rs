@@ -68,7 +68,7 @@ pub enum ChordError {
     },
     /// The weights do not sum to exactly 256.
     BadWeightSum {
-        /// The actual sum (u64: a hostile `--alphabet` can carry enough
+        /// The actual sum (u64: an oversized `--alphabet` can carry enough
         /// max-weight entries to wrap a u32 accumulator — round-8 P2).
         sum: u64,
     },

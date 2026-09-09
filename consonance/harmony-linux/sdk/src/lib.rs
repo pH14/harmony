@@ -37,9 +37,9 @@
 //! Event service (`ServiceId::Event`, op 1) under the byte-deterministic,
 //! versioned payload convention in [`wire`]; package-defined requests ride SDK
 //! opcode 3; the M6 threshold handshake uses op 2 on that same service.
-//! Fault-specific buggify and network adapters live in the optional
-//! `workloads/fault-sdk` crate. Task 74's OTel bridge reuses
-//! these same transport conventions (a reserved event-id namespace).
+//! A package that defines its own request namespace owns the codec for it, as
+//! `workloads/fault-policy` does for standing faults. Task 74's OTel bridge
+//! reuses these same transport conventions (a reserved event-id namespace).
 //!
 pub mod wire;
 

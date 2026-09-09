@@ -1718,7 +1718,7 @@ mod tests {
             });
             assert_eq!(normalize_virtual_time_exit_arm64(&debug_unlock), None);
 
-            // Planted negative: treating an HVF-only trap as a portable event
+            // Negative control: treating an HVF-only trap as a portable event
             // would consume an ordinal and diverge from stock KVM.
             let leaked = Some((
                 NormalizedEventClass::ArchitecturalControl,

@@ -7,6 +7,11 @@
 //! their concatenation), and later entries override earlier ones. Entries are
 //! written in sorted order with zeroed mtimes so the same bundle always
 //! produces the same bytes — the segment participates in the run digest.
+//!
+//! Ownership is the caller's to supply: a staged tree on the host was written
+//! by whoever ran the staging, so its on-disk owners say nothing about the
+//! image, while the kernel's initramfs unpacker honors the owner recorded in
+//! each entry. Entries default to root.
 
 use std::io::Write;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
@@ -18,6 +23,18 @@ pub enum CpioError {
     Unsupported(std::path::PathBuf),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+/// The owner recorded in one archive entry, which the kernel applies when it
+/// unpacks the initramfs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Owner {
+    pub uid: u32,
+    pub gid: u32,
+}
+
+impl Owner {
+    pub const ROOT: Owner = Owner { uid: 0, gid: 0 };
 }
 
 pub struct Writer {
@@ -33,17 +50,18 @@ impl Writer {
         }
     }
 
-    fn header(&mut self, name: &str, mode: u32, filesize: usize) {
+    fn header(&mut self, name: &str, mode: u32, owner: Owner, filesize: usize) {
         let ino = self.ino;
         self.ino += 1;
         // 070701 magic + 13 fields of 8 hex digits: ino, mode, uid, gid,
         // nlink, mtime, filesize, devmajor, devminor, rdevmajor, rdevminor,
-        // namesize, check. uid/gid/mtime pinned to 0 for byte stability.
+        // namesize, check. mtime is pinned to 0 for byte stability.
         let namesize = name.len() + 1;
+        let Owner { uid, gid } = owner;
         let _ = write!(
             self.out,
-            "070701{ino:08x}{mode:08x}{:08x}{:08x}{:08x}{:08x}{filesize:08x}{:08x}{:08x}{:08x}{:08x}{namesize:08x}{:08x}",
-            0, 0, 1, 0, 0, 0, 0, 0, 0
+            "070701{ino:08x}{mode:08x}{uid:08x}{gid:08x}{:08x}{:08x}{filesize:08x}{:08x}{:08x}{:08x}{:08x}{namesize:08x}{:08x}",
+            1, 0, 0, 0, 0, 0, 0
         );
         self.out.extend_from_slice(name.as_bytes());
         self.out.push(0);
@@ -57,42 +75,78 @@ impl Writer {
     }
 
     pub fn dir(&mut self, name: &str, mode: u32) {
-        self.header(name, 0o040000 | (mode & 0o7777), 0);
+        self.dir_owned(name, mode, Owner::ROOT);
     }
 
     pub fn file(&mut self, name: &str, mode: u32, data: &[u8]) {
-        self.header(name, 0o100000 | (mode & 0o7777), data.len());
+        self.file_owned(name, mode, Owner::ROOT, data);
+    }
+
+    pub fn symlink(&mut self, name: &str, target: &[u8]) {
+        self.symlink_owned(name, Owner::ROOT, target);
+    }
+
+    pub fn dir_owned(&mut self, name: &str, mode: u32, owner: Owner) {
+        self.header(name, 0o040000 | (mode & 0o7777), owner, 0);
+    }
+
+    pub fn file_owned(&mut self, name: &str, mode: u32, owner: Owner, data: &[u8]) {
+        self.header(name, 0o100000 | (mode & 0o7777), owner, data.len());
         self.out.extend_from_slice(data);
         self.pad4();
     }
 
-    pub fn symlink(&mut self, name: &str, target: &[u8]) {
-        self.header(name, 0o120000 | 0o777, target.len());
+    pub fn symlink_owned(&mut self, name: &str, owner: Owner, target: &[u8]) {
+        self.header(name, 0o120000 | 0o777, owner, target.len());
         self.out.extend_from_slice(target);
         self.pad4();
     }
 
     /// Recursively add `dir`'s contents under archive path `prefix`, in
-    /// sorted order.
+    /// sorted order, every entry owned by root.
     pub fn tree(&mut self, dir: &Path, prefix: &str) -> Result<(), CpioError> {
+        self.tree_owned(dir, prefix, &|_| Owner::ROOT)
+    }
+
+    /// Recursively add `dir`'s contents under archive path `prefix`, in
+    /// sorted order. `owner_of` names each entry's owner by its path relative
+    /// to `dir`.
+    pub fn tree_owned(
+        &mut self,
+        dir: &Path,
+        prefix: &str,
+        owner_of: &dyn Fn(&Path) -> Owner,
+    ) -> Result<(), CpioError> {
+        self.walk(dir, Path::new(""), prefix, owner_of)
+    }
+
+    fn walk(
+        &mut self,
+        dir: &Path,
+        relative: &Path,
+        prefix: &str,
+        owner_of: &dyn Fn(&Path) -> Owner,
+    ) -> Result<(), CpioError> {
         let mut entries: Vec<_> = std::fs::read_dir(dir)?.collect::<Result<_, _>>()?;
         entries.sort_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
             let path = entry.path();
             let name = entry.file_name();
+            let relative = relative.join(&name);
             let name = name.to_string_lossy();
             let archive_name = format!("{prefix}/{name}");
+            let owner = owner_of(&relative);
             let meta = std::fs::symlink_metadata(&path)?;
             let ftype = meta.file_type();
             if ftype.is_symlink() {
                 let target = std::fs::read_link(&path)?;
-                self.symlink(&archive_name, target.as_os_str().as_encoded_bytes());
+                self.symlink_owned(&archive_name, owner, target.as_os_str().as_encoded_bytes());
             } else if ftype.is_dir() {
-                self.dir(&archive_name, meta.permissions().mode());
-                self.tree(&path, &archive_name)?;
+                self.dir_owned(&archive_name, meta.permissions().mode(), owner);
+                self.walk(&path, &relative, &archive_name, owner_of)?;
             } else if ftype.is_file() {
                 let data = std::fs::read(&path)?;
-                self.file(&archive_name, meta.permissions().mode(), &data);
+                self.file_owned(&archive_name, meta.permissions().mode(), owner, &data);
             } else if ftype.is_fifo() || ftype.is_socket() || meta.rdev() != 0 {
                 // Images occasionally carry stray sockets/devices; the guest
                 // gets fresh /dev and /run mounts, so skipping is safe.
@@ -106,7 +160,7 @@ impl Writer {
 
     /// Close the archive and return its bytes (uncompressed cpio).
     pub fn finish(mut self) -> Vec<u8> {
-        self.header("TRAILER!!!", 0, 0);
+        self.header("TRAILER!!!", 0, Owner::ROOT, 0);
         self.out
     }
 }
@@ -119,7 +173,7 @@ impl Default for Writer {
 
 #[cfg(test)]
 mod tests {
-    use super::Writer;
+    use super::{Owner, Writer};
 
     /// Same logical contents, same bytes: the segment participates in the
     /// run digest, so the writer must be a pure function of the tree.
@@ -194,6 +248,100 @@ mod tests {
         let (name, _, _, _, _, next) = parse_entry(&bytes, next);
         assert_eq!(name, "TRAILER!!!");
         assert_eq!(next, bytes.len());
+    }
+
+    /// The uid and gid fields of one parsed newc entry.
+    fn parse_owner(bytes: &[u8], at: usize) -> Owner {
+        let field = |i: usize| {
+            let s = std::str::from_utf8(&bytes[at + 6 + 8 * i..at + 6 + 8 * (i + 1)]).unwrap();
+            u32::from_str_radix(s, 16).unwrap()
+        };
+        Owner {
+            uid: field(2),
+            gid: field(3),
+        }
+    }
+
+    /// Every entry names its own owner, and the plain entry points record
+    /// root. The kernel applies these fields when it unpacks the archive, so
+    /// they are what decides which guest user can read a staged file.
+    #[test]
+    fn entries_record_the_owner_they_were_given() {
+        let postgres = Owner { uid: 70, gid: 70 };
+        let mut w = Writer::new();
+        w.dir_owned("data", 0o700, postgres);
+        w.file_owned("data/conf", 0o600, postgres, b"cfg");
+        w.symlink_owned("data/link", postgres, b"conf");
+        w.file("plain", 0o644, b"x");
+        let bytes = w.finish();
+
+        let mut at = 0;
+        let mut owners = Vec::new();
+        loop {
+            let (name, _, _, _, _, next) = parse_entry(&bytes, at);
+            if name == "TRAILER!!!" {
+                break;
+            }
+            owners.push((name, parse_owner(&bytes, at)));
+            at = next;
+        }
+        assert_eq!(
+            owners,
+            [
+                ("data".to_string(), postgres),
+                ("data/conf".to_string(), postgres),
+                ("data/link".to_string(), postgres),
+                ("plain".to_string(), Owner::ROOT),
+            ]
+        );
+    }
+
+    /// tree_owned() asks for each entry's owner by its path relative to the
+    /// walked root, and tree() is the same walk with every entry root's.
+    #[test]
+    fn tree_owned_looks_up_each_entry_by_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("var/lib/data")).unwrap();
+        std::fs::write(dir.path().join("var/lib/data/conf"), b"cfg").unwrap();
+        std::fs::write(dir.path().join("etc"), b"root-owned").unwrap();
+        let postgres = Owner { uid: 70, gid: 70 };
+        let owner_of = |path: &std::path::Path| {
+            if path.starts_with("var/lib/data") {
+                postgres
+            } else {
+                Owner::ROOT
+            }
+        };
+        let mut w = Writer::new();
+        w.tree_owned(dir.path(), "root", &owner_of).unwrap();
+        let bytes = w.finish();
+
+        let mut at = 0;
+        let mut owners = Vec::new();
+        loop {
+            let (name, _, _, _, _, next) = parse_entry(&bytes, at);
+            if name == "TRAILER!!!" {
+                break;
+            }
+            owners.push((name, parse_owner(&bytes, at)));
+            at = next;
+        }
+        assert_eq!(
+            owners,
+            [
+                ("root/etc".to_string(), Owner::ROOT),
+                ("root/var".to_string(), Owner::ROOT),
+                ("root/var/lib".to_string(), Owner::ROOT),
+                ("root/var/lib/data".to_string(), postgres),
+                ("root/var/lib/data/conf".to_string(), postgres),
+            ]
+        );
+
+        let mut plain = Writer::new();
+        plain.tree(dir.path(), "root").unwrap();
+        let plain = plain.finish();
+        assert_ne!(plain, bytes, "the owner is part of the bytes");
+        assert_eq!(parse_owner(&plain, 0), Owner::ROOT);
     }
 
     /// tree() walks a real directory in sorted order, following the same

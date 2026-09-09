@@ -30,6 +30,10 @@ Linux:
 nix run .#guest-images -- --output "$PWD/guest-output"
 ```
 
+On Linux/x86_64 that produces `x86_64/bzImage`, `x86_64/bzImage-faultlab`, and
+the minimal initramfs; the emitted `MANIFEST.sha256` covers every staged
+artifact.
+
 The pinned BusyBox source is also available as a standalone flake package for
 reproducible image preparation and CI reuse:
 
@@ -45,9 +49,9 @@ does not change the accepted source bytes.
 
 ## Components
 
-- `linux/` builds the pinned kernel and workload-specific initramfs images.
-  Kernel patches provide the guest device and paravirtual clock interfaces;
-  build scripts verify source and artifact hashes.
+- `linux/` builds the pinned kernel, its x86 profiles, and workload-specific
+  initramfs images. Kernel patches provide the guest device, paravirtual clock,
+  and task-park interfaces; build scripts verify source and artifact hashes.
 - `libvoidstar/` implements the SDK-facing dynamic ABI and communicates with
   `/dev/harmony`.
 - `sdk/` provides the no-std event, state, assertion, lifecycle, and entropy

@@ -33,7 +33,7 @@ fn config(native: u32) -> ProptestConfig {
 
 /// Plant the four gating values a bzImage needs (`boot_flag`, `HdrS`, a ≥2.12
 /// `version`, the `XLF_KERNEL_64` bit) at their fixed offsets in a buffer, plus an
-/// arbitrary `setup_sects`/`pref_address`/`init_size` — the realistic adversarial
+/// arbitrary `setup_sects`/`pref_address`/`init_size` — the realistic worst-case
 /// shape that reaches deep into `load`'s geometry math.
 fn plant_bzimage(setup_sects: u8, pref_address: u32, init_size: u32, tail_len: usize) -> Vec<u8> {
     let real_sects = if setup_sects == 0 { 4 } else { setup_sects };
@@ -74,7 +74,7 @@ proptest! {
 
     /// A buffer carrying the real bzImage magics at their fixed offsets, with
     /// arbitrary setup-sector count, preferred address, init_size, initramfs, and
-    /// RAM size — the adversarial shape that drives `load` through every geometry
+    /// RAM size — the worst-case shape that drives `load` through every geometry
     /// check (setup tail, kernel fit, initramfs placement, page tables) — still
     /// never panics. Mixes success and the various `LinuxLoadError`s.
     #[test]
