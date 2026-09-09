@@ -211,3 +211,39 @@ Hash-family assumptions matter for probabilistic claims, as emphasized by
 [Thorup's analysis](https://arxiv.org/abs/1303.5479); a fast deterministic mixer
 is not substituted into those theorems without their hypotheses. R03's exact
 extrema invariant and its empirical search effect are separate claims.
+
+## Chained progress and the quantity a comparison estimates
+
+Let P_j(pi, s) be the searched and replayed prefix carried into stage j by
+policy pi on seed s. Let T_j(pi, s, p) be admitted work until a verified stage
+victory from fixed prefix p, with infinity denoting no victory. The fresh-chain
+stage cost is T_j(pi, s, P_j(pi, s)): earlier retention choices also change the
+later starting emulator state. Its route, resources and timing are consequences
+of the intervention, not nuisance values that can be assumed equal.
+
+For two policies A and B, comparing T_j(A, s, P_j(A, s)) with
+T_j(B, s, P_j(B, s)) measures their end-to-end stage outcomes. Holding the
+prefix fixed instead compares T_j(A, s, p) with T_j(B, s, p), a conditional
+effect of retention at that origin. These are different questions. The second
+can diagnose a mechanism but cannot replace a fresh-chain result. Selecting p
+because A succeeded there also prevents treating that one contrast as an
+unselected population estimate. H01 reuses a completed candidate result for
+this conditional question and makes the selection explicit.
+
+With fixed stage limits b_j, chain success is the intersection of events
+T_j(pi, s, P_j(pi, s)) <= b_j, plus qualified bridges and the total budget.
+The probability of this intersection is not the product of unconditional
+stage success rates: the carried prefixes couple the events. Independent
+fresh-seed replication evaluates the complete chain, including that coupling.
+
+Wall limits create a further distinction. If a control stops after c frames
+without success, the observation is T_control > c, not T_control = infinity.
+A candidate victory at t > c therefore gives no ordering of their victory
+costs. This is exactly J01 Heat: 66,633,523 candidate frames and only 40,507,046
+observed control frames. For a 20% candidate frame reduction, the required
+comparison is 5*t <= 4*T_control. Completing a control budget of 85M without
+success would establish that conditional inequality for this candidate; an
+earlier control victory might refute it. H01 also withholds its allocation
+gate on wall censoring, rather than silently substituting elapsed time for
+completed work. Report setup, replay and bridge work separately from admitted
+search work; neither metric alone is the full cost of a fresh chain.

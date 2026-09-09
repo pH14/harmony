@@ -679,3 +679,28 @@ H01 launched from committed driver `d127aaa7` under a separate3240s/11GiB
 systemd limit on the free0–3 CPUs. The latest full NES library suite includes
 the raw boss decoder:123 tests passed in24.29s, plus the evaluator test. A
 persisted local log resolves a prior lost tool completion without uncertainty.
+
+### L01: retain an ordinary-production comparator
+
+R03b and J01's Metal gains compare sampling against coordinate extremes, an
+optional retention policy. Before describing sampling as an improvement over
+production, also measure ordinary retention on these same two development
+seeds. Reuse both completed candidate results. Run each control with its
+candidate's exact request, removing only the optional retention policy and
+setting the stopping limits to 12M frames and 600s search (120s finish, 780s
+outer watchdog). Keep its original execution limit, chain-export mode, frozen
+binary, fresh origin, four workers and 8GiB. No gameplay prefix is supplied.
+
+Run only when existing campaigns release CPU slots, keeping at most two
+four-worker campaigns. Pin controls to the opposite CPU group from their
+reused candidate when both groups are free. Record actual placement; compare
+admitted frames, with wall censoring explicitly disqualifying the allocation
+gate. For each seed the 20% test is 5× candidate victory frames <=4× control
+victory frames or its completed budget lower bound. Both comparisons must
+pass before claiming a replicated large Metal gain over ordinary production
+retention. These seeds were selected after observing the candidate, so this
+is an adaptive baseline diagnostic and never a held-out success-rate panel.
+A Metal result still does not qualify the Wily goal or authorize a default
+change. Subsequent causal attribution may also need a two-quality-winner
+control: current evidence does not distinguish the rank choice from the more
+general benefit of preserving an additional non-extreme state.
