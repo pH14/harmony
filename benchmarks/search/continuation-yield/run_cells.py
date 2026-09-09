@@ -38,6 +38,9 @@ def main():
         evidence_path = root / required["path"]
         assert sha(evidence_path) == required["sha256"], "qualification evidence changed"
         evidence = json.loads(evidence_path.read_text())
+        if "screen_decision" in required:
+            assert evidence["execution_complete"] and evidence["allocation_stop"] is None
+            assert evidence["screen"]["decision"] == required["screen_decision"], "required screen gate did not pass"
         for cell_id in required["passed_cells"]:
             matching = [row for row in evidence["records"] if row["id"] == cell_id]
             assert len(matching) == 1 and matching[0].get("checks_passed"), "missing qualification"
