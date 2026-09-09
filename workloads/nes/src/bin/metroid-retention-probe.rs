@@ -28,7 +28,7 @@ use std::{
 struct Audit {
     samples: Vec<Vec<ReplacementPair>>,
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct Outcome {
     frames: u64,
     dead: bool,
@@ -39,6 +39,13 @@ struct Outcome {
     // Living action-interior map visits beyond the shared starting map.
     reached_maps: BTreeSet<(u8, u8, u8)>,
 }
+
+fn finish_prefixes(mut prefixes: Vec<Outcome>, last: &Outcome, limit: usize) -> Vec<Outcome> {
+    // A terminal branch executes no further action at any longer horizon.
+    prefixes.resize_with(limit, || last.clone());
+    prefixes
+}
+
 fn prepare(
     core: &Path,
     rom: &[u8],
@@ -69,7 +76,8 @@ fn extend(
     target: &mut MetroidTarget,
     snapshot: &MetroidSnapshot,
     suffix: &[ButtonChord],
-) -> Result<Outcome, Box<dyn Error>> {
+    prefix_limit: usize,
+) -> Result<(Outcome, Vec<Outcome>), Box<dyn Error>> {
     target.restore(snapshot)?;
     let start = target.mechanical_state();
     let mut outcome = Outcome {
@@ -82,6 +90,7 @@ fn extend(
         reached_maps: BTreeSet::new(),
     };
     let before = target.frames_clocked();
+    let mut prefixes = Vec::with_capacity(prefix_limit);
     for action in suffix {
         if target.is_dead() || target.is_victory() {
             break;
@@ -103,16 +112,23 @@ fn extend(
                 outcome.reached_maps.insert((s.area, s.map_x, s.map_y));
             }
         }
+        if prefixes.len() < prefix_limit {
+            outcome.frames = target.frames_clocked() - before;
+            outcome.dead = target.is_dead();
+            outcome.endpoint = target.mechanical_state();
+            prefixes.push(outcome.clone());
+        }
     }
     outcome.frames = target.frames_clocked() - before;
     outcome.dead = target.is_dead();
     outcome.endpoint = target.mechanical_state();
-    Ok(outcome)
+    let prefixes = finish_prefixes(prefixes, &outcome, prefix_limit);
+    Ok((outcome, prefixes))
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if !(6..=8).contains(&args.len()) {
-        return Err("usage: metroid-retention-probe CORE ROM AUDIT OUT TRIALS ACTIONS [TERMINAL_POLICY [SEED]]".into());
+    if !(6..=9).contains(&args.len()) {
+        return Err("usage: metroid-retention-probe CORE ROM AUDIT OUT TRIALS ACTIONS [TERMINAL_POLICY [SEED [PREFIX_LIMIT]]]".into());
     }
     let core = Path::new(&args[0]);
     let rom = fs::read(&args[1])?;
@@ -124,6 +140,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let actions: usize = args[5].parse()?;
     if trials == 0 || trials > 256 || actions == 0 || actions > 128 {
         return Err("probe limits exceed bounded diagnostic".into());
+    }
+    let prefix_limit = args
+        .get(8)
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(0);
+    if prefix_limit > actions {
+        return Err("prefix limit exceeds generated suffix length".into());
     }
     let terminal_policy =
         MetroidTerminalPolicy::parse(args.get(6).map_or("death_or_ending_v2", String::as_str))?;
@@ -141,6 +165,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let suffix_sha256 = format!("{:x}", Sha256::digest(&suffix_bytes));
     fs::write(out.join("suffixes.json"), suffix_bytes)?;
     let mut log = BufWriter::new(fs::File::create(out.join("outcomes.jsonl"))?);
+    let mut prefix_log = if prefix_limit > 0 {
+        Some(BufWriter::new(fs::File::create(
+            out.join("prefixes.jsonl"),
+        )?))
+    } else {
+        None
+    };
     let mut totals = vec![[0u64; 6]; audit.samples.len()];
     let mut prefix_frames = 0u64;
     let mut probe_frames = [0u64; 2];
@@ -166,9 +197,22 @@ fn main() -> Result<(), Box<dyn Error>> {
             prefix_frames += cf + inf;
             pair_count += 1;
             for (trial, suffix) in suffixes.iter().enumerate() {
-                let c = extend(&mut candidate, &cs, suffix)?;
-                let i = extend(&mut incumbent, &is, suffix)?;
+                let (c, cp) = extend(&mut candidate, &cs, suffix, prefix_limit)?;
+                let (i, ip) = extend(&mut incumbent, &is, suffix, prefix_limit)?;
                 let (discarded, survivor) = if pair.replaces { (&i, &c) } else { (&c, &i) };
+                if let Some(prefix_log) = &mut prefix_log {
+                    let (discarded_prefixes, survivor_prefixes) = if pair.replaces {
+                        (&ip, &cp)
+                    } else {
+                        (&cp, &ip)
+                    };
+                    writeln!(
+                        prefix_log,
+                        "{}",
+                        json!({"stratum":stratum,"pair":index,"execution":pair.execution,"trial":trial,"candidate_replaces":pair.replaces,"discarded":discarded_prefixes,"survivor":survivor_prefixes})
+                    )?;
+                    prefix_log.flush()?;
+                }
                 probe_frames[0] += discarded.frames;
                 probe_frames[1] += survivor.frames;
                 let discarded_gain = discarded.equipment_gained & !survivor.equipment_gained != 0
@@ -233,6 +277,54 @@ fn main() -> Result<(), Box<dyn Error>> {
         out.join("summary.json"),
         serde_json::to_vec_pretty(&report)?,
     )?;
+    if prefix_limit > 0 {
+        fs::write(
+            out.join("prefix-metadata.json"),
+            serde_json::to_vec_pretty(&json!({
+                "format":"metroid-equal-suffix-prefix-observations-v1",
+                "prefix_horizons":(1..=prefix_limit).collect::<Vec<_>>(),
+                "suffix_sha256":suffix_sha256,
+                "generated_actions_per_trial":actions,
+                "cost_scope":"prefix counters are cumulative observations of the single full run; do not sum them as additional physical work",
+                "terminal_rule":"later horizons repeat the first terminal outcome and its unchanged frame count"
+            }))?,
+        )?;
+    }
     println!("{report}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_prefix_padding_preserves_state_events_and_cumulative_cost() {
+        let alive = Outcome {
+            frames: 10,
+            dead: false,
+            endpoint: MetroidMechanicalState::default(),
+            equipment_gained: 0,
+            boss_gain: false,
+            capacity_gain: false,
+            reached_maps: BTreeSet::new(),
+        };
+        let dead = Outcome {
+            frames: 20,
+            dead: true,
+            reached_maps: BTreeSet::from([(1, 2, 3)]),
+            ..alive.clone()
+        };
+        let prefixes = finish_prefixes(vec![alive.clone(), dead.clone()], &dead, 6);
+        assert_eq!(prefixes.len(), 6);
+        assert_eq!(prefixes[0].frames, 10);
+        assert!(!prefixes[0].dead);
+        let expected = serde_json::to_vec(&dead).unwrap();
+        assert!(
+            prefixes[1..]
+                .iter()
+                .all(|p| serde_json::to_vec(p).unwrap() == expected)
+        );
+        assert!(finish_prefixes(Vec::new(), &alive, 0).is_empty());
+    }
 }

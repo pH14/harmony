@@ -159,6 +159,15 @@ hash. Use terminal v3 for audits from corrected campaigns; living-map checks
 respect that predicate. A separately registered seed permits new suffix probes
 without silently reusing the original development suffix bank.
 
+An optional final `PREFIX_LIMIT` argument records cumulative outcomes after
+each of the first requested actions in `prefixes.jsonl`, while executing the
+same full suffix bank. `prefix-metadata.json` records the horizons and bank hash.
+After an early terminal, later horizons repeat its outcome and frame count.
+These counters observe the single run; summing them would double-count physical
+work. Full-horizon outputs retain their historical format and default calls
+produce no prefix sidecar. This permits checking the actual one-to-six-action
+job horizon without replacing the frozen24-action diagnostic bank.
+
 The opt-in Cargo feature `metroid-refined-archive` builds a separate experimental
 v9 key policy. It uses 8-pixel retention positions and raw pose, while preserving
 the existing 32-pixel selection cells, 128-pixel regions, map groups, progress
