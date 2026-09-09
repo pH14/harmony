@@ -558,3 +558,13 @@ The route may contain no boss encounter; that qualifies a negative control
 only. Do not infer whole-campaign encounter absence or start longer searches
 from an empty trace. A positive episode is required before proposing campaign
 encounter or partial-damage counters.
+
+R03 Metroid completed the full50M-frame comparison without censoring.
+Sampling has no additional final milestone or20% arrival improvement, and
+misses the control energy tank. Its Metroid escalation gate failed. Do not
+run longer sample campaigns. Full results are preserved on msr1.
+Both MM2 starts failed immediately because the driver incorrectly passed
+the Metroid-only replacement-pair audit option. No emulator search ran.
+Remove that unsupported diagnostic option, preserve failed outputs unchanged,
+and run the same registered transfer conditions under new run ID `r03b`.
+The binary, policies, seeds, budgets, vocabulary and selection stay frozen.

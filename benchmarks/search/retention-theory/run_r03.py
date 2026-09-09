@@ -4,6 +4,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from pathlib import Path
+import re
 import subprocess
 
 SAMPLE = "representative_job_sample_2_v1"
@@ -18,7 +19,9 @@ def main():
     parser.add_argument("--phase", choices=["qualify", "metroid", "mm2"], required=True)
     parser.add_argument("--recheck", action="store_true")
     parser.add_argument("--resume", action="store_true", help="Reuse completed cells and run only absent cells")
+    parser.add_argument("--run-id", default="r03")
     args = parser.parse_args()
+    assert re.fullmatch(r"[a-z0-9-]+", args.run_id)
     root = args.experiment.resolve()
     source = root / "source-job-sample-001"
     research = source / "benchmarks/search/retention-theory"
@@ -26,13 +29,13 @@ def main():
     records = []
 
     def save(passed):
-        (root / "runs" / f"r03-{args.phase}-results.json").write_text(
+        (root / "runs" / f"{args.run_id}-{args.phase}-results.json").write_text(
             json.dumps({"passed": passed, "records": sorted(records, key=lambda r: r["label"])}, indent=2) + "\n")
 
     def run(game, policy, cpus):
         label = f"{game}-{policy or 'legacy'}"
         suite = json.loads((research / ("k01-smoke.json" if game == "metroid" else "b01.json")).read_text())
-        suite["id"] = f"retention-theory-r03-{args.phase}-{label}"
+        suite["id"] = f"retention-theory-{args.run_id}-{args.phase}-{label}"
         suite["cases"] = [case for case in suite["cases"] if case["game"] == game]
         suite["memory_mib"] = [8192]
         if game == "metroid":
@@ -45,10 +48,12 @@ def main():
                 "actions": 4096, "executions": 500000 if game == "metroid" else 100000,
                 "frames": 50000000 if game == "metroid" else 12000000,
                 "wall_seconds": 1800 if game == "metroid" else 600,
-                "verification": "witness", "retention_audit": True,
+                "verification": "witness",
             })
-        manifest = root / f"r03-{args.phase}-{label}.json"
-        out = root / "runs" / f"r03-{args.phase}-{label}"
+            if game == "metroid":
+                suite["search"]["retention_audit"] = True
+        manifest = root / f"{args.run_id}-{args.phase}-{label}.json"
+        out = root / "runs" / f"{args.run_id}-{args.phase}-{label}"
         if not args.recheck and not (args.resume and out.exists()):
             assert not out.exists(), "refusing to replace an experiment"
             manifest.write_text(json.dumps(suite, indent=2) + "\n")

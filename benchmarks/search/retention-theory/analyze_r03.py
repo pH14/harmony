@@ -12,10 +12,11 @@ def main():
     parser.add_argument("--experiment", type=Path, required=True)
     parser.add_argument("--game", choices=["metroid", "mm2"], required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--run-id", default="r03")
     args = parser.parse_args()
     data = {}
     for label, policy in [("sample", SAMPLE), ("extremes", EXTREMES)]:
-        paths = list((args.experiment / "runs" / f"r03-{args.game}-{args.game}-{policy}").glob("*/summary.json"))
+        paths = list((args.experiment / "runs" / f"{args.run_id}-{args.game}-{args.game}-{policy}").glob("*/summary.json"))
         assert len(paths) == 1
         path = paths[0]
         if args.game == "metroid":
