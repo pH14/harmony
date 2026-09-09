@@ -674,3 +674,8 @@ A control win earlier than that threshold rejects the20% claim. Preserve any
 control bridge, but never count this supplied-prefix run as a fresh chain or
 an untouched validation seed. This is an adaptive diagnostic prompted by J01,
 not an independent replication. No further work is licensed by screens alone.
+
+H01 launched from committed driver `d127aaa7` under a separate3240s/11GiB
+systemd limit on the free0–3 CPUs. The latest full NES library suite includes
+the raw boss decoder:123 tests passed in24.29s, plus the evaluator test. A
+persisted local log resolves a prior lost tool completion without uncertainty.

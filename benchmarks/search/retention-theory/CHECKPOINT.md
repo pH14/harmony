@@ -1,9 +1,11 @@
-# Research checkpoint — September 9, 02:17 UTC
+# Research checkpoint — September 9, 02:55 UTC
 
 The goal remains active. No fresh Metroid boss or MM2 Wily 4 breakthrough has
 been established. The approved ROM transfer is complete and checksum verified.
 Three Metroid/retention development gates have failed. Job sampling produced a
-large MM2 Metal improvement and a fresh paired chain is running on msr1. All
+large MM2 Metal improvement; its fresh chain has now also solved Heat and Air.
+The control stopped at Heat's wall limit. Sampling's chain and a bounded
+shared-prefix Heat control are running on msr1. All
 production defaults remain unchanged.
 
 ## Findings that changed the research direction
@@ -59,7 +61,9 @@ uniform sampling in adaptive search.
 
 The frozen default-feature ARM build is source commit `33795855`; its source
 and binary digests are recorded in [the ledger](README.md). All 132 generic and
-122 NES library tests and strict Clippy checks passed. All five ARM qualification
+123 NES library tests, the evaluator test and strict Clippy checks passed. The
+latest NES suite completed in24.29s; its persisted local log preserves the
+completion lost from an earlier tool response. All five ARM qualification
 cells passed full replay, including exact corrected-default Metroid compatibility.
 [Qualification evidence](r03-qualify-results.json) records the actual admissions.
 A checker initially demanded resource tradeoffs from the early control; its
@@ -82,13 +86,29 @@ with the existing production export contract. No search predicate changed.
 qualified endpoints and143,580 physical frames for the successful qualification.
 The earlier failed helper adds an inferred16,819 frames, recorded separately.
 
-J01 now starts two new fresh chains on development seed20261102, with no
+J01 starts two new fresh chains on development seed20261102, with no
 imported gameplay input. It retains R03b's full-hold profile and swaps CPU
 placement: sample8–11, extremes0–3. Each stage is capped at1M jobs/120M frames
 and20 minutes search; each chain stops at its first unsolved stage and has a
 90-minute total limit. Later-stage comparisons are end-to-end chain evidence,
 because each arm carries only its own searched prefix. Wily4 still requires
 all eight weapons and twice-replayed entry, followed by untouched replication.
+
+Sampling's new Metal victory took2,488,346 frames versus7,672,364, replicating
+the earlier large first-stage improvement. It then defeated Heat at66,633,523
+frames and Air at39,646,633, with healthy next-stage bridges replayed twice.
+Wood is running. The control stopped unsolved at Heat after40,507,046 frames
+and1200s; at that common frame boundary neither had won. Consequently the
+greater chain depth is promising development evidence but does not establish
+a matched-work Heat improvement.
+
+H01 isolates that question with one additional extremes control from exactly
+sampling's searched Metal prefix and the same seed/binary/configuration. It
+reuses the completed sampling Heat result and allows85M frames/3000s on the
+free0–3 cores. A20% conditional gain requires5×66,633,523 <=4× control cost
+or completed frame-budget lower bound, with no wall censoring. This is a
+registered diagnostic, not a fresh-chain result or untouched replication.
+The original J01 chain limits and all earlier failed gates remain intact.
 
 The standalone Metroid boss-memory probe also passed three replays of the D01
 Kraid-area route: ordinary holds and one-frame reads end in identical emulator
