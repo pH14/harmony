@@ -11,7 +11,9 @@ ctl() {
 writer() {
   worker=$1
   i=1
-  while [ "$i" -le 2000 ]; do
+  # Keep the acknowledged journal bounded so the complete prefix read fits
+  # within one ordinary etcdctl request even on the slowest guest backend.
+  while [ "$i" -le 256 ]; do
     key="museum/${worker}/key-${i}"
     value="value-${worker}-${i}"
     # Keep pressure on the apply path across a node kill. A failed request is
