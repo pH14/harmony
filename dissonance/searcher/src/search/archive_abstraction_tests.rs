@@ -714,15 +714,36 @@ fn pairwise_difference_does_not_prove_a_future_was_lost_from_two_survivors() {
     let mut archive = ToyArchive::new(|_| 1);
     archive.slot_retention = SlotRetentionPolicy::QualityRepresentatives2;
     for state in 0..3 {
-        let result = offer(
-            &mut archive,
-            state,
-            Key {
-                slot: 0,
-                resources: [10 - state as u64; 2],
-            },
-            1,
-        );
+        let (result, _) = archive
+            .insert_after_observed(
+                None,
+                None,
+                state as u64,
+                ArchiveCandidate {
+                    suffix: vec![state as u8],
+                    key: Key {
+                        slot: 0,
+                        resources: [10 - state as u64; 2],
+                    },
+                    milestones: (),
+                },
+                state,
+                |event| {
+                    if state == 2 {
+                        assert!(!event.candidate_admitted);
+                        assert_eq!(event.slot_member_count, 2);
+                        let members = (event.slot_members)()?;
+                        assert!(members.iter().all(|m| m.retained_by_local_rule));
+                        let covered = members
+                            .iter()
+                            .any(|m| model.can_reach_event(*m.snapshot.unwrap(), 1));
+                        assert!(covered);
+                        assert!(!model.can_reach_event(*event.incumbent.1.unwrap(), 1));
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap();
         assert_eq!(result.is_some(), state < 2);
     }
     assert_eq!(archive.active_count(), 2);
@@ -730,4 +751,106 @@ fn pairwise_difference_does_not_prove_a_future_was_lost_from_two_survivors() {
     assert!(model.can_reach_event(2, 1));
     assert!(!model.can_reach_event(1, 1));
     assert!(retained_can_reach(&archive, &model, 1));
+}
+
+#[test]
+fn complete_slot_observation_preserves_rejection_replacement_and_counters() {
+    let run = |observe: bool| {
+        let mut archive = ContextArchive::new(|_| 1);
+        archive.slot_retention = SlotRetentionPolicy::QualityRepresentatives2;
+        offer_context(&mut archive, 0, 3, Some(0));
+        offer_context(&mut archive, 1, 2, Some(1));
+        let mut observations = Vec::new();
+        for (state, quality) in [(2, 1), (3, 4)] {
+            archive
+                .insert_after_observed(
+                    None,
+                    None,
+                    state,
+                    ArchiveCandidate {
+                        suffix: vec![state as u8],
+                        key: ContextKey {
+                            quality,
+                            context: Some(state),
+                        },
+                        milestones: (),
+                    },
+                    state as usize,
+                    |event| {
+                        if observe {
+                            let members = (event.slot_members)()?;
+                            assert_eq!(event.slot_member_count, members.len());
+                            observations.push((
+                                event.candidate_admitted,
+                                members
+                                    .iter()
+                                    .map(|m| {
+                                        (
+                                            m.id,
+                                            *m.snapshot.unwrap(),
+                                            m.input.actions.clone(),
+                                            m.retained_by_local_rule,
+                                        )
+                                    })
+                                    .collect::<Vec<_>>(),
+                            ));
+                        }
+                        Ok(())
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(archive.input_reconstructions.get(), 0);
+        (
+            retained_context_states(&archive),
+            archive.selector_report(),
+            observations,
+        )
+    };
+    let control = run(false);
+    let measured = run(true);
+    assert_eq!((&control.0, &control.1), (&measured.0, &measured.1));
+    assert_eq!(measured.0, BTreeSet::from([0, 3]));
+    assert_eq!(
+        measured.2,
+        vec![
+            (false, vec![(0, 0, vec![0], true), (1, 1, vec![1], true)]),
+            (true, vec![(0, 0, vec![0], true), (1, 1, vec![1], false)]),
+        ]
+    );
+}
+
+#[test]
+fn complete_slot_observation_keeps_uncached_incumbents_explicit() {
+    let mut archive = ContextArchive::new(|_| 1);
+    archive.slot_retention = SlotRetentionPolicy::QualityRepresentatives2;
+    offer_context(&mut archive, 0, 3, Some(0));
+    offer_context(&mut archive, 1, 2, Some(1));
+    // Model an already evicted snapshot without removing its active metadata.
+    archive.entries[0].snapshot = None;
+    archive
+        .insert_after_observed(
+            None,
+            None,
+            2,
+            ArchiveCandidate {
+                suffix: vec![2],
+                key: ContextKey {
+                    quality: 1,
+                    context: Some(2),
+                },
+                milestones: (),
+            },
+            2,
+            |event| {
+                let members = (event.slot_members)()?;
+                assert_eq!(members.len(), 2);
+                assert_eq!((members[0].id, members[0].snapshot), (0, None));
+                assert_eq!(members[0].input.actions, vec![0]);
+                assert!(members[0].retained_by_local_rule);
+                assert!(members[1].snapshot.is_some());
+                Ok(())
+            },
+        )
+        .unwrap();
 }

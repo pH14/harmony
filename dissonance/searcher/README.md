@@ -178,6 +178,12 @@ incumbent is removed. The read-only event includes cached snapshots, prior
 selection exposure, and lazy reconstruction of both inputs. Observers must
 bound their storage and account for reconstruction separately; observer input
 materialization never changes deterministic reconstruction counters. The
+same event offers a lazy complete local-slot view with stable ids, optional
+cached snapshots, inputs and the local rule's proposed keep/remove flags. No
+slot vectors or inputs are allocated unless requested. The proposal precedes
+global population and memory eviction, so it does not certify the final global
+survivor set. Missing cached snapshots remain explicit members of the view.
+The
 constant-size `retention_diagnostics` sidecar census counts removal before
 window exposure, recorded parent selections and productive-admission credit.
 Selections include pre-execution duplicate skips, which execute no new job.

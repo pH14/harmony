@@ -21,6 +21,8 @@ consonance = ["machine/consonance"]
 metroid-refined-archive = []
 # Optional motion metadata for bounded context retention; does not split cells.
 metroid-motion-context = []
+# Reporting-only complete local-survivor samples; legacy audits stay v1 by default.
+metroid-complete-retention-audit = []
 
 [[bin]]
 name = "nova-consonance-campaign"

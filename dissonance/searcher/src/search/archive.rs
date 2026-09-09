@@ -864,6 +864,25 @@ pub struct ArchiveCandidate<A: Ord, K, M> {
     pub milestones: M,
 }
 
+/// One existing member of a local retention slot, materialized for diagnostics.
+pub struct RetentionSlotMember<'a, A: Ord, K, S> {
+    /// Stable stream entry id, not its compact in-memory index.
+    pub id: u64,
+    /// Existing endpoint key.
+    pub key: K,
+    /// Resident snapshot, if still cached.
+    pub snapshot: Option<&'a S>,
+    /// Complete input, reconstructed without changing search counters.
+    pub input: Input<A>,
+    /// Whether the local rule proposes preserving this member. Subsequent
+    /// population or memory eviction can still remove it.
+    pub retained_by_local_rule: bool,
+}
+
+/// Result of lazily reconstructing every incumbent in a local slot.
+pub type MaterializedRetentionSlot<'a, A, K, S> =
+    Result<Vec<RetentionSlotMember<'a, A, K, S>>, &'static str>;
+
 /// Read-only same-slot competition, emitted before any incumbent is removed.
 /// Lazy inputs are reconstructed only if the observer requests them. Their
 /// allocations and work belong to diagnostics, not deterministic report counters.
@@ -886,6 +905,12 @@ pub struct RetentionObservation<'a, A: Ord, K, S> {
     pub in_window_ever: bool,
     /// Materialize candidate and incumbent inputs without changing search counters.
     pub inputs: &'a dyn Fn() -> Result<(Input<A>, Input<A>), &'static str>,
+    /// Number of existing members in this local slot, excluding the candidate.
+    pub slot_member_count: usize,
+    /// Materialize every incumbent and the local rule's proposed survivor set.
+    /// This precedes global population and memory eviction. No vectors or
+    /// inputs are allocated unless the observer invokes this function.
+    pub slot_members: &'a dyn Fn() -> MaterializedRetentionSlot<'a, A, K, S>,
 }
 
 /// Constant-space lifecycle counters, reporting-only and excluded from replay state.
@@ -3114,6 +3139,23 @@ where
                     };
                     input.actions.extend_from_slice(&suffix);
                     Ok((input, self.materialize_input_untracked(id)?))
+                },
+                slot_member_count: slot.len(),
+                slot_members: &|| {
+                    slot.iter()
+                        .map(|member| {
+                            let entry = &self.entries[*member];
+                            Ok(RetentionSlotMember {
+                                id: entry.id,
+                                key: entry.key,
+                                snapshot: entry.snapshot.as_deref(),
+                                input: self.materialize_input_untracked(*member)?,
+                                retained_by_local_rule: replacements
+                                    .as_ref()
+                                    .is_none_or(|ids| !ids.contains(member)),
+                            })
+                        })
+                        .collect()
                 },
             })?;
         }

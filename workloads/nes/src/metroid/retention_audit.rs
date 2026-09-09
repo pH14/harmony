@@ -5,6 +5,8 @@ use super::{
     archive::MetroidArchiveKey,
     target::{ButtonChord, MetroidInput, MetroidMechanicalState, MetroidSnapshot},
 };
+#[cfg(feature = "metroid-complete-retention-audit")]
+use crate::search::archive::ArchiveKey;
 use crate::search::archive::{EntrySelectorCounters, RetentionObservation};
 use serde::{Deserialize, Serialize};
 use std::{error::Error, path::PathBuf};
@@ -36,6 +38,36 @@ pub struct ReplacementPair {
     pub candidate_input: MetroidInput,
     /// Incumbent input from ordinary gameplay genesis.
     pub incumbent_input: MetroidInput,
+    /// Complete local-rule competition when requested and fully reconstructable.
+    #[cfg(feature = "metroid-complete-retention-audit")]
+    #[serde(default)]
+    pub complete_competition: Option<CompleteCompetition>,
+}
+
+/// All existing members of the sampled local slot, before global eviction.
+#[cfg(feature = "metroid-complete-retention-audit")]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CompleteCompetition {
+    /// Whether the local rule proposes admitting the candidate in the pair.
+    pub candidate_admitted: bool,
+    /// Every incumbent, including those proposed for removal.
+    pub incumbents: Vec<CompleteIncumbent>,
+}
+
+/// A reconstructable incumbent in a complete local-rule competition.
+#[cfg(feature = "metroid-complete-retention-audit")]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CompleteIncumbent {
+    /// Stable stream entry id.
+    pub id: u64,
+    /// Optional opaque retention context.
+    pub context: Option<u64>,
+    /// Cached decoded endpoint.
+    pub state: MetroidMechanicalState,
+    /// Input from ordinary gameplay genesis.
+    pub input: MetroidInput,
+    /// Local proposal only; subsequent global eviction is outside this audit.
+    pub retained_by_local_rule: bool,
 }
 
 #[derive(Serialize)]
@@ -53,6 +85,12 @@ pub(crate) struct RetentionAudit {
     input_reconstructions: u64,
     diagnostic_action_capacity_bytes: usize,
     samples: Vec<Vec<ReplacementPair>>,
+    #[cfg(feature = "metroid-complete-retention-audit")]
+    complete_missing_snapshot: u64,
+    #[cfg(feature = "metroid-complete-retention-audit")]
+    complete_oversized_input: u64,
+    #[cfg(feature = "metroid-complete-retention-audit")]
+    complete_unsupported_slot: u64,
 }
 
 // An independent deterministic sampling hash, never the campaign RNG.
@@ -67,7 +105,11 @@ impl RetentionAudit {
         Self {
             path,
             finished: false,
-            format: "metroid-retention-audit-v1",
+            format: if cfg!(feature = "metroid-complete-retention-audit") {
+                "metroid-retention-audit-v2-local-survivors"
+            } else {
+                "metroid-retention-audit-v1"
+            },
             strata: [
                 "different_equipment",
                 "different_capacity",
@@ -82,12 +124,22 @@ impl RetentionAudit {
             input_reconstructions: 0,
             diagnostic_action_capacity_bytes: STRATA
                 * PER_STRATUM
-                * 2
+                * if cfg!(feature = "metroid-complete-retention-audit") {
+                    4
+                } else {
+                    2
+                }
                 * MAX_ACTIONS
                 * std::mem::size_of::<ButtonChord>(),
             samples: (0..STRATA)
                 .map(|_| Vec::with_capacity(PER_STRATUM))
                 .collect(),
+            #[cfg(feature = "metroid-complete-retention-audit")]
+            complete_missing_snapshot: 0,
+            #[cfg(feature = "metroid-complete-retention-audit")]
+            complete_oversized_input: 0,
+            #[cfg(feature = "metroid-complete-retention-audit")]
+            complete_unsupported_slot: 0,
         }
     }
 
@@ -152,6 +204,8 @@ impl RetentionAudit {
                 in_window_ever: event.in_window_ever,
                 candidate_input,
                 incumbent_input,
+                #[cfg(feature = "metroid-complete-retention-audit")]
+                complete_competition: self.complete_competition(event)?,
             };
             if (index as usize) < self.samples[stratum].len() {
                 self.samples[stratum][index as usize] = pair;
@@ -162,6 +216,43 @@ impl RetentionAudit {
             self.flush()?;
         }
         Ok(())
+    }
+
+    #[cfg(feature = "metroid-complete-retention-audit")]
+    fn complete_competition(
+        &mut self,
+        event: &RetentionObservation<'_, ButtonChord, MetroidArchiveKey, MetroidSnapshot>,
+    ) -> Result<Option<CompleteCompetition>, Box<dyn Error>> {
+        if !(1..=2).contains(&event.slot_member_count) {
+            self.complete_unsupported_slot += 1;
+            return Ok(None);
+        }
+        let members = (event.slot_members)()?;
+        self.input_reconstructions += members.len() as u64;
+        if members.iter().any(|member| member.snapshot.is_none()) {
+            self.complete_missing_snapshot += 1;
+            return Ok(None);
+        }
+        if members
+            .iter()
+            .any(|member| member.input.actions.len() > MAX_ACTIONS)
+        {
+            self.complete_oversized_input += 1;
+            return Ok(None);
+        }
+        Ok(Some(CompleteCompetition {
+            candidate_admitted: event.candidate_admitted,
+            incumbents: members
+                .into_iter()
+                .map(|member| CompleteIncumbent {
+                    id: member.id,
+                    context: member.key.retention_context(),
+                    state: member.snapshot.expect("all snapshots checked").state(),
+                    input: member.input,
+                    retained_by_local_rule: member.retained_by_local_rule,
+                })
+                .collect(),
+        }))
     }
 
     fn flush(&self) -> Result<(), Box<dyn Error>> {

@@ -85,10 +85,11 @@ frames under the same allowance; dying early is not an efficiency improvement.
 Any candidate using probes must beat its control under a total physical-work
 budget that includes those probes, as well as under the archive-memory budget.
 
-The next bounded diagnostic should therefore capture the complete active
-survivor set at an actual competition, replay identical suffixes from every
+The next bounded diagnostic should therefore capture the complete local-rule
+survivor proposal at an actual competition, replay identical suffixes from every
 member, and report the proposed replacement's gained events, lost events,
 survival and physical costs. A new independent suffix suite should test a frozen
 proposal before it earns fresh-search compute. That design addresses
 [#286](https://github.com/pH14/harmony/issues/286); it does not authorize another
-long campaign in this tranche.
+long campaign in this tranche. A callback before global eviction does not certify
+the final globally active set; that boundary must remain explicit in the result.

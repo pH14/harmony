@@ -26,7 +26,10 @@ the complete-survivor counterexample with the real generic archive; check strict
 Clippy and relevant replay/pressure tests. Rebuild on msr1 with pinned source and
 asset hashes. Reproduce the prior5000-job qualification streams, with fixed job
 and frame bounds plus120s watchdog per cell and at most four cells. Any stream
-divergence blocks the suffix probe. Inspect complete sample availability only
+divergence blocks the suffix probe. The cells preserve every original header
+bound; an external120s watchdog is tighter. Use CPUs8–11 sequentially and allow
+1GiB output per cell, including its checkpoint. Default Metroid must also
+reproduce the exact legacy v1 audit bytes. Inspect complete sample availability only
 after qualification; do not pick samples by future outcomes.
 
 If qualified, register the exact suffix sample and conservative physical bound

@@ -134,6 +134,19 @@ sampled suffixes to both sides. It reports physical probe/prefix frames, gains,
 survival, and living map exits separately. These diagnostic starts never count
 as fresh validation; differing endpoints alone are not useful-future evidence.
 
+The optional Cargo feature `metroid-complete-retention-audit` writes audit
+`v2-local-survivors`. Each sampled pair can include every incumbent and the local
+rule's proposed keep/remove flags. The callback precedes global population and
+memory eviction; these records do not certify the final globally active set.
+Missing snapshots, unsupported slot sizes and oversized extra inputs leave an
+explicit absent complete record and increment diagnostic counters. At most two
+incumbents are materialized, with the same8192-action input limit. The action
+payload bound becomes5MiB; reconstruction and output buffers remain additional
+diagnostic overhead. Sampling indices, observations, search counters and RNG are
+unchanged. Default builds preserve the v1 audit. Comparing a discarded state's
+suffix outcomes with the union of all local survivors avoids mistaking novelty
+against one incumbent for a future lost from the complete set.
+
 The probe accepts `CORE ROM AUDIT OUT TRIALS ACTIONS [TERMINAL_POLICY [SEED]]`.
 Omitting the final arguments keeps the historical terminal predicate and suffix
 seed. Its v2 report records the terminal identity, numeric seed, and exact suffix
