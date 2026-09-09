@@ -53,8 +53,8 @@ case "$1" in
     echo '@reachable 10'
     ;;
   2)
-    [ -s "${journal}" ] || exit 0
     echo '@sometimes 12'
+    [ -s "${journal}" ] || exit 0
     # A failed read means the member is still down or restarting. That is not
     # evidence of corruption; only a successful readback can publish a verdict.
     ctl endpoint health >/dev/null 2>&1 || exit 0
