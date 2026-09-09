@@ -38,14 +38,17 @@ def main():
     parser.add_argument("--default", type=Path, required=True)
     parser.add_argument("--refined", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--ceiling", type=int, default=CEILING)
     args = parser.parse_args()
+    assert 0 < args.ceiling <= CEILING
     data = {label: load(path) for label, path in [("default", args.default), ("refined", args.refined)]}
     assert data["default"][0]["search_request"] == data["refined"][0]["search_request"], "comparison requests differ"
     assert data["default"][0]["search_request"]["metroid_terminal"] == "death_or_bcd_underflow_or_ending_v3"
     assert data["default"][0]["identity"]["source_tree_sha256"] == data["refined"][0]["identity"]["source_tree_sha256"], "comparison sources differ"
-    common = min(CEILING, *(s["result"]["frames_emulated"] for s, _, _ in data.values()))
+    common = min(args.ceiling, *(s["result"]["frames_emulated"] for s, _, _ in data.values()))
     boundaries = sorted({b for b in [10_000_000, 25_000_000, 50_000_000, common] if b <= common})
     report = {"scope": "development only; cumulative work counters, not route duration",
+              "requested_frame_ceiling": args.ceiling,
               "common_frame_ceiling": common, "arms": {}}
     final_names = {}
     for label, (summary, rows, intervals) in data.items():
@@ -79,9 +82,15 @@ def main():
             speedups.append(name)
     extra = sorted(final_names["refined"] - final_names["default"] - INITIAL)
     lost = sorted(final_names["default"] - final_names["refined"] - INITIAL)
+    censored = [label for label, (summary, _, _) in data.items()
+                if summary["result"]["stop_reason"] == "wall_limit"]
+    requested_checkpoint_reached = all(s["result"]["frames_emulated"] >= args.ceiling for s, _, _ in data.values())
+    evidence_complete = not censored or requested_checkpoint_reached
     report["decision"] = {"additional_refined_names": extra, "additional_default_names": lost,
                           "conservative_twenty_percent_speedups": sorted(speedups),
-                          "qualifies_bounded_replication": bool(extra or speedups),
+                          "wall_censored_cells": censored,
+                          "both_reached_requested_frame_checkpoint": requested_checkpoint_reached,
+                          "qualifies_bounded_replication": evidence_complete and bool(extra or speedups),
                           "qualifies_breakthrough": False}
     args.out.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report["decision"], indent=2))

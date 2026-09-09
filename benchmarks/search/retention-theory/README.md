@@ -410,3 +410,17 @@ and suffix frames. Use a 600s process-group bound on the idle little cores.
 No diagnostic prefix enters fresh search, and no finite matching sample proves
 equivalence. This tests new states/suffixes after choosing the representation;
 it is not untouched validation of global search performance.
+
+The live K01 throughput forecast places the slower CPU group's full work budget
+near its 30-minute wall limit. Do not extend the limit. If a cell is censored,
+the original full-budget gate fails; retain its completed, replayed evidence.
+The already registered 50M checkpoint can support a separately labelled
+diagnostic comparison only if both arms reach it. A follow-up prompted by that
+checkpoint must use 50M from the start, rather than relabel the censored run as
+a completed 70M panel. This operational contingency was recorded before
+inspecting either arm's 50M checkpoint.
+
+Follow-up [#281](https://github.com/pH14/harmony/issues/281) records the missing
+distinction between boss-area entry, actual encounter, and partial fight
+progress. Its source-labelled observations require their own qualification
+and must not alter search policy merely because no boss was defeated.
