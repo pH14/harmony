@@ -68,10 +68,10 @@ Existing barren counters already adapt to new-cell descendant yield. Entry-count
 weighting is an existing, separate factor. The chosen ablation is specified in
 [selection-hypothesis.md](selection-hypothesis.md).
 
-The new selector has passed generic deterministic/replay/resource checks. Native
-qualification must preserve the first D01 control's complete campaign stream and
-exercise the candidate with full replay before a fresh paired panel. The panel
-is not yet run and no performance gain is claimed.
+The new selector passed generic deterministic/replay/resource checks. Before the
+fresh paired panel, native qualification was required to preserve the first D01
+control's complete campaign stream and exercise the candidate with full replay.
+The qualification and subsequent screen results are recorded below.
 
 ## Native qualification and paired screen
 
@@ -124,4 +124,12 @@ fresh pairs for [R01](r01-registration.json), with an explicitly shorter 20M
 restricted horizon, and reserves 40M nominal frames for conditional MM2 transfer.
 The policy, executable and other Metroid settings remain unchanged. R01 checks
 S01's frozen positive gate before dispatch and verifies that its new seeds have
-not appeared in owned run records. No confirmation result is yet available.
+not appeared in owned run records. Its registration was published in commit
+`17ced735a1683a66228a448f65476e6c999930b0` before dispatch at
+2026-09-09 16:04:06 UTC on msr1. No confirmation result is yet available.
+
+`account_renewal.py` counts D01/S01/R01/T01 as search and D02/D02r/TQ01 as
+qualification. TQ01 is reserved for a bounded replay smoke of the existing MM2
+action settings before any qualified transfer panel. Naming that budget class
+does not authorize it before R01 passes. Distinct completed summaries are counted
+once; unsummarized live work remains additional and unmeasured in each snapshot.

@@ -93,3 +93,32 @@ This is a counting bound on the encountered baseline trace. It does not apportio
 an adaptive performance gain between selection stages, establish useful futures,
 or extend to every archive visited by a different candidate trajectory. The
 registered S01 performance criterion is unchanged.
+
+## What the completed S01 traces localize
+
+[The read-only S01 mechanism summary](s01-mechanism-analysis.json), derived from
+the final recorded diagnostics in [the frozen results](s01-results.json), extends
+the baseline observation to both arms. Across all four controls and four
+candidates, **zero within-cell distributions changed** on the recorded paths.
+Between-cell distributions changed on 513,916/589,553 control draws and
+529,780/601,172 candidate draws. Their draw-weighted mean conditional TV values
+were approximately 0.28332 and 0.27623 respectively. These are different
+encountered histories, not paired estimates of the same archive distribution.
+
+There is also an exact size deduction. The old within-cell vector starts with
+four weights of 256, followed by 128 at index four; the new vector is constant
+256. Their normalized laws are equal if and only if the offered window has at
+most four members. Thus all 1,190,725 audited within-cell draws in S01 offered
+at most four members. This follows from the implemented rank formula and zero
+changed-distribution counts, not from an average occupancy or a sampled maximum.
+It applies to these recorded draws, not every reachable archive or future seed.
+
+The cap-count deduction also applies separately: at least 392,327 control and
+439,811 candidate draws changed without any positive-cost term at the combined
+cap. The operative selection difference on these recorded paths is therefore
+between cells, and it often acts away from that cap. The summary does not
+separate the cost preference from its interaction with novelty along changing
+histories, nor prove how either caused the observed precursor improvement.
+No snapshot eviction was recorded in either arm. No new emulator work or
+parameter choice was used for this analysis; independent confirmation proceeds
+with the originally qualified mechanism.

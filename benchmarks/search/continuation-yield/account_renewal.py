@@ -18,8 +18,8 @@ def main():
         summary = json.loads(raw)
         result = summary.get("result") or {}
         relative = path.relative_to(args.runs)
-        assert relative.parts[0] in ("d01", "d02", "d02r", "s01"), "declare the new stage's budget class before accounting it"
-        qualification = relative.parts[0] in ("d02", "d02r")
+        assert relative.parts[0] in ("d01", "d02", "d02r", "s01", "r01", "tq01", "t01"), "declare the new stage's budget class before accounting it"
+        qualification = relative.parts[0] in ("d02", "d02r", "tq01")
         witness = result.get("witness", {}).get("physical_suffix_frames")
         milestones = [value["replay"]["physical_suffix_frames"]
                       for value in result.get("milestone_witnesses", {}).values()]
