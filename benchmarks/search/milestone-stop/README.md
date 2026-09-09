@@ -39,8 +39,9 @@ new binary. Its full stream SHA-256 is
    registered execution budget with no event and unchanged stream body.
 5. Stop at Morph Ball with frame cap 22,585: retain the observed event during
    drain, mark it outside budget, and report a frame-limit stop.
-6. Stop at Brinstar: the observed genesis already satisfies the criterion;
-   complete zero jobs and verify the origin and full replay.
+6. Original Q01 expectation: stop at Brinstar with zero jobs because genesis
+   already satisfies the criterion. This assumption failed; see the correction
+   below. The failed expectation and complete result remain in Q01.
 
 `qualify_native.py` independently checks the frozen artifacts and accounts all
 completed qualification, inferred campaign replay and twice-replayed witness
@@ -54,3 +55,21 @@ Run the checker on msr1 with `--experiment` pointing at the experiment root,
 `--registration` at the published registration and `--out` at a new JSON path.
 Any qualification result must retain its raw panel and provenance beside this
 document. Do not use this reused seed as performance evidence.
+
+## Q01 origin-observation correction
+
+Q01 passed its first five frozen cells and stopped on the sixth expectation.
+The sixth cell itself completed full report/checkpoint replay, but reported
+Brinstar at admission 1 (171 frames), then drained seven jobs (1,474 total
+frames). `CoordinatorCore::bootstrap` retains genesis without calling the
+workload observation accumulator. Witness replay observes its starting state,
+which explains its different execution-zero stamp; the witness clock is not
+the campaign admission clock. Changing those existing semantics would break
+the unchanged-prefix contract.
+
+Q01r prospectively rechecks only Brinstar with the corrected first-admission
+expectation and the identical frozen binary. It requires the five passed Q01
+cells, keeps the failed sixth cell, and charges both original and repeated work.
+The generic snapshot-root test separately verifies an actually observed supplied
+origin: zero reservations, a header-only stream and exact report/checkpoint
+replay. No production code or native binary changed for this correction.

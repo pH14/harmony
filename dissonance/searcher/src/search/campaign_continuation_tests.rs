@@ -252,9 +252,12 @@ impl Evaluation for TestGame {
     }
     fn merge_snapshot_root_evidence(
         &self,
-        _evidence: &mut Self::Evidence,
-        _target: &Self::Target,
+        evidence: &mut Self::Evidence,
+        target: &Self::Target,
     ) -> Result<(), Box<dyn Error>> {
+        if target.value == 0 {
+            evidence.get_or_insert(0);
+        }
         Ok(())
     }
     fn merge_import_evidence(
@@ -499,6 +502,49 @@ fn milestone_stops_preserve_prefix_order_cost_and_full_replay() {
             replay_campaign_checkpointed(&TestGame, forged.as_bytes(), None, None).unwrap_err();
         assert!(error.to_string().contains("milestone stop"), "{error}");
     }
+}
+
+#[test]
+fn an_observed_snapshot_root_stops_before_reserving_any_job() {
+    let config = milestone_config(4);
+    let snapshots = SnapshotCheckpoint {
+        format: TestGame.checkpoint_format().into(),
+        entries: vec![SnapshotCheckpointEntry { id: 0, snapshot: 0 }],
+    };
+    let checkpoint = CampaignCheckpoint {
+        path: "observed-zero-origin".into(),
+        file_sha256: format!("{:x}", Sha256::digest(snapshots.to_bytes().unwrap())),
+        snapshots,
+    };
+    let origin = CampaignOrigin::SnapshotRoot {
+        checkpoint: checkpoint.clone(),
+    };
+    let mut stream = Vec::new();
+    let outcome = run_campaign_checkpointed_with_options(
+        &TestGame,
+        &config,
+        &origin,
+        &mut stream,
+        None,
+        CampaignExecutionOptions {
+            stop_after_milestone: Some("zero_endpoint"),
+            ..CampaignExecutionOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(outcome.0.executions_completed, 0);
+    assert_eq!(
+        outcome.0.first_milestone,
+        Some(CampaignMilestoneObservation {
+            execution: 0,
+            frames_emulated: 0,
+        })
+    );
+    assert_eq!(std::str::from_utf8(&stream).unwrap().lines().count(), 1);
+    assert_eq!(
+        replay_campaign_checkpointed(&TestGame, &stream, None, Some(&checkpoint)).unwrap(),
+        outcome
+    );
 }
 
 #[test]

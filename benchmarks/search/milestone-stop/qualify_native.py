@@ -27,15 +27,30 @@ def main():
     registration = read(args.registration)
     assert sha(Path(__file__)) == registration['qualification_checker_sha256']
     root = args.experiment
+    initial_registration_path = root / registration['initial_registration']
+    assert sha(initial_registration_path) == registration['initial_registration_sha256']
+    initial_registration = read(initial_registration_path)
+    initial_panel_path = root / initial_registration['output'] / 'results.json'
+    initial_panel = read(initial_panel_path)
+    assert initial_panel['registration_sha256'] == sha(initial_registration_path)
+    assert not initial_panel['execution_complete']
+    assert initial_panel['allocation_stop'] == 'cell failure; no subsequent cells dispatched'
+    assert [r['id'] for r in initial_panel['records']] == [c['id'] for c in initial_registration['cells']]
+    failed = initial_panel['records'][-1]
+    assert failed['id'] == 'origin-brinstar'
+    assert failed['failure'] == 'frozen compatibility result differs: executions'
     panel_path = root / registration['output'] / 'results.json'
     panel = read(panel_path)
     assert panel['registration_sha256'] == sha(args.registration)
     assert panel['execution_complete'] and panel['allocation_stop'] is None
     assert [r['id'] for r in panel['records']] == [c['id'] for c in registration['cells']]
     paths, rows = {}, []
-    for record in panel['records']:
-        assert record['checks_passed'] and record['exit_code'] == 0
-        paths[record['id']] = root / registration['output'] / record['id'] / record['summary']['cell'] / 'campaign'
+    records = [(record, initial_registration['output']) for record in initial_panel['records']]
+    records += [(record, registration['output']) for record in panel['records']]
+    for record, output in records:
+        assert record['exit_code'] == 0
+        if record['id'] != 'origin-brinstar': assert record['checks_passed']
+        paths[record['id']] = root / output / record['id'] / record['summary']['cell'] / 'campaign'
         path = paths[record['id']]
         result = read(path / 'result.json')
         assert result == record['summary']['result']
@@ -70,9 +85,12 @@ def main():
         assert proof['first_seen']['morph_ball'] is not None
     for name in ('stream.jsonl', 'campaign.json', 'checkpoint.json'):
         assert sha(paths['morph-one-slot'] / name) == sha(paths['morph-two-slots'] / name)
-    origin = read(paths['origin-brinstar'] / 'result.json')
-    assert origin['executions'] == 0 and origin['first_milestone'] == {'execution': 0, 'frames_emulated': 0}
-    assert len(streams['origin-brinstar']) == 1
+    for key in ('origin-brinstar', 'first-admission-brinstar'):
+        origin = read(paths[key] / 'result.json')
+        assert origin['executions'] == 8 and origin['first_milestone'] == {'execution': 1, 'frames_emulated': 171}
+        assert streams[key][1:] == baseline[:8]
+    for name in ('stream.jsonl', 'campaign.json', 'checkpoint.json'):
+        assert sha(paths['origin-brinstar'] / name) == sha(paths['first-admission-brinstar'] / name)
     prior_path = root / registration['prior_ledger']
     assert sha(prior_path) == registration['prior_ledger_sha256']
     prior = read(prior_path)
@@ -84,6 +102,8 @@ def main():
     output = {'format': 'milestone-stop-qualification-v1', 'decision': 'pass',
               'as_of_utc': datetime.now(timezone.utc).isoformat(),
               'registration_sha256': sha(args.registration), 'panel_sha256': sha(panel_path),
+              'initial_panel_sha256': sha(initial_panel_path),
+              'preserved_failed_expectation': 'Q01 assumed genesis had an observation. Metroid campaign genesis retains state without observing it; Brinstar first appears at admission 1. Q01r freezes that existing observation contract and rechecks the unchanged binary.',
               'source_commit': registration['source_commit'], 'binary_sha256': registration['binary_sha256'],
               'cells': rows, 'additional_known_auxiliary_frames': charge,
               'cumulative_known_auxiliary_frames': total,
