@@ -9,12 +9,21 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{error::Error, fs, io::Write, path::Path};
 
+fn retain_trace(raw: &nes_workload::metroid::boss_probe::BossMemory, boss_area: bool) -> bool {
+    // A loader flag can clear before damage, and hit states overwrite the tag.
+    // Retaining the entire area avoids those gaps without inferring identity.
+    (boss_area && matches!(raw.area, 0x12 | 0x14))
+        || raw.loader_present != 0
+        || raw.enemies.iter().any(|enemy| enemy.special & 0x40 != 0)
+}
+
 fn replay(
     core: &Path,
     rom: &[u8],
     core_hash: &str,
     input: &MetroidInput,
     single_frames: bool,
+    boss_area: bool,
     mut output: Option<&mut fs::File>,
 ) -> Result<Value, Box<dyn Error>> {
     let mut target = MetroidTarget::from_rom_bytes_headless(rom, core, core_hash)?
@@ -63,8 +72,8 @@ fn replay(
                 if guarded_loader {
                     first_loader.get_or_insert(route_frames);
                 }
-                if raw.loader_present != 0 || tagged {
-                    // Numeric arrays keep a bounded private trace small. Column names
+                if retain_trace(&raw, boss_area) {
+                    // Numeric arrays keep a bounded diagnostic trace small. Column names
                     // are recorded once in the summary, and all frames enter the hash.
                     let slots: Vec<_> = raw
                         .enemies
@@ -124,9 +133,10 @@ fn replay(
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 4 {
-        return Err("usage: metroid-boss-probe CORE ROM INPUT.json OUT".into());
+    if !(4..=5).contains(&args.len()) || args.get(4).is_some_and(|arg| arg != "boss-area") {
+        return Err("usage: metroid-boss-probe CORE ROM INPUT.json OUT [boss-area]".into());
     }
+    let boss_area = args.len() == 5;
     let core = Path::new(&args[0]);
     let rom = fs::read(&args[1])?;
     let bytes = fs::read(&args[2])?;
@@ -142,15 +152,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     let out = Path::new(&args[3]);
     fs::create_dir(out)?;
     let core_hash = format!("{:x}", Sha256::digest(fs::read(core)?));
-    let ordinary = replay(core, &rom, &core_hash, &input, false, None)?;
+    let ordinary = replay(core, &rom, &core_hash, &input, false, boss_area, None)?;
     fs::write(
         out.join("ordinary.json"),
         serde_json::to_vec_pretty(&ordinary)?,
     )?;
     let mut trace = fs::File::create(out.join("relevant-frames.jsonl"))?;
-    let first = replay(core, &rom, &core_hash, &input, true, Some(&mut trace))?;
+    let first = replay(
+        core,
+        &rom,
+        &core_hash,
+        &input,
+        true,
+        boss_area,
+        Some(&mut trace),
+    )?;
     fs::write(out.join("first.json"), serde_json::to_vec_pretty(&first)?)?;
-    let second = replay(core, &rom, &core_hash, &input, true, None)?;
+    let second = replay(core, &rom, &core_hash, &input, true, boss_area, None)?;
     if first != second {
         return Err("independent one-frame diagnostics differ".into());
     }
@@ -164,7 +182,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             return Err(format!("action grouping changed {field}").into());
         }
     }
-    let result = json!({"format":"metroid-boss-memory-probe-v1","scope":"one existing searched tape; diagnostic only",
+    let mut result = json!({"format":"metroid-boss-memory-probe-v1","scope":"one existing searched tape; diagnostic only",
         "terminal_policy":"death_or_bcd_underflow_or_ending_v3","verified_replays":3,
         "input_sha256":format!("{:x}",Sha256::digest(bytes)),"core_sha256":core_hash,
         "rom_sha256":format!("{:x}",Sha256::digest(rom)),"ordinary":ordinary,"one_frame":first,
@@ -172,6 +190,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         "slot_columns":["offset","status","data_index","special","hit_points","x_room","y_room","name_table"],
         "limitations":["loader presence is not a damage or defeat event","special bytes may change during combat or remain stale",
                        "an empty route trace does not imply an encounter-free campaign","no values affect fresh search"]});
+    if boss_area {
+        result["format"] = json!("metroid-boss-memory-probe-v2");
+        result["trace_observation_policy"] = json!("boss_area_all_frames_v1");
+    }
     fs::write(
         out.join("summary.json"),
         serde_json::to_vec_pretty(&result)?,
@@ -181,4 +203,48 @@ fn main() -> Result<(), Box<dyn Error>> {
         json!({"verified_replays":3,"one_frame":result["one_frame"]})
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nes_workload::metroid::boss_probe::{BossMemory, EnemyBytes};
+
+    #[test]
+    fn boss_area_trace_preserves_the_observed_hit_filter_counterexample() {
+        // F02 Ridley frame 76002: HP 140 -> 136, status 6, special 3,
+        // loader 0. Both old instantaneous guards miss this real hit frame.
+        let mut raw = BossMemory {
+            area: 0x14,
+            mode: 3,
+            door: 0,
+            room_number: 0,
+            loader_present: 0,
+            kraid_status: 0,
+            ridley_status: 0,
+            enemies: vec![EnemyBytes {
+                slot: 0,
+                status: 6,
+                data_index: 9,
+                special: 3,
+                hit_points: 136,
+                x: 0,
+                y: 0,
+                name_table: 0,
+            }],
+        };
+        assert!(!retain_trace(&raw, false));
+        assert!(retain_trace(&raw, true));
+        raw.area = 0x12;
+        assert!(retain_trace(&raw, true));
+        raw.area = 0x10;
+        assert!(!retain_trace(&raw, true));
+        raw.enemies[0].special = 0x40;
+        assert!(retain_trace(&raw, false));
+        assert!(retain_trace(&raw, true));
+        raw.enemies[0].special = 0;
+        raw.loader_present = 1;
+        assert!(retain_trace(&raw, false));
+        assert!(retain_trace(&raw, true));
+    }
 }

@@ -198,7 +198,7 @@ in the [research ledger](../../../../benchmarks/search/retention-theory/README.m
 bytes while replaying an existing searched tape. It compares ordinary chords
 with two independent one-frame replays, requiring equal final emulator bytes
 and decoded state plus identical frame-trace hashes. Inputs are bounded at
-8,192 actions/250k route frames; private trace output is capped at32MiB.
+8,192 actions/250k route frames; diagnostic trace output is capped at 32 MiB.
 No probe value changes search observations, snapshots, retention or termination.
 The standalone probe uses corrected terminal v3 and stops on a terminal tape.
 
@@ -209,6 +209,17 @@ byte can change during combat or remain in an inactive slot. The report keeps
 loader, slot status, tag and HP separate; it does not infer damage totals,
 encounter identity or defeat from them. An empty existing-route trace is only
 a negative control, not evidence about every route in its source campaign.
+
+Append `boss-area` to retain every frame in either boss area, including hit
+states that clear the loader flag and overwrite the special tag. This opt-in
+output uses probe format v2 and `boss_area_all_frames_v1`; the four-argument
+invocation retains its original format and filter. Both modes hash all sampled
+frames and keep the same fixed input/output bounds. Full-area retention may
+reach the output cap sooner and fails explicitly instead of truncating evidence.
+The [positive-control study](../../../../benchmarks/search/depth-transfer/README.md)
+found 98 real HP decreases missed by both instantaneous guards. These raw traces
+support subsequent enemy-lifetime analysis, not an automatic damage counter or
+identity across snapshot restores. The mode affects only this standalone probe.
 
 ## Retrospective motion descriptors
 
