@@ -352,3 +352,32 @@ but the corrected pair will receive new source and binary identities.
 The initial test invocation used the parent Cargo workspace and failed before
 running tests because NES is an independent package. Corrected the invocation
 to its manifest; this was tooling setup, not a scientific outcome.
+
+Integrated qualification passed locally: 122 NES library tests in each key
+mode, strict Clippy for the feature library and evaluator, 22 runner tests,
+and dependency boundaries. The exact imported prior diagnostics are retained
+in `t03-prior-evidence.json`, with the source artifact's hash; they were not
+rerun on msr1 or used as fresh search inputs.
+
+### K01 development decision rule (before running the pair)
+
+Use seed 3, corrected terminal v3 in both arms, unchanged semantic selector,
+alphabet-only suffix generation, one representative per slot, 4 workers/8 GiB,
+500k jobs and 70M admitted frames, 1800s search plus 120s finishing. The process
+group has a 1980s hard limit. Default runs on 0–3 and refined on 8–11.
+Record actual frames and replay every named milestone independently. For a
+common-cost view use the last logged row at or below 10M, 25M, 50M, and the
+smaller final frame total (capped at 70M); report that row's actual counter.
+Final drained-window observations cannot be credited to a smaller boundary.
+
+An additional replayed boss or ending is primary evidence. Otherwise, an
+additional named capability or area beyond the initial Brinstar/Morph Ball,
+or at least 20% fewer frames to a common later milestone, qualifies two more
+bounded development seeds (4 and 5, swapping CPU placements for seed 4).
+This is a practical escalation rule, not a significance test. If refined only
+increases map/cell count, do not extend its horizon. Compare retained memory,
+underflow eligibility, and unselected-removal fraction to distinguish loss of
+representation from dilution of exploration. Mixed semantic results permit
+the same small replication, never a default promotion. Longer depth runs need
+a useful-progress win on at least two of the three development seeds; untouched
+validation is still required for a breakthrough claim.
