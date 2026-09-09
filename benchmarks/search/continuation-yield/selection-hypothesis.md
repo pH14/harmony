@@ -111,7 +111,36 @@ four weights of 256, followed by 128 at index four; the new vector is constant
 most four members. Thus all 1,190,725 audited within-cell draws in S01 offered
 at most four members. This follows from the implemented rank formula and zero
 changed-distribution counts, not from an average occupancy or a sampled maximum.
-It applies to these recorded draws, not every reachable archive or future seed.
+That diagnostic deduction alone applies to these recorded draws, not every
+reachable archive or future seed.
+
+### A structural bound before further experiments
+
+Source inspection gives a stronger, conditional proof for this Metroid
+configuration. Let `D` be the maximum number of retention slots mapping to one
+selection cell, and `k` the allowed representatives per slot. Active offered
+membership is at most `D*k`; exhaustion, action limits and the newest-member
+window can only reduce it. With the implemented rank scale of four, `D*k <= 4`
+is sufficient to make the within-cell cost ablation identically inactive.
+
+In the qualified [Metroid key](../../../workloads/nes/src/metroid/archive.rs),
+depth 1 merges only a 2-by-2 block of the ordinary 16-pixel depth-0 locations.
+It preserves every other retention-group field, including posture and door.
+Health, missiles and the optional motion descriptor do not multiply depth-0
+slots. Ordinary retention allows one representative per slot, so `D=4`, `k=1`.
+The [generic archive](../../../dissonance/searcher/src/search/archive.rs) removes
+displaced representatives from its active selector index before admitting their
+replacements. Thus the bound holds throughout valid ordinary campaigns with
+this geometry, independent of the seed; retained historical snapshot anchors
+cannot enlarge the active draw. The eight S01 traces agree with that proof.
+
+This conclusion does not cover the refined 8-pixel geometry or two-representative
+retention experiments, which change its premises. Nor does it automatically
+cover [MM2's key](../../../workloads/nes/src/mm2/archive.rs): its selection cell
+also pools weapon identities and menu states. That permits larger grouping
+fibers syntactically; whether such members are reached together in the planned
+fresh-stage transfer remains an empirical question. The qualified generic
+candidate remains frozen, including both cost-removal branches.
 
 The cap-count deduction also applies separately: at least 392,327 control and
 439,811 candidate draws changed without any positive-cost term at the combined
