@@ -1,0 +1,163 @@
+{
+  "format": "depth-transfer-e03-registration-v1",
+  "registered_utc": "2026-09-09T22:56:32.832813+00:00",
+  "purpose": "Distinguish classified encounter and observed HP decrease on a fixed set of surviving development tapes; not a campaign census or performance comparison.",
+  "selection_rule": "The six R01 development witness tapes (control/resource, seeds 3/4/5), followed by both L04 seed-3 anchor tapes (control/middle), selected by existing panel identity before new encounter outcomes. No validation tapes. No replacement based on outcomes.",
+  "host": "msr1",
+  "source_host": "ms02",
+  "cases": [
+    {
+      "id": "e03-0",
+      "source_run": "r01-development-control-s3",
+      "source_path": "/root/harmony-alternative-futures-20260908/runs/r01-development-control-s3/metroid-full-s3-w4-m8192/campaign/witness-input.json",
+      "source_results_sha256": "106b335080addd024de6db2e9ce7c1c4ee52930913112d1915e921befa789782",
+      "input": "e03-inputs/tape-0.json",
+      "input_sha256": "1d4a539a881a58e282daea4c7b41c8db5c3abcf13e9e290f3e19a1c456f63271",
+      "actions": 1351,
+      "route_frames": 46756,
+      "cpu": "4",
+      "expected_physical_frames_including_three_setups": 143055,
+      "arguments": [
+        "boss-context"
+      ]
+    },
+    {
+      "id": "e03-1",
+      "source_run": "r01-development-control-s4",
+      "source_path": "/root/harmony-alternative-futures-20260908/runs/r01-development-control-s4/metroid-full-s4-w4-m8192/campaign/witness-input.json",
+      "source_results_sha256": "ce3f19eeb0ce6ef1578b3ae1e7163657f0f5ba4581ad8b006afd019dd50dc848",
+      "input": "e03-inputs/tape-1.json",
+      "input_sha256": "ea8c2727502ab6c78dfc1e1e58b41e92416885b82305144e97426de4981691fd",
+      "actions": 1096,
+      "route_frames": 36345,
+      "cpu": "5",
+      "expected_physical_frames_including_three_setups": 111822,
+      "arguments": [
+        "boss-context"
+      ]
+    },
+    {
+      "id": "e03-2",
+      "source_run": "r01-development-control-s5",
+      "source_path": "/root/harmony-alternative-futures-20260908/runs/r01-development-control-s5/metroid-full-s5-w4-m8192/campaign/witness-input.json",
+      "source_results_sha256": "c879429d748d42cb08c364533e5a5d35e96cff15d770ea6a2032466f53f674e9",
+      "input": "e03-inputs/tape-2.json",
+      "input_sha256": "4f634cb323663f7f9ac0008ee011865cda0f9250254081732fa1339dd461a016",
+      "actions": 1165,
+      "route_frames": 40891,
+      "cpu": "6",
+      "expected_physical_frames_including_three_setups": 125460,
+      "arguments": [
+        "boss-context"
+      ]
+    },
+    {
+      "id": "e03-3",
+      "source_run": "r01-development-resource-s3",
+      "source_path": "/root/harmony-alternative-futures-20260908/runs/r01-development-resource-s3/metroid-full-s3-w4-m8192/campaign/witness-input.json",
+      "source_results_sha256": "78e133190f23557792ea7cc991693f1035dbdf5eec498fd820f7566e191fafd1",
+      "input": "e03-inputs/tape-3.json",
+      "input_sha256": "dd2431bc0463b0d6f4dd4b4099a19357bd9db6b90fed23ae1e769d2ac75cdc25",
+      "actions": 1103,
+      "route_frames": 36982,
+      "cpu": "7",
+      "expected_physical_frames_including_three_setups": 113733,
+      "arguments": [
+        "boss-context"
+      ]
+    },
+    {
+      "id": "e03-4",
+      "source_run": "r01-development-resource-s4",
+      "source_path": "/root/harmony-alternative-futures-20260908/runs/r01-development-resource-s4/metroid-full-s4-w4-m8192/campaign/witness-input.json",
+      "source_results_sha256": "36deb22522d97de3d1564373c7f3f7a595dbcf5b77e15af0efc0457a2716cf81",
+      "input": "e03-inputs/tape-4.json",
+      "input_sha256": "99d96e8e412578eaa4e30b3e69eec948f66463cf8dc70f210c5f6ef7a4e63845",
+      "actions": 773,
+      "route_frames": 25672,
+      "cpu": "8",
+      "expected_physical_frames_including_three_setups": 79803,
+      "arguments": [
+        "boss-context"
+      ]
+    },
+    {
+      "id": "e03-5",
+      "source_run": "r01-development-resource-s5",
+      "source_path": "/root/harmony-alternative-futures-20260908/runs/r01-development-resource-s5/metroid-full-s5-w4-m8192/campaign/witness-input.json",
+      "source_results_sha256": "80ba49fb0455ac1ee9dcdbb18ad287eaade2a008c6d5ed0b59e4f5a2ddf0fd27",
+      "input": "e03-inputs/tape-5.json",
+      "input_sha256": "a8dcce5773a64b210a72597ff8a7c71bcdf927e111d686c39b7331d1350a6fac",
+      "actions": 989,
+      "route_frames": 35479,
+      "cpu": "9",
+      "expected_physical_frames_including_three_setups": 109224,
+      "arguments": [
+        "boss-context"
+      ]
+    },
+    {
+      "id": "e03-6",
+      "source_run": "l04-anchor-control-s3",
+      "source_path": "/root/harmony-alternative-futures-20260908/runs/l04-anchor-control-s3/metroid-full-s3-w4-m8192/campaign/witness-input.json",
+      "source_results_sha256": "1c3c821188a6fc24b03d10a976fe8f1c8f50b59fcc35ef252af2271d18c75755",
+      "input": "e03-inputs/tape-6.json",
+      "input_sha256": "5246bec4841627113d7debfc44a172238273fa6e465858f49a7e891644e4f3c0",
+      "actions": 3092,
+      "route_frames": 107469,
+      "cpu": "10",
+      "expected_physical_frames_including_three_setups": 325194,
+      "arguments": [
+        "boss-context"
+      ]
+    },
+    {
+      "id": "e03-7",
+      "source_run": "l04-anchor-middle-s3",
+      "source_path": "/root/harmony-alternative-futures-20260908/runs/l04-anchor-middle-s3/metroid-full-s3-w4-m8192/campaign/witness-input.json",
+      "source_results_sha256": "1a069c93b3381c37029cb0a103bd8aecd68fa378615d3a46254ebbe5818ba3c1",
+      "input": "e03-inputs/tape-7.json",
+      "input_sha256": "e02ab518b777508031bc0c67dc17c9088a11edabdf70a290510d364d27dab3d5",
+      "actions": 3454,
+      "route_frames": 113065,
+      "cpu": "11",
+      "expected_physical_frames_including_three_setups": 341982,
+      "arguments": [
+        "boss-context"
+      ]
+    }
+  ],
+  "binary": "builds/boss-context-001/metroid-boss-probe",
+  "binary_sha256": "c6a5b591f170c12e858faf27ecd3d082767d09b5b8b21fd271dc3eae8353acc3",
+  "source_commit": "0fd8c6f9ca6b1d584165f6a148096074787a1c55",
+  "source_tree_sha256": "78be2883d79f7a05c96a8a518e92beaf15e6308e4cbf7b2ca26a3e0ca7da453f",
+  "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+  "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+  "nq02_results_sha256": "ba9c62da08157a3c799a81271b1a8b18bc79154560890dee1051d26ea24bf8fc",
+  "input_archive_sha256": "2b7847f54cfa6593dea0710ea2e08dac2046684a2e98956e67a362d59b842f67",
+  "max_tapes": 8,
+  "max_route_frames_per_tape": 250000,
+  "max_actions_per_tape": 8192,
+  "replays_per_tape": 3,
+  "auxiliary_frame_ceiling": 6100000,
+  "expected_known_physical_frames": 1350273,
+  "block_known_auxiliary_frames_before": 39436970,
+  "max_wall_seconds_per_case": 300,
+  "memory_max_per_case": "4G",
+  "trace_limit_bytes": 33554432,
+  "dispatch": "Eight independent one-CPU retrospective replay cases concurrently on idle msr1 CPUs 4-11; no performance resource comparison. Native NQ02 passed first.",
+  "decisions": [
+    "Require all three replays and per-frame hashes, endpoints and input/core/ROM identities to agree for each completed tape.",
+    "Report area entry, snapshot-local classification, comparable intervals, observed HP decreases and actual guarded defeat flags separately.",
+    "A tape without classified observations has unavailable HP-loss evidence, not a zero-damage measurement.",
+    "A classified encounter with comparable HP but no decrease supports a combat diagnostic only on that tape; no encounter supports a reach diagnostic only on that tape.",
+    "A failure is retained with actual known work and explicit unknown advancement. No silent truncation, replacement tape or retry.",
+    "No campaign-wide absence, matched improvement, fresh success or permission for an unchanged parameter sweep follows from these eight selected artifacts."
+  ],
+  "limitations": [
+    "Historical panels use different policies and horizons; do not pool as a performance experiment.",
+    "Legacy-terminal source tapes may fail corrected-terminal replay; those are measurement failures.",
+    "Same-key invisible reloads and unavailable samples remain outside exact lifetime-damage claims.",
+    "Existing tapes are diagnostics only and cannot become fresh-search origins or action guidance."
+  ]
+}
