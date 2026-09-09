@@ -976,3 +976,23 @@ production retention policy while matching experimental motion metadata.
 The [design](motion-retention-design.md) requires a qualifying advantage against
 both controls at their common completed work boundary; otherwise longer motion
 campaigns stop. No held-out validation or budget extension is preapproved.
+
+### Work ledger before R05 completes
+
+[The work ledger](work-accounting-after-r04.json) scans actual run summary paths,
+excluding copied summaries embedded in analyses. Before R05 completes it counts
+67 completed evaluation cells and two recorded startup errors: 1,156,082,981
+admitted frames, 9,031,352 executions and 23,937.3 summed search-phase seconds.
+That time includes overlapping cells and is not machine wall time. Exact full
+campaign verification reexecutes another 19,644,104 admitted frames; recorded
+final/milestone suffix replays add 2,095,208 frames. Six standalone diagnostic
+summaries report another 4,473,093 physical frames, with their components and
+file hashes recorded separately.
+
+These are measured categories, not a complete physical-work total. Setup,
+bridges, exports, unadmitted work and runs without a completed summary may add
+work. Unknown cost remains unknown. The revised [accountant](account_runs.py)
+recognizes the suffix and boss probe producers' explicit counters; its totals
+match the independently recorded P03/P04/E01/E02 analyses. It does not alter
+the frozen R05 package, whose original accountant remains preserved. A final
+ledger will be generated from the revised script after R05.

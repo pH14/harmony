@@ -7,6 +7,25 @@ import json
 from pathlib import Path
 
 
+def probe_work(value):
+    """Read counters whose scope is defined by a known diagnostic producer."""
+    kind = value.get("format")
+    if kind == "metroid-equal-suffix-probe-v2":
+        components = {"prefix_and_gain_export_frames": value["prefix_and_gain_export_frames"],
+                      "discarded_suffix_frames": value["probe_frames_discarded_survivor"][0],
+                      "survivor_suffix_frames": value["probe_frames_discarded_survivor"][1]}
+    elif kind == "metroid-boss-memory-probe-v1":
+        assert value["verified_replays"] == 3
+        components = {"ordinary_replay_including_setup": value["ordinary"]["physical_frames_including_setup"],
+                      "two_one_frame_replays_including_setup": 2 * value["one_frame"]["physical_frames_including_setup"]}
+    elif type(value.get("physical_frames")) is int:
+        components = {"reported_physical_frames": value["physical_frames"]}
+    else:
+        return None
+    assert all(type(n) is int and n >= 0 for n in components.values())
+    return {"physical_frames": sum(components.values()), "components": components}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--experiment", type=Path, required=True)
@@ -30,13 +49,13 @@ def main():
                           "executions": result.get("executions"), "search_seconds": result.get("search_seconds"),
                           "cell_elapsed_seconds": value.get("elapsed_seconds"),
                           "twice_replayed_suffix_frames": 2 * (suffix + milestone_suffix) if suffix is not None else None})
-        elif isinstance(value.get("physical_frames"), int):
-            probes.append({**common, "format": value.get("format"), "physical_frames": value["physical_frames"]})
+        elif (work := probe_work(value)) is not None:
+            probes.append({**common, "format": value.get("format"), **work})
         else:
             other.append({**common, "format": value.get("format"), "status": value.get("status")})
     complete = [cell for cell in cells if cell["status"] == "complete"]
     assert all(cell["admitted_frames"] is not None for cell in complete)
-    report = {"format": "retention-tranche-work-accounting-v1",
+    report = {"format": "retention-tranche-work-accounting-v2",
               "scope": "one record per actual evaluation/probe summary path; embedded copies in analyses excluded",
               "cell_status_counts": dict(Counter(cell["status"] for cell in cells)),
               "completed_evaluation_admitted_frames": sum(cell["admitted_frames"] for cell in complete),
@@ -47,6 +66,7 @@ def main():
               "standalone_probe_physical_frames_reported": sum(probe["physical_frames"] for probe in probes),
               "limitations": ["Not a complete machine-wide physical-frame or CPU-time total.",
                               "Full replay work is inferred from exact campaign verification; suffix/probe counters are reported.",
+                              "Known suffix and boss diagnostic counters are decomposed explicitly; other summary formats stay uncounted.",
                               "Setup, bridges, exports, unadmitted worker work and incomplete runs may add physical work.",
                               "Search-phase seconds sum across overlapping cells and are not tranche wall time.",
                               "Missing/incomplete results have unknown cost, not zero-cost success."],
