@@ -9,9 +9,12 @@ use crate::search::archive::{EntrySelectorCounters, RetentionObservation};
 use serde::{Deserialize, Serialize};
 use std::{error::Error, path::PathBuf};
 
-const PER_STRATUM: usize = 16;
-const STRATA: usize = 5;
-const MAX_ACTIONS: usize = 8192;
+/// Maximum retained replacement pairs in one diagnostic category.
+pub const PER_STRATUM: usize = 16;
+/// Number of categories in the version-one audit format.
+pub const STRATA: usize = 5;
+/// Maximum controller actions in either retained source input.
+pub const MAX_ACTIONS: usize = 8192;
 
 /// One independently replayable pair, without emulator snapshots or ROM bytes.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -53,6 +56,12 @@ pub(crate) struct RetentionAudit {
     input_reconstructions: u64,
     diagnostic_action_capacity_bytes: usize,
     samples: Vec<Vec<ReplacementPair>>,
+}
+
+fn compact_input(input: MetroidInput) -> MetroidInput {
+    MetroidInput {
+        actions: input.actions.into_boxed_slice().into_vec(),
+    }
 }
 
 // An independent deterministic sampling hash, never the campaign RNG.
@@ -141,6 +150,10 @@ impl RetentionAudit {
                 self.oversized_input += 1;
                 return Ok(());
             }
+            // Reconstructed candidates can have doubled Vec capacity after suffix append.
+            // Store exactly the action length so the declared retained payload bound holds.
+            let candidate_input = compact_input(candidate_input);
+            let incumbent_input = compact_input(incumbent_input);
             let pair = ReplacementPair {
                 stratum,
                 execution: event.execution,
@@ -179,5 +192,23 @@ impl RetentionAudit {
     pub(crate) fn finish(&mut self) -> Result<(), Box<dyn Error>> {
         self.finished = true;
         self.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_ACTIONS, compact_input};
+    use crate::metroid::target::{ButtonChord, MetroidInput};
+
+    #[test]
+    fn stored_samples_discard_reconstruction_spare_capacity() {
+        let mut actions = vec![ButtonChord::new(0, 1); 5000];
+        actions.push(ButtonChord::new(1, 2));
+        assert!(actions.capacity() > MAX_ACTIONS);
+        let expected = actions.clone();
+        let input = compact_input(MetroidInput { actions });
+        assert_eq!(input.actions, expected);
+        assert_eq!(input.actions.capacity(), input.actions.len());
+        assert!(input.actions.capacity() <= MAX_ACTIONS);
     }
 }

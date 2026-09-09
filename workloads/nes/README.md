@@ -97,6 +97,10 @@ Development-only observation audits are available through `metroid-local-search`
 (request-bounded search from an input discovered by a prior campaign, with
 composed ordinary-genesis witness verification) and `nes-input-inspect`
 (raw-machine replay, endpoint RAM/image, and bounded terminal-state probes).
+The raw inspector checks a combined declared prefix/suffix ceiling of 20,000
+actions and 2M normalized hold frames before creating an emulator target, then
+checks the resolved physical tape again after adapter-owned setup/award frames.
+These are tape bounds; repeated verification work is accounted separately.
 Their diagnostic origins never qualify fresh search. Requests, bounds, exact
 provenance and experimental policy comparisons are documented in the
 [alternative-futures research ledger](../../benchmarks/search/alternative-futures/README.md).

@@ -1303,3 +1303,60 @@ T04 seed-audit preflight initially failed while decoding an AppleDouble `._`
 sidecar as JSON. Exclude those binary filesystem metadata sidecars, retaining
 all actual benchmark/manifest/request JSON in the audit. No plan was written
 and no validation search ran before this correction; no seeds were replaced.
+
+## I06 review correction — reject oversized declared raw tapes before replay
+
+Local review identified that the raw inspector enforced its combined physical
+frame/action ceiling only after adapter replay. Individually bounded MM2 prefix
+and suffix files could therefore exceed the combined declared work ceiling before
+rejection. Check their combined normalized holds and action count before creating
+either target, and retain the final resolved-tape check for implicit setup/award
+frames. Existing registered inputs are below both bounds; no search policy or
+frozen validation binary changes. Focused unit tests and affected-binary Clippy
+<=10m cover normalized zero/max holds, independent count/frame limits and combined
+prefix/suffix overflow. Reuse existing native evidence for unchanged execution;
+final raw-tool qualification can confirm the accepted I05 replay remains identical.
+
+T03 seed5 completes3M/364,178,451 frames,235 observed cells, capacity25,
+two tanks, no boss. Bombs938,694, Ridley area1,226,882, Kraid1,327,670;
+no Long Beam. The T04 gate confirms earlier Bombs/Kraid at admitted-frame work
+on seeds3/5 and regression on4, with adjacent progress samples providing narrow
+frame-work bounds. The unchanged frozen panel starts01:55:46UTC; no further
+terminal-policy tuning or replacement seeds are allowed. All named discovery
+witnesses passed the runner's two independent ordinary-genesis replays.
+
+I06's focused normalized-hold/count/frame/combined-tape test and Clippy pass.
+An initial formatting invocation used unsupported `cargo fmt --bin`; it made no
+changes. Direct rustfmt on the affected file succeeded. This diagnostic guard
+change does not touch the validation binary or search semantics.
+
+## Q33 preregistration — review boundary fixes and compatibility
+
+Three concrete review findings require a coherent boundary fix: cap external
+paired-audit bytes/category/pair/input lengths before target creation; cap a
+whole-chain prefix before any worker replays it; and discard spare Vec capacity
+when retaining sampled inputs. The latter can exceed the declared payload bound
+for a5000-action parent extended by one action. This tranche's4096-action horizon
+keeps reconstructed capacities within the old8192-action allocation ceiling, so
+that counterexample does not invalidate the frozen T04 memory condition. Sample
+values, search decisions, RNG, and policy identities remain unchanged.
+
+Use the writer's five categories/16pairs/8192actions and64MiB JSON envelope for
+external audits. The chain-prefix ceiling is8MiB/100k actions/10M normalized hold
+frames, accommodating complete registered chains. The known C02 eight-master
+prefix is3478 actions/127,147 frames and the P02 audit is888,421 bytes; all existing
+fixtures fit. Bounds are input/work limits, not a claim about global search utility.
+
+Focused affected NES library/binary tests, boundary CLI fixtures, and Clippy each
+have10m process-group watchdogs. Require independent byte/action/frame/category
+failures, pre-emulation rejection, and exact stored Vec capacity after the actual
+reconstruction-growth pattern. If they pass, freeze new source-attested native
+binaries onCPUs16–19, preserving T017 and all running validation processes.
+Then run: the frozen audited100k legacy Metroid stream comparison; the existing
+5k Wily1 full campaign/checkpoint prefix fixture; P03's same corrected-terminal
+shared-suffix probe; and I05's same raw MM2 inspection. Each cell/probe <=5m,
+sequentially on reserved CPUs16–19 (raw/probe one core). Compare exact campaign
+hashes, paired outcome/suffix hashes, raw endpoints and physical costs, allowing
+only diagnostic elapsed time to differ. A mismatch requires diagnosis; do not
+reinterpret validation or rerun an unchanged failure. These are implementation
+checks, not new candidate families or fresh validation successes.

@@ -39,6 +39,19 @@ fn read_input(path: &PathBuf, expected: &str) -> Result<MetroidInput, Box<dyn Er
     }
     Ok(input)
 }
+fn bounded_tape_frames(
+    actions: impl Iterator<Item = nes::ButtonChord>,
+) -> Result<u64, Box<dyn Error>> {
+    let mut frames = 0;
+    for (index, action) in actions.enumerate() {
+        frames += u64::from(action.bounded_hold_frames());
+        if index >= 20_000 || frames > 2_000_000 {
+            return Err("physical tape exceeds bounds".into());
+        }
+    }
+    Ok(frames)
+}
+
 // Host timing is diagnostic only and never enters replay or search decisions.
 #[allow(clippy::disallowed_methods)]
 fn telemetry_now() -> Instant {
@@ -54,6 +67,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     let request_bytes = fs::read(&args[0])?;
     let request: Request = serde_json::from_slice(&request_bytes)?;
     let input = read_input(&request.input, &request.input_sha256)?;
+    let mm2_setup = match request.game.as_str() {
+        "metroid" => None,
+        "mm2" => Some((
+            read_input(
+                request.prefix.as_ref().ok_or("missing prefix")?,
+                request
+                    .prefix_sha256
+                    .as_deref()
+                    .ok_or("missing prefix hash")?,
+            )?,
+            Mm2Stage::parse(request.stage.as_deref().ok_or("missing stage")?)?,
+        )),
+        _ => return Err("unsupported game".into()),
+    };
+    // Reject an oversized declared prefix/suffix before either adapter clocks frames.
+    bounded_tape_frames(
+        mm2_setup
+            .iter()
+            .flat_map(|(prefix, _)| prefix.actions.iter())
+            .chain(input.actions.iter())
+            .copied(),
+    )?;
     let out = PathBuf::from(&args[1]);
     fs::create_dir(&out)?;
     let rom = fs::read(&request.rom)?;
@@ -82,14 +117,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         adapter_dead = target.is_dead();
         tape.extend(input.actions.iter().copied());
     } else if request.game == "mm2" {
-        let prefix = read_input(
-            request.prefix.as_ref().ok_or("missing prefix")?,
-            request
-                .prefix_sha256
-                .as_deref()
-                .ok_or("missing prefix hash")?,
-        )?;
-        let stage = Mm2Stage::parse(request.stage.as_deref().ok_or("missing stage")?)?;
+        let (prefix, stage) = mm2_setup.ok_or("missing MM2 setup")?;
         let mut target = Mm2Target::from_rom_bytes_after(
             &rom,
             &request.core,
@@ -111,13 +139,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         return Err("unsupported game".into());
     }
-    let total: u64 = tape
-        .iter()
-        .map(|a| u64::from(a.bounded_hold_frames()))
-        .sum();
-    if total > 2_000_000 || tape.len() > 20_000 {
-        return Err("physical tape exceeds bounds".into());
-    }
+    // Adapter-owned setup/award transitions can add frames; check the resolved tape too.
+    let total = bounded_tape_frames(tape.iter().copied())?;
     let image = if request.game == "metroid" {
         nes::with_cartridge_ram(&rom)?
     } else {
@@ -218,4 +241,31 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("raw frame accounting differs".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bounded_tape_frames;
+    use machine::nes::ButtonChord;
+
+    #[test]
+    fn declared_tape_bounds_cover_combined_work_and_normalized_holds() {
+        let one_frame = ButtonChord {
+            buttons: 0,
+            hold_frames: 0,
+        };
+        let max_frame = ButtonChord {
+            buttons: 0,
+            hold_frames: 255,
+        };
+        assert_eq!(
+            bounded_tape_frames([one_frame, max_frame].into_iter()).unwrap(),
+            121
+        );
+        assert!(bounded_tape_frames(std::iter::repeat_n(one_frame, 20_001)).is_err());
+        assert!(bounded_tape_frames(std::iter::repeat_n(max_frame, 16_667)).is_err());
+        let prefix = std::iter::repeat_n(max_frame, 10_000);
+        let suffix = std::iter::repeat_n(max_frame, 10_000);
+        assert!(bounded_tape_frames(prefix.chain(suffix)).is_err());
+    }
 }

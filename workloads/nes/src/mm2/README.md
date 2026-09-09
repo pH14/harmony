@@ -60,3 +60,10 @@ short/long sampling remains the default. The experimental middle-band policy
 and its mean-matched two-band ablation preserve controller-mask draws and
 special menu taps. Their identifiers are strict replay context; see the shared
 [NES policy documentation](../../README.md) for values and duration ranges.
+
+Fresh-chain evaluation prefixes have an explicit whole-chain ceiling: 8 MiB of
+JSON, 100,000 normalized controller actions, and 10M normalized hold frames.
+`nes-eval` verifies these limits and the prefix hash before creating a target.
+The ceiling accommodates complete chains under the registered 4096-action stage
+horizon; setup/reconstruction work remains separately charged, not admitted suffix
+work. Repeated target construction does not make prefix execution free.

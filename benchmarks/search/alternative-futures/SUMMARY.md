@@ -10,8 +10,8 @@ The archive loses locally useful futures, but preserving two resource extremes
 has not turned that loss into deeper fresh search. A separate Metroid terminal
 classification defect admitted a transient BCD health underflow as an excellent
 living state. Correcting that defect has a clear mechanical justification and
-mixed but promising late development results. Its untouched comparison is
-conditionally prepared; outcomes are not yet available.
+mixed but promising late development results. Its frozen untouched comparison is
+running; completed validation outcomes are not yet available.
 
 | Explanation or mechanism | Controlled observation | Decision so far |
 | --- | --- | --- |
@@ -38,8 +38,8 @@ are labeled separately and use only inputs discovered in this tranche.
 The terminal correction's completed seed-3 anchor observed 246 map cells and
 capacity 25, with Bombs at 1,487,653 executions and Kraid at 1,556,014. Its frozen
 legacy control reached those at 2,847,297 and 2,937,978. Seed 4 instead reached
-Bombs/Kraid later than control. Seed 5 is still completing. None has a boss so
-far. These execution counts measure discovery work; a witness's route frame
+Bombs/Kraid later than control. Seed 5 finished with earlier Bombs/Kraid/Ridley discovery, two tanks and
+capacity 25. None defeated a boss. These execution counts measure discovery work; a witness's route frame
 count is a different quantity.
 
 The two completed fresh MM2 chains used the frozen order Metal, Heat, Air, Wood,
@@ -81,6 +81,6 @@ The [experiment ledger](README.md) contains registrations, failures, bounds,
 decisions, and the two-hour checkpoints. [Literature notes](literature.md)
 separate published mechanisms from Harmony observations and extrapolations.
 The [compact evidence directory](results) preserves exact hashes and outcomes.
-The frozen T04 plan, when its development gate passes, tests ten untouched seeds
+The frozen T04 plan passed its development gate and tests ten untouched seeds
 against ten matched controls without tuning, replacement seeds, or retries.
 Censored or unstarted cells will remain explicitly incomplete.

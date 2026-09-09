@@ -4,7 +4,7 @@
 use nes_workload::{
     metroid::{
         archive::sample_chord,
-        retention_audit::ReplacementPair,
+        retention_audit::{MAX_ACTIONS, PER_STRATUM, ReplacementPair, STRATA},
         target::{
             ButtonChord, MetroidInput, MetroidMechanicalState, MetroidSnapshot, MetroidTarget,
             MetroidTerminalPolicy,
@@ -20,14 +20,52 @@ use std::{
     collections::BTreeSet,
     error::Error,
     fs,
-    io::{BufWriter, Write},
+    io::{BufWriter, Read, Write},
     path::Path,
 };
 
 #[derive(Deserialize)]
 struct Audit {
+    format: String,
     samples: Vec<Vec<ReplacementPair>>,
 }
+const MAX_AUDIT_BYTES: u64 = 64 * 1024 * 1024;
+
+fn validate_audit(audit: &Audit) -> Result<(), Box<dyn Error>> {
+    if audit.format != "metroid-retention-audit-v1" || audit.samples.len() != STRATA {
+        return Err("unsupported audit format or category count".into());
+    }
+    for (stratum, pairs) in audit.samples.iter().enumerate() {
+        if pairs.len() > PER_STRATUM {
+            return Err("audit exceeds bounded pair count".into());
+        }
+        for pair in pairs {
+            if pair.stratum != stratum
+                || pair.candidate_input.actions.len() > MAX_ACTIONS
+                || pair.incumbent_input.actions.len() > MAX_ACTIONS
+            {
+                return Err("audit pair category or input exceeds bounds".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_audit(path: &Path) -> Result<(Audit, Vec<u8>), Box<dyn Error>> {
+    let file = fs::File::open(path)?;
+    if file.metadata()?.len() > MAX_AUDIT_BYTES {
+        return Err("audit exceeds 64 MiB".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_AUDIT_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_AUDIT_BYTES {
+        return Err("audit exceeds 64 MiB".into());
+    }
+    let audit: Audit = serde_json::from_slice(&bytes)?;
+    validate_audit(&audit)?;
+    Ok((audit, bytes))
+}
+
 #[derive(Debug, Serialize)]
 struct Outcome {
     frames: u64,
@@ -121,16 +159,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let policy =
         MetroidTerminalPolicy::parse(args.get(6).map_or("death_or_ending_v2", String::as_str))?;
     let core = Path::new(&args[0]);
-    let rom = fs::read(&args[1])?;
-    let bytes = fs::read(&args[2])?;
-    let audit: Audit = serde_json::from_slice(&bytes)?;
+    let (audit, bytes) = read_audit(Path::new(&args[2]))?;
     let out = Path::new(&args[3]);
-    fs::create_dir(out)?;
     let trials: usize = args[4].parse()?;
     let actions: usize = args[5].parse()?;
     if trials == 0 || trials > 256 || actions == 0 || actions > 128 {
         return Err("probe limits exceed bounded diagnostic".into());
     }
+    let rom = fs::read(&args[1])?;
+    fs::create_dir(out)?;
     let core_hash = format!("{:x}", Sha256::digest(fs::read(core)?));
     let mut rng = RomuDuoJrRand::with_seed(0x616c_7466_7574_7572);
     let suffixes: Vec<Vec<ButtonChord>> = (0..trials)
@@ -232,4 +269,65 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     println!("{report}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        Audit, MAX_ACTIONS, MAX_AUDIT_BYTES, PER_STRATUM, STRATA, read_audit, validate_audit,
+    };
+    use nes_workload::metroid::{
+        retention_audit::ReplacementPair,
+        target::{ButtonChord, MetroidInput},
+    };
+
+    fn pair() -> ReplacementPair {
+        ReplacementPair {
+            stratum: 0,
+            execution: 0,
+            replaces: true,
+            candidate: Default::default(),
+            incumbent: Default::default(),
+            created_execution: 0,
+            exposure: Default::default(),
+            in_window_ever: false,
+            candidate_input: MetroidInput { actions: vec![] },
+            incumbent_input: MetroidInput { actions: vec![] },
+        }
+    }
+
+    #[test]
+    fn external_audit_shape_and_source_lengths_are_bounded() {
+        let mut audit = Audit {
+            format: "metroid-retention-audit-v1".into(),
+            samples: vec![vec![]; STRATA],
+        };
+        audit.samples[0].push(pair());
+        assert!(validate_audit(&audit).is_ok());
+        audit.samples[0][0].stratum = 1;
+        assert!(validate_audit(&audit).is_err());
+        audit.samples[0] = vec![pair(); PER_STRATUM + 1];
+        assert!(validate_audit(&audit).is_err());
+        audit.samples[0] = vec![pair()];
+        audit.samples[0][0].candidate_input.actions = vec![ButtonChord::new(0, 1); MAX_ACTIONS + 1];
+        assert!(validate_audit(&audit).is_err());
+        audit.samples[0].clear();
+        audit.samples.push(vec![]);
+        assert!(validate_audit(&audit).is_err());
+    }
+
+    #[test]
+    fn oversized_audit_is_rejected_before_deserialization() {
+        let path =
+            std::env::temp_dir().join(format!("harmony-audit-byte-bound-{}", std::process::id()));
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.set_len(MAX_AUDIT_BYTES + 1).unwrap();
+        let error = read_audit(&path).err().unwrap().to_string();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(error, "audit exceeds 64 MiB");
+    }
 }

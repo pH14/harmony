@@ -137,6 +137,10 @@ memory. `metroid-retention-probe` reconstructs each pair and applies the same
 sampled suffixes to both sides. It reports physical probe/prefix frames, gains,
 survival, and living map exits separately. These diagnostic starts never count
 as fresh validation; differing endpoints alone are not useful-future evidence.
+The probe accepts only the version-one five-category format, at most 16 pairs
+per category, at most 8192 actions per source input, and at most 64 MiB of audit
+JSON before parsing. Retained sample inputs discard reconstruction spare capacity
+so the declared action allocation bound applies to storage as well as lengths.
 
 `nes-eval` optionally selects a versioned `nes_duration` distribution; legacy
 short/long sampling remains the default. The experimental middle-band policy

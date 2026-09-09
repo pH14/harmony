@@ -34,12 +34,48 @@ use sha2::{Digest, Sha256};
 use std::{
     error::Error,
     fs,
-    io::{self, BufWriter, LineWriter, Write},
+    io::{self, BufWriter, LineWriter, Read, Write},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+const MAX_CHAIN_PREFIX_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_CHAIN_PREFIX_ACTIONS: usize = 100_000;
+const MAX_CHAIN_PREFIX_FRAMES: u64 = 10_000_000;
+
+fn parse_chain_prefix(bytes: &[u8], expected: &str) -> Result<Mm2Input> {
+    if bytes.len() as u64 > MAX_CHAIN_PREFIX_BYTES {
+        return Err("chain prefix exceeds eight MiB".into());
+    }
+    if format!("{:x}", Sha256::digest(bytes)) != expected {
+        return Err("chain prefix checksum mismatch".into());
+    }
+    let input: Mm2Input = serde_json::from_slice(bytes)?;
+    if input.actions.len() > MAX_CHAIN_PREFIX_ACTIONS
+        || input
+            .actions
+            .iter()
+            .map(|a| u64::from(a.bounded_hold_frames()))
+            .sum::<u64>()
+            > MAX_CHAIN_PREFIX_FRAMES
+    {
+        return Err("chain prefix exceeds action or frame bounds".into());
+    }
+    Ok(input)
+}
+
+fn read_chain_prefix(path: &Path, expected: &str) -> Result<Mm2Input> {
+    let file = fs::File::open(path)?;
+    if file.metadata()?.len() > MAX_CHAIN_PREFIX_BYTES {
+        return Err("chain prefix exceeds eight MiB".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_CHAIN_PREFIX_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    parse_chain_prefix(&bytes, expected)
+}
 
 // Host telemetry never enters the campaign stream or adapter state.
 #[allow(clippy::disallowed_methods)]
@@ -475,11 +511,13 @@ fn main() -> Result<()> {
                 .prefix_input
                 .as_ref()
                 .map(|path| -> Result<Mm2Input> {
-                    let bytes = fs::read(path)?;
-                    if Some(format!("{:x}", Sha256::digest(&bytes))) != request.prefix_sha256 {
-                        return Err("chain prefix checksum mismatch".into());
-                    }
-                    Ok(serde_json::from_slice(&bytes)?)
+                    read_chain_prefix(
+                        path,
+                        request
+                            .prefix_sha256
+                            .as_deref()
+                            .ok_or("missing prefix hash")?,
+                    )
                 })
                 .transpose()?;
             let game = match prefix {
@@ -572,7 +610,35 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::victory_within_budget;
+    use super::{
+        MAX_CHAIN_PREFIX_ACTIONS, MAX_CHAIN_PREFIX_BYTES, parse_chain_prefix, victory_within_budget,
+    };
+    use nes_workload::mm2::target::{ButtonChord, Mm2Input};
+    use sha2::{Digest, Sha256};
+
+    fn encoded_prefix(actions: Vec<ButtonChord>) -> (Vec<u8>, String) {
+        let bytes = serde_json::to_vec(&Mm2Input { actions }).unwrap();
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        (bytes, digest)
+    }
+
+    #[test]
+    fn chain_prefix_has_whole_chain_byte_action_and_frame_caps() {
+        let (bytes, digest) =
+            encoded_prefix(vec![ButtonChord::new(0, 1); MAX_CHAIN_PREFIX_ACTIONS]);
+        assert!(parse_chain_prefix(&bytes, &digest).is_ok());
+        assert!(parse_chain_prefix(&bytes, "wrong").is_err());
+        let (bytes, digest) =
+            encoded_prefix(vec![ButtonChord::new(0, 1); MAX_CHAIN_PREFIX_ACTIONS + 1]);
+        assert!(parse_chain_prefix(&bytes, &digest).is_err());
+        let (bytes, digest) = encoded_prefix(vec![ButtonChord::new(0, 120); 83_334]);
+        assert!(parse_chain_prefix(&bytes, &digest).is_err());
+        let bytes = vec![0; MAX_CHAIN_PREFIX_BYTES as usize + 1];
+        assert_eq!(
+            parse_chain_prefix(&bytes, "").unwrap_err().to_string(),
+            "chain prefix exceeds eight MiB"
+        );
+    }
 
     #[test]
     fn a_victory_in_the_drained_window_does_not_pass_the_frame_gate() {
