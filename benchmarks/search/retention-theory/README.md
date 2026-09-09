@@ -996,3 +996,45 @@ recognizes the suffix and boss probe producers' explicit counters; its totals
 match the independently recorded P03/P04/E01/E02 analyses. It does not alter
 the frozen R05 package, whose original accountant remains preserved. A final
 ledger will be generated from the revised script after R05.
+
+### R05 completed: motion replication fails both controls
+
+All three arms completed their50M-frame budgets without wall censoring on the
+same fast cores and frozen executable. The [frozen analysis](r05-analysis.json)
+rejects both escalation comparisons. Ordinary retention gets missiles by17.689M
+frames, Norfair by17.940M and a tank by42.392M. Context gets missiles by45.040M
+and Norfair by45.667M, with no tank. Quality gets missiles by19.957M and Norfair
+by22.042M, also without a tank. Every reported named milestone was replayed.
+There is no qualifying speedup or added context milestone, and context loses
+ordinary's tank. No longer motion-retention campaign is permitted this tranche.
+
+| Arm | Admitted frames | Jobs | Search seconds | Peak sampled RSS bytes | Active entries |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Ordinary | 50,000,719 | 396,412 | 863.972 | 1,257,578,496 | 47,078 |
+| Context | 50,000,990 | 369,530 | 848.919 | 864,915,456 | 31,248 |
+| Quality | 50,001,074 | 405,598 | 861.626 | 1,760,550,912 | 68,274 |
+
+Context's31,248 active entries include14,085 distinct-context pairs and zero
+same-context pairs; its largest slot is2. Quality has9,808 same-context and
+22,263 distinct-context pairs; ordinary has one entry per slot. Correct rule
+implementation therefore did not translate into improved fresh discovery.
+Lower context RSS coincides with less discovered progress and is not a success.
+[Full cell evidence](r05-results.json) preserves identities and costs.
+
+[The standalone figure](motion-development.svg), also provided as
+[PNG](motion-development.png), contrasts the initial gain with the replication.
+It plots telemetry arrival intervals, not confidence intervals. Its generator
+records exact analysis hashes and Matplotlib version in
+[motion-development-figure.json](motion-development-figure.json).
+
+[Updated work accounting](work-accounting-after-r05.json) counts70 completed
+cells and two errors:1,306,085,764 admitted frames and10,202,892 executions,
+plus19,644,104 full-replay admitted frames,2,529,008 reported witness-suffix
+frames and4,473,093 standalone probe frames. Summed search-phase time is
+26,511.8s across overlapping runs. Setup, bridges, exports and incomplete or
+unadmitted work remain additional; this is not a complete machine-wide total.
+
+Draft [PR#287](https://github.com/pH14/harmony/pull/287) preserves the research.
+The generic/portable checks and seven research driver contracts are documented
+in the verification ledger. Hosted checks remain separate from scientific
+qualification. No validation panel or fresh boss/Wily4 breakthrough is claimed.

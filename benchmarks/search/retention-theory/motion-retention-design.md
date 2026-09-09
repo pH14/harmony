@@ -139,3 +139,22 @@ and ordinary-control advantage separately. Only passing both comparisons
 qualifies specifying one longer development pair; its budget must be registered
 before it starts. Otherwise stop longer motion-retention campaigns in this
 tranche. This single fresh seed never establishes the breakthrough threshold.
+
+## R05 outcome: stop longer motion campaigns
+
+All three arms completed50M frames without wall censoring. Ordinary retention
+reached missiles in(17,679,187,17,688,601] frames, Norfair in(17,927,937,17,939,954]
+and an energy tank in(42,379,225,42,392,241]. Context retention reached missiles
+in(45,028,326,45,039,871] and Norfair in(45,655,749,45,667,367], with no tank.
+Quality retention reached missiles in(19,944,024,19,956,630] and Norfair
+in(22,028,371,22,042,470], also with no tank. All observed named milestones
+have independently replayed witnesses.
+
+The frozen analyzer rejects both comparisons: no additional context milestone
+or qualifying20% speedup, and a lost ordinary-control tank. Its decision is
+`qualifies_one_longer_development_pair: false`. Context retention still obeys
+its active-set invariant:31,248 entries, largest slot2,14,085 distinct-context
+pairs and zero same-context pairs. This is a performance failure of the
+correctly activated mechanism on a new development seed. No longer motion
+campaign is permitted in this tranche. Preserve the initial positive R04b result
+alongside this negative replication; neither implies a universal result.

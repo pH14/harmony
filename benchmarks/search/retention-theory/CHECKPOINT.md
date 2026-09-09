@@ -1,104 +1,85 @@
-# Research checkpoint — September 9, R04b passes and R05 runs
+# Research checkpoint — September 9, R05 fails; longer campaigns stopped
 
-The goal remains active. No fresh Metroid boss or MM2 Wily 4 breakthrough has
-been established. The approved ROM transfer is complete and checksum verified.
-Three Metroid/retention development gates have failed. Job sampling produced a
-large MM2 Metal improvement over coordinate extremes; its fresh chain also
-solved Heat and Air before stopping at Wood. The ordinary-retention Metal
-comparison was mixed, so a replicated production improvement is not established.
-The shared-prefix Heat control completed 85M frames without a victory, while
-the reused sample arm won at 66.63M: a positive conditional diagnostic. J02's
-ordinary fresh chain stopped at Heat after its full 66.63M-frame ceiling;
-sampling's reused J01 chain had cleared three stages. Those adaptively chosen
-budgets authorized J03, a new prospective development seed through Wood.
-J03 used ordinary then sampling on the same CPU group and predeclared stage
-ceilings. Ordinary cleared all four stages; sampling cleared Metal and failed
-Heat after the full 85M-frame ceiling without censoring. Its escalation gate
-failed, so no longer sampling chains are permitted in this tranche. All
-production defaults remain unchanged.
+The goal remains active. No fresh Metroid boss or MM2 Wily4 breakthrough has
+been established. ROM transfer is complete and checksum verified. The initial
+12-hour tranche ends10:16UTC;08:46UTC remains reserved for consolidation. Current
+time is about06:18UTC. Do not silently extend or mark the breakthrough achieved.
 
-P04's frozen motion descriptor separated six of eight useful competitor pairs
-that even the finer spatial key merged, including one mechanically identical
-pair. Another useful pair shares all seven inspected motion bytes, so the
-descriptor is not sufficient state. This passed the registered design gate.
-Commit `e29ee221` implements at most two best context maxima, a top-two-quality
-capacity control, finite positive and adverse examples, and a versioned optional
-Metroid motion key. Generic tests (135 plus one interface), feature NES tests
-(126 plus evaluator), default NES tests (125), and strict Clippy passed.
+No owned msr1 search campaign is running or queued. R05 finished around06:14UTC;
+service`harmony-r05-replication-002` is inactive. All tested retention families
+have failed their registered escalation gates. Do not rescue them with longer
+runs, extra seeds or altered thresholds in this tranche.
 
-R04's five 5k-job full-replay cells completed, including exact old default and
-job-sample streams. Cached/direct motion and actual campaign-key agreement
-passed on original P04 pairs 0/2/12, costing 378,316 physical frames. The census
-gate failed because resident snapshots include historical reconstruction anchors
-and are not the active retention set. All original results are preserved in
-[r04-original-qualify-results.json](r04-original-qualify-results.json): 3,361,554
-admitted frames and 249.4s total cell elapsed time, plus full-replay work.
+R05 used fresh development seed20261210, ordinary/context/quality sequentially
+on8–11, same frozen`context-002` executable, v3 terminal, ordinary geometry,
+alphabet-only,4096 actions,4 workers,8GiB,500k jobs/50M frames/1800s per arm.
+All completed50M, without wall censoring. Ordinary gets missiles by17.689M,
+Norfair by17.940M, tank by42.392M. Context gets missiles by45.040M and Norfair
+by45.667M, no tank. Quality gets missiles by19.957M and Norfair by22.042M,
+no tank. Both frozen gate comparisons fail. Context still has31,248 active
+entries,14,085 distinct-context pairs, zero same-context pairs, largest slot2.
+The mechanism is active; its new-seed performance is negative.
 
-Commit `4e3f0255` corrects the census to use active keys and adds a historical-
-entry exclusion check. R04b reruns the same five short cells, also requiring
-both feature streams to match R04 exactly. All 135 generic tests and strict NES
-Clippy pass after the correction. No policy, descriptor or numerical gate was
-changed. R04b passed all five full-replay cells and every exact old/new stream
-comparison. Both policies have at most two active entries per slot. Quality has
-517 same-context pairs; context has zero, plus 1,376 distinct-context pairs.
-All keys carry contexts. The cached-context check also matches the original P04
-motion, endpoints and snapshot hashes exactly. The post-correction 126 NES
-tests plus evaluator and strict generic/default-NES Clippy passed.
+The prior R04b seed3 gain remains preserved: a replayed context tank by36.988M
+against none in quality at50M. R05 does not erase that development result, but
+it prevents escalating it. [The synthesis](SYNTHESIS.md), [R05 analysis](r05-analysis.json),
+[full summaries](r05-results.json) and [figure](motion-development.png) show both.
+Figure was rendered with Matplotlib3.11.1 in temporary environment
+`/private/tmp/harmony-retention-plot-env`; PNG was visually inspected. Source
+analysis hashes are in`motion-development-figure.json`.
 
-R04b completed on msr1: quality then context,
-same frozen `context-002` executable (source `4e3f0255`), seed3, four workers,
-8GiB, alphabet-only, corrected terminal v3, and 50M-frame/500k-job/1800s limits
-per arm. Both use the released fast cores8–11; that placement amendment was
-committed before any development data. Launcher `run-r04b-57bdffdd.py`, frozen
-analyzer in `source-context-002`, outputs `runs/r04b-development-results.json`
-and `runs/r04b-development-analysis.json`. The frozen analyzer passed: context
-found and replayed an energy tank by36,987,803 frames; quality found none at50M.
-No lost control milestone, wall censoring or underflow eligibility. Both
-completed50M. Sampled RSS1.735GB quality versus2.520GB context, within8GiB.
+[Updated accounting](work-accounting-after-r05.json) counts70 completed cells
+and two errors,1,306,085,764 admitted frames,10,202,892 executions,19,644,104
+full-replay admitted frames,2,529,008 reported witness-suffix frames and4,473,093
+standalone probe frames. Summed search time26,511.8s is not tranche wall time.
+Setup, exports, bridges, unadmitted and incomplete work can add cost. Outputs
+occupy about6.3GiB. Revised accountant is msr1 root`account-runs-v2.py`; output
+`runs/work-accounting-after-r05-v2.json`. The frozen R05 accountant is older.
 
-That pass authorizes R05 only: fresh development seed20261210, absent from both
-committed research ledgers and rejected by the launcher if already in msr1
-summaries. Three arms run ordinary/context/quality, sequentially on8–11, same
-`context-002` binary and50M-frame/500k-job/1800s/8GiB per-arm limits. No resumed
-gameplay input. Both the capacity comparison and ordinary-retention comparison
-must pass the registered gate before specifying any longer pair.
+Draft [PR#287](https://github.com/pH14/harmony/pull/287) exists. Pushed head was
+`bff3a20a`; local`76c339fb` adds explicit research-test CI wiring. R05 evidence,
+plot and current synthesis still need committing/pushing, then update the PR
+body from its currently running-R05 description. Use
+`/private/tmp/harmony-retention-pr-body.md` with`gh pr edit --body-file`.
+The root pre-push hook explicitly permits skipping its convenience root checks;
+changed standalone package checks already passed. Hosted CI is the gate of
+record. Initial pushed head's portable job passed, broad checks still ran at
+last read; PR was mergeable. Do not claim final-head CI yet.
 
-Active service: `harmony-r05-replication-002`, started05:30UTC. At06:00 ordinary
-and context have completed50M frames each without wall censoring; quality is
-running. No partial milestone outcome has changed the registration. Drivers are frozen
-from `c11f4a7f` at `harmony-r05-c11f4a7f/` under the owned msr1 root. Outputs:
-`runs/r05-results.json`, `runs/r05-analysis.json`, and the automatically generated
-`runs/work-accounting-after-r05.json`. The service cap is6000s/12GiB. No other
-search campaign is running. [The design](motion-retention-design.md) preserves
-the exact registration; no validation seed has been used.
+Production implementation remains frozen at`4e3f0255`, source digest
+`c0c67ce855ad874f974879bd238dd1e38d358c02d492abb04d6150c936c80113`, binary
+`2a727ac12dbc4ff07272e0119bab39179aaa45bc0a6f422c2cc8fb77cdf3f981`.
+All compatibility and active-context qualifications passed; defaults unchanged.
+[Implementation self-review](implementation-review.md) records boundaries,
+especially unqualified motion-feature splice/resume/combined-key performance.
+The optional-policy fixture exercises actual alternatives, pressure and replay.
+No unsafe change. Relevant portable checks are complete, plus five adversarial
+R05 allocation-gate cases. Together with two chain-limit tests, the exact new
+CI command passes locally in0.037s. Local telemetry reads now close their file;
+the frozen R05 driver and decision semantics were not modified.
 
-A bounded [literature update](literature-update.md) was completed during the
-run. It covers Intelligent Go-Explore, a July2026 preliminary topology report
-with a negative Atari result, and the exact assumptions behind successor-feature
-abstraction. Two additional finite fixtures pass: policy-averaged event
-features can agree while action-conditioned futures reverse; and a candidate's
-pairwise novelty can already be covered by the other retained survivor. These
-are theory tests only; no production code or running policy changed. Existing follow-ups
-#270/#283/#286 cover ordering, exposure and behavioral-retention work.
+The reused [P03 objective audit](p03-objective-audit.json) finds124 versus112
+exclusive map/suffix events but326 versus353 surviving endpoints. Objective
+choice reverses direction on the same data. The [predictive-retention contract](predictive-retention-contract.md)
+defines complete-survivor gained/lost coverage, fixed utility and sampling
+assumptions, plus probe costs. No new emulator work or candidate tuning.
+Its auditor passes side-swapping symmetry and rejects a planted inconsistent
+exit flag. Literature memo and two later finite fixtures are committed.
 
-Draft [PR#287](https://github.com/pH14/harmony/pull/287) preserves the research
-branch; hosted CI is pending. The implementing agent's scoped
-[review](implementation-review.md) found no new retention correctness defect.
-[Work accounting](work-accounting-after-r04.json) records67 completed cells,
-two errors,1.156B admitted frames and4,473,093 standalone probe frames, with
-additional replay categories and explicit unknown costs. The revised accountant
-is also at msr1 root`account-runs-v2.py`; regenerate after R05 rather than relying
-on the frozen driver's earlier accounting schema.
+Remaining work: finish R05 evidence/PR synchronization, inspect final-head CI
+when appropriate, and consolidate the scientific result. Any genuinely new
+short diagnostic requires a concrete hypothesis and budget first; no longer
+retention campaign is justified by the current evidence. No validation seed
+has been used. Existing follow-ups #270/#281/#283/#286 cover ordering, boss
+observations, actual continuation exposure and behavioral retention.
 
-[The predictive-retention contract](predictive-retention-contract.md) derives
-complete-survivor marginal gain/loss and finite-sample assumptions. The reused
-P03 objective audit shows124 versus112 exclusive map/suffix events but326 versus
-353 surviving endpoints: objective choice reverses direction on the same data.
-No new emulator work or running-policy change. Five adversarial R05 gate tests
-pass; together with two chain-limit tests they are now explicitly wired into
-search-evaluation CI. The exact seven-test command passes locally in0.037s.
-It exposed an unclosed telemetry-reader handle, now closed explicitly in local
-source. The frozen R05 driver and its gate semantics remain unchanged.
+One optional transfer remains blocked: second private Metroid development
+witness, seed5, ms02→msr1. Auto-review rejected the transfer; user approval was
+asked asynchronously and has NOT arrived. Do not retry or work around it.
+Seed3 was approved, replayed3 times and produced an empty boss-memory trace;
+E02 stays partial. The ROM permission is settled and unrelated. This optional
+file does not block the other research work. Explain the remaining rejection
+briefly in the final if still unresolved.
 
 ## Findings that changed the research direction
 
