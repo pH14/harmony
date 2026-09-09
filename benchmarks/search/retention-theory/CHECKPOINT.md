@@ -130,6 +130,8 @@ chain through Wood, reusing J01 sampling. Its fixed stage budgets equal the
 candidate's completed stage work, with a2400s stage watchdog to allow that work
 to finish and a90-minute chain cap. It cannot claim Wily4 and cannot continue
 after an out-of-budget victory. Two synthetic driver-contract checks passed.
+J02 is now running from committed driver56ab51ee on8–11, after both L01 controls
+finished. Its Metal witness reproduces the ordinary baseline before Heat begins.
 
 The standalone Metroid boss-memory probe also passed three replays of the D01
 Kraid-area route: ordinary holds and one-frame reads end in identical emulator
@@ -142,6 +144,15 @@ frames and325,194 total physical frames, with zero guarded loader or active-tag
 agreement. The seed-5 witness transfer was rejected by automatic approval review;
 explicit approval for that private file was requested and no workaround attempted.
 It remains unexecuted, so [E02](e02-results.json) is a partial two-route check.
+
+P04 is a new, bounded Metroid diagnostic rather than an extension of a failed
+campaign. It reconstructs the existing sixteen P03 pairs twice per endpoint,
+reads facing and motion bytes, and checks snapshot noninterference. The coarse
+descriptor and six-of-eight design gate were frozen before inspecting the new
+data; existing P03 suffix outcomes are reused. Sourcef24b6b26 passed its focused
+unit test and strict Clippy. The ARM `motion-probe-001` build is attested, and
+the diagnostic runs on little CPU4 with2M total frames/600s/4GiB bounds. A pass
+would permit specifying a memory-bounded policy and pilot, not a fresh campaign.
 
 No validation seed has been used. [The validation protocol](validation-protocol.md)
 separates operational repeatability, exact paired inference, censoring, and

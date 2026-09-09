@@ -813,3 +813,12 @@ prove noninterference. Cap all physical replay at 2M frames, each input at
 The standalone diagnostic and analysis are frozen before execution. The
 existing Metroid coverage, finer-key and job-sampling campaign gates remain
 failed; P04 neither resumes nor extends those campaigns.
+
+P04 source is `f24b6b26`; ARM source SHA256
+`3415d10bcfa97b7ceb9242aa5f794bd77de020fe095f577946bcf9105104da37`,
+binary `8167bcce273f716b16b1e22b8c8914a6e0703e3a0cb06d216c69c9beeeccf6ae`.
+The focused raw-byte unit check and strict library/probe Clippy passed. The
+unchanged P03 audit checksum was verified before the bounded diagnostic launch.
+J02 runs separately from driver `56ab51ee`; its analyzer checks per-stage
+lineage, semantic identity and actual completed control work. A stopped control
+that has not observed its frame ceiling cannot supply a matched-work negative.
