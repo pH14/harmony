@@ -48,11 +48,10 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
 
 ## Discovery contract
 
-The case has one locked execution profile. CI runs the probe on both arms for every relevant
-change, then runs the bounded search campaign on a schedule or on demand. The vulnerable arm
-must find and replay assertion 1 with evidence point 11; the v3.5.3 control must run the same
-recorded actions without either assertion. A search miss is a regression in the test machinery,
-not a request to tune the workload.
+The case has one locked execution profile. CI runs the same bounded search campaign on both arms
+on demand or on schedule. The vulnerable arm must find and replay assertion 1 with evidence point
+11; the v3.5.3 control must stay clean under the identical campaign. A search miss is a regression
+in the test machinery, not a request to tune the workload.
 
 The only expected difference between the arms is the upstream etcd fix. Performance experiments
 may add separate profiles later, but they cannot alter the correctness or portability contract

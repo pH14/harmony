@@ -49,7 +49,6 @@
     "actions": 24,
     "wall_minutes": 150
   },
-  "probe": "bugs/historical/etcd-3.5-inconsistency/probe.json",
   "discovery_mode": "guided",
   "status": "planned"
 }

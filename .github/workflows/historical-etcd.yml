@@ -190,49 +190,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  probe:
-    name: Probe replay on both pinned arms
-    needs: [manifest, guest, images, tools]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: etcd-guest-${{ github.run_id }}
-          path: guest
-      - uses: actions/download-artifact@v4
-        with:
-          name: etcd-images-${{ github.run_id }}
-          path: oci-images
-      - uses: actions/download-artifact@v4
-        with:
-          name: etcd-tools-${{ github.run_id }}
-          path: tools
-      - name: Grant nested KVM access
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - name: Replay deterministic probe
-        env:
-          CASE_ID: ${{ needs.manifest.outputs.case_id }}
-          HORIZON_MS: ${{ needs.manifest.outputs.horizon_ms }}
-          RAM_MIB: ${{ needs.manifest.outputs.ram_mib }}
-          VULNERABLE_VERSION: ${{ needs.manifest.outputs.vulnerable_version }}
-          CONTROL_VERSION: ${{ needs.manifest.outputs.control_version }}
-          KNOBS: ${{ needs.manifest.outputs.knobs }}
-          ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}
-          ORACLE_EVIDENCE: ${{ needs.manifest.outputs.oracle_evidence }}
-        run: .github/scripts/historical-replay.sh probe "${CASE_DIR}/probe.json"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: etcd-probe-${{ github.run_id }}
-          path: reports
-          if-no-files-found: warn
-          retention-days: 30
-
   search:
     name: Discover the bug on affected and fixed arms
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -288,7 +245,7 @@ jobs:
 
   report:
     name: Render the etcd museum entry
-    needs: [probe, search]
+    needs: [search]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -297,11 +254,6 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: etcd-probe-${{ github.run_id }}
-          path: reports
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:

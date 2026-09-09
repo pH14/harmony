@@ -420,7 +420,7 @@ impl InputPolicy for FaultGame {
         _run: &FaultCampaignRun,
         _max_actions: usize,
     ) -> usize {
-        0
+        std::mem::size_of::<(u16, u64)>() * MAX_COORDINATE_ANCHORS
     }
 
     fn draw_state_memory_bytes(&self, state: &FaultDrawState) -> usize {
