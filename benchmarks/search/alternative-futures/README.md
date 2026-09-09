@@ -1393,3 +1393,39 @@ against the same frozen hashes at their existing5m bounds. Keep builds033–035
 for their already completed diagnostic proofs. Require the current evaluator's
 SMB reference and Nova/STB companion checks at the final candidate checkpoint;
 SMB uses the whole host only once validation has released all campaign CPUs.
+
+## Six-hour checkpoint — 2026-09-09 02:26 UTC
+
+New causal facts since hour four: ordinary local extension from the freshly
+discovered Kraid witness exhausted its registered 100M frames without a boss;
+removing MM2 splices yielded 2.64 times as many ordinary attempts without
+advancing the Wily 1 watermark; and removing across-cell route-cost rank changed
+parents substantially without the desired depth. A raw 120-frame MM2 follow-up
+rejects immediate terminality as the explanation for that watermark. These
+negative results park the corresponding families without a budget increase.
+
+The corrected terminal policy passed the preregistered development gate: seeds
+3 and 5 discovered both Bombs and Kraid earlier at admitted-frame work, while
+seed 4 regressed. No development seed defeated a boss. The untouched T04 panel
+started at 01:55:46 UTC from the frozen binary, resource plan, and ten audited
+seeds. Its first four cells are making progress at about 1.59–1.99M executions
+and 204–248M frames. Logical resident memory is 2.93–4.21 GB and progress files
+are fresh. No observed boss defeat yet; incomplete cells are not panel outcomes.
+The first two seeds show divergent capability timing between arms, reinforcing
+the need to finish the whole frozen comparison without tuning.
+
+Recorded cumulative work at 02:26:02 UTC is 5,376,893,797 admitted search frames,
+40,272,709 executions, and 7,155,153 separately measured paired-probe physical
+frames. Observed CPU is a lower bound of 115,041.18 seconds (31.96 CPU-hours),
+excluding active processes, compilation/tests, and unlogged replay work.
+`results/accounting-0600.json` retains per-run accounting and exclusions;
+`results/validation-health-0600.json` retains the live snapshot.
+
+Boundary fixes passed focused tests, independent review verification, and exact
+native paired/raw diagnostic comparisons. Current main integrated cleanly and
+its local fast gates passed: formatting, Clippy, and 1,184 root tests (23 skipped).
+Draft PR #285 preserves the current implementation and provisional claims.
+Next decision: complete the frozen untouched panel, then qualify integrated
+build 036 against the existing native stream and SMB/Nova/STB references as
+capacity frees. No new candidate family is active. Consolidation starts 06:56
+UTC and the tranche ends at 08:26 UTC.
