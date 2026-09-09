@@ -837,3 +837,34 @@ censoring. Against the reused 66,633,523-frame sampling victory, the conditional
 zero repeated candidate search. This result concerns the selected shared
 origin and coordinate-extremes comparator; L01's mixed production result
 and the still-running J02 ordinary chain remain separate evidence.
+
+### J03: one prospective fresh depth replication
+
+J02 ordinary retention stopped at Heat after 66,634,555 admitted frames,
+without a victory. Its first Metal victory reproduced L01 at 2,182,520 frames
+with an identical replayed witness despite the different stopping ceiling.
+The complete chain analyzer passed lineage and semantic-identity checks. Thus
+sampling's three-stage attainment exceeds ordinary retention's one stage at
+the observed J01 stage budgets on this selected development seed. The bounded
+fresh-replication gate passes; no Wily or held-out claim follows.
+
+Register exactly one paired development seed, 20261103, through Wood. Both
+arms start afresh from power-on, with no imported gameplay tape, one attempt
+per stage and only their own twice-replayed bridges. Freeze `job-sample-001`,
+the existing full-hold suffix, selector, energy-splice mixture, 4 workers/8GiB,
+1M jobs per stage, and common Metal/Heat/Air/Wood ceilings of 12M/85M/60M/85M
+admitted frames. Allow2700s per stage,5400s total per chain,5460s watchdog.
+These larger prospective ceilings avoid reusing the favorable seed's exact
+stage costs as a population claim. Ordinary retention runs first, then sampling,
+both on CPUs8–11. This leaves0–3 available for the independently gated Metroid
+work and keeps at most two four-worker campaigns active.
+
+Run both arms regardless of the first search outcome; infrastructure failure
+requires inspecting the preserved failure before any retry. Stop each chain at
+its first unsolved/out-of-budget stage or the verified post-Wood bridge. A
+repeated advantage requires more candidate in-budget stage victories, with the
+control observing its prescribed work at the blocking stage, or at least20%
+less admitted work to a common third-stage victory. If those conditions fail,
+J01's production-depth advantage is not replicated and does not justify longer
+sampling chains. Wall/total-budget censoring is unresolved, not a completed
+matched-work failure. This remains development work, not the Wily4 seed panel.
