@@ -75,9 +75,29 @@ fn verify(command: &str, first: &Path, second: &Path) -> std::process::Output {
         .expect("run N6 verifier")
 }
 
+fn sweep_profile(kernel_name: &str, initramfs: &[u8], report_root: &Path) {
+    let kernel = artifact(kernel_name);
+    let first = boot_to_report(&kernel, initramfs);
+    let second = boot_to_report(&kernel, initramfs);
+    let first_path = write_report(report_root, &format!("{kernel_name}-1.log"), &first);
+    let second_path = write_report(report_root, &format!("{kernel_name}-2.log"), &second);
+    let positive = verify("verify", &first_path, &second_path);
+    assert!(
+        positive.status.success(),
+        "{kernel_name}: traps-on sweep failed: {}",
+        String::from_utf8_lossy(&positive.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&positive.stdout);
+    assert!(
+        stdout.contains("table_rows=10 exercised_rows=10 operations=174 runs=2"),
+        "{kernel_name}: unexpected sweep summary: {stdout}"
+    );
+    eprintln!("{kernel_name}: {}", stdout.trim());
+}
+
 #[test]
 #[ignore = "requires Linux/x86_64 KVM plus the N6 locked guest artifacts"]
-fn traps_off_fails_before_two_traps_on_runs_are_credited() {
+fn traps_off_fails_before_both_production_profiles_are_credited() {
     assert!(Path::new("/dev/kvm").exists(), "/dev/kvm is required");
     let report_root = std::env::var_os("N6_REPORT_DIR").map_or_else(
         || std::env::temp_dir().join(format!("harmony-n6-x86-{}", std::process::id())),
@@ -111,20 +131,9 @@ fn traps_off_fails_before_two_traps_on_runs_are_credited() {
         String::from_utf8_lossy(&negative_verdict.stdout)
     );
 
-    let kernel = artifact("bzImage");
     let initramfs = artifact("initramfs-n6.cpio.gz");
-    let first = boot_to_report(&kernel, &initramfs);
-    let second = boot_to_report(&kernel, &initramfs);
-    let first_path = write_report(&report_root, "traps-on-1.log", &first);
-    let second_path = write_report(&report_root, "traps-on-2.log", &second);
-    let positive = verify("verify", &first_path, &second_path);
-    assert!(
-        positive.status.success(),
-        "traps-on sweep failed: {}",
-        String::from_utf8_lossy(&positive.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&positive.stdout);
-    assert!(stdout.contains("table_rows=10 exercised_rows=10 operations=174 runs=2"));
-    eprintln!("{}", stdout.trim());
+    for profile in ["bzImage", "bzImage-faultlab"] {
+        sweep_profile(profile, &initramfs, &report_root);
+    }
     eprintln!("N6_X86_REPORT_DIR={}", report_root.display());
 }
