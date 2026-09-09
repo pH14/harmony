@@ -1,0 +1,164 @@
+{
+  "format": "alternative-futures-ci-checkpoint-v1",
+  "captured_utc": "2026-09-09T03:56:31.002867+00:00",
+  "pr": "https://github.com/pH14/harmony/pull/285",
+  "head": "42d9e3ad489714e9882e222bfb64363d2260ab44",
+  "checks": [
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305361991/job/102330328540",
+      "name": "Compare deterministic campaign hashes across replicas",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305361991/job/102320870596",
+      "name": "Dissonance search \u00b7 QuickNES guest \u00b7 Consonance snapshots (1)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818471",
+      "name": "mutants (8/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818394",
+      "name": "mutants (10/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818440",
+      "name": "mutants (13/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818427",
+      "name": "mutants (11/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305361991/job/102320870522",
+      "name": "NES package native/Consonance backend acceptance",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818430",
+      "name": "mutants (4/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818419",
+      "name": "mutants (1/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818450",
+      "name": "mutants (14/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818296",
+      "name": "public-api",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305361991/job/102320870540",
+      "name": "Dissonance search \u00b7 QuickNES guest \u00b7 Consonance snapshots (3)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305361991/job/102320870518",
+      "name": "Dissonance search \u00b7 QuickNES guest \u00b7 Consonance snapshots (4)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818425",
+      "name": "mutants (5/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818423",
+      "name": "mutants (12/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305361991/job/102320870263",
+      "name": "Dissonance search \u00b7 QuickNES guest \u00b7 Consonance snapshots (2)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818403",
+      "name": "mutants (6/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818401",
+      "name": "mutants (9/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818292",
+      "name": "kani",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818343",
+      "name": "mutants (0/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818259",
+      "name": "mutants (2/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305361979/job/102320818060",
+      "name": "Source build, probe, search and replay (hard, seed 1)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818330",
+      "name": "mutants (7/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818303",
+      "name": "mutants (3/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305361979/job/102320818074",
+      "name": "Source build, probe, search and replay (fair, seed 1)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305361979/job/102320817987",
+      "name": "Source build, probe, search and replay (easy, seed 1)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305361979/job/102320817855",
+      "name": "source-built",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818214",
+      "name": "coverage",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818368",
+      "name": "mutants (15/16)",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305361979/job/102320818049",
+      "name": "portable",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/pH14/harmony/actions/runs/34305362019/job/102320818090",
+      "name": "gates",
+      "state": "SUCCESS"
+    }
+  ],
+  "scope": "All checks passed on this published implementation head. Later documentation/evidence commits require their own head status; runtime Rust/Cargo source is unchanged."
+}

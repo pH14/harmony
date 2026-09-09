@@ -22,7 +22,7 @@ import sys
 import time
 
 SCHEMA = 'harmony-search-eval-v1'
-ALLOWED_SEARCH = {'seed','workers','executions','frames','actions','memory_mib','window','result_slots','wall_seconds','selector','suffix','mixture','verification'}
+ALLOWED_SEARCH = {'seed','workers','executions','frames','actions','memory_mib','window','result_slots','wall_seconds','selector','suffix','mixture','verification','retention_audit','mm2_chain','prefix_input','prefix_sha256','slot_retention','metroid_terminal','nes_duration'}
 
 
 def valid_id(value):

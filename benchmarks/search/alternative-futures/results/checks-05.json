@@ -1,0 +1,22 @@
+{
+  "format": "alternative-futures-check-log-index-v1",
+  "logs": [
+    {
+      "file": "s04-focused.log",
+      "sha256": "0d3186bfca3d78b4220295b6b893f60afe97a82b3f289dd7014be5bf5c6ab12f",
+      "bytes": 1114
+    },
+    {
+      "file": "s04-focused-retry.log",
+      "sha256": "07121e577ce4939ca40019ab0882e6d44f0d466bd1183a1eaec7813d7e72931f",
+      "bytes": 12376
+    }
+  ],
+  "results": {
+    "generic_unit_tests": 119,
+    "generic_interface_tests": 1,
+    "generic_all_target_clippy": "passed",
+    "affected_nes_target_clippy": "passed",
+    "collector_both_followup_summaries": "verified against real I05 output"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "session_child_timeout": {
+    "exit_code": -9,
+    "elapsed_seconds": 2.0219301590695977,
+    "watchdog_killed_process_groups": [
+      3218121,
+      3218120
+    ],
+    "wall_bound_seconds": 2
+  },
+  "ordinary_completion": {
+    "exit_code": 0,
+    "elapsed_seconds": 1.0105070130666718,
+    "watchdog_killed_process_groups": [],
+    "wall_bound_seconds": 5
+  },
+  "child_not_running": true
+}

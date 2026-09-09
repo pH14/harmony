@@ -1,0 +1,22 @@
+{
+  "format": "alternative-futures-check-log-index-v1",
+  "logs": [
+    {
+      "file": "i06-focused.log",
+      "sha256": "fb85d6e4a3e2a56f53b8f1eb0144d35acbd9b348b6a51ac711884008693798ee",
+      "bytes": 758
+    },
+    {
+      "file": "q33-focused.log",
+      "sha256": "00d5a6981a172305d48495ef20c9f0aec9dcb7288c2bf67c82de800ae74130d5",
+      "bytes": 12497
+    }
+  ],
+  "results": {
+    "nes_library": "passed including reconstructed-capacity regression",
+    "nes_eval": "passed including whole-chain prefix byte/action/frame limits",
+    "retention_probe": "passed including sparse oversize-file and sample-shape limits",
+    "raw_inspector": "passed including combined normalized tape bounds",
+    "affected_nes_clippy": "passed"
+  }
+}

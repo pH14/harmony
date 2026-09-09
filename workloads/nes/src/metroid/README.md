@@ -16,6 +16,19 @@ source addresses and meanings are documented beside their constants in
 identifier is `death_or_ending_v2`, correcting the prototype's stale
 `death_only_v1` label without changing that prototype's predicate.
 
+The opt-in `metroid_terminal: death_or_bcd_underflow_or_ending_v3` evaluation
+policy also marks decoded health >=8000 as terminal. Bank07's damage routine
+stores a BCD subtraction before testing borrow and clearing lethal damage; a
+video-frame boundary can expose that intermediate value. A development witness
+reported 9800 for one frame, then zero under neutral input. Such a state must
+not displace living alternatives as an apparent health improvement. This policy
+keeps raw health unchanged and changes only terminal observation/admission.
+The historical v2 policy remains the default and replays with its original
+semantics; campaign headers distinguish the policies and mismatches fail.
+This correction is separate from capability keys and experimental retention.
+See the [research ledger](../../../../benchmarks/search/alternative-futures/README.md)
+for the causal probe and qualification limits.
+
 `archive.rs` records the experimental adapter policy explicitly. It pools
 16-pixel positions through 32-pixel cells, 128-pixel regions, map cells, and
 inventory counts. Posture and door-transition state distinguish possible
@@ -112,3 +125,33 @@ repeats the replay, and includes ROM/core/input hashes. In its replay report,
 For Mega Man 2, `nes-progress mm2 CORE ROM searched-power-on-prefix.json wily4`
 checks that the retained tape still reaches that stage through the current
 runtime; it is a compatibility fixture, not a fresh search result.
+
+The opt-in `retention_audit` evaluation flag records at most 16 competing input
+pairs in each of five diagnostic categories: different equipment, different
+capacity, resource tradeoffs, equal preference, and ordered resources. A separate
+sampling hash leaves the campaign RNG untouched. Incumbents with evicted cached
+snapshots are counted but excluded, so samples are not a census of every state.
+The declared 2.5 MiB action-payload bound plus metadata/reconstruction and output
+buffers are diagnostic overhead reflected in RSS and I/O, outside logical archive
+memory. `metroid-retention-probe` reconstructs each pair and applies the same
+sampled suffixes to both sides. It reports physical probe/prefix frames, gains,
+survival, and living map exits separately. These diagnostic starts never count
+as fresh validation; differing endpoints alone are not useful-future evidence.
+The probe accepts only the version-one five-category format, at most 16 pairs
+per category, at most 8192 actions per source input, and at most 64 MiB of audit
+JSON before parsing. Retained sample inputs discard reconstruction spare capacity
+so the declared action allocation bound applies to storage as well as lengths.
+
+`nes-eval` optionally selects a versioned `nes_duration` distribution; legacy
+short/long sampling remains the default. The experimental middle-band policy
+and its mean-matched two-band ablation preserve controller-mask draws and
+special menu taps. Their identifiers are strict replay context; see the shared
+[NES policy documentation](../../README.md) for values and duration ranges.
+The paired-retention probe accepts an optional final terminal-policy identifier
+to isolate terminal classification on the same frozen pairs and sampled suffixes.
+
+The development-only local search tool permits explicitly registered probes up
+to one million jobs, 100 million admitted frames, and 1,800 search seconds,
+while full campaign replay is limited to 5,000 jobs. Its 4,096-action total
+horizon includes the supplied development prefix; source and composed witnesses
+are independently replayed twice. These starts never establish fresh depth.

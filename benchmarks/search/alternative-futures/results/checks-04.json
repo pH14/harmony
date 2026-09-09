@@ -1,0 +1,70 @@
+{
+  "format": "alternative-futures-check-log-index-v1",
+  "scope": "local implementation checkpoint; native replay evidence is recorded separately",
+  "logs": [
+    {
+      "file": "l02-tests.log",
+      "sha256": "6243f4da1784c3ced595f21b0abb27a2a278da7a43eba3b49d6f4858e3926f2f",
+      "bytes": 1608
+    },
+    {
+      "file": "l02-tests-retry.log",
+      "sha256": "d29a85434c754c58535fd75c0a8bd891e86059b008733300c3b819d8ca6a5eac",
+      "bytes": 16877
+    },
+    {
+      "file": "l02-clippy.log",
+      "sha256": "893942e8499da46da6e1e834772bf71ce4c44d4bc1c362589f374a38e68c6dc2",
+      "bytes": 272
+    },
+    {
+      "file": "l03-focused.log",
+      "sha256": "8685bf95119fb534d79f19f94d196f002563487a9365102fc9fc188857ac5dc2",
+      "bytes": 982
+    },
+    {
+      "file": "p03-focused.log",
+      "sha256": "ed5b825e02297dfff10d90805dfc1e14b693bbbfd8a28ad9f12e6c542c0e2e6b",
+      "bytes": 864
+    },
+    {
+      "file": "checkpoint04-checks.log",
+      "sha256": "e51632ed416ca677c36448065325c6c70197c465a22edc6f19c461274034c300",
+      "bytes": 31531
+    },
+    {
+      "file": "checkpoint04-checks-retry.log",
+      "sha256": "35881662a0100591d89f446c71c82176ea96a7e36564b5ea42616f9ae9d2510c",
+      "bytes": 344
+    },
+    {
+      "file": "checkpoint04-python.log",
+      "sha256": "677e6a7f781487f5b9866a23adc38e1a88afd477a44c6d62b93abeb466311c98",
+      "bytes": 581
+    },
+    {
+      "file": "checkpoint04-fixture.log",
+      "sha256": "1f5ea38f9fa48216c12c049d7ae52866e3cf1dc012695a32f63dba0ecbc7c725",
+      "bytes": 699
+    },
+    {
+      "file": "checkpoint04-age-test.log",
+      "sha256": "18e3af99d6bf938fd8441715b1bb3a4bbd54da5137b60563148d802e56a44a10",
+      "bytes": 690
+    }
+  ],
+  "results": {
+    "generic_unit_tests": 118,
+    "generic_interface_tests": 1,
+    "nes_library_tests": 124,
+    "nes_binary_tests": "all passed",
+    "python_runner_tests": 22,
+    "dependency_boundaries": "passed",
+    "generic_all_target_clippy": "passed after fixture expression cleanup",
+    "affected_nes_target_clippy": "passed",
+    "actual_alternative_eviction_continuation_fixture": "passed after cleanup",
+    "age_histogram_test": "passed after naming clarification"
+  },
+  "log_host": "ms02",
+  "log_directory": "/root/harmony-alternative-futures-20260908"
+}

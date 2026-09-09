@@ -1,0 +1,199 @@
+{
+  "format": "alternative-futures-t04-development-gate-v1",
+  "time_utc": "2026-09-09T01:55:46.712712+00:00",
+  "qualified": true,
+  "paired_development": [
+    {
+      "seed": 3,
+      "arms": {
+        "control": {
+          "summary_sha256": "1cbfef5917a8adbff20450308b4ca451ab9b8c8152ffdd4c3829f13f3e1303d2",
+          "binary_sha256": "08de82c8b457d4193cb64d0b438749e4c3424981bcafd3c12f871c26f574241f",
+          "executions": 3000000,
+          "frames": 382101298,
+          "milestone_work_bounds": {
+            "long_beam": {
+              "first_execution": 1761899,
+              "admitted_frames_lower": 226057390,
+              "admitted_frames_upper": 226069549
+            },
+            "bombs": {
+              "first_execution": 2847297,
+              "admitted_frames_lower": 363700294,
+              "admitted_frames_upper": 363712621
+            },
+            "kraid_area": {
+              "first_execution": 2937978,
+              "admitted_frames_lower": 374667945,
+              "admitted_frames_upper": 374679027
+            }
+          },
+          "max_energy_tanks": 1,
+          "max_missile_capacity": 15,
+          "map_cells_observed": 155
+        },
+        "corrected": {
+          "summary_sha256": "2a81053a83204a3a0ef8383b5c7d810a2b59a0f46fb8bf3d3c19c295ddf204cb",
+          "binary_sha256": "abbd936ea4aa60bb9af809349817aac64fde7798e92e2832e67c25cb5aead9ca",
+          "executions": 3000000,
+          "frames": 366396624,
+          "milestone_work_bounds": {
+            "bombs": {
+              "first_execution": 1487653,
+              "admitted_frames_lower": 187622759,
+              "admitted_frames_upper": 187634304
+            },
+            "kraid_area": {
+              "first_execution": 1556014,
+              "admitted_frames_lower": 195721480,
+              "admitted_frames_upper": 195734550
+            },
+            "ridley_area": {
+              "first_execution": 1987951,
+              "admitted_frames_lower": 246337225,
+              "admitted_frames_upper": 246352876
+            }
+          },
+          "max_energy_tanks": 1,
+          "max_missile_capacity": 25,
+          "map_cells_observed": 246
+        }
+      },
+      "both_late_capabilities_earlier_at_admitted_work": true,
+      "execution_ratios": {
+        "bombs": 0.5224790388919737,
+        "kraid_area": 0.5296207119318116
+      }
+    },
+    {
+      "seed": 4,
+      "arms": {
+        "control": {
+          "summary_sha256": "988a32ebb03785601efaf8d9fe55e88f31f6eb33432aa598b6dd1089a515d72e",
+          "binary_sha256": "08de82c8b457d4193cb64d0b438749e4c3424981bcafd3c12f871c26f574241f",
+          "executions": 3000000,
+          "frames": 371057908,
+          "milestone_work_bounds": {
+            "long_beam": {
+              "first_execution": 1121066,
+              "admitted_frames_lower": 142134567,
+              "admitted_frames_upper": 142148002
+            },
+            "bombs": {
+              "first_execution": 2393367,
+              "admitted_frames_lower": 299041622,
+              "admitted_frames_upper": 299056399
+            },
+            "kraid_area": {
+              "first_execution": 2443424,
+              "admitted_frames_lower": 305031857,
+              "admitted_frames_upper": 305044611
+            }
+          },
+          "max_energy_tanks": 1,
+          "max_missile_capacity": 20,
+          "map_cells_observed": 175
+        },
+        "corrected": {
+          "summary_sha256": "cfebab8ddaa05b6b0d23384cca95a865b014fc400dd4c366c0e86c0cdac999e3",
+          "binary_sha256": "abbd936ea4aa60bb9af809349817aac64fde7798e92e2832e67c25cb5aead9ca",
+          "executions": 3000000,
+          "frames": 380102776,
+          "milestone_work_bounds": {
+            "long_beam": {
+              "first_execution": 1505743,
+              "admitted_frames_lower": 191361562,
+              "admitted_frames_upper": 191373501
+            },
+            "bombs": {
+              "first_execution": 2772507,
+              "admitted_frames_lower": 352613153,
+              "admitted_frames_upper": 352626641
+            },
+            "kraid_area": {
+              "first_execution": 2834909,
+              "admitted_frames_lower": 360050063,
+              "admitted_frames_upper": 360061701
+            }
+          },
+          "max_energy_tanks": 1,
+          "max_missile_capacity": 15,
+          "map_cells_observed": 141
+        }
+      },
+      "both_late_capabilities_earlier_at_admitted_work": false,
+      "execution_ratios": {
+        "bombs": 1.1584128134130705,
+        "kraid_area": 1.160219839045536
+      }
+    },
+    {
+      "seed": 5,
+      "arms": {
+        "control": {
+          "summary_sha256": "89826f8035e51ce52fc6447fb080b3956dfb7bd185f862e20f19b2d23708bc5a",
+          "binary_sha256": "08de82c8b457d4193cb64d0b438749e4c3424981bcafd3c12f871c26f574241f",
+          "executions": 3000000,
+          "frames": 366764950,
+          "milestone_work_bounds": {
+            "long_beam": {
+              "first_execution": 1431568,
+              "admitted_frames_lower": 174778015,
+              "admitted_frames_upper": 174793949
+            },
+            "bombs": {
+              "first_execution": 2137376,
+              "admitted_frames_lower": 263199527,
+              "admitted_frames_upper": 263211554
+            },
+            "kraid_area": {
+              "first_execution": 2207373,
+              "admitted_frames_lower": 271591032,
+              "admitted_frames_upper": 271604096
+            },
+            "ridley_area": {
+              "first_execution": 2742879,
+              "admitted_frames_lower": 335821998,
+              "admitted_frames_upper": 335833974
+            }
+          },
+          "max_energy_tanks": 1,
+          "max_missile_capacity": 15,
+          "map_cells_observed": 211
+        },
+        "corrected": {
+          "summary_sha256": "c00f7015323a100a923fef2acd9ffae865c9f1dc1e00352145fa972207669571",
+          "binary_sha256": "abbd936ea4aa60bb9af809349817aac64fde7798e92e2832e67c25cb5aead9ca",
+          "executions": 3000000,
+          "frames": 364178451,
+          "milestone_work_bounds": {
+            "bombs": {
+              "first_execution": 938694,
+              "admitted_frames_lower": 113325932,
+              "admitted_frames_upper": 113337939
+            },
+            "ridley_area": {
+              "first_execution": 1226882,
+              "admitted_frames_lower": 146929089,
+              "admitted_frames_upper": 146941130
+            },
+            "kraid_area": {
+              "first_execution": 1327670,
+              "admitted_frames_lower": 158814162,
+              "admitted_frames_upper": 158826249
+            }
+          },
+          "max_energy_tanks": 2,
+          "max_missile_capacity": 25,
+          "map_cells_observed": 235
+        }
+      },
+      "both_late_capabilities_earlier_at_admitted_work": true,
+      "execution_ratios": {
+        "bombs": 0.4391805653287021,
+        "kraid_area": 0.6014706168826021
+      }
+    }
+  ],
+  "comparison_note": "First discovery admitted-frame work is bracketed by adjacent progress samples; exact first-execution counts are recorded. Substantial earlier Bombs/Kraid work on two seeds qualifies untouched measurement, not a breakthrough."
+}

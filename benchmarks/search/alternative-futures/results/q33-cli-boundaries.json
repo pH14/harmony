@@ -1,0 +1,24 @@
+{
+  "format": "alternative-futures-cli-boundary-proof-v1",
+  "scope": "invalid inputs; missing or empty assets ensure a later emulator path cannot masquerade as the intended rejection",
+  "cases": [
+    {
+      "fixture": "raw",
+      "exit_code": 1,
+      "expected_pre_emulation_error": "physical tape exceeds bounds",
+      "stderr_sha256": "1db57e83ca19c8ede5602f20edd97ac0003d6360ee50796e70ac65cea2dfbfc0"
+    },
+    {
+      "fixture": "probe",
+      "exit_code": 1,
+      "expected_pre_emulation_error": "unsupported audit format or category count",
+      "stderr_sha256": "077512e684376afe3d424698cb9411f9970d8e96e835b74cff3a6b1a9059bbed"
+    },
+    {
+      "fixture": "chain",
+      "exit_code": 1,
+      "expected_pre_emulation_error": "chain prefix exceeds action or frame bounds",
+      "stderr_sha256": "17dbccc680001cb8e576a43d0dda92d3fb47b1deec1fb393386d017c401044c5"
+    }
+  ]
+}

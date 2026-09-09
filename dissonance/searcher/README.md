@@ -77,6 +77,16 @@ cargo clippy --manifest-path dissonance/searcher/Cargo.toml --all-targets -- -D 
 The legacy selector identifiers retain their exact behavior. Search experiments
 use independent versioned identifiers:
 
+- `room_cell_uniform_128_energy_progress_first_exposure_v2:<thresholds>` keeps
+  semantic class/cell selection but first offers the oldest surviving cell member
+  that has neither been selected nor offered. The offer claims the existing
+  exposure bit at dispatch, so concurrent reservations can offer different
+  members. Once all members have had an offer, the ordinary cost-weighted newest
+  128 window resumes. This changes selection only and allocates no extra archive
+  storage. It consumes the usual one within-cell RNG draw, preserving mutation
+  draw cadence. Uniform draws remain available; the rule is experimental.
+  The qualification-only v1 prototype skipped that RNG step; replay it with
+  its frozen research build rather than interpreting it as v2.
 - `room_cell_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides
   each within-cell cost weight by one plus that entry's admitted selections.
   Cheap members get early attempts, while repeatedly sampled members yield some
@@ -170,3 +180,47 @@ relation considers map cells equal, so no map cell can dominate another. It is
 not the full historical cross-location preference/Pareto implementation, and
 it does not restore the prototype's improvement-replay queues. Its separate
 identifier permits an ablation without changing any existing selector's behavior.
+
+## Retention diagnostics
+
+`Reporting::observe_retention` can inspect a same-slot competition before the
+incumbent is removed. The read-only event includes cached snapshots, prior
+selection exposure, and lazy reconstruction of both inputs. Observers must
+bound their storage and account for reconstruction separately; observer input
+materialization never changes deterministic reconstruction counters. The
+constant-size `retention_diagnostics` sidecar census records window exposure and
+admitted parent-job selection/productivity credit at removal. It is not replay
+state. Zero selection or productivity credit does not establish that the physical
+state had no outgoing exploration: intermediate states can have continuations
+inside their birth suffix, and pending jobs receive parent credit only after
+ordered admission. Removal-time counters do not retroactively include that later
+credit. Replacement ages describe these same parent-credit populations; they do
+not remove this ambiguity. See #283 for the separate exposure-measurement work.
+The evaluator flushes/disables campaign sampling before verification replay.
+
+The opt-in `resource_extremes_2_v1` slot policy keeps at most two resource
+extremes supplied by `ArchiveKey::retention_resources`, breaking ties by
+existing group cost and stable entry id. It preserves the best point under
+each axis ordering, not every Pareto point. Retained alternatives share the
+ordinary archive byte budget and selector. Unsupported keys use their ordinary
+rule. The stream header records the policy; omission replays the legacy rule.
+This is an experimental mechanism, not a default or a behavioral dominance claim.
+
+Retention lifecycle diagnostics reuse existing selector exposure vectors and add
+only fixed counters, reported by `retention_diagnostic_memory_bytes`. Existing
+vectors remain covered by archive metadata charging. Measured process RSS also
+includes workload-owned audit storage. The final census reads only cached
+active endpoints; missing payloads are counted and never reconstructed.
+
+Replacement ages count admission-sequence differences in five bins: 0, 1–7,
+8–63, 64–511, and at least 512, with a second histogram for never-selected
+entries. Nonmonotonic caller sequences are counted as unknown. Whole-tree
+import rebuilds entries at execution zero, so ages measure the current campaign,
+including bootstrap replacements at zero. The fixed census occupies 160 bytes.
+
+`room_cell_uniform_128_energy_progress_no_cell_cost_v1:<thresholds>` removes
+only the route-cost rank between selection cells. Semantic class/frontier
+preference, group energy, cell novelty, and cost weighting among a cell's own
+recent members stay unchanged, including RNG draw cadence. It adds no archive
+storage. This experimental ablation tests whether costly locations receive too
+little exploration; it does not change retention or claim uniform exploration.

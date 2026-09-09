@@ -1,0 +1,12 @@
+{
+  "metroid": {
+    "jobs_each": 5000,
+    "changed_parent_ids": 4943,
+    "first_changed_job_zero_based": 25
+  },
+  "mm2": {
+    "jobs_each": 5000,
+    "changed_parent_ids": 4905,
+    "first_changed_job_zero_based": 26
+  }
+}

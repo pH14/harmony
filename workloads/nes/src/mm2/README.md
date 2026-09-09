@@ -37,3 +37,33 @@ replay rejects a different recorded policy instead of silently reinterpreting it
 Use the common [local evaluation runner](../../../../benchmarks/search/README.md).
 The source lineage and discarded search claims are listed in the
 [synthesis record](../../../../benchmarks/search/SYNTHESIS.md).
+
+`nes-eval` also accepts an explicit `mm2_chain` stage origin and an optional
+power-on `prefix_input` with a required SHA-256. On a searched victory it emits
+`full-victory-input.json` and `next-prefix.json`, using the existing adapter-owned
+award/menu transition. `chain-cost.json` counts repeated target construction
+(including every prefix replay) and the transition helper's physical frames.
+Witness suffix frames are reported independently. Partial setup failures have
+incomplete cost accounting and cannot be scored as successful searches.
+The research driver in `benchmarks/search/alternative-futures/mm2_chain.py`
+accepts no gameplay prefix; it carries only prior searched victories from its
+own new output directory under the recovered fixed historical order. This is
+chained qualification, distinct from unrestricted whole-game search.
+
+Physical chain exports expand the adapter's automatic award-idle frames into
+explicit zero-button holds. Concatenating the originally sampled holds alone
+omits that executed work and can fail the next-stage replay. `physical_input`
+replays and expands those holds without changing campaign action semantics.
+
+`nes-eval` optionally selects a versioned `nes_duration` distribution; legacy
+short/long sampling remains the default. The experimental middle-band policy
+and its mean-matched two-band ablation preserve controller-mask draws and
+special menu taps. Their identifiers are strict replay context; see the shared
+[NES policy documentation](../../README.md) for values and duration ranges.
+
+Fresh-chain evaluation prefixes have an explicit whole-chain ceiling: 8 MiB of
+JSON, 100,000 normalized controller actions, and 10M normalized hold frames.
+`nes-eval` verifies these limits and the prefix hash before creating a target.
+The ceiling accommodates complete chains under the registered 4096-action stage
+horizon; setup/reconstruction work remains separately charged, not admitted suffix
+work. Repeated target construction does not make prefix execution free.

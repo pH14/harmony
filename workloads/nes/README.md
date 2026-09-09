@@ -86,3 +86,31 @@ all 40 cleared-level flags, continues execution through intermediate clears, and
 permits an 8,192-action horizon. The default remains the isolated-level workload.
 Whole-game runs must begin at level 1; isolated level setups are never scored as
 whole-game completion.
+
+`nes-eval` optionally accepts `slot_retention: "resource_extremes_2_v1"`.
+Metroid supplies health/missiles and MM2 health/total weapon energy; other
+workloads keep ordinary retention. This bounded research policy leaves the
+controller vocabulary and selector unchanged. Its identity is recorded in
+streams and evaluation provenance.
+
+Development-only observation audits are available through `metroid-local-search`
+(request-bounded search from an input discovered by a prior campaign, with
+composed ordinary-genesis witness verification) and `nes-input-inspect`
+(raw-machine replay, endpoint RAM/image, and bounded terminal-state probes).
+The raw inspector checks a combined declared prefix/suffix ceiling of 20,000
+actions and 2M normalized hold frames before creating an emulator target, then
+checks the resolved physical tape again after adapter-owned setup/award frames.
+These are tape bounds; repeated verification work is accounted separately.
+Their diagnostic origins never qualify fresh search. Requests, bounds, exact
+provenance and experimental policy comparisons are documented in the
+[alternative-futures research ledger](../../benchmarks/search/alternative-futures/README.md).
+
+`nes-eval` accepts `nes_duration` for Metroid and MM2. The default
+`stratified_short_or_long_v1` preserves historical holds of 2–12 or 48–120
+frames. Experimental `stratified_short_middle_long_v2` samples three equal
+bands (2–12, 13–47, 48–120), keeping button draws and special menu taps
+unchanged. The duration identity is part of strict campaign replay context.
+The local Metroid diagnostic uses the same option named `duration`.
+The ablation `stratified_two_band_mean_matched_v1` retains the two historical
+bands but chooses short holds with probability 131/231, matching the three-band
+mean of 121/3 frames. It tests average duration separately from middle-band support.

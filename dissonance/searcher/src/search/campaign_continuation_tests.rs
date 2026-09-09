@@ -28,12 +28,16 @@ impl ArchiveKey for TestKey {
     type Group = u8;
 
     fn groups() -> usize {
-        1
+        3
     }
 
     fn group(self, depth: usize) -> Self::Group {
-        assert_eq!(depth, 0);
-        self.0 % 16
+        // Separate cells under one class exercise cell-cost selection during pressure.
+        match depth {
+            0 | 1 => self.0 % 16,
+            2 => 0,
+            _ => panic!("unexpected test group depth"),
+        }
     }
 
     fn slot_capacity() -> usize {
@@ -41,6 +45,10 @@ impl ArchiveKey for TestKey {
     }
     fn preference_cmp(self, other: Self) -> std::cmp::Ordering {
         (self.0 / 16).cmp(&(other.0 / 16))
+    }
+    fn retention_resources(self) -> Option<[u64; 2]> {
+        let level = u64::from(self.0 / 16);
+        Some([level, 15 - level])
     }
     type Lineage = ();
 
@@ -366,17 +374,17 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             selector: if persistent {
                 SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
                     entry: 3,
-                    groups: vec![],
+                    groups: vec![6],
                 })
             } else if semantic {
                 SelectorPolicy::EnergyProgressCheapestCount(RetireThresholds {
                     entry: 3,
-                    groups: vec![],
+                    groups: vec![6],
                 })
             } else {
                 SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
                     entry: 3,
-                    groups: vec![],
+                    groups: vec![6],
                 })
             },
             victory_input_path: None,
@@ -398,6 +406,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             &mut buffered_bytes,
             None,
             CampaignExecutionOptions {
+                slot_retention: Default::default(),
                 frame_budget: None,
                 result_buffering: ResultBuffering::TwoPerWorker,
             },
@@ -487,6 +496,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             &mut bounded_buffered_bytes,
             None,
             CampaignExecutionOptions {
+                slot_retention: Default::default(),
                 frame_budget: Some(128),
                 result_buffering: ResultBuffering::TwoPerWorker,
             },
@@ -516,4 +526,118 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
                 .is_err()
         );
     }
+}
+
+#[test]
+fn resource_extremes_replay_alternatives_eviction_and_continuations() {
+    let mut cost_policy_parents = Vec::new();
+    for selector in [
+        SelectorPolicy::EnergyProgressCheapest(RetireThresholds {
+            entry: 3,
+            groups: vec![6],
+        }),
+        SelectorPolicy::EnergyProgressNoCellCost(RetireThresholds {
+            entry: 3,
+            groups: vec![6],
+        }),
+        SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
+            entry: 3,
+            groups: vec![6],
+        }),
+        SelectorPolicy::EnergyProgressFirstExposure(RetireThresholds {
+            entry: 3,
+            groups: vec![6],
+        }),
+    ] {
+        let config = CampaignConfig {
+            campaign_seed: 947,
+            workers: 4,
+            execution_budget: 1200,
+            action_limit: 64,
+            host: "resource-test".into(),
+            wall_budget: None,
+            continue_after_victory: false,
+            archive_entry_limit: 128,
+            reservations_per_worker: 2,
+            memory_budget_mib: Some(12),
+            materialize_final_artifacts: true,
+            run: (),
+            suffix: SuffixShape::OneOrTwo,
+            mixture: DrawMixture::AlphabetContinuation,
+            retention: RetentionPolicy::AdmitAlive,
+            selector,
+            victory_input_path: None,
+        };
+        let mut stream = Vec::new();
+        let mut sidecar = Vec::new();
+        let (live, checkpoint) = run_campaign_checkpointed_with_options(
+            &TestGame,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            Some(&mut sidecar),
+            CampaignExecutionOptions {
+                frame_budget: None,
+                result_buffering: ResultBuffering::TwoPerWorker,
+                slot_retention: crate::search::archive::SlotRetentionPolicy::ResourceExtremes2,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            live.slot_retention.as_deref(),
+            Some("resource_extremes_2_v1")
+        );
+        assert!(live.snapshot_evictions > 0, "must exercise pressure");
+        assert!(
+            std::str::from_utf8(&stream)
+                .unwrap()
+                .lines()
+                .any(|line| line.contains("\"path\":\"continuation\"")),
+            "must exercise continuation dispatch"
+        );
+        let last: CampaignProgressRecord<TestKey> = serde_json::from_slice(
+            sidecar
+                .split(|byte| *byte == b'\n')
+                .rfind(|line| !line.is_empty())
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            last.retention_diagnostics.alternative_admissions > 0,
+            "must keep actual alternatives"
+        );
+        assert!(
+            last.retention_diagnostics.removed > 0,
+            "must replace or evict entries"
+        );
+        let (replayed, replay_checkpoint) =
+            replay_campaign_checkpointed(&TestGame, &stream, None, None).unwrap();
+        assert_eq!(live, replayed);
+        assert_eq!(checkpoint, replay_checkpoint);
+        if matches!(
+            config.selector,
+            SelectorPolicy::EnergyProgressCheapest(_) | SelectorPolicy::EnergyProgressNoCellCost(_)
+        ) {
+            let parents: Vec<u64> = std::str::from_utf8(&stream)
+                .unwrap()
+                .lines()
+                .filter_map(|line| {
+                    let row: serde_json::Value = serde_json::from_str(line).unwrap();
+                    (row["event"] == "job").then(|| row["parent_id"].as_u64().unwrap())
+                })
+                .collect();
+            cost_policy_parents.push(parents);
+        }
+        let corrupted = String::from_utf8(stream).unwrap().replacen(
+            "resource_extremes_2_v1",
+            "resource_extremes_2_v0",
+            1,
+        );
+        assert!(replay_campaign_checkpointed(&TestGame, corrupted.as_bytes(), None, None).is_err());
+    }
+    assert_eq!(cost_policy_parents.len(), 2);
+    assert_ne!(
+        cost_policy_parents[0], cost_policy_parents[1],
+        "must replay actual changed parent choices"
+    );
 }

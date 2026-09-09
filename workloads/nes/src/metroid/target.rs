@@ -81,6 +81,46 @@ const HEALTH_LOW: usize = 0x106;
 /// Health the game grants at the start of a new game, in tenths.
 pub const STARTING_HEALTH_TENTHS: u16 = 300;
 
+/// Versioned terminal interpretation; legacy replay keeps its original predicate.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MetroidTerminalPolicy {
+    /// The historical predicate considers only zero health.
+    #[default]
+    Legacy,
+    /// Reject the intermediate BCD borrow value exposed during lethal damage.
+    BcdUnderflow,
+}
+
+impl MetroidTerminalPolicy {
+    /// Stable game-policy identity carried in campaign streams.
+    #[must_use]
+    pub fn identifier(self) -> &'static str {
+        match self {
+            Self::Legacy => "death_or_ending_v2",
+            Self::BcdUnderflow => "death_or_bcd_underflow_or_ending_v3",
+        }
+    }
+
+    /// Resolve only explicitly supported semantics.
+    pub fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
+        match value {
+            "death_or_ending_v2" => Ok(Self::Legacy),
+            "death_or_bcd_underflow_or_ending_v3" => Ok(Self::BcdUnderflow),
+            _ => Err("unknown Metroid terminal policy".into()),
+        }
+    }
+
+    /// Classify a decoded state under these versioned terminal semantics.
+    #[must_use]
+    pub fn is_dead(self, state: MetroidMechanicalState) -> bool {
+        // Bank07 $CED7 stores the BCD subtraction before $CEE4 checks borrow
+        // and $CEEB clears health. A frame boundary can expose this intermediate
+        // negative value. Six tanks cap normal health at 6999; the >=8000 sign
+        // range is not a resource advantage. Keep raw health for forensic replay.
+        state.is_dead() || (self == Self::BcdUnderflow && state.health >= 8000)
+    }
+}
+
 /// First address of the cartridge work RAM window, where the game keeps the
 /// progress that survives leaving a room.
 pub const CARTRIDGE_RAM_BASE: u64 = 0x6000;
@@ -350,6 +390,7 @@ pub struct MetroidTarget {
     action_observations: Vec<MetroidObservations>,
     failed: bool,
     genesis_prefix: Vec<ButtonChord>,
+    terminal_policy: MetroidTerminalPolicy,
 }
 
 impl MetroidTarget {
@@ -432,7 +473,18 @@ impl MetroidTarget {
             observation,
             failed: false,
             genesis_prefix,
+            terminal_policy: MetroidTerminalPolicy::Legacy,
         })
+    }
+
+    /// Select terminal semantics without changing execution or raw observations.
+    #[must_use]
+    pub fn with_terminal_policy(mut self, policy: MetroidTerminalPolicy) -> Self {
+        self.terminal_policy = policy;
+        self.observation.dead = policy.is_dead(self.observation.decoded);
+        self.genesis_observation.dead = policy.is_dead(self.genesis_observation.decoded);
+        self.action_observations = vec![self.observation.clone()];
+        self
     }
 
     /// Every input from power-on to sealed genesis; the same chords replay
@@ -568,8 +620,13 @@ impl Target for MetroidTarget {
             self.failed = true;
             return;
         };
-        match decode_action_observations(&frames, &cartridge, &self.observation, self.current_wram)
-        {
+        match decode_action_observations_with_policy(
+            &frames,
+            &cartridge,
+            &self.observation,
+            self.current_wram,
+            self.terminal_policy,
+        ) {
             Ok((observations, wram)) => {
                 if let Some(last) = observations.last() {
                     self.observation = last.clone();
@@ -630,6 +687,7 @@ impl Target for MetroidTarget {
             .read_wram()
             .map_err(|error| error.to_string())?;
         self.observation = snapshot.observation.clone();
+        self.observation.dead = self.terminal_policy.is_dead(self.observation.decoded);
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
         Ok(())
@@ -638,11 +696,28 @@ impl Target for MetroidTarget {
 
 /// Decode the held action without adding reporting transitions to the search
 /// event stream. The endpoint carries every live Tourian event in the action.
+#[cfg(test)]
 fn decode_action_observations(
     frames: &[[u8; WRAM_SIZE]],
     cartridge: &[u8],
     initial: &MetroidObservations,
+    prior_wram: [u8; WRAM_SIZE],
+) -> Result<(Vec<MetroidObservations>, [u8; WRAM_SIZE]), MachineError> {
+    decode_action_observations_with_policy(
+        frames,
+        cartridge,
+        initial,
+        prior_wram,
+        MetroidTerminalPolicy::Legacy,
+    )
+}
+
+fn decode_action_observations_with_policy(
+    frames: &[[u8; WRAM_SIZE]],
+    cartridge: &[u8],
+    initial: &MetroidObservations,
     mut prior_wram: [u8; WRAM_SIZE],
+    policy: MetroidTerminalPolicy,
 ) -> Result<(Vec<MetroidObservations>, [u8; WRAM_SIZE]), MachineError> {
     let boss_defeats = decode_boss_defeats(cartridge)?;
     let mut prior_state = initial.decoded;
@@ -653,20 +728,22 @@ fn decode_action_observations(
         let frame_count = initial.frame_count + u64::try_from(offset).unwrap_or(u64::MAX) + 1;
         tourian_events.observe(state, wram[0x98]);
         let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
-            || state.is_dead() != prior_state.is_dead();
+            || policy.is_dead(state) != policy.is_dead(prior_state);
         if boundary || offset + 1 == frames.len() {
-            observations.push(MetroidTarget::make_observation(
+            let mut observation = MetroidTarget::make_observation(
                 frame_count,
                 state,
                 wram,
                 &prior_wram,
                 boss_defeats,
                 tourian_events,
-            ));
+            );
+            observation.dead = policy.is_dead(state);
+            observations.push(observation);
             prior_wram = *wram;
         }
         prior_state = state;
-        if state.is_dead() {
+        if policy.is_dead(state) {
             break;
         }
     }
@@ -728,6 +805,76 @@ pub fn spatial_bucket(state: MetroidMechanicalState) -> (u8, u8, u8, u8, u8, u8,
 mod observation_tests {
     use super::*;
     use crate::metroid::progress::NamedProgress;
+
+    #[test]
+    fn bcd_underflow_is_terminal_without_rewriting_raw_health() {
+        let cartridge = [0; 8192];
+        let mut start = [0; WRAM_SIZE];
+        start[GAME_MODE] = GAME_MODE_PLAYING;
+        start[HEALTH_LOW] = 0x37;
+        let initial = MetroidTarget::make_observation(
+            0,
+            decode_state(&start, &cartridge).unwrap(),
+            &start,
+            &start,
+            BossDefeats::default(),
+            TourianEvents::default(),
+        );
+        let mut underflow = start;
+        underflow[HEALTH_LOW] = 0;
+        underflow[HEALTH_HIGH] = 0x98;
+        let mut cleared = underflow;
+        cleared[HEALTH_HIGH] = 0;
+        let (legacy, _) = decode_action_observations_with_policy(
+            &[underflow],
+            &cartridge,
+            &initial,
+            start,
+            MetroidTerminalPolicy::Legacy,
+        )
+        .unwrap();
+        assert!(!legacy[0].dead);
+        let (corrected, _) = decode_action_observations_with_policy(
+            &[underflow, cleared],
+            &cartridge,
+            &initial,
+            start,
+            MetroidTerminalPolicy::BcdUnderflow,
+        )
+        .unwrap();
+        assert_eq!(corrected.len(), 1);
+        assert!(corrected[0].dead);
+        assert_eq!(corrected[0].frame_count, 1);
+        assert_eq!(corrected[0].decoded.health, 9800);
+        for (high, low) in [(0x69, 0x99), (0x19, 0x99), (0, 0x12)] {
+            let mut live = start;
+            live[HEALTH_HIGH] = high;
+            live[HEALTH_LOW] = low;
+            let (observations, _) = decode_action_observations_with_policy(
+                &[live],
+                &cartridge,
+                &initial,
+                start,
+                MetroidTerminalPolicy::BcdUnderflow,
+            )
+            .unwrap();
+            assert!(!observations[0].dead, "valid health was rejected");
+        }
+    }
+
+    #[test]
+    fn terminal_policy_identifiers_are_strict() {
+        for policy in [
+            MetroidTerminalPolicy::Legacy,
+            MetroidTerminalPolicy::BcdUnderflow,
+        ] {
+            assert_eq!(
+                MetroidTerminalPolicy::parse(policy.identifier()).unwrap(),
+                policy
+            );
+        }
+        assert!(MetroidTerminalPolicy::parse("death_or_ending_v999").is_err());
+    }
 
     #[test]
     fn transient_escape_survives_stationary_held_action_without_extra_events() {

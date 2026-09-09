@@ -1,0 +1,135 @@
+{
+  "format": "alternative-futures-q36-gates-v1",
+  "started_utc": "2026-09-09T06:44:51.975819+00:00",
+  "build": {
+    "binary_sha256": "e5c363cc1fd6ae9ef6a8be44688c5e3daa512324581f5c9061849709fa51091b",
+    "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+    "dirty": null,
+    "files": 509,
+    "format": "harmony-search-build-v1",
+    "locked": true,
+    "profile": "release",
+    "revision": null,
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+    "rustflags": "",
+    "source_tree_sha256": "cd549ed7bdbd6b3b1c8a22b52c8c7e10d3f060851a2f2ffaade7a9792d380447",
+    "target_cache": "/root/harmony-alternative-futures-20260908/target-native"
+  },
+  "gates": [
+    {
+      "label": "q36-metroid-compat",
+      "reference": "t02b-compat-legacy-s3",
+      "execution": {
+        "exit_code": 0,
+        "elapsed_seconds": 97.53480060398579,
+        "watchdog_killed_process_groups": [],
+        "wall_bound_seconds": 300
+      },
+      "cells": [
+        {
+          "cell": "metroid-full-s3-w4-m8192",
+          "summary_sha256": "2ba1c7c421ea2ad36a950f81f564ab37d41a51b56ac61bbbb90e5cbb4147a77f",
+          "reference_summary_sha256": "246ef9d5831b54ccdbfbdad1fddbc59b48c5eeb0ca50ae30d12fd6b287b2ea3a",
+          "exact_match": {
+            "executions": 100000,
+            "frames_emulated": 13629183,
+            "stream_sha256": "bd2832ea030de2a6ba8b5247b71b560f52682dbbd4042a6847b115505d975cde",
+            "solved": false
+          }
+        }
+      ]
+    },
+    {
+      "label": "q36-mm2-compat",
+      "reference": "m01-qualification-control",
+      "execution": {
+        "exit_code": 0,
+        "elapsed_seconds": 37.192757079028524,
+        "watchdog_killed_process_groups": [],
+        "wall_bound_seconds": 300
+      },
+      "cells": [
+        {
+          "cell": "mm2-wily1-s20261001-w4-m8192",
+          "summary_sha256": "c3371903b4fee2ba62171873e81a11115fb9aa2867b742a129481d568c8b3a81",
+          "reference_summary_sha256": "75c575ca14997e99cc8ac6cd24c72ac4dd380ace92c4363a12ce81ba7d8ee935",
+          "exact_match": {
+            "executions": 5000,
+            "frames_emulated": 905770,
+            "stream_sha256": "03c4a247d33614e68abe323c79c90a3c4645c8da2829ec1d0361cdf3e5265ab0",
+            "solved": false
+          }
+        }
+      ]
+    },
+    {
+      "label": "q36-companions",
+      "reference": "g01-companion-control",
+      "execution": {
+        "exit_code": 0,
+        "elapsed_seconds": 10.05692647502292,
+        "watchdog_killed_process_groups": [],
+        "wall_bound_seconds": 300
+      },
+      "cells": [
+        {
+          "cell": "nova-full-s1-w2-m512",
+          "summary_sha256": "76d84ce124d64c79eeba12dff135f92bee404bad6ec93876be3135144067d2b7",
+          "reference_summary_sha256": "08828d509e5d2f4179a5d916f823dc4ad28062d1a941b88a6ea909bc5398f422",
+          "exact_match": {
+            "executions": 500,
+            "frames_emulated": 80586,
+            "stream_sha256": "b4d0348359285cbcaa8074fca901cb5a15cd7fa52aa9cd79e85f15136e44d45c",
+            "solved": false
+          }
+        },
+        {
+          "cell": "nova-level-1-s1-w2-m512",
+          "summary_sha256": "15de9738f5b0e9523877cc711878a7b1098ccfea2852394515a0170ba2d6cb25",
+          "reference_summary_sha256": "69e067bb7f4aa15a1075b87c48a6c6f85d9d7c62d952d05dec68cb2dc0df38d9",
+          "exact_match": {
+            "executions": 500,
+            "frames_emulated": 80586,
+            "stream_sha256": "1c0b072bc92943ceb316d94c70db080988c03f0a44292e9fcb9d41291400dbc6",
+            "solved": false
+          }
+        },
+        {
+          "cell": "stb-hard-s1-w2-m512",
+          "summary_sha256": "2324408e58b7c0c9b94cc933770df539e02a3e6324b77e40b321a142138e9910",
+          "reference_summary_sha256": "2080818b5cdb09202942f2b7d2da02809bbc3977cfed8d154758352984fcf6b9",
+          "exact_match": {
+            "executions": 500,
+            "frames_emulated": 83148,
+            "stream_sha256": "dd04f9779c0427c47d0398a82fcc3c578f33e7b82598cd5194ecd5339f5fd958",
+            "solved": false
+          }
+        }
+      ]
+    },
+    {
+      "label": "q36-smb",
+      "reference": "g01-smb",
+      "execution": {
+        "exit_code": 0,
+        "elapsed_seconds": 119.70655924908351,
+        "watchdog_killed_process_groups": [],
+        "wall_bound_seconds": 750
+      },
+      "cells": [
+        {
+          "cell": "smb-full-s20260910-w24-m2048",
+          "summary_sha256": "a41860eda7e4b772934b960e0d940884cf68932c5b6d9dfb48f069b59bb3a3ad",
+          "reference_summary_sha256": "ba4896b9dfc8522f981367098b3aa10d34f722ab84360ad4db2a421dbcc5248e",
+          "exact_match": {
+            "executions": 301688,
+            "frames_emulated": 42017148,
+            "stream_sha256": "33112e2a5dc91ed95635cdff4c162c901392d0a3b24be57f26e67b57b0ef15b6",
+            "solved": true
+          }
+        }
+      ]
+    }
+  ],
+  "finished_utc": "2026-09-09T06:49:16.481496+00:00"
+}

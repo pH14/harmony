@@ -151,6 +151,10 @@ impl ArchiveKey for MetroidArchiveKey {
         1
     }
 
+    fn retention_resources(self) -> Option<[u64; 2]> {
+        Some([u64::from(self.health), u64::from(self.missiles)])
+    }
+
     fn preference_cmp(self, other: Self) -> Ordering {
         self.preference().cmp(&other.preference())
     }
@@ -350,6 +354,14 @@ const SELECT_ODDS: usize = 12;
 /// Draw one game-neutral controller chord: any direction set with any A/B
 /// set, or a short Select tap. Start is excluded because it only pauses.
 pub fn sample_chord(rand: &mut RomuDuoJrRand) -> Result<ButtonChord, Box<dyn Error>> {
+    sample_chord_with_duration(rand, crate::duration::NesDurationPolicy::ShortOrLong)
+}
+
+/// Draw the same controller masks under an explicitly versioned hold policy.
+pub fn sample_chord_with_duration(
+    rand: &mut RomuDuoJrRand,
+    duration: crate::duration::NesDurationPolicy,
+) -> Result<ButtonChord, Box<dyn Error>> {
     if rand.below(NonZeroUsize::new(SELECT_ODDS).ok_or("invalid select odds")?) == 0 {
         let hold = u8::try_from(2 + rand.below(NonZeroUsize::new(6).ok_or("invalid tap")?))?;
         return Ok(ButtonChord::new(SELECT, hold));
@@ -358,11 +370,7 @@ pub fn sample_chord(rand: &mut RomuDuoJrRand) -> Result<ButtonChord, Box<dyn Err
         [rand.below(NonZeroUsize::new(DIRECTIONS.len()).ok_or("empty direction vocabulary")?)];
     let buttons =
         direction | AB[rand.below(NonZeroUsize::new(AB.len()).ok_or("empty A/B vocabulary")?)];
-    let hold_frames = if rand.below(NonZeroUsize::new(2).ok_or("invalid duration odds")?) == 0 {
-        u8::try_from(2 + rand.below(NonZeroUsize::new(11).ok_or("invalid short duration")?))?
-    } else {
-        u8::try_from(48 + rand.below(NonZeroUsize::new(73).ok_or("invalid long duration")?))?
-    };
+    let hold_frames = duration.sample(rand)?;
     Ok(ButtonChord::new(buttons, hold_frames))
 }
 

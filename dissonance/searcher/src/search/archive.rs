@@ -74,6 +74,12 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn preference_cmp(self, _other: Self) -> Ordering {
         Ordering::Equal
     }
+    /// Two monotone resource axes available for optional bounded retention.
+    /// These are local resource preferences, never behavioral-dominance claims.
+    /// If any competitor returns `None`, use the ordinary representative rule.
+    fn retention_resources(self) -> Option<[u64; 2]> {
+        None
+    }
     /// Ancestry state a key needs to complete itself.
     type Lineage: Clone + Default;
     /// Complete a freshly decoded key against its parent's key and lineage.
@@ -89,6 +95,40 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
 /// campaign's retention. Campaign runs register their own per-run bound at
 /// or below this.
 pub const MAX_ARCHIVE_ENTRIES: usize = 4_194_304;
+/// Versioned same-slot representative mechanism, independent of parent selection.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SlotRetentionPolicy {
+    /// Existing workload capacity, opaque preference, then route cost.
+    #[default]
+    Representative,
+    /// At most two representatives: the best under each resource-axis order.
+    /// Intermediate tradeoffs can still be lost; this is not a full Pareto front.
+    ResourceExtremes2,
+}
+
+impl SlotRetentionPolicy {
+    /// `None` preserves historical bytes and behavior.
+    #[must_use]
+    pub fn identifier(self) -> Option<&'static str> {
+        match self {
+            Self::Representative => None,
+            Self::ResourceExtremes2 => Some("resource_extremes_2_v1"),
+        }
+    }
+
+    /// Decode a recorded mechanism; unknown identifiers fail closed.
+    ///
+    /// # Errors
+    /// Returns an error for an unsupported recorded policy.
+    pub fn from_identifier(identifier: Option<&str>) -> Result<Self, Box<dyn Error>> {
+        match identifier {
+            None => Ok(Self::Representative),
+            Some("resource_extremes_2_v1") => Ok(Self::ResourceExtremes2),
+            Some(value) => Err(format!("unknown slot retention policy {value}").into()),
+        }
+    }
+}
+
 /// Entries one retention slot holds before candidates must displace.
 pub const MAX_ENTRIES_PER_KEY: usize = 2;
 /// Dead metadata reclaimed per compaction. A fixed batch bounds physical
@@ -227,6 +267,11 @@ pub enum SelectorPolicy {
     /// Cost selection using semantic progress without entry-count weighting.
     /// Equal-progress locations share frontier rank regardless of map identity.
     EnergyProgressCheapest(RetireThresholds),
+    /// Offer each surviving member of a chosen cell once before cost-ranked reuse.
+    /// The first offer bypasses the recency window and is claimed at dispatch.
+    EnergyProgressFirstExposure(RetireThresholds),
+    /// Preserve semantic selection while removing only across-cell route-cost rank.
+    EnergyProgressNoCellCost(RetireThresholds),
 }
 
 /// The recorded identifier of a parent selector.
@@ -251,6 +296,14 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
         }
         SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => format!(
             "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:{}",
+            threshold_values(scales)
+        ),
+        SelectorPolicy::EnergyProgressNoCellCost(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_progress_no_cell_cost_v1:{}",
+            threshold_values(scales)
+        ),
+        SelectorPolicy::EnergyProgressFirstExposure(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_progress_first_exposure_v2:{}",
             threshold_values(scales)
         ),
         SelectorPolicy::EnergyProgressCheapest(scales) => format!(
@@ -300,6 +353,8 @@ pub fn selector_policy_from_identifier(
     let energy_prefix = format!("{SELECTOR_IDENTIFIER}_energy:");
     let frontier_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier:");
     let key_count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:");
+    let no_cell_cost_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_no_cell_cost_v1:");
+    let exposure_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_first_exposure_v2:");
     let semantic_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_v1:");
     let progress_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_count_v1:");
     let count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:");
@@ -311,6 +366,8 @@ pub fn selector_policy_from_identifier(
         EnergyFrontierCheapest,
         EnergyFrontierCheapestCount,
         EnergyProgressCheapest,
+        EnergyProgressFirstExposure,
+        EnergyProgressNoCellCost,
         EnergyProgressCheapestCount,
         EnergyFrontierCheapestKeyCount,
     }
@@ -318,6 +375,10 @@ pub fn selector_policy_from_identifier(
         (values, Parsed::Retire)
     } else if let Some(values) = identifier.strip_prefix(&key_count_prefix) {
         (values, Parsed::EnergyFrontierCheapestKeyCount)
+    } else if let Some(values) = identifier.strip_prefix(&no_cell_cost_prefix) {
+        (values, Parsed::EnergyProgressNoCellCost)
+    } else if let Some(values) = identifier.strip_prefix(&exposure_prefix) {
+        (values, Parsed::EnergyProgressFirstExposure)
     } else if let Some(values) = identifier.strip_prefix(&semantic_prefix) {
         (values, Parsed::EnergyProgressCheapest)
     } else if let Some(values) = identifier.strip_prefix(&progress_prefix) {
@@ -354,6 +415,10 @@ pub fn selector_policy_from_identifier(
     Ok(match selector {
         Parsed::EnergyFrontierCheapestKeyCount => {
             SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
+        }
+        Parsed::EnergyProgressNoCellCost => SelectorPolicy::EnergyProgressNoCellCost(thresholds),
+        Parsed::EnergyProgressFirstExposure => {
+            SelectorPolicy::EnergyProgressFirstExposure(thresholds)
         }
         Parsed::EnergyProgressCheapest => SelectorPolicy::EnergyProgressCheapest(thresholds),
         Parsed::EnergyProgressCheapestCount => {
@@ -792,11 +857,69 @@ pub struct ArchiveCandidate<A: Ord, K, M> {
     pub milestones: M,
 }
 
+/// Read-only same-slot competition, emitted before any incumbent is removed.
+/// Lazy inputs are reconstructed only if the observer requests them. Their
+/// allocations and work belong to diagnostics, not deterministic report counters.
+pub struct RetentionObservation<'a, A: Ord, K, S> {
+    /// Admission sequence of the proposed candidate.
+    pub execution: u64,
+    /// Proposed endpoint key and snapshot.
+    pub candidate: (K, &'a S),
+    /// Incumbent key and resident snapshot, if still cached.
+    pub incumbent: (K, Option<&'a S>),
+    /// Whether the candidate displaces this incumbent under the current rule.
+    pub replaces: bool,
+    /// Whether the candidate will be admitted, possibly alongside the incumbent.
+    pub candidate_admitted: bool,
+    /// Incumbent admission sequence.
+    pub created_execution: u64,
+    /// Incumbent exposure before this competition.
+    pub exposure: EntrySelectorCounters,
+    /// Whether the incumbent ever entered the selector's recency window.
+    pub in_window_ever: bool,
+    /// Materialize candidate and incumbent inputs without changing search counters.
+    pub inputs: &'a dyn Fn() -> Result<(Input<A>, Input<A>), &'static str>,
+}
+
+/// Constant-space lifecycle counters, reporting-only and excluded from replay state.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct RetentionDiagnostics {
+    /// Full-slot competitions (excluding duplicate inputs).
+    pub competitions: u64,
+    /// Accepted candidates that preserved at least one competing resource extreme.
+    pub alternative_admissions: u64,
+    /// Resource-aware decisions, including rejected candidates.
+    pub resource_decisions: u64,
+    /// Incumbents removed by replacement or memory/population eviction.
+    pub removed: u64,
+    /// Removed incumbents never exposed in the recency window.
+    pub removed_never_in_window: u64,
+    /// Removed incumbents never selected.
+    pub removed_never_selected: u64,
+    /// Removed incumbents never produced a retained extension.
+    pub removed_never_productive: u64,
+    /// Sum of admitted selections received by removed incumbents.
+    pub removed_selections: u64,
+    /// Same-slot removals by admission age: 0, 1..7, 8..63, 64..511, >=512.
+    pub replacement_age_bins: [u64; 5],
+    /// The same age bins restricted to entries never selected.
+    pub replacement_unselected_age_bins: [u64; 5],
+    /// Nonmonotonic caller sequences with creation later than replacement.
+    pub replacement_age_unknown: u64,
+    /// Unknown-age removals that had never been selected.
+    pub replacement_unselected_age_unknown: u64,
+}
+
 /// The generic snapshot archive.
 pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     /// Retention stops when the entry count reaches this bound; campaign
     /// runs record their bound in the stream header and replay under it.
     pub max_entries: usize,
+    /// Reporting-only lifecycle census; fixed size, no search feedback.
+    pub retention_diagnostics: RetentionDiagnostics,
+    /// Recorded optional same-slot retention mechanism.
+    pub slot_retention: SlotRetentionPolicy,
     /// Retained entries in insertion order.
     pub(crate) entries: Vec<ArchiveEntry<A, K, M, S>>,
     /// Stable stream id to current compact in-memory slot.
@@ -1391,6 +1514,8 @@ where
     pub fn new(action_time: fn(&A) -> u64) -> Self {
         Self {
             max_entries: MAX_ARCHIVE_ENTRIES,
+            retention_diagnostics: RetentionDiagnostics::default(),
+            slot_retention: SlotRetentionPolicy::default(),
             entries: Vec::new(),
             id_to_index: BTreeMap::new(),
             next_entry_id: 0,
@@ -1582,6 +1707,14 @@ where
         if !self.active.get(id).copied().unwrap_or(false) {
             return false;
         }
+        self.retention_diagnostics.removed += 1;
+        self.retention_diagnostics.removed_never_in_window += u64::from(!self.in_window_ever[id]);
+        self.retention_diagnostics.removed_never_selected += u64::from(self.selected[id] == 0);
+        self.retention_diagnostics.removed_never_productive += u64::from(self.productive[id] == 0);
+        self.retention_diagnostics.removed_selections = self
+            .retention_diagnostics
+            .removed_selections
+            .saturating_add(self.selected[id]);
         self.active[id] = false;
         self.active_count = self.active_count.saturating_sub(1);
         let slot_key = self.entries[id].key.group(0);
@@ -2132,6 +2265,10 @@ where
     pub(crate) fn materialize_input(&self, id: usize) -> Result<Input<A>, &'static str> {
         self.input_reconstructions
             .set(self.input_reconstructions.get().saturating_add(1));
+        self.materialize_input_untracked(id)
+    }
+
+    fn materialize_input_untracked(&self, id: usize) -> Result<Input<A>, &'static str> {
         let entry = self.entries.get(id).ok_or("archive input id is missing")?;
         let actions = self
             .input_index
@@ -2711,6 +2848,29 @@ where
         candidate: ArchiveCandidate<A, K, M>,
         snapshot: S,
     ) -> Result<(Option<usize>, K), Box<dyn Error>> {
+        self.insert_after_observed(parent_id, previous, execution, candidate, snapshot, |_| {
+            Ok(())
+        })
+    }
+
+    /// Insert with a read-only diagnostic observer of full-slot competitions.
+    /// The observer must use bounded storage and never supply decisions or random
+    /// draws back to the campaign. Errors stop the run rather than losing evidence.
+    ///
+    /// # Errors
+    /// Returns insertion errors or an observer error.
+    pub fn insert_after_observed<F>(
+        &mut self,
+        parent_id: Option<usize>,
+        previous: Option<K>,
+        execution: u64,
+        candidate: ArchiveCandidate<A, K, M>,
+        snapshot: S,
+        observer: F,
+    ) -> Result<(Option<usize>, K), Box<dyn Error>>
+    where
+        F: FnOnce(&RetentionObservation<'_, A, K, S>) -> Result<(), Box<dyn Error>>,
+    {
         let ArchiveCandidate {
             suffix,
             key,
@@ -2740,8 +2900,8 @@ where
         let slot = self.slots.entry(key.group(0)).or_default().clone();
         let new_slot = slot.is_empty();
         let slot_full = slot.len() >= K::slot_capacity().max(1);
-        let replace = if slot_full {
-            let worst = slot.iter().copied().min_by(|left, right| {
+        let worst = if slot_full {
+            slot.iter().copied().min_by(|left, right| {
                 let left_entry = &self.entries[*left];
                 let right_entry = &self.entries[*right];
                 left_entry
@@ -2749,19 +2909,107 @@ where
                     .preference_cmp(right_entry.key)
                     .then_with(|| self.time_in_group[*right].cmp(&self.time_in_group[*left]))
                     .then_with(|| right_entry.id.cmp(&left_entry.id))
-            });
-            worst.filter(|id| match key.preference_cmp(self.entries[*id].key) {
-                Ordering::Greater => true,
-                Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
-                Ordering::Less => false,
             })
         } else {
             None
         };
-        if slot_full && replace.is_none() {
+        let replace = worst.filter(|id| match key.preference_cmp(self.entries[*id].key) {
+            Ordering::Greater => true,
+            Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
+            Ordering::Less => false,
+        });
+        let replacements = if self.slot_retention == SlotRetentionPolicy::ResourceExtremes2
+            && key.retention_resources().is_some()
+            && slot
+                .iter()
+                .all(|id| self.entries[*id].key.retention_resources().is_some())
+        {
+            self.retention_diagnostics.resource_decisions += 1;
+            let new_id = self.entries.len();
+            let resource_order = |id: usize, axis: usize| {
+                let (resources, cost, stable) = if id == new_id {
+                    (
+                        key.retention_resources()
+                            .expect("candidate resources checked"),
+                        candidate_time_in_group,
+                        self.next_entry_id,
+                    )
+                } else {
+                    (
+                        self.entries[id]
+                            .key
+                            .retention_resources()
+                            .expect("incumbent resources checked"),
+                        self.time_in_group[id],
+                        self.entries[id].id,
+                    )
+                };
+                (
+                    resources[axis],
+                    resources[1 - axis],
+                    Reverse(cost),
+                    Reverse(stable),
+                )
+            };
+            let best = [0, 1].map(|axis| {
+                slot.iter()
+                    .copied()
+                    .chain(std::iter::once(new_id))
+                    .max_by_key(|id| resource_order(*id, axis))
+                    .expect("candidate makes nonempty competition")
+            });
+            if best.contains(&new_id) {
+                if slot.iter().any(|id| best.contains(id)) {
+                    self.retention_diagnostics.alternative_admissions += 1;
+                }
+                Some(
+                    slot.iter()
+                        .copied()
+                        .filter(|id| !best.contains(id))
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            }
+        } else if !slot_full || replace.is_some() {
+            Some(replace.into_iter().collect::<Vec<_>>())
+        } else {
+            None
+        };
+        let observed_incumbent = replacements
+            .as_ref()
+            .and_then(|ids| ids.first().copied())
+            .or(worst);
+        if let Some(id) = observed_incumbent {
+            self.retention_diagnostics.competitions += 1;
+            observer(&RetentionObservation {
+                execution,
+                candidate: (key, &snapshot),
+                incumbent: (self.entries[id].key, self.entries[id].snapshot.as_deref()),
+                replaces: replacements.as_ref().is_some_and(|ids| ids.contains(&id)),
+                candidate_admitted: replacements.is_some(),
+                created_execution: self.entries[id].created_execution,
+                exposure: EntrySelectorCounters {
+                    selected: self.selected[id],
+                    productive: self.productive[id],
+                },
+                in_window_ever: self.in_window_ever[id],
+                inputs: &|| {
+                    let mut input = match parent_id {
+                        Some(parent) => self.materialize_input_untracked(parent)?,
+                        None => Input {
+                            actions: Vec::new(),
+                        },
+                    };
+                    input.actions.extend_from_slice(&suffix);
+                    Ok((input, self.materialize_input_untracked(id)?))
+                },
+            })?;
+        }
+        let Some(replacements) = replacements else {
             self.rejected = self.rejected.saturating_add(1);
             return Ok((None, key));
-        }
+        };
         let population_retirements = self
             .active_count
             .saturating_sub(self.max_entries)
@@ -2781,8 +3029,8 @@ where
             return Err("archive population limit did not retire an entry".into());
         }
         if let Some(bank) = &mut self.continuations {
-            if replace.is_some_and(|replaced| {
-                key.preference_cmp(self.entries[replaced].key) == Ordering::Greater
+            if replacements.iter().any(|replaced| {
+                key.preference_cmp(self.entries[*replaced].key) == Ordering::Greater
             }) {
                 bank.improved(key.group(0), self.next_entry_id);
             }
@@ -2797,7 +3045,26 @@ where
                 );
             }
         }
-        if let Some(replaced) = replace {
+        for replaced in replacements {
+            if self.active[replaced] {
+                let unselected = u64::from(self.selected[replaced] == 0);
+                if let Some(age) = execution.checked_sub(self.entries[replaced].created_execution) {
+                    let bucket = match age {
+                        0 => 0,
+                        1..=7 => 1,
+                        8..=63 => 2,
+                        64..=511 => 3,
+                        _ => 4,
+                    };
+                    self.retention_diagnostics.replacement_age_bins[bucket] += 1;
+                    self.retention_diagnostics.replacement_unselected_age_bins[bucket] +=
+                        unselected;
+                } else {
+                    self.retention_diagnostics.replacement_age_unknown += 1;
+                    self.retention_diagnostics
+                        .replacement_unselected_age_unknown += unselected;
+                }
+            }
             self.replacement_time_displaced = self.replacement_time_displaced.saturating_add(1);
             self.deactivate(replaced);
         }
@@ -3098,6 +3365,8 @@ where
         matches!(
             self.selector_policy,
             SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressFirstExposure(_)
+                | SelectorPolicy::EnergyProgressNoCellCost(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         )
     }
@@ -3406,6 +3675,8 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(scales)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales)
             | SelectorPolicy::EnergyProgressCheapest(scales)
+            | SelectorPolicy::EnergyProgressFirstExposure(scales)
+            | SelectorPolicy::EnergyProgressNoCellCost(scales)
             | SelectorPolicy::EnergyProgressCheapestCount(scales) => (scales, true),
             _ => return Ok(rand.below(count)),
         };
@@ -3492,9 +3763,17 @@ where
                         }
                         None => 8,
                     };
-                    let costlier = cost.map_or(0, |cost| {
-                        cheapest.partition_point(|cheaper| *cheaper < cost) / CHEAPEST_RANK_SCALE
-                    });
+                    let costlier = if matches!(
+                        self.selector_policy,
+                        SelectorPolicy::EnergyProgressNoCellCost(_)
+                    ) {
+                        0
+                    } else {
+                        cost.map_or(0, |cost| {
+                            cheapest.partition_point(|cheaper| *cheaper < cost)
+                                / CHEAPEST_RANK_SCALE
+                        })
+                    };
                     (novelty.saturating_add(costlier), 16)
                 }
                 (None, None) => (0, 8),
@@ -3526,6 +3805,8 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
             | SelectorPolicy::EnergyProgressCheapest(thresholds)
+            | SelectorPolicy::EnergyProgressFirstExposure(thresholds)
+            | SelectorPolicy::EnergyProgressNoCellCost(thresholds)
             | SelectorPolicy::EnergyProgressCheapestCount(thresholds) => {
                 self.since_retained[id] < thresholds.entry
             }
@@ -3543,6 +3824,8 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
             | SelectorPolicy::EnergyProgressCheapest(_)
+            | SelectorPolicy::EnergyProgressFirstExposure(_)
+            | SelectorPolicy::EnergyProgressNoCellCost(_)
             | SelectorPolicy::EnergyProgressCheapestCount(_) => true,
             SelectorPolicy::Retire(thresholds) => {
                 thresholds
@@ -3587,6 +3870,30 @@ where
         rand: &mut RomuDuoJrRand,
         cell: Vec<usize>,
     ) -> Result<(usize, ConcentrationDraw), Box<dyn Error>> {
+        if matches!(
+            self.selector_policy,
+            SelectorPolicy::EnergyProgressFirstExposure(_)
+        ) && let Some(id) = cell
+            .iter()
+            .copied()
+            .find(|id| self.selected[*id] == 0 && !self.in_window_ever[*id])
+        {
+            // Claim the first offer at dispatch, before ordered admission updates
+            // `selected`. Other in-flight reservations can then offer another
+            // member. The existing exposure bit is sufficient; no queue or
+            // extra snapshot survives outside the ordinary archive budget.
+            // Match the ordinary within-cell draw's one RNG step. Choosing
+            // an old member should not independently shift mutation seeds.
+            let _ = rand.next_u64();
+            self.in_window_ever[id] = true;
+            return Ok((
+                id,
+                ConcentrationDraw {
+                    window_size: 1,
+                    entered_window: 1,
+                },
+            ));
+        }
         let window = &cell[cell.len().saturating_sub(CONCENTRATION_WINDOW)..];
         let mut entered_window = 0_u64;
         for id in window {
@@ -3601,6 +3908,8 @@ where
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
                 | SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressFirstExposure(_)
+                | SelectorPolicy::EnergyProgressNoCellCost(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             let mut ranked = window
@@ -3669,6 +3978,23 @@ where
     #[must_use]
     pub fn opened_new_cell(&self, id: usize) -> bool {
         self.opened_cell.get(id).copied().unwrap_or(false)
+    }
+
+    /// Additional fixed storage used by the retention lifecycle observer.
+    /// Existing selector exposure vectors are reused and already covered by
+    /// the archive metadata charge; they are not additional diagnostic storage.
+    #[must_use]
+    pub fn retention_diagnostic_memory_bytes(&self) -> usize {
+        size_of::<RetentionDiagnostics>()
+    }
+
+    /// Cached endpoints of active entries, for a final reporting-only census.
+    /// Missing snapshots remain visible; diagnostics must not reconstruct them.
+    pub(crate) fn retained_snapshots(&self) -> impl Iterator<Item = Option<&S>> {
+        self.entries
+            .iter()
+            .zip(&self.active)
+            .filter_map(|(entry, active)| active.then_some(entry.snapshot.as_deref()))
     }
 
     /// Number of entries currently participating in retention.
@@ -3882,6 +4208,8 @@ where
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
                 | SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressFirstExposure(_)
+                | SelectorPolicy::EnergyProgressNoCellCost(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
@@ -3959,6 +4287,8 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
             | SelectorPolicy::EnergyProgressCheapest(_)
+            | SelectorPolicy::EnergyProgressFirstExposure(_)
+            | SelectorPolicy::EnergyProgressNoCellCost(_)
             | SelectorPolicy::EnergyProgressCheapestCount(_) => new_cell_descendant,
             SelectorPolicy::GroupUniform => false,
         };
@@ -3994,6 +4324,8 @@ where
         | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
         | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
         | SelectorPolicy::EnergyProgressCheapest(thresholds)
+        | SelectorPolicy::EnergyProgressFirstExposure(thresholds)
+        | SelectorPolicy::EnergyProgressNoCellCost(thresholds)
         | SelectorPolicy::EnergyProgressCheapestCount(thresholds) = &self.selector_policy
         {
             let entries_over_threshold = u64::try_from(
@@ -4077,11 +4409,15 @@ mod tests {
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, HISTORY_COMPACTION_MIN_DROPS, Input,
         InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, RetireThresholds,
         SELECTION_EXHAUSTION_THRESHOLD, SelectorAccounting, SelectorDraw, SelectorPath,
-        SelectorPolicy, selector_policy_from_identifier,
+        SelectorPolicy, SlotRetentionPolicy, selector_policy_from_identifier,
     };
     use crate::search::rand::RomuDuoJrRand;
     use serde::{Deserialize, Serialize};
-    use std::{cmp::Reverse, collections::BTreeMap, sync::Arc};
+    use std::{
+        cmp::Reverse,
+        collections::{BTreeMap, BTreeSet},
+        sync::Arc,
+    };
 
     /// A small action fixture with the same two dimensions the extracted
     /// archive tests need: an input identity and a deterministic duration.
@@ -4482,6 +4818,10 @@ mod tests {
             self.quality.cmp(&other.quality)
         }
 
+        fn retention_resources(self) -> Option<[u64; 2]> {
+            (self.quality != 0).then_some([u64::from(self.quality), u64::from(255 - self.quality)])
+        }
+
         type Lineage = ();
 
         fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
@@ -4489,6 +4829,167 @@ mod tests {
         }
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn resource_extremes_fall_back_when_a_competitor_has_no_resources() {
+        let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+        archive.slot_retention = SlotRetentionPolicy::ResourceExtremes2;
+        for quality in [0, 4] {
+            assert!(
+                archive
+                    .insert(
+                        None,
+                        u64::from(quality),
+                        ArchiveCandidate {
+                            suffix: vec![quality],
+                            key: PreferredKey { slot: 7, quality },
+                            milestones: (),
+                        },
+                        ()
+                    )
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        assert_eq!(archive.active_count(), 1);
+        assert_eq!(archive.entries[archive.slots[&7][0]].key.quality, 4);
+        assert_eq!(archive.retention_diagnostics.resource_decisions, 0);
+    }
+
+    #[test]
+    fn resource_extremes_keep_two_tradeoffs_and_reject_interior_points() {
+        let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+        archive.slot_retention = SlotRetentionPolicy::ResourceExtremes2;
+        for (quality, expected) in [(5, true), (9, true), (7, false), (3, true)] {
+            let admitted = archive
+                .insert(
+                    None,
+                    1,
+                    ArchiveCandidate {
+                        suffix: vec![quality],
+                        key: PreferredKey { slot: 7, quality },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap();
+            assert_eq!(admitted.is_some(), expected);
+            assert!(archive.slots[&7].len() <= 2);
+        }
+        let qualities: BTreeSet<_> = archive.slots[&7]
+            .iter()
+            .map(|id| archive.entries[*id].key.quality)
+            .collect();
+        assert_eq!(qualities, BTreeSet::from([3, 9]));
+        assert_eq!(archive.retention_diagnostics.alternative_admissions, 2);
+        assert_eq!(archive.retention_diagnostics.resource_decisions, 4);
+        // Equal resource vectors keep the cheaper route; exact cost ties keep the incumbent.
+        assert!(
+            archive
+                .insert(
+                    None,
+                    2,
+                    ArchiveCandidate {
+                        suffix: vec![],
+                        key: PreferredKey {
+                            slot: 7,
+                            quality: 3
+                        },
+                        milestones: ()
+                    },
+                    ()
+                )
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(archive.slots[&7].len(), 2);
+        assert_eq!(
+            SlotRetentionPolicy::from_identifier(None).unwrap(),
+            SlotRetentionPolicy::Representative
+        );
+        assert!(SlotRetentionPolicy::from_identifier(Some("resource_extremes_2_v0")).is_err());
+    }
+
+    #[test]
+    fn replacement_age_distinguishes_same_rollout_and_nonmonotonic_sequences() {
+        let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+        for (quality, execution) in [(1, 42), (2, 42), (3, 50), (4, 49)] {
+            archive
+                .insert(
+                    None,
+                    execution,
+                    ArchiveCandidate {
+                        suffix: vec![quality],
+                        key: PreferredKey { slot: 7, quality },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+        }
+        let diagnostics = archive.retention_diagnostics;
+        assert_eq!(diagnostics.replacement_age_bins, [1, 0, 1, 0, 0]);
+        assert_eq!(diagnostics.replacement_unselected_age_bins, [1, 0, 1, 0, 0]);
+        assert_eq!(diagnostics.replacement_age_unknown, 1);
+        assert_eq!(diagnostics.replacement_unselected_age_unknown, 1);
+        assert_eq!(diagnostics.removed_never_selected, 3);
+    }
+
+    #[test]
+    fn retention_observation_preserves_decisions_inputs_and_search_counters() {
+        let run = |observe: bool| {
+            let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+            let mut events = Vec::new();
+            for (execution, quality) in [2, 1, 3].into_iter().enumerate() {
+                archive
+                    .insert_after_observed(
+                        None,
+                        None,
+                        execution as u64,
+                        ArchiveCandidate {
+                            suffix: vec![quality],
+                            key: PreferredKey { slot: 7, quality },
+                            milestones: (),
+                        },
+                        (),
+                        |event| {
+                            if observe {
+                                let (candidate, incumbent) = (event.inputs)()?;
+                                events.push((
+                                    event.replaces,
+                                    candidate.actions,
+                                    incumbent.actions,
+                                    event.exposure.selected,
+                                ));
+                            }
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+            }
+            assert_eq!(archive.input_reconstructions.get(), 0);
+            assert_eq!(archive.retention_diagnostics.competitions, 2);
+            assert_eq!(archive.retention_diagnostics.removed_never_selected, 1);
+            (
+                archive.active.clone(),
+                archive.retained,
+                archive.rejected,
+                archive.selector_report(),
+                events,
+            )
+        };
+        let control = run(false);
+        let observed = run(true);
+        assert_eq!(
+            (&control.0, control.1, control.2, &control.3),
+            (&observed.0, observed.1, observed.2, &observed.3)
+        );
+        assert_eq!(
+            observed.4,
+            vec![(false, vec![1], vec![2], 0), (true, vec![3], vec![2], 0)]
+        );
     }
 
     #[test]
@@ -6407,6 +6908,72 @@ mod tests {
     }
 
     #[test]
+    fn first_exposure_reaches_old_members_during_arrivals_and_claims_in_flight_offers() {
+        let keys: Vec<_> = (0..140).map(|id| [id, 0, 0, 0]).collect();
+        let thresholds = RetireThresholds {
+            entry: 3,
+            groups: vec![],
+        };
+        let mut following_draws = Vec::new();
+        for first in [false, true] {
+            let mut archive = flat_archive::<2>(&keys);
+            archive.selector_policy = if first {
+                SelectorPolicy::EnergyProgressFirstExposure(thresholds.clone())
+            } else {
+                SelectorPolicy::EnergyProgressCheapest(thresholds.clone())
+            };
+            let identifier = super::selector_policy_identifier(&archive.selector_policy);
+            assert_eq!(
+                selector_policy_from_identifier(&identifier, 0).unwrap(),
+                archive.selector_policy
+            );
+            let mut rand = RomuDuoJrRand::with_seed(97);
+            for offer in 0..16 {
+                // Keep older entries live while new, equally eligible arrivals
+                // continually move the legacy window forward. Do not admit the
+                // selections yet: these represent concurrent reservations.
+                let cell = (0..archive.entries.len()).collect();
+                let (id, draw) = archive.draw_from_cell(&mut rand, cell).unwrap();
+                if first {
+                    assert_eq!(id, offer);
+                    assert_eq!(draw.window_size, 1);
+                    assert_eq!(draw.entered_window, 1);
+                } else {
+                    assert!(id >= 12 + offer);
+                }
+                assert_eq!(archive.selected[id], 0);
+                let next = 140 + offer;
+                archive
+                    .insert(
+                        None,
+                        0,
+                        ArchiveCandidate {
+                            suffix: vec![next as u8],
+                            key: FlatKey([next as u16, 0, 0, 0]),
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .unwrap()
+                    .unwrap();
+            }
+            assert_eq!(archive.in_window_ever[0], first);
+            following_draws.push(rand.next_u64());
+        }
+        assert_eq!(
+            following_draws[0], following_draws[1],
+            "first exposure shifted mutation RNG cadence"
+        );
+        assert!(
+            selector_policy_from_identifier(
+                "room_cell_uniform_128_energy_progress_first_exposure_v0:3",
+                0
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn the_cell_draw_samples_only_the_recency_window() {
         // 140 entries in one cell: the window is the 128 greatest ids.
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 124); 140];
@@ -6658,6 +7225,72 @@ mod tests {
             self
         }
         fn record(_: &mut Self::Lineage, _: Self) {}
+    }
+
+    #[test]
+    fn no_cell_cost_restores_costly_cell_draws_without_changing_rng_or_member_draws() {
+        let thresholds = RetireThresholds {
+            entry: 3,
+            groups: vec![6],
+        };
+        let policies = [
+            SelectorPolicy::EnergyProgressCheapest(thresholds.clone()),
+            SelectorPolicy::EnergyProgressNoCellCost(thresholds.clone()),
+        ];
+        let groups: Vec<_> = (0..64).map(|id| [0, id, 0, 0]).collect();
+        let cells: Vec<_> = (0..64).map(|cost| (None, Some(cost))).collect();
+        let mut counts = [[0; 4]; 2];
+        let mut rng_ends = Vec::new();
+        for (arm, policy) in policies.iter().enumerate() {
+            let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+            archive.selector_policy = policy.clone();
+            let mut rand = RomuDuoJrRand::with_seed(986);
+            for _ in 0..12_000 {
+                let index = archive
+                    .draw_group_index(&mut rand, 1, &groups, None, Some(&cells))
+                    .unwrap();
+                counts[arm][index / 16] += 1;
+            }
+            rng_ends.push(rand.next_u64());
+        }
+        assert!(
+            counts[0][0] > 10_000 && counts[0][3] < 200,
+            "legacy cost suppression: {counts:?}"
+        );
+        assert!(
+            counts[1].iter().all(|count| (2600..3400).contains(count)),
+            "equal energy/novelty cells should share draws: {counts:?}"
+        );
+        assert_eq!(rng_ends[0], rng_ends[1]);
+
+        let keys: Vec<_> = (0..64).map(|id| [id, 0, 0, 0]).collect();
+        let mut left = flat_archive::<3>(&keys);
+        let mut right = flat_archive::<3>(&keys);
+        left.selector_policy = policies[0].clone();
+        right.selector_policy = policies[1].clone();
+        left.time_in_group = (0..64).collect();
+        right.time_in_group = left.time_in_group.clone();
+        let mut a = RomuDuoJrRand::with_seed(102);
+        let mut b = a;
+        for _ in 0..1000 {
+            assert_eq!(
+                left.draw_from_cell(&mut a, (0..64).collect()).unwrap(),
+                right.draw_from_cell(&mut b, (0..64).collect()).unwrap()
+            );
+        }
+        assert_eq!(a.next_u64(), b.next_u64());
+        let identifier = super::selector_policy_identifier(&policies[1]);
+        assert_eq!(
+            selector_policy_from_identifier(&identifier, 1).unwrap(),
+            policies[1]
+        );
+        assert!(
+            selector_policy_from_identifier(
+                "room_cell_uniform_128_energy_progress_no_cell_cost_v99:3,6",
+                1
+            )
+            .is_err()
+        );
     }
 
     #[test]

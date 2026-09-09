@@ -97,7 +97,7 @@ impl ResultBuffering {
     }
 }
 
-/// Optional execution controls. Buffering changes host memory and timing only;
+/// Optional execution and retention controls. Buffering changes host memory and timing only;
 /// callers record that choice in benchmark provenance, outside deterministic
 /// campaign bytes. A wall-time stop can still change with execution speed.
 #[derive(Clone, Copy, Debug, Default)]
@@ -108,6 +108,8 @@ pub struct CampaignExecutionOptions {
     /// Worker results are outside the archive's logical memory budget and must
     /// be included in the caller's host capacity planning and RSS measurements.
     pub result_buffering: ResultBuffering,
+    /// Optional versioned retention mechanism; changes deterministic campaign bytes.
+    pub slot_retention: super::archive::SlotRetentionPolicy,
 }
 
 /// Reservations held ahead of ordered admission per logical worker when the
@@ -281,9 +283,32 @@ pub trait CampaignTypes: Sync {
 
 /// Stream and result serialization owned by a campaign adapter.
 pub trait Reporting: CampaignTypes {
+    /// Observe a same-slot competition without affecting search decisions.
+    /// Implementations must bound their memory and account for diagnostic work.
+    fn observe_retention(
+        &self,
+        _event: &super::archive::RetentionObservation<'_, Self::Action, Self::Key, Self::Snapshot>,
+    ) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+    /// Flush and disable campaign-only diagnostics before verification replay.
+    fn finish_retention_observation(&self) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+
     /// Optional bounded observation diagnostics for the live sidecar. These
     /// values never influence selection, admission, or deterministic reports.
     fn diagnostics(_evidence: &Self::Evidence) -> Option<serde_json::Value> {
+        None
+    }
+    /// Optional final census over cached active endpoints. Missing snapshots
+    /// must be counted explicitly. No reconstruction or search feedback is allowed.
+    fn retained_diagnostics<'a>(
+        _snapshots: impl Iterator<Item = Option<&'a Self::Snapshot>>,
+    ) -> Option<serde_json::Value>
+    where
+        Self::Snapshot: 'a,
+    {
         None
     }
     /// Accumulate observation-only diagnostics during witness replay. Unlike
@@ -859,6 +884,9 @@ pub struct CampaignStreamHeader<T> {
     /// deterministic reservation window drains and may overshoot the limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_budget: Option<u64>,
+    /// Versioned same-slot mechanism; omitted for historical representative behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_retention: Option<String>,
     /// Wall budget in seconds when one was set.
     pub wall_budget_seconds: Option<u64>,
     /// Bounded clean-reset action horizon.
@@ -1108,6 +1136,9 @@ pub struct CampaignModeReport<A: Ord, R> {
     /// deterministic reservation window drains and may overshoot the limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_budget: Option<u64>,
+    /// Versioned same-slot mechanism; omitted for historical representative behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_retention: Option<String>,
     /// Jobs actually executed and admitted, the winning admission's own
     /// drained window included. This is the run's throughput.
     pub executions_completed: u64,
@@ -1807,7 +1838,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                     continue;
                 }
                 let retained_before = self.archive.retained;
-                let (admitted, key) = self.archive.insert_after(
+                let (admitted, key) = self.archive.insert_after_observed(
                     Some(current_parent),
                     previous_key,
                     sequence,
@@ -1817,6 +1848,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                         milestones: action.milestones,
                     },
                     candidate.snapshot,
+                    |event| game.observe_retention(event),
                 )?;
                 match admitted {
                     Some(id) if self.archive.retained > retained_before => {
@@ -2016,6 +2048,7 @@ fn stream_header<G: Game>(
         resume_actions: origin.resume_actions,
         execution_budget: config.execution_budget,
         frame_budget: None,
+        slot_retention: None,
         wall_budget_seconds: config.wall_budget.map(|budget| budget.as_secs()),
         action_limit: config.action_limit,
         archive_entry_limit: config.archive_entry_limit,
@@ -2232,6 +2265,7 @@ fn build_report<G: Game>(
         origin,
         execution_budget: header.execution_budget,
         frame_budget: header.frame_budget,
+        slot_retention: header.slot_retention.clone(),
         executions_completed,
         executions_to_first_victory: counters.executions_to_first_victory,
         wall_budget_seconds: header.wall_budget_seconds,
@@ -2415,9 +2449,19 @@ fn replay_splice<G: Game>(
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "K: Serialize + DeserializeOwned")]
 pub struct CampaignProgressRecord<K> {
+    /// Constant-space retention/exposure census; not deterministic replay state.
+    #[serde(default)]
+    pub retention_diagnostics: super::archive::RetentionDiagnostics,
+    /// Host allocation owned by generic retention diagnostics, outside the
+    /// historical logical archive budget and included in measured process RSS.
+    #[serde(default)]
+    pub retention_diagnostic_memory_bytes: usize,
     /// Workload-owned observation counters; no selector feedback is implied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workload_diagnostics: Option<serde_json::Value>,
+    /// Final cached-endpoint census, separate from observations and one trajectory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_diagnostics: Option<serde_json::Value>,
     /// Objective workload evidence, independent of the selector's deepest key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<serde_json::Value>,
@@ -2516,6 +2560,7 @@ fn write_live_progress<G: Game>(
     coordinator_profile: &LiveCoordinatorProfile,
     draw_state_memory_bytes: usize,
     telemetry_started: Instant,
+    final_census: bool,
     sink: &mut dyn Write,
 ) -> Result<(), Box<dyn Error>> {
     let sequence = core.sequence;
@@ -2529,7 +2574,12 @@ fn write_live_progress<G: Game>(
         .map(|(key, cheapest, retained)| (Some(key), cheapest, retained))
         .unwrap_or((None, 0, 0));
     let line = serde_json::to_string(&CampaignProgressRecord {
+        retention_diagnostics: core.archive.retention_diagnostics,
+        retention_diagnostic_memory_bytes: core.archive.retention_diagnostic_memory_bytes(),
         workload_diagnostics: G::diagnostics(&core.evidence),
+        retained_diagnostics: final_census
+            .then(|| G::retained_diagnostics(core.archive.retained_snapshots()))
+            .flatten(),
         coordinator: coordinator_profile
             .enabled
             .then(|| serde_json::to_value(coordinator_profile))
@@ -2758,6 +2808,7 @@ where
     }
     let mut header = stream_header(game, config, &origin_record, draw_table_header);
     header.frame_budget = frame_budget;
+    header.slot_retention = options.slot_retention.identifier().map(str::to_owned);
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
 
@@ -2769,6 +2820,7 @@ where
         config.memory_budget_mib,
     );
     core.archive.selector_policy = config.selector.clone();
+    core.archive.slot_retention = options.slot_retention;
     core.archive
         .enable_continuations(config.mixture.uses_continuations());
     let mut counters = CampaignCounters::new(config.workers);
@@ -3317,6 +3369,7 @@ where
                                 &coordinator_profile,
                                 draw_state_memory_bytes,
                                 telemetry_started,
+                                false,
                                 sink,
                             )?;
                             if coordinator_profile.enabled {
@@ -3448,6 +3501,7 @@ where
             &coordinator_profile,
             game.draw_state_memory_bytes(&draw_state),
             telemetry_started,
+            true,
             sink,
         )?;
     }
@@ -3731,6 +3785,8 @@ where
     core.record_progress = header.progress_policy.is_some();
     core.bounded_progress_curve = uses_bounded_progress_curve(header.progress_policy.as_deref());
     core.archive.selector_policy = replay_selector.clone();
+    core.archive.slot_retention =
+        super::archive::SlotRetentionPolicy::from_identifier(header.slot_retention.as_deref())?;
     core.archive
         .enable_continuations(replay_mixture.uses_continuations());
     let mut counters = CampaignCounters::new(header.workers);

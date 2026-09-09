@@ -15,16 +15,16 @@ use sha2::{Digest, Sha256};
 use crate::{
     metroid::{
         archive::{
-            DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MAX_METROID_ACTIONS, MetroidArchiveKey,
-            MetroidArchiveReport, MetroidMilestoneInputs, MetroidMilestoneTimes, MetroidMilestones,
+            KEY_POLICY_IDENTIFIER, MAX_METROID_ACTIONS, MetroidArchiveKey, MetroidArchiveReport,
+            MetroidMilestoneInputs, MetroidMilestoneTimes, MetroidMilestones,
             MetroidProgressWatermark, REPLACEMENT_IDENTIFIER, archive_key, chord_time,
             merge_milestones, merge_progress_watermark, milestone_key, milestones,
-            progress_watermark, sample_chord,
+            progress_watermark, sample_chord_with_duration,
         },
         progress::NamedProgress,
         target::{
             ButtonChord, MetroidInput, MetroidObservations, MetroidSnapshot, MetroidTarget,
-            power_on_walk, preference_tuple,
+            MetroidTerminalPolicy, power_on_walk, preference_tuple,
         },
     },
     search::{
@@ -53,7 +53,6 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_select_taps_no_start_v1";
-const TERMINAL_POLICY_IDENTIFIER: &str = "death_or_ending_v2";
 
 type MetroidPreference = (u8, u8, u16, u8);
 type MetroidChampionKey = (MetroidProgressWatermark, MetroidPreference);
@@ -64,6 +63,7 @@ pub struct MetroidNoTableHeader;
 
 /// ROM and emulator identity shared by Metroid workers.
 pub struct MetroidGame {
+    duration_policy: crate::duration::NesDurationPolicy,
     rom: Vec<u8>,
     core_path: PathBuf,
     core_sha256: String,
@@ -71,6 +71,8 @@ pub struct MetroidGame {
     identity: String,
     champion_input_path: Option<PathBuf>,
     milestone_input_dir: Option<PathBuf>,
+    terminal_policy: MetroidTerminalPolicy,
+    retention_audit: Option<std::sync::Mutex<super::retention_audit::RetentionAudit>>,
 }
 
 impl MetroidGame {
@@ -105,6 +107,7 @@ impl MetroidGame {
             prefix_digest.finalize(),
         );
         Self {
+            duration_policy: crate::duration::NesDurationPolicy::ShortOrLong,
             rom: rom.to_vec(),
             core_path: core_path.to_path_buf(),
             core_sha256: core_sha256.to_owned(),
@@ -112,7 +115,23 @@ impl MetroidGame {
             identity,
             champion_input_path: None,
             milestone_input_dir: None,
+            retention_audit: None,
+            terminal_policy: MetroidTerminalPolicy::Legacy,
         }
+    }
+
+    /// Select explicitly versioned terminal observation semantics.
+    #[must_use]
+    pub fn with_terminal_policy(mut self, policy: MetroidTerminalPolicy) -> Self {
+        self.terminal_policy = policy;
+        self
+    }
+
+    /// Select an explicit controller duration distribution without changing masks.
+    #[must_use]
+    pub fn with_duration_policy(mut self, policy: crate::duration::NesDurationPolicy) -> Self {
+        self.duration_policy = policy;
+        self
     }
 
     /// Write the champion input to `path` each time it improves, so a long
@@ -128,6 +147,15 @@ impl MetroidGame {
     #[must_use]
     pub fn with_milestone_input_dir(mut self, directory: PathBuf) -> Self {
         self.milestone_input_dir = Some(directory);
+        self
+    }
+
+    /// Enable bounded replacement-pair sampling without changing search semantics.
+    #[must_use]
+    pub fn with_retention_audit(mut self, path: PathBuf) -> Self {
+        self.retention_audit = Some(std::sync::Mutex::new(
+            super::retention_audit::RetentionAudit::new(path),
+        ));
         self
     }
 
@@ -179,6 +207,7 @@ pub struct MetroidCampaignRun;
 #[derive(Clone, Default)]
 pub struct MetroidCampaignEvidence {
     observed_map: MapCoverage,
+    underflow: UnderflowDiagnostics,
     named_progress: NamedProgress,
     aggregate: MetroidMilestones,
     watermark: MetroidProgressWatermark,
@@ -188,6 +217,15 @@ pub struct MetroidCampaignEvidence {
     champion_milestones: MetroidMilestones,
     champion_key: Option<MetroidChampionKey>,
     genesis_area: Option<u8>,
+}
+
+/// Fixed-size reporting counters; no search decisions or snapshot storage.
+#[derive(Clone, Default)]
+struct UnderflowDiagnostics {
+    endpoints: u64,
+    eligible: u64,
+    first_execution: Option<u64>,
+    max_health: u16,
 }
 
 /// Observation-only bitmap over raw area bytes and the engine's 32x32 map.
@@ -465,11 +503,76 @@ impl CampaignTypes for MetroidGame {
 }
 
 impl Reporting for MetroidGame {
+    fn observe_retention(
+        &self,
+        event: &crate::search::archive::RetentionObservation<
+            '_,
+            ButtonChord,
+            MetroidArchiveKey,
+            MetroidSnapshot,
+        >,
+    ) -> Result<(), Box<dyn Error>> {
+        if let Some(audit) = &self.retention_audit {
+            audit
+                .lock()
+                .map_err(|_| "retention audit lock poisoned")?
+                .observe(event)?;
+        }
+        Ok(())
+    }
+
+    fn finish_retention_observation(&self) -> Result<(), Box<dyn Error>> {
+        if let Some(audit) = &self.retention_audit {
+            audit
+                .lock()
+                .map_err(|_| "retention audit lock poisoned")?
+                .finish()?;
+        }
+        Ok(())
+    }
+
+    fn retained_diagnostics<'a>(
+        snapshots: impl Iterator<Item = Option<&'a MetroidSnapshot>>,
+    ) -> Option<serde_json::Value> {
+        let (mut active, mut missing) = (0_u64, 0_u64);
+        let (mut equipment, mut bosses, mut missiles, mut tanks) = (0, 0, 0, 0);
+        let mut maps = MapCoverage::default();
+        let (mut underflows, mut health) = (0_u64, 0_u16);
+        for snapshot in snapshots {
+            active += 1;
+            let Some(snapshot) = snapshot else {
+                missing += 1;
+                continue;
+            };
+            let state = snapshot.state();
+            underflows += u64::from(state.health >= 8000);
+            health = health.max(state.health);
+            equipment |= state.equipment;
+            bosses = bosses.max(state.bosses);
+            missiles = missiles.max(state.missile_capacity);
+            tanks = tanks.max(state.energy_tanks);
+            maps.observe(state.area, state.map_x, state.map_y);
+        }
+        Some(serde_json::json!({
+            "scope": "union/maxima over cached active endpoints; not one trajectory; lower bounds when snapshots are missing",
+            "active_entries": active, "missing_snapshots": missing,
+            "underflow_endpoints_cached": underflows, "max_health_cached": health,
+            "equipment_union": equipment, "max_bosses": bosses,
+            "max_missile_capacity": missiles, "max_energy_tanks": tanks,
+            "map_cells_retained_cached": maps.count(), "temporary_bitmap_bytes": 32768
+        }))
+    }
+
     fn diagnostics(evidence: &MetroidCampaignEvidence) -> Option<serde_json::Value> {
         Some(serde_json::json!({
             "map_cells_observed": evidence.observed_map.count(),
             "coverage_bitmap_bytes": 32768,
             "named_progress": evidence.named_progress,
+            "underflow_action_endpoints": evidence.underflow.endpoints,
+            "underflow_candidate_eligible_endpoints": evidence.underflow.eligible,
+            "first_underflow_execution": evidence.underflow.first_execution,
+            "max_observed_endpoint_health": evidence.underflow.max_health,
+            "underflow_diagnostic_memory_bytes": std::mem::size_of::<UnderflowDiagnostics>(),
             "observation_filter": "live gameplay observations supplied to this accumulator"
         }))
     }
@@ -558,9 +661,9 @@ impl InputPolicy for MetroidGame {
                 CONTROLLER_VOCABULARY_IDENTIFIER,
             ),
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
-            (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
+            (DURATION_POLICY_FIELD, self.duration_policy.identifier()),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
-            (TERMINAL_POLICY_FIELD, TERMINAL_POLICY_IDENTIFIER),
+            (TERMINAL_POLICY_FIELD, self.terminal_policy.identifier()),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -613,7 +716,7 @@ impl InputPolicy for MetroidGame {
             mixture.weight,
             mutation_seed,
             |_| Ok(None),
-            sample_chord,
+            |rand| sample_chord_with_duration(rand, self.duration_policy),
         )
     }
 
@@ -674,6 +777,7 @@ impl TargetExecution for MetroidGame {
             &self.core_sha256,
             &self.prefix,
         )
+        .map(|target| target.with_terminal_policy(self.terminal_policy))
         .map_err(|error| error.to_string())
     }
 
@@ -837,6 +941,15 @@ impl Evaluation for MetroidGame {
     where
         F: FnOnce() -> Result<MetroidInput, Box<dyn Error>>,
     {
+        if let Some(endpoint) = action.observations.last() {
+            evidence.underflow.max_health =
+                evidence.underflow.max_health.max(endpoint.decoded.health);
+            if endpoint.decoded.health >= 8000 {
+                evidence.underflow.endpoints += 1;
+                evidence.underflow.eligible += u64::from(action.candidate.is_some());
+                evidence.underflow.first_execution.get_or_insert(sequence);
+            }
+        }
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         let mut discoveries = Vec::new();
         let action_end_frame = action.observations.last().map_or(0, |obs| obs.frame_count);
@@ -931,6 +1044,42 @@ pub fn replay_metroid_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duration_policy_requires_a_matching_replay_context() {
+        let legacy = MetroidGame::new(&[0], Path::new("unused"), "test");
+        let middle = MetroidGame::new(&[0], Path::new("unused"), "test")
+            .with_duration_policy(crate::duration::NesDurationPolicy::ThreeBands);
+        let old = legacy.policies(&MetroidCampaignRun);
+        let new = middle.policies(&MetroidCampaignRun);
+        assert!(legacy.resolve_recorded(&old).is_ok());
+        assert!(middle.resolve_recorded(&new).is_ok());
+        assert!(legacy.resolve_recorded(&new).is_err());
+        assert!(middle.resolve_recorded(&old).is_err());
+        assert_eq!(
+            old.iter()
+                .filter(|(key, value)| new.get(*key) != Some(*value))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn terminal_semantics_require_a_matching_replay_context() {
+        let legacy = MetroidGame::new(&[0], Path::new("unused"), "test");
+        let corrected = MetroidGame::new(&[0], Path::new("unused"), "test")
+            .with_terminal_policy(MetroidTerminalPolicy::BcdUnderflow);
+        let old = legacy.policies(&MetroidCampaignRun);
+        let new = corrected.policies(&MetroidCampaignRun);
+        assert!(legacy.resolve_recorded(&old).is_ok());
+        assert!(corrected.resolve_recorded(&new).is_ok());
+        assert!(legacy.resolve_recorded(&new).is_err());
+        assert!(corrected.resolve_recorded(&old).is_err());
+        assert_eq!(
+            old.iter().filter(|(k, v)| new.get(*k) != Some(*v)).count(),
+            1
+        );
+    }
 
     #[test]
     fn named_discovery_reconstructs_input_independently_of_output_configuration() {

@@ -15,11 +15,11 @@ use sha2::{Digest, Sha256};
 use crate::{
     mm2::{
         archive::{
-            DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MAX_MM2_ACTIONS, Mm2ArchiveKey,
-            Mm2ArchiveReport, Mm2MilestoneInputs, Mm2MilestoneTimes, Mm2Milestones,
-            Mm2ProgressWatermark, REPLACEMENT_IDENTIFIER, archive_key, chord_time,
-            merge_milestones, merge_progress_watermark, milestone_key, milestones,
-            progress_watermark, sample_chord,
+            KEY_POLICY_IDENTIFIER, MAX_MM2_ACTIONS, Mm2ArchiveKey, Mm2ArchiveReport,
+            Mm2MilestoneInputs, Mm2MilestoneTimes, Mm2Milestones, Mm2ProgressWatermark,
+            REPLACEMENT_IDENTIFIER, archive_key, chord_time, merge_milestones,
+            merge_progress_watermark, milestone_key, milestones, progress_watermark,
+            sample_chord_with_duration,
         },
         target::{
             ButtonChord, Mm2Input, Mm2Observations, Mm2Snapshot, Mm2Stage, Mm2Target,
@@ -66,6 +66,7 @@ pub struct Mm2NoTableHeader;
 
 /// ROM and emulator identity shared by Mega Man 2 workers.
 pub struct Mm2Game {
+    duration_policy: crate::duration::NesDurationPolicy,
     rom: Vec<u8>,
     core_path: PathBuf,
     core_sha256: String,
@@ -73,6 +74,7 @@ pub struct Mm2Game {
     stage: Mm2Stage,
     identity: String,
     champion_input_path: Option<PathBuf>,
+    setup_frames: std::sync::atomic::AtomicU64,
 }
 
 impl Mm2Game {
@@ -107,6 +109,7 @@ impl Mm2Game {
             prefix_digest.finalize(),
         );
         Self {
+            duration_policy: crate::duration::NesDurationPolicy::ShortOrLong,
             rom: rom.to_vec(),
             core_path: core_path.to_path_buf(),
             core_sha256: core_sha256.to_owned(),
@@ -114,7 +117,22 @@ impl Mm2Game {
             stage,
             identity,
             champion_input_path: None,
+            setup_frames: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// Physical emulator frames spent constructing all targets in this context.
+    /// Includes every repeated chain prefix; reporting only, never replay state.
+    #[must_use]
+    pub fn setup_frame_count(&self) -> u64 {
+        self.setup_frames.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Select an explicit controller duration distribution without changing masks.
+    #[must_use]
+    pub fn with_duration_policy(mut self, policy: crate::duration::NesDurationPolicy) -> Self {
+        self.duration_policy = policy;
+        self
     }
 
     /// Write the champion input to `path` each time it improves, so a long
@@ -443,6 +461,29 @@ impl CampaignTypes for Mm2Game {
 }
 
 impl Reporting for Mm2Game {
+    fn retained_diagnostics<'a>(
+        snapshots: impl Iterator<Item = Option<&'a Mm2Snapshot>>,
+    ) -> Option<serde_json::Value> {
+        let (mut active, mut missing) = (0_u64, 0_u64);
+        let (mut weapons, mut stage, mut screen) = (0, 0, 0);
+        for snapshot in snapshots {
+            active += 1;
+            let Some(snapshot) = snapshot else {
+                missing += 1;
+                continue;
+            };
+            let state = snapshot.state();
+            weapons |= state.weapons_obtained;
+            stage = stage.max(state.stage);
+            screen = screen.max(state.screen);
+        }
+        Some(serde_json::json!({
+            "scope": "union/maxima over cached active endpoints; not one trajectory; lower bounds when snapshots are missing",
+            "active_entries": active, "missing_snapshots": missing,
+            "weapons_union": weapons, "max_stage": stage, "max_screen": screen
+        }))
+    }
+
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -506,7 +547,7 @@ impl InputPolicy for Mm2Game {
                 CONTROLLER_VOCABULARY_IDENTIFIER,
             ),
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
-            (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
+            (DURATION_POLICY_FIELD, self.duration_policy.identifier()),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
             (TERMINAL_POLICY_FIELD, TERMINAL_POLICY_IDENTIFIER),
         ]
@@ -560,7 +601,7 @@ impl InputPolicy for Mm2Game {
             mixture.weight,
             mutation_seed,
             |_| Ok(None),
-            sample_chord,
+            |rand| sample_chord_with_duration(rand, self.duration_policy),
         )
     }
 
@@ -615,14 +656,19 @@ impl TargetExecution for Mm2Game {
     }
 
     fn new_target(&self) -> Result<Mm2Target, String> {
-        Mm2Target::from_rom_bytes_after(
+        let target = Mm2Target::from_rom_bytes_after(
             &self.rom,
             &self.core_path,
             &self.core_sha256,
             &self.prefix,
             self.stage,
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        self.setup_frames.fetch_add(
+            target.frames_clocked(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        Ok(target)
     }
 
     fn reset(&self, target: &mut Mm2Target) {
@@ -850,6 +896,35 @@ pub fn replay_mm2_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duration_policy_requires_a_matching_replay_context() {
+        let legacy = Mm2Game::new_at_stage(
+            &[0],
+            Path::new("unused"),
+            "test",
+            Mm2Stage::parse("metal").unwrap(),
+        );
+        let middle = Mm2Game::new_at_stage(
+            &[0],
+            Path::new("unused"),
+            "test",
+            Mm2Stage::parse("metal").unwrap(),
+        )
+        .with_duration_policy(crate::duration::NesDurationPolicy::ThreeBands);
+        let old = legacy.policies(&Mm2CampaignRun);
+        let new = middle.policies(&Mm2CampaignRun);
+        assert!(legacy.resolve_recorded(&old).is_ok());
+        assert!(middle.resolve_recorded(&new).is_ok());
+        assert!(legacy.resolve_recorded(&new).is_err());
+        assert!(middle.resolve_recorded(&old).is_err());
+        assert_eq!(
+            old.iter()
+                .filter(|(key, value)| new.get(*key) != Some(*value))
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn recorded_policy_set_is_exact_and_game_owned() {

@@ -1,0 +1,46 @@
+{
+  "format": "alternative-futures-integrated-checkpoint-v1",
+  "build": {
+    "binary_sha256": "e5c363cc1fd6ae9ef6a8be44688c5e3daa512324581f5c9061849709fa51091b",
+    "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+    "dirty": null,
+    "files": 509,
+    "format": "harmony-search-build-v1",
+    "locked": true,
+    "profile": "release",
+    "revision": null,
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+    "rustflags": "",
+    "source_tree_sha256": "cd549ed7bdbd6b3b1c8a22b52c8c7e10d3f060851a2f2ffaade7a9792d380447",
+    "target_cache": "/root/harmony-alternative-futures-20260908/target-native"
+  },
+  "logs": [
+    {
+      "file": "/private/tmp/q36-main-checks.log",
+      "sha256": "528023a9c651e7af00a6f73377e1c0da9d0ed3a4d6cc903949528a3484e0cb0b"
+    },
+    {
+      "file": "/private/tmp/q36-build-info.json",
+      "sha256": "40f466b5b5cacf40faf576b348063b216013e0f014ec2e2dd918fa3b1b961116"
+    }
+  ],
+  "checks": {
+    "merged_main_nes_library": 125,
+    "affected_binary_tests": 5,
+    "python_harness": 22,
+    "dependency_boundaries": "pass",
+    "formatting": "pass",
+    "clippy": "pass",
+    "root_nextest": {
+      "passed": 1184,
+      "skipped": 23
+    },
+    "validation_assessment_planted_tests": 5
+  },
+  "native_remaining": [
+    "audited100k legacy Metroid stream",
+    "5000-job Wily1 full campaign/checkpoint",
+    "SMB reference",
+    "Nova1/full and STB Hard companions"
+  ]
+}

@@ -1,0 +1,261 @@
+{
+  "scope": "descriptive reanalysis of P02; rates do not replace an equal actual-frame experiment",
+  "pairs": [
+    {
+      "pair": 0,
+      "execution": 414040,
+      "discarded": {
+        "frames": 53800,
+        "distinct_living_exit_maps": 2,
+        "exit_trials": 19,
+        "exit_trials_per_100k_frames": 35.32
+      },
+      "survivor": {
+        "frames": 30424,
+        "distinct_living_exit_maps": 1,
+        "exit_trials": 1,
+        "exit_trials_per_100k_frames": 3.29
+      }
+    },
+    {
+      "pair": 1,
+      "execution": 437887,
+      "discarded": {
+        "frames": 61076,
+        "distinct_living_exit_maps": 6,
+        "exit_trials": 55,
+        "exit_trials_per_100k_frames": 90.05
+      },
+      "survivor": {
+        "frames": 59750,
+        "distinct_living_exit_maps": 3,
+        "exit_trials": 57,
+        "exit_trials_per_100k_frames": 95.4
+      }
+    },
+    {
+      "pair": 2,
+      "execution": 290923,
+      "discarded": {
+        "frames": 59600,
+        "distinct_living_exit_maps": 2,
+        "exit_trials": 14,
+        "exit_trials_per_100k_frames": 23.49
+      },
+      "survivor": {
+        "frames": 34420,
+        "distinct_living_exit_maps": 1,
+        "exit_trials": 8,
+        "exit_trials_per_100k_frames": 23.24
+      }
+    },
+    {
+      "pair": 3,
+      "execution": 298341,
+      "discarded": {
+        "frames": 62564,
+        "distinct_living_exit_maps": 7,
+        "exit_trials": 63,
+        "exit_trials_per_100k_frames": 100.7
+      },
+      "survivor": {
+        "frames": 62166,
+        "distinct_living_exit_maps": 7,
+        "exit_trials": 61,
+        "exit_trials_per_100k_frames": 98.12
+      }
+    },
+    {
+      "pair": 4,
+      "execution": 252677,
+      "discarded": {
+        "frames": 59069,
+        "distinct_living_exit_maps": 2,
+        "exit_trials": 11,
+        "exit_trials_per_100k_frames": 18.62
+      },
+      "survivor": {
+        "frames": 36566,
+        "distinct_living_exit_maps": 2,
+        "exit_trials": 10,
+        "exit_trials_per_100k_frames": 27.35
+      }
+    },
+    {
+      "pair": 5,
+      "execution": 414113,
+      "discarded": {
+        "frames": 44816,
+        "distinct_living_exit_maps": 2,
+        "exit_trials": 44,
+        "exit_trials_per_100k_frames": 98.18
+      },
+      "survivor": {
+        "frames": 8191,
+        "distinct_living_exit_maps": 2,
+        "exit_trials": 3,
+        "exit_trials_per_100k_frames": 36.63
+      }
+    },
+    {
+      "pair": 6,
+      "execution": 303644,
+      "discarded": {
+        "frames": 49433,
+        "distinct_living_exit_maps": 1,
+        "exit_trials": 11,
+        "exit_trials_per_100k_frames": 22.25
+      },
+      "survivor": {
+        "frames": 22992,
+        "distinct_living_exit_maps": 2,
+        "exit_trials": 8,
+        "exit_trials_per_100k_frames": 34.79
+      }
+    },
+    {
+      "pair": 7,
+      "execution": 344926,
+      "discarded": {
+        "frames": 53633,
+        "distinct_living_exit_maps": 2,
+        "exit_trials": 44,
+        "exit_trials_per_100k_frames": 82.04
+      },
+      "survivor": {
+        "frames": 50818,
+        "distinct_living_exit_maps": 3,
+        "exit_trials": 45,
+        "exit_trials_per_100k_frames": 88.55
+      }
+    },
+    {
+      "pair": 8,
+      "execution": 251966,
+      "discarded": {
+        "frames": 42709,
+        "distinct_living_exit_maps": 2,
+        "exit_trials": 15,
+        "exit_trials_per_100k_frames": 35.12
+      },
+      "survivor": {
+        "frames": 26366,
+        "distinct_living_exit_maps": 1,
+        "exit_trials": 4,
+        "exit_trials_per_100k_frames": 15.17
+      }
+    },
+    {
+      "pair": 9,
+      "execution": 233725,
+      "discarded": {
+        "frames": 30785,
+        "distinct_living_exit_maps": 1,
+        "exit_trials": 8,
+        "exit_trials_per_100k_frames": 25.99
+      },
+      "survivor": {
+        "frames": 4388,
+        "distinct_living_exit_maps": 1,
+        "exit_trials": 10,
+        "exit_trials_per_100k_frames": 227.89
+      }
+    },
+    {
+      "pair": 10,
+      "execution": 267000,
+      "discarded": {
+        "frames": 36484,
+        "distinct_living_exit_maps": 2,
+        "exit_trials": 64,
+        "exit_trials_per_100k_frames": 175.42
+      },
+      "survivor": {
+        "frames": 31356,
+        "distinct_living_exit_maps": 2,
+        "exit_trials": 64,
+        "exit_trials_per_100k_frames": 204.11
+      }
+    },
+    {
+      "pair": 11,
+      "execution": 258630,
+      "discarded": {
+        "frames": 5767,
+        "distinct_living_exit_maps": 0,
+        "exit_trials": 0,
+        "exit_trials_per_100k_frames": 0.0
+      },
+      "survivor": {
+        "frames": 5445,
+        "distinct_living_exit_maps": 0,
+        "exit_trials": 0,
+        "exit_trials_per_100k_frames": 0.0
+      }
+    },
+    {
+      "pair": 12,
+      "execution": 151014,
+      "discarded": {
+        "frames": 61007,
+        "distinct_living_exit_maps": 4,
+        "exit_trials": 51,
+        "exit_trials_per_100k_frames": 83.6
+      },
+      "survivor": {
+        "frames": 61080,
+        "distinct_living_exit_maps": 4,
+        "exit_trials": 54,
+        "exit_trials_per_100k_frames": 88.41
+      }
+    },
+    {
+      "pair": 13,
+      "execution": 349473,
+      "discarded": {
+        "frames": 14075,
+        "distinct_living_exit_maps": 1,
+        "exit_trials": 40,
+        "exit_trials_per_100k_frames": 284.19
+      },
+      "survivor": {
+        "frames": 3618,
+        "distinct_living_exit_maps": 1,
+        "exit_trials": 2,
+        "exit_trials_per_100k_frames": 55.28
+      }
+    },
+    {
+      "pair": 14,
+      "execution": 288844,
+      "discarded": {
+        "frames": 47820,
+        "distinct_living_exit_maps": 2,
+        "exit_trials": 53,
+        "exit_trials_per_100k_frames": 110.83
+      },
+      "survivor": {
+        "frames": 44717,
+        "distinct_living_exit_maps": 2,
+        "exit_trials": 54,
+        "exit_trials_per_100k_frames": 120.76
+      }
+    },
+    {
+      "pair": 15,
+      "execution": 257556,
+      "discarded": {
+        "frames": 25240,
+        "distinct_living_exit_maps": 2,
+        "exit_trials": 9,
+        "exit_trials_per_100k_frames": 35.66
+      },
+      "survivor": {
+        "frames": 7600,
+        "distinct_living_exit_maps": 1,
+        "exit_trials": 1,
+        "exit_trials_per_100k_frames": 13.16
+      }
+    }
+  ]
+}
