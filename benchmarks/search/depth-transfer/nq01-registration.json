@@ -1,0 +1,43 @@
+{
+  "format": "depth-transfer-nq01-registration-v1",
+  "registered_utc": "2026-09-09T21:26:48.253921+00:00",
+  "purpose": "Verify legacy default bytes and opt-in dense trace neutrality using the already replayed E02 seed-5 diagnostic route. No search or performance comparison.",
+  "host": "msr1",
+  "source_commit": "17e664813b21649627f6290297e749576712243f",
+  "source_tree_sha256": "9702c32559a84e5d1d8469292f27e7a4efd17ca6ff180c7fe0c3552e55cb3ba9",
+  "binary_sha256": "3967c27d0fa1fd4927f9f8e5b76a599a3fd0db81167bc793abe52e4236a1aaf4",
+  "build_info_sha256": "d0ad0f77cc9742757cdd1999b8619e08d828c1437108e1249644a84d3a2b588d",
+  "binary": "builds/boss-area-001/metroid-boss-probe",
+  "input": "depth-transfer-20260909/e02-seed5-input.json",
+  "input_sha256": "03e1adf0185bb5dc0bbb5cdf6519eac669a794730e460319e82d0833d0b5d2c1",
+  "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+  "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+  "legacy_summary": "depth-transfer-20260909/e02-seed5-result/summary.json",
+  "legacy_summary_sha256": "e5863362f11ee4a79bd1b41c1b664f0958f4b51f2f1019fc6872b46200be4ea9",
+  "cases": [
+    {
+      "id": "nq01-default",
+      "cpu": "4",
+      "arguments": []
+    },
+    {
+      "id": "nq01-area",
+      "cpu": "5",
+      "arguments": [
+        "boss-area"
+      ]
+    }
+  ],
+  "max_wall_seconds_per_case": 300,
+  "memory_max_per_case": "4G",
+  "trace_limit_bytes": 33554432,
+  "auxiliary_frame_ceiling": 800000,
+  "expected_physical_frames_per_case": 383796,
+  "decisions": [
+    "Default summary and retained trace must equal the original completed E02 seed-5 artifacts byte for byte.",
+    "Dense mode must preserve all-frame hashes, emulator endpoints, counters and all three replay comparisons. Only trace byte counts and explicit output version/policy may differ.",
+    "Both dense single-frame passes must match. Its output must retain every final contiguous boss-area frame and respect the unchanged 32 MiB cap.",
+    "Any mismatch stops qualification; no search escalation or unregistered retry."
+  ],
+  "resource_note": "Run on separate idle msr1 CPUs concurrently; no cross-case speed comparison is made."
+}

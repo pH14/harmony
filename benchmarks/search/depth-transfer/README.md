@@ -150,3 +150,21 @@ confirmation on msr1; an impossible win count stops further pair dispatch.
 Completed new work now totals 173,654,997 admitted search frames and 2,247,093
 known auxiliary frames, plus the disclosed unmeasured gaps. D01 has its own
 400M nominal ceiling and no result yet. All new work remains in PR #287.
+
+## Native diagnostic correction
+
+The standalone probe now accepts the optional `boss-area` trace mode. Its
+[native qualification](nq01-results.json) passes on the already observed E02
+seed-5 route: default summary/trace bytes match the old binary exactly, and the
+dense mode adds 29,911 area frames while preserving all-frame hashes, emulator
+endpoints and all three replay comparisons. It spent 767,592 physical frames
+including setup. The hit-state regression and all-feature probe Clippy pass.
+The new source/build stays separate from D01's frozen performance binary.
+Completed auxiliary work is now 3,014,685 known frames before D01 witnesses.
+
+[B01](b01-registration.json) reserves one longer architecture check after D01
+finishes: replay C01's already known control-1 on x86 at a fixed 35M horizon.
+It must reproduce the known 33,896,740-frame event, total admitted work and
+action tapes. This deliberately reused control is qualification only; its
+entire work is charged to a 36M auxiliary ceiling and supplies no new sample to
+the selector comparison. No performance job may share its host while it runs.
