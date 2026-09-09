@@ -169,6 +169,9 @@ frame cap to count as censored observations. Total CPU/elapsed cost for these
 event-stopped cells is not a fixed-work throughput comparison; register its
 interpretation and gate before running a performance panel. Unsupported games
 or names are rejected, and the default stopping behavior is unchanged.
+Comparisons reject changed milestone names or observation versions; aggregates
+keep their stopping criteria separate. See [native replay qualification](milestone-stop/README.md)
+for unchanged-prefix, buffering, nonattainment and budget-drain checks.
 
 - **Search quality:** verified completion, first-victory executions and emulator
   frames, objective progress/milestones, deaths and retained novelty cells. The

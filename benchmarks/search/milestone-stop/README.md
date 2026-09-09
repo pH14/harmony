@@ -4,6 +4,29 @@ This is engineering qualification for [#290](https://github.com/pH14/harmony/iss
 within the existing continuation-yield tranche. It is not a fresh performance
 panel and does not extend the tranche or establish boss-level progress.
 
+**Composite native qualification passed on 2026-09-09 at 18:59 UTC.**
+[Q01 raw results](q01-results.json) retain the failed origin expectation;
+[Q01r](q01r-results.json) passes its prospectively corrected check on the same
+binary. [The composite audit](qualification.json) verifies all artifact hashes,
+prefixes, replay outcomes and accounting.
+
+| Case | First event: execution / admitted frames | Total admitted frames | Outcome |
+| --- | ---: | ---: | --- |
+| Default, 2,000 jobs | — | 284,283 | Old stream, report and checkpoint identical |
+| Morph Ball, one result slot | 148 / 22,586 | 23,883 | Stop; full replay |
+| Morph Ball, two result slots | 148 / 22,586 | 23,883 | Identical stream, report and checkpoint |
+| Energy tank, 2,000 jobs | Unobserved | 284,283 | Execution limit; unchanged stream body |
+| Morph Ball, cap 22,585 | 148 / 22,586 | 23,883 | Observed beyond budget; frame-limit stop |
+| Brinstar, corrected expectation | 1 / 171 | 1,474 | Stop; full replay; identical to original observation |
+
+Morph Ball stopping avoids 260,400 admitted frames in this reused fixture,
+including the normal seven-job drain. This is measured avoided work in the
+fixture, not a new selector-performance estimate. The two Brinstar attempts are
+both charged. Additional known auxiliary work is **1,296,554 frames**, bringing
+the tranche to **30,112,297 / 50M auxiliary frames**; search remains
+**489,962,470 / 500M frames**. Physical accounting gaps remain explicit in the
+audit. Both owned qualification services are terminal.
+
 The workload names and versions an observation. The generic coordinator stops
 new reservations after its first admitted occurrence and finishes the already
 reserved window. If admission `e` first observes the event, its cost is bootstrap
