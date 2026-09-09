@@ -1,0 +1,39 @@
+{
+  "format": "depth-transfer-f03-analysis-v1",
+  "decision": "pass_for_observed_reference_lifetimes",
+  "raw_trace_sha256": "403c78444fe8751dd16c80a6eb635a384a2cb345568d732e76aa6cf50435eca8",
+  "raw_trace_bytes": 5023093,
+  "raw_rows": 28522,
+  "old_column_projection_equals_f02": true,
+  "rust_fixture_equals_raw_projection": true,
+  "interval_counts": {
+    "baseline": 2,
+    "continuous": 879,
+    "hp_drop": 98,
+    "left_or_unclassified": 2
+  },
+  "hp_decrease_count_and_sum_by_area": {
+    "20": [
+      62,
+      140
+    ],
+    "18": [
+      36,
+      96
+    ]
+  },
+  "known_auxiliary_frames": 241080,
+  "file_sha256": {
+    "f03-registration.json": "d4e6655be42a5ceb48aaa57b06fefb184c42de61144d8fea628389a39e226264",
+    "f03-results.json": "8c8c3de0b617899e8b5fbc3dfa141684143cca4d1eb658f580fb09bffe7cc6fd",
+    "f03-fight-slot0.csv": "0ba8d825b52c30381eb173dc25d7de4b47dc36fa176f4eb1f38d2f14d88d342e",
+    "boss_interval.py": "d833e9575ad4a26a5db5955738128f44c701065f4446f4834f3ff5cff89d3995",
+    "test_boss_interval.py": "815ab18beebfef44f06171f33f7aca21db941c92f47eba09789004b05268bd23",
+    "verify_f03.py": "2d08a0eb3d7a1e4a436d4363ace694eb1f798826716a5895fc81705f3934651d"
+  },
+  "limitations": [
+    "Two public-reference fights; no fresh-search success.",
+    "Offline observer cuts are not actual native emulator restores.",
+    "Observed HP decreases do not prove absence of invisible same-key reloads."
+  ]
+}

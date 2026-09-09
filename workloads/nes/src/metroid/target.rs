@@ -544,6 +544,12 @@ impl MetroidTarget {
         super::boss_probe::decode(&self.machine.read_wram()?, &self.cartridge()?)
     }
 
+    /// Read both RAM regions at the same paused frame boundary. This standalone
+    /// diagnostic must not combine endpoint cartridge RAM with earlier WRAM.
+    pub fn diagnostic_boss_context(&self) -> Result<super::boss_probe::BossContext, MachineError> {
+        super::boss_probe::decode_context(&self.machine.read_wram()?, &self.cartridge()?)
+    }
+
     /// Read motion bytes for standalone replay diagnostics. This does not
     /// change clocks, observations, snapshots, archive keys or search policy.
     pub fn diagnostic_kinematics(

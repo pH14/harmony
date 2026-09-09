@@ -187,3 +187,27 @@ advancement, setup and unadmitted-work gaps remain explicit. The next
 boundaries and use bounded existing-tape evidence before another search family
 or larger allocation. The original boss/Wily breakthrough remains unachieved.
 All work remains in PR #287.
+
+
+## Saved status and a snapshot-local observer
+
+[F03](f03-analysis.json) adds the saved status/attribute byte at `$040C + slot`.
+Both full reference replays agree; projecting away the added columns reproduces
+F02 exactly. Normal enemy states must use current attributes because the saved
+byte can be stale; hit/death states recover the prior boss attributes from the
+saved byte. This removes the need to inherit an encounter-entry anchor across
+restores. The [contract](boss-observation-contract.md) states the source argument,
+interval definition, reset properties and unresolved same-key reload limit.
+
+The Python reference retains all 98 HP decreases and checks every stored cut,
+plus planted restore/gap/reuse counterexamples. Rust checks the same 981 positive
+fight frames and boundary cases. These are cheap offline checks, not new search
+results or a positive native-emulator restore qualification. The new optional
+standalone `boss-context` mode reads both RAM regions at one frame boundary;
+`boss-context-restores` additionally performs real self-restores every 4,096
+route frames. The default and `boss-area` contracts stay unchanged. Native
+qualification must finish before examining another frozen development tape set.
+
+The [additive F03 ledger](ledger-after-f03.json) records **37,901,786 known
+auxiliary frames**; admitted search stays **371,963,017**. Historical files and
+unknown physical-work gaps remain preserved.

@@ -77,8 +77,8 @@ event, work, action tapes and replayed semantic observations. Do not reopen this
 selector's depth allocation from the earlier first-missile improvement or treat
 the stopped screen as proof of population equivalence.
 
-The renewed block has spent 371,963,017 admitted search frames and 37,660,706
-known auxiliary frames; the ledger retains unmeasured gaps and all older totals.
+The renewed block has spent 371,963,017 admitted search frames and 37,901,786
+known auxiliary frames (ledger-after-f03.json); the ledger retains unmeasured gaps and all older totals.
 The original breakthrough objective remains unmet. Unused compute is not a
 reason for another selector, retention or duration sweep.
 
@@ -114,8 +114,14 @@ legacy bytes and emulator state. These are measurement results, not search wins.
    neither a few negative tapes nor a public reference establishes the whole
    campaign's behavior. No new large search allocation precedes that decision.
 
-Native app state: its saved goal still reports the earlier blocked tranche.
-The available goal tools cannot edit or resume that state, and automated access
-to Codex's own controls is denied. The user's renewed authorization governs the
-work recorded here; the app's Resume control is needed for automatic continuation
-after the current turn. Do not falsely mark the original goal complete.
+F03 completed two additional reference replays (241,080 known frames). The
+saved-status rule identifies all 98 observed HP decreases without remembering
+boss entry. Python and Rust checks cover fresh baselines, restores, gaps, stale
+bytes and visible identity changes. See boss-observation-contract.md: invisible
+same-key reloads remain an explicit limit, so report observed HP decreases, not
+an exact lifetime-damage total. No new search allocation is earned yet.
+
+Native app state was verified active on 2026-09-09 at 22:13:02 UTC. The original
+expired tranche text remains historical; the user's renewed authorization and
+this separately bounded decision block govern current work. Automatic goal
+continuation is available again. The breakthrough objective remains unmet.

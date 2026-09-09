@@ -264,3 +264,27 @@ in both R04 arms holds that metadata constant in the policy comparison.
 The existing [ordering-bias follow-up](https://github.com/pH14/harmony/issues/270)
 tracks the full-key donor-selection limitation; do not treat motion retention's
 alphabet-only qualification as resolving that issue.
+
+### Snapshot-local interval mode
+
+Append `boss-context` for format v3, `boss_context_intervals_v1`. This retains
+full-area rows and adds the six raw saved-status bytes at `$040C + slot` and
+six optional interval reports. Normal states use current boss attributes;
+hit/death states use the saved prior attributes. Comparisons require consecutive
+frames, the same epoch and visible identity, and usable HP. Reports preserve
+unavailable values separately from comparable zero change. The HP-loss sum is
+null when no interval is comparable.
+
+`boss-context-restores` qualifies the integration by restoring the current
+snapshot every 4,096 route frames in each one-frame pass. It verifies identical
+raw bytes across each restore, clears the observer, and reads a fresh baseline
+before advancing. This mode records the restore count and adds no route frames.
+Both context modes keep the same input and 32 MiB trace bounds; legacy default
+and `boss-area` output remain unchanged. Only this standalone binary invokes the
+observer. It reads both RAM regions at the same paused frame boundary and must
+not combine held-chord endpoint cartridge RAM with historical WRAM.
+
+The [observation contract](../../../../benchmarks/search/depth-transfer/boss-observation-contract.md)
+records source arguments, reference data, reset/gap/stale-byte counterexamples,
+and the unresolved possibility of an invisible same-key slot reload. Its output
+is observed HP decrease, not a proven lifetime damage total or search reward.

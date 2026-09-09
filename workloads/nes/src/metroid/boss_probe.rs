@@ -30,6 +30,24 @@ pub struct BossMemory {
     pub enemies: Vec<EnemyBytes>,
 }
 
+/// Same-boundary raw fields for the opt-in interval observer. Kept separate to
+/// preserve the legacy raw report's serialized bytes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct BossContext {
+    pub memory: BossMemory,
+    pub saved_status: [u8; 6],
+}
+
+pub(crate) fn decode_context(wram: &[u8], cartridge: &[u8]) -> Result<BossContext, MachineError> {
+    // decode checks a later WRAM address in every slot before these reads.
+    let memory = decode(wram, cartridge)?;
+    let saved_status = std::array::from_fn(|slot| wram[0x40c + slot * 16]);
+    Ok(BossContext {
+        memory,
+        saved_status,
+    })
+}
+
 pub(crate) fn decode(wram: &[u8], cartridge: &[u8]) -> Result<BossMemory, MachineError> {
     fn byte(memory: &[u8], index: usize) -> Result<u8, MachineError> {
         memory.get(index).copied().ok_or_else(|| {
