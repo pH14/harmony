@@ -17,6 +17,7 @@ def main():
     parser.add_argument("--experiment", type=Path, required=True)
     parser.add_argument("--phase", choices=["qualify", "metroid", "mm2"], required=True)
     parser.add_argument("--recheck", action="store_true")
+    parser.add_argument("--resume", action="store_true", help="Reuse completed cells and run only absent cells")
     args = parser.parse_args()
     root = args.experiment.resolve()
     source = root / "source-job-sample-001"
@@ -48,7 +49,7 @@ def main():
             })
         manifest = root / f"r03-{args.phase}-{label}.json"
         out = root / "runs" / f"r03-{args.phase}-{label}"
-        if not args.recheck:
+        if not args.recheck and not (args.resume and out.exists()):
             assert not out.exists(), "refusing to replace an experiment"
             manifest.write_text(json.dumps(suite, indent=2) + "\n")
             subprocess.run([
@@ -76,8 +77,10 @@ def main():
             assert result["stop_reason"] != "wall_limit"
             if record["policy"] is None:
                 assert result["stream_sha256"] == EXPECTED, "legacy corrected stream changed"
-            else:
+            elif record["policy"] == SAMPLE:
                 assert summary["last_progress"]["retention_diagnostics"]["alternative_admissions"] > 0
+            else:
+                assert summary["last_progress"]["retention_diagnostics"]["resource_decisions"] > 0
         print(json.dumps({"label": record["label"], "verified": True,
                           "stream_sha256": result["stream_sha256"], "stop_reason": result["stop_reason"]}), flush=True)
 

@@ -516,3 +516,12 @@ logic. For MM2, a useful transfer gate specifically means a replayed Metal
 victory when the control does not win within budget, or at least 20% fewer
 frames to their common victory. Screen counts alone do not qualify new chains.
 Wall censoring blocks either game's escalation gate; report the completed work.
+
+R03 qualification checker correction: the candidate passed full Metroid
+replay with 2,352 alternative admissions. The early resource-extremes control
+made 15,977 resource decisions but admitted no tradeoffs, producing the same
+search decisions as legacy. The driver incorrectly required alternatives from
+that control too and stopped after the Metroid cells. Require actual sample
+admissions and actual control resource decisions; keep both full-replay checks.
+The corrected external driver reuses the three completed cells and runs only
+the absent MM2 cells. No frozen executable or source directory is edited.
