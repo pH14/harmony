@@ -110,6 +110,10 @@ echo "FAULT_INIT_STAGE=$stage" >&2
 if ! $BB grep -q ' /dev devtmpfs' /proc/mounts 2>/dev/null; then
     $BB mount -t devtmpfs dev /dev
 fi
+# The fault guest has a private network namespace with no external interface.
+# Bring up its loopback device so local-only services (the normal distributed
+# workload shape) work without a workload-specific setup knob.
+$BB ip link set lo up
 ROOT=/harmony-oci/rootfs
 stage=prepare-rootfs
 echo "FAULT_INIT_STAGE=$stage" >&2
@@ -198,8 +202,10 @@ ready /usr/bin/etcdctl endpoint health
         let check = contains(b"if ! $BB grep -q ' /dev devtmpfs' /proc/mounts")
             .expect("devtmpfs mount check");
         let mount = contains(b"$BB mount -t devtmpfs dev /dev").expect("devtmpfs mount");
+        let loopback = contains(b"$BB ip link set lo up").expect("loopback setup");
         assert!(check < mount, "the mount is guarded by /proc/mounts");
         assert!(contains(b"|| true").is_none());
+        assert!(mount < loopback, "loopback follows /dev setup");
         assert!(contains(b"stage=mount-proc").is_some());
         assert!(contains(b"$BB mount --bind \"$ROOT\" \"$ROOT\"").is_some());
         let tmpfs_tmp =

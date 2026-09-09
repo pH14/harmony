@@ -39,9 +39,10 @@ ready <argv...>          a command that exits 0 once setup is done
 
 A node's id is its line order among `node` lines, from 0 — the same id the host
 names in a `DecisionClass::Process` target, so the two sides agree without a
-handshake. The image's init mounts `/proc`, `/sys` and `/dev` and nothing else,
-so a workload that needs `/dev/shm`, a writable `/tmp`, or a configured loopback
-interface asks for them on the `setup` line.
+handshake. The image's init mounts `/proc`, `/sys`, and `/dev`, configures the
+private guest loopback interface, and gives the workload writable tmpfs mounts
+at `/tmp` and `/run`. A workload that needs another pseudo-filesystem still asks
+for it on the `setup` line.
 
 Validate a bundle on any host, including this development host:
 
