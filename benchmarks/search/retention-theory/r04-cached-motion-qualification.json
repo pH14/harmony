@@ -1,0 +1,243 @@
+{
+  "format": "r04-cached-context-qualification-v1",
+  "original_flat_pair_ids": [
+    0,
+    2,
+    12
+  ],
+  "original_p04_endpoints_sha256": "34b8f90e846b9014a5038276c9530e4984de0c6a03b24ec92b94a83e19541ad9",
+  "cached_check_endpoints_sha256": "a585bb8417e996e5377d90305f428d673cd8756ffa9b5513761bc3049e061713",
+  "original_p04_endpoint_and_snapshot_agreement": true,
+  "summary": {
+    "audit_sha256": "1f84ee6e6f73361abf65a9d4be293a155abe1caf8626798715f168dcb3b4aafd",
+    "cached_context_matches_direct_read": true,
+    "campaign_key_context_checked": true,
+    "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+    "format": "metroid-competitor-motion-probe-v1",
+    "pairs": 3,
+    "physical_frames": 378316,
+    "read_only_snapshot_checks": true,
+    "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+    "scope": "existing recorded competitors, no new search or suffix trials",
+    "terminal_policy": "death_or_bcd_underflow_or_ending_v3",
+    "verified_replays_per_endpoint": 2
+  },
+  "endpoints": [
+    {
+      "candidate": {
+        "cached_context": 4,
+        "endpoint": {
+          "area": 16,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 32,
+          "map_x": 11,
+          "map_y": 8,
+          "missile_capacity": 10,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 3,
+          "x": 160,
+          "y": 40
+        },
+        "motion": {
+          "direction": 0,
+          "gravity": 0,
+          "horizontal_acceleration": 0,
+          "horizontal_speed": 0,
+          "horizontal_speed_maximum": 24,
+          "jump_displacement": 78,
+          "vertical_speed": 0
+        },
+        "physical_frames": 35344,
+        "setup_frames": 929,
+        "snapshot_sha256": "68c7f9c0ab07330ef98e330a7de2d9a1235abb87cae80f515b50f066399181ed"
+      },
+      "candidate_replaces": false,
+      "cumulative_physical_frames": 141368,
+      "execution": 471442,
+      "incumbent": {
+        "cached_context": 7,
+        "endpoint": {
+          "area": 16,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 32,
+          "map_x": 11,
+          "map_y": 8,
+          "missile_capacity": 10,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 3,
+          "x": 160,
+          "y": 40
+        },
+        "motion": {
+          "direction": 0,
+          "gravity": 0,
+          "horizontal_acceleration": 48,
+          "horizontal_speed": 1,
+          "horizontal_speed_maximum": 24,
+          "jump_displacement": 78,
+          "vertical_speed": 0
+        },
+        "physical_frames": 35340,
+        "setup_frames": 929,
+        "snapshot_sha256": "6b07218d8f1983e2d4e5572d5996d80de23ccf899ad82df59b9a6b41339e679a"
+      },
+      "pair": 0,
+      "stratum": 0,
+      "verified_replays_per_endpoint": 2
+    },
+    {
+      "candidate": {
+        "cached_context": 11,
+        "endpoint": {
+          "area": 16,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 112,
+          "map_x": 13,
+          "map_y": 9,
+          "missile_capacity": 10,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 6,
+          "x": 62,
+          "y": 69
+        },
+        "motion": {
+          "direction": 1,
+          "gravity": 24,
+          "horizontal_acceleration": 0,
+          "horizontal_speed": 255,
+          "horizontal_speed_maximum": 24,
+          "jump_displacement": 28,
+          "vertical_speed": 1
+        },
+        "physical_frames": 32765,
+        "setup_frames": 929,
+        "snapshot_sha256": "8e4a5fd9d23ac29beb135abd7157c079498a0d8460abff22f9a54dfa4b0017a0"
+      },
+      "candidate_replaces": false,
+      "cumulative_physical_frames": 272312,
+      "execution": 394437,
+      "incumbent": {
+        "cached_context": 8,
+        "endpoint": {
+          "area": 16,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 112,
+          "map_x": 13,
+          "map_y": 9,
+          "missile_capacity": 10,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 6,
+          "x": 53,
+          "y": 69
+        },
+        "motion": {
+          "direction": 0,
+          "gravity": 24,
+          "horizontal_acceleration": 0,
+          "horizontal_speed": 1,
+          "horizontal_speed_maximum": 24,
+          "jump_displacement": 28,
+          "vertical_speed": 1
+        },
+        "physical_frames": 32707,
+        "setup_frames": 929,
+        "snapshot_sha256": "c29df5129a50e0b928f62a7396649fed574d92053b631d8bc70abf2f45eb9e6d"
+      },
+      "pair": 1,
+      "stratum": 0,
+      "verified_replays_per_endpoint": 2
+    },
+    {
+      "candidate": {
+        "cached_context": 11,
+        "endpoint": {
+          "area": 17,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 44,
+          "map_x": 29,
+          "map_y": 14,
+          "missile_capacity": 10,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 6,
+          "x": 26,
+          "y": 183
+        },
+        "motion": {
+          "direction": 1,
+          "gravity": 24,
+          "horizontal_acceleration": 0,
+          "horizontal_speed": 255,
+          "horizontal_speed_maximum": 24,
+          "jump_displacement": 34,
+          "vertical_speed": 2
+        },
+        "physical_frames": 26531,
+        "setup_frames": 929,
+        "snapshot_sha256": "038c5e78709158df44115e97c8e8f0ebd66dea97d0afae4fd0e8f0a1b7cd5907"
+      },
+      "candidate_replaces": false,
+      "cumulative_physical_frames": 378316,
+      "execution": 315708,
+      "incumbent": {
+        "cached_context": 3,
+        "endpoint": {
+          "area": 17,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 0,
+          "equipment": 16,
+          "health": 44,
+          "map_x": 29,
+          "map_y": 14,
+          "missile_capacity": 10,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 6,
+          "x": 28,
+          "y": 183
+        },
+        "motion": {
+          "direction": 0,
+          "gravity": 24,
+          "horizontal_acceleration": 0,
+          "horizontal_speed": 0,
+          "horizontal_speed_maximum": 24,
+          "jump_displacement": 34,
+          "vertical_speed": 253
+        },
+        "physical_frames": 26471,
+        "setup_frames": 929,
+        "snapshot_sha256": "0a603284715541868b0e4e8bab94525b553d87c57452ee89be2a40891ac5e6cb"
+      },
+      "pair": 2,
+      "stratum": 0,
+      "verified_replays_per_endpoint": 2
+    }
+  ]
+}

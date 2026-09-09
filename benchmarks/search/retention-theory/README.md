@@ -915,3 +915,29 @@ fails: **no longer sampling chains in this tranche**. The favorable J01/J02
 results remain valid development observations, but their production-depth
 advantage did not replicate. [j03-analysis.json](j03-analysis.json) preserves
 the complete evidence. No Wily 4 or held-out seed result is claimed.
+
+### R04b qualification passed; bounded development dispatched
+
+All five corrected qualification cells passed full replay and the prescribed
+hash comparisons, including unchanged feature-policy streams from original
+R04. Both active censuses have a largest slot of two and every active key has
+a context. Quality retention has 3,866 active entries, 1,083 distinct-context
+pairs and 517 same-context pairs. Context retention has 3,492 active entries,
+1,376 distinct-context pairs and zero same-context pairs. The mechanism gate
+passes. This is activity evidence, not progress evidence.
+[r04b-qualify-results.json](r04b-qualify-results.json) preserves the full cells.
+
+The cached-context probe consumed 378,316 physical frames; all original P04
+selected endpoints, raw motion fields and snapshot hashes match exactly.
+[r04-cached-motion-qualification.json](r04-cached-motion-qualification.json)
+records the comparison and [r04-build-provenance.json](r04-build-provenance.json)
+attests both source versions and all five executables. The corrected feature
+binary is `2a727ac12dbc4ff07272e0119bab39179aaa45bc0a6f422c2cc8fb77cdf3f981`.
+
+The one-seed development pair is dispatched through launcher `57bdffdd`, using
+that same binary in both arms, quality then context. J03 released cores8–11,
+so both use that faster group under a pre-data placement amendment. All other
+registered conditions remain: fresh seed3, four workers,8GiB, corrected v3,
+alphabet-only,4096 actions,500k jobs/50M frames/1800s search per arm. The outer
+service caps the pair at4080s and12GiB; the analyzer runs after both cells stop.
+No validation seeds are consumed.

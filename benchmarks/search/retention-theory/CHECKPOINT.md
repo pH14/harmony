@@ -1,4 +1,4 @@
-# Research checkpoint — September 9, J03 and R04 qualification
+# Research checkpoint — September 9, J03 stopped and R04b development
 
 The goal remains active. No fresh Metroid boss or MM2 Wily 4 breakthrough has
 been established. The approved ROM transfer is complete and checksum verified.
@@ -11,9 +11,11 @@ the reused sample arm won at 66.63M: a positive conditional diagnostic. J02's
 ordinary fresh chain stopped at Heat after its full 66.63M-frame ceiling;
 sampling's reused J01 chain had cleared three stages. Those adaptively chosen
 budgets authorized J03, a new prospective development seed through Wood.
-J03 uses ordinary then sampling on the same CPU group and predeclared stage
-ceilings. Its ordinary arm has already cleared all four stages; sampling is
-running. All production defaults remain unchanged.
+J03 used ordinary then sampling on the same CPU group and predeclared stage
+ceilings. Ordinary cleared all four stages; sampling cleared Metal and failed
+Heat after the full 85M-frame ceiling without censoring. Its escalation gate
+failed, so no longer sampling chains are permitted in this tranche. All
+production defaults remain unchanged.
 
 P04's frozen motion descriptor separated six of eight useful competitor pairs
 that even the finer spatial key merged, including one mechanically identical
@@ -36,9 +38,22 @@ Commit `4e3f0255` corrects the census to use active keys and adds a historical-
 entry exclusion check. R04b reruns the same five short cells, also requiring
 both feature streams to match R04 exactly. All 135 generic tests and strict NES
 Clippy pass after the correction. No policy, descriptor or numerical gate was
-changed. `harmony-r04b-qualify-002` is active on msr1; no larger R04 campaign is
-running. [The design](motion-retention-design.md) preserves both registrations
-and the subsequent 50M-frame development gate.
+changed. R04b passed all five full-replay cells and every exact old/new stream
+comparison. Both policies have at most two active entries per slot. Quality has
+517 same-context pairs; context has zero, plus 1,376 distinct-context pairs.
+All keys carry contexts. The cached-context check also matches the original P04
+motion, endpoints and snapshot hashes exactly. The post-correction 126 NES
+tests plus evaluator and strict generic/default-NES Clippy passed.
+
+`harmony-r04b-development-002` is now active on msr1: quality then context,
+same frozen `context-002` executable (source `4e3f0255`), seed3, four workers,
+8GiB, alphabet-only, corrected terminal v3, and 50M-frame/500k-job/1800s limits
+per arm. Both use the released fast cores8–11; that placement amendment was
+committed before any development data. Launcher `run-r04b-57bdffdd.py`, frozen
+analyzer in `source-context-002`, outputs `runs/r04b-development-results.json`
+and `runs/r04b-development-analysis.json`. The latter is generated automatically
+after both cells complete. No repeat seed, longer run or validation is allowed
+unless [the design's gate](motion-retention-design.md) passes.
 
 ## Findings that changed the research direction
 

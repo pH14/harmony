@@ -247,3 +247,29 @@ earlier control victory might refute it. H01 also withholds its allocation
 gate on wall censoring, rather than silently substituting elapsed time for
 completed work. Report setup, replay and bridge work separately from admitted
 search work; neither metric alone is the full cost of a fresh chain.
+
+## Context maxima are a mechanism claim, not a discovery theorem
+
+P04 supplies a concrete refinement candidate: a coarse motion descriptor
+separates six useful competitor pairs still merged by the finer position key.
+It also contains a counterexample where all inspected motion bytes agree but
+the futures differ. The [context-maxima construction](motion-retention-design.md)
+therefore has two separate obligations: an exact fixed-stream retention
+invariant, checked with finite positive and adverse examples, and a matched
+adaptive-search comparison against a top-two-quality capacity control.
+
+The active retained set must also be distinguished from physical snapshot
+residency. Historical ancestors can own snapshots needed for reconstruction
+without participating in retention. Counting checkpoint payloads per cell can
+falsely report capacity violations and same-context alternatives. R04 exposed
+this measurement error; R04b counts the actual active keys. Correctly measuring
+two distinct contexts establishes only the implemented partition choice, not
+two useful futures or sufficient continuation exposure.
+
+J03 illustrates the separate end-to-end obligation. Job sampling improved Metal
+on the new seed, yet ordinary retention completed four stages while sampling
+failed Heat at the full shared ceiling. An early-stage improvement and a
+favorable selected-prefix diagnostic do not imply better chained discovery.
+That prospective failure closes this family's escalation gate for the tranche;
+it does not falsify the fixed-stream extrema invariant or prove eventual
+success impossible.
