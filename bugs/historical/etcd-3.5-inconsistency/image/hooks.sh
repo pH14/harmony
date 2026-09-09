@@ -38,6 +38,14 @@ case "$1" in
     # 2 compares this client record with the recovered bbolt contents.
     # `setsid -f` double-forks the workers so this one-shot hook returns while
     # they keep the apply path busy for later Kill/Restart actions.
+    # Establish the oracle's non-empty acknowledged-write precondition before
+    # detaching the pressure writers. On slow TCG guests, a detached etcdctl
+    # process may not complete before the first scheduled restart otherwise.
+    if ctl put museum/0/key-0 value-0-0 >/dev/null 2>&1; then
+      printf 'museum/0/key-0\tvalue-0-0\n' >>"${journal}"
+    else
+      exit 0
+    fi
     setsid -f "$0" worker 1 >/dev/null 2>&1
     setsid -f "$0" worker 2 >/dev/null 2>&1
     setsid -f "$0" worker 3 >/dev/null 2>&1
@@ -60,8 +68,8 @@ case "$1" in
     # Keep only complete, workload-shaped records. The journal is appended by
     # detached workers, so its final line can be a partial write.
     awk -F '	' '
-      $1 ~ /^museum\/[1-4]\/key-[0-9]+$/ &&
-      $2 ~ /^value-[1-4]-[0-9]+$/ { print $1 "\t" $2 }
+      $1 ~ /^museum\/[0-4]\/key-[0-9]+$/ &&
+      $2 ~ /^value-[0-4]-[0-9]+$/ { print $1 "\t" $2 }
     ' "${snapshot}" | LC_ALL=C sort >"${expected}"
     [ -s "${expected}" ] || exit 0
     echo '@sometimes 14'
