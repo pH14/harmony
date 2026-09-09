@@ -211,3 +211,10 @@ Replacement ages count admission-sequence differences in five bins: 0, 1–7,
 entries. Nonmonotonic caller sequences are counted as unknown. Whole-tree
 import rebuilds entries at execution zero, so ages measure the current campaign,
 including bootstrap replacements at zero. The fixed census occupies 160 bytes.
+
+`room_cell_uniform_128_energy_progress_no_cell_cost_v1:<thresholds>` removes
+only the route-cost rank between selection cells. Semantic class/frontier
+preference, group energy, cell novelty, and cost weighting among a cell's own
+recent members stay unchanged, including RNG draw cadence. It adds no archive
+storage. This experimental ablation tests whether costly locations receive too
+little exploration; it does not change retention or claim uniform exploration.

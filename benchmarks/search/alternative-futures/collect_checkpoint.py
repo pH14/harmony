@@ -78,7 +78,8 @@ for name in a.runs:
             row['raw_replay'] = {k: v for k, v in d.items() if k not in ['mask_followup', 'idle_followup']}
             for key in ['mask_followup', 'idle_followup']:
                 values = d.get(key, [])
-                row[key + '_summary'] = {'observations': len(values), 'health_counts': dict(Counter(v['state']['health'] for v in values)), 'pose_counts': dict(Counter(v['state']['pose'] for v in values))}
+                state_field = 'player_state' if values and 'player_state' in values[0]['state'] else 'pose'
+                row[key + '_summary'] = {'observations': len(values), 'health_counts': dict(Counter(v['state']['health'] for v in values)), state_field + '_counts': dict(Counter(v['state'][state_field] for v in values))}
         diagnostics.append(row)
 output = {'format': 'alternative-futures-checkpoint-v1', 'scope': 'explicit registered development and qualification runs; not untouched validation', 'remote_host': 'ms02', 'runs': a.runs, 'cells': cells, 'diagnostics': diagnostics, 'chains': chains}
 if a.output.exists():

@@ -28,12 +28,16 @@ impl ArchiveKey for TestKey {
     type Group = u8;
 
     fn groups() -> usize {
-        1
+        3
     }
 
     fn group(self, depth: usize) -> Self::Group {
-        assert_eq!(depth, 0);
-        self.0 % 16
+        // Separate cells under one class exercise cell-cost selection during pressure.
+        match depth {
+            0 | 1 => self.0 % 16,
+            2 => 0,
+            _ => panic!("unexpected test group depth"),
+        }
     }
 
     fn slot_capacity() -> usize {
@@ -370,17 +374,17 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             selector: if persistent {
                 SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
                     entry: 3,
-                    groups: vec![],
+                    groups: vec![6],
                 })
             } else if semantic {
                 SelectorPolicy::EnergyProgressCheapestCount(RetireThresholds {
                     entry: 3,
-                    groups: vec![],
+                    groups: vec![6],
                 })
             } else {
                 SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
                     entry: 3,
-                    groups: vec![],
+                    groups: vec![6],
                 })
             },
             victory_input_path: None,
@@ -526,14 +530,23 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
 
 #[test]
 fn resource_extremes_replay_alternatives_eviction_and_continuations() {
+    let mut cost_policy_parents = Vec::new();
     for selector in [
+        SelectorPolicy::EnergyProgressCheapest(RetireThresholds {
+            entry: 3,
+            groups: vec![6],
+        }),
+        SelectorPolicy::EnergyProgressNoCellCost(RetireThresholds {
+            entry: 3,
+            groups: vec![6],
+        }),
         SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
             entry: 3,
-            groups: vec![],
+            groups: vec![6],
         }),
         SelectorPolicy::EnergyProgressFirstExposure(RetireThresholds {
             entry: 3,
-            groups: vec![],
+            groups: vec![6],
         }),
     ] {
         let config = CampaignConfig {
@@ -601,6 +614,20 @@ fn resource_extremes_replay_alternatives_eviction_and_continuations() {
             replay_campaign_checkpointed(&TestGame, &stream, None, None).unwrap();
         assert_eq!(live, replayed);
         assert_eq!(checkpoint, replay_checkpoint);
+        if matches!(
+            config.selector,
+            SelectorPolicy::EnergyProgressCheapest(_) | SelectorPolicy::EnergyProgressNoCellCost(_)
+        ) {
+            let parents: Vec<u64> = std::str::from_utf8(&stream)
+                .unwrap()
+                .lines()
+                .filter_map(|line| {
+                    let row: serde_json::Value = serde_json::from_str(line).unwrap();
+                    (row["event"] == "job").then(|| row["parent_id"].as_u64().unwrap())
+                })
+                .collect();
+            cost_policy_parents.push(parents);
+        }
         let corrupted = String::from_utf8(stream).unwrap().replacen(
             "resource_extremes_2_v1",
             "resource_extremes_2_v0",
@@ -608,4 +635,9 @@ fn resource_extremes_replay_alternatives_eviction_and_continuations() {
         );
         assert!(replay_campaign_checkpointed(&TestGame, corrupted.as_bytes(), None, None).is_err());
     }
+    assert_eq!(cost_policy_parents.len(), 2);
+    assert_ne!(
+        cost_policy_parents[0], cost_policy_parents[1],
+        "must replay actual changed parent choices"
+    );
 }

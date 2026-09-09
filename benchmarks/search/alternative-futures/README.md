@@ -1032,3 +1032,220 @@ The checkpoint commit's secret scanner misclassified three long artifact paths
 as high-entropy values. Store paths as structured components and retain the
 original remote accounting snapshot hash; no measured value changes and no
 scanner rule is bypassed.
+
+## M01 preregistration — MM2 learned-tail contribution
+
+Existing coordinator telemetry already answers the reconstruction-cost question:
+S01 has zero replay jobs/actions/time. It dispatches1,674,919 suffix actions over
+131,552 selections (12.73/job), although ordinary sampling has at most6 actions.
+Middle/mean-duration arms similarly average13.39/10.73 actions per selection.
+Splice tails (generic cap128 actions) explain this; the duration distribution
+only draws new actions and does not rewrite learned tails. Requested suffix
+frames51.78M/51.13M/51.98M are separate from actual50M admitted work.
+Thus another duration budget would not isolate this mutation mechanism.
+
+Question: are learned tails consuming work that ordinary local exploration
+would use more effectively at the Wily1 bottleneck? Use existing `energy:6`
+instead of `energy_splice:6`, keeping semantic selector, original duration,
+ordinary retention,4workers8GiB,4096 actions,window/result2,one_to_six and the
+same C02 development-discovered Wily1 prefix/seed. MM2 has no biased draw table,
+so `energy:6` falls back to ordinary alphabet sampling while retaining the
+usual strategy RNG draw. This avoids an unrelated one-draw shift introduced
+by plain `alphabet_only`. No new search implementation or family is activated.
+
+First run5k full campaign/checkpoint replay control and no-splice arms onCPUs0–3,
+240s search+60s finish/310s watchdog each. Parse the existing recorded job
+frames, splice resolution and admission outcomes into aggregate statistics;
+never extract controller advice. Verify actual tails in control and their
+absence in no-splice. Compare control's admitted5000-job frames with the
+existing S01 progress prefix where available. If qualification fails, diagnose.
+If it passes, run the no-splice arm at50M frames/500k jobs,1080s search+120s
+finish/1230s watchdog, same allocation, against frozen S01. A capability/boss
+reach or changed bottleneck qualifies reconsidering a fresh chain and active
+families; no useful gain rejects this ablation at the tested work without
+raising its budget. Keep all prefix/export/witness costs and label the start
+diagnostic. This redesign follows two duration comparisons with no MM2 depth gain.
+
+M01 qualification passed both full campaign/checkpoint replays. Control's5000
+jobs exactly match S01's905,770-frame prefix. Resolved tails account for832 jobs
+and302,967 frames (16.64% of jobs,33.45% of work);845 unavailable-splice jobs
+fall back to ordinary sampling. No-splice uses723,355 frames for5000 jobs and
+has no resolved tails. Aggregate recording evidence is frozen on ms02 as
+`m01-qualification-accounting.json`. The qualified50M no-splice probe is running.
+
+L04 mean-matched fresh seeds3/4/5 finish500k jobs in52,545,868/56,762,360/
+56,548,476 frames, coverage86/75/87, tanks0/0/1. Middle duration has97/87/93,
+tanks1/1/1. This supports a distribution effect on these development seeds,
+not simply more attempts from a smaller mean. No untouched validation claim.
+The middle long anchor reaches Long Beam at1,236,600 jobs; corrected control
+has not by1,392,400. Assess final depth before choosing validation conditions.
+
+## L05 preregistration — post-discovery depth feasibility
+
+Question: is the lack of a fresh Metroid boss chiefly late arrival at useful
+states, or does ordinary post-discovery exploration remain ineffective with
+substantial work? D01 first reaches Kraid area near2.94M of3M jobs, leaving
+roughly60k jobs; prior local diagnostics only used~100k jobs. Global L04 can
+improve arrival timing but cannot isolate exploration from that same discovered
+endpoint. This is a feasibility diagnosis, not a larger-budget algorithm claim.
+
+Run one corrected-terminal, ordinary-duration local search from the unchanged
+D01 first Kraid-area input, seed3,4workers8GiB,semantic selector,alphabet_only,
+one_to_six,ordinary retention,4096 total actions including the frozen prefix.
+Register100M admitted frames with1M-job safety cap,1800s search and1950s
+process-group watchdog onCPUs4–7. The CLI's bounded diagnostic ceilings rise
+only to these registered values; full campaign replay stays capped at5k jobs.
+Disk remains bounded by the same compact diagnostic outputs, with no full large
+stream/checkpoint retention; monitor the4GiB cell limit. Return/source and every
+composed milestone witness are separately replayed twice from ordinary genesis.
+The archive and learned history reset at this snapshot root; this is not fresh
+search and is not equivalent to resuming D01's archive.
+
+Before launch, focused Clippy <=10m and the existing5k underflow-bearing full
+replay fixture <=5m must preserve its frozen corrected stream exactly. A boss
+shows post-discovery feasibility at a measured extra cost and shifts emphasis
+toward earlier arrival/continued allocation. No boss at the registered limit
+narrows the late-arrival explanation and motivates a different local mechanism;
+do not extend the diagnostic unchanged. A capability-only gain is reported as
+such. Do not automatically run a second larger arm. This adds no candidate
+family: T correctness and L duration remain the active comparison.
+
+M01 no-splice finishes347,266 jobs/50,001,105 frames versus S01's131,544 jobs/
+50,004,243 frames, still maxscreen36 and no Wily1 boss reach. More ordinary
+attempts alone do not resolve this bottleneck; no fresh no-splice chain is
+qualified. Preserve the negative ablation rather than increase its work.
+
+## T03 preregistration — repeat late terminal-correction depth
+
+L04's corrected ordinary-duration seed3 reaches Bombs at1,487,653 jobs and Kraid
+area at1,556,014, versus frozen legacy2,847,297/2,937,978. The short500k panel
+could not predict this late change. First replay each newly saved milestone
+twice from ordinary genesis with the frozen `nes-progress` probe onCPU16,
+<=5m combined; keep hashes and physical costs. This verifies concrete healthy
+trajectories independently of the still-running campaign before expanding.
+
+If both witnesses verify, run corrected-terminal ordinary-duration seeds4/5
+under the exact fixed3M/400M anchor and L04's5100s search+240s finish/5400s
+watchdog. No new policy or family. Frozen `remine-012.json` panel
+`metroid-long-control` supplies the matched legacy work/memory controls:
+seed4=371,057,908 frames, Bombs2,393,367/Kraid2,443,424;
+seed5=366,764,950 frames, Bombs2,137,376/Kraid2,207,373, Ridley area2,742,879.
+Those legacy cells used7200s wall caps but all stopped at3M jobs; compare
+attainment/frame work and mark any new wall censoring, not unlike wall timings.
+Build017's legacy compatibility has already reproduced frozen control work.
+
+Start seed4 onCPUs0–3 after M01 completes. Start seed5 onCPUs12–15 only after
+L04 middle seed3 has terminated, preserving the four-campaign ceiling alongside
+L05 and the ordinary seed3 anchor. A repeated boss or substantial late-capability
+gain qualifies freezing T for untouched validation; mixed outcomes remain
+experimental. Neither the single-seed improvement nor this development panel
+is a breakthrough. If the witness replay fails, diagnose before either run.
+
+## I05 preregistration — MM2 endpoint extendability check
+
+The frozen C02 Wily1 champion's native image places the airborne player near
+the bottom edge (decoded y234, health12). I02 verified endpoint RAM/image
+agreement but did not observe MM2 after that endpoint. With retention, exposure,
+duration and splice ablations all reporting the same maxscreen without boss
+reach, check whether the reported champion immediately enters a terminal
+transition. This diagnoses reporting/adapter mechanics, not a route or controller
+solution, and does not assume the entire archive shares the champion's future.
+
+Extend the existing raw inspector's120-neutral-frame follow-up to MM2, without
+reading absent save RAM. Same frozen I02 MM2 input/prefix; no changed search or
+input selection. Focused Clippy <=10m; one raw replay <=5m onCPU16. Record all
+health/lives/player-state transitions and actual raw/adapter/follow-up frames.
+Neutral death alone does not prove irreversibility or justify earlier terminal
+classification. Death on the very next frame would qualify an all-controller
+one-frame diagnostic; sustained life would reject the immediate-terminal lead.
+Preserve the native image and outcome on ms02, and only compact evidence in Git.
+
+L05 finishes839,877 jobs/100,000,942 admitted frames in750.7 search seconds.
+Coverage85 cells, missile capacity20, one energy tank, equipment21, no boss.
+Its composed champion is alive (health567) with capacity20 and replays twice
+from ordinary genesis. This demonstrates post-discovery resource progress but
+not boss feasibility at100M frames; late arrival alone is insufficient to
+explain failure at this tested work. Do not extend this diagnostic unchanged.
+The first capacity15 sidecar still has its highest class in Kraid area; a cheap
+check therefore does not support the specific speculation that the new capacity
+class simply moved all top-class exploration back to Brinstar.
+
+I05 rejects the immediate-terminal lead: the MM2 endpoint remains health12,
+lives3 through all120 neutral frames. It is in a camera transition; screen/
+room change36/36→35/35 while y234→9. Maxscreen is consequently a visited
+watermark, not a stable frontier or a boss-reach surrogate. No terminal-policy
+change or all-controller follow-up is qualified by this result. The prior
+raw/adapter endpoint agreement remains exact.
+
+L04 middle anchor completes3M jobs/332,305,364 frames,178 observed map cells,
+missile capacity20, one energy tank, no boss. Long Beam1,236,600;
+Bombs2,560,868; Kraid area2,641,107; no Ridley area. Compared with the corrected
+ordinary control's earlier Bombs/Kraid/Ridley progression, this is a tradeoff
+rather than consistent deeper attainment. Preserve its positive coverage and
+resource evidence, but park L per the no-breakthrough/mixed-depth decision.
+Stream bb0cc4951a4e67a35cbb58d8d7da23715b3bc3b406c4775517d50060b23f448d.
+
+## S04 preregistration — across-cell route-cost penalty
+
+D02 established long-lived starvation; first exposure within an already chosen
+cell reduced never-selected removals but did not improve useful progress.
+MM2 has a single stage/boss-count coarsest class in these probes, so merely
+mixing inventory classes cannot address that measured bottleneck. Code inspection
+identifies a distinct across-cell penalty: within a selected region, a cell's
+weight halves for every four cells with cheaper offered routes, combined with
+novelty rank. Route cost across different locations is not future utility, and
+this can suppress costly platform/pose cells even though their identities survive.
+
+Activate S04 (selection cost) alongside T (terminal correctness); L/R/E/S-first-
+exposure are parked. Add one versioned generic selector that removes only the
+across-cell cost-rank term. Keep semantic class/frontier selection, group energy,
+cell novelty, within-cell cost/recency weighting, uniform draw fraction, retention,
+continuations, vocabulary, duration, memory and RNG draw cadence unchanged.
+No new per-entry storage or snapshots. This is an ablation, not a fair-selection
+or dominance claim.
+
+Focused tests <=10m must show the costly-cell suppression and its removal,
+unchanged RNG cadence/within-cell draws, strict policy identities, and exact
+campaign/checkpoint replay under actual replacement, alternatives, eviction and
+continuation dispatch. Extend the existing pressure fixture to a three-depth
+hierarchy so the changed cell-cost branch is exercised there; retain coverage
+of the one-group case in the generic archive tests. Then qualify5k Metroid and
+MM2 full native campaign/checkpoint runs in control/new-selector arms, <=5m/cell,
+with actual changed parents. Preserve the default MM2 semantic golden stream.
+
+If qualified, compare corrected-terminal Metroid from D01's same local prefix
+at12M frames/150k jobs to T02b corrected control; compare MM2 from C02's same
+Wily1 prefix at50M/500k to S01. Both use original duration, ordinary retention,
+semantic selection except this term, and the prior game-specific ordinary
+mixtures (Metroid alphabet_only, MM2 energy_splice:6). Four workers/8GiB,
+Metroid1080s/1200s watchdog and MM21080+120s/1230s watchdog. Initially useCPUs4–7
+sequentially alongside T03. A substantial useful coverage/capability/boss gain
+qualifies fresh development; no useful gain in both games parks this ablation
+without automatically changing the remaining cost terms or increasing budgets.
+
+S04 initial focused compile failed because its new test did not qualify an
+unimported identifier helper. Use the module-qualified helper; preserve the
+failed log and rerun the bounded focused checks. No runtime behavior changed.
+
+S04 focused retry passes119 generic unit tests plus the interface test, generic
+all-target Clippy and affected NES binary/library Clippy. The pressure fixture
+exercises changed parent sequences and exact replay for the new selector.
+
+L04 corrected ordinary anchor completes3M jobs/366,396,624 frames,246 observed
+map cells, missile capacity25, one tank, no boss. Bombs1,487,653,
+Kraid1,556,014, Ridley area1,987,951; no Long Beam. Full summary and witness
+verification are preserved in checkpoint-0500. T03 seed5 also reaches Bombs
+and both areas earlier than its frozen legacy control while seed4 currently
+lags; await the complete matched panel before a validation decision.
+
+Inspection found a collector indentation mistake introduced with MM2 state
+summaries: only the final idle-followup summary was emitted. Correct the loop
+and preserve a revised compact checkpoint; raw diagnostics and old immutable
+snapshots remain unchanged. This affects reporting completeness, not search.
+
+S04 native qualification passes all four5k full campaign/checkpoint cells.
+Both controls reproduce their frozen hashes. New selector changes4,943/5,000
+Metroid parent IDs (first job25) and4,905/5,000 MM2 (first job26), zero-based.
+Build031/032 share source09a8fb4fc9363ce9d1111cb0f0499366abc2729783527a590c38a99f4a584690.
+The registered local probes now run sequentially onCPUs4–7. Corrected collector
+output includes both empty mask and populated MM2 player-state idle summaries.

@@ -104,11 +104,11 @@ fn main() -> Result<()> {
     let request_bytes = fs::read(&args[0])?;
     let request: Request = serde_json::from_slice(&request_bytes)?;
     if request.executions == 0
-        || request.executions > 150000
+        || request.executions > 1_000_000
         || request.frames == 0
-        || request.frames > 20000000
+        || request.frames > 100_000_000
         || request.wall_seconds == 0
-        || request.wall_seconds > 1080
+        || request.wall_seconds > 1800
         || (request.full_replay && request.executions > 5000)
     {
         return Err("diagnostic request exceeds its bounded limits".into());

@@ -192,17 +192,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         machine.drop_snapshot(endpoint)?;
     }
     let mut idle_followup = Vec::new();
-    if request.game == "metroid" {
-        machine.set_video_capture(false);
-        for offset in 1..=120 {
-            let snap = machine.snapshot()?;
-            machine.branch(snap, &nes::reproducer(&[nes::ButtonChord::new(0, 1)]))?;
-            machine.run(StopConditions::default(), None)?;
-            machine.drop_snapshot(snap)?;
-            let w = machine.read_wram()?;
+    machine.set_video_capture(false);
+    for offset in 1..=120 {
+        let snap = machine.snapshot()?;
+        machine.branch(snap, &nes::reproducer(&[nes::ButtonChord::new(0, 1)]))?;
+        machine.run(StopConditions::default(), None)?;
+        machine.drop_snapshot(snap)?;
+        let w = machine.read_wram()?;
+        let observation = if request.game == "metroid" {
             let c = machine.read_save_ram()?;
-            idle_followup.push(json!({"offset":offset,"state":metroid_state(&w,&c)?,"raw_health":[w[0x106],w[0x107]]}));
-        }
+            json!({"offset":offset,"state":metroid_state(&w,&c)?,"raw_health":[w[0x106],w[0x107]]})
+        } else {
+            json!({"offset":offset,"state":mm2_state(&w)?})
+        };
+        idle_followup.push(observation);
     }
     let result = json!({"format":"nes-input-inspect-v1","scope":"diagnostic raw replay; no fresh search",
         "request_sha256":hash(&request_bytes),"input_sha256":request.input_sha256,"rom_sha256":hash(&rom),

@@ -270,6 +270,8 @@ pub enum SelectorPolicy {
     /// Offer each surviving member of a chosen cell once before cost-ranked reuse.
     /// The first offer bypasses the recency window and is claimed at dispatch.
     EnergyProgressFirstExposure(RetireThresholds),
+    /// Preserve semantic selection while removing only across-cell route-cost rank.
+    EnergyProgressNoCellCost(RetireThresholds),
 }
 
 /// The recorded identifier of a parent selector.
@@ -294,6 +296,10 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
         }
         SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => format!(
             "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:{}",
+            threshold_values(scales)
+        ),
+        SelectorPolicy::EnergyProgressNoCellCost(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_progress_no_cell_cost_v1:{}",
             threshold_values(scales)
         ),
         SelectorPolicy::EnergyProgressFirstExposure(scales) => format!(
@@ -347,6 +353,7 @@ pub fn selector_policy_from_identifier(
     let energy_prefix = format!("{SELECTOR_IDENTIFIER}_energy:");
     let frontier_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier:");
     let key_count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:");
+    let no_cell_cost_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_no_cell_cost_v1:");
     let exposure_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_first_exposure_v2:");
     let semantic_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_v1:");
     let progress_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_count_v1:");
@@ -360,6 +367,7 @@ pub fn selector_policy_from_identifier(
         EnergyFrontierCheapestCount,
         EnergyProgressCheapest,
         EnergyProgressFirstExposure,
+        EnergyProgressNoCellCost,
         EnergyProgressCheapestCount,
         EnergyFrontierCheapestKeyCount,
     }
@@ -367,6 +375,8 @@ pub fn selector_policy_from_identifier(
         (values, Parsed::Retire)
     } else if let Some(values) = identifier.strip_prefix(&key_count_prefix) {
         (values, Parsed::EnergyFrontierCheapestKeyCount)
+    } else if let Some(values) = identifier.strip_prefix(&no_cell_cost_prefix) {
+        (values, Parsed::EnergyProgressNoCellCost)
     } else if let Some(values) = identifier.strip_prefix(&exposure_prefix) {
         (values, Parsed::EnergyProgressFirstExposure)
     } else if let Some(values) = identifier.strip_prefix(&semantic_prefix) {
@@ -406,6 +416,7 @@ pub fn selector_policy_from_identifier(
         Parsed::EnergyFrontierCheapestKeyCount => {
             SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
         }
+        Parsed::EnergyProgressNoCellCost => SelectorPolicy::EnergyProgressNoCellCost(thresholds),
         Parsed::EnergyProgressFirstExposure => {
             SelectorPolicy::EnergyProgressFirstExposure(thresholds)
         }
@@ -3355,6 +3366,7 @@ where
             self.selector_policy,
             SelectorPolicy::EnergyProgressCheapest(_)
                 | SelectorPolicy::EnergyProgressFirstExposure(_)
+                | SelectorPolicy::EnergyProgressNoCellCost(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         )
     }
@@ -3664,6 +3676,7 @@ where
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales)
             | SelectorPolicy::EnergyProgressCheapest(scales)
             | SelectorPolicy::EnergyProgressFirstExposure(scales)
+            | SelectorPolicy::EnergyProgressNoCellCost(scales)
             | SelectorPolicy::EnergyProgressCheapestCount(scales) => (scales, true),
             _ => return Ok(rand.below(count)),
         };
@@ -3750,9 +3763,17 @@ where
                         }
                         None => 8,
                     };
-                    let costlier = cost.map_or(0, |cost| {
-                        cheapest.partition_point(|cheaper| *cheaper < cost) / CHEAPEST_RANK_SCALE
-                    });
+                    let costlier = if matches!(
+                        self.selector_policy,
+                        SelectorPolicy::EnergyProgressNoCellCost(_)
+                    ) {
+                        0
+                    } else {
+                        cost.map_or(0, |cost| {
+                            cheapest.partition_point(|cheaper| *cheaper < cost)
+                                / CHEAPEST_RANK_SCALE
+                        })
+                    };
                     (novelty.saturating_add(costlier), 16)
                 }
                 (None, None) => (0, 8),
@@ -3785,6 +3806,7 @@ where
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
             | SelectorPolicy::EnergyProgressCheapest(thresholds)
             | SelectorPolicy::EnergyProgressFirstExposure(thresholds)
+            | SelectorPolicy::EnergyProgressNoCellCost(thresholds)
             | SelectorPolicy::EnergyProgressCheapestCount(thresholds) => {
                 self.since_retained[id] < thresholds.entry
             }
@@ -3803,6 +3825,7 @@ where
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
             | SelectorPolicy::EnergyProgressCheapest(_)
             | SelectorPolicy::EnergyProgressFirstExposure(_)
+            | SelectorPolicy::EnergyProgressNoCellCost(_)
             | SelectorPolicy::EnergyProgressCheapestCount(_) => true,
             SelectorPolicy::Retire(thresholds) => {
                 thresholds
@@ -3886,6 +3909,7 @@ where
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
                 | SelectorPolicy::EnergyProgressCheapest(_)
                 | SelectorPolicy::EnergyProgressFirstExposure(_)
+                | SelectorPolicy::EnergyProgressNoCellCost(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             let mut ranked = window
@@ -4185,6 +4209,7 @@ where
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
                 | SelectorPolicy::EnergyProgressCheapest(_)
                 | SelectorPolicy::EnergyProgressFirstExposure(_)
+                | SelectorPolicy::EnergyProgressNoCellCost(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
@@ -4263,6 +4288,7 @@ where
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
             | SelectorPolicy::EnergyProgressCheapest(_)
             | SelectorPolicy::EnergyProgressFirstExposure(_)
+            | SelectorPolicy::EnergyProgressNoCellCost(_)
             | SelectorPolicy::EnergyProgressCheapestCount(_) => new_cell_descendant,
             SelectorPolicy::GroupUniform => false,
         };
@@ -4299,6 +4325,7 @@ where
         | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
         | SelectorPolicy::EnergyProgressCheapest(thresholds)
         | SelectorPolicy::EnergyProgressFirstExposure(thresholds)
+        | SelectorPolicy::EnergyProgressNoCellCost(thresholds)
         | SelectorPolicy::EnergyProgressCheapestCount(thresholds) = &self.selector_policy
         {
             let entries_over_threshold = u64::try_from(
@@ -7198,6 +7225,72 @@ mod tests {
             self
         }
         fn record(_: &mut Self::Lineage, _: Self) {}
+    }
+
+    #[test]
+    fn no_cell_cost_restores_costly_cell_draws_without_changing_rng_or_member_draws() {
+        let thresholds = RetireThresholds {
+            entry: 3,
+            groups: vec![6],
+        };
+        let policies = [
+            SelectorPolicy::EnergyProgressCheapest(thresholds.clone()),
+            SelectorPolicy::EnergyProgressNoCellCost(thresholds.clone()),
+        ];
+        let groups: Vec<_> = (0..64).map(|id| [0, id, 0, 0]).collect();
+        let cells: Vec<_> = (0..64).map(|cost| (None, Some(cost))).collect();
+        let mut counts = [[0; 4]; 2];
+        let mut rng_ends = Vec::new();
+        for (arm, policy) in policies.iter().enumerate() {
+            let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+            archive.selector_policy = policy.clone();
+            let mut rand = RomuDuoJrRand::with_seed(986);
+            for _ in 0..12_000 {
+                let index = archive
+                    .draw_group_index(&mut rand, 1, &groups, None, Some(&cells))
+                    .unwrap();
+                counts[arm][index / 16] += 1;
+            }
+            rng_ends.push(rand.next_u64());
+        }
+        assert!(
+            counts[0][0] > 10_000 && counts[0][3] < 200,
+            "legacy cost suppression: {counts:?}"
+        );
+        assert!(
+            counts[1].iter().all(|count| (2600..3400).contains(count)),
+            "equal energy/novelty cells should share draws: {counts:?}"
+        );
+        assert_eq!(rng_ends[0], rng_ends[1]);
+
+        let keys: Vec<_> = (0..64).map(|id| [id, 0, 0, 0]).collect();
+        let mut left = flat_archive::<3>(&keys);
+        let mut right = flat_archive::<3>(&keys);
+        left.selector_policy = policies[0].clone();
+        right.selector_policy = policies[1].clone();
+        left.time_in_group = (0..64).collect();
+        right.time_in_group = left.time_in_group.clone();
+        let mut a = RomuDuoJrRand::with_seed(102);
+        let mut b = a;
+        for _ in 0..1000 {
+            assert_eq!(
+                left.draw_from_cell(&mut a, (0..64).collect()).unwrap(),
+                right.draw_from_cell(&mut b, (0..64).collect()).unwrap()
+            );
+        }
+        assert_eq!(a.next_u64(), b.next_u64());
+        let identifier = super::selector_policy_identifier(&policies[1]);
+        assert_eq!(
+            selector_policy_from_identifier(&identifier, 1).unwrap(),
+            policies[1]
+        );
+        assert!(
+            selector_policy_from_identifier(
+                "room_cell_uniform_128_energy_progress_no_cell_cost_v99:3,6",
+                1
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -145,3 +145,9 @@ special menu taps. Their identifiers are strict replay context; see the shared
 [NES policy documentation](../../README.md) for values and duration ranges.
 The paired-retention probe accepts an optional final terminal-policy identifier
 to isolate terminal classification on the same frozen pairs and sampled suffixes.
+
+The development-only local search tool permits explicitly registered probes up
+to one million jobs, 100 million admitted frames, and 1,800 search seconds,
+while full campaign replay is limited to 5,000 jobs. Its 4,096-action total
+horizon includes the supplied development prefix; source and composed witnesses
+are independently replayed twice. These starts never establish fresh depth.
