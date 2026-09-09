@@ -73,6 +73,7 @@ pub struct MetroidGame {
     core_sha256: String,
     prefix: Vec<ButtonChord>,
     identity: String,
+    chord_correlation: crate::chord_correlation::ChordCorrelation,
     champion_input_path: Option<PathBuf>,
     milestone_input_dir: Option<PathBuf>,
     terminal_policy: MetroidTerminalPolicy,
@@ -116,6 +117,7 @@ impl MetroidGame {
             core_sha256: core_sha256.to_owned(),
             prefix,
             identity,
+            chord_correlation: crate::chord_correlation::ChordCorrelation::Independent,
             champion_input_path: None,
             milestone_input_dir: None,
             retention_audit: None,
@@ -127,6 +129,16 @@ impl MetroidGame {
     #[must_use]
     pub fn with_terminal_policy(mut self, policy: MetroidTerminalPolicy) -> Self {
         self.terminal_policy = policy;
+        self
+    }
+
+    /// Set an explicitly recorded suffix-local action correlation policy.
+    #[must_use]
+    pub fn with_chord_correlation(
+        mut self,
+        policy: crate::chord_correlation::ChordCorrelation,
+    ) -> Self {
+        self.chord_correlation = policy;
         self
     }
 
@@ -666,7 +678,7 @@ impl InputPolicy for MetroidGame {
     }
 
     fn policies(&self, _run: &MetroidCampaignRun) -> GamePolicies {
-        [
+        let mut policies: GamePolicies = [
             (
                 CONTROLLER_VOCABULARY_FIELD,
                 CONTROLLER_VOCABULARY_IDENTIFIER,
@@ -682,7 +694,14 @@ impl InputPolicy for MetroidGame {
             EMULATOR_BACKEND_FIELD.to_owned(),
             self.identity.clone(),
         )))
-        .collect()
+        .collect();
+        if self.chord_correlation != crate::chord_correlation::ChordCorrelation::Independent {
+            policies.insert(
+                "action_correlation".to_owned(),
+                self.chord_correlation.identifier().to_owned(),
+            );
+        }
+        policies
     }
 
     fn resolve_recorded(
@@ -721,14 +740,22 @@ impl InputPolicy for MetroidGame {
         mixture: MixtureDraw,
         mutation_seed: u64,
     ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-        draw_suffix(
+        if self.chord_correlation != crate::chord_correlation::ChordCorrelation::Independent
+            && mixture.mixture != DrawMixture::AlphabetOnly
+        {
+            return Err("action correlation currently requires alphabet_only".into());
+        }
+        let mut suffix = draw_suffix(
             shape,
             mixture.mixture,
             mixture.weight,
             mutation_seed,
             |_| Ok(None),
             sample_chord,
-        )
+        )?;
+        self.chord_correlation
+            .apply(&mut suffix, mutation_seed, 4)?;
+        Ok(suffix)
     }
 
     fn expand_suffix_recorded(
@@ -1074,6 +1101,67 @@ pub fn replay_metroid_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn correlation_identity_is_strict_and_suffix_local() {
+        use crate::chord_correlation::ChordCorrelation;
+        let ordinary = MetroidGame::new(&[0], Path::new("unused"), "test");
+        let old = ordinary.policies(&MetroidCampaignRun);
+        assert!(!old.contains_key("action_correlation"));
+        for policy in [
+            ChordCorrelation::ComponentHalf,
+            ChordCorrelation::MatchedWholeRepeat,
+        ] {
+            let candidate =
+                MetroidGame::new(&[0], Path::new("unused"), "test").with_chord_correlation(policy);
+            let new = candidate.policies(&MetroidCampaignRun);
+            assert_eq!(new.len(), old.len() + 1);
+            assert_eq!(new["action_correlation"], policy.identifier());
+            assert!(old.iter().all(|(key, value)| new.get(key) == Some(value)));
+            assert!(candidate.resolve_recorded(&new).is_ok());
+            assert!(ordinary.resolve_recorded(&new).is_err());
+            assert!(candidate.resolve_recorded(&old).is_err());
+            let mix = MixtureDraw {
+                mixture: DrawMixture::AlphabetOnly,
+                weight: 0,
+                splice_weight: 0,
+            };
+            let first = candidate
+                .expand_suffix(&MetroidCampaignRun, &(), SuffixShape::OneToSix, mix, 123)
+                .unwrap();
+            candidate
+                .expand_suffix(&MetroidCampaignRun, &(), SuffixShape::OneToSix, mix, 789)
+                .unwrap();
+            assert_eq!(
+                first,
+                candidate
+                    .expand_suffix_recorded(
+                        &MetroidCampaignRun,
+                        &(),
+                        SuffixShape::OneToSix,
+                        mix,
+                        None,
+                        123
+                    )
+                    .unwrap()
+            );
+            assert!(
+                candidate
+                    .expand_suffix(
+                        &MetroidCampaignRun,
+                        &(),
+                        SuffixShape::OneToSix,
+                        MixtureDraw {
+                            mixture: DrawMixture::BiasedHalf,
+                            weight: 0,
+                            splice_weight: 0,
+                        },
+                        123
+                    )
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn terminal_semantics_require_a_matching_replay_context() {

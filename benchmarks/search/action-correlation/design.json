@@ -1,0 +1,25 @@
+{
+  "format": "action-correlation-design-v1",
+  "recorded_utc": "2026-09-09T23:19:00.319331+00:00",
+  "candidate": "component_refresh_half_v1",
+  "alpha": "1/2",
+  "components": [
+    9,
+    2,
+    2
+  ],
+  "ordinary_control": "independent_v1",
+  "matched_persistence_control": "whole_repeat_37_of_210_v1",
+  "scope": "Postprocess newly generated alphabet-only suffixes; start fresh at every suffix and after special taps. No inherited origin history.",
+  "invariants": [
+    "Original suffix length, hold frames and special-tap positions unchanged path by path.",
+    "Original legal direction sets and button alphabet unchanged.",
+    "No selector, retention, observation, terminal or genesis change.",
+    "Defaults keep their identifiers and exact output bytes. Nondefault policy identity is explicit and mismatched replay is rejected."
+  ],
+  "law_model_sha256": "85683f10d2e64fa053e5df097112fca13ae33e1f5d141909ac638219c02879cb",
+  "law_result_sha256": "16fa69061ced30e3520351307b6463b4ddaa53c7a1a8d850e37ca08a533a43e2",
+  "emulator_allocation": "None in this design record. Native cases require a separate prospective registration; no fresh search is authorized by a constructed task gain.",
+  "prior_block_search_frames": 371963017,
+  "prior_block_known_auxiliary_frames": 40787243
+}

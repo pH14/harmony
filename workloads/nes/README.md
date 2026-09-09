@@ -122,3 +122,24 @@ feature build. The separate selector identifier
 historical group-time ranks. Its use does not change workload retention or the
 controller vocabulary. See the [searcher policy contract](../../dissonance/searcher/README.md)
 and [registered research](../../benchmarks/search/continuation-yield/README.md).
+
+
+## Experimental action correlation
+
+For Metroid and MM2, `nes-eval` optionally accepts `chord_correlation` as
+`component_refresh_half_v1` or `whole_repeat_37_of_210_v1`. Both require
+`alphabet_only`. The shared controller transform operates only within each
+newly drawn suffix; it never reads a restored state's action history or game
+observations. It preserves suffix length, all hold frames and special-tap
+positions. A special tap clears the previous-command context. No persistent
+draw state or snapshot field is added.
+
+The component policy draws a complete fresh command half the time and refreshes
+one of the three direction/A/B components otherwise. The whole-command control
+has a derived repeat probability that matches complete-command run lengths.
+The optional `action_correlation` entry in game policies records the exact law;
+a different policy context rejects replay. Defaults and explicit
+`independent_v1` preserve the existing policy map and independent sampler.
+These are research choices, not demonstrated game improvements. The
+[finite model and counterexample](../../benchmarks/search/action-correlation/README.md)
+explain what is proved and what remains empirical.

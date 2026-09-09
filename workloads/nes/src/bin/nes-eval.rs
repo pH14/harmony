@@ -67,6 +67,8 @@ struct Request {
     stop_after_milestone: Option<String>,
     #[serde(default)]
     metroid_terminal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chord_correlation: Option<String>,
     #[serde(default)]
     mm2_chain: bool,
     #[serde(default)]
@@ -417,6 +419,20 @@ fn main() -> Result<()> {
     if request.metroid_terminal.is_some() && request.game != "metroid" {
         return Err("Metroid terminal policy requires the Metroid adapter".into());
     }
+    let chord_correlation = nes_workload::chord_correlation::ChordCorrelation::parse(
+        request
+            .chord_correlation
+            .as_deref()
+            .unwrap_or("independent_v1"),
+    )?;
+    if request.chord_correlation.is_some() && !matches!(request.game.as_str(), "metroid" | "mm2") {
+        return Err("action correlation requires Metroid or MM2".into());
+    }
+    if chord_correlation != nes_workload::chord_correlation::ChordCorrelation::Independent
+        && request.mixture != "alphabet_only"
+    {
+        return Err("action correlation requires alphabet_only".into());
+    }
     match request.game.as_str() {
         "smb" | "metroid"
             if request.level.is_some()
@@ -494,6 +510,7 @@ fn main() -> Result<()> {
                 Some(input) => Mm2Game::new_at_stage_after(&rom, p, h, input.actions, stage),
                 None => Mm2Game::new_at_stage(&rom, p, h, stage),
             };
+            let game = game.with_chord_correlation(chord_correlation);
             let outcome = evaluate(&game, Mm2CampaignRun, &request, &out, started);
             let mut chain_setup = json!({"format":"mm2-chain-stage-cost-v1", "new_target_setup_frames":game.setup_frame_count(), "stage":stage.name(), "prefix_sha256":request.prefix_sha256, "scope":"freshness established by enclosing chain manifest, not by this stage tool"});
             if request.mm2_chain {
@@ -537,6 +554,7 @@ fn main() -> Result<()> {
         "metroid" => evaluate(
             &{
                 let game = MetroidGame::new(&rom, p, h)
+                    .with_chord_correlation(chord_correlation)
                     .with_milestone_input_dir(out.join("milestone-inputs"))
                     .with_terminal_policy(
                         nes_workload::metroid::target::MetroidTerminalPolicy::parse(

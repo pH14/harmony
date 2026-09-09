@@ -72,6 +72,7 @@ pub struct Mm2Game {
     prefix: Vec<ButtonChord>,
     stage: Mm2Stage,
     identity: String,
+    chord_correlation: crate::chord_correlation::ChordCorrelation,
     champion_input_path: Option<PathBuf>,
     setup_frames: std::sync::atomic::AtomicU64,
 }
@@ -114,6 +115,7 @@ impl Mm2Game {
             prefix,
             stage,
             identity,
+            chord_correlation: crate::chord_correlation::ChordCorrelation::Independent,
             champion_input_path: None,
             setup_frames: std::sync::atomic::AtomicU64::new(0),
         }
@@ -124,6 +126,16 @@ impl Mm2Game {
     #[must_use]
     pub fn setup_frame_count(&self) -> u64 {
         self.setup_frames.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Set an explicitly recorded suffix-local action correlation policy.
+    #[must_use]
+    pub fn with_chord_correlation(
+        mut self,
+        policy: crate::chord_correlation::ChordCorrelation,
+    ) -> Self {
+        self.chord_correlation = policy;
+        self
     }
 
     /// Write the champion input to `path` each time it improves, so a long
@@ -532,7 +544,7 @@ impl InputPolicy for Mm2Game {
     }
 
     fn policies(&self, _run: &Mm2CampaignRun) -> GamePolicies {
-        [
+        let mut policies: GamePolicies = [
             (
                 CONTROLLER_VOCABULARY_FIELD,
                 CONTROLLER_VOCABULARY_IDENTIFIER,
@@ -548,7 +560,14 @@ impl InputPolicy for Mm2Game {
             EMULATOR_BACKEND_FIELD.to_owned(),
             self.identity.clone(),
         )))
-        .collect()
+        .collect();
+        if self.chord_correlation != crate::chord_correlation::ChordCorrelation::Independent {
+            policies.insert(
+                "action_correlation".to_owned(),
+                self.chord_correlation.identifier().to_owned(),
+            );
+        }
+        policies
     }
 
     fn resolve_recorded(&self, policies: &GamePolicies) -> Result<Mm2CampaignRun, Box<dyn Error>> {
@@ -586,14 +605,22 @@ impl InputPolicy for Mm2Game {
         mixture: MixtureDraw,
         mutation_seed: u64,
     ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-        draw_suffix(
+        if self.chord_correlation != crate::chord_correlation::ChordCorrelation::Independent
+            && mixture.mixture != DrawMixture::AlphabetOnly
+        {
+            return Err("action correlation currently requires alphabet_only".into());
+        }
+        let mut suffix = draw_suffix(
             shape,
             mixture.mixture,
             mixture.weight,
             mutation_seed,
             |_| Ok(None),
             sample_chord,
-        )
+        )?;
+        self.chord_correlation
+            .apply(&mut suffix, mutation_seed, 8)?;
+        Ok(suffix)
     }
 
     fn expand_suffix_recorded(
@@ -887,6 +914,69 @@ pub fn replay_mm2_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn correlation_identity_is_strict_and_suffix_local() {
+        use crate::chord_correlation::ChordCorrelation;
+        let ordinary =
+            Mm2Game::new_at_stage(&[0], Path::new("unused"), "test", Mm2Stage::default());
+        let old = ordinary.policies(&Mm2CampaignRun);
+        assert!(!old.contains_key("action_correlation"));
+        for policy in [
+            ChordCorrelation::ComponentHalf,
+            ChordCorrelation::MatchedWholeRepeat,
+        ] {
+            let candidate =
+                Mm2Game::new_at_stage(&[0], Path::new("unused"), "test", Mm2Stage::default())
+                    .with_chord_correlation(policy);
+            let new = candidate.policies(&Mm2CampaignRun);
+            assert_eq!(new.len(), old.len() + 1);
+            assert_eq!(new["action_correlation"], policy.identifier());
+            assert!(old.iter().all(|(key, value)| new.get(key) == Some(value)));
+            assert!(candidate.resolve_recorded(&new).is_ok());
+            assert!(ordinary.resolve_recorded(&new).is_err());
+            assert!(candidate.resolve_recorded(&old).is_err());
+            let mix = MixtureDraw {
+                mixture: DrawMixture::AlphabetOnly,
+                weight: 0,
+                splice_weight: 0,
+            };
+            let first = candidate
+                .expand_suffix(&Mm2CampaignRun, &(), SuffixShape::OneToSix, mix, 123)
+                .unwrap();
+            candidate
+                .expand_suffix(&Mm2CampaignRun, &(), SuffixShape::OneToSix, mix, 789)
+                .unwrap();
+            assert_eq!(
+                first,
+                candidate
+                    .expand_suffix_recorded(
+                        &Mm2CampaignRun,
+                        &(),
+                        SuffixShape::OneToSix,
+                        mix,
+                        None,
+                        123
+                    )
+                    .unwrap()
+            );
+            assert!(
+                candidate
+                    .expand_suffix(
+                        &Mm2CampaignRun,
+                        &(),
+                        SuffixShape::OneToSix,
+                        MixtureDraw {
+                            mixture: DrawMixture::BiasedHalf,
+                            weight: 0,
+                            splice_weight: 0,
+                        },
+                        123
+                    )
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn recorded_policy_set_is_exact_and_game_owned() {

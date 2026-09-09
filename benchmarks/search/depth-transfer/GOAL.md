@@ -154,3 +154,13 @@ instrumentation framework or reconstruct discarded full campaigns. A new
 performance panel still needs a frozen endpoint, paired seeds, resource bounds,
 futility gate and a favorable preceding qualification. The original matched
 boss/Wily and untouched-validation objective remains active and unachieved.
+
+
+The next theory pass selected a fixed suffix-local component-refresh kernel;
+see ../action-correlation/design.json. Exact finite checks distinguish it from
+matched whole-command persistence and exhibit an adverse task, so there is no
+utility-dominance claim. The implementation keeps original suffix timing and
+special taps, starts fresh at every suffix, and shares one parameter setting
+between Metroid and MM2. It earns bounded native compatibility/replay
+qualification only. No fresh performance panel or extra frame allocation is
+implied by the constructed-task result.

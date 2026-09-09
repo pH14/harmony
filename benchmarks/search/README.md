@@ -326,3 +326,12 @@ Publish solve status **and named milestones**, including runs with no further
 discovery. Compare admitted work for search quality; use matched CPU types and
 isolated runs for claims about throughput. The historical audit and independently
 replayed evidence are recorded in `results/progress-audit-007.json`.
+
+
+Metroid/MM2 action-correlation studies may set `search.chord_correlation` to
+`component_refresh_half_v1` or its matched `whole_repeat_37_of_210_v1` control,
+with `mixture: alphabet_only`. An omitted field preserves ordinary draws. The
+new policy is explicit in workload identities; the generic `compare` command
+continues rejecting changed workload policies. An intentional policy experiment
+must register each arm's complete identity and its scoring rule instead of
+loosening that guard. See the [action-correlation design](action-correlation/README.md).
