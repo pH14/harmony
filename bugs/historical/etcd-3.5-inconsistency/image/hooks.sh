@@ -50,29 +50,31 @@ case "$1" in
     # evidence of corruption; only a successful readback can publish a verdict.
     ctl endpoint health >/dev/null 2>&1 || exit 0
     snapshot=${journal}.$$
-    trap 'rm -f "${snapshot}"' EXIT
+    expected=${snapshot}.expected
+    actual_raw=${snapshot}.actual.raw
+    actual=${snapshot}.actual
+    trap 'rm -f "${snapshot}" "${expected}" "${actual_raw}" "${actual}"' EXIT
     cp "${journal}" "${snapshot}" 2>/dev/null || exit 0
+    # Keep only complete, workload-shaped records. The journal is appended by
+    # detached workers, so its final line can be a partial write.
+    awk -F '	' '
+      $1 ~ /^museum\/[1-4]\/key-[0-9]+$/ &&
+      $2 ~ /^value-[1-4]-[0-9]+$/ { print $1 "\t" $2 }
+    ' "${snapshot}" | LC_ALL=C sort >"${expected}"
+    [ -s "${expected}" ] || exit 0
+
+    # One prefix read replaces one etcdctl process and RPC per journal row.
+    # Convert etcdctl's key/value line pairs to the same canonical form as the
+    # journal, then check only the acknowledged subset. Extra keys can be
+    # present because the workers may append a journal record after a put.
+    ctl get museum/ --prefix >"${actual_raw}" 2>/dev/null || exit 0
+    awk '
+      NR % 2 == 1 { key = $0; next }
+      { print key "\t" $0 }
+    ' "${actual_raw}" | LC_ALL=C sort >"${actual}"
     failed=0
-    while IFS='	' read -r key expected; do
-      # The journal is appended by detached workers. A snapshot can end at a
-      # record while that record is being written; ignore that incomplete tail
-      # rather than turning the journal transport race into a false bug.
-      case "${key}" in
-        museum/[1-4]/key-[0-9]*) ;;
-        *) continue ;;
-      esac
-      case "${expected}" in
-        value-[1-4]-[0-9]*) ;;
-        *) continue ;;
-      esac
-      if ! actual=$(ctl get "$key" --print-value-only 2>/dev/null); then
-        exit 0
-      fi
-      if [ "$actual" != "$expected" ]; then
-        failed=1
-        break
-      fi
-    done <"${snapshot}"
+    missing=$(comm -23 "${expected}" "${actual}")
+    [ -z "${missing}" ] || failed=1
     echo '@reachable 11'
     if [ "$failed" -eq 0 ]; then
       echo '@always 1 1'
