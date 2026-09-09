@@ -12,7 +12,8 @@ The research baseline is commit `8e5ae6830775d886d6f486d81115b3f655e1128d`,
 which adds diagnostics and experimental two-extreme retention on top of PR #268
 (`03b8c750`). That committed work belongs to the separate ms02 research effort.
 We reuse it without modifying its worktree, runs, or uncommitted local-search
-experiment. All comparisons below use the same frozen binary for both arms.
+experiment. Resource comparisons use the same frozen binary for both arms;
+key comparisons freeze separate feature builds from identical source.
 Its optional retention policy is disabled in controls.
 
 msr1 has 12 ARM cores (four A520 and eight A720), 54 GiB RAM and about 792 GiB
@@ -23,9 +24,10 @@ have different clocks, so matched-work results are primary. Paired placements
 must be swapped before interpreting throughput. Bound total output to 80 GiB,
 each cell to 4 GiB, and each experiment with the runner's process-group watchdog.
 
-The licensed Metroid asset transfer from ms02 awaits explicit approval after
-automatic approval review rejected it. MM2 and SMB assets already on msr1 have
-the expected hashes. Source, theory, and those workloads can proceed meanwhile.
+The user explicitly approved transferring the existing Metroid asset from ms02
+at the first checkpoint. The copy to msr1 has the expected SHA-256
+`e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6`.
+MM2 and SMB assets already on msr1 also have the expected hashes.
 
 ## Questions and evidence gates
 
@@ -79,7 +81,8 @@ No deep-search claim follows from qualification.
 
 An initial source transfer raced directory creation and failed before copying;
 it was retried after creation succeeded. The licensed ROM transfer was rejected
-before execution and has not been retried. Neither consumed search work.
+before execution; it succeeded after the user's subsequent explicit approval.
+Neither infrastructure event consumed search work.
 
 B01 passed: both 5,000-job cells completed full campaign/checkpoint and witness
 verification. SMB admitted 689,658 frames; MM2 Metal admitted 564,972 frames.
@@ -283,14 +286,16 @@ keeps the historical key type unchanged while freezing two explicit executables.
 First verify the exact partition refinement and all pixel/pose marginal mappings
 without an emulator (10m watchdog). Then build immutable default and feature
 variants (20m each), recording Cargo features in the build attestation. With
-the Metroid ROM available, run a 5k full-replay feature qualification and a
-100k default run whose stream matches the frozen baseline. Only then compare
+the Metroid ROM available, establish the ARM baseline with the frozen baseline
+executable, run a 5k full-replay feature qualification, and require the new
+default executable to match the ARM baseline at 100k jobs. Do not compare raw
+stream hashes against ms02, whose core identity differs. Only then compare
 fresh development seed 3 under default/refined identity at 500k jobs/70M frames,
 4 workers/8 GiB, semantic/alphabet-only controls and 30m per cell. This is a
 key-only ablation: neither optional resource retention policy is enabled.
 More retained cells without better useful progress fails the gate; inspect
 memory/exposure before any longer run. These are development seeds and cannot
-qualify the breakthrough panel. Metroid ROM transfer remains pending approval.
+qualify the breakthrough panel. Metroid ROM transfer was later approved.
 
 A03 failed its preregistered escalation gate. At the fixed work ceilings,
 the screen-attainment pairs (coverage, extremes) were (16,8), (8,8), (6,7)
@@ -317,3 +322,33 @@ jobs, full replay, 240+60s per cell. All four streams must match B01 because
 the new feature changes only Metroid. This completes the available cross-game
 compatibility checks before asking for the still-required Metroid asset.
 It cannot substitute for a Metroid replay or fresh-search result.
+
+Q03 passed all four cells. Both frozen executables reproduce B01's exact SMB
+and MM2 stream hashes with full campaign replay. Results and build attestations
+are in [q03-results.json](q03-results.json). No Metroid emulator qualification
+had run at this checkpoint because the ROM transfer awaited approval. The bounded next
+experiments are prepared in `k01-smoke.json`, `k01-compatibility.json`, and
+`k01-development.json`; [CHECKPOINT.md](CHECKPOINT.md) summarizes the evidence
+and resumption order.
+
+### T03/B02: observation validity before the Metroid key experiment
+
+After the approved ROM transfer, the parallel research effort reported a
+verified transient BCD health underflow. Its terminal correction at `e59a953a`
+adds an opt-in `death_or_bcd_underflow_or_ending_v3` predicate and replay-policy
+identity, with fixed observation counters. Import only its target, campaign,
+evaluation request and runner changes; do not import local-search tools or
+change the other worktree. Preserve v2 defaults and raw health. Its independently
+replayed local probes support correctness/extendability, not fresh depth.
+
+B02 establishes the original ARM Metroid 5k full-replay and 100k witness streams
+from `baseline-001`, sequentially on CPUs 0–3 under an 1100s group watchdog.
+The integrated default build must reproduce both. Both key variants then need
+5k full replay under corrected terminal semantics before the key-only pair.
+Hold terminal v3 fixed in both development arms; do not attribute its effects
+to key refinement. The prior prepared feature executables remain archived,
+but the corrected pair will receive new source and binary identities.
+
+The initial test invocation used the parent Cargo workspace and failed before
+running tests because NES is an independent package. Corrected the invocation
+to its manifest; this was tooling setup, not a scientific outcome.
