@@ -95,3 +95,33 @@ with matched hard resource bounds and CPU/elapsed tolerance. It stops after
 completed pairs if three strict wins become impossible. No screening result is
 available at registration; no long campaign or validation panel is authorized by
 qualification alone.
+
+## S01 outcome and independent confirmation
+
+[S01 completed](s01-results.json) all four registered pairs. Its
+[independently recomputed result](s01-analysis.json) passes: three strict wins,
+with candidate/control restricted-cost ratio in [0.71988, 0.72107], or about
+28% less admitted work. These interval bounds reflect checkpoint timing,
+not population uncertainty. Candidate total CPU cost was 1.0061 times control
+and elapsed cost 1.0123 times control; the resource gate also passed.
+
+| Seed | Control first-missile frames | Candidate first-missile frames | Result |
+| --- | ---: | ---: | --- |
+| 3770579311 | 10.546M–10.560M | 6.899M–6.908M | Win |
+| 3870466989 | 11.473M–11.485M | 11.983M–11.995M | Loss |
+| 2087347095 | 14.699M–14.711M | 12.855M–12.868M | Win |
+| 2292227086 | Not attained by 25M | 12.720M–12.731M | Win |
+
+The censored control contributes the full restricted cost of 25M; it is not
+excluded. All four candidate first-missile discoveries and all observed control
+discoveries were replayed twice. Total admitted search was 200,007,288 frames,
+including 7,288 frames of bounded drain, plus 912,556 measured witness replay
+frames. Setup/unadmitted physical work remains additional where unmeasured.
+
+This is an exploratory pass, not independent confirmation or a boss breakthrough.
+The [prewritten conditional allocation](conditional-confirmation.md) keeps four
+fresh pairs for [R01](r01-registration.json), with an explicitly shorter 20M
+restricted horizon, and reserves 40M nominal frames for conditional MM2 transfer.
+The policy, executable and other Metroid settings remain unchanged. R01 checks
+S01's frozen positive gate before dispatch and verifies that its new seeds have
+not appeared in owned run records. No confirmation result is yet available.

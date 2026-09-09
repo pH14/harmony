@@ -1,0 +1,351 @@
+{
+  "format": "continuation-yield-screen-analysis-v1",
+  "registration_format": "continuation-yield-s01-registration-v1",
+  "results_sha256": "a14316175b8bf664239457df29b3cc11d43aecdebb459bdf07ec3de82739b13c",
+  "registration_sha256": "1b338951642a9a40a6d944dad7bdcc72738534ebdd9841a1bcb5a7e015be9009",
+  "score": {
+    "decision": "pass",
+    "completed_pairs": 4,
+    "strict_wins": 3,
+    "remaining_pairs": 0,
+    "candidate_to_control_cost_ratio_interval": [
+      0.7198765854151746,
+      0.7210676107571222
+    ],
+    "candidate_to_control_resource_ratios": {
+      "cpu_seconds": 1.0061330245590867,
+      "elapsed_seconds": 1.0123417141523425
+    },
+    "pairs": [
+      {
+        "seed": 3770579311,
+        "control": [
+          10545807,
+          10559707
+        ],
+        "candidate": [
+          6899105,
+          6908115
+        ],
+        "strict_win": true,
+        "difference_interval": [
+          -3660602,
+          -3637692
+        ]
+      },
+      {
+        "seed": 3870466989,
+        "control": [
+          11472549,
+          11484624
+        ],
+        "candidate": [
+          11982519,
+          11994966
+        ],
+        "strict_win": false,
+        "difference_interval": [
+          497895,
+          522417
+        ]
+      },
+      {
+        "seed": 2087347095,
+        "control": [
+          14698894,
+          14711417
+        ],
+        "candidate": [
+          12854890,
+          12868040
+        ],
+        "strict_win": true,
+        "difference_interval": [
+          -1856527,
+          -1830854
+        ]
+      },
+      {
+        "seed": 2292227086,
+        "control": [
+          25000000,
+          25000000
+        ],
+        "candidate": [
+          12720003,
+          12731189
+        ],
+        "strict_win": true,
+        "difference_interval": [
+          -12279997,
+          -12268811
+        ]
+      }
+    ],
+    "interpretation": "Exploratory compute-allocation gate, not statistical significance or independent confirmation."
+  },
+  "rows": [
+    {
+      "id": "pair-0-control",
+      "seed": 3770579311,
+      "admitted_frames": 25000694,
+      "frame_drain": 694,
+      "executions": 204147,
+      "search_seconds": 432.339055489,
+      "elapsed_seconds": 437.7670598409604,
+      "cpu_seconds": 1287.904,
+      "max_process_rss_bytes": 665198592,
+      "peak_disk_allocated_bytes_sampled": 12259328,
+      "twice_replayed_witness_suffix_frames": 110994,
+      "stream_sha256": "f9953d858f85deb6649df4a44adea7b7b98408365478731c5e285151812f4cc4",
+      "summary_sha256": "e23db2905fbd9cdc8c83acba798a7e64f24739b7ce979e5cf83c33384af4e46f",
+      "progress_sha256": "72dc558625650f87f00e803442410e7abcc6daaaa5f8d47c22654cc3cd8bbaf6",
+      "endpoint_evidence": {
+        "endpoint": "missile_capacity",
+        "budget_frames": 25000000,
+        "arrival_interval": {
+          "lower_open": 10545807,
+          "upper_closed": 10559707,
+          "first_execution": 78667
+        },
+        "observed_through_frames": 25000694,
+        "observed_full_budget": true,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          10545807,
+          10559707
+        ]
+      }
+    },
+    {
+      "id": "pair-0-candidate",
+      "seed": 3770579311,
+      "admitted_frames": 25001003,
+      "frame_drain": 1003,
+      "executions": 202311,
+      "search_seconds": 434.810079909,
+      "elapsed_seconds": 445.73269050603267,
+      "cpu_seconds": 1298.976359,
+      "max_process_rss_bytes": 1060634624,
+      "peak_disk_allocated_bytes_sampled": 12959744,
+      "twice_replayed_witness_suffix_frames": 212062,
+      "stream_sha256": "50714d26b6c448e9b318f781194f55c4b3514db276333655d743fe919705116c",
+      "summary_sha256": "d744cf2ea745c39d2f8c862762ee65c116c605fa4f26be32e965c67d0c0e7a4e",
+      "progress_sha256": "2fc352cc3ed17f00c370a99e9c692ebfc15686e52b7644dd7cf94211efc5e65b",
+      "endpoint_evidence": {
+        "endpoint": "missile_capacity",
+        "budget_frames": 25000000,
+        "arrival_interval": {
+          "lower_open": 6899105,
+          "upper_closed": 6908115,
+          "first_execution": 52301
+        },
+        "observed_through_frames": 25001003,
+        "observed_full_budget": true,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          6899105,
+          6908115
+        ]
+      }
+    },
+    {
+      "id": "pair-1-candidate",
+      "seed": 3870466989,
+      "admitted_frames": 25001032,
+      "frame_drain": 1032,
+      "executions": 200257,
+      "search_seconds": 431.77897387,
+      "elapsed_seconds": 437.7267485659686,
+      "cpu_seconds": 1284.994725,
+      "max_process_rss_bytes": 758673408,
+      "peak_disk_allocated_bytes_sampled": 11964416,
+      "twice_replayed_witness_suffix_frames": 124140,
+      "stream_sha256": "c2a6990de30fa1498cfc346d0b1cdb3536e2ccf396eadd6912f34838f11b5485",
+      "summary_sha256": "49a396881a6bced335ba089052a3c61c4000dd9410f9f56b0ae9e505f3a34cc1",
+      "progress_sha256": "35cf0c05f9b0afadd8b0fa3d0b1f7c31ecbcc9878b744c2101a5d59a3877a546",
+      "endpoint_evidence": {
+        "endpoint": "missile_capacity",
+        "budget_frames": 25000000,
+        "arrival_interval": {
+          "lower_open": 11982519,
+          "upper_closed": 11994966,
+          "first_execution": 88888
+        },
+        "observed_through_frames": 25001032,
+        "observed_full_budget": true,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          11982519,
+          11994966
+        ]
+      }
+    },
+    {
+      "id": "pair-1-control",
+      "seed": 3870466989,
+      "admitted_frames": 25000966,
+      "frame_drain": 966,
+      "executions": 205079,
+      "search_seconds": 432.116733118,
+      "elapsed_seconds": 437.6526433949475,
+      "cpu_seconds": 1283.792749,
+      "max_process_rss_bytes": 652886016,
+      "peak_disk_allocated_bytes_sampled": 11931648,
+      "twice_replayed_witness_suffix_frames": 103728,
+      "stream_sha256": "4fd4f1ca264eb7b6ef3cca25e68dd563d27238368bc5c5eda78d2d55b876bd07",
+      "summary_sha256": "690d59159bfa97594c776bf2cd076a6e7c3b62b11218ab083d6afae798116a2b",
+      "progress_sha256": "0c673082c017b4fd8c6c6e12b4996fc64fac687fbd3ce31e6727ff01e7058ba6",
+      "endpoint_evidence": {
+        "endpoint": "missile_capacity",
+        "budget_frames": 25000000,
+        "arrival_interval": {
+          "lower_open": 11472549,
+          "upper_closed": 11484624,
+          "first_execution": 85547
+        },
+        "observed_through_frames": 25000966,
+        "observed_full_budget": true,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          11472549,
+          11484624
+        ]
+      }
+    },
+    {
+      "id": "pair-2-control",
+      "seed": 2087347095,
+      "admitted_frames": 25000998,
+      "frame_drain": 998,
+      "executions": 196691,
+      "search_seconds": 427.371936649,
+      "elapsed_seconds": 433.7159125310136,
+      "cpu_seconds": 1276.870349,
+      "max_process_rss_bytes": 635539456,
+      "peak_disk_allocated_bytes_sampled": 11411456,
+      "twice_replayed_witness_suffix_frames": 115814,
+      "stream_sha256": "6cc565396e152482545d28bc1a7f1b66d5078d43c661c3b3ee47a9b03971d1c4",
+      "summary_sha256": "23b30d01dc2198d0e79562139395c208a4adef8699aae257fa634c01fb5c9be9",
+      "progress_sha256": "0048cf4384e4f5be136ad95a42f518c3e0d0cb2f1f981682c51469ed281d9b99",
+      "endpoint_evidence": {
+        "endpoint": "missile_capacity",
+        "budget_frames": 25000000,
+        "arrival_interval": {
+          "lower_open": 14698894,
+          "upper_closed": 14711417,
+          "first_execution": 107071
+        },
+        "observed_through_frames": 25000998,
+        "observed_full_budget": true,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          14698894,
+          14711417
+        ]
+      }
+    },
+    {
+      "id": "pair-2-candidate",
+      "seed": 2087347095,
+      "admitted_frames": 25000661,
+      "frame_drain": 661,
+      "executions": 199877,
+      "search_seconds": 428.634942937,
+      "elapsed_seconds": 434.80413673300063,
+      "cpu_seconds": 1279.125446,
+      "max_process_rss_bytes": 681476096,
+      "peak_disk_allocated_bytes_sampled": 11890688,
+      "twice_replayed_witness_suffix_frames": 122522,
+      "stream_sha256": "0405595d7ecf5fd84fab6263ea18446ff52941726a310523cc1e1b3de6597502",
+      "summary_sha256": "cede8509f53fcd2383433401311275c3308fa9b32607b43407494b4988034f6b",
+      "progress_sha256": "a46ea269200ad68fb73e63762f2c715c3dfd995fee0ed203b1860a673974e0a5",
+      "endpoint_evidence": {
+        "endpoint": "missile_capacity",
+        "budget_frames": 25000000,
+        "arrival_interval": {
+          "lower_open": 12854890,
+          "upper_closed": 12868040,
+          "first_execution": 95154
+        },
+        "observed_through_frames": 25000661,
+        "observed_full_budget": true,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          12854890,
+          12868040
+        ]
+      }
+    },
+    {
+      "id": "pair-3-candidate",
+      "seed": 2292227086,
+      "admitted_frames": 25001036,
+      "frame_drain": 1036,
+      "executions": 198836,
+      "search_seconds": 429.157037259,
+      "elapsed_seconds": 434.88158920797287,
+      "cpu_seconds": 1280.331686,
+      "max_process_rss_bytes": 567771136,
+      "peak_disk_allocated_bytes_sampled": 11849728,
+      "twice_replayed_witness_suffix_frames": 109880,
+      "stream_sha256": "39863d15a00b6088e2188f2667633a9945aaa901483cd8de63e2c9fbdcc044b6",
+      "summary_sha256": "3896bc8d3b9d0f37c0b34991295ef8b95eefdd4914da136dfb948a87c9b558a3",
+      "progress_sha256": "0b98ecd3c8401e3168739cd1eea9e757d7c53d720616ab01a5966371d247c8e4",
+      "endpoint_evidence": {
+        "endpoint": "missile_capacity",
+        "budget_frames": 25000000,
+        "arrival_interval": {
+          "lower_open": 12720003,
+          "upper_closed": 12731189,
+          "first_execution": 93645
+        },
+        "observed_through_frames": 25001036,
+        "observed_full_budget": true,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          12720003,
+          12731189
+        ]
+      }
+    },
+    {
+      "id": "pair-3-control",
+      "seed": 2292227086,
+      "admitted_frames": 25000898,
+      "frame_drain": 898,
+      "executions": 180006,
+      "search_seconds": 421.726939853,
+      "elapsed_seconds": 422.636512660014,
+      "cpu_seconds": 1263.508632,
+      "max_process_rss_bytes": 262754304,
+      "peak_disk_allocated_bytes_sampled": 9543680,
+      "twice_replayed_witness_suffix_frames": 13416,
+      "stream_sha256": "f5e96b3c22e6b6b1a2bf8d3e57fa1ce83c856ac068a7f5d2fc05cd1b010109a5",
+      "summary_sha256": "d871098cdd2fb5214403612ec9203748935f7bddd599215a2cf8c82a1de8241f",
+      "progress_sha256": "24dabadcf53c84ab4aef344683a729ec4ede49612eed64689af00fb45475ca3f",
+      "endpoint_evidence": {
+        "endpoint": "missile_capacity",
+        "budget_frames": 25000000,
+        "arrival_interval": null,
+        "observed_through_frames": 25000898,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          25000000,
+          25000000
+        ]
+      }
+    }
+  ],
+  "admitted_frames": 200007288,
+  "twice_replayed_witness_suffix_frames": 912556,
+  "unrun_pairs": 0,
+  "interpretation": [
+    "This is the registered exploratory allocation gate, not a significance test.",
+    "Unrun pairs and untouched validation have no observed outcomes.",
+    "Map/gear/boss anecdotes cannot override this fixed primary endpoint.",
+    "Physical setup, snapshot reconstruction and unadmitted work may be additional.",
+    "A pass earns independent confirmation and transfer; it is not a breakthrough."
+  ]
+}
