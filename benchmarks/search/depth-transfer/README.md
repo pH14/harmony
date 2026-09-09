@@ -46,5 +46,41 @@ Each future performance panel keeps candidate/control resource comparisons on
 one host and one CPU set; architecture-specific binary/core identities remain
 visible. Development and independent confirmation are scored separately.
 
-Status: registration and host qualification preparation; no new performance
-result or depth claim yet. All new changes remain in PR #287.
+## Completed qualification and diagnostics
+
+[QX01](qx01-qualification.json) qualifies the native x86 build on ms02. The
+default 2,000-job fixture passes full replay; one-slot and two-slot milestone
+runs stop after the same first-morph event at job 148 / 22,586 admitted frames,
+with identical retained artifacts and 23,883 total frames including drain.
+The matching ARM semantic counts do not imply cross-architecture snapshot or
+resource identity. The [checker](verify_qx01.py) consumes existing artifacts
+without rerunning emulation. Its 669,822 known auxiliary frames include replay.
+
+The QX01 launch accidentally recorded a placeholder registration-commit label.
+The raw result is preserved. The [binding](qx01-registration-binding.json)
+verifies its registration bytes against commit `55d3e16b`, which existed before
+launch; this is a provenance correction, not a replacement experiment.
+
+The previously registered E02 seed-5 diagnostic is now
+[complete](e02-seed5-results.json). All three independent replays agree, with
+383,796 physical frames including setup. Its selected Ridley-area route has
+zero guarded loader or active-tag episodes. Together with the earlier seed-3
+result, this completes the two-route diagnostic; it does not establish absence
+across either producing campaign. An initial launch failed before emulation
+because `/usr/bin/time` was unavailable; the
+[resumption record](e02-seed5-resumption.json) preserves that zero-frame failure.
+
+The [auxiliary ledger](auxiliary-ledger-after-qx01-e02.json) records 1,053,618
+known frames for these completed operations, separately from ongoing search.
+
+[F01](f01-observer-registration.json) registers a bounded positive control for
+the existing raw observer, using Lord Tom's public
+[Metroid movie](https://tasvideos.org/1320M) on FCEUX. This is an independent
+reference emulator; the movie's routes and states never enter fresh search.
+A complete replay must reproduce a guarded defeat transition before a second
+process is allowed. Loader/active-slot agreement alone is insufficient to claim
+damage. A mismatch is retained as a decoder falsifier, not fixed by extending
+the search budget. The [Lua observer](observe_fm2.lua) only reads memory.
+
+Status: C01 calibration is running; no candidate depth-transfer result yet.
+All new changes remain in PR #287.

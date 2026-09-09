@@ -1,0 +1,9 @@
+{
+  "format": "depth-transfer-qx01-registration-binding-v1",
+  "recorded_utc": "2026-09-09T20:26:21.870385+00:00",
+  "authoritative_registration_commit": "55d3e16bf40ed4404e46d5fe5f0f3ceccff69cc1",
+  "registration_sha256": "03dd8c4e89d06d3001fafc82eff27a9d517ff2ad1a7bf65a5f20a41f1db35ae6",
+  "preserved_launch_label": "FROZEN_LOCAL_COMMIT_PENDING_SUBSTITUTION",
+  "original_results_sha256": "5a3e5c94da1b88798cc83d0f4e1764f8e0e26b191a8c5032f6736fdaa69c63fe",
+  "correction": "The launcher passed a literal placeholder commit label. The committed registration preceded dispatch, and its exact bytes match both the immutable registration and the result hash. Preserve the original results and bind them here to the actual commit; do not repeat successful emulator work."
+}

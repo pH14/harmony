@@ -1,0 +1,31 @@
+{
+  "format": "depth-transfer-auxiliary-ledger-v1",
+  "recorded_utc": "2026-09-09T20:41:07.665102+00:00",
+  "completed_known_auxiliary_frames": 1053618,
+  "components": [
+    {
+      "id": "QX01",
+      "known_auxiliary_frames": 669822,
+      "result_sha256": "5a3e5c94da1b88798cc83d0f4e1764f8e0e26b191a8c5032f6736fdaa69c63fe"
+    },
+    {
+      "id": "E02 seed 5",
+      "physical_frames_including_setup": 383796,
+      "result_sha256": "e5863362f11ee4a79bd1b41c1b664f0958f4b51f2f1019fc6872b46200be4ea9",
+      "native_service_cpu_seconds_rounded": 83.385,
+      "native_service_memory_peak_display": "6.7M",
+      "completed_utc": "2026-09-09T20:27:50Z"
+    },
+    {
+      "id": "E02 initial missing-time launch",
+      "physical_frames": 0,
+      "cpu_seconds": 0.029465
+    }
+  ],
+  "performance_panel_status": "C01 running; its search and witness work is not included in this completed auxiliary-only ledger.",
+  "limitations": [
+    "QX01 full replay cost inferred from admitted frames; setup/unadmitted physical work remain unmeasured.",
+    "Compilation, local tests and hosted CI are separate and not included in emulator-frame totals.",
+    "Systemd resource displays are rounded; the completed service has been collected."
+  ]
+}

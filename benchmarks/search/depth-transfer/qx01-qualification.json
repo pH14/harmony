@@ -1,0 +1,56 @@
+{
+  "format": "depth-transfer-qx01-qualification-v1",
+  "decision": "pass",
+  "verified_utc": "2026-09-09T20:30:44.420172+00:00",
+  "registration_sha256": "03dd8c4e89d06d3001fafc82eff27a9d517ff2ad1a7bf65a5f20a41f1db35ae6",
+  "panel_sha256": "5a3e5c94da1b88798cc83d0f4e1764f8e0e26b191a8c5032f6736fdaa69c63fe",
+  "checker_sha256": "0873120fc519fa3bb6f0d76a50ca53bc08c04a4b47d18be4aeaaa06e91e73b82",
+  "source_sha256": "2a4cc365f0dcbfa66f8818a5076d75766139b6920b60a6f378672308631d5647",
+  "binary_sha256": "ab331788fd5755a1e6b4b30b1e73a1cb07a6338d1e6a25ebc6722fb1a242505c",
+  "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+  "cells": [
+    {
+      "id": "default",
+      "qualification_admitted_frames": 284283,
+      "inferred_full_replay_admitted_frames": 284283,
+      "twice_replayed_witness_frames": 1908,
+      "artifact_sha256": {
+        "stream.jsonl": "484ee2e2426d9e5379b00b1cb78aecd6823bfe761df9e64cd35a99f860145f9c",
+        "campaign.json": "0c39efca76ca28a3258caefe897f41ff7ab11211dfb706f26985fe6d32a12794",
+        "checkpoint.json": "7dc1247d2aba6b631e7da8f78acfc5b5f17a73e6881de5bb50304d6a1a49474d",
+        "result.json": "883bdbf9c63fe259a1464346ff98b4626134589b9a1efc70ff6ce5445688a966"
+      }
+    },
+    {
+      "id": "morph-one-slot",
+      "qualification_admitted_frames": 23883,
+      "inferred_full_replay_admitted_frames": 23883,
+      "twice_replayed_witness_frames": 1908,
+      "artifact_sha256": {
+        "stream.jsonl": "e6bdb672e520f52ea488a64b649ef64090acd633bcc9f9cd69737ef31868bd22",
+        "campaign.json": "6af0b36167e543cca40107633d0ebd4aa09d76a15ca514c7dd7c0cc0b002ddcf",
+        "checkpoint.json": "d2bb8308a1e949e153371791c518ce8a851cf1a751c3b66e3778e6cb9e286bd5",
+        "result.json": "4c98db89e119f0ae6ed475735fa93b78c5b6c18293001eea29ab006b5e28ac06"
+      }
+    },
+    {
+      "id": "morph-two-slots",
+      "qualification_admitted_frames": 23883,
+      "inferred_full_replay_admitted_frames": 23883,
+      "twice_replayed_witness_frames": 1908,
+      "artifact_sha256": {
+        "stream.jsonl": "e6bdb672e520f52ea488a64b649ef64090acd633bcc9f9cd69737ef31868bd22",
+        "campaign.json": "6af0b36167e543cca40107633d0ebd4aa09d76a15ca514c7dd7c0cc0b002ddcf",
+        "checkpoint.json": "d2bb8308a1e949e153371791c518ce8a851cf1a751c3b66e3778e6cb9e286bd5",
+        "result.json": "94a9653b039413e4bd64b7c8457ef6bd1b64fdadd6b7ca1590f697ef1435d40f"
+      }
+    }
+  ],
+  "known_auxiliary_frame_charge": 669822,
+  "launch_commit_label": "FROZEN_LOCAL_COMMIT_PENDING_SUBSTITUTION",
+  "limitations": [
+    "Reused short fixture, not performance evidence or universal cross-platform identity.",
+    "See qx01-registration-binding.json for the preserved launch-label correction.",
+    "Full-replay cost is inferred from admitted work; setup and unadmitted physical work remain unmeasured."
+  ]
+}
