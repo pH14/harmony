@@ -223,7 +223,14 @@ fn scan_syscall_instructions(path: &Path) -> Vec<u64> {
                 let Some(delta) = u64::try_from(position - start).ok() else {
                     continue;
                 };
-                places.push(address.saturating_add(delta));
+                let place = address.saturating_add(delta);
+                // The x86 guest's generic execution breakpoint uses an
+                // eight-byte hardware slot.  Hardware requires its address
+                // to be naturally aligned; the slot still covers the
+                // syscall instruction inside that word.  ARM64 execution
+                // breakpoints are four-byte instructions and the `svc`
+                // pattern is already naturally aligned.
+                places.push(if class == 2 { place & !7 } else { place });
             }
         }
     }
@@ -358,7 +365,7 @@ ready /usr/bin/etcdctl endpoint health
         std::fs::write(&path, elf).unwrap();
         #[cfg(unix)]
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(resolve_places(root.path()), [0x400001]);
+        assert_eq!(resolve_places(root.path()), [0x400000]);
     }
 
     #[test]
