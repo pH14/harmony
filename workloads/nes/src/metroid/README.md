@@ -151,12 +151,12 @@ The key's serialized field layout is unchanged; the recorded policy identifies
 the position/pose interpretation. Archive imports already re-derive keys from
 reconstructed states rather than copying the old key identity.
 
-This is an abstraction experiment, not a validated improvement. The frozen
-numeric continuation probes predict that it separates 11 of 15 sampled pairs
-with distinguishing local exits or survival outcomes. More slots consume the
-same archive byte budget, and retained alternatives may still receive too little
-work. Actual-ROM replay and matched fresh search must qualify it before use.
-See the [research ledger](../../../../benchmarks/search/retention-theory/README.md).
+This is an abstraction experiment, not a validated improvement. Separating
+sampled competitors with different futures motivates testing a key but does not
+prove better discovery. More slots consume the same archive byte budget, and
+retained alternatives may still receive too little work. Actual-ROM replay and
+matched fresh-search results, including failed escalation gates, are recorded
+in the [research ledger](../../../../benchmarks/search/retention-theory/README.md).
 
 ## Standalone boss-memory diagnostics
 

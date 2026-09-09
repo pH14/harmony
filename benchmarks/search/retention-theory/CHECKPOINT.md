@@ -122,7 +122,7 @@ terminal v3 in both arms. Underflow endpoints are excluded and observed in
 qualification. Follow-up [#281](https://github.com/pH14/harmony/issues/281) covers
 boss encounters and partial fight observations, which have not been implemented.
 
-## Current experiment and interpretation
+## Earlier R03 design and interpretation (historical)
 
 R03 keeps the ordinary quality winner and the best state from the lowest-ranked
 creation job, at most two states within the same byte budget. It uses existing
