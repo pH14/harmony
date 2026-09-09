@@ -506,3 +506,13 @@ test-only helper import; fixed before these checks. A duplicated full check
 was needed because the previous tool response lost its completion status;
 the logged repeat completed in under a minute. `analyze_p03.py` reproduces
 `p03-analysis.json` byte for byte from the private raw output.
+
+R03 ARM source is commit `33795855`, default features, source digest
+`0429fe61af18ef06429e6ea2920fd8a69dc225fd25289eb31df37bcc55e22f97`;
+binary `11249fff2bce1401d46d21db1f081678caae28c63124793886e78b5eb3992a7e`.
+The frozen build finished in 44.62s with Rust 1.97.1.
+Before development outputs exist, `analyze_r03.py` records the comparison
+logic. For MM2, a useful transfer gate specifically means a replayed Metal
+victory when the control does not win within budget, or at least 20% fewer
+frames to their common victory. Screen counts alone do not qualify new chains.
+Wall censoring blocks either game's escalation gate; report the completed work.
