@@ -20,5 +20,18 @@
   "formatting": "generic and NES manifest checks passed",
   "log_sha256": "5e1edc33e198b123ceb0e78778d86ac3541b7ff65282887a3b4363e83c3d5845",
   "scope": "local portable checks; not a CI or full-game performance claim",
-  "default_nes_library_tests_before_census_repair": 125
+  "default_nes_library_tests_before_census_repair": 125,
+  "subsequent_theory_fixtures": {
+    "passing_focused_tests": [
+      "equal_policy_averaged_event_features_can_hide_opposite_action_futures",
+      "pairwise_difference_does_not_prove_a_future_was_lost_from_two_survivors"
+    ],
+    "production_changes": false,
+    "generic_all_targets_strict_clippy": "passed",
+    "logs_sha256": {
+      "harmony-predictive-fingerprint-test.log": "ad974e6829ed80951591dbc69e848c2afe23759cca56aab2ccfdddf55d2697e6",
+      "harmony-survivor-union-test.log": "b7f60cb014970690712a21656ec140931f840a0da2121d7abc842b2a8ddc79a5",
+      "harmony-theory-fixtures-clippy.log": "365f6babc4736462aa56ed279026e82b7383fbe14ba469486e094be53d7510a0"
+    }
+  }
 }

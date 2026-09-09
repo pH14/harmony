@@ -56,3 +56,15 @@ deterministic reconstruction from generalization. A signature that predicts
 sampled short futures still needs a matched discovery comparison; it does not
 inherit an all-actions, all-horizons bisimulation theorem. This is a follow-up
 design obligation, not authorization for another long run after a failed gate.
+
+For a multi-representative slot, those probes must compare against the complete
+survivor set. The current audit records a candidate and one actual competitor;
+that suffices for a one-representative comparison but not a claim about the
+union of two survivors' futures. Our second finite fixture uses production
+top-two admission: a rejected candidate differs from the worse survivor, while
+the better survivor already covers its event. The apparent pairwise novelty is
+zero marginal coverage for the retained set. Formally the relevant difference
+is `F(candidate) minus union(F(s) for s in retained)`, not `F(candidate) minus
+F(one competitor)`. Existing P03 single-representative evidence remains scoped
+to its original slots; a future R04 audit must retain all competitors' inputs
+before making a lost-future claim. No new probe campaign is launched here.

@@ -699,3 +699,35 @@ fn equal_policy_averaged_event_features_can_hide_opposite_action_futures() {
     };
     assert_eq!((weighted(0), weighted(1)), (3, 1));
 }
+
+#[test]
+fn pairwise_difference_does_not_prove_a_future_was_lost_from_two_survivors() {
+    let model = Model {
+        labels: vec![0; 4],
+        edges: vec![
+            [edge(3, 1); 2], // The better survivor already covers candidate's event.
+            [edge(3, 2); 2], // The worse survivor does not.
+            [edge(3, 1); 2], // Candidate differs from the worse survivor only.
+            [edge(3, 0); 2],
+        ],
+    };
+    let mut archive = ToyArchive::new(|_| 1);
+    archive.slot_retention = SlotRetentionPolicy::QualityRepresentatives2;
+    for state in 0..3 {
+        let result = offer(
+            &mut archive,
+            state,
+            Key {
+                slot: 0,
+                resources: [10 - state as u64; 2],
+            },
+            1,
+        );
+        assert_eq!(result.is_some(), state < 2);
+    }
+    assert_eq!(archive.active_count(), 2);
+    assert_eq!(model.distinguish(2, 1), Some(vec![0]));
+    assert!(model.can_reach_event(2, 1));
+    assert!(!model.can_reach_event(1, 1));
+    assert!(retained_can_reach(&archive, &model, 1));
+}
