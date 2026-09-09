@@ -154,6 +154,23 @@ unit test and strict Clippy. The ARM `motion-probe-001` build is attested, and
 the diagnostic runs on little CPU4 with2M total frames/600s/4GiB bounds. A pass
 would permit specifying a memory-bounded policy and pilot, not a fresh campaign.
 
+P04 completed and passed: the frozen coarse descriptor separates exactly six
+of the eight still-merged useful pairs, including the identical-mechanical-state
+pair0/trial15. It used1,587,338 physical frames, with all32 endpoints replayed
+twice and all snapshot noninterference checks passing. The resulting
+[context-retention design](motion-retention-design.md) calls for at most two
+quality-ranked context representatives, with an ordinary top-two-quality
+capacity control and unchanged selection geometry. It still needs implementation,
+finite positive/adverse fixtures, replay qualification and a distinguishing pilot
+before any fresh campaign is allowed.
+
+H01 also completed: extremes from exactly sampling's Heat origin did not win
+within85M frames. The conditional20% gate passed without wall censoring.
+Actual admitted work85,001,033; recorded physical lower bound85,144,123. This
+is an adaptive shared-prefix result against coordinate extremes, not evidence
+of a fresh-chain improvement over ordinary retention. J02 remains the relevant
+ordinary-retention depth comparison.
+
 No validation seed has been used. [The validation protocol](validation-protocol.md)
 separates operational repeatability, exact paired inference, censoring, and
 multiple endpoints. Small negative panels and failed compute-allocation gates

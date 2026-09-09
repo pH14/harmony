@@ -1,0 +1,12 @@
+{
+  "audit_sha256": "c310985ec09f24a35f1f8e755a44ecc934f5bc2eba355207f80d74efe85b5120",
+  "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+  "format": "metroid-competitor-motion-probe-v1",
+  "pairs": 16,
+  "physical_frames": 1587338,
+  "read_only_snapshot_checks": true,
+  "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+  "scope": "existing recorded competitors, no new search or suffix trials",
+  "terminal_policy": "death_or_bcd_underflow_or_ending_v3",
+  "verified_replays_per_endpoint": 2
+}

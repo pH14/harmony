@@ -822,3 +822,18 @@ unchanged P03 audit checksum was verified before the bounded diagnostic launch.
 J02 runs separately from driver `56ab51ee`; its analyzer checks per-stage
 lineage, semantic identity and actual completed control work. A stopped control
 that has not observed its frame ceiling cannot supply a matched-work negative.
+
+P04 completed all sixteen pairs with two independent replays per endpoint and
+snapshot noninterference, using 1,587,338 physical frames. The fixed coarse
+tuple separates exactly six of the eight still-merged useful pairs: 0, 3, 5,
+6, 12 and 13. Pair0/trial15 supplies the required identical-mechanical-state
+example. The gate passes for a [bounded design](motion-retention-design.md),
+not fresh search. Pair4 remains indistinguishable even by all seven raw bytes,
+so neither descriptor is promoted to sufficient state. No new suffixes ran.
+
+H01 completed 85,001,033 admitted frames without a Heat victory or wall
+censoring. Against the reused 66,633,523-frame sampling victory, the conditional
+20% gate passes. Recorded physical work is at least85,144,123 frames, with
+zero repeated candidate search. This result concerns the selected shared
+origin and coordinate-extremes comparator; L01's mixed production result
+and the still-running J02 ordinary chain remain separate evidence.
