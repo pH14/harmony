@@ -63,16 +63,18 @@ def main():
                      "endpoint_evidence": record["endpoint_evidence"]})
     report = {"format": "continuation-yield-screen-analysis-v1",
               "registration_format": registration["format"],
+              "stage_purpose": registration["purpose"],
               "results_sha256": sha(args.results), "registration_sha256": sha(args.registration),
               "score": score, "rows": rows,
               "admitted_frames": sum(row["admitted_frames"] for row in rows),
               "twice_replayed_witness_suffix_frames": sum(row["twice_replayed_witness_suffix_frames"] for row in rows),
               "unrun_pairs": score["remaining_pairs"],
-              "interpretation": ["This is the registered exploratory allocation gate, not a significance test.",
+              "interpretation": ["The score is the registered allocation gate, not a significance test or proof of seed independence.",
+                                 "This panel's role is given by stage_purpose. Independence requires the separate registration and prior-seed audit; the scorer alone does not establish it.",
                                  "Unrun pairs and untouched validation have no observed outcomes.",
                                  "Map/gear/boss anecdotes cannot override this fixed primary endpoint.",
                                  "Physical setup, snapshot reconstruction and unadmitted work may be additional.",
-                                 "A pass earns independent confirmation and transfer; it is not a breakthrough."]}
+                                 "A pass supports only this registered stage; further claims require their specified gates and sufficient remaining budget. It is not a breakthrough."]}
     assert not args.out.exists(), "do not replace frozen analysis"
     args.out.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({key: value for key, value in report.items() if key != "rows"}, indent=2))

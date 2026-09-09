@@ -1,0 +1,124 @@
+{
+  "format": "continuation-yield-tq01-registration-v1",
+  "registered_utc": "2026-09-09T16:50:55.152197+00:00",
+  "purpose": "Qualify the unchanged candidate under the existing MM2 evaluation action/suffix/mixture settings with full report/checkpoint replay before the conditional transfer panel.",
+  "source": "source-selection-001",
+  "build": "builds/selection-001",
+  "binary_sha256": "20adb6389bce6d14071172dd72df33cc8d3279311a013f9ec2c60cdb534ffb94",
+  "build_info_sha256": "de2997dd59d7f4295279110049478db5d5c60df9f5c555c0e7f8f24edcd67b55",
+  "source_commit": "d391fb5876dff705f095767caaf9637f4f113095",
+  "output": "runs/renewal-20260909/tq01",
+  "cpus": "8-11",
+  "deadline_utc": "2026-09-09T20:49:08+00:00",
+  "systemd_memory_max": "12G",
+  "runner_sha256": "063854cd362316afc1fa6d15fe07feaba0e5f778f3e8e0355344360a5c047404",
+  "analyzer_sha256": "d2de4d01141269b0a296ef4df22b215226fdd2f5b4b60f126bdfdb4e27e82bde",
+  "budget_class": "Auxiliary: at most 1M admitted search frames, full replay and twice-replayed witnesses; no performance claim.",
+  "pass_rule": "Complete report/checkpoint replay under the frozen identity and hard resource bounds.",
+  "cells": [
+    {
+      "id": "mm2-default-actions-replay",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-tq01-mm2-default-actions-replay",
+        "seeds": [
+          2026090902
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 2000,
+          "frames": 1000000,
+          "actions": 8192,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 240,
+          "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "mixture": "energy_splice:6",
+          "verification": "campaign",
+          "retention_audit": false
+        },
+        "cases": [
+          {
+            "id": "mm2-metal",
+            "game": "mm2",
+            "stage": 6,
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 390,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "execution_limit",
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 8192,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 2000,
+        "format": "nes-eval-identity-v1",
+        "frames": 1000000,
+        "game": "mm2",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "energy_splice:6",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_start_taps_no_select_v2",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:6:prefix-sha256=ad8eeacb2139d12f5bba3b2e13b10bb4cc1208da0b16c35e1af428abf54cc86d;result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_first_boss_defeated"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": false,
+        "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+        "seed": 2026090902,
+        "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": 6,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "campaign",
+        "wall_seconds": 240,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    }
+  ],
+  "evaluation_source_sha256": "a495acc3be13b02277e491f1d3905c5da9861dd9414a24025174a71744c8eca1",
+  "protocol_sha256": "3da60c86e7c92886fd70c0f9eb4e08b4e8634564d75f66983a06af2e7a85a568",
+  "seed_scope": "Reuse the already recorded D02r qualification seed for this settings check; it is not an independent performance seed.",
+  "required_evidence": [
+    {
+      "path": "runs/renewal-20260909/r01/results.json",
+      "sha256": "70068c90a31b504bd3060cc52bdcc3a22ecc894d1b2c8561cd4d43793d530327",
+      "screen_decision": "pass",
+      "passed_cells": [
+        "pair-0-control",
+        "pair-0-candidate",
+        "pair-1-candidate",
+        "pair-1-control",
+        "pair-2-control",
+        "pair-2-candidate",
+        "pair-3-candidate",
+        "pair-3-control"
+      ]
+    }
+  ]
+}

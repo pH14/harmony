@@ -126,7 +126,7 @@ The policy, executable and other Metroid settings remain unchanged. R01 checks
 S01's frozen positive gate before dispatch and verifies that its new seeds have
 not appeared in owned run records. Its registration was published in commit
 `17ced735a1683a66228a448f65476e6c999930b0` before dispatch at
-2026-09-09 16:04:06 UTC on msr1. No confirmation result is yet available.
+2026-09-09 16:04:06 UTC on msr1. The completed confirmation is recorded below.
 
 `account_renewal.py` counts D01/S01/R01/T01 as search and D02/D02r/TQ01 as
 qualification. TQ01 is reserved for a bounded replay smoke of the existing MM2
@@ -146,3 +146,40 @@ retain their full fixed-horizon resource measurements.
 milestone stop with complete event evidence, bounded drain, normal export and
 replay, preserved censoring, and a prospectively appropriate resource comparison.
 R01's registered stopping behavior remains in force.
+
+## R01 confirmation outcome
+
+[R01 completed](r01-results.json) all four fresh pairs at its separately
+registered 20M-frame horizon. The [independent audit](r01-analysis.json) agrees
+with the native gate: three strict wins and a candidate/control mean
+restricted-cost ratio in [0.68684, 0.68764], or 31.24–31.32% less admitted work
+to the bounded endpoint. The interval reflects checkpoint timing, not population
+uncertainty. The new seeds were registered before execution and audited against
+all prior owned run summaries. Candidate total CPU and elapsed costs were
+1.0010 and 1.0093 times control, satisfying the resource gate.
+
+| Seed | Control first-missile frames | Candidate first-missile frames | Result |
+| --- | ---: | ---: | --- |
+| 1192010857 | 13.735M–13.750M | Not attained by 20M | Loss |
+| 690938892 | Not attained by 20M | 9.868M–9.878M | Win |
+| 2686054190 | Not attained by 20M | 9.901M–9.914M | Win |
+| 3252380807 | 14.316M–14.328M | 6.989M–7.002M | Win |
+
+Censoring is retained in both arms. All observed milestone witnesses were
+replayed twice. R01 used 160,007,152 admitted frames, including 7,152 of bounded
+drain, plus 569,872 measured witness replay frames. The service completed
+successfully at 2026-09-09 16:50:09 UTC.
+
+The same candidate has passed the 25M development screen and the independent
+20M confirmation. Their different restricted horizons remain separate; these
+small panels do not establish population efficacy or a boss breakthrough.
+The scorer's inherited generic text concerns the score alone; seed independence
+comes from the registration and native prior-seed audit, not from win counts.
+
+[TQ01](tq01-registration.json) now registers a bounded full-replay check of the
+unchanged MM2 candidate with the existing evaluation's 8,192-action limit,
+`one_to_six_within_3_longest_actions_full_hold` suffix and `energy_splice:6`
+mixture. It reuses the D02r qualification seed without claiming an independent
+performance observation. Its runner requires R01's frozen positive result before
+dispatch. A successful check permits the prewritten four-pair, 5M-per-arm T01
+transfer allocation; it does not itself establish transfer.
