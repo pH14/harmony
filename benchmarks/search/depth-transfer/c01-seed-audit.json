@@ -1,0 +1,31 @@
+{
+  "format": "depth-transfer-c01-seed-audit-v1",
+  "scope": "Available completed/failed summary identities under the two research roots and ms02 shared evaluation runs; fresh labels were derived before dispatch.",
+  "hosts": [
+    {
+      "host": "msr1",
+      "summaries": 128,
+      "unique_seeds": 21,
+      "requested": [
+        2030421909,
+        2234161540,
+        3101192823,
+        3776618068
+      ],
+      "collisions": []
+    },
+    {
+      "host": "ms02",
+      "summaries": 809,
+      "unique_seeds": 31,
+      "requested": [
+        2030421909,
+        2234161540,
+        3101192823,
+        3776618068
+      ],
+      "collisions": []
+    }
+  ],
+  "recorded_utc": "2026-09-09T20:16:35.292961+00:00"
+}

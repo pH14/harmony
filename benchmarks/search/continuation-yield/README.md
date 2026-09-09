@@ -1,5 +1,10 @@
 # Continuation yield: renewed research allocation
 
+The user has since authorized continued research on both msr1 and ms02.
+[Depth transfer](../depth-transfer/README.md) integrates PRs #285/#288 and records
+the next allocation. This directory preserves the completed tranche's protocol
+and accounting; the new study has separate registrations and costs.
+
 The user requested consultation with **Fable 5.1 xhigh**, revision of the current
 goal, and continued work. The consultation completed with the requested model;
 [provenance](consultation-provenance.json) records the verified public input

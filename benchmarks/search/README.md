@@ -2,6 +2,9 @@
 
 # Local search evaluation
 
+The [depth-transfer study](depth-transfer/README.md) continues the controlled
+selection experiments with explicit milestone endpoints and two qualified hosts.
+
 This suite evaluates Dissonance search mechanisms against fixed NES workloads.
 It is designed for a private Linux host with licensed ROMs; ordinary CI uses
 synthetic engine/runner tests and source-built games. A stage fixture is never
