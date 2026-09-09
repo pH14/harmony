@@ -704,3 +704,28 @@ A Metal result still does not qualify the Wily goal or authorize a default
 change. Subsequent causal attribution may also need a two-quality-winner
 control: current evidence does not distinguish the rank choice from the more
 general benefit of preserving an additional non-extreme state.
+
+### E02: inspect two already completed late-area development witnesses
+
+E01 stopped at the first Kraid-area milestone. Two subsequently available
+completed development witnesses continue beyond area entry: the ordinary
+corrected seed-3 anchor (`l04-anchor-control-s3`, 107,469 route frames) and
+corrected seed 5 (`t03-anchor-corrected-s5`, 127,003 frames). The former visits
+Kraid area; the latter Ridley area. Inspect exactly these two full witnesses
+with the unchanged `boss-probe-001` binary, ordinary cadence plus two one-frame
+replays each. Keep the existing 8,192-action/250k-frame input bounds, 32MiB
+trace bound, and 300s/4GiB watchdog per tape; use little CPU4, one at a time.
+No search campaign runs and no tape becomes a fresh-search origin.
+
+The source summaries are read-only development artifacts from ms02, not its
+untouched validation panel. Seed-3 summary SHA256 is
+`2a81053a83204a3a0ef8383b5c7d810a2b59a0f46fb8bf3d3c19c295ddf204cb`,
+input `5246bec4841627113d7debfc44a172238273fa6e465858f49a7e891644e4f3c0`.
+Seed-5 summary SHA256 is
+`c00f7015323a100a923fef2acd9ffae865c9f1dc1e00352145fa972207669571`,
+input `03e1adf0185bb5dc0bbb5cdf6519eac669a794730e460319e82d0833d0b5d2c1`.
+Require all three ARM replay endpoints and machine bytes to agree, and both
+one-frame traces to agree, as in E01. This does not assert ARM/x86 snapshot-byte
+identity. A positive loader/slot episode would qualify closer lifecycle
+inspection; an empty trace remains evidence only about these selected routes.
+Do not infer campaign-wide absence or extend any failed search from it.
