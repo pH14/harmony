@@ -71,3 +71,9 @@ Existing follow-ups cover [boss observations](https://github.com/pH14/harmony/is
 predictive-retention design should measure action-conditioned differences
 against the complete survivor set and charge probe work explicitly. None of
 the current proxy metrics authorizes an unbounded search run.
+
+[A quantitative decision contract](predictive-retention-contract.md) now spells
+out gained versus lost event coverage and finite-sample assumptions. On the
+same existing P03 suffixes, map-event counts favor discarded states while final
+survival favors survivors. That objective reversal is another reason to freeze
+task utility before selecting a heuristic. It changes no running policy or gate.

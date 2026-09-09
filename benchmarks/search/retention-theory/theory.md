@@ -281,3 +281,10 @@ Action-conditioned evidence is therefore necessary for a claim that survives
 changes in the exploration mixture; exact successor-model theorems require
 stronger conditions than a fitted short-horizon average. The new finite fixture
 passes and changes no running experiment.
+
+[The predictive-retention contract](predictive-retention-contract.md) makes the
+next decision quantitative: measure gained and lost action-conditioned events
+against the complete survivor set, freeze their utility, bound uncertainty under
+explicit sampling assumptions, and include probe work in the experiment budget.
+Reanalysis of P03 reverses direction between map-event coverage and endpoint
+survival, demonstrating why detecting aliasing alone does not select a policy.
