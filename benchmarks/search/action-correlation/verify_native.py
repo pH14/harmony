@@ -38,6 +38,9 @@ def main():
             assert summary['identity'][key] == value, key
         hashes = {name: sha(path / name) for name in
                   ('stream.jsonl', 'campaign.json', 'checkpoint.json')}
+        event_sha = hashlib.sha256((path / 'stream.jsonl').read_bytes().split(b'\n', 1)[1]).hexdigest()
+        if 'expected_event_stream_sha256' in cell:
+            assert event_sha == cell['expected_event_stream_sha256'], 'cross-host event stream differs'
         for name, expected in cell.get('expected_artifact_sha256', {}).items():
             assert hashes[name] == expected, 'legacy compatibility: ' + record['id'] + '/' + name
         witness = 2 * (result['witness']['physical_suffix_frames'] + sum(
@@ -45,6 +48,7 @@ def main():
         rows.append({'id': record['id'], 'admitted_qualification_frames': result['frames_emulated'],
                      'inferred_full_replay_admitted_frames': result['frames_emulated'],
                      'twice_replayed_witness_frames': witness, 'artifact_sha256': hashes,
+                     'event_stream_sha256': event_sha,
                      'summary_sha256': record['summary_sha256'],
                      'cpu_seconds': summary['cpu_seconds'], 'elapsed_seconds': summary['elapsed_seconds']})
     for first, second in reg.get('buffer_pairs', []):
