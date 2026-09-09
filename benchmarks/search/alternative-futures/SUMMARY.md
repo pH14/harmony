@@ -18,7 +18,7 @@ running; completed validation outcomes are not yet available.
 | Capability identity collisions | The audited long Metroid anchor recorded millions of replacement competitions without the proposed equal-count/different-equipment collision. | Do not add an unsupported identity correction. |
 | Destructive replacement | In 1,024 paired, shared-suffix trials on 16 late pairs, discarded states alone produced 156 living map exits versus 42 survivor-only exits. No new equipment, capacity, or boss gain was found. Corrected terminal semantics reproduced these exact outcomes. | Local useful-continuation loss is real; it does not establish fresh-depth improvement or global novelty. |
 | Two resource extremes per slot | Short fresh comparisons were mixed; the long seed-3 resource arm missed Bombs and Kraid that its representative control reached. Both fresh MM2 chains cleared all eight masters but stopped at Wily 1. | Park resource retention at the tested equal-memory conditions. Resource dominance is not behavioral dominance. |
-| First exposure within a chosen cell | Reduced never-selected replacement fractions, but did not produce useful depth in the matched local comparisons. Most sampled unselected MM2 replacements were already hundreds of jobs old. | Selection starvation extends beyond immediate replacement; this intervention was insufficient. |
+| First exposure within a chosen cell | Reduced the fraction removed with zero admitted parent-job credit, without useful depth in the matched local comparisons. Many such entries survived hundreds of admissions. | This intervention was insufficient. Zero parent-job credit does not prove zero outgoing exploration; the stronger starvation inference is withdrawn. |
 | Remove across-cell route-cost rank | Native qualification changed about 98% of parent IDs while preserving RNG cadence and replay. Metroid gained only two local cells with unchanged capacity; MM2 still reached screen 36 without its boss. | Park this distinct selection ablation. |
 | Add middle action durations | Fresh short Metroid coverage improved on all three development seeds. The long arm traded earlier Long Beam and some resources against later Bombs/Kraid and no Ridley area relative to corrected ordinary duration. A mean-matched two-band control did not reproduce the short gains. | A duration-distribution effect exists, but deeper attainment is mixed and no boss followed. Park duration tuning. |
 | Remove learned MM2 splices | Ordinary attempts increased from about 132k to 347k at the same 50M admitted frames, still without a Wily 1 boss encounter. | More ordinary attempts alone did not resolve the bottleneck. |
@@ -27,6 +27,13 @@ running; completed validation outcomes are not yet available.
 Trials within one pair share source states and are correlated. The paired probe
 counts are descriptive evidence, not independent seed successes. Area exits are
 local extendability evidence, not proof of globally useful behavior.
+
+Selection counters are censuses at removal. An intermediate state can already
+have outgoing actions in its birth suffix, and pending jobs receive parent credit
+only after ordered admission. Thus zero admitted parent-job credit does not mean
+zero physical exploration. The age histogram does not resolve this ambiguity.
+See #283 for the separate measurement needed before a stronger starvation claim;
+#281 tracks the missing distinction between boss-area entry and actual encounters.
 
 ## Depth and transfer
 

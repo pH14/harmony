@@ -53,3 +53,13 @@ search-quality promotion claim. Keep boss attainment, late capability discovery,
 archive coverage, and single-trajectory resource maxima separate. The remaining
 boss and Wily 4 acceptance criteria cannot be satisfied by local diagnostics,
 prior tapes, or the infrastructure repair alone.
+
+## Existing observability follow-ups #281 and #283
+
+Reuse #283 to distinguish admitted parent-job credit from all outgoing exposure.
+The current age histogram does not prove zero physical exploration, and the
+stronger persistent-starvation inference has been withdrawn. Reuse #281 to
+distinguish Metroid area entry, active boss encounter, and partial fight progress.
+Neither an area-entry witness nor absence of defeat proves that combat progress
+was lost through replacement. These issues already capture the next necessary
+observations; avoid duplicate instrumentation proposals.

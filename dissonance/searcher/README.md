@@ -188,8 +188,14 @@ incumbent is removed. The read-only event includes cached snapshots, prior
 selection exposure, and lazy reconstruction of both inputs. Observers must
 bound their storage and account for reconstruction separately; observer input
 materialization never changes deterministic reconstruction counters. The
-constant-size `retention_diagnostics` sidecar census counts removal before
-window exposure, selection, and productive extension. It is not replay state.
+constant-size `retention_diagnostics` sidecar census records window exposure and
+admitted parent-job selection/productivity credit at removal. It is not replay
+state. Zero selection or productivity credit does not establish that the physical
+state had no outgoing exploration: intermediate states can have continuations
+inside their birth suffix, and pending jobs receive parent credit only after
+ordered admission. Removal-time counters do not retroactively include that later
+credit. Replacement ages describe these same parent-credit populations; they do
+not remove this ambiguity. See #283 for the separate exposure-measurement work.
 The evaluator flushes/disables campaign sampling before verification replay.
 
 The opt-in `resource_extremes_2_v1` slot policy keeps at most two resource

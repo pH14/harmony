@@ -820,8 +820,10 @@ D02 completed 10,005,418 frames: 22,658 replacements, 16,253 never selected.
 All-age bins were [220,239,937,2825,18437]; never-selected bins were
 [220,239,818,2391,12585], unknown0. Only 1.35% of never-selected removals
 occurred within the same admission; 77.4% survived >=512 admissions. This
-rejects within-rollout timing as the principal explanation here. Starvation
-persists beyond the within-cell allocation addressed by S. The 5k diagnostic
+shows that removal usually occurs well after birth in this sampled parent-credit
+population. The original inference that this established persistent starvation
+was too strong: zero parent credit can coexist with birth-suffix or pending-job
+exploration (see the later interpretation correction below). The 5k diagnostic
 qualification preserved the semantic-control golden stream exactly. No new
 selection candidate is activated by this census alone.
 
@@ -1187,8 +1189,10 @@ Stream bb0cc4951a4e67a35cbb58d8d7da23715b3bc3b406c4775517d50060b23f448d.
 
 ## S04 preregistration — across-cell route-cost penalty
 
-D02 established long-lived starvation; first exposure within an already chosen
-cell reduced never-selected removals but did not improve useful progress.
+D02 recorded long-lived entries with zero admitted parent-job credit; first
+exposure within an already chosen cell reduced that removal fraction but did
+not improve useful progress. The original starvation interpretation motivating
+this registration was later narrowed; see the interpretation correction below.
 MM2 has a single stage/boss-count coarsest class in these probes, so merely
 mixing inventory classes cannot address that measured bottleneck. Code inspection
 identifies a distinct across-cell penalty: within a selected region, a cell's
@@ -1451,3 +1455,25 @@ Reporting verification also preserves the runner's normal infrastructure-error
 records with null identity/result instead of aborting the entire panel summary.
 The planted failure leaves its completed peer reportable; relabeling the same
 missing-provenance record as complete is rejected. All five tests pass.
+
+## Interpretation correction — parent credit is not total outgoing exposure
+
+Related issue #283, created during this tranche and read at the publication
+checkpoint, identifies two counterexamples to interpreting zero parent credit
+as zero exploration. Current `campaign.rs` confirms that ordered admission
+first calls `admit_job`, then credits only `pending_job.parent_id` through
+`record_selection` and `record_selection_outcome`. An intermediate state in a
+multi-action suffix can therefore have an executed outgoing action without
+parent credit, and a parent can be removed before its pending job is admitted.
+`archive.rs::deactivate` snapshots the counters at removal.
+
+D02's age histogram remains accurate for its stated parent-credit population,
+but cannot establish that these states were physically unexplored. Withdraw
+the stronger persistent-starvation inference. S02/S03/S04 remain isolated,
+replay-qualified interventions with observed negative depth outcomes; their
+results do not depend on claiming that every zero-credit state was unexplored.
+No validation policy, counter, or frozen binary changes. Update the nearby
+searcher README and synthesis to state this boundary. Reuse #283 for future
+measurement work instead of opening a duplicate. Issue #281 separately tracks
+boss-encounter/partial-damage observation, which this tranche does not establish
+from an area-entry or failed-defeat report.
