@@ -8,14 +8,6 @@ ctl() {
   /opt/etcd/etcdctl --endpoints=http://127.0.0.1:2379 "$@"
 }
 
-ctl_fast() {
-  /opt/etcd/etcdctl \
-    --endpoints=http://127.0.0.1:2379 \
-    --dial-timeout=1s \
-    --command-timeout=1s \
-    "$@"
-}
-
 writer() {
   worker=$1
   i=1
@@ -91,12 +83,12 @@ case "$1" in
     # present because the workers may append a journal record after a put.
     # A restarted member can log that it is ready before its client listener
     # accepts this request. Retry the read itself rather than relying on a
-    # separate health RPC whose short timeout can fail under emulation.
+    # separate health RPC that does not prove the data read will complete.
     readback=0
     attempt=1
-    while [ "$attempt" -le 20 ]; do
+    while [ "$attempt" -le 3 ]; do
       : >"${actual_raw}"
-      if ctl_fast get museum/ --prefix >"${actual_raw}" 2>/dev/null; then
+      if ctl get museum/ --prefix >"${actual_raw}" 2>/dev/null; then
         readback=1
         break
       fi
