@@ -15,6 +15,15 @@ const PER_STRATUM: usize = 16;
 const STRATA: usize = 5;
 const MAX_ACTIONS: usize = 8192;
 
+// Appending a candidate suffix can leave Vec capacity above MAX_ACTIONS even
+// when its length fits. Store a tightly sized payload so the declared bound
+// covers retained action capacity; temporary reconstruction remains separate.
+fn compact_input(input: MetroidInput) -> MetroidInput {
+    MetroidInput {
+        actions: input.actions.into_boxed_slice().into_vec(),
+    }
+}
+
 /// One independently replayable pair, without emulator snapshots or ROM bytes.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ReplacementPair {
@@ -202,8 +211,8 @@ impl RetentionAudit {
                 created_execution: event.created_execution,
                 exposure: event.exposure,
                 in_window_ever: event.in_window_ever,
-                candidate_input,
-                incumbent_input,
+                candidate_input: compact_input(candidate_input),
+                incumbent_input: compact_input(incumbent_input),
                 #[cfg(feature = "metroid-complete-retention-audit")]
                 complete_competition: self.complete_competition(event)?,
             };
@@ -248,7 +257,7 @@ impl RetentionAudit {
                     id: member.id,
                     context: member.key.retention_context(),
                     state: member.snapshot.expect("all snapshots checked").state(),
-                    input: member.input,
+                    input: compact_input(member.input),
                     retained_by_local_rule: member.retained_by_local_rule,
                 })
                 .collect(),
@@ -270,5 +279,32 @@ impl RetentionAudit {
     pub(crate) fn finish(&mut self) -> Result<(), Box<dyn Error>> {
         self.finished = true;
         self.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retained_action_capacity_is_bounded_without_changing_serialized_inputs() {
+        let mut actions = Vec::with_capacity(MAX_ACTIONS - 1);
+        actions.resize(MAX_ACTIONS - 1, ButtonChord::new(0, 1));
+        actions.push(ButtonChord::new(1, 2));
+        assert_eq!(actions.len(), MAX_ACTIONS);
+        assert!(actions.capacity() > MAX_ACTIONS);
+        let input = MetroidInput { actions };
+        let expected = serde_json::to_vec(&input).unwrap();
+        let stored = compact_input(input);
+        assert_eq!(stored.actions.capacity(), MAX_ACTIONS);
+        assert_eq!(serde_json::to_vec(&stored).unwrap(), expected);
+        assert_eq!(
+            compact_input(MetroidInput {
+                actions: Vec::new()
+            })
+            .actions
+            .capacity(),
+            0
+        );
     }
 }

@@ -38,23 +38,26 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--experiment", type=Path, required=True)
     p.add_argument("--source", type=Path, required=True)
+    p.add_argument("--revision", choices=["001", "002"], default="001")
     a = p.parse_args()
     root, source = a.experiment.resolve(), a.source.resolve()
     prior = json.loads((root / "runs/r04b-qualify-results.json").read_text())
     assert prior["passed"]
-    out = root / "runs/u01-qualify"
+    out = root / ("runs/u01-qualify" if a.revision == "001" else "runs/u01-qualify-002")
     out.mkdir()
     result = out / "results.json"
     report = {"format": "u01-complete-local-survivors-qualification-v1",
               "scope": "reporting-only stream identity; no performance claim",
               "prior_sha256": sha(root / "runs/r04b-qualify-results.json"),
               "cpus": "8-11", "helper_wall_seconds": 120, "records": [], "passed": False}
+    report["revision"] = a.revision
 
     def save():
         result.write_text(json.dumps(report, indent=2) + "\n")
 
     save()
-    for label in ["default-metroid", "default-mm2", "quality", "context"]:
+    labels = ["default-metroid", "default-mm2", "quality", "context"] if a.revision == "001" else ["default-metroid", "quality"]
+    for label in labels:
         old = next(r for r in prior["records"] if r["label"] == label)
         suite = json.loads((root / f"r04b-qualify-{label}.json").read_text())
         # Retain every prior search/header field, including its original bounds.
@@ -62,7 +65,7 @@ def main():
         suite["id"] = f"retention-theory-u01-qualify-{label}"
         manifest = out / f"{label}.json"
         manifest.write_text(json.dumps(suite, indent=2) + "\n")
-        build = root / "builds" / ("survivor-default-001" if label.startswith("default") else "survivor-motion-001")
+        build = root / "builds" / (f"survivor-default-{a.revision}" if label.startswith("default") else f"survivor-motion-{a.revision}")
         info = json.loads((build / "build-info.json").read_text())
         assert sha(build / "nes-eval") == info["binary_sha256"]
         destination = out / label
@@ -88,6 +91,9 @@ def main():
                 audit = json.loads(audit_path.read_text())
                 record["audit_sha256"] = sha(audit_path)
                 record["audit_format"] = audit["format"]
+                if a.revision == "002":
+                    previous = list((root / f"runs/u01-qualify/{label}").glob("*/campaign/retention-audit.json"))
+                    assert len(previous) == 1 and sha(previous[0]) == sha(audit_path), "capacity repair changed audit bytes"
                 if label == "default-metroid":
                     previous = list((root / f"runs/r04b-qualify-{label}").glob("*/campaign/retention-audit.json"))
                     assert len(previous) == 1 and sha(previous[0]) == sha(audit_path)

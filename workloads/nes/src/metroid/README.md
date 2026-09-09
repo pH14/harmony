@@ -134,6 +134,11 @@ sampled suffixes to both sides. It reports physical probe/prefix frames, gains,
 survival, and living map exits separately. These diagnostic starts never count
 as fresh validation; differing endpoints alone are not useful-future evidence.
 
+Stored action vectors are compacted before sampling retains them. A suffix
+append can otherwise leave spare vector capacity above the input-length limit;
+the declared payload bound covers retained capacity, not only live elements.
+Temporary reconstruction and serialization buffers remain additional overhead.
+
 The optional Cargo feature `metroid-complete-retention-audit` writes audit
 `v2-local-survivors`. Each sampled pair can include every incumbent and the local
 rule's proposed keep/remove flags. The callback precedes global population and

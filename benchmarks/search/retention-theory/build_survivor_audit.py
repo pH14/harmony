@@ -17,12 +17,13 @@ def main():
     p.add_argument("--experiment", type=Path, required=True)
     p.add_argument("--source", type=Path, required=True)
     p.add_argument("--commit", required=True)
+    p.add_argument("--revision", choices=["001", "002"], default="001")
     a = p.parse_args()
     root, source = a.experiment.resolve(), a.source.resolve()
     before = evaluator.source_identity(source)
     environment = {**os.environ, "HARMONY_SEARCH_SOURCE_SHA256": before["source_tree_sha256"]}
-    for label, features in [("survivor-default-001", ""),
-                            ("survivor-motion-001", "metroid-motion-context,metroid-complete-retention-audit")]:
+    for label, features in [(f"survivor-default-{a.revision}", ""),
+                            (f"survivor-motion-{a.revision}", "metroid-motion-context,metroid-complete-retention-audit")]:
         out = root / "builds" / label
         out.mkdir()
         command = ["cargo", "build", "--release", "--locked", "--manifest-path",
