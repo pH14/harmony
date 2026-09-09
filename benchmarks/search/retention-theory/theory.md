@@ -124,6 +124,15 @@ Do not mistake a positive asymptotic probability for adequate finite exposure.
 
 ## Predictions that decide the next experiment
 
+Observation validity precedes these abstraction claims. The parallel research
+effort found a real transient BCD health underflow: a dying endpoint appeared
+to have 9800 health before the next frame cleared it. A mathematically optimal
+resource ranking over that observation would preserve a false advantage. The
+versioned terminal correction imported from `e59a953a` supplies the missing
+validity predicate while preserving raw evidence. Corrected terminal semantics
+must be identical in both arms of subsequent key experiments. This is a
+correctness premise, not evidence that the finer key improves boss attainment.
+
 1. Identity refinement should first reduce replayed continuation disagreements
    on held-out suffixes for states split by that refinement. If it only grows
    cell count without separating useful futures, do not spend a long run on it.

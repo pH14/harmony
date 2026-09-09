@@ -16,6 +16,15 @@ source addresses and meanings are documented beside their constants in
 identifier is `death_or_ending_v2`, correcting the prototype's stale
 `death_only_v1` label without changing that prototype's predicate.
 
+The opt-in `metroid_terminal: death_or_bcd_underflow_or_ending_v3` evaluation
+policy also marks decoded health >=8000 as terminal. The damage routine stores
+a BCD subtraction before testing borrow and clearing lethal damage; a frame
+boundary can expose this intermediate value. A verified development endpoint
+reported 9800 and died under every one-frame controller mask. Raw health remains
+unchanged for replay inspection. Historical v2 is still the default; stream
+headers distinguish the policies and reject a mismatched replay context.
+This correction is independent of the optional archive-key refinement.
+
 `archive.rs` records the experimental adapter policy explicitly. It pools
 16-pixel positions through 32-pixel cells, 128-pixel regions, map cells, and
 inventory counts. Posture and door-transition state distinguish possible
