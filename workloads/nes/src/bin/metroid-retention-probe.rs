@@ -7,6 +7,7 @@ use nes_workload::{
         retention_audit::ReplacementPair,
         target::{
             ButtonChord, MetroidInput, MetroidMechanicalState, MetroidSnapshot, MetroidTarget,
+            MetroidTerminalPolicy,
         },
     },
     search::rand::RomuDuoJrRand,
@@ -44,8 +45,10 @@ fn prepare(
     hash: &str,
     input: &MetroidInput,
     expected: MetroidMechanicalState,
+    terminal_policy: MetroidTerminalPolicy,
 ) -> Result<(MetroidTarget, MetroidSnapshot, u64), Box<dyn Error>> {
-    let mut target = MetroidTarget::from_rom_bytes_headless(rom, core, hash)?;
+    let mut target = MetroidTarget::from_rom_bytes_headless(rom, core, hash)?
+        .with_terminal_policy(terminal_policy);
     for action in &input.actions {
         if target.is_dead() || target.is_victory() {
             return Err("sample input continues after terminal".into());
@@ -94,7 +97,7 @@ fn extend(
             outcome.capacity_gain |=
                 s.missile_capacity > start.missile_capacity || s.energy_tanks > start.energy_tanks;
             if s.in_play()
-                && !s.is_dead()
+                && !observation.dead
                 && (s.area, s.map_x, s.map_y) != (start.area, start.map_x, start.map_y)
             {
                 outcome.reached_maps.insert((s.area, s.map_x, s.map_y));
@@ -108,8 +111,8 @@ fn extend(
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 6 {
-        return Err("usage: metroid-retention-probe CORE ROM AUDIT OUT TRIALS ACTIONS".into());
+    if !(6..=8).contains(&args.len()) {
+        return Err("usage: metroid-retention-probe CORE ROM AUDIT OUT TRIALS ACTIONS [TERMINAL_POLICY [SEED]]".into());
     }
     let core = Path::new(&args[0]);
     let rom = fs::read(&args[1])?;
@@ -122,12 +125,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     if trials == 0 || trials > 256 || actions == 0 || actions > 128 {
         return Err("probe limits exceed bounded diagnostic".into());
     }
+    let terminal_policy = MetroidTerminalPolicy::parse(
+        args.get(6).map_or("death_or_ending_v2", String::as_str),
+    )?;
+    let seed = args
+        .get(7)
+        .map(|value| value.parse::<u64>())
+        .transpose()?
+        .unwrap_or(0x616c_7466_7574_7572);
     let core_hash = format!("{:x}", Sha256::digest(fs::read(core)?));
-    let mut rng = RomuDuoJrRand::with_seed(0x616c_7466_7574_7572);
+    let mut rng = RomuDuoJrRand::with_seed(seed);
     let suffixes: Vec<Vec<ButtonChord>> = (0..trials)
         .map(|_| (0..actions).map(|_| sample_chord(&mut rng)).collect())
         .collect::<Result<_, _>>()?;
-    fs::write(out.join("suffixes.json"), serde_json::to_vec(&suffixes)?)?;
+    let suffix_bytes = serde_json::to_vec(&suffixes)?;
+    let suffix_sha256 = format!("{:x}", Sha256::digest(&suffix_bytes));
+    fs::write(out.join("suffixes.json"), suffix_bytes)?;
     let mut log = BufWriter::new(fs::File::create(out.join("outcomes.jsonl"))?);
     let mut totals = vec![[0u64; 6]; audit.samples.len()];
     let mut prefix_frames = 0u64;
@@ -141,6 +154,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &core_hash,
                 &pair.candidate_input,
                 pair.candidate,
+                terminal_policy,
             )?;
             let (mut incumbent, is, inf) = prepare(
                 core,
@@ -148,6 +162,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &core_hash,
                 &pair.incumbent_input,
                 pair.incumbent,
+                terminal_policy,
             )?;
             prefix_frames += cf + inf;
             pair_count += 1;
@@ -187,7 +202,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     };
                     // Suffix may terminate early: retain only through the first terminal action.
                     let mut replay =
-                        MetroidTarget::from_rom_bytes_headless(&rom, core, &core_hash)?;
+                        MetroidTarget::from_rom_bytes_headless(&rom, core, &core_hash)?
+                            .with_terminal_policy(terminal_policy);
                     for action in &input.actions {
                         replay.apply(action);
                     }
@@ -213,7 +229,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
-    let report = json!({"format":"metroid-equal-suffix-probe-v1","scope":"development-discovered competitors; diagnostic, not fresh search","rom_sha256":format!("{:x}",Sha256::digest(&rom)),"core_sha256":core_hash,"audit_sha256":format!("{:x}",Sha256::digest(&bytes)),"pairs":pair_count,"trials_per_pair":trials,"actions_per_trial":actions,"equal_work_rule":"identical pre-sampled action suffixes and frame allowances; terminal branches stop early, actual frames reported separately","totals_columns":["trials","discarded_only_gain","survivor_only_gain","discarded_only_living_map_exit","survivor_only_living_map_exit","discarded_survives_survivor_dies"],"totals_by_stratum":totals,"prefix_and_gain_export_frames":prefix_frames,"probe_frames_discarded_survivor":probe_frames,"limitations":["cached incumbent sample only","finite matching suffixes do not prove equivalence","map exit is local reach evidence, not a boss or new global coverage claim","resource gain is relative to each starting state"]});
+    let report = json!({"format":"metroid-equal-suffix-probe-v2","scope":"development-discovered competitors; diagnostic, not fresh search","rom_sha256":format!("{:x}",Sha256::digest(&rom)),"core_sha256":core_hash,"audit_sha256":format!("{:x}",Sha256::digest(&bytes)),"terminal_policy":terminal_policy.identifier(),"seed":seed,"suffix_sha256":suffix_sha256,"pairs":pair_count,"trials_per_pair":trials,"actions_per_trial":actions,"equal_work_rule":"identical pre-sampled action suffixes and frame allowances; terminal branches stop early, actual frames reported separately","totals_columns":["trials","discarded_only_gain","survivor_only_gain","discarded_only_living_map_exit","survivor_only_living_map_exit","discarded_survives_survivor_dies"],"totals_by_stratum":totals,"prefix_and_gain_export_frames":prefix_frames,"probe_frames_discarded_survivor":probe_frames,"limitations":["cached incumbent sample only","finite matching suffixes do not prove equivalence","map exit is local reach evidence, not a boss or new global coverage claim","resource gain is relative to each starting state"]});
     fs::write(
         out.join("summary.json"),
         serde_json::to_vec_pretty(&report)?,

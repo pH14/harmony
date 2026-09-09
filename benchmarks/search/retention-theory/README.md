@@ -391,3 +391,22 @@ legacy stream compatibility remains an explicit gate. The refined corrected
 for admission, and passed full report/checkpoint replay. At this small budget
 refinement retains 4,837 states versus 2,047, with the same ten observed maps;
 this establishes activity and cost, not improved discovery.
+
+### P03 preparation: separate new suffix evidence from the original examples
+
+The existing equal-suffix probe had a fixed random seed and implicit legacy
+terminal semantics. Add optional explicit terminal/seed arguments and record
+both plus the suffix hash in a v2 report. Preserve the original defaults and
+respect the chosen terminal predicate when counting living exits. This tool
+change does not affect the frozen K01 binaries or either running campaign.
+
+After K01 finishes, a bounded diagnostic may use the default arm's 16 sampled
+equal-preference pairs, terminal v3, 64 suffixes of 24 actions, seed 20261201.
+Those pairs have equal measured resources and capability identity, isolating
+the remaining state aliasing. Reconstruct both endpoints exactly; classify
+which pairs the compiled refined key separates and which still share a slot.
+Count distinguishing living exits and survival separately, with actual prefix
+and suffix frames. Use a 600s process-group bound on the idle little cores.
+No diagnostic prefix enters fresh search, and no finite matching sample proves
+equivalence. This tests new states/suffixes after choosing the representation;
+it is not untouched validation of global search performance.

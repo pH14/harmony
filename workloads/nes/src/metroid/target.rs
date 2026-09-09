@@ -70,8 +70,8 @@ const POSE_AIRBORNE: u8 = 0x02;
 pub const POSTURE_GROUNDED: u8 = 0;
 pub const POSTURE_AIRBORNE: u8 = 1;
 /// Posture for any pose the decoder does not name, such as rolling as a
-/// morph ball or climbing into a door. Each is a distinct way to occupy a
-/// position, so the pose byte itself separates them.
+/// morph ball or climbing into a door. The legacy archive collapses these
+/// poses into one posture; the optional refined key records the raw pose.
 pub const POSTURE_OTHER: u8 = 2;
 
 /// Health, as binary-coded decimal digits of a fixed-point `###.#` value.

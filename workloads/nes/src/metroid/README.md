@@ -134,6 +134,13 @@ sampled suffixes to both sides. It reports physical probe/prefix frames, gains,
 survival, and living map exits separately. These diagnostic starts never count
 as fresh validation; differing endpoints alone are not useful-future evidence.
 
+The probe accepts `CORE ROM AUDIT OUT TRIALS ACTIONS [TERMINAL_POLICY [SEED]]`.
+Omitting the final arguments keeps the historical terminal predicate and suffix
+seed. Its v2 report records the terminal identity, numeric seed, and exact suffix
+hash. Use terminal v3 for audits from corrected campaigns; living-map checks
+respect that predicate. A separately registered seed permits new suffix probes
+without silently reusing the original development suffix bank.
+
 The opt-in Cargo feature `metroid-refined-archive` builds a separate experimental
 v9 key policy. It uses 8-pixel retention positions and raw pose, while preserving
 the existing 32-pixel selection cells, 128-pixel regions, map groups, progress
