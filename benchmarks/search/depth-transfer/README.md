@@ -82,5 +82,71 @@ process is allowed. Loader/active-slot agreement alone is insufficient to claim
 damage. A mismatch is retained as a decoder falsifier, not fixed by extending
 the search budget. The [Lua observer](observe_fm2.lua) only reads memory.
 
-Status: C01 calibration is running; no candidate depth-transfer result yet.
-All new changes remain in PR #287.
+### Positive encounter control and a damage-filter counterexample
+
+F01 initially failed its first frame-clock assertion. The frontend continued
+until stopped 29 seconds after launch: 29.458 CPU seconds, with unmeasured frame
+advancement. The failure earns no positive evidence. A separately bounded
+[20-call diagnostic](observer-clock.csv) observed movie clocks `0, 0, 1, …, 19`.
+[F01r](f01r-observer-registration.json) adds that single startup synchronization
+yield and makes checked failures stop playback and exit. Both independently
+started corrected replays completed all 120,540 movie frames and produced
+[identical summaries and raw traces](f01r-results.json). This qualifies an
+encounter-entry positive control, with 319 loader/active-tag agreement frames.
+
+The [filtered trace analysis](f01r-lifecycle-analysis.json) then exposed a
+measurement problem: every observed HP difference crossed a filter gap, and the
+loader had cleared before damage. The pinned disassembly explains both effects:
+door-transition logic clears `KrdRdlyPresent`; the hit path changes enemy status
+and overwrites the special byte before decrementing HP. Neither field is a
+persistent fight identity.
+
+[F02](f02-lifecycle-registration.json) retains every boss-area frame using the
+same memory reads, movie and emulator. Applying the old filter reproduces F01r's
+exact trace, and two new processes produce identical complete traces. The
+[lifecycle analysis](f02-lifecycle-analysis.json) finds:
+
+| Reference fight | Continuous frames, entry through defeat | HP changes | Total HP decrease | Changes with current loader / special tag |
+| --- | --- | --- | --- | --- |
+| Ridley | 581 | 62 | 140 → 0 | 0 / 0 |
+| Kraid | 400 | 36 | 96 → 0 | 0 / 0 |
+
+Both lifetimes keep the same area, slot and data index, with no HP increase or
+premature inactive slot. HP reaches zero 24 frames before the defeat flag and
+slot retirement. All 98 decreases occur in hit/death states with the special
+tag overwritten. Mandatory current-loader or current-tag guards would miss
+every one. The [complete compressed trace](f02-boss-area-frames.csv.gz) preserves
+the raw evidence; it contains observations, not controller inputs.
+
+This supports episode-entry anchoring followed by continuous enemy-lifetime
+observation. It does not qualify identity across snapshot restores, inactive
+slot reuse, area/type changes or HP increases. Those boundaries must invalidate
+or close an episode before campaign counters are added under
+[issue #281](https://github.com/pH14/harmony/issues/281). One public movie with
+two fights, replayed independently, is observer evidence; no fresh search
+success or QuickNES cross-emulator replay is implied.
+
+F01r and F02 each spend 241,080 known movie frames; the clock diagnostic adds 19.
+Together with QX01/E02, that is 1,535,797 known auxiliary frames before C01's
+witness work. Failed-F01 advancement and frontend setup remain unmeasured.
+
+## Calibration result and paired allocation
+
+[C01 passed](c01-analysis.json): three of four ordinary controls attained an
+energy tank within the fixed 50M-frame horizon. Exact admitted arrival costs
+were 40,909,271, 33,896,740 and 48,845,104; the fourth was censored at 50M. All
+four measurements passed. Actual admitted work including drain is 173,654,997
+frames, with 711,296 known twice-replayed witness frames. This qualifies the
+endpoint for allocation; it does not compare selectors or guarantee power.
+
+[D01](d01-registration.json) freezes four fresh paired seeds on ms02 CPUs 0–3,
+50M frames per arm, with balanced sequential arm order and no concurrent
+performance job on that host. Three strict wins, at least 15% lower mean
+restricted cost, and CPU/elapsed ratios at most 1.25 are required. The complete
+eight-cell wall bound is reserved before launch. Retention, terminal policy,
+actions and endpoint remain unchanged. A passing result earns independent
+confirmation on msr1; an impossible win count stops further pair dispatch.
+
+Completed new work now totals 173,654,997 admitted search frames and 2,247,093
+known auxiliary frames, plus the disclosed unmeasured gaps. D01 has its own
+400M nominal ceiling and no result yet. All new work remains in PR #287.

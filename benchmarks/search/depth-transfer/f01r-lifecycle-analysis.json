@@ -1,0 +1,63 @@
+{
+  "format": "metroid-observer-lifecycle-analysis-v1",
+  "trace_sha256": "cfca7daf1fc9efd67cb4e32610a0d7922177e86ac8d5a4ee88892d07d715db04",
+  "raw_repeat_verified_by": "f01r-results.json",
+  "episodes": [
+    {
+      "boss": "ridley",
+      "area": 20,
+      "slot": 0,
+      "type": 9,
+      "first_tagged_active_frame": 75811,
+      "last_tagged_active_frame": 76366,
+      "guarded_loader_frames": 159,
+      "first_tagged_frame_without_loader": 75970,
+      "tagged_hp_initial": 140,
+      "tagged_hp_minimum": 1,
+      "observed_hp_declines": 61,
+      "declines_with_current_loader": 0,
+      "declines_across_filtered_gaps": 61,
+      "first_observed_hp_decline": {
+        "previous_observed_frame": 76001,
+        "frame": 76006,
+        "before": 140,
+        "after": 136,
+        "current_loader": 0,
+        "consecutive_frames": false
+      },
+      "defeat_frame": 76391
+    },
+    {
+      "boss": "kraid",
+      "area": 18,
+      "slot": 0,
+      "type": 8,
+      "first_tagged_active_frame": 104837,
+      "last_tagged_active_frame": 105211,
+      "guarded_loader_frames": 160,
+      "first_tagged_frame_without_loader": 104997,
+      "tagged_hp_initial": 96,
+      "tagged_hp_minimum": 4,
+      "observed_hp_declines": 35,
+      "declines_with_current_loader": 0,
+      "declines_across_filtered_gaps": 35,
+      "first_observed_hp_decline": {
+        "previous_observed_frame": 105041,
+        "frame": 105045,
+        "before": 96,
+        "after": 92,
+        "current_loader": 0,
+        "consecutive_frames": false
+      },
+      "defeat_frame": 105236
+    }
+  ],
+  "decision": "Qualify loader plus active tag as an episode-entry positive control only. Reject a mandatory current-loader guard for fight progress. Before reporting damage, retain per-frame data through transient tag/status changes and qualify slot lifetime/reset boundaries.",
+  "source": "https://github.com/nmikstas/metroid-disassembly/blob/4270d57f9468daebdeea485686e31e26218a780c/Source_Files/Bank07.asm",
+  "source_reason": "Door-transition logic clears KrdRdlyPresent. The hit path writes status 6 and overwrites EnSpecialAttribs before decrementing HP.",
+  "limits": [
+    "These are observed HP differences on a filtered diagnostic movie; no exact damage total or QuickNES cross-emulator qualification is claimed.",
+    "Two independent processes replay one public movie, not two independent gameplay trajectories.",
+    "Initial power-on all-ones RAM is retained raw and excluded by the live/area gates."
+  ]
+}

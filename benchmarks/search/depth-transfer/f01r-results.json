@@ -1,0 +1,46 @@
+{
+  "format": "depth-transfer-f01r-results-v1",
+  "registration_sha256": "2433a4773692ecadafcb52f8382530a862467f115b9142ffab128ff4a3b541df",
+  "runs": {
+    "f01r-a": {
+      "summary": {
+        "format": "metroid-public-observer-v1",
+        "complete": true,
+        "advanced_frames": 120540,
+        "movie_frames": 120540,
+        "guarded_loader_frames": 319,
+        "loader_and_active_tag_frames": 319,
+        "first_loader_frame": 75811,
+        "first_active_tag_frame": 75811,
+        "first_kraid_defeat_frame": 105236,
+        "first_ridley_defeat_frame": 76391,
+        "trace_rows": 645,
+        "trace_bytes": 101735
+      },
+      "summary_sha256": "06488edeaffdee389372e130b1ed599874fb6243f1e506e4d11397f622b2b4dc",
+      "trace_sha256": "cfca7daf1fc9efd67cb4e32610a0d7922177e86ac8d5a4ee88892d07d715db04",
+      "journal": "Sep 09 20:57:03 ms02 taskset[3246812]: Movie finished playing.\nSep 09 20:57:03 ms02 taskset[3246812]: Emulator Exit\nSep 09 20:57:03 ms02 systemd[1]: harmony-depth-f01r-a-20260909.service: Deactivated successfully.\nSep 09 20:57:03 ms02 systemd[1]: harmony-depth-f01r-a-20260909.service: Consumed 1min 39.830s CPU time, 177.8M memory peak.\n"
+    },
+    "f01r-b": {
+      "summary": {
+        "format": "metroid-public-observer-v1",
+        "complete": true,
+        "advanced_frames": 120540,
+        "movie_frames": 120540,
+        "guarded_loader_frames": 319,
+        "loader_and_active_tag_frames": 319,
+        "first_loader_frame": 75811,
+        "first_active_tag_frame": 75811,
+        "first_kraid_defeat_frame": 105236,
+        "first_ridley_defeat_frame": 76391,
+        "trace_rows": 645,
+        "trace_bytes": 101735
+      },
+      "summary_sha256": "06488edeaffdee389372e130b1ed599874fb6243f1e506e4d11397f622b2b4dc",
+      "trace_sha256": "cfca7daf1fc9efd67cb4e32610a0d7922177e86ac8d5a4ee88892d07d715db04",
+      "journal": "Sep 09 20:59:04 ms02 taskset[3246937]: Movie finished playing.\nSep 09 20:59:04 ms02 taskset[3246937]: Emulator Exit\nSep 09 20:59:04 ms02 systemd[1]: harmony-depth-f01r-b-20260909.service: Deactivated successfully.\nSep 09 20:59:04 ms02 systemd[1]: harmony-depth-f01r-b-20260909.service: Consumed 1min 39.888s CPU time, 178.8M memory peak.\n"
+    }
+  },
+  "positive_control_passed": true,
+  "known_script_advanced_frames": 241080
+}

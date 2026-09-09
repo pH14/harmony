@@ -1,0 +1,15 @@
+{
+  "format": "observer-clock-diagnostic-registration-v1",
+  "registered_utc": "2026-09-09T20:53:20.584895+00:00",
+  "reason": "F01 asserted on its first frame-clock check; Lua failure left the frontend running until manual stop 29 seconds after start. Preserve failure, determine initial frameadvance phase before any corrected full replay.",
+  "script_sha256": "6010de9a165585de2bc9b412972d8173c6ffa0eff3fa3c90d0d44f256b53b8d7",
+  "emulator_and_movie": "Same hashes as f01-observer-registration.json",
+  "host": "ms02",
+  "cpus": "16",
+  "max_calls": 20,
+  "outer_wall_seconds": 10,
+  "memory_max": "2G",
+  "known_script_frames_at_most": 20,
+  "failed_f01_work": "0 recorded completed frames; unobserved frontend advancement after assertion is unknown. CPU 29.458 seconds, peak memory 172M from systemd journal. Original failure remains unqualified.",
+  "decision": "Inspect exact clock sequence. Only a bounded, explained synchronization correction can earn a new registered full replay; no blind replay retries."
+}

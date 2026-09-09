@@ -1,0 +1,41 @@
+{
+  "format": "depth-transfer-d01-seed-audit-v1",
+  "recorded_utc": "2026-09-09T20:56:53.970Z",
+  "hosts": [
+    {
+      "host": "msr1",
+      "roots": [
+        "/root/harmony-retention-theory-20260908"
+      ],
+      "summaries": 132,
+      "unique_seeds": 24,
+      "requested": [
+        1437316129,
+        1695811351,
+        1719227342,
+        2645476937
+      ],
+      "collisions": [],
+      "parse_errors": []
+    },
+    {
+      "host": "ms02",
+      "roots": [
+        "/root/harmony-alternative-futures-20260908",
+        "/root/harmony-alternative-futures-followup-20260909",
+        "/root/harmony-search-eval",
+        "/root/harmony-depth-transfer-20260909"
+      ],
+      "summaries": 1813,
+      "unique_seeds": 32,
+      "requested": [
+        1437316129,
+        1695811351,
+        1719227342,
+        2645476937
+      ],
+      "collisions": [],
+      "parse_errors": []
+    }
+  ]
+}
