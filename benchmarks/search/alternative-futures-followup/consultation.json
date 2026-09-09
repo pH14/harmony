@@ -1,0 +1,16 @@
+{
+  "exit_code": 0,
+  "elapsed_seconds": 593.049371917,
+  "timeout": false,
+  "wall_bound_seconds": 600,
+  "requested_model": "claude-fable-5-1",
+  "requested_effort": "xhigh",
+  "session_id": "fbc8df54-8a24-491a-bb8a-0e98b59f0585",
+  "advice_sha256": "3afd8e02cf3dfaa971f20857991bd8c428dc875751c7e4ce19a906cf635c3d29",
+  "note": "Advice text extracted from first repeated plan in the assistant response. Rendered Write tags were text, not executed tools. Actual tool set empty. Provider CLI list-price estimate is not a subscription charge.",
+  "observed_advisor_model": "claude-fable-5-1",
+  "provider_result": "success",
+  "provider_stop_reason": "end_turn",
+  "tools_available": [],
+  "feedback_status": "Accepted direction with explicit corrections in README; no rendered tool request executed"
+}

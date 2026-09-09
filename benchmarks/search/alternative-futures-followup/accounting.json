@@ -1,0 +1,8 @@
+{
+  "format": "alternative-futures-followup-accounting-v1",
+  "physical_emulator_frames": 11864694,
+  "cpu_seconds_lower_bound": 302.912871,
+  "exclusions": "Compilation, unit tests, Clippy, file export, and Fable advisory inference excluded; no search campaigns launched. CPU is measured completed native diagnostic work, not all project work.",
+  "registered_frame_ceiling": 25000000,
+  "registered_cpu_seconds_ceiling": 14400
+}

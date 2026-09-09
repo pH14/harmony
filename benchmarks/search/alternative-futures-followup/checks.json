@@ -1,0 +1,31 @@
+{
+  "format": "followup-verification-v1",
+  "checks": {
+    "nes_library_tests": {
+      "passed": 125
+    },
+    "metroid_probe_tests": {
+      "passed": 4
+    },
+    "mm2_probe_tests": {
+      "passed": 1
+    },
+    "nes_all_target_clippy": "passed",
+    "nes_fmt": "passed",
+    "python_syntax": "passed"
+  },
+  "no_shared_production_code_changes": true,
+  "reference_reuse_base": "ca85b3fa8e8e1b70cd98ccd85903d29dfdfe9409",
+  "notes": [
+    "Initial Metroid test borrow-check error and MM2 stage parser compile error were fixed before tests/builds/experiments.",
+    "Python syntax command initially could not write the host default cache; rerun with a writable temporary cache passed.",
+    "F02 native research build predates source-only verification helper; its exact build is embedded in f02-execution.json. Final helper and F03 share the later source identity.",
+    "Build source identity also hashes reports; evolving local report files differ. All 383 Rust/Cargo/toolchain inputs match the native tree exactly."
+  ],
+  "native_rust_cargo_identity": {
+    "files": 383,
+    "differences": [],
+    "manifest_sha256": "0100914f2993487fc321f3a5f2b10b4eb86059ccfd0d307a07c34d588603d551"
+  },
+  "native_build_source_identity": "502b2b3b87e6d588f3c2f29745764d74171486f86926925c0adfd567b0838f5f"
+}

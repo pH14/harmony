@@ -114,3 +114,19 @@ The local Metroid diagnostic uses the same option named `duration`.
 The ablation `stratified_two_band_mean_matched_v1` retains the two historical
 bands but chooses short holds with probability 131/231, matching the three-band
 mean of 121/3 frames. It tests average duration separately from middle-band support.
+
+`metroid-retention-probe` accepts an optional final `FRAMES_PER_SIDE` argument
+following the terminal policy. This development-only mode gives each source
+exactly the same physical suffix work, resampling after death and clipping the
+last hold at the cap. It records map reach against the union of both source
+trajectories, a lower bound on prior campaign coverage. Absence from that union
+is not global novelty. Inputs, suffix banks, work limits, and unverified witness
+exports are explicit; no probe feedback enters a campaign. See the
+[follow-up protocol](../../benchmarks/search/alternative-futures-followup/README.md).
+
+`mm2-future-probe REQUEST OUTPUT` samples bounded frontier and calibration
+boundaries from a supplied own-chain Wily1 trajectory, then executes ordinary
+suffixes with explicit physical work and snapshot accounting. The request pins
+both the chain prefix and trajectory input hashes. Its cell novelty is relative
+to that trajectory, not the complete archive. Neither diagnostic changes search
+keys, retention, selection, or controller generation.
