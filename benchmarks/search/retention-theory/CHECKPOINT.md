@@ -33,7 +33,7 @@ exploration or a removal-time census. Reader pins Metroidv4/MM2v1 explicitly.
 U01 reporting implementation8d503c28 adds a lazy complete local-slot view and
 opt-in metroid-complete-retention-audit feature. All139 generic tests,1 interface,
 125 default NES library,139 release all-feature NES tests, strict generic and
-all-feature NES Clippy, and formatting passed. Eighteen Python research CI
+all-feature NES Clippy, and formatting passed. Twenty-two Python research CI
 contracts pass. Four ARM5000-job streams reproduce exact prior hashes and
 default Metroid v1 audit bytes. Source digest9ac8c23a7d6e206972bd5808f6a8922e7e32fa96a3fc67a91d4bcf9a5d79ddb0;
 new binaries and source remain frozen under msr1 source-survivor-001/builds.
@@ -71,3 +71,10 @@ transfer briefly if it is still unresolved at the final response.
 Read SYNTHESIS.md for current scientific conclusions and README.md for full
 history. Existing issues#270,#281,#283,#286 cover remaining work; no duplicate
 issues needed. No subagents permitted by current instructions. No unsafe change.
+
+The retrospective finite-cover analysis is complete: five triples need one
+representative and two need two to cover all measured positive events. All four
+observed gaps are avoidable at capacity2 in hindsight. Public masks/dictionaries
+in u01-finite-cover.json pass separate integer-mask verification with no private
+inputs. This is not an online policy or behavioral-equivalence proof. No more
+emulator work is justified by this diagnostic.

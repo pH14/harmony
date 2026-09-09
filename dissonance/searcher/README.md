@@ -183,8 +183,7 @@ cached snapshots, inputs and the local rule's proposed keep/remove flags. No
 slot vectors or inputs are allocated unless requested. The proposal precedes
 global population and memory eviction, so it does not certify the final global
 survivor set. Missing cached snapshots remain explicit members of the view.
-The
-constant-size `retention_diagnostics` sidecar census counts removal before
+The constant-size `retention_diagnostics` sidecar census counts removal before
 window exposure, recorded parent selections and productive-admission credit.
 Selections include pre-execution duplicate skips, which execute no new job.
 Pending job credits and continuation within the birth job are not represented,

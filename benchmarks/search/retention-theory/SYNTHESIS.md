@@ -70,6 +70,13 @@ gain. Four exact ARM stream checks and unchanged default audit bytes qualify
 the reporting change. The callback measures local-rule proposals before global
 eviction, not the final global archive or an improved search policy.
 
+A retrospective [exact finite-cover calculation](u01-finite-cover.json) sharpens
+that result: all seven offered triples have a subset of at most two states
+covering every measured positive event; five need only one. All four observed
+coverage gaps were therefore avoidable within the same slot capacity on this
+probe. This is a hindsight oracle, not an online selection rule or equivalence
+proof. Its public bit-mask certificates can be checked without ROMs or tapes.
+
 The [ledger](README.md) contains all favorable and adverse results, source and
 asset identities, work limits, actual costs and censoring. The positive
 shared-prefix Heat diagnostic is conditional on a selected origin; it does not

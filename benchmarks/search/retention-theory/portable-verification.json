@@ -75,5 +75,11 @@
       "harmony-complete-slot-generic-clippy.log": "a82b9296744bc19c639640a0f9f989b4baaeda1e30416adc9e57f377457993c5"
     },
     "scope": "local portable checks; ARM qualification separately attested"
+  },
+  "u01_public_cover_certificate": {
+    "passed": true,
+    "competitions": 7,
+    "method": "separate integer-mask enumeration, without ROM/input tapes or emulator work",
+    "log_sha256": "f757a89f4f874fd5d774eb9fdca73130ecfd1540952a06cdf471df2b0ac3a7e2"
   }
 }

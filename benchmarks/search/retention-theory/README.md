@@ -1166,3 +1166,31 @@ cells, two errors,1,308,743,091 admitted frames,10,222,892 executions,
 and7,407,354 standalone physical probe frames. Search-phase seconds sum to
 26,557.17 across overlapping cells; that is not elapsed tranche time. All owned
 native experiment services are now inactive. No validation seed was used.
+
+## U01 retrospective finite-cover certificate
+
+After the suffix outcomes, analyzer2e744f69 exhaustively checks all subsets of
+each offered triple. Features retain the suffix index and positive map, equipment,
+boss/capacity or final-survival event. No weights are fitted. The minimum cover
+is one state in five competitions and two in two; no measured triple requires
+three. Every one of the four coverage gaps is avoidable by another subset of at
+most two offered states. This is exact only for the measured positive events;
+it is not behavioral equivalence, an online algorithm, or a fresh-search win.
+No emulator work was added. Four finite counterexamples bring research CI to22
+passing tests, in addition to the22 existing top-level runner tests.
+
+The [public certificate](u01-finite-cover.json) contains the event dictionary,
+three integer masks and all minimum subsets for each competition, with raw
+outcome/registration hashes. It contains no action tape. A separate integer-mask
+checker verifies it without access to the private ROM, inputs or raw outcomes:
+
+```sh
+python3 benchmarks/search/retention-theory/verify_survivor_cover.py \
+  benchmarks/search/retention-theory/u01-finite-cover.json
+```
+
+This distinction matters for the next design: the sampled failures are avoidable
+selection losses under the existing capacity, while the previous proxy-based
+rules failed fresh-search replication. The missing component is a cheap,
+generalizable predictor of which measured futures a state contributes. The
+finite oracle supplies neither that predictor nor permission for longer runs.
