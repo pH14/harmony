@@ -11,8 +11,8 @@ ctl() {
 ctl_fast() {
   /opt/etcd/etcdctl \
     --endpoints=http://127.0.0.1:2379 \
-    --dial-timeout=100ms \
-    --command-timeout=100ms \
+    --dial-timeout=1s \
+    --command-timeout=1s \
     "$@"
 }
 
@@ -70,20 +70,6 @@ case "$1" in
     else
       echo '@sometimes 18'
     fi
-    # A failed read means the member is still down or restarting. That is not
-    # evidence of corruption; only a successful readback can publish a verdict.
-    ready=0
-    attempt=1
-    while [ "$attempt" -le 100 ]; do
-      if ctl_fast endpoint health >/dev/null 2>&1; then
-        ready=1
-        break
-      fi
-      sleep 0.01
-      attempt=$((attempt + 1))
-    done
-    [ "$ready" -eq 1 ] || exit 0
-    echo '@sometimes 14'
     snapshot=${journal}.$$
     expected=${snapshot}.expected
     actual_raw=${snapshot}.actual.raw
@@ -103,7 +89,21 @@ case "$1" in
     # Convert etcdctl's key/value line pairs to the same canonical form as the
     # journal, then check only the acknowledged subset. Extra keys can be
     # present because the workers may append a journal record after a put.
-    ctl_fast get museum/ --prefix >"${actual_raw}" 2>/dev/null || exit 0
+    # A restarted member can log that it is ready before its client listener
+    # accepts this request. Retry the read itself rather than relying on a
+    # separate health RPC whose short timeout can fail under emulation.
+    readback=0
+    attempt=1
+    while [ "$attempt" -le 20 ]; do
+      : >"${actual_raw}"
+      if ctl_fast get museum/ --prefix >"${actual_raw}" 2>/dev/null; then
+        readback=1
+        break
+      fi
+      sleep 0.01
+      attempt=$((attempt + 1))
+    done
+    [ "$readback" -eq 1 ] || exit 0
     echo '@sometimes 16'
     awk '
       NR % 2 == 1 { key = $0; next }
