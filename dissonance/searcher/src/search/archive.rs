@@ -7517,6 +7517,7 @@ mod tests {
             labels: [u16; 3],
             semantic: bool,
             counts: bool,
+            no_cost: bool,
         ) -> [usize; 3] {
             let mut archive = Archive::<u8, LabelledKey<CLASSES>, (), ()>::new(|_| 1);
             for (id, label) in labels.into_iter().enumerate() {
@@ -7540,7 +7541,9 @@ mod tests {
                 entry: 1000,
                 groups: vec![1000; 3],
             };
-            archive.selector_policy = if semantic && !counts {
+            archive.selector_policy = if no_cost {
+                SelectorPolicy::EnergyProgressNoCost(thresholds)
+            } else if semantic && !counts {
                 SelectorPolicy::EnergyProgressCheapest(thresholds)
             } else if semantic {
                 SelectorPolicy::EnergyProgressCheapestCount(thresholds)
@@ -7558,7 +7561,7 @@ mod tests {
             counts
         }
         for labels in [[1, 900, 2000], [2000, 1, 900]] {
-            let classes = sample::<true>(labels, true, true);
+            let classes = sample::<true>(labels, true, true, false);
             assert!(
                 classes[0] > 4000 && classes[1] > 4000,
                 "equivalent progress must share classes: {classes:?}"
@@ -7567,7 +7570,7 @@ mod tests {
                 classes[2], 0,
                 "a larger label must not displace actual progress"
             );
-            let bands = sample::<false>(labels, true, true);
+            let bands = sample::<false>(labels, true, true, false);
             assert!(
                 bands[0].abs_diff(bands[1]) < 400,
                 "location labels changed frontier weighting: {bands:?}"
@@ -7577,13 +7580,13 @@ mod tests {
                 "declared progress must still influence selection: {bands:?}"
             );
         }
-        let legacy = sample::<true>([1, 900, 2000], false, true);
+        let legacy = sample::<true>([1, 900, 2000], false, true, false);
         assert!(
             legacy[2] > 8000,
             "the control must reproduce the old label bias"
         );
         for labels in [[10, 90, 200], [200, 10, 90]] {
-            let draws = sample::<false>(labels, true, false);
+            let draws = sample::<false>(labels, true, false, false);
             assert!(
                 draws[0] > draws[2] && draws[1] > draws[2],
                 "semantic-only {draws:?}"
@@ -7602,5 +7605,14 @@ mod tests {
                 .unwrap(),
             policy
         );
+
+        for labels in [[10, 90, 200], [200, 10, 90]] {
+            let classes = sample::<true>(labels, true, false, true);
+            assert!(classes[0] > 4000 && classes[1] > 4000);
+            assert_eq!(classes[2], 0);
+            let bands = sample::<false>(labels, true, false, true);
+            assert!(bands[0].abs_diff(bands[1]) < 400);
+            assert!(bands[0] > bands[2] && bands[1] > bands[2]);
+        }
     }
 }

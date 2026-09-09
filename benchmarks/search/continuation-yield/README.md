@@ -57,7 +57,7 @@ attainments at 25M frames, with mean first-missile cost in
 14.086M–24.855M. The sample-CV interval is 0.2549–0.2559; it is descriptive,
 not a confidence interval or power calculation. The 100M nominal allocation used
 100,002,831 admitted frames including 2,831 frames of bounded in-flight drain.
-All four stopped at the frame bound. Measured witness replay consumed 283615 additional
+All four stopped at the frame bound. Measured paired witness replays consumed 567230 additional
 frames. Genesis/setup and unadmitted physical search work remain unmeasured.
 No failed earlier retention comparison is reopened by these controls.
 
