@@ -667,3 +667,35 @@ fn absent_context_uses_ordinary_capacity_instead_of_inventing_diversity() {
     assert_eq!(retained_context_states(&archive), BTreeSet::from([3]));
     assert_eq!(archive.retention_diagnostics.alternative_admissions, 0);
 }
+
+#[test]
+fn equal_policy_averaged_event_features_can_hide_opposite_action_futures() {
+    let model = Model {
+        labels: vec![0, 0, 1, 2],
+        edges: vec![
+            [edge(2, 1), edge(3, 0)],
+            [edge(3, 0), edge(2, 1)],
+            [edge(2, 0); 2],
+            [edge(3, 0); 2],
+        ],
+    };
+    // The uniform policy gives the same one-half event probability at both
+    // starts. Future steps emit nothing, so every longer event-return average
+    // also agrees. This is insufficient for preserving action-conditioned use.
+    let event_numerator = |state: usize| {
+        model.edges[state]
+            .iter()
+            .map(|e| u32::from(e.events))
+            .sum::<u32>()
+    };
+    assert_eq!(event_numerator(0), 1);
+    assert_eq!(event_numerator(1), 1);
+    assert_eq!(model.distinguish(0, 1), Some(vec![0]));
+    let refined = model.refine(vec![0, 0, 1, 2]);
+    assert_ne!(refined[0], refined[1]);
+    // Changing the action mixture to P(action0)=3/4 reverses the values.
+    let weighted = |state: usize| {
+        3 * u32::from(model.edges[state][0].events) + u32::from(model.edges[state][1].events)
+    };
+    assert_eq!((weighted(0), weighted(1)), (3, 1));
+}

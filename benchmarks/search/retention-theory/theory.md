@@ -273,3 +273,11 @@ favorable selected-prefix diagnostic do not imply better chained discovery.
 That prospective failure closes this family's escalation gate for the tranche;
 it does not falsify the fixed-stream extrema invariant or prove eventual
 success impossible.
+
+The [bounded literature update](literature-update.md) adds a further executable
+obligation for predictive descriptors: two states can have identical average
+event features under one action mixture while requiring opposite actions.
+Action-conditioned evidence is therefore necessary for a claim that survives
+changes in the exploration mixture; exact successor-model theorems require
+stronger conditions than a fitted short-horizon average. The new finite fixture
+passes and changes no running experiment.

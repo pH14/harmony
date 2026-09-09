@@ -55,6 +55,14 @@ and `runs/r04b-development-analysis.json`. The latter is generated automatically
 after both cells complete. No repeat seed, longer run or validation is allowed
 unless [the design's gate](motion-retention-design.md) passes.
 
+A bounded [literature update](literature-update.md) was completed during the
+run. It covers Intelligent Go-Explore, a July2026 preliminary topology report
+with a negative Atari result, and the exact assumptions behind successor-feature
+abstraction. One additional finite fixture passes: policy-averaged event
+features can agree while action-conditioned futures reverse. It is a theory
+test only; no production code or running policy changed. Existing follow-ups
+#270/#283/#286 cover ordering, exposure and behavioral-retention work.
+
 ## Findings that changed the research direction
 
 The formal model separates continuation equivalence, retention of distinguishing
