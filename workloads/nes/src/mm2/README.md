@@ -61,3 +61,10 @@ the adapter's physical-input expansion and ordinary award/menu transition,
 records their frame costs, and writes a private next-stage prefix. A separate
 twice-replayed next-stage bridge remains required. It does not make a supplied
 victory into a fresh chain result.
+
+A replayed stage-award witness can report both `victory: true` and
+`dead: true` at its final endpoint. Those raw flags do not alone establish
+continued gameplay. Keep them in the evidence, then qualify chainability by
+replaying the ordinary award/menu transition and next-stage entry with the
+awarded inventory retained. The R03b Metal qualification records this case
+for both policies, with twice-replayed Heat entry at full health.
