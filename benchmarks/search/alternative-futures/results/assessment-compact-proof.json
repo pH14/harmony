@@ -1,0 +1,12 @@
+{
+  "exit_code": 0,
+  "elapsed_seconds": 1.8023034590296447,
+  "user_seconds": 1.681521,
+  "system_seconds": 0.120057,
+  "max_rss_kib": 53912,
+  "identical_completed_cells": 2,
+  "completed_by_arm": {
+    "control": 1,
+    "corrected": 1
+  }
+}

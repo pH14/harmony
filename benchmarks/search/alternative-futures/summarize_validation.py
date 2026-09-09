@@ -20,20 +20,37 @@ def sha(path):
 
 def progress(path):
     if not path.exists():
-        return []
-    rows = []
+        return [], {}
+    rows, metrics = [], {}
+    latest = {}
     with path.open() as stream:
         for line in stream:
             try:
-                rows.append(json.loads(line))
+                latest = json.loads(line)
             except json.JSONDecodeError:
                 # A live writer can leave its final line incomplete.
                 if stream.read():
                     raise
+                break
+            workload = latest.get('workload_diagnostics', {})
+            named = workload.get('named_progress', {})
+            attained = tuple(key for key, value in named.get('first_seen', {}).items() if value is not None)
+            signature = (workload.get('map_cells_observed'), named.get('max_missile_capacity'),
+                         named.get('max_energy_tanks'), attained)
+            if signature not in metrics:
+                metrics[signature] = {'map_cells_observed': signature[0], 'named_progress': {
+                    'max_missile_capacity': signature[1], 'max_energy_tanks': signature[2],
+                    'first_seen': {key: True for key in attained}}}
+            # Keep numerical work samples, sharing unchanged reporting values.
+            # Full retention/selection sidecars are unnecessary for this assessment.
+            rows.append({'executions': latest['executions'], 'frames_emulated': latest['frames_emulated'],
+                         'workload_diagnostics': metrics[signature]})
+            if len(rows) > 100_000:
+                raise ValueError('unexpected progress density for the frozen 3M-execution panel')
     assert all(a['executions'] <= b['executions'] and
                a['frames_emulated'] <= b['frames_emulated']
                for a, b in zip(rows, rows[1:])), 'nonmonotone progress'
-    return rows
+    return rows, latest
 
 
 def work_bounds(points, first_execution):
@@ -62,6 +79,7 @@ def at_frame(points, boundary):
 
 
 def summarize(root, plan):
+    assert len(plan['cells']) <= 20, 'only the frozen bounded panel is supported'
     rows, points_by_label = [], {}
     launcher = root / 'validation' / plan['id']
     for cell in plan['cells']:
@@ -72,9 +90,9 @@ def summarize(root, plan):
         summary = read(summary_path) if summary_path.exists() else {}
         execution = read(execution_path) if execution_path.exists() else {}
         result = summary.get('result') or {}
-        points = progress(directory / 'campaign' / 'progress.jsonl')
+        points, last_observation = progress(directory / 'campaign' / 'progress.jsonl')
         points_by_label[label] = points
-        latest = summary.get('last_progress') or (points[-1] if points else {})
+        latest = summary.get('last_progress') or last_observation
         if result and (not points or result['executions'] > points[-1]['executions']):
             points.append({**latest, 'executions': result['executions'],
                            'frames_emulated': result['frames_emulated']})

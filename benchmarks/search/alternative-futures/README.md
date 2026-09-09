@@ -1491,3 +1491,28 @@ the frozen references. Any timeout, runner failure, missing cell, or mismatch
 stops this gate sequence with logs and partial proof preserved; no automatic
 retry or changed bound follows. Waiting and each process tree are bounded, so
 this registered sequence fits inside the reserved consolidation window.
+
+The validation assessor now retains numerical work samples with shared compact
+capability/coverage measurements instead of every repeated retention sidecar.
+It caps progress density at100k samples per cell and accepts at most20 cells.
+This avoids retaining the full expanded diagnostic JSON for all20 campaigns at
+once. Six planted tests pass, including a partial trailing line and shared
+metric storage. Run one read-only assessment on reserved CPU16 under a300s
+watchdog, measure peak RSS/CPU, and require identical already-completed cell
+rows and common-work pairs to the prior assessment. A difference blocks use of
+the optimized report until diagnosed; live progress is expected to advance.
+
+The compact assessor reproduces both completed cells and their common-work
+comparison exactly, using52.6MiB peak RSS and1.80s elapsed on CPU16. Independent
+verification found no changed discovery times or frame brackets. The measured
+read-only process is included in diagnostic CPU accounting.
+
+Build036 provenance additionally pins the804-file full tracked-source package
+(`545e40e8d1c080f8af9c409d40c955f537ce22d6942fbb3cfa196b88dedc22af`).
+All382 Rust/Cargo source entries match both the current branch and actual remote
+build tree. This supplements the existing narrower search-source identity with
+dependencies outside its directory scope, including Consonance. The immutable
+search-source overlay has SHA256
+`aaecde5aae245985769a665e2e091f75b8878bf96c10db0e68bd2069a6078552`.
+`results/q36-source-package-proof.json` retains the per-file hashes and archive
+relationship. Both source archives stay on ms02; licensed assets are separate.

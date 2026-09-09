@@ -89,6 +89,20 @@ class AssessmentTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, 'completed outcome lacks provenance'):
                 assessment.summarize(root, plan)
 
+    def test_progress_discards_unneeded_sidecars_and_shares_unchanged_metrics(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'progress.jsonl'
+            rows = [{'executions': n, 'frames_emulated': n * 10,
+                     'retention_diagnostics': {'unused': 'large sidecar'},
+                     'workload_diagnostics': {'named_progress': {'first_seen': {'bombs': {'execution': 1}}}}}
+                    for n in range(1, 4)]
+            path.write_text('\n'.join(map(json.dumps, rows)) + '\n{')
+            compact, latest = assessment.progress(path)
+            self.assertEqual(latest, rows[-1])
+            self.assertNotIn('retention_diagnostics', compact[0])
+            self.assertIs(compact[0]['workload_diagnostics'], compact[-1]['workload_diagnostics'])
+            self.assertEqual(assessment.at_frame(compact, 29)['observed_named_milestones'], ['bombs'])
+
 
 if __name__ == '__main__':
     unittest.main()
