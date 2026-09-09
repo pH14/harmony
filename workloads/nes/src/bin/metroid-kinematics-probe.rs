@@ -51,12 +51,28 @@ fn replay(
     }
     let before = serde_json::to_vec(&target.snapshot().ok_or("snapshot failed")?)?;
     let motion = target.diagnostic_kinematics()?;
+    let cached_context = target.cached_motion_context();
+    if cached_context != motion.coarse_context() {
+        return Err("cached motion context differs from direct RAM read".into());
+    }
+    #[cfg(feature = "metroid-motion-context")]
+    {
+        use nes_workload::{
+            metroid::campaign::MetroidGame,
+            search::{archive::ArchiveKey, campaign::Evaluation},
+        };
+        let game = MetroidGame::new(rom, core, core_hash)
+            .with_terminal_policy(MetroidTerminalPolicy::BcdUnderflow);
+        if game.current_key(&target)?.retention_context() != Some(u64::from(cached_context)) {
+            return Err("campaign key does not carry the qualified cached context".into());
+        }
+    }
     let after = serde_json::to_vec(&target.snapshot().ok_or("snapshot failed")?)?;
     if before != after {
         return Err("reading motion bytes changed snapshot state".into());
     }
     Ok(
-        json!({"endpoint":target.mechanical_state(), "motion":motion,
+        json!({"endpoint":target.mechanical_state(), "motion":motion, "cached_context":cached_context,
               "snapshot_sha256":format!("{:x}",Sha256::digest(before)),
               "physical_frames":target.frames_clocked(), "setup_frames":setup}),
     )
@@ -121,7 +137,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         "audit_sha256":format!("{:x}",Sha256::digest(bytes)),"core_sha256":core_hash,
         "rom_sha256":format!("{:x}",Sha256::digest(rom)),
         "terminal_policy":"death_or_bcd_underflow_or_ending_v3",
-        "read_only_snapshot_checks":true});
+        "read_only_snapshot_checks":true,
+        "cached_context_matches_direct_read":true,
+        "campaign_key_context_checked":cfg!(feature = "metroid-motion-context")});
     fs::write(
         out.join("summary.json"),
         serde_json::to_vec_pretty(&report)?,

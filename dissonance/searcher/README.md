@@ -215,6 +215,18 @@ physical states: candidates within a job share a rank, the hash is fixed, and
 search arrivals depend on earlier retention. Imports and evictions further
 limit any sampling interpretation. The parent selector remains unchanged.
 
+`quality_representatives_2_v1` keeps the top two ordinary quality/cost/arrival
+representatives. `context_representatives_2_v1` instead keeps the top two
+quality maxima from distinct `ArchiveKey::retention_context()` values. Context
+values have only equality semantics; their numeric order never supplies a
+preference. Coincident contexts need one representative. Missing context on
+any competitor uses the ordinary rule for that competition. Both mechanisms
+keep at most two entries under the same byte budget and leave selection groups
+unchanged. The first is a capacity control for the second. For fixed streams,
+the latter preserves the two highest-quality context maxima between external
+evictions/imports; neither rule guarantees useful future behavior. Replay
+records the explicit policy identifier and rejects unknown identifiers.
+
 Retention lifecycle diagnostics reuse existing selector exposure vectors and add
 only fixed counters, reported by `retention_diagnostic_memory_bytes`. Existing
 vectors remain covered by archive metadata charging. Measured process RSS also

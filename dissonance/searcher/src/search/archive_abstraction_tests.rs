@@ -505,3 +505,152 @@ fn job_sample_can_lose_a_useful_state_within_one_cohort() {
     assert_eq!(archive.active_count(), 1);
     assert!(!retained_can_reach(&archive, &model, 1));
 }
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+struct ContextKey {
+    quality: u8,
+    context: Option<u64>,
+}
+
+impl ArchiveKey for ContextKey {
+    type Group = ();
+    type Lineage = ();
+    fn groups() -> usize {
+        1
+    }
+    fn group(self, depth: usize) {
+        assert_eq!(depth, 0);
+    }
+    fn slot_capacity() -> usize {
+        1
+    }
+    fn preference_cmp(self, other: Self) -> Ordering {
+        self.quality.cmp(&other.quality)
+    }
+    fn retention_context(self) -> Option<u64> {
+        self.context
+    }
+    fn complete(self, _: Option<(Self, &())>) -> Self {
+        self
+    }
+    fn record(_: &mut (), _: Self) {}
+}
+
+type ContextArchive = Archive<u8, ContextKey, (), usize>;
+
+fn offer_context(archive: &mut ContextArchive, state: usize, quality: u8, context: Option<u64>) {
+    archive
+        .insert(
+            None,
+            u64::try_from(state).unwrap(),
+            ArchiveCandidate {
+                suffix: vec![u8::try_from(state).unwrap()],
+                key: ContextKey { quality, context },
+                milestones: (),
+            },
+            state,
+        )
+        .unwrap();
+}
+
+fn retained_context_states(archive: &ContextArchive) -> BTreeSet<usize> {
+    archive
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(id, _)| archive.active[*id])
+        .map(|(_, entry)| *entry.snapshot.as_deref().unwrap())
+        .collect()
+}
+
+#[test]
+fn context_and_quality_pairs_match_fixed_stream_top_two_oracles_at_every_prefix() {
+    // Includes repeated contexts, a late new maximum, equal-quality arrivals,
+    // and contexts that were excluded before their quality improved.
+    let stream = [
+        (4, 0),
+        (3, 0),
+        (2, 1),
+        (1, 2),
+        (5, 2),
+        (6, 1),
+        (6, 0),
+        (7, 3),
+        (8, 0),
+        (9, 3),
+        (8, 2),
+        (10, 4),
+    ];
+    for policy in [
+        SlotRetentionPolicy::QualityRepresentatives2,
+        SlotRetentionPolicy::ContextRepresentatives2,
+    ] {
+        let mut archive = ContextArchive::new(|_| 1);
+        archive.slot_retention = policy;
+        for (index, &(quality, context)) in stream.iter().enumerate() {
+            offer_context(&mut archive, index, quality, Some(context));
+            let mut candidates: Vec<_> = stream[..=index].iter().enumerate().collect();
+            candidates.sort_by_key(|(i, (q, _))| (Reverse(*q), *i));
+            let mut contexts = BTreeSet::new();
+            let expected: BTreeSet<_> = candidates
+                .into_iter()
+                .filter(|(_, (_, context))| {
+                    policy == SlotRetentionPolicy::QualityRepresentatives2
+                        || contexts.insert(*context)
+                })
+                .take(2)
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(
+                retained_context_states(&archive),
+                expected,
+                "policy={policy:?} prefix={index}"
+            );
+        }
+    }
+}
+
+#[test]
+fn context_pair_preserves_a_distinct_exit_but_can_discard_a_third_context() {
+    let model = Model {
+        labels: vec![0; 5],
+        edges: vec![
+            [edge(0, 0); 2],
+            [edge(1, 0); 2],
+            [edge(4, 1), edge(2, 0)],
+            [edge(3, 0), edge(4, 2)],
+            [edge(4, 0); 2],
+        ],
+    };
+    assert_eq!(model.distinguish(0, 2), Some(vec![0]));
+    for policy in [
+        SlotRetentionPolicy::QualityRepresentatives2,
+        SlotRetentionPolicy::ContextRepresentatives2,
+    ] {
+        let mut archive = ContextArchive::new(|_| 1);
+        archive.slot_retention = policy;
+        for (state, (quality, context)) in [(10, 0), (9, 0), (8, 1), (7, 2)].into_iter().enumerate()
+        {
+            offer_context(&mut archive, state, quality, Some(context));
+        }
+        let retained = retained_context_states(&archive);
+        assert_eq!(retained.len(), 2);
+        assert_eq!(
+            retained.iter().any(|s| model.can_reach_event(*s, 1)),
+            policy == SlotRetentionPolicy::ContextRepresentatives2
+        );
+        assert!(model.can_reach_event(3, 2));
+        assert!(!retained.iter().any(|s| model.can_reach_event(*s, 2)));
+    }
+}
+
+#[test]
+fn absent_context_uses_ordinary_capacity_instead_of_inventing_diversity() {
+    let mut archive = ContextArchive::new(|_| 1);
+    archive.slot_retention = SlotRetentionPolicy::ContextRepresentatives2;
+    for (state, quality) in [4, 5, 2, 6].into_iter().enumerate() {
+        offer_context(&mut archive, state, quality, None);
+    }
+    assert_eq!(retained_context_states(&archive), BTreeSet::from([3]));
+    assert_eq!(archive.retention_diagnostics.alternative_admissions, 0);
+}

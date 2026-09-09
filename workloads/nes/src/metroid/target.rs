@@ -552,6 +552,13 @@ impl MetroidTarget {
         Ok(super::kinematics_probe::decode(&self.machine.read_wram()?))
     }
 
+    /// Motion context derived from the already captured endpoint RAM. No
+    /// extra emulator read or observation/snapshot field is needed.
+    #[must_use]
+    pub fn cached_motion_context(&self) -> u16 {
+        super::kinematics_probe::decode(&self.current_wram).coarse_context()
+    }
+
     /// Read the cartridge work RAM window the decoder needs.
     fn cartridge(&self) -> Result<Vec<u8>, MachineError> {
         self.machine.read_save_ram()

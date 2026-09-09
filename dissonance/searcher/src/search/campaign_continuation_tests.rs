@@ -46,6 +46,9 @@ impl ArchiveKey for TestKey {
         let level = u64::from(self.0 / 16);
         Some([level, 15 - level])
     }
+    fn retention_context(self) -> Option<u64> {
+        Some(u64::from(self.0 / 16) % 3)
+    }
     type Lineage = ();
 
     fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
@@ -531,6 +534,8 @@ fn optional_slot_policies_replay_alternatives_eviction_and_continuations() {
         SlotRetentionPolicy::ResourceExtremes2,
         SlotRetentionPolicy::ResourceCoverage2,
         SlotRetentionPolicy::RepresentativeJobSample2,
+        SlotRetentionPolicy::QualityRepresentatives2,
+        SlotRetentionPolicy::ContextRepresentatives2,
     ] {
         let config = CampaignConfig {
             campaign_seed: 947,

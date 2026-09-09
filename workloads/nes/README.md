@@ -104,3 +104,12 @@ and the best state from the lowest-ranked creation job. Its fixed job ranking
 uses no search RNG and needs no resource axes. It retains at most two states
 under the same archive byte budget, including when resources tie. This is a
 research option; the ranking gives no guarantee of useful future behavior.
+
+`quality_representatives_2_v1` supplies a plain top-two-quality control.
+`context_representatives_2_v1` keeps the top two representatives from distinct
+opaque contexts. Metroid supplies a facing/speed-sign context only in builds
+with `--features metroid-motion-context`; other builds/workloads have no such
+context and use ordinary retention for that policy. Motion metadata changes
+neither retention-slot geometry nor selector groups. Both comparison arms must
+use the same feature build, resource limits and recorded terminal semantics.
+No experimental policy or feature is a production default.

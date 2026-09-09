@@ -25,7 +25,13 @@ pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 /// Largest bounded input horizon accepted by a Metroid campaign.
 pub const MAX_METROID_ACTIONS: usize = 8_192;
 /// Recorded archive-key and per-location preference policy.
-pub const KEY_POLICY_IDENTIFIER: &str = if cfg!(feature = "metroid-refined-archive") {
+pub const KEY_POLICY_IDENTIFIER: &str = if cfg!(feature = "metroid-motion-context") {
+    if cfg!(feature = "metroid-refined-archive") {
+        "metroid_items_tanks_spatial_8_raw_pose_motion_context_selection_32_legacy_progress_v11"
+    } else {
+        "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_v10"
+    }
+} else if cfg!(feature = "metroid-refined-archive") {
     "metroid_items_tanks_spatial_8_raw_pose_selection_32_legacy_progress_v9"
 } else {
     "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8"
@@ -88,6 +94,10 @@ pub struct MetroidArchiveKey {
     pub health: u16,
     /// Missiles carried.
     pub missiles: u8,
+    /// Descriptor captured from target RAM; neither group identity nor quality.
+    /// Numeric-only construction leaves it absent.
+    #[cfg(feature = "metroid-motion-context")]
+    pub motion_context: Option<u16>,
 }
 
 impl ArchiveKey for MetroidArchiveKey {
@@ -167,6 +177,11 @@ impl ArchiveKey for MetroidArchiveKey {
         Some([u64::from(self.health), u64::from(self.missiles)])
     }
 
+    #[cfg(feature = "metroid-motion-context")]
+    fn retention_context(self) -> Option<u64> {
+        self.motion_context.map(u64::from)
+    }
+
     fn preference_cmp(self, other: Self) -> Ordering {
         self.preference().cmp(&other.preference())
     }
@@ -213,6 +228,8 @@ pub fn archive_key(state: MetroidMechanicalState) -> MetroidArchiveKey {
         door: state.door,
         health,
         missiles,
+        #[cfg(feature = "metroid-motion-context")]
+        motion_context: None,
     }
 }
 
@@ -393,6 +410,33 @@ pub fn sample_chord(rand: &mut RomuDuoJrRand) -> Result<ButtonChord, Box<dyn Err
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "metroid-motion-context")]
+    #[test]
+    fn motion_metadata_changes_neither_geometry_nor_quality_and_round_trips() {
+        let plain = archive_key(MetroidMechanicalState::default());
+        assert_eq!(plain.retention_context(), None);
+        let left = MetroidArchiveKey {
+            motion_context: Some(3),
+            ..plain
+        };
+        let right = MetroidArchiveKey {
+            motion_context: Some(17),
+            ..plain
+        };
+        assert_ne!(left.retention_context(), right.retention_context());
+        assert_eq!(left.preference_cmp(right), Ordering::Equal);
+        for depth in 0..MetroidArchiveKey::groups() {
+            assert_eq!(left.group(depth), plain.group(depth));
+            assert_eq!(left.group(depth), right.group(depth));
+        }
+        let bytes = postcard::to_allocvec(&left).unwrap();
+        assert_eq!(
+            postcard::from_bytes::<MetroidArchiveKey>(&bytes).unwrap(),
+            left
+        );
+        assert!(KEY_POLICY_IDENTIFIER.contains("motion_context"));
+    }
 
     fn state(x: u8, health: u16, equipment: u8) -> MetroidMechanicalState {
         MetroidMechanicalState {

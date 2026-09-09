@@ -53,6 +53,11 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_select_taps_no_start_v1";
+const RESULT_DIGEST_IDENTIFIER: &str = if cfg!(feature = "metroid-motion-context") {
+    "metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5"
+} else {
+    "metroid-semantic-postcard-1.1.3-sha256-hex-v4"
+};
 
 type MetroidPreference = (u8, u8, u16, u8);
 type MetroidChampionKey = (MetroidProgressWatermark, MetroidPreference);
@@ -99,7 +104,7 @@ impl MetroidGame {
             "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;\
              genesis=metroid-new-game-v1:prefix-sha256={:x};\
              image=cartridge-ram-declared-v1;\
-             result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v4;sha256={core_sha256}",
+             result_digest={RESULT_DIGEST_IDENTIFIER};sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
             machine::quicknes::QUICKNES_BUILD,
             machine::quicknes::QUICKNES_OPTIONS,
@@ -387,6 +392,21 @@ fn merge_action_milestones(
     }
 }
 
+fn target_archive_key(target: &MetroidTarget) -> MetroidArchiveKey {
+    let key = archive_key(target.mechanical_state());
+    #[cfg(feature = "metroid-motion-context")]
+    {
+        MetroidArchiveKey {
+            motion_context: Some(target.cached_motion_context()),
+            ..key
+        }
+    }
+    #[cfg(not(feature = "metroid-motion-context"))]
+    {
+        key
+    }
+}
+
 fn execute_suffix(
     target: &mut MetroidTarget,
     genesis: (u8, u8),
@@ -424,7 +444,7 @@ fn execute_suffix(
                 .snapshot()
                 .ok_or("failed to snapshot Metroid suffix")?;
             Some(CampaignCandidate {
-                key: archive_key(target.mechanical_state()),
+                key: target_archive_key(target),
                 viable: true,
                 snapshot,
             })
@@ -851,7 +871,7 @@ impl Evaluation for MetroidGame {
     }
 
     fn current_key(&self, target: &MetroidTarget) -> Result<MetroidArchiveKey, Box<dyn Error>> {
-        Ok(archive_key(target.mechanical_state()))
+        Ok(target_archive_key(target))
     }
 
     fn complete_candidate_key(

@@ -19,6 +19,8 @@ sha2 = "=0.10.9"
 consonance = ["machine/consonance"]
 # Experimental Metroid retention refinement; the default preserves v8 keys.
 metroid-refined-archive = []
+# Optional motion metadata for bounded context retention; does not split cells.
+metroid-motion-context = []
 
 [[bin]]
 name = "nova-consonance-campaign"

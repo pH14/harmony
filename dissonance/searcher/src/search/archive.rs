@@ -80,6 +80,12 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn retention_resources(self) -> Option<[u64; 2]> {
         None
     }
+    /// Optional opaque context for bounded representative diversity. Only
+    /// equality is meaningful; its numeric value supplies no quality order.
+    /// Missing contexts use the ordinary representative rule at competition.
+    fn retention_context(self) -> Option<u64> {
+        None
+    }
     /// Ancestry state a key needs to complete itself.
     type Lineage: Clone + Default;
     /// Complete a freshly decoded key against its parent's key and lineage.
@@ -108,6 +114,10 @@ pub enum SlotRetentionPolicy {
     ResourceCoverage2,
     /// Ordinary best representative plus the best from the lowest-ranked job.
     RepresentativeJobSample2,
+    /// Best two candidates under ordinary quality, cost and stable arrival.
+    QualityRepresentatives2,
+    /// Best two context maxima under ordinary quality; contexts are unordered.
+    ContextRepresentatives2,
 }
 
 impl SlotRetentionPolicy {
@@ -119,6 +129,8 @@ impl SlotRetentionPolicy {
             Self::ResourceExtremes2 => Some("resource_extremes_2_v1"),
             Self::ResourceCoverage2 => Some("resource_coverage_2_v1"),
             Self::RepresentativeJobSample2 => Some("representative_job_sample_2_v1"),
+            Self::QualityRepresentatives2 => Some("quality_representatives_2_v1"),
+            Self::ContextRepresentatives2 => Some("context_representatives_2_v1"),
         }
     }
 
@@ -132,6 +144,8 @@ impl SlotRetentionPolicy {
             Some("resource_extremes_2_v1") => Ok(Self::ResourceExtremes2),
             Some("resource_coverage_2_v1") => Ok(Self::ResourceCoverage2),
             Some("representative_job_sample_2_v1") => Ok(Self::RepresentativeJobSample2),
+            Some("quality_representatives_2_v1") => Ok(Self::QualityRepresentatives2),
+            Some("context_representatives_2_v1") => Ok(Self::ContextRepresentatives2),
             Some(value) => Err(format!("unknown slot retention policy {value}").into()),
         }
     }
@@ -2905,7 +2919,17 @@ where
             Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
             Ordering::Less => false,
         });
-        let replacements = if self.slot_retention == SlotRetentionPolicy::RepresentativeJobSample2 {
+        let quality_pair = matches!(
+            self.slot_retention,
+            SlotRetentionPolicy::RepresentativeJobSample2
+                | SlotRetentionPolicy::QualityRepresentatives2
+        ) || (self.slot_retention
+            == SlotRetentionPolicy::ContextRepresentatives2
+            && key.retention_context().is_some()
+            && slot
+                .iter()
+                .all(|id| self.entries[*id].key.retention_context().is_some()));
+        let replacements = if quality_pair {
             let new_id = self.entries.len();
             let attributes = |id: usize| {
                 if id == new_id {
@@ -2931,14 +2955,28 @@ where
             let representative = candidates()
                 .max_by(|a, b| quality(*a, *b))
                 .expect("candidate makes nonempty competition");
-            let sampled = candidates()
-                .min_by(|a, b| {
-                    retention_job_rank(attributes(*a).3)
-                        .cmp(&retention_job_rank(attributes(*b).3))
-                        .then_with(|| quality(*b, *a))
-                })
-                .expect("candidate makes nonempty competition");
-            let keep = [representative, sampled];
+            let alternative = match self.slot_retention {
+                SlotRetentionPolicy::RepresentativeJobSample2 => candidates()
+                    .min_by(|a, b| {
+                        retention_job_rank(attributes(*a).3)
+                            .cmp(&retention_job_rank(attributes(*b).3))
+                            .then_with(|| quality(*b, *a))
+                    })
+                    .expect("candidate makes nonempty competition"),
+                SlotRetentionPolicy::QualityRepresentatives2 => candidates()
+                    .filter(|id| *id != representative)
+                    .max_by(|a, b| quality(*a, *b))
+                    .unwrap_or(representative),
+                SlotRetentionPolicy::ContextRepresentatives2 => candidates()
+                    .filter(|id| {
+                        attributes(*id).0.retention_context()
+                            != attributes(representative).0.retention_context()
+                    })
+                    .max_by(|a, b| quality(*a, *b))
+                    .unwrap_or(representative),
+                _ => unreachable!("quality-pair policies checked before competition"),
+            };
+            let keep = [representative, alternative];
             if keep.contains(&new_id) {
                 if slot.iter().any(|id| keep.contains(id)) {
                     self.retention_diagnostics.alternative_admissions += 1;

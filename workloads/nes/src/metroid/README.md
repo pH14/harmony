@@ -192,3 +192,21 @@ descriptors with existing continuation outcomes can refute a proposed grouping;
 it cannot establish that motion alone causes the difference or that keeping
 its groups improves discovery. The coarse descriptor and design gate are
 registered in the [P04 ledger](../../../../benchmarks/search/retention-theory/README.md).
+
+The optional `metroid-motion-context` feature adds `motion_context: Option<u16>`
+to the archive key. Actual candidate and reconstructed-origin keys derive it
+from the target's already cached endpoint RAM; numeric-only key construction
+leaves it absent. It encodes raw facing and the signs of both signed speeds,
+without preferring a direction. Group identity, opaque quality, observations
+and emulator snapshots remain unchanged. Both arms of a motion-retention
+comparison use this same metadata and memory accounting.
+
+The feature records key policy v10 with the ordinary 16-pixel geometry, or v11
+if combined with the separate refined-archive feature, and result-digest
+`metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5`. The combined variant is
+defined for compatibility but is not qualified by the motion experiment.
+Feature-disabled builds retain their old key layout and digest identifier.
+`context_representatives_2_v1` uses only context equality and keeps at most two
+quality-ranked contexts; `quality_representatives_2_v1` is its capacity control.
+The motion probe additionally checks cached context against direct RAM and,
+when feature-enabled, checks the actual campaign key, without running search.

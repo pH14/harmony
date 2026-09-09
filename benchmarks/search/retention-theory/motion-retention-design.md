@@ -54,3 +54,37 @@ Then specify a small distinguishing pilot and its work limit before running it.
 P04's pass authorizes that design and qualification work only. The failed K01
 and Metroid R03 campaign gates remain recorded and are not reset. No long run,
 default change or held-out panel is yet justified by this proposal.
+
+## R04 registration, before ARM data
+
+The small distinguishing pilot is two fresh 5,000-job campaigns (development
+seed 3, four workers, 8 GiB, existing K01 smoke configuration, corrected v3
+terminal handling). Both use the identical motion-feature binary. Compare
+`quality_representatives_2_v1` with `context_representatives_2_v1`, sequentially
+on cores 0–3. Each has a 240-second search limit plus 120-second verification
+allowance. Full campaign replay must reproduce the report and checkpoint.
+The qualification-only resident-snapshot census must show all keys carrying
+contexts, at most two snapshots per slot, no same-context pair under context
+retention, at least ten same-context pairs under quality retention, and at least
+ten distinct-context pairs under context retention. This checks real opportunity
+and mechanism activity, not future coverage or progress. Memory eviction can
+make the census a subset of active entries; its scope is explicitly resident
+snapshots. Existing P04 suffix results supply the behavioral motivation.
+
+Before those cells, the feature-disabled binary must reproduce the frozen
+5,000-job corrected Metroid, MM2 and Metroid job-sampling streams exactly.
+Reconstruct original P04 pairs 0, 2 and 12 twice per endpoint to check cached
+context and actual campaign key against the previously qualified direct RAM
+read, including stationary, horizontal and vertical sign classes. No new
+suffixes, pair selection or descriptor tuning is allowed in this check.
+
+Only if all checks pass, run one fresh development pair at seed 3, quality
+then context on cores 0–3: same feature binary, 8 GiB, four workers, alphabet
+draws, 4,096 actions, 500,000-job/50-million-frame ceilings, and 1,800-second
+search limit per arm plus 120 seconds for finishing. Stop at the first bound;
+no retries or longer run on a negative result. Replayed new named milestones
+or at least 20% less admitted work to a common missile/Norfair/tank milestone,
+without losing a milestone reached by the completed control, can qualify one
+new development seed. Wall-censored relevant work remains unresolved, never
+a win. Boss defeats are stronger evidence but still require fresh replication.
+If this gate fails, retire this motion-context family for this tranche.

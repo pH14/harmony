@@ -17,6 +17,26 @@ pub struct Kinematics {
     pub horizontal_speed_maximum: u8,
 }
 
+impl Kinematics {
+    /// Encode the opaque tuple (raw facing, horizontal sign, vertical sign).
+    /// Preserve every raw facing byte without imposing a preferred direction.
+    #[must_use]
+    pub fn coarse_context(self) -> u16 {
+        fn sign_class(byte: u8) -> u16 {
+            if byte == 0 {
+                1
+            } else if byte < 128 {
+                2
+            } else {
+                0
+            }
+        }
+        u16::from(self.direction) * 9
+            + sign_class(self.horizontal_speed) * 3
+            + sign_class(self.vertical_speed)
+    }
+}
+
 pub(crate) fn decode(wram: &[u8; 2048]) -> Kinematics {
     Kinematics {
         direction: wram[0x4d],
@@ -62,5 +82,28 @@ mod tests {
         wram[0x309] = 0;
         assert_eq!(decode(&wram).horizontal_speed, 0);
         assert_eq!(decode(&wram).vertical_speed, 0xfa);
+    }
+
+    #[test]
+    fn coarse_context_preserves_facing_and_sign_without_ranking_magnitudes() {
+        let mut wram = [0; 2048];
+        let mut contexts = std::collections::BTreeSet::new();
+        for facing in 0..=u8::MAX {
+            wram[0x4d] = facing;
+            for x in [0xff, 0, 1] {
+                wram[0x309] = x;
+                for y in [0xff, 0, 1] {
+                    wram[0x308] = y;
+                    assert!(contexts.insert(decode(&wram).coarse_context()));
+                }
+            }
+        }
+        assert_eq!(contexts.len(), 256 * 9);
+        wram[0x309] = 2;
+        wram[0x308] = 0xfe;
+        let before = decode(&wram).coarse_context();
+        wram[0x309] = 127;
+        wram[0x308] = 128;
+        assert_eq!(before, decode(&wram).coarse_context());
     }
 }
