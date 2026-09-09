@@ -1,0 +1,175 @@
+{
+  "format": "p05-recorded-competitor-diagnostic-v1",
+  "scope": "diagnostic only; failed R05 search family stays closed",
+  "source_audit_sha256": "d7c2e2c30741d1bd7a7a44384ee57cb1817a01c6d85e81a0fee69be218e236bd",
+  "subset_audit_sha256": "460fa2fef0f34e2c087e3300bf7cbf8edf4c83e8cd1dabb161167b451252d083",
+  "seed": 20261214,
+  "trials_per_pair": 16,
+  "actions_per_trial": 24,
+  "suffix_work_bound": {
+    "prefix_upper_bound": 821698,
+    "suffix_upper_bound": 1474560,
+    "gain_exports_upper_bound": 7325712,
+    "total_upper_bound": 9621970
+  },
+  "records": [
+    {
+      "label": "motion",
+      "build": {
+        "binary": "metroid-kinematics-probe",
+        "binary_sha256": "d48042d84b6f055773131046c66a55bc522a3f92cba4c7304626e5a0a793a08c",
+        "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+        "dirty": null,
+        "features": "metroid-motion-context",
+        "files": 386,
+        "format": "harmony-diagnostic-build-v1",
+        "locked": true,
+        "profile": "release",
+        "revision": null,
+        "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+        "source_commit": "e29ee221",
+        "source_tree_sha256": "dc1a23824949cd80827b170af45635f585a617d0c42ee275b43b9b07ced23add",
+        "target_cache": "/root/harmony-retention-theory-20260908/target"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "/root/harmony-retention-theory-20260908/builds/motion-probe-002/metroid-kinematics-probe",
+        "/root/harmony-retention-theory-20260908/assets/quicknes_libretro.so",
+        "/root/harmony-retention-theory-20260908/assets/metroid.nes",
+        "/root/harmony-retention-theory-20260908/p05-audit.json",
+        "/root/harmony-retention-theory-20260908/runs/p05/motion"
+      ],
+      "elapsed_seconds": 82.0515136049944,
+      "summary": {
+        "audit_sha256": "460fa2fef0f34e2c087e3300bf7cbf8edf4c83e8cd1dabb161167b451252d083",
+        "cached_context_matches_direct_read": true,
+        "campaign_key_context_checked": true,
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "format": "metroid-competitor-motion-probe-v1",
+        "pairs": 16,
+        "physical_frames": 1440708,
+        "read_only_snapshot_checks": true,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "scope": "existing recorded competitors, no new search or suffix trials",
+        "terminal_policy": "death_or_bcd_underflow_or_ending_v3",
+        "verified_replays_per_endpoint": 2
+      },
+      "physical_frames": 1440708,
+      "passed": true
+    },
+    {
+      "label": "suffix",
+      "build": {
+        "format": "harmony-diagnostic-build-v1",
+        "source_commit": "a864291e",
+        "source": {
+          "source_tree_sha256": "85918a462a8ec9f0c4022011333334ace0742d93857943b55cd9275bead9429e",
+          "revision": null,
+          "dirty": null,
+          "files": 334
+        },
+        "binary_sha256": "20f0255bc4002d4e43ffecbfd9e0efc053c7656c2b06272bc4fbc16e7eff9672",
+        "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+        "features": "",
+        "profile": "release",
+        "locked": true
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "/root/harmony-retention-theory-20260908/builds/probe-001/metroid-retention-probe",
+        "/root/harmony-retention-theory-20260908/assets/quicknes_libretro.so",
+        "/root/harmony-retention-theory-20260908/assets/metroid.nes",
+        "/root/harmony-retention-theory-20260908/p05-audit.json",
+        "/root/harmony-retention-theory-20260908/runs/p05/suffix",
+        "16",
+        "24",
+        "death_or_bcd_underflow_or_ending_v3",
+        "20261214"
+      ],
+      "elapsed_seconds": 60.55310980899958,
+      "summary": {
+        "actions_per_trial": 24,
+        "audit_sha256": "460fa2fef0f34e2c087e3300bf7cbf8edf4c83e8cd1dabb161167b451252d083",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "equal_work_rule": "identical pre-sampled action suffixes and frame allowances; terminal branches stop early, actual frames reported separately",
+        "format": "metroid-equal-suffix-probe-v2",
+        "limitations": [
+          "cached incumbent sample only",
+          "finite matching suffixes do not prove equivalence",
+          "map exit is local reach evidence, not a boss or new global coverage claim",
+          "resource gain is relative to each starting state"
+        ],
+        "pairs": 16,
+        "prefix_and_gain_export_frames": 720354,
+        "probe_frames_discarded_survivor": [
+          170882,
+          171173
+        ],
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "scope": "development-discovered competitors; diagnostic, not fresh search",
+        "seed": 20261214,
+        "suffix_sha256": "b902641c75a00a0b0cfc8ef919770e07d0b3caedd82c87c2d7d05f02159a1155",
+        "terminal_policy": "death_or_bcd_underflow_or_ending_v3",
+        "totals_by_stratum": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            256,
+            0,
+            0,
+            23,
+            13,
+            4
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "totals_columns": [
+          "trials",
+          "discarded_only_gain",
+          "survivor_only_gain",
+          "discarded_only_living_map_exit",
+          "survivor_only_living_map_exit",
+          "discarded_survives_survivor_dies"
+        ],
+        "trials_per_pair": 16
+      },
+      "physical_frames": 1062409,
+      "passed": true
+    }
+  ],
+  "complete": true,
+  "physical_frames": 2503117
+}

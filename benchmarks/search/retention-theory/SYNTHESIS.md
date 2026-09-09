@@ -44,6 +44,14 @@ active and obeys its rule:31,248 active entries,14,085 distinct-context pairs,
 zero same-context pairs. The performance failure therefore persists despite
 correct implementation of the proposed retention invariant.
 
+A separately registered replay diagnostic on the new seed's ordinary-control
+competitors used2.50M physical frames in143 seconds. Useful suffix differences
+appeared in6/8 pairs with matching motion contexts and6/8 with different contexts.
+The partition did not concentrate the useful differences in this small panel.
+No capability gain was observed. [P05](p05-analysis.json) preserves the fixed
+sample, both objective directions and its limited descriptive scope; it does
+not reopen the failed search gate.
+
 The [ledger](README.md) contains all favorable and adverse results, source and
 asset identities, work limits, actual costs and censoring. The positive
 shared-prefix Heat diagnostic is conditional on a selected origin; it does not

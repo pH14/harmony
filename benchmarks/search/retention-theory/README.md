@@ -1038,3 +1038,35 @@ Draft [PR#287](https://github.com/pH14/harmony/pull/287) preserves the research.
 The generic/portable checks and seven research driver contracts are documented
 in the verification ledger. Hosted checks remain separate from scientific
 qualification. No validation panel or fresh boss/Wily4 breakthrough is claimed.
+
+### P05: a bounded descriptor check after R05
+
+The [registered diagnostic](p05-registration.md) reuses all16 equal-preference
+pairs from R05 ordinary, in recorded order, with a new fixed bank of16 suffixes
+of24 actions (seed20261214). The two existing attested helpers reconstruct
+endpoints twice and then compare suffix futures under terminalv3. No fresh
+search or descriptor tuning occurs, and the failed motion family stays closed.
+
+Motion reconstruction costs1,440,708 frames/82.05s; suffix probing costs1,062,409
+frames/60.55s. Both satisfy their120s wall limits. Total2,503,117 physical frames
+is below the registered worst-case allowances, which include setup and every
+potential gain export. No capability gain or export occurs.
+
+| Frozen contexts | Useful disagreement observed | No disagreement in tested suffixes |
+| --- | ---: | ---: |
+| Same | 6 | 2 |
+| Different | 6 | 2 |
+
+This small panel does not show the motion split concentrating useful differences.
+It does not establish population probabilities or equivalence for matching
+samples. Two pairs with all seven raw motion fields equal still differ in their
+mechanical endpoints; they do not isolate another world variable. Pair10 has
+identical mechanical endpoints, equal coarse contexts, different raw motion and
+three distinguishing suffixes. The [analysis](p05-analysis.json) preserves these
+qualification limits and both objective directions. [Full results](p05-results.json)
+and [driver hashes](p05-driver-provenance.json) make the procedure reviewable.
+
+[Updated accounting](work-accounting-after-p05.json) leaves search work unchanged
+at70 completed evaluation cells and1,306,085,764 admitted frames. Standalone
+probe work increases to6,976,210 physical frames. Other replay categories and
+unknown setup/bridge/export/unadmitted costs remain separately identified.

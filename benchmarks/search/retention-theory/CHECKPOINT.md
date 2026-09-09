@@ -3,9 +3,10 @@
 The goal remains active. No fresh Metroid boss or MM2 Wily4 breakthrough has
 been established. ROM transfer is complete and checksum verified. The initial
 12-hour tranche ends10:16UTC;08:46UTC remains reserved for consolidation. Current
-time is about06:18UTC. Do not silently extend or mark the breakthrough achieved.
+time is about06:37UTC. Do not silently extend or mark the breakthrough achieved.
 
-No owned msr1 search campaign is running or queued. R05 finished around06:14UTC;
+No owned msr1 search campaign is running or queued. The separately registered
+P05 replay-only diagnostic is running (details below). R05 finished around06:14UTC;
 service`harmony-r05-replication-002` is inactive. All tested retention families
 have failed their registered escalation gates. Do not rescue them with longer
 runs, extra seeds or altered thresholds in this tranche.
@@ -36,11 +37,11 @@ Setup, exports, bridges, unadmitted and incomplete work can add cost. Outputs
 occupy about6.3GiB. Revised accountant is msr1 root`account-runs-v2.py`; output
 `runs/work-accounting-after-r05-v2.json`. The frozen R05 accountant is older.
 
-Draft [PR#287](https://github.com/pH14/harmony/pull/287) exists. Pushed head was
-`bff3a20a`; local`76c339fb` adds explicit research-test CI wiring. R05 evidence,
-plot and current synthesis still need committing/pushing, then update the PR
-body from its currently running-R05 description. Use
-`/private/tmp/harmony-retention-pr-body.md` with`gh pr edit --body-file`.
+Draft [PR#287](https://github.com/pH14/harmony/pull/287) exists. Pushed head
+`d0b794f0` includes complete R05 evidence, plot, updated synthesis and the research
+CI contract integration. Its body now reports the negative replication. Local
+commits`1028cd00`/`5a0eae41` register and implement P05; not pushed yet. Use
+`/private/tmp/harmony-retention-pr-body.md` with`gh pr edit --body-file` for the next update.
 The root pre-push hook explicitly permits skipping its convenience root checks;
 changed standalone package checks already passed. Hosted CI is the gate of
 record. Initial pushed head's portable job passed, broad checks still ran at
@@ -66,8 +67,30 @@ assumptions, plus probe costs. No new emulator work or candidate tuning.
 Its auditor passes side-swapping symmetry and rejects a planted inconsistent
 exit flag. Literature memo and two later finite fixtures are committed.
 
-Remaining work: finish R05 evidence/PR synchronization, inspect final-head CI
-when appropriate, and consolidate the scientific result. Any genuinely new
+P05 is registered in[p05-registration.md](p05-registration.md): all16 equal-
+preference pairs from R05 ordinary's existing audit (full SHA
+`d7c2e2c30741d1bd7a7a44384ee57cb1817a01c6d85e81a0fee69be218e236bd`),
+recorded order, no pair-specific outcome selection. Frozen motion-probe-002
+first reconstructs endpoints twice with its2M cap (predicted1,440,708 frames).
+Then frozen probe-001 runs16 shared suffixes of24 actions, newseed20261214,
+terminalv3. The conservative suffix-helper bound is9,621,970 frames including
+all potential gain exports, below its12M registration:821,698 prefixes,
+1,474,560 suffixes and7,325,712 exports. Each helper120s, whole service300s/4GiB,
+64MiB output cap, core8. No retries/extra suffixes/longer run on a negative or
+incomplete result. It cannot reopen the failed search family.
+
+Active service`harmony-p05-diagnostic-001`, launched06:37UTC. Driver package
+msr1 root`harmony-p05-5a0eae41/` matches committed driver hashes; wrapper
+`run-p05-5a0eae41.sh`. Inputs stay private at root`p05-audit.json`. Outputs:
+`runs/p05/results.json`, `runs/p05/{motion,suffix}/summary.json`,
+`runs/p05-analysis.json`, `runs/work-accounting-after-p05.json`. The fixed
+analyzer reports split/disagreement contingency and both objective directions,
+never an inferential rate or escalation pass. Both helpers are existing attested
+binaries; no production code or build changed. Metadata-only results can be
+copied locally. Do not export private gain tapes to GitHub.
+
+Remaining work: finish P05 and record its bounded result, synchronize the draft
+PR, inspect final-head CI when appropriate, and consolidate the scientific result. Any genuinely new
 short diagnostic requires a concrete hypothesis and budget first; no longer
 retention campaign is justified by the current evidence. No validation seed
 has been used. Existing follow-ups #270/#281/#283/#286 cover ordering, boss

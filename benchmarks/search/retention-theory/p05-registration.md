@@ -60,3 +60,25 @@ Same-context counterexamples can strengthen the case for action-conditioned
 behavioral measurements. Different contexts with matching tested futures show
 that a split alone is not observed marginal utility. Either result informs
 the next measurement design; neither reverses R05's failed escalation gate.
+
+## Completed outcome
+
+Both helpers passed. Motion reconstruction used1,440,708 physical frames in
+82.05s; suffix probing used1,062,409 frames in60.55s. Total2,503,117 frames and
+142.60s, below the registered limits. No capability gain or gain export occurred.
+The conservative preflight suffix bound was9,621,970 frames including all
+potential exports. The finite shared suffix bank has SHA256 recorded in the
+[analysis](p05-analysis.json); [full metadata](p05-results.json) records both
+frozen executables and actual costs.
+
+Useful disagreements appeared in six of eight same-context pairs and six of
+eight different-context pairs. Two same-context pairs also share all seven raw
+motion fields, but their full mechanical endpoints differ, so those cases do
+not isolate an unobserved world variable. Pair10 has identical mechanical state,
+the same coarse context, different raw motion fields and three distinguishing
+suffixes. None of these comparisons identifies motion as the sole cause.
+
+Discarded states survive122 trials versus120 for survivors and expose23
+exclusive map/suffix events versus15. These are separate finite objectives on
+selected competitors, not a new retention-policy win or a population estimate.
+The frozen analyzer leaves every escalation and breakthrough flag false.

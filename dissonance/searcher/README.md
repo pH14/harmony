@@ -179,9 +179,11 @@ selection exposure, and lazy reconstruction of both inputs. Observers must
 bound their storage and account for reconstruction separately; observer input
 materialization never changes deterministic reconstruction counters. The
 constant-size `retention_diagnostics` sidecar census counts removal before
-window exposure and admitted parent-selection/productivity credit. It excludes
-pending jobs and continuation within the birth job, so zero credit does not
-prove that no outgoing action was executed. It is not replay state.
+window exposure, recorded parent selections and productive-admission credit.
+Selections include pre-execution duplicate skips, which execute no new job.
+Pending job credits and continuation within the birth job are not represented,
+so zero credit does not prove that no outgoing action was executed. It is not
+replay state.
 The evaluator flushes/disables campaign sampling before verification replay.
 
 The opt-in `resource_extremes_2_v1` slot policy keeps at most two resource
