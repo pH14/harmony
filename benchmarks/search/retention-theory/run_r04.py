@@ -19,11 +19,11 @@ def main():
     p.add_argument("--phase", choices=["qualify", "development"], required=True)
     a = p.parse_args()
     root = a.experiment.resolve()
-    source = root / "source-context-001"
+    source = root / "source-context-002"
     research = source / "benchmarks/search/retention-theory"
-    out_path = root / f"runs/r04-{a.phase}-results.json"
+    out_path = root / f"runs/r04b-{a.phase}-results.json"
     assert not out_path.exists(), "refusing to overwrite R04"
-    report = {"format": "r04-context-retention-v1", "phase": a.phase,
+    report = {"format": "r04b-context-retention-v1", "phase": a.phase,
               "scope": "mechanism qualification" if a.phase == "qualify" else "one fresh development seed; not validation",
               "cpus": "0-3", "records": [], "passed": False}
 
@@ -33,7 +33,7 @@ def main():
     def run(label, game, policy, build_name):
         build = root / "builds" / build_name
         suite = json.loads((research / ("k01-smoke.json" if game == "metroid" else "b01.json")).read_text())
-        suite["id"] = f"retention-theory-r04-{a.phase}-{label}"
+        suite["id"] = f"retention-theory-r04b-{a.phase}-{label}"
         suite["cases"] = [case for case in suite["cases"] if case["game"] == game]
         if game == "metroid":
             suite["search"]["metroid_terminal"] = TERMINAL
@@ -42,8 +42,8 @@ def main():
         if a.phase == "development":
             suite["search"].update({"executions": 500000, "frames": 50000000,
                                      "wall_seconds": 1800, "verification": "witness"})
-        manifest = root / f"r04-{a.phase}-{label}.json"
-        out = root / f"runs/r04-{a.phase}-{label}"
+        manifest = root / f"r04b-{a.phase}-{label}.json"
+        out = root / f"runs/r04b-{a.phase}-{label}"
         assert not out.exists()
         manifest.write_text(json.dumps(suite, indent=2) + "\n")
         subprocess.run(["taskset", "-c", "0-3", "python3", str(source / "benchmarks/search/eval.py"),
@@ -57,9 +57,9 @@ def main():
         summary = json.loads(paths[0].read_text())
         record = {"label": label, "game": game, "policy": policy,
                   "build": json.loads((build / "build-info.json").read_text()), "summary": summary}
-        census = paths[0].parent / "campaign/retention-census.json"
-        if census.exists():
-            record["census"] = json.loads(census.read_text())
+        census = summary["last_progress"].get("retention_context_census")
+        if census is not None:
+            record["census"] = census
         report["records"].append(record)
         save()
         assert summary["status"] == "complete", "incomplete cell; preserve and stop"
@@ -73,19 +73,24 @@ def main():
 
     save()
     if a.phase == "qualify":
-        default = run("default-metroid", "metroid", None, "context-default-001")
+        default = run("default-metroid", "metroid", None, "context-default-002")
         assert default["summary"]["result"]["stream_sha256"] == "9df5aefec98188306cf68f7b5959a0b4eef88df9a6786b38a31bfad73c5ae94e"
-        default_mm2 = run("default-mm2", "mm2", None, "context-default-001")
+        default_mm2 = run("default-mm2", "mm2", None, "context-default-002")
         assert default_mm2["summary"]["result"]["stream_sha256"] == "2b94c50e70fc971007730fc17a8dc1a3402cc9fdcc2cc8f6953b6dd4e194b49d"
-        sample = run("default-sample", "metroid", SAMPLE, "context-default-001")
+        sample = run("default-sample", "metroid", SAMPLE, "context-default-002")
         old = json.loads((research / "r03-qualify-results.json").read_text())
         expected = next(r for r in old["records"] if r["game"] == "metroid" and r["policy"] == SAMPLE)
         assert sample["summary"]["result"]["stream_sha256"] == expected["summary"]["result"]["stream_sha256"]
-        quality = run("quality", "metroid", QUALITY, "context-001")
-        context = run("context", "metroid", CONTEXT, "context-001")
+        quality = run("quality", "metroid", QUALITY, "context-002")
+        context = run("context", "metroid", CONTEXT, "context-002")
+        original_path = root / "runs/r04-qualify-results.json"
+        original = json.loads(original_path.read_text())
+        report["original_qualification_sha256"] = sha(original_path)
         for record in [quality, context]:
+            prior = next(r for r in original["records"] if r["label"] == record["label"])
+            assert record["summary"]["result"]["stream_sha256"] == prior["summary"]["result"]["stream_sha256"], "census repair changed search decisions"
             census = record["census"]
-            assert census["resident_entries"] == census["with_context"]
+            assert census["active_entries"] == census["with_context"]
             assert census["largest_slot"] <= 2
             assert record["summary"]["last_progress"]["retention_diagnostics"]["alternative_admissions"] > 0
         assert context["census"]["two_same_contexts"] == 0
@@ -93,17 +98,17 @@ def main():
                                                and context["census"]["two_distinct_contexts"] >= 10)
         assert report["mechanism_pilot_passed"], "no adequate distinguishing opportunity; do not expand"
     else:
-        gate_path = root / "runs/r04-qualify-results.json"
+        gate_path = root / "runs/r04b-qualify-results.json"
         gate = json.loads(gate_path.read_text())
         assert gate["passed"] and gate["mechanism_pilot_passed"]
         motion = json.loads((root / "runs/p04-cache-check/summary.json").read_text())
         assert motion["cached_context_matches_direct_read"] and motion["campaign_key_context_checked"]
         report["qualification_sha256"] = sha(gate_path)
         report["motion_check"] = motion
-        digest = sha(root / "builds/context-001/nes-eval")
+        digest = sha(root / "builds/context-002/nes-eval")
         assert all(r["build"]["binary_sha256"] == digest for r in gate["records"] if r["label"] in ["quality", "context"])
-        run("quality", "metroid", QUALITY, "context-001")
-        run("context", "metroid", CONTEXT, "context-001")
+        run("quality", "metroid", QUALITY, "context-002")
+        run("context", "metroid", CONTEXT, "context-002")
     report["passed"] = True
     save()
 

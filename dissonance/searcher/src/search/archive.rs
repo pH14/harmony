@@ -4046,6 +4046,43 @@ where
             .filter_map(|(entry, active)| active.then_some(entry.snapshot.as_deref()))
     }
 
+    /// Final reporting-only census of active keys, independent of snapshot
+    /// residency and historical reconstruction anchors. No search feedback.
+    pub(crate) fn retention_context_census(&self) -> Option<serde_json::Value> {
+        if !self
+            .entries
+            .iter()
+            .zip(&self.active)
+            .any(|(entry, active)| *active && entry.key.retention_context().is_some())
+        {
+            return None;
+        }
+        let mut slots = BTreeMap::<_, Vec<_>>::new();
+        for (entry, active) in self.entries.iter().zip(&self.active) {
+            if *active {
+                slots
+                    .entry(entry.key.group(0))
+                    .or_default()
+                    .push(entry.key.retention_context());
+            }
+        }
+        let with_context = slots
+            .values()
+            .flatten()
+            .filter(|context| context.is_some())
+            .count();
+        (with_context > 0).then(|| serde_json::json!({
+            "scope": "active retained keys; independent of snapshot residency; no future or progress claim",
+            "active_entries": self.active_count, "with_context": with_context,
+            "slots": slots.len(), "largest_slot": slots.values().map(Vec::len).max().unwrap_or(0),
+            "two_distinct_contexts": slots.values().filter(|contexts|
+                contexts.len() == 2 && contexts[0].is_some() && contexts[1].is_some()
+                && contexts[0] != contexts[1]).count(),
+            "two_same_contexts": slots.values().filter(|contexts|
+                contexts.len() == 2 && contexts[0].is_some() && contexts[0] == contexts[1]).count()
+        }))
+    }
+
     /// Number of entries currently participating in retention.
     #[must_use]
     pub fn active_count(&self) -> usize {

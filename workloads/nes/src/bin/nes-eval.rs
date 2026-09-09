@@ -286,40 +286,6 @@ where
     write_json(&out.join("witness-input.json"), &witness)?;
     if full {
         write_json(&out.join("checkpoint.json"), &checkpoint)?;
-        // Qualification-only census of resident snapshots; historical entries
-        // without snapshots are excluded. This is not a reachability metric.
-        let resident: std::collections::BTreeSet<_> =
-            checkpoint.entries.iter().map(|entry| entry.id).collect();
-        let mut slots = std::collections::BTreeMap::<_, Vec<_>>::new();
-        for entry in game.source_entries(&report.archive) {
-            if resident.contains(&entry.id) {
-                slots
-                    .entry(entry.key.group(0))
-                    .or_default()
-                    .push(entry.key.retention_context());
-            }
-        }
-        let with_context = slots
-            .values()
-            .flatten()
-            .filter(|context| context.is_some())
-            .count();
-        if with_context > 0 {
-            write_json(
-                &out.join("retention-census.json"),
-                &json!({
-                    "scope": "resident snapshot keys only; no future or progress claim",
-                    "resident_entries": resident.len(), "with_context": with_context,
-                    "slots": slots.len(),
-                    "largest_slot": slots.values().map(Vec::len).max().unwrap_or(0),
-                    "two_distinct_contexts": slots.values().filter(|contexts|
-                        contexts.len() == 2 && contexts[0].is_some() && contexts[1].is_some()
-                        && contexts[0] != contexts[1]).count(),
-                    "two_same_contexts": slots.values().filter(|contexts|
-                        contexts.len() == 2 && contexts[0].is_some() && contexts[0] == contexts[1]).count()
-                }),
-            )?;
-        }
     }
     // Large archives are verification-only intermediates. Keep bounded campaign evidence.
     if let Some(archive) = value.get_mut("archive").and_then(Value::as_object_mut) {

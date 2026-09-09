@@ -11,7 +11,7 @@ from run_r04 import CONTEXT, QUALITY, TERMINAL
 def analyze(root):
     data, paths = {}, {}
     for label in ["quality", "context"]:
-        matches = list((root / f"runs/r04-development-{label}").glob("*/summary.json"))
+        matches = list((root / f"runs/r04b-development-{label}").glob("*/summary.json"))
         assert len(matches) == 1
         paths[label] = matches[0]
         data[label] = load(matches[0])

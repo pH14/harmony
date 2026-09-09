@@ -88,3 +88,20 @@ without losing a milestone reached by the completed control, can qualify one
 new development seed. Wall-censored relevant work remains unresolved, never
 a win. Boss defeats are stronger evidence but still require fresh replication.
 If this gate fails, retire this motion-context family for this tranche.
+
+## Qualification measurement correction (R04b)
+
+R04's first three compatibility cells passed. Its quality cell's resident
+snapshot census counted four entries in a slot: the checkpoint includes
+inactive reconstruction anchors, so snapshot residency is not the active
+retention set. This invalidates that census as a capacity check. Preserve all
+five completed short cells and their work; do not relax the two-entry gate.
+
+R04b moves the final census to the coordinator's actual active-key set,
+independently of snapshot residency. An executable archive fixture explicitly
+leaves superseded historical metadata and checks that it is excluded. Policies,
+descriptor, seed, all limits and quantitative thresholds are unchanged. Rebuild
+both binaries and rerun only the same five short qualification cells under new
+output names. In addition to all historical stream hashes, require both new
+policy streams to match R04 exactly, proving that this measurement repair does
+not alter their search choices. The subsequent development pair remains gated.

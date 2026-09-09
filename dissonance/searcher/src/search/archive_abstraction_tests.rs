@@ -629,12 +629,25 @@ fn context_pair_preserves_a_distinct_exit_but_can_discard_a_third_context() {
     ] {
         let mut archive = ContextArchive::new(|_| 1);
         archive.slot_retention = policy;
+        // A superseded low-quality seed leaves genuine historical metadata.
+        offer_context(&mut archive, 5, 0, Some(3));
         for (state, (quality, context)) in [(10, 0), (9, 0), (8, 1), (7, 2)].into_iter().enumerate()
         {
             offer_context(&mut archive, state, quality, Some(context));
         }
         let retained = retained_context_states(&archive);
         assert_eq!(retained.len(), 2);
+        // Historical entries can remain for reconstruction. They must not
+        // inflate the final census, whether or not their snapshots are cached.
+        assert!(archive.entries.len() > retained.len());
+        let census = archive.retention_context_census().unwrap();
+        assert_eq!(census["active_entries"], 2);
+        assert_eq!(census["largest_slot"], 2);
+        assert_eq!(census["with_context"], 2);
+        assert_eq!(
+            census["two_distinct_contexts"],
+            u64::from(policy == SlotRetentionPolicy::ContextRepresentatives2)
+        );
         assert_eq!(
             retained.iter().any(|s| model.can_reach_event(*s, 1)),
             policy == SlotRetentionPolicy::ContextRepresentatives2

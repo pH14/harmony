@@ -2462,6 +2462,9 @@ pub struct CampaignProgressRecord<K> {
     /// Final cached-endpoint census, separate from observations and one trajectory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_diagnostics: Option<serde_json::Value>,
+    /// Final active-key context census; excludes inactive snapshot anchors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_context_census: Option<serde_json::Value>,
     /// Objective workload evidence, independent of the selector's deepest key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<serde_json::Value>,
@@ -2579,6 +2582,9 @@ fn write_live_progress<G: Game>(
         workload_diagnostics: G::diagnostics(&core.evidence),
         retained_diagnostics: final_census
             .then(|| G::retained_diagnostics(core.archive.retained_snapshots()))
+            .flatten(),
+        retention_context_census: final_census
+            .then(|| core.archive.retention_context_census())
             .flatten(),
         coordinator: coordinator_profile
             .enabled
