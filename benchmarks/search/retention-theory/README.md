@@ -62,6 +62,11 @@ requires matched-control improvement and at least 3/10 fresh Metroid boss seeds
 or 3/5 fresh MM2 Wily 4 chains, with both games evaluated. Report failures and
 timeouts, and separate verification of implementation from breakthrough claims.
 
+`validation-protocol.md` distinguishes the operational repeatability thresholds
+from exact paired evidence and defines how untouched panels, censoring, and
+multiple endpoints will be reported. Development gates allocate compute; they
+do not prove eventual success or impossibility.
+
 ## Experiment ledger
 
 ### B01: ARM baseline qualification
@@ -525,3 +530,8 @@ that control too and stopped after the Metroid cells. Require actual sample
 admissions and actual control resource decisions; keep both full-replay checks.
 The corrected external driver reuses the three completed cells and runs only
 the absent MM2 cells. No frozen executable or source directory is edited.
+
+R03 remaining portable checks passed: generic interface test, NES evaluator
+binary test, all 22 Python runner contract tests, and dependency-boundary check.
+The exact paired-tail examples in `validation-protocol.md` agree with exhaustive
+enumeration for every success threshold and discordant sample size up to ten.

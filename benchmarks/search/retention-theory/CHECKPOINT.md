@@ -1,84 +1,84 @@
-# First research checkpoint
+# Research checkpoint — September 9, 01:34 UTC
 
 The goal remains active. No fresh Metroid boss or MM2 Wily 4 breakthrough has
-been established. The user subsequently approved the Metroid ROM transfer;
-the copy on msr1 is verified and experimentation is resuming.
+been established. The approved ROM transfer is complete and checksum verified.
+Two implementation families have failed their escalation gates. A third bounded
+retention comparison is running on msr1; all production defaults remain unchanged.
 
-## What the work so far established
+## Findings that changed the research direction
 
-The formal model separates three claims: continuation equivalence, retention
-of useful alternatives, and finite-budget discovery. Eight executable finite
-fixtures exercise the production archive and selector, including examples
-that favor each resource heuristic and examples where more retained futures
-reduce a fixed goal's discovery probability. The proof assumptions and limits
-are in [theory.md](theory.md).
+The formal model separates continuation equivalence, retention of distinguishing
+futures, and finite-budget discovery. Executable finite examples use the real
+archive and selector, including cases where each resource heuristic loses a
+useful future and where additional retained alternatives reduce discovery.
+The assumptions and proof limits are in [theory.md](theory.md).
 
-The resource-coverage experiment keeps up to two states by jointly covered
-resource thresholds. Its first MM2 Metal result used 5.26M search frames versus
-legacy's 6.79M, but the two-extreme ablation produced the identical victory
-input and archive result. That improvement therefore did not validate the new
-coverage objective. Both fresh chains subsequently failed to reach Heat's boss
-within their registered 20-minute stage limit.
+| Mechanism | Controlled evidence | Decision |
+|---|---|---|
+| Joint resource-threshold coverage | Initial MM2 Metal gain exactly matched the two-extreme control. Shared-prefix Heat replication: one win, one tie, one loss at bounded work. | Failed the two-of-three gate; no longer coverage campaigns. |
+| Finer Metroid retention key | Both corrected-terminal seed-3 arms completed 500k jobs. Same final named milestones; energy tank arrived about 16% earlier, below the registered 20% gate. Refined retained 161,829 states versus 42,543. | Failed the gate; no longer refinement campaigns. |
+| Quality representative plus job-ranked sample | Exact finite-stream invariant and adverse same-job example pass. Full Metroid/MM2 replay passes, with actual sample admissions. | Registered fresh Metroid pair underway, then short MM2 Metal transfer. |
 
-From an identical searched Heat prefix, the 12M-frame/100k-job diagnostic panel
-gave these greatest logged screen numbers within the ceilings:
+The fresh resource-coverage chains both stopped at Heat under their declared
+20-minute stage limit. Shared-prefix diagnostics do not count as fresh chains.
+See [MM2 results](c01-a03-results.json) and [Metroid key comparison](k01-analysis.json)
+for both favorable and adverse outcomes and conservative arrival intervals.
 
-| Development seed | Coverage | Two extremes |
-|---|---:|---:|
-| 20261101 | 16 | 8 |
-| 20261102 | 8 | 8 |
-| 20261103 | 6 | 7 |
+## New diagnostics and correctness evidence
 
-The replication failed the preregistered two-of-three escalation gate. Longer
-coverage campaigns are stopped; the policy stays experimental. These fixed
-starts are diagnostic evidence and never count as fresh chained validation.
-Full costs, failures, resource use and provenance are in
-[c01-a03-results.json](c01-a03-results.json).
+P03 reconstructed sixteen equal-resource Metroid competitor pairs and applied
+64 identical suffixes to each pair under the corrected death predicate.
+Fourteen pairs had differing useful local exits or survival. The finer key split
+six of those pairs and still merged eight. No new capability or boss was found.
+This consumed 1,885,036 physical frames including reconstruction. The selected
+sample refutes interchangeability; it is not a population-rate estimate.
+[The analysis](p03-analysis.json) reproduces byte for byte from private raw output
+using [analyze_p03.py](analyze_p03.py).
 
-## The prepared next hypothesis
+Two production-coordinator counterexamples show that zero parent credit at
+removal does not imply an unexplored state. A state can be continued inside its
+birth job, or a pending executed job can receive credit after the parent's
+removal. No scheduler change is justified from the earlier zero-count fractions
+alone. Follow-up [#283](https://github.com/pH14/harmony/issues/283) records the
+measurement gap.
 
-Fifteen of the existing sixteen Metroid resource-pair probes have a distinguishing
-local-exit or survival suffix. An 8-pixel position/raw-pose retention partition
-separates eleven of those pairs. The implemented feature confirms those exact
-splits using the real key code, with all coarser selection groups unchanged.
-The default key still merges the same pairs. The selected sample does not
-establish the refinement's memory cost or fresh-search benefit.
+The imported, versioned Metroid BCD-underflow correction is opt-in. Legacy
+semantics retain exact historical streams; new Metroid comparisons use corrected
+terminal v3 in both arms. Underflow endpoints are excluded and observed in
+qualification. Follow-up [#281](https://github.com/pH14/harmony/issues/281) covers
+boss encounters and partial fight observations, which have not been implemented.
 
-The `metroid-refined-archive` feature is off by default and has a distinct v9
-key-policy identity. It preserves the default key's serialized field layout,
-coarser group definitions, resource preference, and one-state slot capacity.
-Both build modes pass 119 NES library tests. The numeric key audit, strict
-Clippy, and dependency boundary checks pass. The generic coverage implementation
-also passed full report/checkpoint replay under memory pressure and continuation
-dispatch; the old ARM SMB/MM2 streams were reproduced exactly.
+## Current experiment and interpretation
 
-The two frozen ARM builds use commit `5f7f1c8d` under
-`msr1:/root/harmony-retention-theory-20260908/source-refinement-001`:
+R03 keeps the ordinary quality winner and the best state from the lowest-ranked
+creation job, at most two states within the same byte budget. It uses existing
+metadata, no extra search RNG and no finer key. The exact extrema invariant has
+explicit fixed-stream assumptions; the deterministic rank is not a theorem of
+uniform sampling in adaptive search.
 
-* `builds/refinement-default-001`, with no optional Cargo features.
-* `builds/refinement-001`, with `metroid-refined-archive` recorded in its attestation.
+The frozen default-feature ARM build is source commit `33795855`; its source
+and binary digests are recorded in [the ledger](README.md). All 132 generic and
+122 NES library tests and strict Clippy checks passed. All five ARM qualification
+cells passed full replay, including exact corrected-default Metroid compatibility.
+[Qualification evidence](r03-qualify-results.json) records the actual admissions.
+A checker initially demanded resource tradeoffs from the early control; its
+correction reused completed cells and did not relax the candidate requirement.
 
-Q03 qualified both executables on SMB and MM2: all four 5k-job cells passed
-full replay and exactly matched the original ARM baseline streams. Build
-identities and results are in [q03-results.json](q03-results.json). This does
-not qualify the changed Metroid behavior, which still needs emulator replay.
+Metroid development uses seed 3, terminal v3, coarse v8 key, unchanged semantic
+selector and alphabet-only suffixes, four workers and 8 GiB per arm, capped at
+500k jobs/50M frames and 30 minutes search. Sampling uses CPUs 0–3 and extremes
+8–11. The MM2 transfer then uses seed 20261101 and 100k jobs/12M frames with a
+10-minute search bound. No more than two campaigns overlap. Only the registered
+named-milestone or 20% improvement gates permit further development.
 
-After asset approval, first establish the ARM Metroid baseline and prove the new
-default executable matches it at fixed work. Qualify full replay for the refined
-build before the registered 500k-job key-only development pair. Do not combine
-the new key with resource coverage. Inspect useful progress, memory and exposure
-before permitting a longer run.
-
-## Provenance and boundaries
+No validation seed has been used. [The validation protocol](validation-protocol.md)
+separates operational repeatability, exact paired inference, censoring, and
+multiple endpoints. Small negative panels and failed compute-allocation gates
+do not prove an approach incapable of later success.
 
 Work is isolated on `codex/retention-theory-msr1-20260908` at
-`/private/tmp/harmony-retention-theory-msr1-20260908`. It builds on the committed
-diagnostic work at `8e5ae683` from the separate ms02 effort, without modifying
-that effort's working tree or runs. No production default was promoted and no
-ROM is committed. The approved msr1 MM2/SMB assets were used in place;
-the only ms02 extracts were numeric experiment observations.
-
-The [ledger](README.md) records decisions, negative outcomes, qualification
-corrections, limits and the remaining acceptance criteria. The initial 12-hour
-research window ends September 9 at 10:16 UTC; its completion is distinct from
-achieving the breakthrough goal.
+`/private/tmp/harmony-retention-theory-msr1-20260908`, based on committed ms02
+diagnostics at `8e5ae683`. The other effort's worktree and runs are untouched.
+The ledger preserves each experiment's bounds, failures and implementation
+history. Consolidation begins at 08:46 UTC; the initial tranche ends at 10:16 UTC.
+Completing that tranche is distinct from achieving the breakthrough goal.
