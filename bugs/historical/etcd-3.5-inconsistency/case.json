@@ -36,7 +36,7 @@
     "fires_on": "an acknowledged key is missing or has a different value after restart",
     "silent_when": ["the node is down", "the journal is empty", "the readback hook cannot reach etcd"]
   },
-  "actions": ["Wait", "Kill", "Pause", "Restart", "Hook"],
+  "actions": ["Wait", "Kill", "KillAt", "Pause", "Restart", "Hook"],
   "run": {
     "horizon_ms": 500,
     "ram_mib": 512,

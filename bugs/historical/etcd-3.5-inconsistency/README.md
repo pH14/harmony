@@ -28,15 +28,17 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
 
 ## The triple
 
-- **Workload**: one supervised etcd member, driven by four concurrent clients. Each client
+- **Workload**: one supervised stock etcd member, driven by four concurrent clients. Each client
   records every acknowledged put in a journal outside etcd and keeps applying entries while
-  Harmony explores faults. The same image, bundle, hook sequence, and search budget run against
+  Harmony explores faults. The same image, bundle, hook sequence, and search policy run against
   v3.5.2 and v3.5.3; only the pinned release archive changes. There are no correctness,
-  portability, batch, or timing knobs.
+  portability, batch, or timing knobs. These are the upstream release binaries, not
+  Antithesis-instrumented builds; application instrumentation is a separate capability milestone.
 - **Fault surface**: a hard process kill followed by the normal supervisor restart, while the
   clients are applying entries. This targets the small interval between consistent-index
-  persistence and the corresponding entry apply. Upstream needed *random* SIGKILLs under load
-  and memory pressure; Harmony searches the kill Moment directly.
+  persistence and the corresponding entry apply. `KillAt` makes the crash Moment a generic
+  searchable coordinate inside an action; it does not introduce a case-specific delay or probe
+  sequence.
 - **Oracle**: the hook journals each acknowledged put outside etcd, then after a deterministic
   restart reads every journaled key from the recovered member. An acknowledged-but-missing or
   changed value is the case's only failing assertion. A down member, empty journal, or failed

@@ -35,11 +35,18 @@ time ([`target`](src/target.rs)):
 |---|---|
 | `Wait` | nothing; the workload runs undisturbed for a horizon |
 | `Kill(node)` | the node stays down for the whole horizon |
+| `KillAt { node, offset_nanos }` | the node is killed at a searchable virtual-time coordinate inside the horizon |
 | `Pause(node, ticks)` | the node is stopped, then continued inside the horizon |
 | `Restart(node)` | the node is killed and comes back inside the horizon |
 | `Hook(id)` | the agent runs that hook once |
 | `Park(node, addr, hits, hold)` | guest threads are held at an execution place |
 | `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's seal when settling carried it past that start |
+
+`KillAt` is the generic crash-coordinate primitive. Its coordinate is part of
+the action and is sampled over the complete deterministic window, so the same
+fault policy can search a narrow crash interval without adding workload timing
+knobs. A future event, breakpoint, or storage boundary can resolve to the same
+coordinate without changing the campaign or replay format.
 
 Every action but `Interrupt` becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the agent's

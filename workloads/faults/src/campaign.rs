@@ -2,7 +2,7 @@
 
 //! Fault-package implementation of the game-neutral campaign interface.
 
-use std::{error::Error, io::Write, path::PathBuf, sync::OnceLock};
+use std::{error::Error, io::Write, num::NonZeroUsize, path::PathBuf, sync::OnceLock};
 
 use searcher::{
     search::{
@@ -112,6 +112,20 @@ pub struct FaultCampaignEvidence {
     champion_milestones: FaultMilestones,
     bugs: Vec<FaultBugRecord>,
 }
+
+/// Coordinator-side state for the generic crash-coordinate search.
+///
+/// Retained inputs are evidence that a prefix made useful progress. Their
+/// `KillAt` coordinates become anchors for later suffix draws; subsequent
+/// draws take deterministic bisection points around an anchor instead of
+/// repeatedly sampling the whole action window. The state is deliberately
+/// workload-neutral and is rebuilt from retained inputs during stream replay.
+#[derive(Clone, Default)]
+pub struct FaultDrawState {
+    anchors: Vec<(u16, u64)>,
+}
+
+const MAX_COORDINATE_ANCHORS: usize = 256;
 
 /// Fault-package campaign origin.
 pub type FaultCampaignOrigin = CampaignOrigin<FaultGame>;
@@ -302,7 +316,7 @@ impl CampaignTypes for FaultGame {
     type Evidence = FaultCampaignEvidence;
     type ArchiveReport = FaultArchiveReport;
     type Run = FaultCampaignRun;
-    type DrawState = ();
+    type DrawState = FaultDrawState;
     type DrawCheckpoint = ();
     type TableHeader = FaultNoTableHeader;
 }
@@ -409,8 +423,8 @@ impl InputPolicy for FaultGame {
         0
     }
 
-    fn draw_state_memory_bytes(&self, _state: &()) -> usize {
-        0
+    fn draw_state_memory_bytes(&self, state: &FaultDrawState) -> usize {
+        std::mem::size_of::<(u16, u64)>() * state.anchors.len()
     }
 
     fn initial_draw_state(
@@ -418,26 +432,81 @@ impl InputPolicy for FaultGame {
         _run: &FaultCampaignRun,
         _origin: Option<(&str, &FaultArchiveReport)>,
     ) -> Result<InitialDrawState<Self>, Box<dyn Error>> {
-        Ok(((), None))
+        Ok((FaultDrawState::default(), None))
     }
 
     fn expand_suffix(
         &self,
         run: &FaultCampaignRun,
-        _state: &(),
+        state: &FaultDrawState,
         shape: SuffixShape,
         mixture: MixtureDraw,
         mutation_seed: u64,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
-        draw_suffix(
+        let mut suffix = draw_suffix(
             shape,
             mixture.mixture,
             mixture.weight,
             mutation_seed,
             |_| Ok(None),
-            |rand| sample_action(rand, &run.vocabulary),
-        )
+            |rand| sample_action(rand, &run.vocabulary, self.config.horizon_nanos),
+        )?;
+        if !state.anchors.is_empty() {
+            let bound = NonZeroUsize::new(state.anchors.len())
+                .ok_or("coordinate anchor state unexpectedly empty")?;
+            for action in &mut suffix {
+                let FaultAction::KillAt { .. } = *action else {
+                    continue;
+                };
+                let anchor = state.anchors[rand_index(mutation_seed, bound)];
+                let span = self.config.horizon_nanos.max(1);
+                // Each retained coordinate supplies a center. The level is
+                // derived from the mutation seed, and the resulting point is
+                // a deterministic bisection point in a shrinking interval
+                // around that center.
+                let level = ((mutation_seed >> 8) & 31) as u32;
+                let radius = (span >> level).max(1);
+                let refined = if ((mutation_seed >> 40) & 1) == 0 {
+                    anchor.1.saturating_sub(radius)
+                } else {
+                    anchor.1.saturating_add(radius).min(span.saturating_sub(1))
+                };
+                *action = FaultAction::KillAt {
+                    node: anchor.0,
+                    offset_nanos: refined,
+                };
+            }
+        }
+        Ok(suffix)
     }
+
+    fn finish_stream_record(
+        &self,
+        _run: &FaultCampaignRun,
+        state: &mut FaultDrawState,
+        retained: &[(usize, &[FaultAction])],
+    ) -> Result<Option<()>, Box<dyn Error>> {
+        for (_, actions) in retained {
+            for action in *actions {
+                if let FaultAction::KillAt { node, offset_nanos } = *action {
+                    state.anchors.push((node, offset_nanos));
+                    if state.anchors.len() > MAX_COORDINATE_ANCHORS {
+                        let drop = state.anchors.len() - MAX_COORDINATE_ANCHORS;
+                        state.anchors.drain(..drop);
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+}
+
+fn rand_index(seed: u64, bound: NonZeroUsize) -> usize {
+    // The suffix generator is already seeded by `mutation_seed`; deriving an
+    // index directly keeps coordinate refinement draw-for-draw stable without
+    // adding another mutable random stream to the campaign state.
+    let mixed = seed ^ seed.rotate_left(29);
+    ((u128::from(mixed) * u128::from(bound.get() as u64)) >> 64) as usize
 }
 
 impl TargetExecution for FaultGame {

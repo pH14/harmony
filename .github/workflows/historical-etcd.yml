@@ -11,6 +11,7 @@ on:
       - consonance/harmony-linux/**
       - workloads/fault-agent/**
       - workloads/fault-policy/**
+      - workloads/faults/**
   workflow_dispatch:
     inputs:
       executions:

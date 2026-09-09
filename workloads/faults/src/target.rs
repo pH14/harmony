@@ -69,6 +69,17 @@ pub enum FaultAction {
     Wait,
     /// SIGKILL one node for the whole horizon.
     Kill(u16),
+    /// SIGKILL one node at a searchable virtual-time coordinate inside the
+    /// action horizon. The coordinate is measured from the start of this
+    /// action, so it is portable across hosts and does not depend on a wall
+    /// clock, a CPU counter, or a workload-specific delay.
+    KillAt {
+        /// The node.
+        node: u16,
+        /// Virtual nanoseconds after the action starts. Values beyond the
+        /// horizon are clamped to the final nanosecond of the window.
+        offset_nanos: u64,
+    },
     /// SIGSTOP one node for the given number of agent ticks, then SIGCONT.
     Pause(u16, u32),
     /// SIGKILL one node and let the agent start it again inside the horizon.
@@ -175,6 +186,16 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
             )),
             perturb: None,
         },
+        FaultAction::KillAt { node, offset_nanos } => {
+            // Keep the kill window non-empty. A coordinate at or beyond the
+            // horizon means "as late as this action can observe" rather than
+            // silently disabling the fault.
+            let at = start.saturating_add(offset_nanos.min(horizon.saturating_sub(1)));
+            ActionDelta {
+                standing: Some(standing(process_target(node, &Fault::ProcKill), (at, end))),
+                perturb: None,
+            }
+        }
         FaultAction::Pause(node, ticks) => {
             // The pause must lift inside its own horizon, so the search always
             // observes the resumed node rather than inheriting a stopped one.
@@ -511,6 +532,37 @@ mod tests {
         );
         assert_eq!((fault.start, fault.end), WINDOWS.window(1));
         assert!(delta.perturb.is_none());
+    }
+
+    #[test]
+    fn kill_at_starts_at_the_searchable_coordinate() {
+        let (start, end) = WINDOWS.window(1);
+        let offset = 123_456;
+        let fault = action_delta(
+            FaultAction::KillAt {
+                node: 2,
+                offset_nanos: offset,
+            },
+            (start, end),
+        )
+        .standing
+        .expect("coordinate kill installs a standing fault");
+        assert_eq!(
+            decode_process_target(&fault.target),
+            Some((2, Fault::ProcKill))
+        );
+        assert_eq!((fault.start, fault.end), (start + offset, end));
+
+        let late = action_delta(
+            FaultAction::KillAt {
+                node: 2,
+                offset_nanos: u64::MAX,
+            },
+            (start, end),
+        )
+        .standing
+        .expect("late coordinate remains observable");
+        assert_eq!(late.start, end - 1);
     }
 
     #[test]

@@ -209,24 +209,37 @@ pub const PARK_HOLD_US: [u32; 3] = [500, 2_000, 10_000];
 pub fn sample_action(
     rand: &mut RomuDuoJrRand,
     vocabulary: &FaultVocabulary,
+    horizon_nanos: u64,
 ) -> Result<FaultAction, Box<dyn Error>> {
     let pick = |rand: &mut RomuDuoJrRand, len: usize| -> Result<usize, Box<dyn Error>> {
         Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault vocabulary alternative")?))
     };
     let node = u16::try_from(pick(rand, usize::from(vocabulary.nodes()))?)?;
-    match pick(rand, 7)? {
+    match pick(rand, 8)? {
         0 => Ok(FaultAction::Wait),
         1 => Ok(FaultAction::Kill(node)),
-        2 => Ok(FaultAction::Pause(
+        2 => Ok(FaultAction::KillAt {
+            node,
+            // The coordinate is sampled over the complete action window. It
+            // is deliberately not a ladder of workload-specific delays: the
+            // same policy searches any guest using its own deterministic
+            // virtual-time axis.
+            offset_nanos: if horizon_nanos == 0 {
+                0
+            } else {
+                rand.next_u64() % horizon_nanos
+            },
+        }),
+        3 => Ok(FaultAction::Pause(
             node,
             PAUSE_TICKS[pick(rand, PAUSE_TICKS.len())?],
         )),
-        3 => Ok(FaultAction::Restart(node)),
-        4 => match vocabulary.hooks() {
+        4 => Ok(FaultAction::Restart(node)),
+        5 => match vocabulary.hooks() {
             [] => Ok(FaultAction::Wait),
             hooks => Ok(FaultAction::Hook(hooks[pick(rand, hooks.len())?])),
         },
-        5 => Ok(FaultAction::Interrupt(VECTORS[pick(rand, VECTORS.len())?])),
+        6 => Ok(FaultAction::Interrupt(VECTORS[pick(rand, VECTORS.len())?])),
         _ => match vocabulary.places() {
             [] => Ok(FaultAction::Wait),
             places => Ok(FaultAction::Park {
@@ -444,19 +457,25 @@ mod tests {
         let kind = |action: &FaultAction| match action {
             FaultAction::Wait => 0,
             FaultAction::Kill(_) => 1,
-            FaultAction::Pause(..) => 2,
-            FaultAction::Restart(_) => 3,
-            FaultAction::Hook(_) => 4,
-            FaultAction::Interrupt(_) => 5,
-            FaultAction::Park { .. } => 6,
+            FaultAction::KillAt { .. } => 2,
+            FaultAction::Pause(..) => 3,
+            FaultAction::Restart(_) => 4,
+            FaultAction::Hook(_) => 5,
+            FaultAction::Interrupt(_) => 6,
+            FaultAction::Park { .. } => 7,
         };
         for _ in 0..2_000 {
-            let action = sample_action(&mut rand, &vocabulary).expect("draw an action");
+            let action =
+                sample_action(&mut rand, &vocabulary, 500_000_000).expect("draw an action");
             kinds.insert(kind(&action));
             match action {
                 FaultAction::Wait => {}
                 FaultAction::Kill(node) | FaultAction::Restart(node) => {
                     assert!(node < vocabulary.nodes());
+                }
+                FaultAction::KillAt { node, offset_nanos } => {
+                    assert!(node < vocabulary.nodes());
+                    assert!(offset_nanos < 500_000_000);
                 }
                 FaultAction::Pause(node, ticks) => {
                     assert!(node < vocabulary.nodes());
@@ -477,7 +496,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(kinds.len(), 7, "every action kind is reachable");
+        assert_eq!(kinds.len(), 8, "every action kind is reachable");
     }
 
     #[test]
@@ -485,7 +504,7 @@ mod tests {
         let placeless = FaultVocabulary::new(1, vec![1]).expect("vocabulary");
         let mut rand = RomuDuoJrRand::with_seed(5);
         for _ in 0..2_000 {
-            let action = sample_action(&mut rand, &placeless).expect("draw");
+            let action = sample_action(&mut rand, &placeless, 500_000_000).expect("draw");
             assert!(!matches!(action, FaultAction::Park { .. }));
         }
     }
@@ -496,7 +515,9 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(3);
         let mut seen = BTreeSet::new();
         for _ in 0..2_000 {
-            if let FaultAction::Kill(node) = sample_action(&mut rand, &wide).expect("draw") {
+            if let FaultAction::Kill(node) =
+                sample_action(&mut rand, &wide, 500_000_000).expect("draw")
+            {
                 seen.insert(node);
             }
         }
@@ -508,7 +529,7 @@ mod tests {
         let hookless = FaultVocabulary::new(1, Vec::new()).expect("vocabulary");
         let mut rand = RomuDuoJrRand::with_seed(4);
         for _ in 0..2_000 {
-            let action = sample_action(&mut rand, &hookless).expect("draw");
+            let action = sample_action(&mut rand, &hookless, 500_000_000).expect("draw");
             assert!(!matches!(action, FaultAction::Hook(_)));
         }
     }
@@ -518,7 +539,7 @@ mod tests {
         let draw = |seed| {
             let mut rand = RomuDuoJrRand::with_seed(seed);
             (0..64)
-                .map(|_| sample_action(&mut rand, &vocabulary()).expect("draw"))
+                .map(|_| sample_action(&mut rand, &vocabulary(), 500_000_000).expect("draw"))
                 .collect::<Vec<_>>()
         };
         assert_eq!(draw(5), draw(5));
