@@ -1,0 +1,45 @@
+{
+  "model_requested": "claude-fable-5-1",
+  "effort_requested": "xhigh",
+  "elapsed_seconds": 322.60786271095276,
+  "exit_code": 0,
+  "timeout": false,
+  "public_source_manifest": "public-source-manifest.json",
+  "response_sha256": "d29beaaab17e89fce536a5a37912ecd2b497290c75fea54e5316759f6beb42a7",
+  "feedback_sha256": "cbcf21824fe53074886b6c8c01f3d4372c89196e9c30a1eff089be519ba5bfd4",
+  "verified_response_model": "claude-fable-5-1",
+  "reviewer_had_tools": false,
+  "public_sources": [
+    {
+      "name": "SYNTHESIS.md",
+      "public_url": "https://raw.githubusercontent.com/pH14/harmony/0e7ffb62cea40e0a225e306256b40ecf7a8010f4/benchmarks/search/retention-theory/SYNTHESIS.md",
+      "sha256": "6284c37814513f7cc93a98f53ea6b5261379b5df0e2708fd803df698ee03f907",
+      "bytes": 12392
+    },
+    {
+      "name": "predictive-retention-contract.md",
+      "public_url": "https://raw.githubusercontent.com/pH14/harmony/0e7ffb62cea40e0a225e306256b40ecf7a8010f4/benchmarks/search/retention-theory/predictive-retention-contract.md",
+      "sha256": "34619bc19198c24ade0f2595bab13b303302a03bd2dada16b17781c768c8ad71",
+      "bytes": 6168
+    },
+    {
+      "name": "literature-update.md",
+      "public_url": "https://raw.githubusercontent.com/pH14/harmony/0e7ffb62cea40e0a225e306256b40ecf7a8010f4/benchmarks/search/retention-theory/literature-update.md",
+      "sha256": "dae56662233edcf8c7a6fd1fa2d646dc1655d88af65202f03a7f7c7abf886dad",
+      "bytes": 4771
+    },
+    {
+      "name": "validation-protocol.md",
+      "public_url": "https://raw.githubusercontent.com/pH14/harmony/0e7ffb62cea40e0a225e306256b40ecf7a8010f4/benchmarks/search/retention-theory/validation-protocol.md",
+      "sha256": "15e4f5dcffdeeda886fa95be275222d406ba1f7048c93b45d0aac3c46f01a84e",
+      "bytes": 4247
+    },
+    {
+      "name": "public-pr-body.md",
+      "public_url": "https://github.com/pH14/harmony/pull/287",
+      "retrieved_anonymously_from": "https://api.github.com/repos/pH14/harmony/pulls/287",
+      "sha256": "5753df814881edfaa858abb31e60887682490c01c57a806e59c291c668b99fc4",
+      "head": "0e7ffb62cea40e0a225e306256b40ecf7a8010f4"
+    }
+  ]
+}

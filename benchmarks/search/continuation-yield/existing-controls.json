@@ -1,0 +1,113 @@
+{
+  "format": "continuation-yield-control-audit-v1",
+  "emulator_frames_added": 0,
+  "reference_summary_sha256": "6a539f020f345270294315f5bede712565f9bf87234bf5b9e3105084c2028473",
+  "fingerprint": {
+    "binary_sha256": "2a727ac12dbc4ff07272e0119bab39179aaa45bc0a6f422c2cc8fb77cdf3f981",
+    "game": "metroid",
+    "actions": 4096,
+    "workers": 4,
+    "window": 2,
+    "result_slots": 2,
+    "memory_mib": 8192,
+    "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+    "suffix": "one_to_six",
+    "mixture": "alphabet_only",
+    "slot_retention": null,
+    "policies": {
+      "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+      "duration_policy": "stratified_short_or_long_v1",
+      "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+      "key_policy": "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_v10",
+      "replacement_policy": "opaque_preference_then_fewest_frames",
+      "terminal_policy": "death_or_bcd_underflow_or_ending_v3"
+    },
+    "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+    "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+    "prefix_sha256": null,
+    "stage": null,
+    "level": null,
+    "whole_game": false,
+    "mm2_chain": false
+  },
+  "budget_frames": 25000000,
+  "endpoint": "missile_capacity",
+  "compatible_cells": [
+    {
+      "summary_path": "runs/r05-ordinary/metroid-full-s20261210-w4-m8192/summary.json",
+      "summary_sha256": "6a539f020f345270294315f5bede712565f9bf87234bf5b9e3105084c2028473",
+      "progress_sha256": "71d8c8d33ec4550458eb921c8e8506016f11c5ebab5d04612bba5711004cee92",
+      "seed": 20261210,
+      "stop_reason": "frame_limit",
+      "cpu_set": [
+        8,
+        9,
+        10,
+        11
+      ],
+      "endpoint": "missile_capacity",
+      "budget_frames": 25000000,
+      "arrival_interval": {
+        "lower_open": 17679187,
+        "upper_closed": 17688601,
+        "first_execution": 125336
+      },
+      "observed_through_frames": 50000719,
+      "observed_full_budget": true,
+      "hit_by_budget": true,
+      "restricted_cost_interval": [
+        17679187,
+        17688601
+      ]
+    }
+  ],
+  "unique_seed_records": [
+    {
+      "summary_path": "runs/r05-ordinary/metroid-full-s20261210-w4-m8192/summary.json",
+      "summary_sha256": "6a539f020f345270294315f5bede712565f9bf87234bf5b9e3105084c2028473",
+      "progress_sha256": "71d8c8d33ec4550458eb921c8e8506016f11c5ebab5d04612bba5711004cee92",
+      "seed": 20261210,
+      "stop_reason": "frame_limit",
+      "cpu_set": [
+        8,
+        9,
+        10,
+        11
+      ],
+      "endpoint": "missile_capacity",
+      "budget_frames": 25000000,
+      "arrival_interval": {
+        "lower_open": 17679187,
+        "upper_closed": 17688601,
+        "first_execution": 125336
+      },
+      "observed_through_frames": 50000719,
+      "observed_full_budget": true,
+      "hit_by_budget": true,
+      "restricted_cost_interval": [
+        17679187,
+        17688601
+      ]
+    }
+  ],
+  "incompatible_metroid_cells_by_difference": {
+    "binary_sha256,policies": 13,
+    "binary_sha256,slot_retention,policies": 6,
+    "binary_sha256,slot_retention": 5,
+    "slot_retention": 6
+  },
+  "previously_used_seed_identifiers": [
+    3,
+    20261101,
+    20261102,
+    20261103,
+    20261210
+  ],
+  "limitations": [
+    "Empirical control calibration, not a mechanism effect or power calculation.",
+    "Different binaries are excluded even if historical short streams matched.",
+    "Long-run records contain progress intervals, not exact milestone frame times.",
+    "Observation below the common budget is incomplete, not a budgeted failure.",
+    "Historical seed allocation was exploratory; fresh calibration is reported separately."
+  ]
+}
