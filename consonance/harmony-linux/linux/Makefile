@@ -7,6 +7,10 @@
 kernel:
 	./build-kernel.sh
 
+.PHONY: go-runtime-image
+go-runtime-image:
+	./build-go-runtime-image.sh
+
 initramfs:
 	./build-initramfs.sh
 

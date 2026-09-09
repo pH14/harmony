@@ -1,0 +1,209 @@
+x86: emulate cooperative userspace TSC reads from the Harmony clock
+
+CR4.TSD is the stock-KVM enforcement backstop for ring-3 RDTSC and RDTSCP:
+KVM cannot be configured to exit those instructions on the hosted runners.
+Patch 0003 already arms TSD for a Harmony exec image, but an unhandled #GP
+turns every Go counter read into SIGSEGV. Decode only the faulting user
+instruction, safely fetch its bytes, and emulate the two counter reads from
+the materialized pvclock page. The guest counter is already in TSC ticks at
+guest_clock_hz; do not convert the nanosecond field. RDTSCP receives the
+ABI-pinned vCPU index (zero) as TSC_AUX.
+
+Each emulated read rings the existing execution tick before sampling the page.
+That gives counter polling loops a deterministic forward step while retaining
+the same exit-count clock used by clock_gettime and the VMM's TSC oracle.
+Malformed or unavailable pages, nonzero #GP error codes, unreadable code, and
+every other instruction continue through Linux's normal #GP path and retain
+PR_TSC_SIGSEGV behavior.
+
+Outside a Harmony clock boot, PR_SET_TSC keeps normal Linux behavior. Inside
+Harmony, TIF_NOTSC enforces virtual counter reads even if userspace explicitly
+requests PR_TSC_SIGSEGV; it is not a separate signal-only mode.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+--- a/arch/x86/include/asm/harmony_pvclock.h
++++ b/arch/x86/include/asm/harmony_pvclock.h
+@@ -25,6 +25,7 @@
+ #ifdef CONFIG_HARMONY_PVCLOCK
+ bool harmony_pvclock_requested(void);
+ u64 harmony_pvclock_entropy_cycles(void);
++bool harmony_pvclock_read_user_counter(u64 *value, u32 *aux);
+ #else
+ static inline bool harmony_pvclock_requested(void)
+ {
+@@ -33,6 +34,12 @@
+ static inline u64 harmony_pvclock_entropy_cycles(void)
+ {
+ 	return 0;
++}
++static inline bool harmony_pvclock_read_user_counter(u64 *value, u32 *aux)
++{
++	(void)value;
++	(void)aux;
++	return false;
+ }
+ #endif
+ 
+--- a/arch/x86/kernel/harmony_pvclock.c
++++ b/arch/x86/kernel/harmony_pvclock.c
+@@ -372,3 +372,42 @@
+ 	return 0;
+ }
+ early_initcall(harmony_pvclock_init);
++
++/*
++ * Return the materialized counter in the units promised by the ABI. The
++ * page's guest_clock is already the architectural TSC projection at
++ * guest_clock_hz, so converting vns here would both lose precision and
++ * disagree with the VMM's RDMSR/RDTSC oracle. A stable ABI-v1 page pins the
++ * only guest vCPU to AUX zero; reject anything else rather than expose a
++ * host or partially initialized value.
++ */
++bool harmony_pvclock_read_user_counter(u64 *value, u32 *aux)
++{
++	const struct harmony_pvclock_page *p = &harmony_page;
++	u32 seq, abi, flags, vcpu;
++	u64 gc, hz;
++
++	if (!harmony_pvclock_requested())
++		return false;
++
++	do {
++		while ((seq = READ_ONCE(p->seq)) & 1)
++			cpu_relax();
++		virt_rmb();
++		abi = READ_ONCE(p->abi_version);
++		gc = READ_ONCE(p->guest_clock);
++		hz = READ_ONCE(p->guest_clock_hz);
++		flags = READ_ONCE(p->flags);
++		vcpu = READ_ONCE(p->vcpu_index);
++		virt_rmb();
++	} while (unlikely(READ_ONCE(p->seq) != seq));
++
++	if (abi != HARMONY_PVCLOCK_ABI || flags != HARMONY_FLAGS_V1 ||
++	    vcpu != 0 || hz == 0)
++		return false;
++
++	*value = gc;
++	*aux = vcpu;
++	return true;
++}
++EXPORT_SYMBOL_GPL(harmony_pvclock_read_user_counter);
+--- a/arch/x86/kernel/process.c
++++ b/arch/x86/kernel/process.c
+@@ -53,6 +53,7 @@
+ #include <asm/tdx.h>
+ #include <asm/mmu_context.h>
+ #include <asm/msr.h>
++#include <asm/harmony_pvclock.h>
+ #include <asm/shstk.h>
+ 
+ #include "process.h"
+@@ -333,7 +334,8 @@
+ 	if (val == PR_TSC_SIGSEGV)
+ 		disable_TSC();
+ 	else if (val == PR_TSC_ENABLE) {
+-		if (IS_ENABLED(CONFIG_HARMONY_USER_COUNTER_TRAPS))
++		if (IS_ENABLED(CONFIG_HARMONY_USER_COUNTER_TRAPS) &&
++		    harmony_pvclock_requested())
+ 			return -EPERM;
+ 		enable_TSC();
+ 	} else
+--- a/arch/x86/kernel/process_64.c
++++ b/arch/x86/kernel/process_64.c
+@@ -543,6 +543,7 @@
+ 
+ 	reset_thread_features();
+ 	if (IS_ENABLED(CONFIG_HARMONY_USER_COUNTER_TRAPS) &&
++	    harmony_pvclock_requested() &&
+ 	    WARN_ON_ONCE(set_tsc_mode(PR_TSC_SIGSEGV)))
+ 		return;
+ 
+--- a/arch/x86/kernel/traps.c
++++ b/arch/x86/kernel/traps.c
+@@ -69,6 +69,7 @@
+ #include <asm/tdx.h>
+ #include <asm/cfi.h>
+ #include <asm/msr.h>
++#include <asm/harmony_pvclock.h>
+ 
+ #ifdef CONFIG_X86_64
+ #include <asm/x86_init.h>
+@@ -789,6 +790,65 @@
+ 	force_sig(SIGSEGV);
+ }
+ 
++#ifdef CONFIG_HARMONY_USER_COUNTER_TRAPS
++/*
++ * CR4.TSD raises #GP(0) before RDTSC/RDTSCP executes. Decode through the
++ * kernel's checked user fetch so a faulting or unmapped instruction cannot
++ * make the #GP handler dereference user memory. Only the two exact opcode
++ * forms are accepted; unrelated #GPs remain on the normal signal path.
++ */
++static bool harmony_emulate_user_counter(struct pt_regs *regs,
++					 unsigned long error_code)
++{
++	unsigned char buf[MAX_INSN_SIZE] = { 0 };
++	struct insn insn;
++	u64 value;
++	u32 aux;
++	int nr_copied;
++	bool rdtscp;
++
++	if (error_code || !test_thread_flag(TIF_NOTSC))
++		return false;
++
++	nr_copied = insn_fetch_from_user(regs, buf);
++	if (nr_copied <= 0 ||
++	    !insn_decode_from_regs(&insn, regs, buf, nr_copied) ||
++	    insn_get_opcode(&insn) || insn_get_modrm(&insn))
++		return false;
++
++	/* RDTSCP is 0f 01 with f9 in the decoder's ModRM field. */
++	rdtscp = insn.opcode.nbytes == 2 &&
++		  insn.opcode.bytes[0] == 0x0f &&
++		  insn.opcode.bytes[1] == 0x01 &&
++		  insn.modrm.nbytes == 1 &&
++		  insn.modrm.bytes[0] == 0xf9;
++	if (!rdtscp && !(insn.opcode.nbytes == 2 &&
++			 insn.opcode.bytes[0] == 0x0f &&
++			 insn.opcode.bytes[1] == 0x31))
++		return false;
++
++	/* Charge the deterministic execution boundary before reading the clock. */
++	harmony_virtual_time_tick();
++	if (!harmony_pvclock_read_user_counter(&value, &aux))
++		return false;
++
++	regs->ax = (u32)value;
++	regs->dx = value >> 32;
++	if (rdtscp)
++		regs->cx = aux;
++	regs->ip += insn.length;
++	return true;
++}
++#else
++static bool harmony_emulate_user_counter(struct pt_regs *regs,
++					 unsigned long error_code)
++{
++	(void)regs;
++	(void)error_code;
++	return false;
++}
++#endif
++
+ DEFINE_IDTENTRY_ERRORCODE(exc_general_protection)
+ {
+ 	char desc[sizeof(GPFSTR) + 50 + 2*sizeof(unsigned long) + 1] = GPFSTR;
+@@ -813,6 +873,9 @@
+ 	}
+ 
+ 	if (user_mode(regs)) {
++		if (harmony_emulate_user_counter(regs, error_code))
++			goto exit;
++
+ 		if (fixup_iopl_exception(regs))
+ 			goto exit;
+ 

@@ -1,5 +1,5 @@
 # Reviewed raw-counter-read sites in the fault-library guest kernel, the
-# task-park build of the same series (FAULTLAB_TRAPS_OFF=1 ./build-kernel.sh);
+# task-park build of the same series (FAULTLAB=1 ./build-kernel.sh);
 # the other kernels' baselines are rdtsc-allowlist.txt and
 # rdtsc-allowlist-gha.txt.
 # (Task 110, the

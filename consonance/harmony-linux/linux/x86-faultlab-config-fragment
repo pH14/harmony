@@ -1,23 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Fault-library guest kernel: retain the pvclock but let ring-3 read the
-# timestamp counter.
+# Fault-library guest kernel: keep the pvclock and emulate ring-3 timestamp
+# counter reads from its canonical virtual counter. Go's runtime reads RDTSC
+# constantly; the cooperative CR4.TSD/#GP path makes those reads deterministic
+# on stock KVM, where the host cannot surface the instruction as an exit.
 #
-# The historical database specimens cannot run under CR4.TSD. Go's runtime
-# reads the counter directly (etcd and etcdctl fault on their first
-# `cputicks`), and so does glibc's dynamic loader before `main`, which takes
-# down every PostgreSQL binary. CR4.TSD faults inside the guest before any VM
-# exit can happen, so the host's RDTSC exiting is never reached while it is
-# set.
-#
-# This variant is therefore only deterministic on a host with the patched KVM
-# loaded, where RDTSC exits and the host answers from virtual time. On stock
-# KVM it reads the raw host counter and is fit for smoke tests only.
-#
-# Distinct from x86-n6-traps-off-config-fragment, which carries the same symbol
-# for an unrelated purpose: that kernel is the negative control that proves a
-# counter-reading probe can detect a live counter, and its identity stays
-# unambiguous.
-# CONFIG_HARMONY_USER_COUNTER_TRAPS is not set
+# Distinct from x86-n6-traps-off-config-fragment, which remains the negative
+# control that proves a counter-reading probe can detect a live counter.
+CONFIG_HARMONY_USER_COUNTER_TRAPS=y
 #
 # Multiprocessor, like the other kernels, even though the guest has one vCPU.
 # The host delivers the timer interrupt only at VM exits it services, so on

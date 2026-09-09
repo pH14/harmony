@@ -54,6 +54,13 @@ regenerate and verify `../MANIFEST.sha256`.
   own return to user mode. Only the fault-library kernel enables it; with the
   symbol off, the system-call entry poll is an empty inline and every other
   kernel's bytes are unchanged.
+- `0007-x86-harmony-user-counter-emulation.patch` completes trapped userspace
+  `RDTSC` and `RDTSCP` from the clock page's materialized counter. Each read
+  emits the existing execution tick before sampling; `RDTSCP` also returns
+  the single guest vCPU's index as `TSC_AUX`. The handler decodes user code
+  through Linux's checked instruction fetch and leaves unrelated faults on
+  the normal signal path. Confinement is enabled in both production profiles;
+  the N6 traps-off kernel remains a deliberate negative control.
 
 The clock source contains two deliberate `rdtsc` instructions. The reviewed
 allowlist records their locations. The x86 build rejects unaccounted counter
