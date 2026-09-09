@@ -8,6 +8,14 @@ ctl() {
   /opt/etcd/etcdctl --endpoints=http://127.0.0.1:2379 "$@"
 }
 
+ctl_fast() {
+  /opt/etcd/etcdctl \
+    --endpoints=http://127.0.0.1:2379 \
+    --dial-timeout=100ms \
+    --command-timeout=100ms \
+    "$@"
+}
+
 writer() {
   worker=$1
   i=1
@@ -61,7 +69,7 @@ case "$1" in
     ready=0
     attempt=1
     while [ "$attempt" -le 100 ]; do
-      if ctl endpoint health >/dev/null 2>&1; then
+      if ctl_fast endpoint health >/dev/null 2>&1; then
         ready=1
         break
       fi
@@ -89,7 +97,7 @@ case "$1" in
     # Convert etcdctl's key/value line pairs to the same canonical form as the
     # journal, then check only the acknowledged subset. Extra keys can be
     # present because the workers may append a journal record after a put.
-    ctl get museum/ --prefix >"${actual_raw}" 2>/dev/null || exit 0
+    ctl_fast get museum/ --prefix >"${actual_raw}" 2>/dev/null || exit 0
     echo '@sometimes 16'
     awk '
       NR % 2 == 1 { key = $0; next }

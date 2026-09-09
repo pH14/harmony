@@ -5,6 +5,8 @@
       {"Restart": 0},
       "Wait",
       "Wait",
+      "Wait",
+      "Wait",
       {"Hook": 2},
       "Wait"
   ]
