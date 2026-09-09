@@ -1567,3 +1567,48 @@ companion, and sole-host SMB gates. Next decision: finish the frozen ten-pair
 panel without replacement seeds or retries, assess boss attainment first and
 secondary discovery work separately, then consolidate at06:56 UTC. The final
 90-minute reservation and08:26 UTC stop remain unchanged.
+
+## Ten-hour checkpoint — 2026-09-09 06:26 UTC
+
+New facts: nine of ten frozen pairs have completed both3M-execution anchors and
+witness verification, with zero boss defeats in either arm. With one corrected
+seed remaining, the registered3-of-10 Metroid threshold cannot be reached. This
+is a threshold assessment, not a reason to stop the final pair or relabel its
+incomplete observations. No MM2 mechanism qualified an untouched five-seed panel;
+its two fresh own-prefix chains and local transfer ablations remain negative for
+Wily4 reach. Neither requested breakthrough has been established.
+
+The later Metroid pairs reinforce mixed-to-negative secondary outcomes. Seed
+3860178203's correction misses Bombs/Kraid that control reaches. Seed3217532177
+has identical Bombs/Kraid discovery executions and overlapping frame brackets;
+its11-frame bracket offset is not a resolved speed gain. At common work it trades
+higher observed coverage/capacity for fewer tanks. Seed781462287's correction
+reaches Bombs much later and only reaches Kraid after the control's total admitted
+work; it misses the control's Ridley-area discovery. Seed2825471318 reaches
+Bombs/Kraid later, misses Ridley area, and trades lower coverage for higher maximum
+missile capacity. These findings do not promote the mechanically justified
+terminal correction into a general search-quality improvement. No default changed.
+
+Rejected explanations and boundaries are unchanged: paired continuation loss is
+reproducible after terminal correction, two resource extremes were insufficient
+under the tested historical predicate, selection interventions did not recover
+depth, and the R-plus-T campaign interaction and actual outgoing-exposure
+measurement remain follow-ups. Keep T experimental; all other candidate families
+remain parked. The independent reviewer found no material inaccuracies in the
+eight-hour reporting checkpoint or its qualifications.
+
+Compute through06:26:16 UTC is11,714,301,668 admitted search frames and91,404,809
+executions. Measured completed-process CPU is at least297,235.09 seconds
+(82.57 CPU-hours); the earlier exclusions still apply. Paired-probe physical work
+remains7,155,153 frames, reported separately. Two native evaluators remain active
+on their original CPU allocations, with fresh progress and no resource or health
+failure. The final pair has not been moved to idle faster cores. Snapshot evidence
+is in `results/accounting-1000.json`, `t04-assessment-1000.json`, and
+`validation-health-1000.json`.
+
+Next decision: complete or explicitly censor the last pair at the frozen06:50
+cutoff, then let Q36 perform its registered integrated-build compatibility and
+SMB/Nova/STB checks after host release. Preserve final native proof, assessment,
+compute, rejected hypotheses, and follow-ups in one final evidence publication;
+inspect CI on that exact head. Consolidation begins06:56 UTC and the tranche ends
+08:26 UTC without an extension or a new search family.

@@ -10,9 +10,10 @@ The archive loses locally useful futures, but preserving two resource extremes
 has not turned that loss into deeper fresh search. A separate Metroid terminal
 classification defect admitted a transient BCD health underflow as an excellent
 living state. Correcting that defect has a clear mechanical justification and
-mixed but promising late development results. Its frozen untouched comparison is
-running. The first five completed held-out pairs have no boss defeats in either
-arm; this partial result does not replace the full-panel assessment.
+mixed late development results. Its frozen untouched comparison is running.
+Nine completed held-out pairs have no boss defeats in either arm, with substantial
+secondary regressions as well as some gains. The remaining seed cannot bring the
+correction to the registered 3-of-10 threshold; final panel accounting is pending.
 
 | Explanation or mechanism | Controlled observation | Decision so far |
 | --- | --- | --- |
