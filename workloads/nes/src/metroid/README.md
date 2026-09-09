@@ -216,3 +216,6 @@ ordering includes the new metadata; generic splice-donor and resume comparisons
 that use that ordering can therefore change when the feature is enabled.
 Splice and resume behavior require separate qualification. Matching the feature
 in both R04 arms holds that metadata constant in the policy comparison.
+The existing [ordering-bias follow-up](https://github.com/pH14/harmony/issues/270)
+tracks the full-key donor-selection limitation; do not treat motion retention's
+alphabet-only qualification as resolving that issue.
