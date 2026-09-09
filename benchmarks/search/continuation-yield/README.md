@@ -244,3 +244,40 @@ their hashes, and produces the [figure](paired-panels.png) with a
 run `python3 benchmarks/search/continuation-yield/plot_panels.py` from the repo
 root. Panels retain separate horizons and endpoints; marker whiskers show
 observation timing, not statistical uncertainty. Reproduction uses no emulator.
+
+## Prospective named-milestone panels
+
+[Milestone stopping is now replay-qualified](../milestone-stop/README.md), using
+the original auxiliary allowance. That brings known auxiliary work to 30,112,297
+frames; performance search remains at 489,962,470. No later-depth performance
+allocation has been authorized or dispatched.
+
+The updated `run_cells.py` supports an explicitly registered named endpoint.
+Every new registration must pin `named_endpoint_sha256`, the SHA-256 of
+`named_milestone_endpoint.py`, as well as the existing runner/analyzer/scorer
+identities. Preserve old registrations and use their frozen source and runner;
+their recorded missile-interval and stage-victory semantics do not change.
+
+For a named panel, register the same `milestone_stop` object at the top level
+and under `screen`, and set every cell's `search.stop_after_milestone` to its
+name. For example, the condition for the proposed energy-tank study is
+`{"name":"energy_tank","observation_policy":"metroid-named-progress-v2"}`.
+Pin the resource interpretation as
+`screen.resources.measurement: event_stopped_cell_totals_v1` and supply a
+finite positive `max_candidate_to_control_ratio`. These CPU/elapsed totals
+include cell finishing and verification, and do not measure fixed-work
+throughput. This schema is preparation, not a funded performance registration.
+
+The runner rejects inconsistent cell/registration criteria before dispatch.
+It reads exact first-admitted-job cost from verified evaluator output and checks
+the request, identity, observation version, horizon and budget flag. It never
+uses the old missile checkpoint extractor for a named-milestone panel. An
+unobserved event before the registered frame horizon remains incomplete evidence
+and stops the panel as a measurement failure; it cannot become a censored loss.
+Post-budget drain observations remain present but do not count as budgeted hits.
+The paired scorer also refuses mixed endpoint versions or cost conventions.
+
+The tests consume the completed native Q01 records without executing an
+emulator, then inject mismatched endpoints, clocks, missing reports and
+inconsistent budgets. Run all analysis contracts with
+`python3 -m unittest discover -s benchmarks/search/continuation-yield -p 'test_*.py'`.

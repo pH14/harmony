@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 import unittest
 
 from score_screen import score_screen
@@ -16,6 +18,16 @@ def record(name, interval):
 
 
 class FixedPanelGate(unittest.TestCase):
+    def test_published_development_confirmation_and_failed_transfer_keep_their_scores(self):
+        root = Path(__file__).parent
+        for name in ('s01', 'r01', 't01'):
+            with self.subTest(panel=name):
+                reg = json.loads((root / (name + '-registration.json')).read_text())
+                results = json.loads((root / (name + '-results.json')).read_text())
+                analysis = json.loads((root / (name + '-analysis.json')).read_text())
+                published = json.loads(json.dumps(score_screen(results['records'], reg)))
+                self.assertEqual(published, analysis['score'])
+
     def test_both_censored_pairs_are_ties_and_make_three_wins_impossible(self):
         records = [record(f"{arm}{i}", [100, 100]) for i in range(2) for arm in ("c", "a")]
         result = score_screen(records, registration())

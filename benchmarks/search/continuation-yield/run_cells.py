@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 
 from audit_controls import milestone_interval
+from named_milestone_endpoint import named_milestone_endpoint, validate_named_panel
 
 
 def sha(path):
@@ -24,6 +25,8 @@ def main():
     registration = json.loads(args.registration.read_text())
     assert sha(Path(__file__)) == registration["runner_sha256"]
     assert sha(Path(__file__).with_name("audit_controls.py")) == registration["analyzer_sha256"]
+    assert sha(Path(__file__).with_name("named_milestone_endpoint.py")) == registration["named_endpoint_sha256"]
+    condition = validate_named_panel(registration)
     if "screen" in registration:
         from score_screen import score_screen
         assert sha(Path(__file__).with_name("score_screen.py")) == registration["screen_scorer_sha256"]
@@ -100,11 +103,14 @@ def main():
                 if progress.is_file():
                     assert progress.stat().st_size <= 128 * 1024**2
                     record["progress_sha256"] = sha(progress)
-                    if (summary.get("identity") or {}).get("game") == "metroid":
+                    if condition is None and (summary.get("identity") or {}).get("game") == "metroid":
                         record["endpoint_evidence"] = milestone_interval(
                             [json.loads(line) for line in progress.read_text().splitlines()],
                             cell["manifest"]["search"]["frames"])
-                if (summary.get("identity") or {}).get("game") == "mm2" and summary.get("result") and "victory_endpoint_sha256" in registration:
+                if condition is not None and summary.get("result"):
+                    record["endpoint_evidence"] = named_milestone_endpoint(
+                        summary, cell["manifest"]["search"]["frames"], condition)
+                if condition is None and (summary.get("identity") or {}).get("game") == "mm2" and summary.get("result") and "victory_endpoint_sha256" in registration:
                     record["endpoint_evidence"] = victory_endpoint(summary["result"], cell["manifest"]["search"]["frames"])
             save()
             assert process.returncode == 0 and record["summary"] is not None, "execution failure"
@@ -117,6 +123,8 @@ def main():
                 assert summary["result"][key] == value, "frozen compatibility result differs: " + key
             for key, value in cell.get("expected_identity", {}).items():
                 assert summary["identity"][key] == value, "frozen identity differs: " + key
+            if condition is not None:
+                assert record["endpoint_evidence"]["restricted_cost_interval"] is not None, "unattained milestone did not reach the registered horizon"
             record["checks_passed"] = True
         except Exception as error:
             record["failure"] = str(error)

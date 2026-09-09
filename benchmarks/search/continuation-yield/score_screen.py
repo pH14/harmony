@@ -2,9 +2,16 @@
 """Score a fixed paired screen using conservative interval bounds."""
 
 
-def endpoint_cost(record, budget):
+def endpoint_cost(record, budget, condition=None):
     evidence = record["endpoint_evidence"]
+    if evidence.get("milestone_stop") != condition:
+        raise ValueError("endpoint evidence differs from the registered milestone stop")
+    if condition is not None and (evidence.get("cost_convention") != "first_admitted_job_frames_v1"
+                                  or evidence.get("endpoint") != condition["name"]):
+        raise ValueError("registered milestone requires its exact admitted-job cost")
     assert evidence["budget_frames"] == budget
+    if evidence["restricted_cost_interval"] is None:
+        raise ValueError("incomplete endpoint evidence cannot enter a scored pair")
     lower, upper = evidence["restricted_cost_interval"]
     assert 0 <= lower <= upper <= budget
     assert evidence["observed_full_budget"] or evidence["hit_by_budget"] is True
@@ -19,8 +26,8 @@ def score_screen(records, registration):
     for pair in rule["pairs"]:
         if pair["control"] not in by_id or pair["candidate"] not in by_id:
             break
-        control = endpoint_cost(by_id[pair["control"]], rule["budget_frames"])
-        candidate = endpoint_cost(by_id[pair["candidate"]], rule["budget_frames"])
+        control = endpoint_cost(by_id[pair["control"]], rule["budget_frames"], rule.get("milestone_stop"))
+        candidate = endpoint_cost(by_id[pair["candidate"]], rule["budget_frames"], rule.get("milestone_stop"))
         pairs.append({"seed": pair["seed"], "control": control, "candidate": candidate,
                       "strict_win": candidate[1] < control[0],
                       "difference_interval": [candidate[0] - control[1], candidate[1] - control[0]]})
