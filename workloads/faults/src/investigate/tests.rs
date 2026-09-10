@@ -151,9 +151,12 @@ impl Continuation for ModelGuest {
         Ok(self.endpoint(StopReason::VirtualDeadline, false))
     }
 
-    fn restore(&mut self, checkpoint: &[u8]) -> Result<Endpoint, String> {
+    fn restore(&mut self, checkpoint: &[u8], actions: &[FaultAction]) -> Result<Endpoint, String> {
         self.state =
             serde_json::from_slice(checkpoint).map_err(|error| format!("checkpoint: {error}"))?;
+        // The caller names the recorded execution this point continues, and a
+        // later advance stops at that execution's end.
+        self.state.actions = actions.to_vec();
         Ok(self.endpoint(StopReason::VirtualDeadline, false))
     }
 
@@ -161,7 +164,12 @@ impl Continuation for ModelGuest {
         if let Some(argv) = self.state.pending.take() {
             self.state.delivered.push(argv);
         }
-        let target = self.state.virtual_time.saturating_add(bound.within_nanos);
+        let mut target = self.state.virtual_time.saturating_add(bound.within_nanos);
+        let end = ROOT_SEAL.saturating_add(HORIZON.saturating_mul(self.state.actions.len() as u64));
+        let ended = !bound.extend && target >= end;
+        if ended {
+            target = end.max(self.state.virtual_time);
+        }
         if self.wall_cost_per_second > 0
             && bound.within_nanos / 1_000_000_000 * self.wall_cost_per_second > bound.wall_seconds
         {
@@ -173,10 +181,10 @@ impl Continuation for ModelGuest {
             return Ok(self.endpoint(StopReason::HostWatchdog, false));
         }
         let (_, met) = self.step(target, bound.until);
-        let stop = if met {
-            StopReason::ConditionMet
-        } else {
-            StopReason::VirtualDeadline
+        let stop = match (met, ended) {
+            (true, _) => StopReason::ConditionMet,
+            (false, true) => StopReason::ContinuationEnd,
+            (false, false) => StopReason::VirtualDeadline,
         };
         Ok(self.endpoint(stop, met))
     }
@@ -378,6 +386,38 @@ fn an_unknown_finding_names_the_ones_the_workspace_has() {
     )
     .expect_err("an unknown finding");
     assert!(error.to_string().contains("bug-1"), "{error}");
+}
+
+#[test]
+fn a_fresh_process_advances_a_branch_to_the_recorded_execution_end() {
+    let (_directory, mut workspace) = workspace();
+    let mut guest = ModelGuest::new();
+    fork(
+        &mut workspace,
+        &mut guest,
+        &fork_request("trace", 4 * HORIZON),
+    )
+    .expect("fork");
+
+    // The branch, not the checkpoint, says which recorded execution this point
+    // continues, so a process that has never seen the finding still crosses the
+    // remaining windows instead of stopping where it restored.
+    let mut fresh = ModelGuest::new();
+    let outcome = run(
+        &mut workspace,
+        &mut fresh,
+        &RunRequest {
+            branch: "trace".to_owned(),
+            bound: Advance {
+                extend: false,
+                ..advance(8 * HORIZON)
+            },
+            request_id: None,
+        },
+    )
+    .expect("one advance in a fresh process");
+    assert_eq!(outcome.virtual_time, FAILURE_AT);
+    assert_eq!(outcome.stop, StopReason::ContinuationEnd);
 }
 
 #[test]

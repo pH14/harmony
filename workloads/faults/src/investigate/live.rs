@@ -305,7 +305,11 @@ impl Continuation for ConsonanceGuest {
         self.endpoint(stop, met)
     }
 
-    fn restore(&mut self, checkpoint: &[u8]) -> Result<Endpoint, String> {
+    fn restore(&mut self, checkpoint: &[u8], actions: &[FaultAction]) -> Result<Endpoint, String> {
+        // A restored point sits inside the recorded execution, so an advance
+        // from it still has to cross the remaining windows under their own
+        // standing lists.
+        self.set_recorded_actions(actions);
         let decoded = Checkpoint::decode(checkpoint).map_err(|error| error.to_string())?;
         let portable = PortableSnapshot {
             setup: decoded.setup,

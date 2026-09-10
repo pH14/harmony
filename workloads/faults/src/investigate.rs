@@ -163,11 +163,14 @@ pub trait Continuation {
 
     /// Restore retained checkpoint bytes and make that point current.
     ///
+    /// `actions` is the recorded execution the restored point continues, which
+    /// a later advance still has to cross window by window.
+    ///
     /// # Errors
     ///
     /// Returns an error when the checkpoint does not belong to this execution
     /// identity or cannot be imported.
-    fn restore(&mut self, checkpoint: &[u8]) -> Result<Endpoint, String>;
+    fn restore(&mut self, checkpoint: &[u8], actions: &[FaultAction]) -> Result<Endpoint, String>;
 
     /// Advance the current point under `bound`.
     ///
@@ -332,7 +335,7 @@ pub fn fork(
         Selector::BranchHead(_) | Selector::BranchAt(_, _) | Selector::Moment(_) => {
             let checkpoint = checkpoint_bytes(workspace, &request.source)?;
             engine
-                .restore(&checkpoint)
+                .restore(&checkpoint, &actions)
                 .map_err(|error| format!("restore {source_label}: {error}"))?
         }
     };
@@ -417,7 +420,7 @@ pub fn run(
     let branch = named_branch(workspace, &request.branch)?.clone();
     let checkpoint = head_checkpoint(workspace, &branch)?;
     engine
-        .restore(&checkpoint)
+        .restore(&checkpoint, &branch.inherited_actions)
         .map_err(|error| format!("restore {}@head: {error}", branch.name))?;
     let bound = bounded(&request.bound, &branch, workspace)?;
     let endpoint = engine
@@ -475,7 +478,7 @@ pub fn exec(
             let branch = named_branch(workspace, name)?.clone();
             let checkpoint = head_checkpoint(workspace, &branch)?;
             engine
-                .restore(&checkpoint)
+                .restore(&checkpoint, &branch.inherited_actions)
                 .map_err(|error| format!("restore {name}@head: {error}"))?;
             branch
         }
