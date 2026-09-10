@@ -4,7 +4,6 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
-#include <sched.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -53,6 +52,7 @@ static _Atomic uint64_t harmony_automatic_coverage_counter;
 static _Atomic uint64_t harmony_automatic_coverage_threshold =
     HARMONY_COVERAGE_QUANTUM;
 static _Atomic bool harmony_automatic_coverage_enabled = true;
+static uint32_t harmony_automatic_process_id;
 static uint32_t harmony_next_guard = 1;
 static _Atomic uint64_t harmony_next_edge_offset;
 
@@ -63,17 +63,14 @@ static _Atomic uint64_t harmony_next_edge_offset;
  * events consumed the process-global counter. The callback performs the kill
  * synchronously.
  *
- * The high bit closes admission while the low bits count callbacks that have
- * already entered. Keeping both in one atomic word makes close-vs-enter a
- * single compare-and-swap race: either the callback increments first and the
- * closer waits for it, or the closer sets the bit first and the callback waits.
+ * The remaining count is the linearization point for both sides of the
+ * protocol. An arm or disarm replaces it with one atomic exchange; a callback
+ * claims one future event with one compare-and-exchange. Their modification
+ * order decides which arm a callback belongs to, so control never has to
+ * drain callbacks that are doing unrelated device work.
  */
-#define HARMONY_EVENT_GATE_CLOSED (UINT64_C(1) << 63)
-#define HARMONY_EVENT_GATE_READERS (~HARMONY_EVENT_GATE_CLOSED)
-
 static _Atomic uint64_t harmony_event_remaining;
 static _Atomic uint64_t harmony_event_target;
-static _Atomic uint64_t harmony_event_gate;
 static _Atomic bool harmony_event_enabled;
 static pthread_once_t harmony_event_control_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t harmony_event_ready_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -104,6 +101,22 @@ static int event_fd_from_environment(const char *name)
     return (int)value;
 }
 
+static uint32_t process_id_from_environment(void)
+{
+    const char *text = getenv("HARMONY_INSTRUMENTED_PROCESS_ID");
+    char *end;
+    unsigned long value;
+
+    if (text == NULL || *text == '\0')
+        return 0;
+    errno = 0;
+    value = strtoul(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || value == 0 ||
+        value > (unsigned long)INT_MAX)
+        return 0;
+    return (uint32_t)value;
+}
+
 static int read_event_command(int fd, uint64_t *value)
 {
     unsigned char bytes[sizeof(*value)];
@@ -119,52 +132,6 @@ static int read_event_command(int fd, uint64_t *value)
     }
     *value = get_u64(bytes);
     return 0;
-}
-
-static void event_gate_close(void)
-{
-    uint64_t state = atomic_load_explicit(&harmony_event_gate, memory_order_acquire);
-
-    for (;;) {
-        if ((state & HARMONY_EVENT_GATE_CLOSED) != 0)
-            break;
-        if (atomic_compare_exchange_strong_explicit(
-                &harmony_event_gate, &state, state | HARMONY_EVENT_GATE_CLOSED,
-                memory_order_acq_rel, memory_order_acquire))
-            break;
-    }
-    while ((atomic_load_explicit(&harmony_event_gate, memory_order_acquire) &
-            HARMONY_EVENT_GATE_READERS) != 0)
-        (void)sched_yield();
-}
-
-static void event_gate_reopen(void)
-{
-    /* Close waits for the reader count to reach zero before this store. */
-    atomic_store_explicit(&harmony_event_gate, 0, memory_order_release);
-}
-
-static void event_gate_enter(void)
-{
-    uint64_t state = atomic_load_explicit(&harmony_event_gate, memory_order_acquire);
-
-    for (;;) {
-        if ((state & HARMONY_EVENT_GATE_CLOSED) != 0 ||
-            (state & HARMONY_EVENT_GATE_READERS) == HARMONY_EVENT_GATE_READERS) {
-            (void)sched_yield();
-            state = atomic_load_explicit(&harmony_event_gate, memory_order_acquire);
-            continue;
-        }
-        if (atomic_compare_exchange_weak_explicit(
-                &harmony_event_gate, &state, state + 1, memory_order_acq_rel,
-                memory_order_acquire))
-            return;
-    }
-}
-
-static void event_gate_leave(void)
-{
-    (void)atomic_fetch_sub_explicit(&harmony_event_gate, 1, memory_order_release);
 }
 
 static void *event_control_main(void *unused)
@@ -184,24 +151,22 @@ static void *event_control_main(void *unused)
     }
     (void)pthread_mutex_unlock(&harmony_event_ready_lock);
     while (read_event_command(harmony_event_control_fd, &target) == 0) {
-        event_gate_close();
+        /* Disarm before the acknowledgement; callbacks skip publication. */
+        (void)atomic_exchange_explicit(
+            &harmony_event_remaining, 0, memory_order_acq_rel);
         put_u64(acknowledgement, target);
-        if (target == 0) {
-            atomic_store_explicit(&harmony_event_remaining, 0, memory_order_release);
-            atomic_store_explicit(&harmony_event_target, 0, memory_order_release);
-        } else {
-            atomic_store_explicit(&harmony_event_target, target, memory_order_release);
-            atomic_store_explicit(&harmony_event_remaining, target, memory_order_release);
-        }
         if (write_all(harmony_event_control_fd, acknowledgement, sizeof(acknowledgement)) != 0) {
-            atomic_store_explicit(&harmony_event_remaining, 0, memory_order_release);
             atomic_store_explicit(&harmony_event_target, 0, memory_order_release);
             atomic_store_explicit(&harmony_event_enabled, false, memory_order_release);
-            event_gate_reopen();
             break;
         }
-        event_gate_reopen();
+        /* The arm becomes visible only after its acknowledgement is sent. */
+        atomic_store_explicit(&harmony_event_target, target, memory_order_release);
+        (void)atomic_exchange_explicit(
+            &harmony_event_remaining, target, memory_order_acq_rel);
     }
+    (void)atomic_exchange_explicit(&harmony_event_remaining, 0, memory_order_acq_rel);
+    atomic_store_explicit(&harmony_event_target, 0, memory_order_release);
     atomic_store_explicit(&harmony_event_enabled, false, memory_order_release);
     (void)close(harmony_event_control_fd);
     harmony_event_control_fd = -1;
@@ -212,6 +177,7 @@ static void event_control_start(void)
 {
     pthread_t thread;
 
+    harmony_automatic_process_id = process_id_from_environment();
     harmony_event_control_fd = event_fd_from_environment("HARMONY_EVENT_KILL_FD");
     harmony_event_report_fd = event_fd_from_environment("HARMONY_EVENT_REPORT_FD");
     if (harmony_event_control_fd < 0)
@@ -430,6 +396,14 @@ static int coverage_exchange(uint64_t observed)
     return 0;
 }
 
+static void coverage_transport_failure(void)
+{
+    /* A lost deterministic exit stream invalidates the execution. Terminate
+     * the managed process group so the supervisor observes and restarts it. */
+    (void)kill(0, SIGKILL);
+    _exit(127);
+}
+
 /*
  * Instrumented programs that do not configure scheduler identities still
  * need a deterministic escape from compute-only code. Count callbacks across
@@ -460,16 +434,15 @@ static void automatic_coverage_yield(void)
                 memory_order_acq_rel, memory_order_acquire))
             break;
     }
-    process = (uint32_t)getpid() & ~HARMONY_AUTOMATIC_COVERAGE_NAMESPACE;
+    process = harmony_automatic_process_id;
+    if (process == 0)
+        process = (uint32_t)getpid() & ~HARMONY_AUTOMATIC_COVERAGE_NAMESPACE;
     if (coverage_exchange_request(
             HARMONY_AUTOMATIC_COVERAGE_NAMESPACE | process,
             threshold / HARMONY_COVERAGE_QUANTUM, 1,
             &next_yield, &selected) != 0 ||
         next_yield > UINT64_MAX / HARMONY_COVERAGE_QUANTUM) {
-        atomic_store_explicit(
-            &harmony_automatic_coverage_threshold, UINT64_MAX,
-            memory_order_release);
-        return;
+        coverage_transport_failure();
     }
     next_threshold = next_yield * HARMONY_COVERAGE_QUANTUM;
     atomic_store_explicit(
@@ -491,44 +464,54 @@ uint64_t init_coverage_module(size_t num_edges, const char *symbols)
         &harmony_next_edge_offset, (uint64_t)num_edges, memory_order_relaxed);
 }
 
-bool notify_coverage(uint64_t edge)
+/*
+ * Return the count that this callback claimed, or zero when no arm was
+ * active. A return value of one identifies the synchronous kill event. The
+ * successful compare-and-exchange is the callback's linearization point.
+ */
+static uint64_t event_claim(uint64_t *target_out)
 {
     uint64_t remaining;
-    bool event_entered = false;
+    remaining = atomic_load_explicit(&harmony_event_remaining, memory_order_acquire);
+    while (remaining != 0) {
+        if (atomic_compare_exchange_weak_explicit(
+                &harmony_event_remaining, &remaining, remaining - 1,
+                memory_order_acq_rel, memory_order_acquire)) {
+            if (remaining == 1 && target_out != NULL)
+                *target_out = atomic_load_explicit(
+                    &harmony_event_target, memory_order_acquire);
+            return remaining;
+        }
+    }
+    return 0;
+}
+
+bool notify_coverage(uint64_t edge)
+{
+    uint64_t claimed;
+    uint64_t target = 0;
 
     (void)edge;
     event_control_activate();
     if (atomic_load_explicit(&harmony_event_enabled, memory_order_acquire)) {
-        event_gate_enter();
-        event_entered = true;
-        remaining = atomic_load_explicit(&harmony_event_remaining, memory_order_acquire);
-        while (remaining != 0) {
-            if (atomic_compare_exchange_weak_explicit(
-                    &harmony_event_remaining, &remaining, remaining - 1,
-                    memory_order_acq_rel, memory_order_acquire)) {
-                if (remaining == 1) {
-                    if (harmony_event_report_fd >= 0) {
-                        unsigned char report[2 * sizeof(uint64_t)];
+        claimed = event_claim(&target);
+        if (claimed == 1) {
+            if (harmony_event_report_fd >= 0) {
+                unsigned char report[2 * sizeof(uint64_t)];
 
-                        put_u64(report, atomic_load_explicit(
-                            &harmony_event_target, memory_order_acquire));
-                        put_u64(report + sizeof(uint64_t), edge);
-                        (void)write_all(harmony_event_report_fd, report, sizeof(report));
-                    }
-                    (void)kill(0, SIGKILL);
-                }
-                break;
+                put_u64(report, target);
+                put_u64(report + sizeof(uint64_t), edge);
+                (void)write_all(harmony_event_report_fd, report, sizeof(report));
             }
+            (void)kill(0, SIGKILL);
         }
     }
     if (harmony_coverage.counter != UINT64_MAX)
         harmony_coverage.counter++;
     if (harmony_coverage.counter == harmony_coverage.threshold &&
         coverage_exchange(harmony_coverage.counter) != 0)
-        harmony_coverage.threshold = UINT64_MAX;
+        coverage_transport_failure();
     automatic_coverage_yield();
-    if (event_entered)
-        event_gate_leave();
     return false;
 }
 

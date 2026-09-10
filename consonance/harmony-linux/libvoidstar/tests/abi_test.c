@@ -122,6 +122,15 @@ int main(void)
     pthread_t threshold_thread;
     size_t index;
 
+    assert(setenv("HARMONY_INSTRUMENTED_PROCESS_ID", "23", 1) == 0);
+    assert(process_id_from_environment() == 23);
+    assert(setenv("HARMONY_INSTRUMENTED_PROCESS_ID", "0", 1) == 0);
+    assert(process_id_from_environment() == 0);
+    assert(setenv("HARMONY_INSTRUMENTED_PROCESS_ID", "2147483648", 1) == 0);
+    assert(process_id_from_environment() == 0);
+    assert(unsetenv("HARMONY_INSTRUMENTED_PROCESS_ID") == 0);
+    harmony_automatic_process_id = 23;
+
     fuzz_json_data(event, sizeof(event) - 1);
     assert(captured_len == sizeof(event) - 1);
     assert(memcmp(captured, event, captured_len) == 0);
@@ -152,7 +161,7 @@ int main(void)
     }
     assert((last_coverage_thread & UINT32_C(0x80000000)) != 0);
     assert((last_coverage_thread & UINT32_C(0x7fffffff)) ==
-           ((uint32_t)getpid() & UINT32_C(0x7fffffff)));
+           UINT32_C(23));
     assert(last_coverage_ready == 1);
     assert(harmony_coverage_configure(7, 3) == 0);
     assert(!notify_coverage(1));

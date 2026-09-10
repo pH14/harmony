@@ -26,6 +26,10 @@ for one hook that touch launch it twice even when no poll falls in between.
 
 A node that exits while no fault names it is an unexpected death: the agent
 counts it and starts the node again on the next tick.
+Each instrumented start also receives an internal, monotonically increasing
+process incarnation id. The automatic coverage stream uses that id instead of
+the recyclable Linux PID; it is guest state, so snapshots and replay reproduce
+the same allocation without an operator setting.
 
 ## The bundle
 

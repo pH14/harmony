@@ -219,6 +219,7 @@ mod real {
 
         let transport = doorbell::open()?;
         let mut sdk = Sdk::init(transport, &CATALOG).map_err(|error| format!("sdk: {error}"))?;
+        let mut supervisor = Supervisor::new(bundle.nodes.len());
 
         run_setup(&bundle)?;
 
@@ -233,7 +234,7 @@ mod real {
             })
             .collect();
         for (id, node) in nodes.iter_mut().enumerate() {
-            let (child, control) = spawn_node(&node.spec)?;
+            let (child, control) = spawn_node(&node.spec, &mut supervisor)?;
             node.child = Some(child);
             node.event_control = control;
             log(0, &format!("start node {id}"));
@@ -245,7 +246,14 @@ mod real {
             .map_err(|error| format!("setup_complete: {error}"))?;
         log(0, "setup complete");
 
-        poll_loop(args, &bundle, &mut nodes, &mut sdk, &mut clock)
+        poll_loop(
+            args,
+            &bundle,
+            &mut nodes,
+            &mut supervisor,
+            &mut sdk,
+            &mut clock,
+        )
     }
 
     /// Run the bundle's setup command to completion. The image's init mounts
@@ -307,10 +315,10 @@ mod real {
         args: &Args,
         bundle: &Bundle,
         nodes: &mut [Node],
+        supervisor: &mut Supervisor,
         sdk: &mut GuestSdk,
         clock: &mut SleepClock,
     ) -> Result<(), String> {
-        let mut supervisor = Supervisor::new(nodes.len());
         let mut registers = Registers::new();
         let mut runtime = HookRuntime::new();
         let mut buf = [0_u8; MAX_PAYLOAD];
@@ -322,7 +330,15 @@ mod real {
             let tick = supervisor.counters().ticks + 1;
             for action in supervisor.tick(&active, &deaths) {
                 log(tick, &action.describe());
-                apply(action, bundle, nodes, &mut runtime, &args.hook_dir, tick)?;
+                apply(
+                    action,
+                    bundle,
+                    nodes,
+                    supervisor,
+                    &mut runtime,
+                    &args.hook_dir,
+                    tick,
+                )?;
             }
             let ready_hooks = poll_recovery(
                 bundle.ready.as_deref(),
@@ -407,6 +423,7 @@ mod real {
         action: Action,
         bundle: &Bundle,
         nodes: &mut [Node],
+        supervisor: &mut Supervisor,
         runtime: &mut HookRuntime,
         hook_dir: &Path,
         tick: u64,
@@ -430,7 +447,7 @@ mod real {
             Action::Start(node) => {
                 if let Some(entry) = nodes.get_mut(usize::from(node)) {
                     entry.park = None;
-                    let (child, control) = spawn_node(&entry.spec)?;
+                    let (child, control) = spawn_node(&entry.spec, supervisor)?;
                     entry.child = Some(child);
                     entry.event_control = control;
                     if let Some(probe) = runtime.recovery_probe.take() {
@@ -670,7 +687,10 @@ mod real {
         }
     }
 
-    fn spawn_node(spec: &NodeSpec) -> Result<(Child, Option<OwnedFd>), String> {
+    fn spawn_node(
+        spec: &NodeSpec,
+        supervisor: &mut Supervisor,
+    ) -> Result<(Child, Option<OwnedFd>), String> {
         let instrumented = instrumented_events_available();
         let (agent_fd, child_fd) = if instrumented {
             let (agent, child) = event_channel()?;
@@ -683,8 +703,10 @@ mod real {
         // never the agent.
         command.process_group(0);
         if let Some(child_fd) = &child_fd {
+            let process_id = supervisor.allocate_instrumented_process_id()?;
             command
                 .env("HARMONY_EVENT_KILL_FD", child_fd.as_raw_fd().to_string())
+                .env("HARMONY_INSTRUMENTED_PROCESS_ID", process_id.to_string())
                 .env("LD_PRELOAD", "/usr/lib/libvoidstar.so");
         }
         let child = command

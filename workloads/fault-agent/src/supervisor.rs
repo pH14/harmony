@@ -107,6 +107,11 @@ pub struct Supervisor {
     nodes: Vec<NodeState>,
     previous: ActiveFaults,
     counters: Counters,
+    /// The next incarnation id for a managed process built with the
+    /// instrumented event runtime. This lives in the guest-resident
+    /// supervisor state so VM snapshots and replay preserve the allocator.
+    /// Zero is the exhausted marker; every assigned id is positive.
+    next_instrumented_process_id: u32,
 }
 
 impl Supervisor {
@@ -124,7 +129,20 @@ impl Supervisor {
             ],
             previous: ActiveFaults::new(),
             counters: Counters::default(),
+            next_instrumented_process_id: 1,
         }
+    }
+
+    /// Allocate the next process incarnation id for an instrumented managed
+    /// node. The id is global to the supervisor, so starts across all nodes
+    /// cannot reuse one another's ids during an agent execution.
+    pub fn allocate_instrumented_process_id(&mut self) -> Result<u32, String> {
+        let id = self.next_instrumented_process_id;
+        if id == 0 {
+            return Err("instrumented process incarnation id space exhausted".to_owned());
+        }
+        self.next_instrumented_process_id = if id == i32::MAX as u32 { 0 } else { id + 1 };
+        Ok(id)
     }
 
     /// Reconcile one standing-poll answer, given the nodes observed to have
@@ -589,5 +607,33 @@ mod tests {
             "park node 0 at 0x4b0e86 hit 28 hold 2000000"
         );
         assert_eq!(Action::Unpark(0).describe(), "unpark node 0");
+    }
+
+    #[test]
+    fn instrumented_process_ids_are_global_across_nodes() {
+        let mut sup = Supervisor::new(2);
+        assert_eq!(sup.allocate_instrumented_process_id(), Ok(1));
+        assert_eq!(sup.allocate_instrumented_process_id(), Ok(2));
+        assert_eq!(sup.allocate_instrumented_process_id(), Ok(3));
+    }
+
+    #[test]
+    fn instrumented_process_id_state_replays_from_a_snapshot() {
+        let mut sup = Supervisor::new(1);
+        assert_eq!(sup.allocate_instrumented_process_id(), Ok(1));
+        let mut replay = sup.clone();
+        assert_eq!(sup.allocate_instrumented_process_id(), Ok(2));
+        assert_eq!(replay.allocate_instrumented_process_id(), Ok(2));
+    }
+
+    #[test]
+    fn instrumented_process_id_overflow_fails_loudly() {
+        let mut sup = Supervisor::new(1);
+        sup.next_instrumented_process_id = i32::MAX as u32;
+        assert_eq!(sup.allocate_instrumented_process_id(), Ok(i32::MAX as u32));
+        assert_eq!(
+            sup.allocate_instrumented_process_id(),
+            Err("instrumented process incarnation id space exhausted".to_owned())
+        );
     }
 }
