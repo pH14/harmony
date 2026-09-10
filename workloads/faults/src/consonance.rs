@@ -598,7 +598,8 @@ impl Live {
 
     /// Cache the endpoint of `actions` sealed at `moment`, evicting the least
     /// recently used prefix once the cache is full. The setup point is never
-    /// evicted.
+    /// evicted. A failed eviction abandons the live session because its cache
+    /// and the backend snapshot store may no longer agree.
     fn remember(
         &mut self,
         actions: Vec<FaultAction>,
@@ -622,10 +623,10 @@ impl Live {
             else {
                 break;
             };
-            if let Some(victim) = self.snapshots.remove(&victim) {
-                self.session
-                    .drop_snapshot(victim.snap)
-                    .map_err(|error| format!("drop snapshot: {error}"))?;
+            if let Some(victim) = self.snapshots.remove(&victim)
+                && let Err(error) = self.session.drop_snapshot(victim.snap)
+            {
+                return Err(self.abandon("drop snapshot", &error));
             }
         }
         Ok(cached)
@@ -736,7 +737,8 @@ impl Live {
 
     /// Run the action at `index` to its horizon and snapshot the exact stopped
     /// endpoint, reporting the snapshot and its synchronized moment. A
-    /// snapshot failure abandons the live session with the control diagnostic.
+    /// snapshot or observation failure abandons the live session with the
+    /// control diagnostic.
     fn run_action(
         &mut self,
         index: usize,
@@ -767,7 +769,11 @@ impl Live {
         } else {
             None
         };
-        Ok((self.observe(stop)?, snap))
+        let observation = match self.observe(stop) {
+            Ok(observation) => observation,
+            Err(error) => return Err(self.abandon("observe", &error)),
+        };
+        Ok((observation, snap))
     }
 
     fn observe(&mut self, stop: FaultStop) -> Result<FaultObservations, String> {
