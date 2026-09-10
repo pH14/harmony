@@ -751,3 +751,12 @@ alphabet_continuation_v1 on the current milestone-stop binaries, requiring
 actual continuation jobs, replay and same-host/cross-host identity. A separately
 frozen fresh Bombs panel may follow a pass; no historical improvement or earlier
 milestone can replace that panel, confirmation, MM2 or untouched validation.
+
+CQ01 freezes the reused2,000-job/500k-frame native fixture on both hosts with
+unchanged binaries, one-to-six suffix and ordinary cutoff3 selector. Enable
+only alphabet_continuation_v1. Require actual bounded continuation dispatch,
+full replay, ARM buffer identity and cross-host post-header event identity.
+The three cells have180-second search,330-second process and1GiB output limits,
+8GiB archives and12GiB service memory, with an8M known-auxiliary ceiling. No
+fresh performance cell is registered. A failed qualification earns no retry
+or larger fixture; a pass returns to a separately frozen deeper-endpoint decision.

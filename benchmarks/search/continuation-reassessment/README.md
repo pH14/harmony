@@ -175,6 +175,16 @@ required. Recompute the completed evidence without emulation with:
 python3 -m unittest discover -s benchmarks/search/continuation-reassessment -p 'test_*.py' -v
 ```
 
+[CQ01](cq01-registration.json) now freezes that qualification: reused seed
+2026090902, two ARM buffer variants and one x86 cell, each capped at2,000 jobs,
+500k admitted frames and180 search seconds. The existing binaries, assets,
+8GiB archive, ordinary cutoff3 selector and one-to-six suffix stay fixed;
+only the existing `alphabet_continuation_v1` mixture is enabled. Full replay and
+actual fourth-reservation continuation dispatch are required. Each process has
+12GiB service memory,1GiB output and330 seconds including finishing; the ARM
+two-cell service has720 seconds and x86 has360. The separate known auxiliary
+ceiling is8M. No fresh search, retry or automatic larger fixture is registered.
+
 ## Ordering findings stay separate from this candidate
 
 Two new source fixtures expose existing limitations without changing policies:
