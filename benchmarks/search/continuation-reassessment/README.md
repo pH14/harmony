@@ -495,3 +495,11 @@ combined-feature builds; the eight logs and commands are in `pg01-source-checks.
 The archive-challenge caller can pin the projected root and explicit policy.
 No native qualification, conditional policy panel or fresh-search improvement
 has yet been measured for PG01.
+
+PG01 now has a separately registered, three-arm implementation qualification on ms02.
+The exact `ee3b0dae` feature build passed in18.4seconds without emulation. One fixed
+previously observed seed uses the RR02 boot prefix and root identity,250k frames
+and5000executions/arm,30seconds search and120seconds whole-process/arm. All arms
+share512MiB archive and4CPUs; the service is capped at450seconds/4GiB. See
+`pg01-registration.json`; actual alternatives and complete replay are mandatory.
+No native PG01 call has run at publication time, and no utility panel is allocated.

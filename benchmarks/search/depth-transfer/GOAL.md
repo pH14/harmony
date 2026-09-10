@@ -1194,3 +1194,16 @@ campaign replay. Only then decide on a matched ordinary/candidate/capacity-contr
 conditional boss-defeat panel. No fresh-policy development is allocated, MM2 has
 no projection yet, and the full boss/Wily goal remains active and unachieved.
 All ledgers and earlier failed gates are unchanged; msr1 remains unavailable.
+
+PG01 qualification is separately registered at 2026-09-10T20:53:40.752430+00:00; native work ends by
+2026-09-10T21:13:40.752430+00:00 and synthesis by 2026-09-10T21:33:40.752430+00:00.
+The exact published candidate built on ms02 in18.4seconds without emulation.
+Three fixed arms use one previously observed conditional encounter and seed,
+250k admitted frames and5000executions each, with30seconds search/120seconds
+whole-process and a450second4GiB service. All actual direct helper frames and
+admitted replay components are charged; missing engine counters stay unknown.
+Ordinary must admit no alternatives; both optional arms must activate and pass
+complete campaign/checkpoint and witness replay. First failure stops without
+retry. A pass earns a conditional-panel decision only; fresh search, independent
+confirmation, transfer and untouched validation remain unallocated. No native
+PG01 execution has occurred at registration publication time.

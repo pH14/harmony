@@ -1,0 +1,74 @@
+{
+  "format": "retention-pg01-registration-v1",
+  "registered_utc": "2026-09-10T20:53:40.752430+00:00",
+  "deadline_utc": "2026-09-10T21:13:40.752430+00:00",
+  "synthesis_deadline_utc": "2026-09-10T21:33:40.752430+00:00",
+  "host": "ms02",
+  "msr1": "reassigned; never accessed",
+  "source_commit": "ee3b0daed43d03fa797731827bfd6821c11fa682",
+  "binary": "/root/harmony-depth-transfer-20260909/builds/retention-progress-x86-001/metroid-archive-challenge", "binary_path_note": "# pragma: allowlist secret -- public local build path",
+  "binary_sha256": "051d33729ddc1cbfe3487a0bb0810a8212d6e6e460b955748af981b5c83d6ad9",
+  "build_info": "/root/harmony-depth-transfer-20260909/builds/retention-progress-x86-001/build-info.json",
+  "build_info_sha256": "f67fb473ae489fcb09eb434c982c9c9971fd5b0c2ec7ce2caf36ca3450ef7783",
+  "protocol": "/root/harmony-depth-transfer-20260909/protocol/pg01-20260910",
+  "protocol_sha256": {
+    "run_pg01.py": "5eb502b82c9d253011d67274c09ead99201691d449b6d9e51993382c94a63500",
+    "test_pg01.py": "b7531d04eb729130f3c2239f8df4f7731ddd222b6e523f6eb4bce041dce7d9e2",
+    "pg01-prefix.json": "5126eee64820c99697194dec63a20c44491ec7f913d49e77e4fefb97f4f319c5",
+    "pg01-design.md": "1f79abf74fabbfc055c3acd012dac945d8c56917687a188ee8dd58114bf87f43",
+    "pg01-ordinary-request.json": "7e0c46b0df8be59ff5aff6420f09b272412f419b7cafc795040afbfce70e345b",
+    "pg01-progress-request.json": "02aadadc4b232e35d7f5e9afa10aa79540ad03cffeeb57e54fc8f662a06e01bd",
+    "pg01-capacity-request.json": "daf26aec7e588a4c7c0e180a3e81650a48a4cff93e710d1a5e51bcc354a37149"
+  },
+  "output": "/root/harmony-depth-transfer-20260909/runs/retention-progress-pg01",
+  "service": "harmony-retention-progress-pg01-20260910.service",
+  "service_runtime_seconds": 450,
+  "cpus": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "cgroup_limits": {
+    "memory.max": "4294967296",
+    "memory.swap.max": "0",
+    "pids.max": "64"
+  },
+  "output_limit_bytes": 536870912,
+  "file_limit_bytes": 268435456,
+  "cells": [
+    {
+      "id": "ordinary",
+      "request": "pg01-ordinary-request.json",
+      "require_alternate": false,
+      "process_runtime_seconds": 120,
+      "max_drain_frames": 2880
+    },
+    {
+      "id": "progress",
+      "request": "pg01-progress-request.json",
+      "require_alternate": true,
+      "process_runtime_seconds": 120,
+      "max_drain_frames": 2880
+    },
+    {
+      "id": "capacity",
+      "request": "pg01-capacity-request.json",
+      "require_alternate": true,
+      "process_runtime_seconds": 120,
+      "max_drain_frames": 2880
+    }
+  ],
+  "admitted_search_frame_ceiling": 750000,
+  "max_total_inflight_drain_frames": 8640,
+  "direct_helper_frame_ceiling": 6000000,
+  "inferred_admitted_replay_component_ceiling": 758640,
+  "physical_cost_limitations": "These are component ceilings, not a measured total-physical bound. Engine setup, unadmitted work and reconstruction frames are not fully exposed; process and service wall limits bound omitted work. Count direct setup once within direct frames. No new missing-counter category is treated as zero.",
+  "scope": "One previously observed seed at the normally reconstructed RR02 encounter, for implementation qualification only; not fresh search, independent confirmation or a utility panel.",
+  "gate": "All three fixed arms complete within bounds, root projection agrees without changing state/clock, full campaign and checkpoint replay match, local and complete-prefix witnesses match. Progress and capacity arms each require positive alternative_admissions; ordinary requires zero. Stop at first failure; no retry, different root, seed, parameter or horizon. A pass earns only a separate conditional boss-defeat panel decision.",
+  "ledger_before": {
+    "admitted_search": 2982484247,
+    "known_auxiliary": 68383589
+  },
+  "old_allocations": "All previous failed gates and native allocations remain closed. PG01 adds a distinct finite qualification allocation; no fresh-policy panel is allocated."
+}
