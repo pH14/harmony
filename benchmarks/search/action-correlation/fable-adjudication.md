@@ -71,9 +71,20 @@ from these artifacts. Do not reconstruct the 33.9M control or repeat B01 just
 to obtain a final census: it would spend substantial auxiliary work and still
 not answer the historical generation/retention question.
 
+The evaluator source explains the artifact gap: `evaluate` already receives a
+snapshot checkpoint from the campaign engine, but writes it only in full
+campaign-verification mode, which is capped at 5,000 executions. It also removes
+archive entries from the compact report. A future snapshot-export option could
+preserve cached states without replaying a long campaign; snapshots alone would
+still not reconstruct omitted archive metadata or historical admission. No such
+option has been implemented or added to the frozen P01 runs.
+
 The source audit found that the existing named-progress aggregate already
-includes live observations at collected action boundaries on all admitted
-actions, independent of candidate retention. All six D01 cells have no recorded
+includes live observations emitted at spatial-bucket/death transitions and
+action endpoints within admitted actions, independent of candidate retention.
+Cartridge data and the named event's route stamp describe the action endpoint;
+they do not establish the exact within-action pickup time. All six D01 cells
+have no recorded
 Bombs or boss-area entry before their stops. The inventory of 43 longer saved
 campaigns includes boss-area entry without defeats; these mixed protocols are
 context, not an independent comparison. Adding another area counter would not

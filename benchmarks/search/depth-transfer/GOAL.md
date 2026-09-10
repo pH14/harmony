@@ -205,8 +205,10 @@ between missing evidence, final cached states, and states ever observed or
 retained.
 
 The source audit found that the existing named-progress aggregate already covers
-live collected action-boundary observations throughout admitted work, independent
-of retention. No D01 cell recorded Bombs or boss-area entry before its stop.
+live observations emitted at spatial-bucket/death transitions and action endpoints
+throughout admitted work, independent of retention. Cartridge data and named
+route stamps have action-endpoint timing. No D01 cell recorded Bombs or boss-area
+entry before its stop.
 The proposed long Ridley-area tape is exactly the completed NQ02 fixture, whose
 context and restore passes have zero classified frames. Do not spend another
 replay or add area counters to duplicate those measurements. No observer change
@@ -245,3 +247,30 @@ MM2 transfer and later-depth decision, not an assumption that energy-tank gains
 cause boss progress. Untouched validation still requires qualified development
 at the useful target and complete affordable matched panels. The original full
 matched-control boss/Wily goal remains active and unachieved.
+
+## Decision after P01
+
+Independent persistence confirmation failed: one loss and one censored tie,
+zero strict wins. Both first-wave pairs are complete and both services are
+terminal; pairs 2/3 remain unrun. The unchanged operator earns no transfer,
+later-depth comparison, parameter tuning or further precursor panel. Preserve
+its earlier exploratory wins without pooling them into the confirmation score.
+P01 used 195,200,111 admitted search and 430,820 known auxiliary frames. The
+cumulative resumed totals are 842,318,922 and 45,340,219 respectively; see
+../action-correlation/ledger-after-p01.json for separate closed budgets and gaps.
+
+Move the next bounded task to the precise observation gap in
+endpoint-encounter-contract.md. First establish the same-boundary RAM and
+producing-snapshot premises with source and planted within-action, death and
+missing-sample counterexamples. Existing intermediate observations combine
+earlier WRAM with endpoint cartridge data, so they cannot supply a same-time
+boss context. A minimal endpoint-only report can answer whether an admitted
+live endpoint generated a classified encounter; it cannot establish capability,
+retention history, current recoverability or exact lifetime damage.
+
+This is a narrow reporting design and qualification decision, not permission for
+a new large search panel or another observer/reference sweep. No game route,
+reward, archive key, selection bonus or controller update may use the diagnostic.
+Do not build a general telemetry framework. A first positive native episode must
+replay before it can earn a separate bounded local-combat experiment. Keep the
+original matched-control boss/Wily and untouched-validation objective intact.

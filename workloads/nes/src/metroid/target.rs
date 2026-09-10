@@ -859,7 +859,7 @@ mod observation_tests {
         )
         .unwrap();
         assert!(!legacy[0].dead);
-        let (corrected, _) = decode_action_observations_with_policy(
+        let (corrected, stopped_wram) = decode_action_observations_with_policy(
             &[underflow, cleared],
             &cartridge,
             &initial,
@@ -871,6 +871,9 @@ mod observation_tests {
         assert!(corrected[0].dead);
         assert_eq!(corrected[0].frame_count, 1);
         assert_eq!(corrected[0].decoded.health, 9800);
+        // An early terminal observation is not the completed chord's RAM.
+        assert_eq!(stopped_wram, underflow);
+        assert_ne!(stopped_wram, cleared);
         for (high, low) in [(0x69, 0x99), (0x19, 0x99), (0, 0x12)] {
             let mut live = start;
             live[HEALTH_HIGH] = high;
@@ -899,6 +902,74 @@ mod observation_tests {
             );
         }
         assert!(MetroidTerminalPolicy::parse("death_or_ending_v999").is_err());
+    }
+
+    #[test]
+    fn endpoint_context_must_not_pair_earlier_wram_with_final_cartridge() {
+        use crate::metroid::{boss_interval::classify, boss_probe::decode_context};
+
+        let mut earlier = [0; WRAM_SIZE];
+        earlier[GAME_MODE] = GAME_MODE_PLAYING;
+        earlier[HEALTH_HIGH] = 3;
+        earlier[AREA] = 0x14;
+        earlier[0x40f] = 0x40; // Stale boss attribute in an inactive slot.
+        let inactive = [0; 8192];
+        let initial = MetroidTarget::make_observation(
+            100,
+            decode_state(&earlier, &inactive).unwrap(),
+            &earlier,
+            &earlier,
+            BossDefeats::default(),
+            TourianEvents::default(),
+        );
+        let prior_wram = earlier;
+        earlier[SAMUS_X] = 32;
+        let mut final_wram = earlier;
+        final_wram[0x40f] = 0; // A different, ordinary enemy now occupies it.
+        final_wram[SAMUS_X] = 64;
+        let mut final_cartridge = inactive;
+        final_cartridge[0xaf4] = 1;
+
+        assert!(classify(&decode_context(&earlier, &inactive).unwrap(), 0).is_none());
+        assert!(classify(&decode_context(&final_wram, &final_cartridge).unwrap(), 0).is_none());
+        // Neither real boundary has a boss, but the mixed-time pair fabricates one.
+        assert!(classify(&decode_context(&earlier, &final_cartridge).unwrap(), 0).is_some());
+
+        let (observations, cached_wram) = decode_action_observations_with_policy(
+            &[earlier, final_wram],
+            &final_cartridge,
+            &initial,
+            prior_wram,
+            MetroidTerminalPolicy::BcdUnderflow,
+        )
+        .unwrap();
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0].frame_count, 101);
+        assert_eq!(observations.last().unwrap().frame_count, 102);
+        assert!(!observations.last().unwrap().dead);
+        assert_eq!(cached_wram, final_wram);
+        assert!(classify(&decode_context(&cached_wram, &final_cartridge).unwrap(), 0).is_none());
+
+        let (empty, unchanged) = decode_action_observations_with_policy(
+            &[],
+            &final_cartridge,
+            &initial,
+            prior_wram,
+            MetroidTerminalPolicy::BcdUnderflow,
+        )
+        .unwrap();
+        assert!(empty.is_empty());
+        assert_eq!(unchanged, prior_wram); // No newly sampled endpoint exists.
+        assert!(
+            decode_action_observations_with_policy(
+                &[final_wram],
+                &[],
+                &initial,
+                prior_wram,
+                MetroidTerminalPolicy::BcdUnderflow,
+            )
+            .is_err()
+        );
     }
 
     #[test]

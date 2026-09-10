@@ -1,0 +1,65 @@
+{
+  "format": "action-persistence-p01-completed-pair-v1",
+  "recorded_utc": "2026-09-10T01:20:26.857844+00:00",
+  "pair": 1,
+  "registration_sha256": "1caeb28034777c26db03b6f4517bcbc2e282b65c322f7b5a64571853fce4bc2a",
+  "raw_sha256": "f73c4fd8a34fb85c6702a5eb6579341e191a5369eab205e89959aa822fe850b8",
+  "records": [
+    {
+      "id": "p01-pair-1-whole",
+      "admitted_search_frames": 50001010,
+      "known_auxiliary_frames": 109928,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": null,
+        "observed_through_frames": 50001010,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          50000000,
+          50000000
+        ]
+      },
+      "cpu_seconds": 1129.790053,
+      "elapsed_seconds": 357.2136431169929
+    },
+    {
+      "id": "p01-pair-1-ordinary",
+      "admitted_search_frames": 50000954,
+      "known_auxiliary_frames": 97986,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": null,
+        "observed_through_frames": 50000954,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          50000000,
+          50000000
+        ]
+      },
+      "cpu_seconds": 1134.374439,
+      "elapsed_seconds": 355.22199328499846
+    }
+  ],
+  "actual_admitted_search_frames": 100001964,
+  "known_auxiliary_frames": 207914,
+  "decision": "Both arms censored at 50M; one completed tie. The first-wave gate awaits pair 0; pairs 2/3 remain unrun.",
+  "validated_with": {
+    "master_registration_sha256": "32c857b6fd23ff78f54240d8b12d18f7e3c92d856aecfe8e1d46245a947a1731",
+    "scorer_sha256": "a68eac1b6677a37a2326bcffe38b7e198238f862308ae14006d707b6a57d0d63",
+    "scope": "Frozen host, build, policy, endpoint and complete-record checks passed. The ordered panel score awaits pair 0."
+  }
+}

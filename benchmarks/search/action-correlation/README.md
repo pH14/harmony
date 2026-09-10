@@ -1,9 +1,8 @@
 # Changing one control component at a time
 
-The component-refresh candidate failed its registered gate after two seeds.
-Its matched whole-command control reached the energy tank on both seeds while
-ordinary actions were censored; that exploratory result requires a separate
-prospective confirmation. The earlier depth-transfer gate also failed, and the
+Both action proposals are closed after failed gates. Component refresh failed
+D01; its matched whole-command control's two exploratory energy-tank wins did
+not survive the independent P01 confirmation. The earlier depth-transfer gate also failed, and the
 qualified E03 diagnostic found no classified encounter in eight selected tapes.
 These findings do not establish campaign-wide absence or explain the causal
 failure. Retention, parent selection, observations, terminal semantics and fresh
@@ -202,11 +201,15 @@ mathematics and useful game progress, resolves two suspected implementation
 gaps by source inspection, and rejects overly strong inferences from an empty
 final archive or a single damaging continuation.
 
-The existing named-progress aggregate observes live collected action boundaries
-throughout admitted work, including observations on rejected candidates. It is
-not restricted to the final witness or archive. None of the six D01 cells has a
-recorded Bombs or boss-area observation before its stop. This is a scoped
-negative measurement, not absence on every physical frame or later in a run.
+The existing named-progress aggregate consumes live observations emitted at
+spatial-bucket/death transitions and action endpoints throughout admitted work,
+including observations on rejected candidates. Cartridge data is sampled at
+the action endpoint and applied when decoding these observations; the named
+event's route stamp is the action end, not an exact within-action pickup time.
+The aggregate is not restricted to the final witness or archive. None of the
+six D01 cells has a recorded Bombs or boss-area observation before its stop.
+This is a scoped negative measurement, not absence on every physical frame or
+later in a run.
 The [43-run inventory](long-campaign-inventory-ms02.json) includes longer prior
 campaigns that did reach boss areas without recorded defeats. Different horizons,
 policies and reused seeds must not be pooled into a new performance comparison.
@@ -244,6 +247,27 @@ futility, identity corruption and cost preservation after measurement failure.
 They execute no emulator and are explicitly synthetic, not P01 measurements.
 A pass earns a separately registered transfer/depth decision, not a boss/Wily
 claim. A failure closes the proposal without tuning or another precursor panel.
+
+The [completed first wave](p01-analysis.json) fails confirmation:
+
+| Fresh seed / host | Ordinary | Whole-command persistence | Paired result |
+| --- | --- | --- | --- |
+| `3483428449` / msr1 | 45,196,579 | Censored at 50M | Loss |
+| `1805348997` / ms02 | Censored at 50M | Censored at 50M | Tie |
+
+All four cells verify and finish normally. Zero strict wins in two pairs makes
+three wins in four impossible. Pairs 2/3, persistence transfer, later-depth
+comparisons and untouched validation remain unrun. The historical
+[first completed pair](p01-after-pair1.json) is preserved separately. The two
+favorable D01 observations remain exploratory; they cannot rescue this gate.
+No repeat-probability tuning or extra precursor panel follows from this failure.
+
+P01 spends **195,200,111 admitted search and 430,820 known auxiliary frames**.
+The [closed ledger](ledger-after-p01.json) separates its budget from the previous
+block and records cumulative totals since the user's resumption of
+**842,318,922 admitted search and 45,340,219 known auxiliary frames**, plus the
+explicit unmeasured gaps. Both hosts' P01 services are terminal. The original
+boss/Wily objective remains unachieved.
 
 Registrations freeze verifier bytes as well as native builds. To reproduce
 Q01/Q02, use `verify_native.py` from commit `8e390f3b`; QX01 uses the revision at
