@@ -19,16 +19,16 @@ fn sha(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 fn bounded_read(path: &Path) -> Result<Vec<u8>> {
-    if fs::metadata(path)?.len() > 32 * 1024 * 1024 {
-        return Err("input exceeds 32 MiB".into());
+    if fs::metadata(path)?.len() > 64 * 1024 * 1024 {
+        return Err("input exceeds 64 MiB".into());
     }
     Ok(fs::read(path)?)
 }
 fn decode(bytes: &[u8]) -> Result<SnapshotCheckpoint<MetroidSnapshot>> {
     let result =
         SnapshotCheckpoint::<MetroidSnapshot>::from_bytes(bytes, SNAPSHOT_CHECKPOINT_FORMAT)?;
-    if result.entries.is_empty() || result.entries.len() > 1000 {
-        return Err("expected 1..1000 cached snapshots".into());
+    if result.entries.is_empty() || result.entries.len() > 2048 {
+        return Err("expected 1..2048 cached snapshots".into());
     }
     let ids: BTreeSet<_> = result.entries.iter().map(|e| e.id).collect();
     if ids.len() != result.entries.len() {

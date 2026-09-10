@@ -428,7 +428,8 @@ reads each cached snapshot at the same paused boundary. Every restore/read must
 preserve the entire snapshot and the physical frame counter. No actions or
 search run; only one ordinary 929-frame constructor setup is permitted.
 
-Inputs are limited to 32 MiB each and 1,000 unique checkpoint entries. Existing
+Inputs are limited to 64 MiB each and 2,048 unique checkpoint entries, accommodating
+the saved million-frame diagnostic checkpoints without raising search limits. Existing
 outputs are refused. Register external process, wall and file limits before
 native inspection. Raw HP is a state observation, not lifetime damage. Active
 membership needs the producing run's exact replacement/retirement semantics
