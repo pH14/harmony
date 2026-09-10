@@ -272,3 +272,39 @@ frames. Engine setup, unadmitted work and reconstruction gaps remain explicit.
 No performance-search allocation, matched-control gain or fresh victory is
 claimed. This result earns inspection of the existing retained evidence before
 a policy choice; no retry, larger sweep or another selected root follows.
+
+## CI01: the ordinary archive retained and revisited lower-HP boss states
+
+The [paused inspection](ci01-decision.md) finishes in **1.02 seconds** with
+44.9 MiB peak child RSS. All 589 restores (588 cached entries plus the qualified
+E01 control) preserve the entire snapshot and physical clock. Actual work is
+**929 setup frames, zero gameplay actions**. The service is terminal. Native
+metadata exactly matches the independent local typed inventory.
+
+The source-backed active mapping identifies 557 representatives and 31 inactive
+cached snapshots. Among 166 classified active endpoints, boss HP is 140 at 160,
+139 at 3, and 131, 130, 129 at one each. All six endpoints below140 have unchanged
+health 79 and zero missiles. The five classified inactive cached snapshots all
+have HP 140. Missing historical snapshots and rejected endpoints remain unknown;
+HP is a snapshot-local observation, not exact lifetime damage.
+
+The [recomputable analysis](ci01-analysis.json) joins the six active IDs to the
+recorded stream. They receive 27 later jobs; the HP 129 state receives four and
+none produces a retention candidate. The chain 530→978→979→982 has recorded
+parent links and HP 139→131→130→129. Full AP01 replay already passed; CI01 adds
+no new search or witness trajectory. This establishes retained and revisited
+lower-HP states, while leaving the cause of failed continuation unresolved.
+
+[The scorer](score_checkpoint_inspection.py) refuses the active inference if
+snapshots are missing, entries dropped, the input cap binds, or the fixed policy
+preconditions change. Its tests also keep unclassified/HP255 states unavailable.
+All 21 endpoint evidence tests pass; the new Rust decoder's malformed-format /
+duplicate-ID check and strict all-feature Clippy pass. Compressed exact records
+are in `ci01-output/`. [The ledger](ledger-after-ci01.json) closes at
+1,083,261,532 resumed admitted search and **52,196,349 known auxiliary frames**;
+earlier unknown physical-work gaps remain separate.
+
+The [next candidate](next-mechanism.md) is a bounded local retry after an ordinary
+terminal action. An exact finite model includes both a favorable aliasing case
+and an alive-trap counterexample. It earns only a bounded source/fixture decision;
+no new native panel or policy promotion is allocated by this census.

@@ -1,0 +1,15 @@
+{
+  "format": "metroid-ci01-closed-ledger-v1",
+  "prior_ledger_sha256": "a7432fbbc47d2e1c8e76192074912f8a48362d2078bb7c766b3af0e6abc7c212",
+  "registration_sha256": "ab71ba007b55807c8a39dca77c2d16242b10aa8a8d9f5100a49c47e3e7a17c05",
+  "block_known_auxiliary_ceiling": 1000,
+  "block_known_auxiliary_frames": 929,
+  "direct_setup_frames": 929,
+  "continuation_frames": 0,
+  "new_search_frames": 0,
+  "cumulative_since_user_resumption_admitted_search_frames": 1083261532,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 52196349,
+  "outcome": "All 589 paused restores and the original positive control pass. Six active endpoints have classified HP below140; minimum129. No new gameplay actions or fresh gain.",
+  "unknown": "Earlier engine setup, unadmitted work and reconstruction gaps remain unknown; the CI01 instance physical counter covers all its 929 frames.",
+  "old_expired_tranche": "489,962,470 admitted search and 30,112,297 known auxiliary frames remain frozen and excluded from these renewed totals."
+}

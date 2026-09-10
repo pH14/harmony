@@ -470,3 +470,26 @@ or continuation. Current HP differences are state observations, not exact
 lifetime damage or proof that a discarded state was better. Reopen a policy
 only with a concrete causal distinction and cheap falsifier, then the original
 matched-work development/independent/transfer gates. Keep all work in PR #287.
+
+## CI01 closed; one bounded local-retry feasibility decision
+
+CI01 reads the existing AP01 checkpoint in 1.02 seconds, with 589 verified paused
+restores, 929 setup frames and zero action execution. It identifies557 active
+states: six have classified boss HP below 140, including 129. All six have
+health 79 and zero missiles. The HP 129 state receives four recorded follow-up
+jobs  / 179 frames, all without retention candidates. Full prior campaign replay
+passes. This is retained/revisited conditional progress, not a fresh defeat or
+proof of the global bottleneck. The service is terminal. Cumulative resumed
+accounting is 1,083,261,532 admitted search and 52,196,349 known auxiliary frames.
+
+Follow ../endpoint-encounter/next-mechanism.md for exactly one bounded next
+source/model decision: an opt-in local retry after a normal workload-terminal
+action, using the preceding live snapshot, with all failed work charged and
+errors preserved. The exact finite model has both a favorable aliasing case
+and an adverse alive-trap case; q is not fitted to native observations. Spend
+at most 45 minutes on existing-contract feasibility and a meaningful generic
+fixture. Reject a broad replay rewrite or an already implemented mechanism.
+No emulator allocation, new root, fresh panel, parameter sweep or policy
+promotion exists yet. A qualified implementation still needs a prospectively
+frozen cheap matched-work falsifier, then the original independent/transfer/
+untouched gates. Do not interpret this diagnostic or model as goal completion.

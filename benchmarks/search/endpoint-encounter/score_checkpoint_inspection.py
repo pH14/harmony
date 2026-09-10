@@ -97,6 +97,7 @@ def score(protocol, output):
     assert process['returncode'] == 0 and process['stop_reason'] is None
     assert process['wall_seconds'] <= registration['wall_seconds']
     assert report['request_sha256'] == sha(request_bytes) == registration['request_sha256']
+    assert sha(raw(output, 'ci01-inventory.json')) == registration['local_inventory_sha256']
     assert report['checkpoint_sha256'] == q['checkpoint_sha256'] == inventory['checkpoint_sha256']
     assert report['origin_sha256'] == q['origin_sha256']
     assert report['positive_control'] == q['expected_root_context']
@@ -113,13 +114,33 @@ def score(protocol, output):
     stream = [json.loads(line) for line in raw(ap, 'stream.jsonl').splitlines()]
     sidecar = json.loads(raw(ap, 'progress.jsonl').splitlines()[-1])
     active, max_actions = active_ids(rows, stream, sidecar)
+    active_summary = describe([r for r in rows if r['id'] in active])
+    created, parent, selected = {0: 0}, {0: None}, defaultdict(list)
+    for job in stream[1:]:
+        selected[job['parent_id']].append(job)
+        for d in job['decisions']:
+            if d['decision'] == 'retained' and d['id'] not in created:
+                created[d['id']], parent[d['id']] = job['sequence'], job['parent_id']
+    exposure = []
+    by_id = {r['id']: r for r in rows}
+    for entry_id in active_summary['entries_with_classified_hp_below_root_140']:
+        jobs = selected[entry_id]
+        exposure.append({'id': entry_id, 'created_execution': created[entry_id],
+                         'parent_id': parent[entry_id], 'state': by_id[entry_id]['state'],
+                         'route_frame': by_id[entry_id]['frame_count'],
+                         'selection_executions': [j['sequence'] for j in jobs],
+                         'admitted_selection_frames': sum(j['frames'] for j in jobs),
+                         'jobs_with_no_retention_candidates': sum(not j['decisions'] for j in jobs),
+                         'jobs_with_rejected_candidates_only': sum(bool(j['decisions']) and all(d['decision'] == 'rejected' for d in j['decisions']) for j in jobs),
+                         'new_retained_children': sorted({d['id'] for j in jobs for d in j['decisions']
+                                                         if d['decision'] == 'retained' and parent[d['id']] == entry_id})})
     return {'format': 'metroid-ci01-analysis-v1', 'registration_sha256': sha(raw(protocol, 'ci01-registration.json')),
             'checkpoint_sha256': q['checkpoint_sha256'],
             'context_report_sha256': sha(raw(output, 'ci01-context.json')),
             'direct_physical_frames': 929, 'continuation_frames': 0,
             'active_inference': 'Latest admitted stable ID per cell under the source-backed CI01 preconditions.',
             'max_input_action_upper_bound': max_actions, 'active_ids': sorted(active),
-            'active': describe([r for r in rows if r['id'] in active]),
+            'active': active_summary, 'below_root_hp_exposure': exposure,
             'inactive_cached': describe([r for r in rows if r['id'] not in active]),
             'limits': ['Snapshot-local HP, not continuous episode damage or lifetime progress.',
                        'Historical uncached/rejected endpoints remain unmeasured.',
