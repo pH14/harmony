@@ -4,14 +4,15 @@
 //! covered by the package's own tests and the Linux acceptance job.
 
 use super::{
-    Command, Common, ExportArgs, InspectArgs, RunArgs, branches, describe_workspace, findings,
-    humanize, inspect, is_scalar, render, resolve_moment, run, run_bound, write_text,
+    Command, Common, DEFAULT_EXEC_NANOS, ExecArgs, ExportArgs, InspectArgs, RunArgs, branches,
+    describe_workspace, exec_request, findings, humanize, inspect, is_scalar, render,
+    resolve_moment, run, run_bound, write_text,
 };
 use faults_workload::declarations::Declarations;
 use faults_workload::target::{FaultAction, FaultObservations};
 use faults_workload::workspace::{
-    Branch, EvidenceRecord, Finding, History, MomentRecord, Record, RequestRecord, StopReason,
-    Workspace, WorkspaceFacts,
+    Branch, EvidenceRecord, Finding, History, MomentRecord, Record, RequestRecord, Selector,
+    StopReason, Workspace, WorkspaceFacts,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -399,6 +400,100 @@ fn a_watched_condition_parses_into_the_bound() {
     assert!(bound.until.is_some());
     assert!(bound.extend);
     assert_eq!(bound.wall_seconds, 12);
+}
+
+#[test]
+fn exec_branch_request_preserves_argv_and_bounds() {
+    let request = exec_request(&ExecArgs {
+        branch: Some("trace".to_owned()),
+        at: None,
+        within: Some("250ms".to_owned()),
+        extend: true,
+        wall_seconds: 12,
+        request_id: Some("diagnostic-1".to_owned()),
+        argv: vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "printf '%s\\n' 'literal; $HOME'".to_owned(),
+        ],
+    })
+    .expect("a branch command request");
+    assert_eq!(request.target, Selector::BranchHead("trace".to_owned()));
+    assert!(!request.probe);
+    assert_eq!(request.bound.within_nanos, 250_000_000);
+    assert!(request.bound.extend);
+    assert_eq!(request.bound.wall_seconds, 12);
+    assert_eq!(request.bound.until, None);
+    assert_eq!(request.request_id.as_deref(), Some("diagnostic-1"));
+    assert_eq!(
+        request.argv,
+        vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "printf '%s\\n' 'literal; $HOME'".to_owned(),
+        ],
+        "argv is copied literally without a shell round trip"
+    );
+}
+
+#[test]
+fn exec_at_always_marks_a_probe_including_branch_head() {
+    let finding = exec_request(&ExecArgs {
+        branch: None,
+        at: Some("bug-1".to_owned()),
+        within: None,
+        extend: false,
+        wall_seconds: 30,
+        request_id: None,
+        argv: vec!["true".to_owned()],
+    })
+    .expect("a finding probe");
+    assert_eq!(finding.target, Selector::Finding("bug-1".to_owned()));
+    assert!(finding.probe);
+    assert_eq!(finding.bound.within_nanos, DEFAULT_EXEC_NANOS);
+
+    let head = exec_request(&ExecArgs {
+        branch: None,
+        at: Some("trace@head".to_owned()),
+        within: None,
+        extend: false,
+        wall_seconds: 30,
+        request_id: None,
+        argv: vec!["true".to_owned()],
+    })
+    .expect("a branch-head probe");
+    assert_eq!(head.target, Selector::BranchHead("trace".to_owned()));
+    assert!(
+        head.probe,
+        "--at is a probe even when it names a branch head"
+    );
+}
+
+#[test]
+fn exec_requires_exactly_one_target_form() {
+    let error = exec_request(&ExecArgs {
+        branch: Some("trace".to_owned()),
+        at: Some("bug-1".to_owned()),
+        within: None,
+        extend: false,
+        wall_seconds: 30,
+        request_id: None,
+        argv: vec!["true".to_owned()],
+    })
+    .expect_err("branch and --at are exclusive");
+    assert!(error.to_string().contains("not both"), "{error}");
+
+    let error = exec_request(&ExecArgs {
+        branch: None,
+        at: None,
+        within: None,
+        extend: false,
+        wall_seconds: 30,
+        request_id: None,
+        argv: vec!["true".to_owned()],
+    })
+    .expect_err("a target is required");
+    assert!(error.to_string().contains("--at"), "{error}");
 }
 
 #[test]

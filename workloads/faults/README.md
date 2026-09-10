@@ -27,9 +27,14 @@ change the action alphabet or execution commands.
 alphabet, and assembles a guest initramfs: the base image, the OCI rootfs, and
 a control member holding the static fault agent and this package's init. The
 init mounts the pseudo-filesystems, binds and chroots into the workload rootfs,
-and execs the agent. The control member is appended after the compressed
-members and padded to four bytes, which Linux initramfs requires before a raw
-`newc` header.
+and execs the agent. Before the agent starts, init copies the base image's
+static BusyBox into the workload root and supervises an interactive shell in
+that same chroot, attached to `/dev/console` for durable serial `exec` input.
+Shell setup retries are delayed and bounded; repeated failure logs an
+explicit diagnostic and exits the shell supervisor, leaving the missing command
+channel visible to the caller. The control member is appended after the
+compressed members and padded to four bytes, which Linux initramfs requires
+before a raw `newc` header.
 
 ## Actions
 
@@ -112,12 +117,28 @@ property meanings without inferring a verdict from a silent assertion.
 
 The CLI publishes this workspace after a search or replay. A replay retains
 its first reproduced finding from that run's actual observations and state
-digest. [`investigate`](src/investigate.rs) implements `fork` and bounded `run`:
+digest. [`investigate`](src/investigate.rs) implements `fork`, bounded `run`, and
+`exec`:
 it verifies a restored source before advancing, then captures the checkpoint,
 hash, console, and SDK evidence for one endpoint and commits them with the
 branch head and reply. A committed request ID is bound to its arguments and is
 checked before artifact preparation or VM boot. Legacy hash encodings remain
 explicit in retained records.
+
+An `exec` publishes its command identity, actual exit status (or pending/aborted
+state), and output evidence with the same immutable moment. Later `run` and
+`fork` operations retain that command through the physical checkpoint without
+reinjecting it. A new command is rejected while one remains pending. A probe
+opens its source privately and publishes its new branch only with the command
+result; even `--at branch@head` leaves the source branch unchanged. Older
+journals remain readable, but legacy pending-command metadata without a
+verifiable physical tracker cannot be resumed.
+
+Prepared images retain the pre-shell init layout as a compatible encoder. When
+a workspace supplies an image hash, preparation selects only a layout that
+reproduces those exact bytes; changed base, workload, or agent bytes still fail
+the pin check. New searches use the diagnostic-shell layout. Older images
+remain runnable but do not acquire a shell through continuation.
 
 An `--until` condition considers only new reports. Assertion failures stop at
 their SDK boundary; other reports are observed at the enclosing action-segment

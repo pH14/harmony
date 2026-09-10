@@ -15,13 +15,17 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod command;
+pub use command::{exec, retry_exec};
+
 use crate::{
     package::StateHashEncoding,
     retained::RetainedContinuation,
     target::{FaultAction, FaultObservations, FaultStop},
     workspace::{
-        Branch, EvidenceRecord, Finding, History, MomentRecord, PendingCommand, Record, Selector,
-        StopReason, Workspace, WorkspaceFacts,
+        Branch, CommandCompletion, CommandInvocation, CommandRecord, EvidenceRecord, Finding,
+        History, MomentRecord, PendingCommand, Record, Selector, StopReason, Workspace,
+        WorkspaceFacts,
     },
 };
 
@@ -137,6 +141,8 @@ pub struct CapturedEndpoint {
     pub console: Vec<u8>,
     /// SDK reports in stream order.
     pub events: Vec<SdkEventRecord>,
+    /// Command state and captured output from this same stopped endpoint.
+    pub command: Option<control_proto::ExecStatus>,
 }
 
 /// The live guest operations investigation needs.
@@ -161,6 +167,11 @@ pub trait Continuation {
 
     /// Advance the current point under a virtual and host bound.
     fn advance(&mut self, bound: &Advance) -> Result<Endpoint, String>;
+
+    /// Inject a command once at the current stop without advancing guest time.
+    fn start_command(&mut self, _argv: &[String]) -> Result<control_proto::ExecStatus, String> {
+        Err("this continuation does not support guest commands".to_owned())
+    }
 
     /// Capture checkpoint, state hash, console, and SDK events at one point.
     fn capture(&mut self) -> Result<CapturedEndpoint, String>;
@@ -187,6 +198,21 @@ pub struct RunRequest {
     /// Branch to advance.
     pub branch: String,
     /// Virtual/host bound.
+    pub bound: Advance,
+    /// Caller-supplied idempotency key.
+    pub request_id: Option<String>,
+}
+
+/// A command on a named branch, or an isolated probe of an immutable source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecRequest {
+    /// Branch head to mutate, or source to probe when `probe` is true.
+    pub target: Selector,
+    /// Preserve the source and publish a separate probe branch on success.
+    pub probe: bool,
+    /// Exact argument vector; shell expressions require an explicit shell.
+    pub argv: Vec<String>,
+    /// Virtual and host bounds on command advancement.
     pub bound: Advance,
     /// Caller-supplied idempotency key.
     pub request_id: Option<String>,
@@ -223,6 +249,9 @@ pub struct Outcome {
     pub truncated: bool,
     /// Whether this reply came from a committed request retry.
     pub replayed_request: bool,
+    /// Last retained command at this endpoint, including its actual completion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<crate::workspace::CommandRecord>,
     /// Suggested next read/run commands.
     pub next: Vec<String>,
 }
@@ -322,6 +351,7 @@ pub fn fork(
 
     if source.retained || request.rewind_nanos == 0 {
         validate_source_match(&captured, &source)?;
+        command::validate_restored_command(workspace, &captured, source.command.as_ref())?;
     } else if captured.endpoint.virtual_time > source.endpoint.virtual_time {
         return Err(format!(
             "rewound fork {} stopped at {}, after its source finding at {}",
@@ -345,7 +375,10 @@ pub fn fork(
         workspace,
         branch,
         &request.name,
-        captured,
+        Publication {
+            captured,
+            invocation: source.command.map(|command| command.invocation),
+        },
         "fork",
         request.request_id.as_deref(),
         request_fingerprint,
@@ -370,7 +403,6 @@ pub fn run(
         .branch(&request.branch)
         .ok_or_else(|| unknown_branch(workspace, &request.branch))?
         .clone();
-    reject_pending(&branch)?;
     let source_moment = workspace
         .moment(&branch.head)
         .ok_or_else(|| {
@@ -406,6 +438,8 @@ pub fn run(
         .into());
     }
 
+    command::validate_restored_command(workspace, &restored, source_moment.command.as_ref())?;
+    command::validate_pending_branch(&branch, source_moment.command.as_ref())?;
     let bound = normalize_advance(&request.bound);
     let returned = engine
         .advance(&bound)
@@ -420,7 +454,10 @@ pub fn run(
         workspace,
         branch,
         &request.branch,
-        captured,
+        Publication {
+            captured,
+            invocation: source_moment.command.map(|command| command.invocation),
+        },
         "run",
         request.request_id.as_deref(),
         request_fingerprint,
@@ -594,6 +631,24 @@ fn validate_capture(
     actions: &[FaultAction],
 ) -> Result<(), Box<dyn Error>> {
     let endpoint = &captured.endpoint;
+    if let Some(command) = &captured.command {
+        if command.at.0 != endpoint.virtual_time {
+            return Err("command capture names a different endpoint".into());
+        }
+        let completed_at = match command.completion {
+            control_proto::ExecCompletion::Pending => None,
+            control_proto::ExecCompletion::Exited { at, .. }
+            | control_proto::ExecCompletion::Aborted { at } => Some(at.0),
+        };
+        if completed_at.is_some_and(|at| at > endpoint.virtual_time) {
+            return Err("command completion is after the captured endpoint".into());
+        }
+        if endpoint.stop == StopReason::CommandComplete && completed_at.is_none() {
+            return Err("command-complete stop has a pending command".into());
+        }
+    } else if endpoint.stop == StopReason::CommandComplete {
+        return Err("command-complete stop has no retained command".into());
+    }
     if endpoint.observations.moment != endpoint.virtual_time {
         return Err(format!(
             "capture observations name moment {}, endpoint is {}",
@@ -664,15 +719,24 @@ fn validate_capture(
     Ok(())
 }
 
+struct Publication {
+    captured: CapturedEndpoint,
+    invocation: Option<CommandInvocation>,
+}
+
 fn commit_endpoint(
     workspace: &mut Workspace,
     mut branch: Branch,
     branch_name: &str,
-    captured: CapturedEndpoint,
+    publication: Publication,
     operation: &str,
     request_id: Option<&str>,
     request_fingerprint: Option<String>,
 ) -> Result<Outcome, Box<dyn Error>> {
+    let Publication {
+        captured,
+        invocation,
+    } = publication;
     let history = branch.history;
     let moment = workspace.next_moment_id();
     let checkpoint = workspace.store_blob(&captured.checkpoint)?;
@@ -683,7 +747,7 @@ fn commit_endpoint(
     let mut reserved = Vec::new();
     let console_id = allocate_evidence_id(workspace, &mut reserved)?;
     let events_id = allocate_evidence_id(workspace, &mut reserved)?;
-    let evidence = vec![console_id.clone(), events_id.clone()];
+    let mut evidence = vec![console_id.clone(), events_id.clone()];
     let mut records = vec![
         Record::Evidence(Box::new(EvidenceRecord {
             id: console_id,
@@ -704,7 +768,33 @@ fn commit_endpoint(
             precision: "each report carries its stream position and virtual time".to_owned(),
         })),
     ];
-    let truncated = console_truncated || events_truncated;
+    let mut truncated = console_truncated || events_truncated;
+    let command = command::publish_command(
+        workspace,
+        &moment,
+        &captured,
+        invocation,
+        &mut reserved,
+        &mut records,
+    )?;
+    if let Some(command) = &command {
+        if history != History::Modified {
+            return Err("retained command requires modified history".into());
+        }
+        evidence.push(command.evidence.clone());
+        truncated |= captured
+            .command
+            .as_ref()
+            .is_some_and(|status| status.truncated || status.output.len() > EVIDENCE_LIMIT);
+    }
+    branch.pending_command = command.as_ref().and_then(|command| {
+        matches!(command.completion, CommandCompletion::Pending).then(|| PendingCommand {
+            engine_id: command.invocation.engine_id,
+            request_id: command.invocation.request_id.clone(),
+            argv: command.invocation.argv.clone(),
+            evidence: command.evidence.clone(),
+        })
+    });
     records.push(Record::Moment(Box::new(MomentRecord {
         id: moment.clone(),
         branch: Some(branch_name.to_owned()),
@@ -715,6 +805,7 @@ fn commit_endpoint(
         state_hash_encoding: StateHashEncoding::EngineDigest,
         stop: Some(captured.endpoint.stop.clone()),
         observations: Some(captured.endpoint.observations.clone()),
+        command: command.clone(),
     })));
     branch.head = moment.clone();
     branch.start = if branch.start.is_empty() {
@@ -748,6 +839,7 @@ fn commit_endpoint(
         evidence,
         truncated,
         replayed_request: false,
+        command,
         next: next_commands(branch_name, &captured.endpoint),
     };
     records.extend(request_record(
@@ -765,6 +857,7 @@ fn validate_source_match(
     captured: &CapturedEndpoint,
     source: &Source,
 ) -> Result<(), Box<dyn Error>> {
+    // Command bytes/status are checked by callers with workspace evidence.
     if captured.endpoint != source.endpoint {
         return Err(format!(
             "captured {} endpoint does not match its source endpoint",
@@ -953,6 +1046,7 @@ struct Source {
     state_hash: Option<ExpectedHash>,
     checkpoint: Option<Vec<u8>>,
     retained: bool,
+    command: Option<CommandRecord>,
 }
 
 fn source_details(workspace: &Workspace, selector: &Selector) -> Result<Source, Box<dyn Error>> {
@@ -977,20 +1071,19 @@ fn source_details(workspace: &Workspace, selector: &Selector) -> Result<Source, 
                 state_hash: expected_hash_from_finding(finding, moment)?,
                 checkpoint: None,
                 retained: false,
+                command: None,
             })
         }
         Selector::BranchHead(name) => {
             let branch = workspace
                 .branch(name)
                 .ok_or_else(|| unknown_branch(workspace, name))?;
-            reject_pending(branch)?;
             source_from_branch_moment(workspace, branch, branch.head.clone())
         }
         Selector::BranchAt(name, at) => {
             let branch = workspace
                 .branch(name)
                 .ok_or_else(|| unknown_branch(workspace, name))?;
-            reject_pending(branch)?;
             let moments: Vec<&MomentRecord> = workspace
                 .moments()
                 .into_iter()
@@ -1022,8 +1115,9 @@ fn source_details(workspace: &Workspace, selector: &Selector) -> Result<Source, 
                 .ok_or_else(|| format!("no moment named {id:?}"))?;
             if let Some(branch_name) = &moment.branch
                 && let Some(branch) = workspace.branch(branch_name)
+                && branch.head == moment.id
             {
-                reject_pending(branch)?;
+                command::validate_pending_branch(branch, moment.command.as_ref())?;
             }
             let actions = moment
                 .branch
@@ -1051,6 +1145,7 @@ fn source_details(workspace: &Workspace, selector: &Selector) -> Result<Source, 
                 state_hash: Some(expected_hash_from_moment(moment)?),
                 checkpoint: Some(checkpoint_bytes(workspace, moment)?),
                 retained: true,
+                command: moment.command.clone(),
             })
         }
     }
@@ -1067,15 +1162,19 @@ fn source_from_branch_moment(
             branch.name
         )
     })?;
+    if branch.head == moment.id {
+        command::validate_pending_branch(branch, moment.command.as_ref())?;
+    }
     Ok(Source {
         actions: branch.inherited_actions.clone(),
         continuation_end: branch.continuation_end,
         label: format!("{}@{}", branch.name, moment_id),
-        history: branch.history,
+        history: moment.history,
         endpoint: endpoint_from_moment(moment)?,
         state_hash: Some(expected_hash_from_moment(moment)?),
         checkpoint: Some(checkpoint_bytes(workspace, moment)?),
         retained: true,
+        command: moment.command.clone(),
     })
 }
 
@@ -1149,6 +1248,7 @@ fn stop_reason_from_fault(stop: FaultStop) -> StopReason {
         FaultStop::Assertion { point } => StopReason::Assertion { point },
         FaultStop::Crash => StopReason::Crash,
         FaultStop::Quiescent => StopReason::Quiescent,
+        FaultStop::CommandComplete => StopReason::CommandComplete,
         FaultStop::Deadline | FaultStop::Unexpected => StopReason::VirtualDeadline,
     }
 }
@@ -1202,17 +1302,6 @@ fn checkpoint_bytes(
         .as_deref()
         .ok_or_else(|| format!("moment {} retained no checkpoint", moment.id))?;
     workspace.read_blob(digest)
-}
-
-fn reject_pending(branch: &Branch) -> Result<(), Box<dyn Error>> {
-    if let Some(PendingCommand { request_id, .. }) = &branch.pending_command {
-        return Err(format!(
-            "branch {} has pending command request {}; durable exec continuation is not implemented",
-            branch.name, request_id
-        )
-        .into());
-    }
-    Ok(())
 }
 
 fn unknown_branch(workspace: &Workspace, name: &str) -> Box<dyn Error> {
@@ -1353,6 +1442,9 @@ fn retry_request<T: Serialize>(
     let Some(id) = request_id else {
         return Ok(None);
     };
+    if id.is_empty() {
+        return Err("request id must not be empty".into());
+    }
     let expected = fingerprint(operation, args)?;
     let Some(record) = workspace.request(id) else {
         return Ok(None);
@@ -1389,6 +1481,9 @@ fn validate_cached_outcome(workspace: &Workspace, outcome: &Outcome) -> Result<(
             moment.id, moment.virtual_time, outcome.virtual_time
         )
         .into());
+    }
+    if moment.command != outcome.command {
+        return Err("request result command differs from its immutable moment".into());
     }
     if moment.history != outcome.history {
         return Err(format!(
@@ -1495,6 +1590,7 @@ pub fn stop_from_observations(stop: FaultStop, deadline_reached: bool) -> StopRe
         FaultStop::Assertion { point } => StopReason::Assertion { point },
         FaultStop::Crash => StopReason::Crash,
         FaultStop::Quiescent => StopReason::Quiescent,
+        FaultStop::CommandComplete => StopReason::CommandComplete,
         FaultStop::Deadline | FaultStop::Unexpected if deadline_reached => {
             StopReason::VirtualDeadline
         }

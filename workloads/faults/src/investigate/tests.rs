@@ -18,6 +18,9 @@ use crate::{
 };
 use std::collections::VecDeque;
 
+#[path = "tests/command.rs"]
+mod command_tests;
+
 const ROOT_SEAL: u64 = 1_000;
 const HORIZON: u64 = 100;
 const SOURCE_AT: u64 = ROOT_SEAL + 4 * HORIZON;
@@ -101,6 +104,7 @@ fn checkpoint(at: u64) -> Vec<u8> {
 
 fn captured(at: u64) -> CapturedEndpoint {
     CapturedEndpoint {
+        command: None,
         endpoint: endpoint(at),
         checkpoint: checkpoint(at),
         state_hash: hash(at),

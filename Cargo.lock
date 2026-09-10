@@ -384,6 +384,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "consonance-client",
+ "control-proto",
  "faults-workload",
  "nes-workload",
  "oci-support",

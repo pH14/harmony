@@ -283,7 +283,8 @@ pub(crate) fn stop_moment(stop: &StopReason) -> u64 {
         | StopReason::Crash { vtime, .. }
         | StopReason::Decision { vtime, .. }
         | StopReason::SnapshotPoint { vtime }
-        | StopReason::Assertion { vtime, .. } => vtime.0,
+        | StopReason::Assertion { vtime, .. }
+        | StopReason::ExecComplete { vtime, .. } => vtime.0,
     }
 }
 

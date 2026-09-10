@@ -60,21 +60,29 @@ harmony -w W branches
 harmony -w W inspect bug-1
 harmony -w W fork bug-1 --rewind 3s --name trace
 harmony -w W run trace --for 4s --request-id trace-1
+harmony -w W exec trace --within 1s -- sh -c 'cat /run/service.out'
+harmony -w W exec --at bug-1 --within 1s -- sh -c 'cat /run/service.out'
 harmony -w W inspect trace@head console --matches 'ERROR:'
 harmony -w W export bug-1 --out shared --evidence
 ```
 
 `findings` lists recorded properties and verification scope. `branches` lists
 saved continuation endpoints. `inspect` reads a workspace, finding, branch
-point, or retained `console`, `events`, or `hash` view. `fork` starts a named
+point, or retained `console`, `events`, `command`, or `hash` view. `fork` starts a named
 continuation, and `run` advances it by bounded guest virtual time; advancing
-commands require Linux KVM. `export` writes the recorded reproducer and, with
-`--evidence`, investigation evidence separately.
+commands require Linux KVM. `exec BRANCH -- ARGV...` runs a guest command,
+captures its output, and saves the resulting modified checkpoint. Use
+`exec --at SELECTOR -- ARGV...` to run on an automatically named probe while
+leaving the source point unchanged. Shell expressions need an explicit `sh -c`;
+argv is preserved as individual words. `inspect` reports the retained command
+status and evidence byte digests. A pending command resumes with `run`; a new
+command is accepted after it finishes. `export` writes the recorded reproducer
+and, with `--evidence`, investigation evidence separately.
 
 `--json` emits one machine-readable document. Its `virtual_time` fields remain
 numeric nanoseconds; text and JSON also include a human-readable duration.
-Pass `--request-id ID` to `fork` or `run` so a retry returns the committed
-result without constructing or running another guest. Global `--kernel`,
+Pass `--request-id ID` to `fork`, `run`, or `exec` so a retry returns the
+committed result without constructing or running another guest. Global `--kernel`,
 `--base-initramfs`, and `--fault-agent` select pinned artifacts when the
 workspace's recorded artifacts are not installed.
 

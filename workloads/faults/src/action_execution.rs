@@ -420,40 +420,48 @@ mod tests {
     }
 
     #[test]
-    fn action_execution_assertion_beyond_horizon_requires_a_later_deadline() {
-        let windows = ActionWindows {
-            root_seal: 5_000,
-            horizon_nanos: 100,
-        };
-        let actions = [FaultAction::Wait, FaultAction::Wait];
-        let parent = SnapId(74);
-        let mut runtime =
-            FakeActionRuntime::with_outcomes([assertion_stop(5_500), deadline_stop(5_500)]);
-        let mut execution = ActionExecution::new(windows, ActionCursor::default());
-        execution
-            .activate(&mut runtime, parent, windows.window(0).0, &actions)
-            .expect("activate action before assertion");
-        let active_cursor = execution.cursor();
+    fn action_execution_non_deadline_stop_beyond_horizon_preserves_activation() {
+        for first_stop in [
+            assertion_stop(5_500),
+            StopReason::ExecComplete {
+                vtime: control_proto::Moment(5_500),
+                id: 9,
+            },
+        ] {
+            let windows = ActionWindows {
+                root_seal: 5_000,
+                horizon_nanos: 100,
+            };
+            let actions = [FaultAction::Wait, FaultAction::Wait];
+            let parent = SnapId(74);
+            let mut runtime =
+                FakeActionRuntime::with_outcomes([first_stop.clone(), deadline_stop(5_500)]);
+            let mut execution = ActionExecution::new(windows, ActionCursor::default());
+            execution
+                .activate(&mut runtime, parent, windows.window(0).0, &actions)
+                .expect("activate action before assertion");
+            let active_cursor = execution.cursor();
 
-        let assertion = execution
-            .run_until(&mut runtime, 5_500)
-            .expect("surface assertion even after horizon");
-        assert_eq!(assertion, assertion_stop(5_500));
-        assert_eq!(execution.cursor(), active_cursor);
-        assert!(execution.cursor().active());
+            let assertion = execution
+                .run_until(&mut runtime, 5_500)
+                .expect("surface assertion even after horizon");
+            assert_eq!(assertion, first_stop);
+            assert_eq!(execution.cursor(), active_cursor);
+            assert!(execution.cursor().active());
 
-        execution
-            .run_until(&mut runtime, windows.deadline(0))
-            .expect("complete the retained action on its later deadline");
-        assert_eq!(
-            execution.cursor(),
-            ActionCursor::from_parts(1, false).unwrap()
-        );
-        assert_eq!(runtime.activations.len(), 1);
-        assert_eq!(
-            runtime.run_deadlines,
-            vec![windows.deadline(0), windows.deadline(0)]
-        );
+            execution
+                .run_until(&mut runtime, windows.deadline(0))
+                .expect("complete the retained action on its later deadline");
+            assert_eq!(
+                execution.cursor(),
+                ActionCursor::from_parts(1, false).unwrap()
+            );
+            assert_eq!(runtime.activations.len(), 1);
+            assert_eq!(
+                runtime.run_deadlines,
+                vec![windows.deadline(0), windows.deadline(0)]
+            );
+        }
     }
 
     #[test]

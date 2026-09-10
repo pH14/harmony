@@ -13,7 +13,8 @@
 use std::{error::Error, path::PathBuf, process::ExitCode};
 
 use faults_workload::investigate::{
-    Advance, Condition, DEFAULT_WALL_SECONDS, ForkRequest, RunRequest,
+    Advance, Condition, DEFAULT_EXEC_NANOS, DEFAULT_WALL_SECONDS, ExecRequest, ForkRequest,
+    RunRequest,
 };
 use faults_workload::workspace::{Selector, Workspace, format_duration, parse_duration};
 
@@ -51,6 +52,8 @@ pub enum Command {
     Fork(ForkArgs),
     /// Advance a branch by a bounded amount of guest time and save its endpoint.
     Run(RunArgs),
+    /// Execute a command in the guest and retain its output and checkpoint.
+    Exec(ExecArgs),
     /// Write the recorded reproducer, and separately the investigation evidence.
     Export(ExportArgs),
 }
@@ -117,6 +120,31 @@ pub struct RunArgs {
     /// A caller id that makes a retry return this call's committed result.
     #[arg(long, value_name = "ID")]
     pub request_id: Option<String>,
+}
+
+/// Which point to run a command on and how long it may take.
+#[derive(clap::Args)]
+pub struct ExecArgs {
+    /// The branch to run on. Omit it and pass `--at` to probe a point instead.
+    pub branch: Option<String>,
+    /// Probe this finding or moment without moving it.
+    #[arg(long, value_name = "SELECTOR")]
+    pub at: Option<String>,
+    /// Virtual time the command may take.
+    #[arg(long, value_name = "DURATION")]
+    pub within: Option<String>,
+    /// Allow running past the recorded continuation's end.
+    #[arg(long)]
+    pub extend: bool,
+    /// Host seconds this call may spend before it gives up.
+    #[arg(long, default_value_t = DEFAULT_WALL_SECONDS)]
+    pub wall_seconds: u64,
+    /// A caller id that makes a retry return this call's committed result.
+    #[arg(long, value_name = "ID")]
+    pub request_id: Option<String>,
+    /// The command, after `--`. A shell expression needs an explicit `sh -c`.
+    #[arg(last = true, required = true)]
+    pub argv: Vec<String>,
 }
 
 /// Where to write an export and whether to include evidence.
@@ -186,6 +214,20 @@ pub fn run(common: &Common, command: Command) -> Result<ExitCode, Box<dyn Error>
                 }
             }
         }
+        Command::Exec(args) => {
+            let request = exec_request(&args)?;
+            match faults_workload::investigate::retry_exec(&workspace, &request)? {
+                Some(outcome) => serde_json::to_value(outcome)?,
+                None => {
+                    let mut engine = guest(&workspace, common)?;
+                    serde_json::to_value(faults_workload::investigate::exec(
+                        &mut workspace,
+                        engine.as_mut(),
+                        &request,
+                    )?)?
+                }
+            }
+        }
         Command::Export(args) => serde_json::to_value(faults_workload::investigate::export(
             &workspace,
             &args.finding,
@@ -218,6 +260,36 @@ fn run_bound(args: &RunArgs) -> Result<Advance, Box<dyn Error>> {
         until: args.until.as_deref().map(Condition::parse).transpose()?,
         extend: args.extend,
         wall_seconds: args.wall_seconds,
+    })
+}
+
+fn exec_request(args: &ExecArgs) -> Result<ExecRequest, Box<dyn Error>> {
+    let (target, probe) = match (&args.branch, &args.at) {
+        (Some(_), Some(_)) => {
+            return Err("name a branch to run on it, or --at a point to probe it, not both".into());
+        }
+        (Some(branch), None) => (Selector::BranchHead(branch.clone()), false),
+        (None, Some(at)) => (Selector::parse(at)?, true),
+        (None, None) => {
+            return Err("exec needs a branch to run on, or --at a point to probe".into());
+        }
+    };
+    Ok(ExecRequest {
+        target,
+        probe,
+        argv: args.argv.clone(),
+        bound: Advance {
+            within_nanos: args
+                .within
+                .as_deref()
+                .map(parse_duration)
+                .transpose()?
+                .unwrap_or(DEFAULT_EXEC_NANOS),
+            until: None,
+            extend: args.extend,
+            wall_seconds: args.wall_seconds,
+        },
+        request_id: args.request_id.clone(),
     })
 }
 
@@ -412,6 +484,7 @@ fn describe_point(workspace: &Workspace, selector: &Selector, moment: &str) -> s
             .map(|finding| faults_workload::investigate::verification_scope(finding.confirmed)),
         "state_hash": record.and_then(|record| record.state_hash.clone()),
         "state_hash_encoding": record.map(|record| record.state_hash_encoding),
+        "command": record.and_then(|record| record.command.as_ref()),
         "evidence": workspace
             .evidence_at(moment)
             .into_iter()
@@ -420,6 +493,7 @@ fn describe_point(workspace: &Workspace, selector: &Selector, moment: &str) -> s
                     "evidence": record.id,
                     "kind": record.kind,
                     "bytes": record.bytes,
+                    "sha256": record.blob,
                     "truncated": record.truncated,
                     "precision": record.precision,
                 })

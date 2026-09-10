@@ -554,7 +554,7 @@ impl Machine for ConsonanceMachine {
                 )
             },
         )?;
-        let mapped = map_stop(stop);
+        let mapped = map_stop(stop)?;
         self.last_vtime = stop_vtime(&mapped).0;
         if !matches!(mapped, StopReason::SnapshotPoint { .. }) {
             return Ok(mapped);
@@ -749,8 +749,8 @@ fn read_observation(
     read_cached(work_ram, save_ram, addr, len)
 }
 
-fn map_stop(stop: control_proto::StopReason) -> StopReason {
-    match stop {
+fn map_stop(stop: control_proto::StopReason) -> Result<StopReason, MachineError> {
+    Ok(match stop {
         control_proto::StopReason::Deadline { vtime } => StopReason::Deadline {
             vtime: Moment(vtime.0),
         },
@@ -785,7 +785,13 @@ fn map_stop(stop: control_proto::StopReason) -> StopReason {
                 data: ev.data,
             },
         },
-    }
+        control_proto::StopReason::ExecComplete { .. } => {
+            // NES never starts commands or arms their completion stop class.
+            return Err(MachineError::Backend(
+                "unexpected guest command completion in NES execution".to_owned(),
+            ));
+        }
+    })
 }
 
 fn stop_vtime(stop: &StopReason) -> Moment {

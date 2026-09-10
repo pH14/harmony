@@ -113,6 +113,7 @@ impl ConsonanceGuest {
                     FaultStop::Assertion { point } => StopReason::Assertion { point },
                     FaultStop::Crash => StopReason::Crash,
                     FaultStop::Quiescent => StopReason::Quiescent,
+                    FaultStop::CommandComplete => StopReason::CommandComplete,
                     FaultStop::Unexpected => {
                         return Err("unexpected control stop during continuation".into());
                     }
@@ -226,6 +227,33 @@ impl Continuation for ConsonanceGuest {
         self.finish(result)
     }
 
+    fn start_command(&mut self, argv: &[String]) -> Result<control_proto::ExecStatus, String> {
+        let result = (|| {
+            if argv.is_empty() || argv[0].is_empty() || argv.iter().any(|arg| arg.contains('\0')) {
+                return Err(
+                    "a guest command needs nonempty argv and cannot contain NUL bytes".into(),
+                );
+            }
+            let command = argv
+                .iter()
+                .map(|arg| format!("'{}'", arg.replace('\'', "'\"'\"'")))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let endpoint = self
+                .endpoint
+                .clone()
+                .ok_or("no endpoint for command injection")?;
+            let status = self.current()?.start_command(&command)?;
+            if status.at.0 != endpoint.virtual_time
+                || status.completion != control_proto::ExecCompletion::Pending
+            {
+                return Err("command injection changed the stopped endpoint or completion".into());
+            }
+            Ok(status)
+        })();
+        self.finish(result)
+    }
+
     fn capture(&mut self) -> Result<CapturedEndpoint, String> {
         let result = (|| {
             let endpoint = self.endpoint.clone().ok_or("no endpoint to capture")?;
@@ -239,9 +267,13 @@ impl Continuation for ConsonanceGuest {
             if endpoint.virtual_time != current.at() || endpoint.observations != observations {
                 return Err("guest observations changed after the stopped endpoint".into());
             }
+            let command = current.command_status()?;
             let state_hash = current.state_hash()?;
             let console = current.console_tail()?;
             let checkpoint = current.checkpoint()?.encode()?;
+            if current.command_status()? != command {
+                return Err("saving changed the retained command state".into());
+            }
             if current.state_hash()? != state_hash {
                 return Err("saving changed the stopped execution state".into());
             }
@@ -263,6 +295,7 @@ impl Continuation for ConsonanceGuest {
                 state_hash: hex(&state_hash),
                 console,
                 events,
+                command,
             })
         })();
         self.finish(result)

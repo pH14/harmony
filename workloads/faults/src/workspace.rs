@@ -203,6 +203,52 @@ pub struct MomentRecord {
     pub stop: Option<StopReason>,
     /// Endpoint observations, when the point is an endpoint.
     pub observations: Option<FaultObservations>,
+    /// The command captured at this endpoint, when an `exec` changed the
+    /// branch's history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<CommandRecord>,
+}
+
+/// The identity of a command injected into a retained continuation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CommandInvocation {
+    /// The engine/session identity that accepted the command.
+    pub engine_id: u64,
+    /// The caller's idempotency key.
+    pub request_id: String,
+    /// The command argv delivered to the guest.
+    pub argv: Vec<String>,
+}
+
+/// The terminal state of a retained command.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandCompletion {
+    /// The command is still running at the recorded endpoint.
+    Pending,
+    /// The command exited at the recorded virtual time.
+    Exited {
+        /// The guest-reported exit status.
+        status: u64,
+        /// Virtual time at command completion.
+        virtual_time: u64,
+    },
+    /// The command was abandoned at the recorded virtual time.
+    Aborted {
+        /// Virtual time at command abortion.
+        virtual_time: u64,
+    },
+}
+
+/// The command and evidence captured at an immutable moment.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CommandRecord {
+    /// The command's stable identity and argv.
+    pub invocation: CommandInvocation,
+    /// Whether the command remains pending or has completed.
+    pub completion: CommandCompletion,
+    /// Evidence record containing the command output captured at the moment.
+    pub evidence: String,
 }
 
 /// A named continuation whose head advances.
@@ -239,6 +285,9 @@ pub struct PendingCommand {
     pub argv: Vec<String>,
     /// Evidence holding the output captured so far.
     pub evidence: String,
+    /// The engine/session identity that owns the retained command.
+    #[serde(default)]
+    pub engine_id: u64,
 }
 
 /// Captured guest evidence: console text, SDK events, or command output.
@@ -367,6 +416,116 @@ impl State {
                     .into());
                 }
                 self.requests.insert(request.id.clone(), *request);
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate relationships that can span records in one transaction.
+    ///
+    /// Blob references are checked separately before this fold. These checks
+    /// run after every staged record has been applied to a cloned state, so a
+    /// failed command or branch relationship cannot partially publish.
+    fn validate_command_references(&self) -> Result<(), Box<dyn Error>> {
+        for moment in self.moments.values() {
+            let Some(command) = &moment.command else {
+                continue;
+            };
+            if moment.history != History::Modified {
+                return Err(format!(
+                    "moment {} carries a command but its history is not modified",
+                    moment.id
+                )
+                .into());
+            }
+            if command.invocation.request_id.is_empty() {
+                return Err(
+                    format!("command at moment {} has an empty request id", moment.id).into(),
+                );
+            }
+            if command.invocation.argv.is_empty() {
+                return Err(format!("command at moment {} has an empty argv", moment.id).into());
+            }
+            let evidence = self.evidence.get(&command.evidence).ok_or_else(|| {
+                format!(
+                    "command at moment {} references missing evidence {}",
+                    moment.id, command.evidence
+                )
+            })?;
+            if evidence.kind != "command" {
+                return Err(format!(
+                    "command at moment {} references evidence {} of kind {:?}, not command",
+                    moment.id, command.evidence, evidence.kind
+                )
+                .into());
+            }
+            if evidence.moment != moment.id {
+                return Err(format!(
+                    "command at moment {} references evidence {} captured at {}",
+                    moment.id, command.evidence, evidence.moment
+                )
+                .into());
+            }
+            let completion_time = match &command.completion {
+                CommandCompletion::Pending => None,
+                CommandCompletion::Exited { virtual_time, .. }
+                | CommandCompletion::Aborted { virtual_time } => Some(*virtual_time),
+            };
+            if let Some(completion_time) = completion_time
+                && completion_time > moment.virtual_time
+            {
+                return Err(format!(
+                    "command at moment {} completes at virtual time {}, after the moment's {}",
+                    moment.id, completion_time, moment.virtual_time
+                )
+                .into());
+            }
+        }
+
+        for branch in self.branches.values() {
+            let head = self.moments.get(&branch.head);
+            if let Some(pending) = &branch.pending_command {
+                let head = head.ok_or_else(|| {
+                    format!(
+                        "branch {} has pending command metadata but its head {} is missing",
+                        branch.name, branch.head
+                    )
+                })?;
+                let Some(command) = &head.command else {
+                    // Journals written before MomentRecord carried command
+                    // metadata may still have pending branch metadata. Keep
+                    // those records readable; the new controller rejects
+                    // them because the physical tracker cannot be verified.
+                    continue;
+                };
+                if !matches!(&command.completion, CommandCompletion::Pending) {
+                    return Err(format!(
+                        "branch {} pending command does not match completed command at {}",
+                        branch.name, branch.head
+                    )
+                    .into());
+                }
+                if command.invocation.engine_id != pending.engine_id
+                    || command.invocation.request_id != pending.request_id
+                    || command.invocation.argv != pending.argv
+                    || command.evidence != pending.evidence
+                {
+                    return Err(format!(
+                        "branch {} pending command does not match command at {}",
+                        branch.name, branch.head
+                    )
+                    .into());
+                }
+            } else if head.is_some_and(|moment| {
+                moment.command.as_ref().is_some_and(|command| {
+                    matches!(&command.completion, CommandCompletion::Pending)
+                })
+            }) {
+                return Err(format!(
+                    "branch {} head {} has a pending command without pending branch metadata",
+                    branch.name, branch.head
+                )
+                .into());
             }
         }
         Ok(())
@@ -707,6 +866,7 @@ impl Workspace {
             for record in transaction.records {
                 state.apply_checked(record)?;
             }
+            state.validate_command_references()?;
             sync_file(&path)?;
             state.sequence = transaction.sequence;
             expected_sequence = expected_sequence
@@ -949,6 +1109,7 @@ impl Workspace {
         for record in records.iter().cloned() {
             next_state.apply_checked(record)?;
         }
+        next_state.validate_command_references()?;
         next_state.sequence = sequence;
         let transaction = Transaction {
             format: FORMAT.to_owned(),
@@ -1505,6 +1666,264 @@ mod tests {
         }
     }
 
+    fn command_invocation() -> CommandInvocation {
+        CommandInvocation {
+            engine_id: 17,
+            request_id: "request-command".to_owned(),
+            argv: vec!["printf".to_owned(), "ok".to_owned()],
+        }
+    }
+
+    fn command_evidence(workspace: &Workspace, moment: &str, kind: &str) -> EvidenceRecord {
+        let bytes = b"captured command output";
+        EvidenceRecord {
+            id: "ev-command".to_owned(),
+            kind: kind.to_owned(),
+            moment: moment.to_owned(),
+            blob: workspace.store_blob(bytes).expect("command evidence blob"),
+            bytes: bytes.len() as u64,
+            precision: "exact".to_owned(),
+            ..EvidenceRecord::default()
+        }
+    }
+
+    fn command_records(
+        history: History,
+        command: Option<CommandRecord>,
+        evidence: Option<EvidenceRecord>,
+        pending: Option<PendingCommand>,
+    ) -> Vec<Record> {
+        let mut records = vec![
+            Record::Moment(Box::new(MomentRecord {
+                id: "m-command".to_owned(),
+                branch: Some("trace".to_owned()),
+                virtual_time: 100,
+                history,
+                command,
+                ..MomentRecord::default()
+            })),
+            Record::Branch(Box::new(Branch {
+                name: "trace".to_owned(),
+                source: "m-0000".to_owned(),
+                start: "m-command".to_owned(),
+                head: "m-command".to_owned(),
+                history,
+                continuation_end: 200,
+                inherited_actions: Vec::new(),
+                probe: true,
+                pending_command: pending,
+            })),
+        ];
+        if let Some(evidence) = evidence {
+            records.push(Record::Evidence(Box::new(evidence)));
+        }
+        records
+    }
+
+    fn pending_command() -> PendingCommand {
+        PendingCommand {
+            request_id: "request-command".to_owned(),
+            argv: vec!["printf".to_owned(), "ok".to_owned()],
+            evidence: "ev-command".to_owned(),
+            engine_id: 17,
+        }
+    }
+
+    #[test]
+    fn command_records_round_trip_all_completion_shapes() {
+        for completion in [
+            CommandCompletion::Pending,
+            CommandCompletion::Exited {
+                status: 7,
+                virtual_time: 100,
+            },
+            CommandCompletion::Aborted { virtual_time: 100 },
+        ] {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let mut workspace = Workspace::create(directory.path(), facts()).expect("create");
+            let evidence = command_evidence(&workspace, "m-command", "command");
+            let command = CommandRecord {
+                invocation: command_invocation(),
+                completion: completion.clone(),
+                evidence: evidence.id.clone(),
+            };
+            let pending = matches!(&completion, CommandCompletion::Pending).then(pending_command);
+            let records = command_records(
+                History::Modified,
+                Some(command.clone()),
+                Some(evidence),
+                pending,
+            );
+            workspace.commit(records).expect("valid command records");
+            drop(workspace);
+
+            let reopened = Workspace::open(directory.path()).expect("reopen");
+            assert_eq!(
+                reopened
+                    .moment("m-command")
+                    .expect("command moment")
+                    .command,
+                Some(command)
+            );
+            assert_eq!(
+                reopened
+                    .branch("trace")
+                    .expect("command branch")
+                    .pending_command
+                    .is_some(),
+                matches!(&completion, CommandCompletion::Pending)
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_command_records_are_rejected_before_publication() {
+        let cases = [
+            "recorded history",
+            "empty request id",
+            "empty argv",
+            "completion after moment",
+            "missing evidence",
+            "wrong evidence kind",
+            "evidence at another moment",
+            "mismatched pending metadata",
+            "missing pending metadata",
+        ];
+        for case in cases {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let mut workspace = Workspace::create(directory.path(), facts()).expect("create");
+            let mut invocation = command_invocation();
+            let mut completion = CommandCompletion::Pending;
+            let mut history = History::Modified;
+            let mut evidence = Some(command_evidence(&workspace, "m-command", "command"));
+            let mut pending = Some(pending_command());
+            match case {
+                "recorded history" => history = History::Recorded,
+                "empty request id" => invocation.request_id.clear(),
+                "empty argv" => invocation.argv.clear(),
+                "completion after moment" => {
+                    completion = CommandCompletion::Exited {
+                        status: 0,
+                        virtual_time: 101,
+                    };
+                    pending = None;
+                }
+                "missing evidence" => evidence = None,
+                "wrong evidence kind" => {
+                    evidence = Some(command_evidence(&workspace, "m-command", "console"));
+                }
+                "evidence at another moment" => {
+                    evidence = Some(command_evidence(&workspace, "m-other", "command"));
+                }
+                "mismatched pending metadata" => {
+                    pending.as_mut().expect("pending case").engine_id += 1;
+                }
+                "missing pending metadata" => pending = None,
+                other => panic!("unknown command validation case {other}"),
+            }
+            let command = CommandRecord {
+                invocation,
+                completion,
+                evidence: "ev-command".to_owned(),
+            };
+            let error = workspace
+                .commit(command_records(history, Some(command), evidence, pending))
+                .expect_err(case);
+            assert!(error.to_string().contains("command"), "{case}: {error}");
+            assert_eq!(workspace.sequence(), 1, "{case}");
+            assert!(workspace.moment("m-command").is_none(), "{case}");
+            assert!(workspace.branch("trace").is_none(), "{case}");
+            drop(workspace);
+            let reopened = Workspace::open(directory.path()).expect("reopen failed commit");
+            assert_eq!(reopened.sequence(), 1, "{case}");
+            assert!(reopened.moment("m-command").is_none(), "{case}");
+            assert!(reopened.branch("trace").is_none(), "{case}");
+        }
+    }
+
+    #[test]
+    fn opening_a_journal_with_an_invalid_command_relationship_is_rejected() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let workspace = Workspace::create(directory.path(), facts()).expect("create");
+        let evidence = command_evidence(&workspace, "m-command", "command");
+        let command = CommandRecord {
+            invocation: command_invocation(),
+            completion: CommandCompletion::Exited {
+                status: 0,
+                virtual_time: 100,
+            },
+            evidence: evidence.id.clone(),
+        };
+        let transaction = Transaction {
+            format: FORMAT.to_owned(),
+            sequence: 2,
+            records: command_records(History::Recorded, Some(command), Some(evidence), None),
+        };
+        drop(workspace);
+        std::fs::write(
+            directory.path().join(JOURNAL_DIR).join("000002.json"),
+            serde_json::to_vec(&transaction).expect("serialize transaction"),
+        )
+        .expect("write invalid transaction");
+        let error = Workspace::open(directory.path()).expect_err("invalid command relationship");
+        assert!(error.to_string().contains("history"), "{error}");
+    }
+
+    #[test]
+    fn legacy_moment_and_pending_json_remain_readable() {
+        let legacy_moment = serde_json::json!({
+            "id": "m-legacy",
+            "branch": null,
+            "virtual_time": 42,
+            "history": "modified",
+            "checkpoint": null,
+            "state_hash": null,
+            "state_hash_encoding": "legacy_sha256_of_digest",
+            "stop": null,
+            "observations": null,
+        });
+        let moment: MomentRecord = serde_json::from_value(legacy_moment).expect("legacy moment");
+        assert_eq!(moment.command, None);
+        let encoded = serde_json::to_value(&moment).expect("encode legacy moment");
+        assert!(
+            !encoded
+                .as_object()
+                .expect("moment object")
+                .contains_key("command"),
+            "None command fields must not alter legacy record bytes"
+        );
+
+        let legacy_pending = serde_json::json!({
+            "request_id": "legacy-request",
+            "argv": ["sh", "-c", "true"],
+            "evidence": "ev-legacy",
+        });
+        let pending: PendingCommand =
+            serde_json::from_value(legacy_pending).expect("legacy pending command");
+        assert_eq!(
+            pending.engine_id, 0,
+            "legacy metadata has no engine identity"
+        );
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let mut workspace = Workspace::create(directory.path(), facts()).expect("create");
+        workspace
+            .commit(command_records(
+                History::Modified,
+                None,
+                None,
+                Some(pending),
+            ))
+            .expect("legacy head without command remains readable");
+        assert!(
+            workspace
+                .branch("trace")
+                .expect("legacy branch")
+                .pending_command
+                .is_some()
+        );
+    }
+
     fn complete_transaction_records(sequence: u64) -> Vec<Record> {
         let checkpoint = b"opaque checkpoint bytes";
         let evidence = b"captured evidence";
@@ -1951,10 +2370,12 @@ pub fn publish(
             checkpoint: None,
             state_hash: (!summary.state_hash.is_empty()).then(|| summary.state_hash.clone()),
             state_hash_encoding: summary.state_hash_encoding,
+            command: None,
             stop: Some(match bug.observations.stop {
                 crate::target::FaultStop::Assertion { point } => StopReason::Assertion { point },
                 crate::target::FaultStop::Crash => StopReason::Crash,
                 crate::target::FaultStop::Quiescent => StopReason::Quiescent,
+                crate::target::FaultStop::CommandComplete => StopReason::CommandComplete,
                 _ => StopReason::VirtualDeadline,
             }),
             observations: Some(bug.observations.clone()),

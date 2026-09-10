@@ -215,7 +215,15 @@ impl ActionRuntime for Session {
     }
 
     fn run_action_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
-        self.run_until(deadline)
+        // A completed command remains inspectable, but must not repeatedly stop
+        // later runs. Only a pending command opts into its completion boundary.
+        if self.exec_status()?.is_some_and(|command| {
+            matches!(command.completion, control_proto::ExecCompletion::Pending)
+        }) {
+            self.run_until_with_exec_complete(deadline)
+        } else {
+            self.run_until(deadline)
+        }
     }
 }
 
@@ -297,6 +305,27 @@ pub fn boot_continuation(
 }
 
 impl RecordedContinuation<Session> {
+    /// Inject at the current endpoint without advancing the action cursor.
+    pub fn start_command(
+        &mut self,
+        command: &str,
+    ) -> Result<control_proto::ExecStatus, Box<dyn Error>> {
+        let at = self.at();
+        self.inspect(|session| {
+            let status = session
+                .exec_start(command)?
+                .ok_or("started command is absent")?;
+            if status.at.0 != at {
+                return Err("command injection advanced the stopped endpoint".into());
+            }
+            Ok(status)
+        })
+    }
+
+    pub fn command_status(&mut self) -> Result<Option<control_proto::ExecStatus>, Box<dyn Error>> {
+        self.inspect(Session::exec_status)
+    }
+
     pub fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
         self.inspect(Session::state_hash)
     }

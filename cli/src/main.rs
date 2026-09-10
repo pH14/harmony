@@ -29,6 +29,8 @@ use std::process::ExitCode;
                   \x20 harmony -w W inspect bug-1\n\
                   \x20 harmony -w W fork bug-1 --rewind 3s --name trace\n\
                   \x20 harmony -w W run trace --for 4s\n\
+                  \x20 harmony -w W exec trace --within 1s -- sh -c 'cat /run/service.out'\n\
+                  \x20 harmony -w W exec --at bug-1 --within 1s -- sh -c 'cat /run/service.out'\n\
                   \x20 harmony -w W export bug-1 --out shared --evidence"
 )]
 struct Cli {
@@ -62,6 +64,8 @@ enum Command {
     Fork(investigate::ForkArgs),
     /// Advance a branch by a bounded amount of guest time.
     Run(investigate::RunArgs),
+    /// Execute a command in the guest and retain its output and checkpoint.
+    Exec(investigate::ExecArgs),
     /// Write the recorded reproducer and, separately, investigation evidence.
     Export(investigate::ExportArgs),
 }
@@ -88,6 +92,7 @@ fn main() -> ExitCode {
         Command::Inspect(args) => investigate::run(&common, investigate::Command::Inspect(args)),
         Command::Fork(args) => investigate::run(&common, investigate::Command::Fork(args)),
         Command::Run(args) => investigate::run(&common, investigate::Command::Run(args)),
+        Command::Exec(args) => investigate::run(&common, investigate::Command::Exec(args)),
         Command::Export(args) => investigate::run(&common, investigate::Command::Export(args)),
     };
     match result {
@@ -195,7 +200,9 @@ mod search_cli_tests {
     }
 
     #[test]
-    fn command_execution_is_not_exposed_until_durable_state_exists() {
-        assert!(Cli::try_parse_from(["harmony", "exec", "trace", "--", "true"]).is_err());
+    fn command_execution_accepts_a_branch_and_trailing_argv() {
+        let parsed = Cli::try_parse_from(["harmony", "exec", "trace", "--", "true"])
+            .expect("exec is a top-level investigation command");
+        assert!(matches!(parsed.command, Command::Exec(_)));
     }
 }

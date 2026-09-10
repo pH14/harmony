@@ -26,3 +26,6 @@ consonance-client = { path = "../consonance/client", version = "=0.1.0" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+control-proto = { path = "../consonance/control-proto", version = "=0.1.0" }

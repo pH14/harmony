@@ -15,24 +15,37 @@ use std::{
     process::{Command, Output},
 };
 
+use control_proto::{ExecCompletion, ExecStatus, Moment};
 use faults_workload::{
     FaultAction,
     checkpoint::Checkpoint,
     declarations::Declarations,
     execution::ActionCursor,
-    investigate::{CapturedEndpoint, Continuation, Endpoint, ForkRequest, Outcome, fork},
+    investigate::{
+        Advance, CapturedEndpoint, Continuation, Endpoint, ExecRequest, ForkRequest, Outcome, exec,
+        fork,
+    },
     package::StateHashEncoding,
     retained::RetainedContinuation,
-    target::FaultObservations,
+    target::{FaultObservations, FaultStop},
     workspace::{
-        FORMAT, Finding, History, MomentRecord, Record, Selector, StopReason, Workspace,
-        WorkspaceFacts,
+        CommandCompletion, FORMAT, Finding, History, MomentRecord, Record, Selector, StopReason,
+        Workspace, WorkspaceFacts,
     },
 };
 
 const ROOT_SEAL: u64 = 1_000;
 const HORIZON: u64 = 100;
 const SOURCE_AT: u64 = ROOT_SEAL + HORIZON;
+const COMMAND_DELTA: u64 = 25;
+const COMMAND_AT: u64 = SOURCE_AT + COMMAND_DELTA;
+const COMMAND_STATUS: u64 = 37;
+const COMMAND_REQUEST_ID: &str = "exec-known";
+const COMMAND_OUTPUT: &[u8] = b"committed command output\n";
+
+fn command_argv() -> Vec<String> {
+    vec!["echo".to_owned(), "committed-output".to_owned()]
+}
 
 fn actions() -> Vec<FaultAction> {
     vec![FaultAction::Wait]
@@ -76,6 +89,7 @@ fn retained_checkpoint(at: u64) -> Vec<u8> {
 
 fn captured(at: u64) -> CapturedEndpoint {
     CapturedEndpoint {
+        command: None,
         endpoint: endpoint(at),
         checkpoint: retained_checkpoint(at),
         state_hash: state_hash(at),
@@ -196,6 +210,170 @@ fn initial_workspace() -> (tempfile::TempDir, Outcome, u64, Vec<(String, Vec<u8>
     (directory, outcome, sequence, journal)
 }
 
+fn command_request() -> ExecRequest {
+    ExecRequest {
+        target: Selector::BranchHead("trace".to_owned()),
+        probe: false,
+        argv: command_argv(),
+        bound: Advance {
+            within_nanos: COMMAND_DELTA,
+            until: None,
+            extend: true,
+            wall_seconds: 30,
+        },
+        request_id: Some(COMMAND_REQUEST_ID.to_owned()),
+    }
+}
+
+#[derive(Debug)]
+struct CommandContinuation {
+    at: u64,
+    command: Option<ExecStatus>,
+}
+
+impl CommandContinuation {
+    fn new(at: u64) -> Self {
+        Self { at, command: None }
+    }
+
+    fn endpoint(&self) -> Endpoint {
+        let completed = self.command.as_ref().is_some_and(|status| {
+            matches!(
+                status.completion,
+                ExecCompletion::Exited { .. } | ExecCompletion::Aborted { .. }
+            )
+        });
+        let (stop, observation_stop) = if completed {
+            (StopReason::CommandComplete, FaultStop::CommandComplete)
+        } else {
+            (StopReason::VirtualDeadline, FaultStop::Deadline)
+        };
+        Endpoint {
+            virtual_time: self.at,
+            stop,
+            observations: FaultObservations {
+                moment: self.at,
+                stop: observation_stop,
+                ..FaultObservations::default()
+            },
+            condition_met: false,
+        }
+    }
+
+    fn capture_endpoint(&self) -> Result<CapturedEndpoint, String> {
+        Ok(CapturedEndpoint {
+            command: self.command.clone(),
+            endpoint: self.endpoint(),
+            checkpoint: retained_checkpoint(self.at),
+            state_hash: state_hash(self.at),
+            console: format!("command endpoint {}\n", self.at).into_bytes(),
+            events: Vec::new(),
+        })
+    }
+}
+
+impl Continuation for CommandContinuation {
+    fn open_recorded(
+        &mut self,
+        _actions: &[FaultAction],
+        _source_moment: u64,
+        _rewind_nanos: u64,
+    ) -> Result<Endpoint, String> {
+        Err("command fixture requires a retained branch".to_owned())
+    }
+
+    fn restore(
+        &mut self,
+        checkpoint: &[u8],
+        _actions: &[FaultAction],
+        endpoint: &Endpoint,
+    ) -> Result<Endpoint, String> {
+        let retained = RetainedContinuation::decode(checkpoint)
+            .map_err(|error| format!("decode command fixture checkpoint: {error}"))?;
+        if retained.checkpoint.at != endpoint.virtual_time {
+            return Err("command fixture restored a different endpoint".to_owned());
+        }
+        self.at = endpoint.virtual_time;
+        self.command = None;
+        Ok(endpoint.clone())
+    }
+
+    fn advance(&mut self, bound: &Advance) -> Result<Endpoint, String> {
+        if bound.within_nanos < COMMAND_DELTA {
+            return Ok(self.endpoint());
+        }
+        self.at = COMMAND_AT;
+        let command = self
+            .command
+            .as_mut()
+            .ok_or("command fixture was advanced before injection")?;
+        command.at = Moment(COMMAND_AT);
+        command.completion = ExecCompletion::Exited {
+            status: COMMAND_STATUS,
+            at: Moment(COMMAND_AT),
+        };
+        command.output = COMMAND_OUTPUT.to_vec();
+        Ok(self.endpoint())
+    }
+
+    fn start_command(&mut self, _argv: &[String]) -> Result<ExecStatus, String> {
+        if self.command.is_some() {
+            return Err("command fixture already has a command".to_owned());
+        }
+        let status = ExecStatus {
+            id: 1_001,
+            at: Moment(self.at),
+            completion: ExecCompletion::Pending,
+            output: Vec::new(),
+            truncated: false,
+        };
+        self.command = Some(status.clone());
+        Ok(status)
+    }
+
+    fn capture(&mut self) -> Result<CapturedEndpoint, String> {
+        self.capture_endpoint()
+    }
+}
+
+fn initial_command_workspace() -> (tempfile::TempDir, Outcome, u64, Vec<(String, Vec<u8>)>) {
+    let (directory, mut workspace, source) = workspace();
+    let fork_request = ForkRequest {
+        source: Selector::Finding("bug-1".to_owned()),
+        rewind_nanos: 0,
+        name: "trace".to_owned(),
+        probe: false,
+        request_id: None,
+    };
+    let mut guest = FixtureContinuation::new(source.virtual_time);
+    fork(&mut workspace, &mut guest, &fork_request).expect("initial public fork");
+
+    let request = command_request();
+    let mut command_guest = CommandContinuation::new(source.virtual_time);
+    let outcome = exec(&mut workspace, &mut command_guest, &request).expect("public command exec");
+    assert_eq!(
+        command_guest.command.as_ref().map(|status| status.id),
+        Some(1_001)
+    );
+    assert_eq!(
+        outcome.command.as_ref().map(|command| &command.completion),
+        Some(&CommandCompletion::Exited {
+            status: COMMAND_STATUS,
+            virtual_time: COMMAND_AT,
+        })
+    );
+    let replay = faults_workload::investigate::retry_exec(&workspace, &request)
+        .expect("command request lookup")
+        .expect("command request was committed");
+    assert!(replay.replayed_request);
+    assert_eq!(replay.moment, outcome.moment);
+    assert_eq!(replay.command, outcome.command);
+
+    let sequence = workspace.sequence();
+    let journal = journal_snapshot(directory.path());
+    (directory, outcome, sequence, journal)
+}
+
 fn journal_snapshot(root: &Path) -> Vec<(String, Vec<u8>)> {
     let mut entries = fs::read_dir(root.join("journal"))
         .expect("journal directory")
@@ -243,6 +421,26 @@ fn fork_process(root: &Path, source: &str, rewind: &str, name: &str) -> Output {
     command.output().expect("run harmony fork subprocess")
 }
 
+fn exec_process(root: &Path, target: &[&str], argv: &[&str]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_harmony"));
+    command.args(["-w", root.to_str().expect("UTF-8 temp path"), "--json"]);
+    command.args(missing_artifact_args(root));
+    command.args(["exec"]);
+    command.args(target);
+    command.args([
+        "--within",
+        "25ns",
+        "--extend",
+        "--wall-seconds",
+        "30",
+        "--request-id",
+        COMMAND_REQUEST_ID,
+        "--",
+    ]);
+    command.args(argv);
+    command.output().expect("run harmony exec subprocess")
+}
+
 fn inspect_events_process(root: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_harmony"))
         .args([
@@ -255,6 +453,20 @@ fn inspect_events_process(root: &Path) -> Output {
         ])
         .output()
         .expect("run harmony inspect subprocess")
+}
+
+fn inspect_command_process(root: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_harmony"))
+        .args([
+            "-w",
+            root.to_str().expect("UTF-8 temp path"),
+            "--json",
+            "inspect",
+            "trace@head",
+            "command",
+        ])
+        .output()
+        .expect("run harmony inspect command subprocess")
 }
 
 fn json_output(output: &Output) -> serde_json::Value {
@@ -340,4 +552,90 @@ fn process_inspect_events_reads_the_saved_endpoint_as_json() {
     assert_eq!(value["view"], "events");
     assert_eq!(value["moment"], "m-0002");
     assert_eq!(value["lines"], serde_json::json!(["[]"]));
+}
+
+#[test]
+fn process_exec_retry_returns_saved_completion_before_guest_boot() {
+    let (directory, first, sequence, journal) = initial_command_workspace();
+    let root = directory.path().to_path_buf();
+    let argv = ["echo", "committed-output"];
+
+    // These artifact paths cannot be opened. A successful result proves the
+    // fresh CLI process returned the committed request before constructing a
+    // guest continuation.
+    let replay = json_output(&exec_process(&root, &["trace"], &argv));
+    assert_eq!(replay["replayed_request"], true);
+    assert_eq!(replay["operation"], "exec");
+    assert_eq!(replay["branch"], "trace");
+    assert_eq!(
+        replay["command"]["invocation"]["argv"],
+        serde_json::json!(argv)
+    );
+    assert_eq!(
+        replay["command"]["completion"]["exited"]["status"],
+        COMMAND_STATUS
+    );
+    assert_eq!(
+        replay["command"]["completion"]["exited"]["virtual_time"],
+        COMMAND_AT
+    );
+
+    let initial = serde_json::to_value(&first).expect("initial command outcome JSON");
+    let command_evidence_id = initial["command"]["evidence"].clone();
+    assert_eq!(replay["command"]["evidence"], command_evidence_id);
+    for field in [
+        "moment",
+        "virtual_time",
+        "state_hash",
+        "history",
+        "stop",
+        "evidence",
+    ] {
+        assert_eq!(replay[field], initial[field], "retry changed {field}");
+    }
+
+    let command_evidence = json_output(&inspect_command_process(&root));
+    assert_eq!(command_evidence["moment"], replay["moment"]);
+    assert_eq!(command_evidence["view"], "command");
+    assert_eq!(command_evidence["evidence"], command_evidence_id);
+    assert_eq!(
+        command_evidence["lines"],
+        serde_json::json!(["committed command output"])
+    );
+    assert_eq!(command_evidence["truncated"], false);
+
+    let reopened = Workspace::open(&root).expect("reopen after command retry");
+    assert_eq!(
+        reopened.sequence(),
+        sequence,
+        "retry appended a transaction"
+    );
+    drop(reopened);
+    assert_eq!(
+        journal_snapshot(&root),
+        journal,
+        "retry added journal records"
+    );
+
+    let changed_argv = failed_output(exec_process(&root, &["trace"], &["echo", "changed"]));
+    assert!(
+        changed_argv.contains("different arguments"),
+        "{changed_argv}"
+    );
+    assert_eq!(
+        journal_snapshot(&root),
+        journal,
+        "argv collision mutated journal"
+    );
+
+    let changed_probe = failed_output(exec_process(&root, &["--at", "trace@head"], &argv));
+    assert!(
+        changed_probe.contains("different arguments"),
+        "{changed_probe}"
+    );
+    assert_eq!(
+        journal_snapshot(&root),
+        journal,
+        "probe-intent collision mutated journal"
+    );
 }

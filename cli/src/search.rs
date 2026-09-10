@@ -268,6 +268,20 @@ pub fn prepare_fault_artifacts(
     base: Option<PathBuf>,
     agent: Option<PathBuf>,
 ) -> Result<FaultArtifacts, Box<dyn Error>> {
+    prepare_fault_artifacts_pinned(image, kernel, base, agent, None)
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn prepare_fault_artifacts_pinned(
+    image: &str,
+    kernel: Option<PathBuf>,
+    base: Option<PathBuf>,
+    agent: Option<PathBuf>,
+    image_sha256: Option<&str>,
+) -> Result<FaultArtifacts, Box<dyn Error>> {
     let installed = crate::preflight::GuestArtifacts::locate(crate::host::HostReport::detect().isa);
     let kernel = kernel
         .or(installed.kernel)
@@ -280,7 +294,13 @@ pub fn prepare_fault_artifacts(
         .or_else(|| installed.dir.map(|dir| dir.join("fault-agent")))
         .ok_or("fault agent missing: use --fault-agent or HARMONY_FAULT_AGENT")?;
     let agent = std::fs::read(agent)?;
-    let prepared = faults_workload::prepare::prepare_oci(image, &std::fs::read(base)?, &agent)?;
+    let base = std::fs::read(base)?;
+    let prepared = match image_sha256 {
+        Some(expected) => {
+            faults_workload::prepare::prepare_oci_pinned(image, &base, &agent, expected)?
+        }
+        None => faults_workload::prepare::prepare_oci(image, &base, &agent)?,
+    };
     Ok(FaultArtifacts {
         artifacts: faults_workload::Artifacts {
             kernel: std::fs::read(kernel)?,
@@ -313,7 +333,7 @@ pub fn prepared_artifacts(
     base: Option<PathBuf>,
     agent: Option<PathBuf>,
 ) -> Result<faults_workload::Artifacts, Box<dyn Error>> {
-    let prepared = prepare_fault_artifacts(image, kernel, base, agent)?;
+    let prepared = prepare_fault_artifacts_pinned(image, kernel, base, agent, Some(image_sha256))?;
     for (what, want, have) in [
         (
             "workload image",

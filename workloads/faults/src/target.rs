@@ -322,6 +322,8 @@ pub enum FaultStop {
     /// The run reached its horizon deadline, the nominal outcome.
     #[default]
     Deadline,
+    /// A retained diagnostic command reached its completion boundary.
+    CommandComplete,
     /// The guest went quiescent before the deadline.
     Quiescent,
     /// An `assert_always` fired: a bug.
@@ -341,6 +343,7 @@ impl FaultStop {
     pub fn from_stop_reason(reason: &StopReason) -> Self {
         match reason {
             StopReason::Deadline { .. } => Self::Deadline,
+            StopReason::ExecComplete { .. } => Self::CommandComplete,
             StopReason::Quiescent { .. } => Self::Quiescent,
             StopReason::Assertion { ev, .. } => Self::Assertion { point: ev.id },
             StopReason::Crash { .. } => Self::Crash,
@@ -357,7 +360,7 @@ impl FaultStop {
     /// Whether the endpoint can still be branched from.
     #[must_use]
     pub fn is_continuable(self) -> bool {
-        matches!(self, Self::Deadline)
+        matches!(self, Self::Deadline | Self::CommandComplete)
     }
 }
 
@@ -759,6 +762,13 @@ mod tests {
             FaultStop::from_stop_reason(&StopReason::Deadline { vtime: Moment(1) })
                 .is_continuable()
         );
+        let completed = FaultStop::from_stop_reason(&StopReason::ExecComplete {
+            vtime: Moment(2),
+            id: 7,
+        });
+        assert_eq!(completed, FaultStop::CommandComplete);
+        assert!(completed.is_continuable());
+        assert!(!completed.is_bug());
         assert!(!FaultStop::from_stop_reason(&StopReason::Quiescent { vtime: Moment(1) }).is_bug());
     }
 

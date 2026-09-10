@@ -9,6 +9,8 @@
 
 use std::{error::Error, path::Path};
 
+mod legacy;
+
 use guest_image::Writer;
 use oci_support::image::Ownership;
 
@@ -39,6 +41,38 @@ pub fn prepare_oci(image: &str, base: &[u8], agent: &[u8]) -> Result<Prepared, B
     prepare_rootfs(&staged.rootfs, &staged.owners, base, agent)
 }
 
+/// Reconstruct the current or legacy image layout selected by a retained hash.
+/// No guest code runs during preparation. An empty legacy pin selects the
+/// current layout; a nonempty pin must match exactly.
+pub fn prepare_oci_pinned(
+    image: &str,
+    base: &[u8],
+    agent: &[u8],
+    expected_sha256: &str,
+) -> Result<Prepared, Box<dyn Error>> {
+    let staging = tempfile::tempdir()?;
+    let staged = oci_support::image::stage(image, staging.path())?;
+    prepare_rootfs_pinned(&staged.rootfs, &staged.owners, base, agent, expected_sha256)
+}
+
+fn prepare_rootfs_pinned(
+    rootfs: &Path,
+    owners: &Ownership,
+    base: &[u8],
+    agent: &[u8],
+    expected_sha256: &str,
+) -> Result<Prepared, Box<dyn Error>> {
+    for init in [INIT, legacy::INIT] {
+        let prepared = prepare_rootfs_with_init(rootfs, owners, base, agent, init)?;
+        if crate::workspace::check_pinned("workload image", expected_sha256, &prepared.initramfs)
+            .is_ok()
+        {
+            return Ok(prepared);
+        }
+    }
+    Err(format!("workload image differs from pinned hash {expected_sha256} in both supported preparation layouts; supply the pinned artifacts").into())
+}
+
 /// Assemble the guest initramfs from a staged rootfs. `owners` is the owner
 /// each rootfs entry gets in the guest: a node that drops privileges to the
 /// image's service account can only open what that account owns.
@@ -47,6 +81,16 @@ fn prepare_rootfs(
     owners: &Ownership,
     base: &[u8],
     agent: &[u8],
+) -> Result<Prepared, Box<dyn Error>> {
+    prepare_rootfs_with_init(rootfs, owners, base, agent, INIT)
+}
+
+fn prepare_rootfs_with_init(
+    rootfs: &Path,
+    owners: &Ownership,
+    base: &[u8],
+    agent: &[u8],
+    init: &[u8],
 ) -> Result<Prepared, Box<dyn Error>> {
     if base.is_empty() || agent.is_empty() {
         return Err("fault search requires a guest base image and a static fault agent".into());
@@ -65,7 +109,7 @@ fn prepare_rootfs(
         overlay.dir(directory, 0o755);
     }
     overlay.file("harmony-oci/rootfs/opt/harmony/fault-agent", 0o755, agent);
-    overlay.file("init", 0o755, INIT);
+    overlay.file("init", 0o755, init);
     let control = overlay.finish();
     // Linux accepts the next raw cpio header only at a four-byte boundary
     // after decompressing the preceding initramfs member.
@@ -127,6 +171,36 @@ for directory in dev proc sys; do
     $BB mkdir -p "$ROOT/$directory"
     $BB mount --bind "/$directory" "$ROOT/$directory"
 done
+stage=diagnostic-shell
+echo "FAULT_INIT_STAGE=$stage" >&2
+# `harmony -w W exec` types a command at a shell reading the guest console and
+# watches the console for its completion marker, so the workload's filesystem
+# context needs one. The workload image is not required to carry a shell, so
+# the base image's static busybox is staged beside the agent. One supervisor
+# process owns the shell and reaps it, because the agent waits only on the
+# nodes it started and would otherwise accumulate zombies. Failed setup gets a
+# bounded retry window with a delay; repeated failure logs and exits the
+# supervisor instead of leaving a hidden retry loop without the command channel.
+$BB cp "$BB" "$ROOT/opt/harmony/busybox"
+$BB chmod 0755 "$ROOT/opt/harmony/busybox"
+$BB chroot "$ROOT" /opt/harmony/busybox sh -c '
+    PS1="# "
+    export PS1
+    attempts=0
+    while [ "$attempts" -lt 5 ]; do
+        if /opt/harmony/busybox setsid -c /opt/harmony/busybox sh -i \
+            </dev/console >/dev/console 2>&1; then
+            attempts=0
+        else
+            attempts=$((attempts + 1))
+            /opt/harmony/busybox echo \
+                "FAULT_INIT_DIAGNOSTIC_SHELL_FAILED attempt=$attempts" >&2
+        fi
+        /opt/harmony/busybox sleep 1
+    done
+    /opt/harmony/busybox echo \
+        "FAULT_INIT_EXIT stage=diagnostic-shell rc=1" >&2
+    exit 1' &
 stage=chroot-agent
 echo "FAULT_INIT_STAGE=$stage" >&2
 exec $BB chroot "$ROOT" /opt/harmony/fault-agent \
@@ -170,6 +244,46 @@ ready /usr/bin/etcdctl endpoint health
     }
 
     #[test]
+    fn retained_image_pin_selects_exact_current_or_legacy_layout() {
+        use sha2::{Digest, Sha256};
+        let root = tempfile::tempdir().unwrap();
+        image(root.path());
+        let owners = Ownership::default();
+        let current = prepare_rootfs(root.path(), &owners, b"base", b"agent").unwrap();
+        let legacy =
+            prepare_rootfs_with_init(root.path(), &owners, b"base", b"agent", legacy::INIT)
+                .unwrap();
+        assert_ne!(current.initramfs, legacy.initramfs);
+        // The pre-shell init bytes are an artifact compatibility contract.
+        assert_eq!(
+            format!("{:x}", Sha256::digest(legacy::INIT)),
+            "092da85254e4bcfefeb7021d66d0af6bc1ef526f34c59967964316c46ad6dc0a"
+        );
+        for expected in [&current, &legacy] {
+            let pin = format!("{:x}", Sha256::digest(&expected.initramfs));
+            let restored =
+                prepare_rootfs_pinned(root.path(), &owners, b"base", b"agent", &pin).unwrap();
+            assert_eq!(restored.initramfs, expected.initramfs);
+            assert_eq!(restored.bundle, expected.bundle);
+            assert!(
+                prepare_rootfs_pinned(root.path(), &owners, b"different-base", b"agent", &pin)
+                    .is_err()
+            );
+            assert!(
+                prepare_rootfs_pinned(root.path(), &owners, b"base", b"different-agent", &pin)
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            prepare_rootfs_pinned(root.path(), &owners, b"base", b"agent", "")
+                .unwrap()
+                .initramfs,
+            current.initramfs
+        );
+        assert!(prepare_rootfs_pinned(root.path(), &owners, b"base", b"agent", "invalid").is_err());
+    }
+
+    #[test]
     fn preparation_rejects_a_bundle_symlink_outside_the_image() {
         let root = tempfile::tempdir().unwrap();
         let external = tempfile::NamedTempFile::new().unwrap();
@@ -197,12 +311,16 @@ ready /usr/bin/etcdctl endpoint health
         let bind_rootfs = contains(b"stage=bind-rootfs").expect("bind-rootfs stage");
         let bind_pseudo =
             contains(b"stage=bind-pseudo-filesystems").expect("bind-pseudo-filesystems stage");
+        let shell = contains(b"stage=diagnostic-shell").expect("diagnostic-shell stage");
         let chroot = contains(b"stage=chroot-agent").expect("chroot stage");
         assert!(
             bind_rootfs < bind_pseudo,
             "root bind must precede child mounts"
         );
-        assert!(bind_pseudo < chroot, "child mounts must precede chroot");
+        assert!(
+            bind_pseudo < shell && shell < chroot,
+            "the diagnostic shell starts inside the prepared rootfs, before the agent"
+        );
         assert!(contains(b"FAULT_INIT_EXIT stage=$stage rc=$rc").is_some());
         assert!(
             contains(b"/opt/harmony/fault-agent \\\n    --bundle /etc/harmony/bundle --hook-dir /run/fault-agent")
@@ -218,6 +336,95 @@ ready /usr/bin/etcdctl endpoint health
                 .status()
                 .unwrap()
                 .success()
+        );
+    }
+
+    #[test]
+    fn diagnostic_shell_retries_failed_setsid_then_exits_with_a_diagnostic() {
+        use std::{os::unix::fs::PermissionsExt, process::Stdio, thread, time::Duration};
+
+        let text = std::str::from_utf8(INIT).unwrap();
+        let prefix = "$BB chroot \"$ROOT\" /opt/harmony/busybox sh -c '\n";
+        let start = text.find(prefix).expect("diagnostic shell command") + prefix.len();
+        let end = text[start..]
+            .find("\n    exit 1' &")
+            .expect("diagnostic shell end");
+        let body = &text[start..start + end + "\n    exit 1".len()];
+
+        let root = tempfile::tempdir().unwrap();
+        let fake_busybox = root.path().join("busybox");
+        std::fs::write(
+            &fake_busybox,
+            br##"#!/bin/sh
+case "$1" in
+setsid)
+    exit 1
+    ;;
+echo)
+    shift
+    printf '%s\n' "$*" >&2
+    ;;
+sleep)
+    printf 'sleep\n' >> "$SLEEP_LOG"
+    ;;
+*)
+    exit 2
+    ;;
+esac
+"##,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&fake_busybox).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_busybox, permissions).unwrap();
+
+        let console_in = root.path().join("console-in");
+        let console_out = root.path().join("console-out");
+        let sleep_log = root.path().join("sleep-log");
+        std::fs::write(&console_in, []).unwrap();
+        std::fs::write(&sleep_log, []).unwrap();
+        let shell_quote =
+            |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\\"'\\\"'"));
+        let body = body
+            .replace("/opt/harmony/busybox", &shell_quote(&fake_busybox))
+            .replace("</dev/console", &format!("<{}", shell_quote(&console_in)))
+            .replace(">/dev/console", &format!(">{}", shell_quote(&console_out)));
+        assert!(!body.contains("kill -TERM 1"));
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(body)
+            .env("SLEEP_LOG", &sleep_log)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let mut finished = false;
+        for _ in 0..100 {
+            if child.try_wait().unwrap().is_some() {
+                finished = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        if !finished {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("diagnostic-shell retry loop did not terminate");
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success());
+        let diagnostics = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            diagnostics
+                .matches("FAULT_INIT_DIAGNOSTIC_SHELL_FAILED")
+                .count(),
+            5
+        );
+        assert!(diagnostics.contains("FAULT_INIT_EXIT stage=diagnostic-shell rc=1"));
+        assert_eq!(
+            std::fs::read_to_string(sleep_log).unwrap().lines().count(),
+            5
         );
     }
 
