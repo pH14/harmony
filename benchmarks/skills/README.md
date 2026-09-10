@@ -2,18 +2,52 @@
 
 # Harmony developer-skill evaluation
 
-Status: design agreed in principle; PostgreSQL 14.3 selected as the only initial
-target.
-No fixture is qualified and no model attempts have run. This directory defines
-the evaluation contract; it does not yet supply an executable runner.
+This directory holds the evaluation contract and the runner that carries it
+out. It evaluates the four [skills](../../skills/README.md) against an existing
+application: PostgreSQL 14.3, scoped to `CREATE INDEX CONCURRENTLY`. Execution
+goes through a replaceable adapter that drives the shipping CLI, which is
+itself an evaluation target.
 
-This contract is part of the consolidated
-[CLI and agent UX effort](../../docs/CLI-AGENT-UX-PLAN.md), which owns delivery
-order and the integration, investigation, and end-to-end evaluation panels.
-Evaluate `harmony-properties`, `harmony-instrument`, `harmony-build`, and
-`harmony-run` against an existing application. Execution belongs behind a
-replaceable adapter that exercises the shipping CLI; the CLI is now an explicit
-evaluation target. The integration-specific details below remain applicable.
+## Running it
+
+`eval.py` is a `uv` script; it needs no installed dependencies.
+
+```sh
+cargo build --release -p harmony-cli
+./benchmarks/skills/eval.py qualify --out runs/qualify
+./benchmarks/skills/eval.py run --panel investigation --attempts 3 --out runs/pilot
+./benchmarks/skills/eval.py report --out runs/pilot
+```
+
+`qualify` checks the fixture against the shipping CLI and reports whether the
+agent adapter is available. `run` prepares each attempt's isolated directory,
+launches the agent, freezes the submission, grades it, and writes
+`report.json` and `report.md`. Arms alternate in a shuffled order under
+matched budgets, and every attempt keeps its own record.
+
+| File | Owns |
+| --- | --- |
+| [`eval.py`](eval.py) | Preparation, budgets, freezing, evaluation, reports |
+| [`adapters.py`](adapters.py) | The agent adapters. `claude-code` drives the installed CLI; `echo` runs no model so CI can check the runner without credentials |
+| [`panels.py`](panels.py) | Each panel's assignment, tool access, and artifact checks |
+| [`fixture.py`](fixture.py) | The investigation panel's workspace, either adopted from a real search or derived from the historical case |
+
+`--adapter` selects the agent, `--model` and `--effort` its settings. Nothing
+about a fixture, a skill, or a grading rule names a model, so a different
+provider is a different adapter and nothing else.
+
+A derived fixture is assembled from the historical case's bundle, witness, and
+detector output without executing a VM. It measures whether an agent can drive
+the CLI over a recorded finding. It does not measure a real investigation, and
+every attempt record and report says which source it used. Pass
+`--recorded-workspace W` on a KVM host to use a workspace a real search wrote.
+
+[`.github/workflows/skill-eval.yml`](../../.github/workflows/skill-eval.yml)
+calls this runner. Pull requests run the `echo` adapter, which exercises
+preparation, isolation, freezing, grading, and reporting without a model
+credential. A scheduled or manual run calls a real model under explicit token,
+tool-call, and wall ceilings, and refuses to start when no provider credential
+is configured.
 
 ## Target
 
@@ -193,21 +227,21 @@ agent-visible development logs from evaluator-only results.
 Reproducibility means re-evaluating the frozen submission and replaying workload
 artifacts. It does not promise identical model decisions on a fresh attempt.
 
-## Implementation sequence
+## What the integration panels need
 
-1. Derive an agent-visible PostgreSQL CIC contract and source package that omit
-   the existing Harmony case, historical explanation, probe, witness, and fix.
-2. Qualify semantic SDK delivery, the `pg_amcheck` oracle, and exercised
-   preconditions using the existing 14.3/14.4 ground truth.
-3. Implement the isolated workspace, bounded execution adapter, and artifact
-   format, with executable boundary checks.
-4. Qualify PostgreSQL compiler instrumentation as a separate capability, or
-   record exactly which runtime/search integration remains absent.
-5. Author the preparation skills and the run/investigation skill against those
-   verified capabilities and the shipping CLI.
-6. Add the local model adapter and run the matched comparisons for all three
-   panels defined in the consolidated plan.
-7. Add the nightly wrapper after the local path works; select the CI provider
-   before enabling paid execution.
+The investigation panel runs. The integration and end-to-end panels need
+material this repository does not yet contain, and their prompts and checks in
+[`panels.py`](panels.py) are written against it:
 
-This sequence is planned work, not completed qualification or measured evidence.
+- An agent-visible PostgreSQL CIC contract and source package that omit the
+  existing Harmony case, its explanation, its probe, its witness, and the fix.
+- An execution service the attempt calls to run bounded Harmony campaigns on a
+  KVM worker, accepting artifacts and run settings rather than host paths or
+  shell commands.
+- A container image for the attempt workspace, with pinned dependencies and
+  restricted egress. A directory on the runner host is weaker isolation and is
+  recorded as such in each attempt.
+- A decision on PostgreSQL compiler instrumentation: qualify the build,
+  runtime, symbolization and search-feedback path, or record which part is
+  absent. Until then, score capability assessment and the semantic oracle path
+  and award nothing for flags alone.
