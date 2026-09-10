@@ -114,6 +114,12 @@ neither retention-slot geometry nor selector groups. Both comparison arms must
 use the same feature build, resource limits and recorded terminal semantics.
 No experimental policy or feature is a production default.
 
+`--features metroid-boss-context-audit` adds a reporting-only Metroid encounter
+sample at each completed live action endpoint and saves the first producing
+input for two replays. It uses separate artifact identities and adds metadata
+and verification costs; both comparison arms must use the same feature build.
+See the [Metroid observation and cost contract](src/metroid/README.md#experimental-endpoint-encounters).
+
 Build `nes-eval` with `--features selector-cost-audit` to forward the generic
 searcher's observation-only cost-rank diagnostic into progress sidecars. This
 can be combined with `metroid-motion-context`; comparison arms must use the same

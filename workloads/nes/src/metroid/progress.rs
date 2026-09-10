@@ -208,6 +208,8 @@ mod tests {
             },
             mother_brain_status: 0,
             tourian_events: TourianEvents::default(),
+            #[cfg(feature = "metroid-boss-context-audit")]
+            endpoint_boss_slots: None,
             changed_indices: Vec::new(),
             dead: false,
             log_line: String::new(),

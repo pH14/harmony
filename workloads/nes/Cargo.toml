@@ -25,6 +25,8 @@ metroid-motion-context = []
 metroid-complete-retention-audit = []
 # Generic selector diagnostics in the progress sidecar only.
 selector-cost-audit = ["searcher/selector-cost-audit"]
+# Reporting-only boss classification at completed live action endpoints.
+metroid-boss-context-audit = []
 
 [[bin]]
 name = "nova-consonance-campaign"

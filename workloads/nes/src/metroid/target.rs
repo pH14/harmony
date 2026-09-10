@@ -303,6 +303,11 @@ pub struct MetroidObservations {
     pub mother_brain_status: u8,
     /// Tourian transitions latched across frames of this action, reporting-only.
     pub tourian_events: TourianEvents,
+    /// Same-boundary classification for a completed live action endpoint.
+    /// None means this observation is not an eligible endpoint; Some(0) is a
+    /// sampled endpoint without a classified boss. Never used by search policy.
+    #[cfg(feature = "metroid-boss-context-audit")]
+    pub endpoint_boss_slots: Option<u8>,
     /// Sorted work-RAM indices changed since the prior emitted event.
     pub changed_indices: Vec<u16>,
     /// Whether Samus is dead at this event.
@@ -457,6 +462,8 @@ impl MetroidTarget {
             boss_defeats: decode_boss_defeats(&cartridge)?,
             mother_brain_status: read_byte(&wram, 0x98)?,
             tourian_events: TourianEvents::default(),
+            #[cfg(feature = "metroid-boss-context-audit")]
+            endpoint_boss_slots: None,
             changed_indices: Vec::new(),
             dead: false,
             log_line: "frame=0 changed=[]".to_owned(),
@@ -594,6 +601,8 @@ impl MetroidTarget {
             boss_defeats,
             mother_brain_status: wram[0x98],
             tourian_events,
+            #[cfg(feature = "metroid-boss-context-audit")]
+            endpoint_boss_slots: None,
             changed_indices: changed_indices.clone(),
             dead: state.is_dead(),
             log_line: format!("frame={frame_count} changed={changed_indices:?}"),
@@ -764,6 +773,16 @@ fn decode_action_observations_with_policy(
                 tourian_events,
             );
             observation.dead = policy.is_dead(state);
+            #[cfg(feature = "metroid-boss-context-audit")]
+            if offset + 1 == frames.len() && !observation.dead {
+                // Only here do WRAM and cartridge RAM describe the same paused
+                // boundary. Earlier events use endpoint cartridge bytes too.
+                let context = super::boss_probe::decode_context(wram, cartridge)?;
+                observation.endpoint_boss_slots = Some((0..6).fold(0, |mask, slot| {
+                    mask | (u8::from(super::boss_interval::classify(&context, slot).is_some())
+                        << slot)
+                }));
+            }
             observations.push(observation);
             prior_wram = *wram;
         }
@@ -874,6 +893,8 @@ mod observation_tests {
         // An early terminal observation is not the completed chord's RAM.
         assert_eq!(stopped_wram, underflow);
         assert_ne!(stopped_wram, cleared);
+        #[cfg(feature = "metroid-boss-context-audit")]
+        assert_eq!(corrected[0].endpoint_boss_slots, None);
         for (high, low) in [(0x69, 0x99), (0x19, 0x99), (0, 0x12)] {
             let mut live = start;
             live[HEALTH_HIGH] = high;
@@ -949,6 +970,23 @@ mod observation_tests {
         assert!(!observations.last().unwrap().dead);
         assert_eq!(cached_wram, final_wram);
         assert!(classify(&decode_context(&cached_wram, &final_cartridge).unwrap(), 0).is_none());
+        #[cfg(feature = "metroid-boss-context-audit")]
+        {
+            assert_eq!(observations[0].endpoint_boss_slots, None);
+            assert_eq!(observations[1].endpoint_boss_slots, Some(0));
+            let mut boss_endpoint = final_wram;
+            boss_endpoint[0x40f] = 0x40;
+            let (positive, _) = decode_action_observations_with_policy(
+                &[earlier, boss_endpoint],
+                &final_cartridge,
+                &initial,
+                prior_wram,
+                MetroidTerminalPolicy::BcdUnderflow,
+            )
+            .unwrap();
+            assert_eq!(positive[0].endpoint_boss_slots, None);
+            assert_eq!(positive[1].endpoint_boss_slots, Some(1));
+        }
 
         let (empty, unchanged) = decode_action_observations_with_policy(
             &[],

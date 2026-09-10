@@ -275,6 +275,22 @@ class EvaluationTests(unittest.TestCase):
         self.assertIn('index.html', checksums)
         for path, expected in checksums.items(): self.assertEqual(eval.digest(public/path), expected)
 
+    def test_export_preserves_first_encounter_envelope_and_refuses_symlink(self):
+        private, public = self.root/'private', self.root/'public'
+        item = self.matrix(private)
+        relative = Path(item['cell'])/'campaign/first-endpoint-encounter.json'
+        envelope = {'format':'metroid-endpoint-encounter-input-v1',
+                    'first':{'execution':7, 'route_action_end_frame':42, 'area':20, 'boss_slots':1},
+                    'input':{'actions':[{'buttons':1, 'hold_frames':42}]}}
+        eval.write_json(private/relative, envelope)
+        eval.export(private, public)
+        self.assertEqual(eval.read_json(public/relative), envelope)
+        self.assertEqual(eval.read_json(public/'checksums.json')[str(relative)],
+                         eval.digest(private/relative))
+        (private/relative).unlink()
+        (private/relative).symlink_to(private/item['cell']/'campaign/result.json')
+        with self.assertRaises(ValueError): eval.export(private, self.root/'symlink-export')
+
     def test_changed_affinity_keeps_quality_comparable_but_flags_timing(self):
         a, b = self.root/'a', self.root/'b'
         original = self.matrix(a)

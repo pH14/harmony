@@ -87,5 +87,29 @@ read-only milestone/observation queries, guarded by `!dead && !failed`, before
 any next action. `snapshot` captures emulator state and the current observation;
 it does not run another action. This establishes the producing-state connection
 for the intended live endpoint. Existing native snapshot/restore qualification
-remains separate from these source and decoder checks. No reporting field or
-runtime behavior has been changed yet.
+remains separate from these source and decoder checks. This source/fixture
+checkpoint preceded the opt-in implementation below.
+
+## Opt-in implementation
+
+`metroid-boss-context-audit` attaches an optional six-slot mask only to the live
+final observation. `None` means ineligible; `Some(0)` means a sampled endpoint
+without classified boss context. Ordered admission merges constant-size counts
+even for a rejected candidate. Origins do not count. The first positive event
+reconstructs its producing input exactly once, independent of whether an output
+path is configured. `nes-eval` verifies two identical replays ending at that
+encounter and publishes their measured route-frame cost explicitly. Its fresh
+genesis campaign guarantees that a producing prefix's earlier admitted positive
+would already have been the first campaign event. This verification path must
+be revisited before extending the evaluator to imported snapshot origins.
+
+Versioned stream/checkpoint/result identities and an explicit observation-policy
+entry distinguish feature builds. Default schemas remain unchanged. Added
+snapshot metadata participates in existing size-based memory accounting; a first
+encounter adds deterministic input reconstruction and two verification replays.
+No blanket wall/memory neutrality claim follows from reporting-only ownership.
+The local checks include fabricated mixed-time context, early death, missing and
+zero samples, origin exclusion, rejected-candidate reporting, one reconstruction,
+publication independence and rejection of a replay ending after its encounter.
+Native qualification still needs a prospectively bounded registration. No new
+performance allocation or positive native fight is claimed by this implementation.

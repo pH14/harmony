@@ -2,7 +2,10 @@
 //! Compact, headless evaluation of NES packages through the shared campaign engine.
 
 use nes_workload::{
-    metroid::campaign::{MetroidCampaignRun, MetroidGame},
+    metroid::campaign::{
+        ENDPOINT_ENCOUNTER_ARTIFACT, ENDPOINT_ENCOUNTER_ARTIFACT_FORMAT, MetroidCampaignRun,
+        MetroidGame,
+    },
     mm2::{
         campaign::{Mm2CampaignRun, Mm2Game},
         target::{Mm2Input, Mm2Stage},
@@ -189,6 +192,34 @@ fn replay_witness<G: Game>(game: &G, run: &G::Run, input: &Input<G::Action>) -> 
     )
 }
 
+fn verify_endpoint_encounter_witness(artifact: &Value, replay: &Value) -> Result<()> {
+    if artifact["format"] != ENDPOINT_ENCOUNTER_ARTIFACT_FORMAT || replay["dead"] != false {
+        return Err("invalid endpoint encounter artifact or dead replay".into());
+    }
+    let first = &artifact["first"];
+    let slots = first["boss_slots"]
+        .as_u64()
+        .ok_or("missing encounter slot mask")?;
+    let area = first["area"].as_u64().ok_or("missing encounter area")?;
+    let frame = first["route_action_end_frame"]
+        .as_u64()
+        .ok_or("missing encounter frame")?;
+    if !(1..=63).contains(&slots)
+        || !matches!(area, 18 | 20)
+        || frame == 0
+        || replay["physical_suffix_frames"].as_u64() != Some(frame)
+    {
+        return Err("encounter witness does not end at its classified live endpoint".into());
+    }
+    let observed = &replay["diagnostics"]["endpoint_encounters"]["counts"]["first"];
+    for key in ["area", "boss_slots", "route_action_end_frame"] {
+        if observed[key] != first[key] {
+            return Err(format!("encounter witness differs at {key}").into());
+        }
+    }
+    Ok(())
+}
+
 fn evaluate<G: Game>(
     game: &G,
     run: G::Run,
@@ -356,6 +387,37 @@ where
             );
         }
     }
+    let encounter_path = out.join(ENDPOINT_ENCOUNTER_ARTIFACT);
+    let endpoint_encounter_witness = if encounter_path.is_file() {
+        let bytes = fs::read(&encounter_path)?;
+        let artifact: Value = serde_json::from_slice(&bytes)?;
+        let input: Input<G::Action> = serde_json::from_value(artifact["input"].clone())?;
+        let execution = artifact["first"]["execution"]
+            .as_u64()
+            .ok_or("missing encounter execution")?;
+        if request.game != "metroid"
+            || input.actions.is_empty()
+            || input.actions.len() > request.actions
+            || execution == 0
+            || execution > report.executions_completed
+        {
+            return Err("encounter input is outside the admitted campaign bounds".into());
+        }
+        let replay = replay_witness(game, &run, &input)?;
+        if replay != replay_witness(game, &run, &input)? {
+            return Err("endpoint encounter witness replay is nondeterministic".into());
+        }
+        verify_endpoint_encounter_witness(&artifact, &replay)?;
+        Some(json!({
+            "artifact_sha256": format!("{:x}", Sha256::digest(&bytes)),
+            "first": artifact["first"],
+            "verified_replays": 2,
+            "known_replay_frames": 2 * replay["physical_suffix_frames"].as_u64().ok_or("missing replay cost")?,
+            "replay": replay,
+        }))
+    } else {
+        None
+    };
     let verification_seconds = verify_started.elapsed().as_secs_f64();
     let solved = event_within_budget(report.frames_to_first_victory, request.frames);
     let milestone_reached = event_within_budget(
@@ -378,6 +440,9 @@ where
         result["milestone_stop"] = serde_json::to_value(condition)?;
         result["first_milestone"] = serde_json::to_value(report.first_milestone)?;
         result["milestone_within_budget"] = json!(milestone_reached);
+    }
+    if let Some(witness) = endpoint_encounter_witness {
+        result["endpoint_encounter_witness"] = witness;
     }
     write_json(&out.join("result.json"), &result)?;
     phase(out, "done", started)
@@ -564,6 +629,8 @@ fn main() -> Result<()> {
                                 .unwrap_or("death_or_ending_v2"),
                         )?,
                     );
+                #[cfg(feature = "metroid-boss-context-audit")]
+                let game = game.with_endpoint_encounter_path(out.join(ENDPOINT_ENCOUNTER_ARTIFACT));
                 if request.retention_audit {
                     game.with_retention_audit(out.join("retention-audit.json"))
                 } else {
@@ -596,7 +663,10 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::event_within_budget;
+    use super::{
+        ENDPOINT_ENCOUNTER_ARTIFACT_FORMAT, event_within_budget, verify_endpoint_encounter_witness,
+    };
+    use serde_json::json;
 
     #[test]
     fn a_victory_in_the_drained_window_does_not_pass_the_frame_gate() {
@@ -604,5 +674,27 @@ mod tests {
         assert!(!event_within_budget(Some(129), Some(128)));
         assert!(event_within_budget(Some(129), None));
         assert!(!event_within_budget(None, Some(128)));
+    }
+
+    #[test]
+    fn encounter_verification_requires_the_producing_endpoint_not_an_earlier_sighting() {
+        let first =
+            json!({"execution": 42, "area": 20, "boss_slots": 1, "route_action_end_frame": 100});
+        let artifact = json!({"format": ENDPOINT_ENCOUNTER_ARTIFACT_FORMAT, "first": first});
+        let replay = json!({"dead": false, "physical_suffix_frames": 100,
+            "diagnostics": {"endpoint_encounters": {"counts": {"first": first}}}});
+        verify_endpoint_encounter_witness(&artifact, &replay).unwrap();
+        let mut earlier = replay.clone();
+        earlier["physical_suffix_frames"] = json!(101);
+        assert!(verify_endpoint_encounter_witness(&artifact, &earlier).is_err());
+        let mut dead = replay.clone();
+        dead["dead"] = json!(true);
+        assert!(verify_endpoint_encounter_witness(&artifact, &dead).is_err());
+        let mut different = replay.clone();
+        different["diagnostics"]["endpoint_encounters"]["counts"]["first"]["boss_slots"] = json!(2);
+        assert!(verify_endpoint_encounter_witness(&artifact, &different).is_err());
+        let mut missing = replay;
+        missing["diagnostics"] = json!({});
+        assert!(verify_endpoint_encounter_witness(&artifact, &missing).is_err());
     }
 }

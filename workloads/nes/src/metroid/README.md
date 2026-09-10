@@ -101,6 +101,37 @@ archive's complete history. Missing fields in older reports mean **unavailable**
 not zero. A retained champion replay cannot establish everything an older search
 explored or prove that no other branch defeated a boss.
 
+### Experimental endpoint encounters
+
+Build with `--features metroid-boss-context-audit` to report snapshot-local boss
+context at completed, live action endpoints. Intermediate WRAM observations are
+paired with endpoint cartridge RAM, so they are deliberately ineligible. Empty,
+failed and early-dead actions supply no eligible sample. Origin/restored markers
+are not counted as newly executed actions. The report distinguishes admitted
+actions, eligible live endpoints and classified endpoints; it includes the first
+classified endpoint's admitted execution, route frame, area and enemy-slot mask.
+Counters merge before retention and do not claim fight capability, exact damage,
+defeat, retention history or encounters between action endpoints.
+
+`nes-eval` writes `first-endpoint-encounter.json` with the first endpoint and its
+producing searched input, then replays that input twice and requires the same
+live encounter at its end. `result.json.endpoint_encounter_witness` records the
+artifact hash, replay and `known_replay_frames`; charge those frames in addition
+to champion and named-milestone replay costs. No artifact means no positive was
+recorded; use the diagnostic counts to distinguish missing eligible observations.
+A first encounter reconstructs its input even with publication disabled, keeping
+deterministic reconstruction counters independent of output configuration.
+
+The feature is off by default. It adds constant-size metadata to observations
+and snapshots, charged by the existing snapshot memory accounting, and records
+`endpoint_encounter_observation: metroid-live-endpoint-boss-slots-v1`. Its stream
+and checkpoint use `endpoint-context-v5`; semantic result digests use
+`endpoint-context-v6`. It changes no keys, rewards, action law or selection rule,
+but metadata and first-input reconstruction have resource costs. Instrument both
+arms identically; compatibility at bounded fixtures does not establish neutrality
+near memory or wall limits. Positive native fight qualification is still required
+before stronger claims; see the [observation contract](../../../../benchmarks/search/depth-transfer/endpoint-encounter-contract.md).
+
 The names and boss flags follow
 [`Metroid_Defines.asm`](https://github.com/nmikstas/metroid-disassembly/blob/4270d57f9468daebdeea485686e31e26218a780c/Source_Files/Metroid_Defines.asm),
 with the defeat write in `Bank07.asm` at `LDD75`: `(InArea & 0x0f) >> 1`

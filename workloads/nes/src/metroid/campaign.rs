@@ -42,9 +42,22 @@ use crate::{
 };
 
 /// Stream format written by Metroid campaigns.
-pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v4";
+pub const CAMPAIGN_STREAM_FORMAT: &str = if cfg!(feature = "metroid-boss-context-audit") {
+    "metroid-quicknes-campaign-stream-endpoint-context-v5"
+} else {
+    "metroid-quicknes-campaign-stream-v4"
+};
 /// Snapshot checkpoint format written by Metroid campaigns.
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v4";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = if cfg!(feature = "metroid-boss-context-audit") {
+    "metroid-quicknes-snapshot-checkpoint-endpoint-context-v5"
+} else {
+    "metroid-quicknes-snapshot-checkpoint-v4"
+};
+
+/// First observed live endpoint encounter and its producing searched input.
+pub const ENDPOINT_ENCOUNTER_ARTIFACT: &str = "first-endpoint-encounter.json";
+/// Format of the optional first-encounter artifact.
+pub const ENDPOINT_ENCOUNTER_ARTIFACT_FORMAT: &str = "metroid-endpoint-encounter-input-v1";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -53,7 +66,13 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_select_taps_no_start_v1";
-const RESULT_DIGEST_IDENTIFIER: &str = if cfg!(feature = "metroid-motion-context") {
+const RESULT_DIGEST_IDENTIFIER: &str = if cfg!(feature = "metroid-boss-context-audit") {
+    if cfg!(feature = "metroid-motion-context") {
+        "metroid-semantic-postcard-1.1.3-sha256-hex-motion-endpoint-context-v6"
+    } else {
+        "metroid-semantic-postcard-1.1.3-sha256-hex-endpoint-context-v6"
+    }
+} else if cfg!(feature = "metroid-motion-context") {
     "metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5"
 } else {
     "metroid-semantic-postcard-1.1.3-sha256-hex-v4"
@@ -76,6 +95,8 @@ pub struct MetroidGame {
     chord_correlation: crate::chord_correlation::ChordCorrelation,
     champion_input_path: Option<PathBuf>,
     milestone_input_dir: Option<PathBuf>,
+    #[cfg(feature = "metroid-boss-context-audit")]
+    endpoint_encounter_path: Option<PathBuf>,
     terminal_policy: MetroidTerminalPolicy,
     retention_audit: Option<std::sync::Mutex<super::retention_audit::RetentionAudit>>,
 }
@@ -120,6 +141,8 @@ impl MetroidGame {
             chord_correlation: crate::chord_correlation::ChordCorrelation::Independent,
             champion_input_path: None,
             milestone_input_dir: None,
+            #[cfg(feature = "metroid-boss-context-audit")]
+            endpoint_encounter_path: None,
             retention_audit: None,
             terminal_policy: MetroidTerminalPolicy::Legacy,
         }
@@ -156,6 +179,34 @@ impl MetroidGame {
     pub fn with_milestone_input_dir(mut self, directory: PathBuf) -> Self {
         self.milestone_input_dir = Some(directory);
         self
+    }
+
+    /// Export the first classified live endpoint for independent replay.
+    /// This artifact never supplies inputs or feedback to the searcher.
+    #[cfg(feature = "metroid-boss-context-audit")]
+    #[must_use]
+    pub fn with_endpoint_encounter_path(mut self, path: PathBuf) -> Self {
+        self.endpoint_encounter_path = Some(path);
+        self
+    }
+
+    #[cfg(feature = "metroid-boss-context-audit")]
+    fn publish_endpoint_encounter(
+        &self,
+        first: &EndpointEncounter,
+        input: &MetroidInput,
+    ) -> Result<(), Box<dyn Error>> {
+        if let Some(path) = &self.endpoint_encounter_path {
+            let temporary = path.with_extension("json.tmp");
+            let value = serde_json::json!({
+                "format": ENDPOINT_ENCOUNTER_ARTIFACT_FORMAT,
+                "first": first,
+                "input": input,
+            });
+            std::fs::write(&temporary, serde_json::to_vec(&value)?)?;
+            std::fs::rename(temporary, path)?;
+        }
+        Ok(())
     }
 
     /// Enable bounded replacement-pair sampling without changing search semantics.
@@ -217,6 +268,8 @@ pub struct MetroidCampaignEvidence {
     observed_map: MapCoverage,
     underflow: UnderflowDiagnostics,
     named_progress: NamedProgress,
+    #[cfg(feature = "metroid-boss-context-audit")]
+    endpoint_encounters: EndpointEncounters,
     aggregate: MetroidMilestones,
     watermark: MetroidProgressWatermark,
     first_reached: MetroidMilestoneTimes,
@@ -234,6 +287,57 @@ struct UnderflowDiagnostics {
     eligible: u64,
     first_execution: Option<u64>,
     max_health: u16,
+}
+
+#[cfg(feature = "metroid-boss-context-audit")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+struct EndpointEncounter {
+    execution: u64,
+    route_action_end_frame: u64,
+    area: u8,
+    boss_slots: u8,
+}
+
+/// Constant-size endpoint counts. Campaigns merge admitted actions; witness
+/// replay merges replayed actions. Origin/restored observations are excluded.
+#[cfg(feature = "metroid-boss-context-audit")]
+#[derive(Clone, Default, Serialize)]
+struct EndpointEncounters {
+    actions_observed: u64,
+    live_endpoints: u64,
+    classified_endpoints: u64,
+    first: Option<EndpointEncounter>,
+}
+
+#[cfg(feature = "metroid-boss-context-audit")]
+impl EndpointEncounters {
+    fn observe(&mut self, observations: &[MetroidObservations], sequence: u64) -> bool {
+        if sequence == 0 {
+            return false;
+        }
+        self.actions_observed += 1;
+        let Some(endpoint) = observations.last().filter(|endpoint| !endpoint.dead) else {
+            return false;
+        };
+        let Some(boss_slots) = endpoint.endpoint_boss_slots else {
+            return false;
+        };
+        self.live_endpoints += 1;
+        if boss_slots == 0 {
+            return false;
+        }
+        self.classified_endpoints += 1;
+        if self.first.is_some() {
+            return false;
+        }
+        self.first = Some(EndpointEncounter {
+            execution: sequence,
+            route_action_end_frame: endpoint.frame_count,
+            area: endpoint.decoded.area,
+            boss_slots,
+        });
+        true
+    }
 }
 
 /// Observation-only bitmap over raw area bytes and the engine's 32x32 map.
@@ -587,7 +691,7 @@ impl Reporting for MetroidGame {
     }
 
     fn diagnostics(evidence: &MetroidCampaignEvidence) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
+        let value = serde_json::json!({
             "map_cells_observed": evidence.observed_map.count(),
             "coverage_bitmap_bytes": 32768,
             "named_progress": evidence.named_progress,
@@ -597,13 +701,26 @@ impl Reporting for MetroidGame {
             "max_observed_endpoint_health": evidence.underflow.max_health,
             "underflow_diagnostic_memory_bytes": std::mem::size_of::<UnderflowDiagnostics>(),
             "observation_filter": "live gameplay observations supplied to this accumulator"
-        }))
+        });
+        #[cfg(feature = "metroid-boss-context-audit")]
+        let value = {
+            let mut value = value;
+            value["endpoint_encounters"] = serde_json::json!({
+                "format": "metroid-live-endpoint-encounters-v1",
+                "sampling": "completed live action endpoints; origins and intermediate observations excluded",
+                "counts": evidence.endpoint_encounters,
+            });
+            value
+        };
+        Some(value)
     }
     fn merge_witness_diagnostics(
         evidence: &mut MetroidCampaignEvidence,
         observations: &[MetroidObservations],
         sequence: u64,
     ) {
+        #[cfg(feature = "metroid-boss-context-audit")]
+        evidence.endpoint_encounters.observe(observations, sequence);
         let action_end = observations.last().map_or(0, |obs| obs.frame_count);
         for observation in observations {
             evidence
@@ -695,6 +812,11 @@ impl InputPolicy for MetroidGame {
             self.identity.clone(),
         )))
         .collect();
+        #[cfg(feature = "metroid-boss-context-audit")]
+        policies.insert(
+            "endpoint_encounter_observation".to_owned(),
+            "metroid-live-endpoint-boss-slots-v1".to_owned(),
+        );
         if self.chord_correlation != crate::chord_correlation::ChordCorrelation::Independent {
             policies.insert(
                 "action_correlation".to_owned(),
@@ -998,6 +1120,12 @@ impl Evaluation for MetroidGame {
     where
         F: FnOnce() -> Result<MetroidInput, Box<dyn Error>>,
     {
+        #[cfg(feature = "metroid-boss-context-audit")]
+        let first_encounter_needed = evidence
+            .endpoint_encounters
+            .observe(&action.observations, sequence);
+        #[cfg(not(feature = "metroid-boss-context-audit"))]
+        let first_encounter_needed = false;
         if let Some(endpoint) = action.observations.last() {
             evidence.underflow.max_health =
                 evidence.underflow.max_health.max(endpoint.decoded.health);
@@ -1033,8 +1161,23 @@ impl Evaluation for MetroidGame {
             .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
         // Reconstruction is counted in deterministic reports. Whether files
         // are published must not change that count when the stream is replayed.
-        if first_input_needed || champion.is_some() || !discoveries.is_empty() {
+        if first_input_needed
+            || champion.is_some()
+            || !discoveries.is_empty()
+            || first_encounter_needed
+        {
             let input = input()?;
+            #[cfg(feature = "metroid-boss-context-audit")]
+            if first_encounter_needed {
+                self.publish_endpoint_encounter(
+                    evidence
+                        .endpoint_encounters
+                        .first
+                        .as_ref()
+                        .expect("new encounter"),
+                    &input,
+                )?;
+            }
             self.publish_milestones(&discoveries, &input)?;
             update_first_inputs(
                 &mut evidence.first_reached,
@@ -1198,6 +1341,8 @@ mod tests {
             boss_defeats: BossDefeats::default(),
             mother_brain_status: 0,
             tourian_events: TourianEvents::default(),
+            #[cfg(feature = "metroid-boss-context-audit")]
+            endpoint_boss_slots: None,
             changed_indices: Vec::new(),
             dead: false,
             log_line: String::new(),
@@ -1257,5 +1402,102 @@ mod tests {
         coverage.observe(16, 0, 255);
         assert_eq!(coverage.count(), 3);
         assert_eq!(coverage.0.len() * size_of::<u64>(), 32768);
+    }
+
+    #[cfg(feature = "metroid-boss-context-audit")]
+    fn endpoint_observation(slots: Option<u8>) -> MetroidObservations {
+        let mut wram = [0; 2048];
+        wram[0x1e] = 3;
+        wram[0x107] = 3;
+        wram[0x74] = 0x14;
+        MetroidObservations {
+            frame_count: 99,
+            decoded: super::super::target::decode_state(&wram, &[0; 8192]).unwrap(),
+            boss_defeats: Default::default(),
+            mother_brain_status: 0,
+            tourian_events: Default::default(),
+            endpoint_boss_slots: slots,
+            changed_indices: Vec::new(),
+            dead: false,
+            log_line: String::new(),
+        }
+    }
+
+    #[cfg(feature = "metroid-boss-context-audit")]
+    #[test]
+    fn encounter_counts_exclude_origins_intermediate_and_unavailable_samples() {
+        let positive = endpoint_observation(Some(1));
+        let mut counts = EndpointEncounters::default();
+        assert!(!counts.observe(std::slice::from_ref(&positive), 0));
+        assert_eq!(counts.actions_observed, 0);
+        assert!(!counts.observe(&[], 1));
+        assert!(!counts.observe(&[endpoint_observation(None)], 2));
+        assert!(!counts.observe(&[positive.clone(), endpoint_observation(Some(0))], 3));
+        assert!(counts.observe(std::slice::from_ref(&positive), 4));
+        assert!(!counts.observe(std::slice::from_ref(&positive), 5));
+        let mut dead = positive;
+        dead.dead = true;
+        assert!(!counts.observe(&[dead], 6));
+        assert_eq!(counts.actions_observed, 6);
+        assert_eq!(counts.live_endpoints, 3);
+        assert_eq!(counts.classified_endpoints, 2);
+        assert_eq!(counts.first.unwrap().execution, 4);
+    }
+
+    #[cfg(feature = "metroid-boss-context-audit")]
+    #[test]
+    fn first_encounter_is_recorded_before_retention_and_only_reconstructed_once() {
+        let directory =
+            std::env::temp_dir().join(format!("metroid-endpoint-test-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let action = MetroidCampaignActionResult {
+            action: ButtonChord::new(0, 1),
+            observations: vec![endpoint_observation(Some(1))],
+            milestones: MetroidMilestones::default(),
+            dead: false,
+            victory: false,
+            failed: false,
+            candidate: None, // A rejected endpoint still contributes observed evidence.
+        };
+        let input = MetroidInput {
+            actions: vec![ButtonChord::new(0, 1)],
+        };
+        for publish in [false, true] {
+            let mut game = MetroidGame::new(&[], Path::new("unused"), "unused");
+            if publish {
+                game =
+                    game.with_endpoint_encounter_path(directory.join(ENDPOINT_ENCOUNTER_ARTIFACT));
+            }
+            let mut evidence = MetroidCampaignEvidence {
+                champion_key: action_champion_key(&action.observations),
+                ..Default::default()
+            };
+            // Isolate the encounter from already-known ordinary named progress.
+            evidence
+                .named_progress
+                .observe(&action.observations[0], 1, 99);
+            let mut reconstructions = 0;
+            game.merge_action_evidence(&mut evidence, &action, 12, || {
+                reconstructions += 1;
+                Ok(input.clone())
+            })
+            .unwrap();
+            assert_eq!(reconstructions, 1);
+            game.merge_action_evidence(&mut evidence, &action, 13, || {
+                panic!("the first encounter must not reconstruct twice")
+            })
+            .unwrap();
+            assert_eq!(evidence.endpoint_encounters.first.unwrap().execution, 12);
+            assert_eq!(evidence.endpoint_encounters.classified_endpoints, 2);
+            assert_eq!(evidence.aggregate, MetroidMilestones::default());
+        }
+        let artifact: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(directory.join(ENDPOINT_ENCOUNTER_ARTIFACT)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(artifact["first"]["execution"], 12);
+        assert_eq!(artifact["first"]["route_action_end_frame"], 99);
+        assert_eq!(artifact["input"], serde_json::to_value(input).unwrap());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

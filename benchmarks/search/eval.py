@@ -521,7 +521,8 @@ def export(matrix, out):
     # Explicit allowlist. Verify every path before creating a partial public export.
     for item in results:
         for name in ('summary.json', 'resources.jsonl', 'campaign/identity.json', 'campaign/result.json',
-                     'campaign/campaign.json', 'campaign/progress.jsonl', 'campaign/witness-input.json', 'campaign/victory-input.json'):
+                     'campaign/campaign.json', 'campaign/progress.jsonl', 'campaign/witness-input.json', 'campaign/victory-input.json',
+                     'campaign/first-endpoint-encounter.json'):
             relative = Path(item['cell']) / name
             source = matrix / relative
             if source.resolve() != matrix.resolve() / relative:
