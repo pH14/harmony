@@ -322,6 +322,24 @@ is observed HP decrease, not a proven lifetime damage total or search reward.
 
 ### Conditional encounter control diagnostic
 
+An explicit optional request field, `counterfactual_resources`, accepts
+`{"health":1999,"missiles":20}` only within the supplied state's earned
+capacities. This standalone causal diagnostic changes the two BCD health bytes
+and the missile-count byte at the paused boundary. It checks all RAM, the
+physical clock and exact serialized LRAM/SRAM offsets, then updates only the
+cached resource fields. A failed guard rolls back; no-op writes preserve the
+full snapshot. The diagnostic parser is pinned to the existing Harmony/QuickNES
+snapshot wrapper; another layout fails instead of guessing its offsets.
+
+These are artificial interventions, not actions or states produced by search.
+The probe exports before/after snapshots and `resource-operation.json` with the
+prefix boundary, resource values and both snapshot hashes. Counterfactual
+witnesses carry the same operation; held replay repeats the real prefix,
+verifies and applies the operation, then executes the suffix. Such witnesses
+must never be presented as ordinary prefix-plus-suffix inputs or fresh wins.
+Absent this field, the original diagnostic and output representation remain
+unchanged. The generic searcher and all search policies ignore this operation.
+
 `metroid-control-probe draws REQUEST OUT` materializes frozen ordinary
 `sample_chord` suffixes without emulation. `metroid-control-probe run CORE ROM
 REQUEST OUT` requires their hash and the exact searched input, asset and positive

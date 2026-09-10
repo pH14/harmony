@@ -583,3 +583,29 @@ only immediate ms02 task is a bounded Linux compile/Clippy check of the upstream
 compatibility merge; it executes no VM or emulator. Complete publication and CI
 integration in the existing draft PR #287, then continue the scientific decision
 from these closed results rather than rerunning them.
+
+## Next bounded source decision: a joint resource counterfactual
+
+Read the current #285/#288 syntheses and preserve their negative/conditional
+limits. AP01's cache has health16–79, no missiles; the six lower-boss-HP states
+all have health79. This does not identify resources as a cause. Follow
+../endpoint-encounter/resource-counterfactual-decision.md for one diagnostic
+that fills the already-earned health/missile capacities at the original E01
+boundary. It changes no search policy and cannot count as a generated state or
+fresh witness. Keep the original S01 suffix bank and controls; no selected later
+root, larger capacity, new seed bank or retry-policy rescue.
+
+The source pass begins at2026-09-10 07:08:55 UTC with a45-minute ceiling. It uses
+existing bounded RAM hooks, adds no unsafe code and verifies the exact serialized
+resource offsets, all other RAM and no clock advance. No-op/bounds/rollback and
+wrong-address counterexamples pass; independent Python code derives the complete
+expected intervened snapshot. Witness replay must repeat the explicit operation
+at the frozen original-prefix boundary and match both snapshot hashes.
+
+No native allocation exists until source/build/assets/requests, the unchanged
+suffix hash, full-state expectations and individual/total limits are registered.
+First require exact historical default output, then at most the one bounded
+joint-resource panel. Its primary outcome is surviving Ridley defeat; more
+survival or damage is explanatory only. Even a positive earns only an audit of
+whether fresh search can actually supply useful resource states. Keep the retry
+candidate stopped, the existing ledgers frozen and the original goal unachieved.

@@ -25,6 +25,21 @@ use std::{
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Resources {
+    health: u16,
+    missiles: u8,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ResourceOperation {
+    prefix_actions: usize,
+    resources: Resources,
+    before_snapshot_sha256: String,
+    after_snapshot_sha256: String,
+}
+
 #[derive(Deserialize)]
 struct Request {
     input: PathBuf,
@@ -39,6 +54,7 @@ struct Request {
     frames_per_arm: u64,
     total_frame_limit: u64,
     expected_suffix_sha256: Option<String>,
+    counterfactual_resources: Option<Resources>,
 }
 impl Request {
     fn validate(&self) -> Result<()> {
@@ -51,6 +67,15 @@ impl Request {
             || !(1..=2_000_000).contains(&self.total_frame_limit)
         {
             return Err("conditional probe exceeds fixed limits or repeats a seed".into());
+        }
+        if let Some(resources) = &self.counterfactual_resources
+            && (self.expected_endpoint.energy_tanks > 6
+                || resources.health == 0
+                || resources.health
+                    > (u16::from(self.expected_endpoint.energy_tanks) + 1) * 1000 - 1
+                || resources.missiles > self.expected_endpoint.missile_capacity)
+        {
+            return Err("counterfactual resources exceed earned capacities".into());
         }
         Ok(())
     }
@@ -183,6 +208,8 @@ struct Witness {
     emulator_sha256: String,
     continuation_frames: u64,
     completed_actions: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resource_operation: Option<ResourceOperation>,
 }
 fn witness(
     target: &mut MetroidTarget,
@@ -199,6 +226,7 @@ fn witness(
         emulator_sha256: emulator_hash(&target.snapshot().ok_or("witness snapshot failed")?)?,
         continuation_frames: frames,
         completed_actions: executed.len(),
+        resource_operation: None,
     })
 }
 #[derive(Serialize)]
@@ -311,7 +339,21 @@ fn verify_witness(
 ) -> Result<u64> {
     let before = budget.used;
     for _ in 0..2 {
-        let mut target = prepare(core, rom, core_hash, &value.input, budget)?;
+        let mut target = if let Some(operation) = &value.resource_operation {
+            let (prefix, suffix) =
+                split_counterfactual_input(&value.input, operation.prefix_actions)?;
+            let mut target = prepare(core, rom, core_hash, &prefix, budget)?;
+            replay_resource_operation(&mut target, operation)?;
+            for action in &suffix.actions {
+                if target.is_dead() || target.is_victory() {
+                    return Err("counterfactual witness continues after terminal".into());
+                }
+                budget.apply(&mut target, action)?;
+            }
+            target
+        } else {
+            prepare(core, rom, core_hash, &value.input, budget)?
+        };
         if target.is_dead()
             || target.mechanical_state() != value.endpoint
             || target.diagnostic_boss_context()? != value.context
@@ -322,6 +364,44 @@ fn verify_witness(
         }
     }
     Ok(budget.used - before)
+}
+
+fn split_counterfactual_input(
+    input: &MetroidInput,
+    boundary: usize,
+) -> Result<(MetroidInput, MetroidInput)> {
+    if boundary == 0 || boundary >= input.actions.len() {
+        return Err("counterfactual witness requires an interior prefix boundary".into());
+    }
+    let (prefix, suffix) = input.actions.split_at(boundary);
+    Ok((
+        MetroidInput {
+            actions: prefix.to_vec(),
+        },
+        MetroidInput {
+            actions: suffix.to_vec(),
+        },
+    ))
+}
+
+fn snapshot_hash(target: &mut MetroidTarget) -> Result<String> {
+    Ok(hash(&postcard::to_allocvec(
+        &target.snapshot().ok_or("resource snapshot failed")?,
+    )?))
+}
+
+fn replay_resource_operation(
+    target: &mut MetroidTarget,
+    operation: &ResourceOperation,
+) -> Result<()> {
+    if snapshot_hash(target)? != operation.before_snapshot_sha256 {
+        return Err("counterfactual witness has the wrong pre-intervention snapshot".into());
+    }
+    target.diagnostic_set_resources(operation.resources.health, operation.resources.missiles)?;
+    if snapshot_hash(target)? != operation.after_snapshot_sha256 {
+        return Err("counterfactual witness has the wrong intervened snapshot".into());
+    }
+    Ok(())
 }
 fn generate(request: &Request) -> Result<Vec<Vec<ButtonChord>>> {
     request
@@ -384,6 +464,37 @@ fn run(
         &json!({"endpoint":target.mechanical_state(),"context":context,
         "emulator_sha256":request.expected_emulator_sha256,"physical_frames":prefix_frames}),
     )?;
+    let operation = if let Some(resources) = &request.counterfactual_resources {
+        write(&output.join("resource-before-snapshot.json"), &snapshot)?;
+        let before_snapshot_sha256 = snapshot_hash(&mut target)?;
+        let old = target.mechanical_state();
+        target.diagnostic_set_resources(old.health, old.missiles)?;
+        if snapshot_hash(&mut target)? != before_snapshot_sha256 {
+            return Err("no-op resource intervention changed the full snapshot".into());
+        }
+        target.diagnostic_set_resources(resources.health, resources.missiles)?;
+        if target.diagnostic_boss_context()? != context {
+            return Err("resource intervention changed boss context".into());
+        }
+        let operation = ResourceOperation {
+            prefix_actions: prefix.actions.len(),
+            resources: resources.clone(),
+            before_snapshot_sha256,
+            after_snapshot_sha256: snapshot_hash(&mut target)?,
+        };
+        write(&output.join("resource-operation.json"), &operation)?;
+        Some(operation)
+    } else {
+        None
+    };
+    let snapshot = if operation.is_some() {
+        target.snapshot().ok_or("intervened root snapshot failed")?
+    } else {
+        snapshot
+    };
+    if operation.is_some() {
+        write(&output.join("resource-root-snapshot.json"), &snapshot)?;
+    }
     let mut log = fs::File::create(output.join("trials.jsonl"))?;
     let mut saved: [[Option<Witness>; 2]; 2] = Default::default();
     let mut rows = Vec::new();
@@ -406,7 +517,10 @@ fn run(
                 (index * 2 + arm) as u64,
                 budget,
             )?;
-            for (kind, candidate) in [damage, defeat].into_iter().enumerate() {
+            for (kind, mut candidate) in [damage, defeat].into_iter().enumerate() {
+                if let Some(value) = &mut candidate {
+                    value.resource_operation = operation.clone();
+                }
                 if saved[arm][kind].is_none() {
                     saved[arm][kind] = candidate;
                 }
@@ -444,15 +558,21 @@ fn run(
             }
         }
     }
-    Ok(
-        json!({"format":"metroid-conditional-control-v1","scope":"one searched encounter; diagnostic only",
+    let mut result = json!({"format":"metroid-conditional-control-v1","scope":"one searched encounter; diagnostic only",
         "prefix_physical_frames":prefix_frames,"continuation_physical_frames":trial_frames,
         "physical_frames":budget.used,"verified_positive_root_restores":rows.len(),
         "trials":rows,"witnesses":witnesses,
         "limitations":["One-frame diagnostics stop at corrected death; this is not held-campaign throughput.",
             "Observed HP losses are not exact lifetime damage or a proof against invisible same-key reloads.",
-            "One weak-resource root and a finite suffix list cannot establish fight impossibility or a global retention/selection cause."]}),
-    )
+            "One weak-resource root and a finite suffix list cannot establish fight impossibility or a global retention/selection cause."]});
+    if let Some(operation) = operation {
+        result["format"] = json!("metroid-resource-counterfactual-v1");
+        result["scope"] = json!(
+            "Artificial resource intervention at a searched boundary; never a generated state, ordinary input witness or fresh-search result."
+        );
+        result["resource_operation"] = serde_json::to_value(operation)?;
+    }
+    Ok(result)
 }
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -513,6 +633,18 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn intervention_requires_an_interior_boundary_and_preserves_both_tape_parts() {
+        let input = MetroidInput {
+            actions: vec![ButtonChord::new(1, 2), ButtonChord::new(2, 3)],
+        };
+        for boundary in [0, 2, 3, usize::MAX] {
+            assert!(split_counterfactual_input(&input, boundary).is_err());
+        }
+        let (prefix, suffix) = split_counterfactual_input(&input, 1).unwrap();
+        assert_eq!(prefix.actions, input.actions[..1]);
+        assert_eq!(suffix.actions, input.actions[1..]);
+    }
     fn boss(hp: u8) -> BossSlot {
         BossSlot {
             area: 20,
