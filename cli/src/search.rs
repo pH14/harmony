@@ -2,6 +2,11 @@
 //! Search package selection and execution backend dispatch.
 use clap::ValueEnum;
 use nes_workload::package::{SearchOptions, search_native};
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+use sha2::Digest;
 use std::{error::Error, path::PathBuf, process::ExitCode};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -236,6 +241,102 @@ fn select_nes_base_initramfs(paths: &[PathBuf]) -> Option<PathBuf> {
         .cloned()
 }
 
+/// The pinned byte artifacts one fault run boots, plus the bundle the image
+/// declares itself with.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub struct FaultArtifacts {
+    /// The controlled guest kernel, the prepared initramfs, and the agent.
+    pub artifacts: faults_workload::Artifacts,
+    /// The bundle text, which names the nodes, hooks, properties, and
+    /// diagnostics an investigation reports.
+    pub bundle: String,
+    /// The action alphabet the bundle admits.
+    pub vocabulary: faults_workload::FaultVocabulary,
+}
+
+/// Stage a workload image against the installed or named guest artifacts.
+///
+/// # Errors
+///
+/// Returns an error naming the missing artifact and the flag or environment
+/// variable that supplies it.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub fn prepare_fault_artifacts(
+    image: &str,
+    kernel: Option<PathBuf>,
+    base: Option<PathBuf>,
+    agent: Option<PathBuf>,
+) -> Result<FaultArtifacts, Box<dyn Error>> {
+    let installed = crate::preflight::GuestArtifacts::locate(crate::host::HostReport::detect().isa);
+    let kernel = kernel
+        .or(installed.kernel)
+        .ok_or("controlled guest kernel missing: use --kernel or HARMONY_GUEST_DIR")?;
+    let base = base
+        .or_else(|| crate::oci::select_base_initramfs(&installed.initramfs).cloned())
+        .ok_or("guest base image missing: use --base-initramfs")?;
+    let agent = agent
+        .or_else(|| std::env::var_os("HARMONY_FAULT_AGENT").map(PathBuf::from))
+        .or_else(|| installed.dir.map(|dir| dir.join("fault-agent")))
+        .ok_or("fault agent missing: use --fault-agent or HARMONY_FAULT_AGENT")?;
+    let agent = std::fs::read(agent)?;
+    let prepared = faults_workload::prepare::prepare_oci(image, &std::fs::read(base)?, &agent)?;
+    Ok(FaultArtifacts {
+        artifacts: faults_workload::Artifacts {
+            kernel: std::fs::read(kernel)?,
+            initramfs: prepared.initramfs,
+            agent,
+        },
+        bundle: prepared.bundle,
+        vocabulary: prepared.vocabulary,
+    })
+}
+
+/// Stage the image a workspace pinned and refuse anything whose identity has
+/// changed. A workspace's history is only replayable against the artifacts it
+/// recorded, so a rebuilt image is named rather than silently substituted.
+///
+/// # Errors
+///
+/// Returns an error when an artifact is missing or its hash differs from the
+/// one the workspace pinned.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub fn prepared_artifacts(
+    image: &str,
+    image_sha256: &str,
+    kernel_sha256: &str,
+    fault_agent_sha256: &str,
+) -> Result<faults_workload::Artifacts, Box<dyn Error>> {
+    let prepared = prepare_fault_artifacts(image, None, None, None)?;
+    for (what, want, have) in [
+        (
+            "workload image",
+            image_sha256,
+            &prepared.artifacts.initramfs,
+        ),
+        ("guest kernel", kernel_sha256, &prepared.artifacts.kernel),
+        ("fault agent", fault_agent_sha256, &prepared.artifacts.agent),
+    ] {
+        let found = format!("{:x}", sha2::Sha256::digest(have));
+        if !want.is_empty() && want != found {
+            return Err(format!(
+                "the {what} available here hashes {found}, but this workspace was \
+                 recorded against {want}; supply the pinned artifact"
+            )
+            .into());
+        }
+    }
+    Ok(prepared.artifacts)
+}
+
 fn run_faults_consonance(
     input: &std::path::Path,
     kernel: Option<PathBuf>,
@@ -250,41 +351,35 @@ fn run_faults_consonance(
         any(target_arch = "x86_64", target_arch = "aarch64")
     ))]
     {
-        let installed =
-            crate::preflight::GuestArtifacts::locate(crate::host::HostReport::detect().isa);
-        let kernel = kernel
-            .or(installed.kernel)
-            .ok_or("controlled guest kernel missing: use --kernel or HARMONY_GUEST_DIR")?;
-        let base = base
-            .or_else(|| crate::oci::select_base_initramfs(&installed.initramfs).cloned())
-            .ok_or("guest base image missing: use --base-initramfs")?;
-        let agent = agent
-            .or_else(|| std::env::var_os("HARMONY_FAULT_AGENT").map(PathBuf::from))
-            .or_else(|| installed.dir.map(|dir| dir.join("fault-agent")))
-            .ok_or("fault agent missing: use --fault-agent or HARMONY_FAULT_AGENT")?;
-        let agent = std::fs::read(agent)?;
-        let prepared = faults_workload::prepare::prepare_oci(
-            input.to_str().ok_or("OCI input must be UTF-8")?,
-            &std::fs::read(base)?,
-            &agent,
-        )?;
-        let artifacts = faults_workload::Artifacts {
-            kernel: std::fs::read(kernel)?,
-            initramfs: prepared.initramfs,
-            agent,
-        };
+        let image = input.to_str().ok_or("OCI input must be UTF-8")?;
+        let prepared = prepare_fault_artifacts(image, kernel, base, agent)?;
+        let artifacts = &prepared.artifacts;
         let report = match replay {
-            Some(actions) => {
-                faults_workload::package::replay(&artifacts, actions, repeat, options)?
-            }
+            Some(actions) => faults_workload::package::replay(artifacts, actions, repeat, options)?,
             None => {
                 let vocabulary = prepared
                     .vocabulary
                     .clone()
                     .with_places(options.places.clone())?;
-                faults_workload::package::search(&artifacts, &vocabulary, options)?
+                faults_workload::package::search(artifacts, &vocabulary, options)?
             }
         };
+        // A search leaves a workspace an investigation opens; a replay confirms
+        // one recorded input and writes no new history to investigate.
+        if replay.is_none() {
+            faults_workload::workspace::publish(
+                &options.output,
+                image,
+                &prepared.bundle,
+                &report,
+                options,
+            )?;
+            println!(
+                "workspace   {}  ({} finding(s))",
+                options.output.display(),
+                report.bugs.len()
+            );
+        }
         println!(
             "bug_found   {}  executions {}  horizons {}",
             report.bug_found, report.executions, report.horizons_clocked

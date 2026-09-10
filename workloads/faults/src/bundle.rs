@@ -160,7 +160,9 @@ impl FaultVocabulary {
                         format!("bundle line {line_number}: hook id {id:?} is not a u32: {error}")
                     })?);
                 }
-                "ready" | "setup" => {}
+                // Declaration lines carry meanings for inspection, not
+                // alphabet entries. `declarations` parses them.
+                "ready" | "setup" | "describe" | "assert" | "diagnostic" => {}
                 other => {
                     return Err(format!(
                         "bundle line {line_number}: unknown keyword {other:?}"

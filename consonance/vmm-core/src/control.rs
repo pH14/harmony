@@ -321,6 +321,18 @@ pub fn server_caps() -> Caps {
 /// The control-transport server: one live [`Vmm`], a [`SnapshotEngine`] holding
 /// the snapshot pool, the [`VmmFactory`] that boots restore targets, and the
 /// wire-handle table. One server = one session = one VM; see the module doc.
+/// One improvisation in flight: its sentinel state machine and how much of the
+/// serial capture has already been scanned.
+///
+/// It outlives the request that started it. A command whose virtual-time bound
+/// expires is still running in the guest, so the capture is retained and the
+/// next advance keeps feeding it; only a restore, which abandons that timeline,
+/// discards it.
+struct ActiveExec {
+    session: ExecSession,
+    cursor: usize,
+}
+
 pub struct ControlServer<B: Backend<A: Vendor>> {
     /// The live VM. `None` only after a fatal error already tore it down (or
     /// transiently inside a `branch`/`replay`, where the old VM must be dropped
@@ -452,6 +464,13 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     /// `exec` is off the record, so this never needs to be reproducible — only
     /// unique-enough within a session.
     exec_nonce: u64,
+    /// The improvisation currently in flight, if any. An `exec` injects its
+    /// command, records the serial cursor here, and then advances through the
+    /// ordinary [`run`](Self::run) loop, so staged host faults, guest service
+    /// requests and SDK stops keep being handled while the command runs. The
+    /// capture stays here after a bound expires, so a later `run` can still
+    /// observe the completion sentinel rather than losing the command.
+    active_exec: Option<ActiveExec>,
     /// Completed restore-delimited production-trace segments. The current
     /// live VMM's segment is appended only in the read-only
     /// [`session_virtual_time_trace`](Self::session_virtual_time_trace) view.
@@ -558,6 +577,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             tainted_snaps: BTreeSet::new(),
             snapshot_meta: BTreeMap::new(),
             exec_nonce: 0,
+            active_exec: None,
             session_trace: Vec::new(),
             session_trace_start: SessionTraceStart::InitialBoot,
             last_seal_dirty_gfns: None,
@@ -1926,6 +1946,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // snapshot ancestry exactly (and lets a rewind to an untainted ancestor
         // legitimately reach untainted state). Both `branch` and `replay` land here.
         self.timeline_tainted = self.tainted_snaps.contains(&snap.0);
+        // A restore abandons the timeline a command was typed into, so the
+        // improvisation in flight cannot complete on it. Discard the capture
+        // rather than let it match output from the restored execution.
+        self.active_exec = None;
         // 5. A restore rewinds the VM, so **re-arm the host-plane schedule** from
         //    scratch (task 59): drop any stale staged faults and reset the recorded
         //    reproducer to a bare `Seeded` at the **restored stream's** seed
@@ -2113,6 +2137,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             return Ok(Err(err.clone()));
         }
         loop {
+            // An improvisation advances through this loop, not beside it, so a
+            // command runs while staged faults drain and the guest's service
+            // requests are answered. Its completion ends the run.
+            if let Some(outcome) = self.poll_exec()? {
+                return Ok(Ok(outcome));
+            }
             if let Some((moment, question)) = self
                 .vmm
                 .as_ref()
@@ -2335,9 +2365,17 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
     }
 
-    /// `exec(cmd, deadline)`: the **improvisation** (task 81). Inject `cmd` on the
-    /// guest's serial input (as if typed at the serial shell), step the VM until the
-    /// completion sentinel or the V-time `deadline`, and capture the serial output.
+    /// `exec(cmd, deadline)`: the improvisation. Inject `cmd` on the guest's
+    /// serial input (as if typed at the serial shell) and advance through the
+    /// ordinary [`run`](Self::run) loop until the completion sentinel, the
+    /// V-time `deadline`, or a guest stop.
+    ///
+    /// **Advancement is shared with `run`.** The command is delivered, and then
+    /// the same loop drains staged host faults at their `Moment`s, surfaces
+    /// guest service requests for the explorer to answer, and honours the
+    /// armed stop classes. A workload whose agent is polling a service — every
+    /// fault workload — therefore keeps running while a diagnostic command
+    /// executes, instead of the command failing on the first request.
     ///
     /// **Taints the timeline first — before any fallible work** (the conservative
     /// taint invariant). Even if injection, a step, or a terminal aborts the run
@@ -2347,11 +2385,21 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// caller may deliberately sacrifice a timeline; fork-first is a usage
     /// discipline, not a server rule.
     ///
-    /// **Off the record by ruling** (`docs/PROTOCOL.md`): the
-    /// serial channel is deliberately crude, there is **no determinism guarantee**
-    /// on this path, and nothing here is recorded into the reproducer
-    /// ([`recorded`](Self::recorded) is untouched) or the fault schedule. See the
-    /// sentinel scheme + failure modes in [`crate::exec`] and `README.md`.
+    /// **Off the record by ruling** (`docs/PROTOCOL.md`): the serial channel is
+    /// deliberately crude, there is **no determinism guarantee** on delivery,
+    /// and nothing here is recorded into the reproducer
+    /// ([`recorded`](Self::recorded) is untouched) or the fault schedule. The
+    /// state the command produced is still reachable — by the checkpoint the
+    /// caller retains, not by replaying earlier inputs. See the sentinel scheme
+    /// + failure modes in [`crate::exec`] and `README.md`.
+    ///
+    /// Three replies are possible. [`Reply::ExecResult`] means the command
+    /// completed, or its own deadline passed with the capture retained.
+    /// [`Reply::Stop`] means the guest stopped for another reason first and the
+    /// command is still in flight; a later [`Request::Run`] finishes it and
+    /// returns its [`Reply::ExecResult`] then. A second `exec` while one is in
+    /// flight is [`ControlError::Unsupported`]: the caller must let the first
+    /// one finish rather than interleave two commands on one serial line.
     fn exec(
         &mut self,
         cmd: &str,
@@ -2360,61 +2408,80 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // 1. Conservative taint: set BEFORE touching the guest, covering every
         //    failure point below.
         self.timeline_tainted = true;
+        if self.active_exec.is_some() {
+            return Ok(Err(ControlError::Unsupported));
+        }
         let nonce = self.exec_nonce;
         self.exec_nonce = self.exec_nonce.wrapping_add(1);
 
-        let mut session = ExecSession::new(cmd, nonce);
+        let session = ExecSession::new(cmd, nonce);
         let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
         // 2. Inject the command line on the serial RX and note the current capture
         //    length, so only NEW output is fed to the completion scanner.
         vmm.inject_serial_input(session.input());
-        let mut cursor = vmm.serial_output().len();
+        let cursor = vmm.serial_output().len();
+        self.active_exec = Some(ActiveExec { session, cursor });
 
-        // 3. Step toward the sentinel / deadline / terminal. The deadline is
-        //    observed opportunistically at each V-time boundary (like `run`): a hung
-        //    or shell-less guest ends here `ok = false`. No fault-schedule
-        //    interaction — `exec` is off the record.
-        loop {
-            let out = vmm.serial_output();
-            if out.len() > cursor {
-                session.feed(&out[cursor..]);
-                cursor = out.len();
-            }
-            if session.is_done() {
-                break;
-            }
-            let vns = vmm.effective_vns().unwrap_or(0);
-            if vns >= deadline.0 {
-                session.finish_timeout();
-                break;
-            }
-            match vmm.step()? {
-                Step::Continued => {}
-                // A cooperating-SDK doorbell during an improvisation is consumed and
-                // ignored (exec is not an SDK-driven run); keep stepping.
-                Step::SdkStop => {
-                    if vmm.pending_service_question().is_some() {
-                        return Ok(Err(ControlError::Unsupported));
-                    }
-                    let _ = vmm.take_sdk_stop();
-                }
-                // The guest halted / crashed / rebooted before the sentinel: drain
-                // any final output and close as an (unsuccessful) timeout.
-                Step::Terminal(_) => {
-                    let out = vmm.serial_output();
-                    if out.len() > cursor {
-                        session.feed(&out[cursor..]);
-                    }
-                    session.finish_timeout();
-                    break;
-                }
-            }
+        // 3. Advance through the shared loop. Assertions stay armed so a guest
+        //    failure during a diagnostic surfaces instead of being consumed.
+        let until = control_proto::StopConditions {
+            deadline: Some(deadline),
+            on: control_proto::StopMask::NONE.arm(control_proto::class_bit::ASSERTION),
+        };
+        match self.run(&until)? {
+            // The command outlived its own bound. It may still be running in
+            // the guest, so the capture stays live: the caller sees what
+            // arrived, and a later `run` returns the completion if it lands.
+            Ok(Reply::Stop(StopReason::Deadline { .. })) => Ok(Ok(self.pending_exec_reply())),
+            other => Ok(other),
         }
-        let outcome = session.into_outcome();
-        Ok(Ok(Reply::ExecResult {
+    }
+
+    /// Feed newly captured serial output to the improvisation in flight and
+    /// report its result once the sentinel lands. `None` while no command is in
+    /// flight or none has completed.
+    fn poll_exec(&mut self) -> Result<Option<Reply>, ServeError> {
+        let Some(active) = self.active_exec.as_mut() else {
+            return Ok(None);
+        };
+        let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+        let output = vmm.serial_output();
+        if output.len() > active.cursor {
+            let fresh = output[active.cursor..].to_vec();
+            active.cursor = output.len();
+            active.session.feed(&fresh);
+        }
+        if !active.session.is_done() {
+            return Ok(None);
+        }
+        let outcome = self
+            .active_exec
+            .take()
+            .ok_or(ServeError::Poisoned)?
+            .session
+            .into_outcome();
+        Ok(Some(Reply::ExecResult {
             output: outcome.output,
             ok: outcome.ok,
         }))
+    }
+
+    /// The reply for a command whose own bound expired while it is still in
+    /// flight: what was captured so far, and `ok = false`.
+    fn pending_exec_reply(&self) -> Reply {
+        let outcome = self
+            .active_exec
+            .as_ref()
+            .map(|active| active.session.outcome())
+            .unwrap_or(crate::exec::ExecOutcome {
+                output: Vec::new(),
+                ok: false,
+                status: None,
+            });
+        Reply::ExecResult {
+            output: outcome.output,
+            ok: outcome.ok,
+        }
     }
 
     /// The reply to [`Request::RecordedEnv`] (task 81) — the taint guard's
@@ -8072,6 +8139,10 @@ mod tests {
 
     /// Improvise: `exec` with an already-expired deadline (`Moment(0)`), so it taints
     /// the timeline and returns immediately without stepping the mock guest.
+    ///
+    /// The mock has no shell, so the command never reaches its sentinel and
+    /// stays in flight. A second `exec` on the same timeline is therefore
+    /// refused — it still taints, which is what the taint tests are about.
     fn exec(server: &mut ControlServer<MockBackend>, cmd: &str) -> (Vec<u8>, bool) {
         match server
             .handle(&Request::Exec {
@@ -8081,6 +8152,7 @@ mod tests {
             .unwrap()
         {
             Ok(Reply::ExecResult { output, ok }) => (output, ok),
+            Err(ControlError::Unsupported) => (Vec::new(), false),
             other => panic!("exec reply: {other:?}"),
         }
     }
@@ -8125,6 +8197,45 @@ mod tests {
         assert!(output.is_empty());
         // Tainted: the mint is refused, loud.
         assert_eq!(recorded_env_res(&mut s), Err(ControlError::Tainted));
+    }
+
+    /// One serial line carries one command at a time. A command still in
+    /// flight refuses a second `exec` rather than interleaving two on the wire;
+    /// a restore abandons that timeline and accepts commands again.
+    #[test]
+    fn one_command_at_a_time_and_a_restore_clears_the_one_in_flight() {
+        let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut s);
+        let (snap, _) = snap_tainted(&mut s);
+        assert!(matches!(
+            s.handle(&Request::Exec {
+                cmd: "sleep 5".to_string(),
+                deadline: Moment(0),
+            })
+            .unwrap(),
+            Ok(Reply::ExecResult { ok: false, .. }),
+        ));
+        assert_eq!(
+            s.handle(&Request::Exec {
+                cmd: "ls /".to_string(),
+                deadline: Moment(0),
+            })
+            .unwrap(),
+            Err(ControlError::Unsupported),
+            "a second command while one is in flight is refused"
+        );
+        assert!(matches!(replay(&mut s, snap), Ok(Reply::Unit)));
+        assert!(
+            matches!(
+                s.handle(&Request::Exec {
+                    cmd: "ls /".to_string(),
+                    deadline: Moment(0),
+                })
+                .unwrap(),
+                Ok(Reply::ExecResult { .. }),
+            ),
+            "a restored timeline accepts a command again"
+        );
     }
 
     /// A snapshot taken from a tainted timeline reports `tainted: true`; one taken

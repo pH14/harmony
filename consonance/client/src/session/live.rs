@@ -45,6 +45,21 @@ pub struct Session {
     /// Set once a run exceeds the wall-clock bound. The VM was canceled, so no
     /// later request may enter it.
     abandoned: bool,
+    /// Whether the most recent checkpoint sealed a timeline an improvisation
+    /// had modified. Read straight after the seal that set it.
+    checkpoint_modified: bool,
+}
+
+/// What one guest command did.
+#[derive(Clone, Debug)]
+pub struct GuestCommand {
+    /// The serial output captured while it ran.
+    pub output: Vec<u8>,
+    /// Whether it reached its completion sentinel. Completion alone does not
+    /// establish an exit status; the sentinel carries that separately.
+    pub completed: bool,
+    /// Why the guest stopped, when it stopped before the command finished.
+    pub stop: Option<StopReason>,
 }
 
 impl std::fmt::Debug for Session {
@@ -57,6 +72,7 @@ impl std::fmt::Debug for Session {
             .field("config", &self.config)
             .field("snapshot_times", &self.snapshot_times.len())
             .field("abandoned", &self.abandoned)
+            .field("checkpoint_modified", &self.checkpoint_modified)
             .finish_non_exhaustive()
     }
 }
@@ -160,6 +176,7 @@ impl Session {
             config,
             snapshot_times: BTreeMap::from([(genesis.id, genesis.at), (setup.id, setup.at)]),
             abandoned,
+            checkpoint_modified: false,
         })
     }
 
@@ -240,6 +257,133 @@ impl Session {
             .map_err(|error| SessionError::Portable(error.to_string()))?;
         self.snapshot_times.insert(receipt.id, receipt.at.0);
         Ok(receipt.id)
+    }
+
+    /// The live VM's current virtual time, in nanoseconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session has no live VM.
+    pub fn virtual_time(&self) -> Result<u64, Box<dyn Error>> {
+        self.client
+            .transport()
+            .vmm()
+            .and_then(Vmm::effective_vns)
+            .ok_or_else(|| SessionError::Control("live VM has no virtual time".to_owned()).into())
+    }
+
+    /// Stage one host-plane effect at the moment it is recorded against.
+    ///
+    /// A verbatim replay re-arms the schedule from the restored stream, which
+    /// holds no future effects. An investigation that continues a recorded
+    /// execution stages its remaining host-plane inputs again at their original
+    /// coordinates through this, so the continuation inherits them without the
+    /// reseed a branch would apply.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the effect cannot be staged at that moment.
+    pub fn perturb(&mut self, fault: Vec<u8>, at: u64) -> Result<(), Box<dyn Error>> {
+        let reply = self
+            .client
+            .request(&Request::Perturb {
+                fault: control_proto::HostFault(fault),
+                at: control_proto::Moment(at),
+            })
+            .map_err(|error| SessionError::Control(error.to_string()))?;
+        expect_unit(reply, "perturb")
+    }
+
+    /// Capture the current point as a portable whole-VM checkpoint, settling
+    /// the guest to a sealable boundary first, and report whether an
+    /// improvisation has modified the timeline reaching it.
+    ///
+    /// The taint guard refuses to mint a *reproducer* from a modified timeline,
+    /// which stays true. It is not a claim that the state cannot be saved: a
+    /// command the caller delivered is not in any earlier input, so this
+    /// checkpoint is the only way back to the state it produced. The caller is
+    /// told the history is modified and must not present it as a replay from
+    /// boot.
+    pub fn checkpoint(
+        &mut self,
+        settle_step: u64,
+        max_settle: u64,
+    ) -> Result<(PortableSnapshot, bool), Box<dyn Error>> {
+        let (handle, at, _) = seal_after_settling(
+            self,
+            settle_step,
+            max_settle,
+            Self::try_seal_any_history,
+            Self::settle_step,
+        )?;
+        let modified = self.checkpoint_modified;
+        let exported = self.export_snapshot(handle, at);
+        let exported = self.cleanup_handles([handle], exported);
+        self.snapshot_times.remove(&handle);
+        exported.map(|snapshot| (snapshot, modified))
+    }
+
+    /// Seal the current point whether or not the timeline is modified, noting
+    /// which it was. `None` when the server cannot seal that point yet.
+    fn try_seal_any_history(&mut self) -> Result<Option<(SnapId, u64)>, Box<dyn Error>> {
+        match self.client.transport_mut().handle(&Request::Snapshot) {
+            Ok(Ok(Reply::Snapshot { id, at, tainted, .. })) => {
+                self.snapshot_times.insert(id, at.0);
+                self.checkpoint_modified = tainted;
+                Ok(Some((id, at.0)))
+            }
+            Ok(Ok(reply)) => Err(SessionError::Reply {
+                operation: "checkpoint",
+                reply,
+            }
+            .into()),
+            Ok(Err(ControlError::NotQuiescent)) => Ok(None),
+            Ok(Err(error)) => Err(SessionError::Control(error.to_string()).into()),
+            Err(error) => Err(SessionError::Control(error.to_string()).into()),
+        }
+    }
+
+    /// Deliver one guest command and advance until it completes, its virtual
+    /// deadline passes, or the guest stops for another reason.
+    ///
+    /// Advancement is the ordinary one: staged host faults drain at their
+    /// moments and the guest's service requests are answered while the command
+    /// runs, so a workload whose agent is polling keeps running. A command that
+    /// outlives its deadline is still in flight; its capture stays live in the
+    /// server and a later [`Session::run_until`] returns its completion.
+    ///
+    /// Delivery is outside the recorded reproducer, so the timeline is modified
+    /// from here on. Retain the checkpoint.
+    pub fn exec_command(
+        &mut self,
+        command: &str,
+        deadline: u64,
+    ) -> Result<GuestCommand, Box<dyn Error>> {
+        let reply = self.drive(&Request::Exec {
+            cmd: command.to_owned(),
+            deadline: control_proto::Moment(deadline),
+        })?;
+        Ok(match reply {
+            Reply::ExecResult { output, ok } => GuestCommand {
+                output,
+                completed: ok,
+                stop: None,
+            },
+            // The guest stopped before the command finished. The capture stays
+            // live in the server; the caller decides whether to keep advancing.
+            Reply::Stop(stop) => GuestCommand {
+                output: Vec::new(),
+                completed: false,
+                stop: Some(stop),
+            },
+            reply => {
+                return Err(SessionError::Reply {
+                    operation: "exec",
+                    reply,
+                }
+                .into());
+            }
+        })
     }
 
     /// Snapshot the current control-server state and retain its V-time.

@@ -11,10 +11,14 @@
 
 pub mod archive;
 pub mod bundle;
+pub mod checkpoint;
+pub mod declarations;
+pub mod investigate;
 pub mod package;
 pub mod prepare;
 pub mod report;
 pub mod target;
+pub mod workspace;
 
 #[cfg(all(
     feature = "consonance",
@@ -32,5 +36,7 @@ pub mod campaign;
 pub mod consonance;
 
 pub use bundle::FaultVocabulary;
+pub use declarations::{AssertionKind, Declarations};
 pub use package::{Artifacts, Options, RecordedActions, Report, parse_recorded_input};
 pub use target::{DEFAULT_HORIZON_NANOS, FaultAction, MAX_FAULT_ACTIONS};
+pub use workspace::{Finding, History, Selector, Workspace};
