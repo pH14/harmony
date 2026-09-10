@@ -111,7 +111,15 @@ def prepare(attempt_dir: Path, panel: panels.Panel, arm: str, harmony: Path,
     settings = {"permissions": {"allow": allow, "deny": [], "defaultMode": "default"}}
     (attempt_dir / ".claude" / "settings.json").parent.mkdir(exist_ok=True)
     (attempt_dir / ".claude" / "settings.json").write_text(json.dumps(settings, indent=1))
-    return {"supplied": supplied, "bash_allow": panel.bash_allow}
+    return {
+        "supplied": supplied,
+        "bash_allow": panel.bash_allow,
+        # The contract asks for a pinned container per attempt. A directory on
+        # the runner host is weaker: the attempt's file tools are confined to
+        # it, and its commands are the allowlist above, but it shares the host
+        # and the operator's agent configuration. Reports say which was used.
+        "isolation": "directory on the runner host",
+    }
 
 
 def launch(adapter, attempt_dir: Path, panel: panels.Panel,
@@ -303,6 +311,7 @@ def _write_report(out: Path, records: list[dict]) -> None:
         "model": records[0]["model"] if records else None,
         "adapter_version": records[0]["adapter_version"] if records else None,
         "fixture": records[0]["fixture"] if records else None,
+        "isolation": records[0]["supplied"].get("isolation") if records else None,
         "arms": {
             arm: {
                 "attempts": len(items),
@@ -340,6 +349,8 @@ def _markdown(summary: dict) -> str:
         lines += ["The fixture was derived from the historical case without "
                   "executing a VM, so this panel measures CLI usability and "
                   "not a real investigation.", ""]
+    if summary.get("isolation"):
+        lines += [f"Isolation: {summary['isolation']}.", ""]
     lines += ["| Arm | Attempts | Passed | Failed | Infrastructure |",
               "| --- | --- | --- | --- | --- |"]
     for arm, facts in summary["arms"].items():
