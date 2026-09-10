@@ -566,3 +566,17 @@ These are conditional cached-state observations, not an active-state census or
 an efficacy pass. See pq01-results.md, verify_pq01.py and scoped-return-design.md.
 The latter proposes a bounded same-slot return question for source falsification;
 no new policy or native allocation exists. PG02 remains invalid and closed.
+
+
+### Scoped-return source and native qualification
+
+[The scoped return design](scoped-return-design.md) implements a matched-coin
+control and half-probability return to a qualified same-slot progress alternative
+inside the existing eligible window. Production fixtures check its conditional
+allocation identity, eligibility boundaries and an adverse ordinary-only success
+world. [SR01](sr01-results.md) qualifies all four native arm contracts and actual
+parent divergence with full replay in73seconds, costing3,934,140physical frames.
+No boss defeat occurs; this is implementation evidence, not an efficacy screen.
+All61 native artifacts and complete resource/cost receipts verify offline. The
+owned service is stopped and allocation closed; only ms02 is used. A controlled
+1M-frame conditional screen needs a separate prospective registration.

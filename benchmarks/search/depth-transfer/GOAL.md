@@ -1399,3 +1399,21 @@ before the rule can earn a separately registered conditional screen. No efficacy
 estimate, retries, pooling, horizon rescue or validation allocation. Three offline
 scorer tests cover real serialized arm schemas and planted failures. No SR01 native
 execution has run at publication. Full goal remains active and unachieved.
+
+
+## SR01 closure: actual return and replay qualified
+
+All four frozen cells pass in72.858631seconds. After124 identical records,
+progress/control and progress/half job125 choose parents89/90 with identical
+mutation seed and selector record. Both histories replay completely. No living
+boss defeat occurs. Physical cost3,934,140 =1,001,718 admitted +2,932,422auxiliary;
+serviceCPU86.315847seconds, peak139,218,944bytes, zero swap. All61 native artifacts
+verify offline. The owned service is stopped and unused allowance released.
+Resumed ledger2,986,488,253admitted /77,201,243known auxiliary; old unknowns unchanged.
+
+Next freeze a separate four-arm conditional endpoint panel, at the unchanged1M
+horizon: progress/control versus progress/half, ordinary/control and capacity/half.
+Use fresh paired seeds, exact physical accounting and prespecified efficacy and
+futility rules. Optional nonactivation is valid efficacy data. No retry, pooling,
+horizon extension, control promotion or fresh/validation allocation follows from
+qualification. Full goal remains active and unachieved; ms02 only.

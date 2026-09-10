@@ -15,7 +15,7 @@ cached reconstruction anchors can be inactive, and the final snapshot set is a
 selected sample of history. They motivate a return-allocation question, not an
 estimated opportunity rate or a guaranteed speedup.
 
-## Implemented source hypothesis (native qualification pending)
+## Implemented source hypothesis
 
 The explicit scoped-return selectors implement a bounded redirection of the
 existing group-walk cell proposal:
@@ -105,5 +105,6 @@ strict all-feature/all-target searcher Clippy passes. The challenge caller passe
 7 tests with the progress feature and 7 with defaults; its feature-build strict
 Clippy passes. The general correctness, deterministic execution, external input,
 compatibility, semantic ownership and test-strength lenses in REVIEWING.md were
-applied. No unsafe code or its invariants changed. Native activation and efficacy
-remain unmeasured; passing source checks does not close the research goal.
+applied. No unsafe code or its invariants changed. SR01 subsequently qualifies native activation and complete replay in all four
+arms; see sr01-results.md. Efficacy remains unmeasured; passing implementation
+checks does not close the research goal.
