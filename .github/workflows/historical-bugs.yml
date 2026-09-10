@@ -138,6 +138,16 @@ jobs:
           sudo chmod 666 /dev/kvm
           uname -a > reports/host.txt
           cargo test --locked -p vmm-backend --test kvm_smoke "$filter" -- --ignored --test-threads=1 2>&1 | tee reports/completion.log
+          if [[ '${{ inputs.backend_boundaries }}' == true ]]; then
+            git apply -R .github/scripts/kvm-completion-boundaries.patch
+            set +e
+            cargo test --locked -p vmm-backend --test kvm_smoke "$filter" -- --ignored --test-threads=1 > reports/completion-negative-control.log 2>&1
+            control_status=$?
+            set -e
+            test "$control_status" -ne 0
+            grep -q 'serviced PIO has already completed' reports/completion-negative-control.log
+            echo 'Unmodified backend rejected at the expected serviced-PIO state assertion' >> reports/completion-negative-control.log
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
