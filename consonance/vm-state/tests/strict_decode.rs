@@ -151,6 +151,28 @@ fn v4_engine_state_section_is_required_nonempty_and_last() {
     assert_eq!(VmState::decode(&trailing), Err(VmStateError::TrailingBytes));
 }
 
+#[test]
+fn legacy_v3_rejects_a_well_formed_engine_state_section() {
+    let (legacy_count, legacy_sections) = split(&valid());
+    assert_eq!(legacy_count, 13);
+    assert_eq!(legacy_sections.len(), usize::from(legacy_count));
+
+    // TLV 14 belongs only to v4. Both an empty payload and an opaque nonempty
+    // payload are otherwise well-formed sections, so the v3 reader must reject
+    // them instead of accepting and discarding the field.
+    for payload in [Vec::new(), vec![0xA5]] {
+        let mut sections = legacy_sections.clone();
+        sections.push((14, payload));
+        assert_eq!(sections.len(), 14);
+        let blob = pack_version(VM_STATE_LEGACY_VERSION, 14, &sections);
+        assert_eq!(
+            VmState::decode(&blob),
+            Err(VmStateError::UnknownTag(14)),
+            "v3 must reject a planted engine TLV regardless of payload length"
+        );
+    }
+}
+
 /// The v2 arch tag is a **hard gate on the record set**: a blob whose sections are
 /// byte-perfect but whose arch tag is another architecture's is REJECTED, never
 /// decoded into this build's x86 fields (`docs/ARCHITECTURE.md` — versioned
