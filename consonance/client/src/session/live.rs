@@ -327,7 +327,9 @@ impl Session {
     /// which it was. `None` when the server cannot seal that point yet.
     fn try_seal_any_history(&mut self) -> Result<Option<(SnapId, u64)>, Box<dyn Error>> {
         match self.client.transport_mut().handle(&Request::Snapshot) {
-            Ok(Ok(Reply::Snapshot { id, at, tainted, .. })) => {
+            Ok(Ok(Reply::Snapshot {
+                id, at, tainted, ..
+            })) => {
                 self.snapshot_times.insert(id, at.0);
                 self.checkpoint_modified = tainted;
                 Ok(Some((id, at.0)))
