@@ -1,0 +1,72 @@
+{
+  "format": "metroid-rq01-closed-ledger-v1",
+  "prior_ledger_sha256": "d70571c2ae685a47682bb21bd3e784633c61cf35afe0225c7983b8e2bd748ed6",
+  "registration_sha256": "0c5cc47296e3233c0b7f13f2d3718380cade932cdc1653d0a21ee0ecc4d56b69",
+  "block_known_auxiliary_ceiling": 4000000,
+  "block_known_auxiliary_frames": 1513890,
+  "cells": {
+    "rq01-control": {
+      "admitted_frames": 1954,
+      "known_auxiliary_frames": 481326,
+      "cost": {
+        "admitted_search_frames": 1954,
+        "campaign_replay_admitted_frames": 1954,
+        "direct_physical_frames": 477418,
+        "direct_setup_frames": 5574
+      },
+      "process": {
+        "cell": "rq01-control",
+        "returncode": 0,
+        "stop_reason": null,
+        "wall_seconds": 21.012688075948972,
+        "maxrss_kib": 20968,
+        "user_seconds": 21.003633,
+        "system_seconds": 0.039968
+      }
+    },
+    "rq01-one": {
+      "admitted_frames": 19010,
+      "known_auxiliary_frames": 516282,
+      "cost": {
+        "admitted_search_frames": 19010,
+        "campaign_replay_admitted_frames": 19010,
+        "direct_physical_frames": 478262,
+        "direct_setup_frames": 5574
+      },
+      "process": {
+        "cell": "rq01-one",
+        "returncode": 0,
+        "stop_reason": null,
+        "wall_seconds": 23.012739770987537,
+        "maxrss_kib": 22528,
+        "user_seconds": 22.958692,
+        "system_seconds": 0.079939
+      }
+    },
+    "rq01-two": {
+      "admitted_frames": 19010,
+      "known_auxiliary_frames": 516282,
+      "cost": {
+        "admitted_search_frames": 19010,
+        "campaign_replay_admitted_frames": 19010,
+        "direct_physical_frames": 478262,
+        "direct_setup_frames": 5574
+      },
+      "process": {
+        "cell": "rq01-two",
+        "returncode": 0,
+        "stop_reason": null,
+        "wall_seconds": 29.013157813984435,
+        "maxrss_kib": 22420,
+        "user_seconds": 29.499659,
+        "system_seconds": 0.048018
+      }
+    }
+  },
+  "cumulative_since_user_resumption_admitted_search_frames": 1083261532,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 53710239,
+  "outcome": "Default artifacts match AQ01. Both retry runs exercise 44 retries and have identical artifacts; the surviving linear witness matches the original worker snapshot and all replay checks pass. Native integration qualification only.",
+  "services": "All three services inactive/dead, ExecMainStatus=0 and MainPID=0.",
+  "unknown": "Engine setup, unadmitted work and reconstruction remain additional unknown costs.",
+  "old_expired_tranche": "489,962,470 admitted search and 30,112,297 known auxiliary frames remain frozen and excluded from these renewed totals."
+}

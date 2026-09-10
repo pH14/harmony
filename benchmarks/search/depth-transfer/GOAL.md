@@ -524,3 +524,29 @@ Freeze source/build/assets/requests plus at most 4M known auxiliary frames and
 short external limits before execution. No retries or automatic performance
 panel follow a qualification failure. The original scientific objective remains
 active and unachieved.
+
+## RQ01 closed; one cheap conditional efficacy screen
+
+RQ01 passes native default compatibility, surviving linear-retry replay, full
+campaign replay and one/two-buffer identity. Both candidate fixtures exercise
+44 retries. All three services are terminal; known auxiliary cost is 1,513,890
+within its separate 4M ceiling. Resumed totals are 1,083,261,532 admitted search
+and 53,710,239 known auxiliary frames. Qualification is not an efficacy result.
+
+Next freeze RC01: at most four new paired conditional seeds, original E01 root,
+ordinary versus the qualified retry flag, actual Ridley defeat, 250k admitted
+frames per arm and unchanged selector/retention/action law. Use the same host
+and CPU set sequentially, balanced arm order. Count failed attempts and bounded
+drain; retain unknown setup/unadmitted/reconstruction costs rather than claim
+exact total-physical-work equality. Require three strict wins robust to event
+intervals, at least 15% lower mean restricted cost and no material process-cost
+regression. Both-censored pairs are ties; incomplete measurement ends dispatch.
+Stop when three wins become impossible. No post-hoc HP endpoint, larger horizon,
+replacement seed or selected damage root rescues a failed screen.
+
+Register a separate ceiling covering all eight cells and verification before
+running. A conditional pass earns further planning for fresh development and
+cross-host/MM2 qualification, not default promotion or goal completion. ms02
+need not spend qualification compute on a candidate that fails this cheap gate.
+Keep every result in PR #287 and the original repeated fresh boss/Wily objective
+active and unachieved.

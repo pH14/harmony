@@ -308,3 +308,35 @@ The [next candidate](next-mechanism.md) is a bounded local retry after an ordina
 terminal action. An exact finite model includes both a favorable aliasing case
 and an alive-trap counterexample. It earns only a bounded source/fixture decision;
 no new native panel or policy promotion is allocated by this census.
+
+## RQ01: local retries pass native integration qualification
+
+The opt-in implementation consumes the existing pre-drawn suffix, retrying once
+from the preceding live boundary after ordinary death. Failed attempts consume
+the original command cap and their physical frames remain charged. Errors and
+victories stop normally. The shared helper supports Metroid and MM2; the archive,
+selector, input law and defaults remain unchanged. The exact finite-cap model
+and adverse alive-trap fixture are in [next-mechanism.md](next-mechanism.md).
+
+[RQ01](rq01-registration.json) first reproduces all nine historical default
+artifacts byte for byte. Its two 128-job candidate runs each admit 19,010 frames
+and exercise 44 retries. All nine compared artifacts are identical between one
+and two result buffers. The first surviving retry's linear input reproduces the
+original worker snapshot exactly, then passes two root-local and two full-prefix
+replays. Full campaign/checkpoint replay passes in every cell. The witness is
+alive with health79 and snapshot-local boss HP138; this is exercised integration,
+not an efficacy endpoint or a fresh discovery.
+
+The three runs finish in 21.01, 23.01 and 29.01 seconds with peak child RSS below
+23 MiB. All services are inactive/dead with successful exit status. Compressed
+raw artifacts are in `rq01-output/`; [the verifier](verify_retry_qualification.py)
+recomputes the [result](rq01-analysis.json), including 24 passing evidence tests
+that reject missing surviving witnesses and changed default/buffer checkpoints.
+Relevant source verification passes 152 searcher tests plus its interface test,
+142 feature-enabled NES library tests, three challenge tests and strict Clippy.
+
+The [closed ledger](ledger-after-rq01.json) charges **1,513,890 known auxiliary
+frames**, below its separate 4M ceiling. Resumed totals are 1,083,261,532 admitted
+search and **53,710,239 known auxiliary frames**, with earlier physical-cost gaps
+preserved. This qualification earns a separately frozen cheap conditional
+falsifier, not a larger search allocation or an untouched validation panel.
