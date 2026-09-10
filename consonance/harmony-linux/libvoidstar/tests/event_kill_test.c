@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -28,6 +29,7 @@ static void run_child(void)
     unsigned char byte = 1;
 
     assert(start_fd >= 0);
+    (void)init_coverage_module(64, "event-kill-test.sym.tsv");
     assert(write(start_fd, &byte, sizeof(byte)) == (ssize_t)sizeof(byte));
     assert(read(start_fd, &byte, sizeof(byte)) == (ssize_t)sizeof(byte));
 
@@ -66,7 +68,7 @@ static void check_ordinal(const char *executable, uint64_t ordinal)
         (void)close(report_channel[0]);
         (void)close(start_channel[0]);
         assert(setpgid(0, 0) == 0);
-        assert(execl(executable, executable, "--child", (char *)NULL) == 0);
+        assert(execl(executable, executable, "--launcher", (char *)NULL) == 0);
         _exit(127);
     }
     active_child = (sig_atomic_t)child;
@@ -103,8 +105,13 @@ int main(int argc, char **argv)
     size_t index;
 
     assert(signal(SIGALRM, timeout) != SIG_ERR);
-    if (argc == 2)
-        run_child();
+    if (argc == 2) {
+        if (strcmp(argv[1], "--child") == 0)
+            run_child();
+        if (strcmp(argv[1], "--launcher") == 0)
+            assert(execl(argv[0], argv[0], "--child", (char *)NULL) == 0);
+        abort();
+    }
     for (index = 0; index < sizeof(ordinals) / sizeof(ordinals[0]); ++index)
         check_ordinal(argv[0], ordinals[index]);
     return 0;

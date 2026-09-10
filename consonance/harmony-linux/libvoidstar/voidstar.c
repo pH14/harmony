@@ -76,6 +76,9 @@ static _Atomic uint64_t harmony_event_target;
 static _Atomic uint64_t harmony_event_gate;
 static _Atomic bool harmony_event_enabled;
 static pthread_once_t harmony_event_control_once = PTHREAD_ONCE_INIT;
+static pthread_mutex_t harmony_event_ready_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t harmony_event_ready_cond = PTHREAD_COND_INITIALIZER;
+static bool harmony_instrumentation_ready;
 static int harmony_event_control_fd = -1;
 static int harmony_event_report_fd = -1;
 
@@ -125,7 +128,7 @@ static void event_gate_close(void)
     for (;;) {
         if ((state & HARMONY_EVENT_GATE_CLOSED) != 0)
             break;
-        if (atomic_compare_exchange_weak_explicit(
+        if (atomic_compare_exchange_strong_explicit(
                 &harmony_event_gate, &state, state | HARMONY_EVENT_GATE_CLOSED,
                 memory_order_acq_rel, memory_order_acquire))
             break;
@@ -170,6 +173,16 @@ static void *event_control_main(void *unused)
     unsigned char acknowledgement[sizeof(target)];
 
     (void)unused;
+    if (pthread_mutex_lock(&harmony_event_ready_lock) != 0)
+        return NULL;
+    while (!harmony_instrumentation_ready) {
+        if (pthread_cond_wait(
+                &harmony_event_ready_cond, &harmony_event_ready_lock) != 0) {
+            (void)pthread_mutex_unlock(&harmony_event_ready_lock);
+            return NULL;
+        }
+    }
+    (void)pthread_mutex_unlock(&harmony_event_ready_lock);
     while (read_event_command(harmony_event_control_fd, &target) == 0) {
         event_gate_close();
         put_u64(acknowledgement, target);
@@ -215,6 +228,16 @@ static void event_control_start(void)
 __attribute__((constructor)) static void harmony_event_constructor(void)
 {
     (void)pthread_once(&harmony_event_control_once, event_control_start);
+}
+
+static void event_control_activate(void)
+{
+    (void)pthread_once(&harmony_event_control_once, event_control_start);
+    if (pthread_mutex_lock(&harmony_event_ready_lock) != 0)
+        return;
+    harmony_instrumentation_ready = true;
+    (void)pthread_cond_broadcast(&harmony_event_ready_cond);
+    (void)pthread_mutex_unlock(&harmony_event_ready_lock);
 }
 
 static int write_all(int fd, const unsigned char *data, size_t size)
@@ -429,12 +452,18 @@ static void automatic_coverage_yield(void)
         &harmony_automatic_coverage_counter, 1, memory_order_relaxed) + 1;
     threshold = atomic_load_explicit(
         &harmony_automatic_coverage_threshold, memory_order_acquire);
-    if (observed != threshold)
-        return;
+    for (;;) {
+        if (observed < threshold || threshold == UINT64_MAX)
+            return;
+        if (atomic_compare_exchange_weak_explicit(
+                &harmony_automatic_coverage_threshold, &threshold, UINT64_MAX,
+                memory_order_acq_rel, memory_order_acquire))
+            break;
+    }
     process = (uint32_t)getpid() & ~HARMONY_AUTOMATIC_COVERAGE_NAMESPACE;
     if (coverage_exchange_request(
             HARMONY_AUTOMATIC_COVERAGE_NAMESPACE | process,
-            observed / HARMONY_COVERAGE_QUANTUM, 1,
+            threshold / HARMONY_COVERAGE_QUANTUM, 1,
             &next_yield, &selected) != 0 ||
         next_yield > UINT64_MAX / HARMONY_COVERAGE_QUANTUM) {
         atomic_store_explicit(
@@ -451,6 +480,13 @@ static void automatic_coverage_yield(void)
 uint64_t init_coverage_module(size_t num_edges, const char *symbols)
 {
     (void)symbols;
+    /*
+     * LD_PRELOAD may first load this bridge into an uninstrumented launcher.
+     * Wait for the instrumentor's module registration so a standing arm is
+     * consumed by the executable that owns the deterministic event stream and
+     * survives an intervening exec.
+     */
+    event_control_activate();
     return atomic_fetch_add_explicit(
         &harmony_next_edge_offset, (uint64_t)num_edges, memory_order_relaxed);
 }
@@ -461,7 +497,7 @@ bool notify_coverage(uint64_t edge)
     bool event_entered = false;
 
     (void)edge;
-    (void)pthread_once(&harmony_event_control_once, event_control_start);
+    event_control_activate();
     if (atomic_load_explicit(&harmony_event_enabled, memory_order_acquire)) {
         event_gate_enter();
         event_entered = true;

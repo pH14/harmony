@@ -10,7 +10,9 @@ coverage and sanitizer callback symbols expected by instrumented programs.
 Device exchanges are serialized per process. Unconfigured instrumented
 workloads use one process-wide callback counter and yield at the library's
 fixed 64-event cadence. This bounds compute-only execution on every backend
-without a machine counter or an operator setting. A workload that calls
+without a machine counter or an operator setting. A callback that overtakes an
+in-flight yield claims the missed threshold on its next event, so a threaded
+program cannot permanently skip the software exit. A workload that calls
 `harmony_coverage_configure` replaces that fallback with its explicit logical
 thread identities and runnable sets. The high bit of a thread identity is
 reserved for the fallback's deterministic per-process streams. Device errors fail closed:
@@ -18,9 +20,11 @@ an event is dropped and entropy returns zero rather than using host randomness.
 `init_coverage_module` follows the SDK ABI and assigns non-overlapping edge
 ranges to modules injected by the Go instrumentor.
 
-Instrumented workloads may also inherit `HARMONY_EVENT_KILL_FD`. The library
-reads positive `u64` arm values from that socket and kills its own process group
-after that many future instrumented callbacks. This is a synchronous
+Instrumented workloads may also inherit `HARMONY_EVENT_KILL_FD`. Event control
+begins reading at the first instrumented module registration or callback, so
+the socket and a pending arm pass through an uninstrumented launcher without
+that launcher consuming it. The library reads positive `u64` arm values from that socket and
+kills its own process group after that many future instrumented callbacks. This is a synchronous
 instrumented-event coordinate. Zero disarms the coordinate.
 Gate harnesses may additionally pass `HARMONY_EVENT_REPORT_FD`; immediately
 before an armed event kill, the bridge writes the selected ordinal and the
