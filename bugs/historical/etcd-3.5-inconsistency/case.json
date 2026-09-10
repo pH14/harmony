@@ -37,9 +37,9 @@
     "evidence": 11,
     "kind": "always",
     "hook": 2,
-    "detector": "client journal versus recovered etcd reads",
-    "fires_on": "an acknowledged key is missing or has a different value after restart",
-    "silent_when": ["the node is down", "the journal is empty", "the readback hook cannot reach etcd"]
+    "detector": "client journal versus serializable reads from every recovered etcd member",
+    "fires_on": "an acknowledged key is missing or has a different value on any recovered member after restart",
+    "silent_when": ["a member is down", "the journal is empty", "a local member read is inconclusive"]
   },
   "actions": ["Wait", "EventKill", "Kill", "Pause", "Restart", "Hook"],
   "run": {

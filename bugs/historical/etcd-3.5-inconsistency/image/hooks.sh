@@ -4,9 +4,19 @@ set -eu
 
 journal=/tmp/etcd/journal/acked
 writers_started=/tmp/etcd/journal/writers-started
+cluster_endpoints='http://127.0.0.1:2379,http://127.0.0.1:2381,http://127.0.0.1:2383'
+member_endpoint_1=http://127.0.0.1:2379
+member_endpoint_2=http://127.0.0.1:2381
+member_endpoint_3=http://127.0.0.1:2383
 
 ctl() {
-  ETCDCTL_API=3 /opt/etcd/etcdctl --endpoints=http://127.0.0.1:2379 "$@"
+  ETCDCTL_API=3 /opt/etcd/etcdctl --endpoints="${cluster_endpoints}" "$@"
+}
+
+ctl_member() {
+  endpoint=$1
+  shift
+  ETCDCTL_API=3 /opt/etcd/etcdctl --endpoints="${endpoint}" "$@"
 }
 
 writer() {
@@ -50,14 +60,10 @@ case "$1" in
     ;;
   2)
     [ -s "${journal}" ] || exit 0
-    # A failed read means the member is still down or restarting. That is not
-    # evidence of corruption; only a successful readback can publish a verdict.
-    ctl endpoint health >/dev/null 2>&1 || exit 0
     snapshot=${journal}.$$
     expected=${snapshot}.expected
-    actual_raw=${snapshot}.actual.raw
-    actual=${snapshot}.actual
-    trap 'rm -f "${snapshot}" "${expected}" "${actual_raw}" "${actual}"' EXIT
+    actual_raw_prefix=${snapshot}.actual.
+    trap 'rm -f "${snapshot}" "${expected}" "${actual_raw_prefix}"*' EXIT
     cp "${journal}" "${snapshot}" 2>/dev/null || exit 0
     # Keep only complete, workload-shaped records. The journal is appended by
     # detached workers, so its final line can be a partial write.
@@ -67,18 +73,32 @@ case "$1" in
     ' "${snapshot}" | LC_ALL=C sort -u >"${expected}"
     [ -s "${expected}" ] || exit 0
 
-    # One prefix read replaces one etcdctl process and RPC per journal row.
-    # Convert etcdctl's key/value line pairs to the same canonical form as the
-    # journal, then check only the acknowledged subset. Extra keys can be
-    # present because the workers may append a journal record after a put.
-    ctl get museum/ --prefix >"${actual_raw}" 2>/dev/null || exit 0
-    awk '
-      NR % 2 == 1 { key = $0; next }
-      { print key "\t" $0 }
-    ' "${actual_raw}" | LC_ALL=C sort >"${actual}"
+    # Read each member's local bbolt view with a serializable range. A failed
+    # read or malformed response leaves the oracle inconclusive: a member that
+    # is still recovering is not evidence of data loss.
+    conclusive=1
     failed=0
-    missing=$(comm -23 "${expected}" "${actual}")
-    [ -z "${missing}" ] || failed=1
+    member=1
+    for endpoint in "${member_endpoint_1}" "${member_endpoint_2}" "${member_endpoint_3}"; do
+      actual_raw=${actual_raw_prefix}${member}.raw
+      actual_unsorted=${actual_raw_prefix}${member}.unsorted
+      actual=${actual_raw_prefix}${member}
+      if ! ctl_member "${endpoint}" get museum/ --prefix --consistency=s >"${actual_raw}" 2>/dev/null; then
+        conclusive=0
+      elif awk '
+        NR % 2 == 1 { key = $0; next }
+        { print key "\t" $0 }
+        END { if (NR % 2 != 0) exit 1 }
+      ' "${actual_raw}" >"${actual_unsorted}" \
+        && LC_ALL=C sort "${actual_unsorted}" >"${actual}"; then
+        missing=$(LC_ALL=C comm -23 "${expected}" "${actual}")
+        [ -z "${missing}" ] || failed=1
+      else
+        conclusive=0
+      fi
+      member=$((member + 1))
+    done
+    [ "${conclusive}" -eq 1 ] || exit 0
     echo '@reachable 11'
     if [ "$failed" -eq 0 ]; then
       echo '@always 1 1'

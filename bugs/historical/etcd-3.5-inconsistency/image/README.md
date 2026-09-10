@@ -43,8 +43,11 @@ docker build --platform=linux/arm64 \
 docker save --output etcd-3.5.2-arm64.oci harmony-etcd:3.5.2-arm64
 ```
 
-The guest runs one local instrumented etcd member. Hook 1 detaches four clients that keep
-putting acknowledged keys and journaling them outside etcd. Harmony can then
-kill and restart the member while apply is busy. Hook 2 only emits a verdict
-after a successful readback of a journal snapshot, so a node that is still
-down cannot count as data loss.
+The guest runs three local instrumented etcd members in one Raft cluster. Their client and peer
+ports are `2379/2380`, `2381/2382`, and `2383/2384`, with independent data directories under
+`/tmp/etcd/data`. The readiness probe requires all three client endpoints to be healthy. Hook 1
+detaches four persistent clients that put uniquely keyed values through the cluster endpoint set
+and journal each acknowledged put outside etcd. Harmony can then kill and restart one member
+while apply is busy. Hook 2 performs one serializable local read through every member and only
+emits a verdict after all three comparisons succeed, so a member that is still down cannot count
+as data loss.
