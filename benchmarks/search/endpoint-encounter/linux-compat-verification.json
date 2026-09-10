@@ -1,0 +1,22 @@
+{
+  "format": "linux-compatibility-verification-v1",
+  "source_commit": "5793748abd1145842817573a883f1b61c8678ab1",
+  "source_archive_sha256": "44e0737cb9a0bcdf8ceb6e9312fb8c912168284b6e07faf08d03a3566d4dfc4c",
+  "host": "ms02",
+  "toolchain": "1.97.0-x86_64-unknown-linux-gnu",
+  "command": "cargo +1.97.0 clippy --locked --all-features --all-targets -p faults-workload -p harmony-cli -- -D warnings",
+  "source_path": "/root/harmony-depth-transfer-20260909/source-linux-compat-001",
+  "cpu": "0-7",
+  "memory_max": "8G",
+  "runtime_limit_seconds": 600,
+  "cargo_elapsed_seconds": 6.36,
+  "systemd_cpu_seconds": 19.406,
+  "systemd_memory_peak_reported": "865.3M",
+  "service": "harmony-linux-compat-001",
+  "active_state": "inactive",
+  "sub_state": "dead",
+  "main_pid": 0,
+  "exit_status": 0,
+  "emulation_frames": 0,
+  "purpose": "Compile-only verification of the default result field in the new upstream faults adapter; no native experiment or VM execution."
+}

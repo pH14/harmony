@@ -550,3 +550,36 @@ cross-host/MM2 qualification, not default promotion or goal completion. ms02
 need not spend qualification compute on a candidate that fails this cheap gate.
 Keep every result in PR #287 and the original repeated fresh boss/Wily objective
 active and unachieved.
+
+## RC01 closed at the registered futility gate
+
+Two pairs complete their fixed250k horizons with no Ridley defeat in either
+arm. Candidate cells exercise1,064/1,072 retries and all four campaigns and
+witnesses replay. Two censored ties make three strict wins impossible, so pairs3/4
+remain unrun. All four services are terminal. Total process wall time is151.10
+seconds; the separately registered block uses3,914,100 known auxiliary frames.
+Resumed totals are1,083,261,532 admitted search and57,624,339 known auxiliary
+frames. Frozen old tranche totals and unknown physical costs remain separate.
+
+Close allocation to this candidate at this root/endpoint/horizon. Its model and
+implementation are useful falsifiable artifacts, but neither the exercised
+retries nor fewer jobs is an efficacy result. No larger run, damage-based rescue,
+new seed bank, third selected root, default promotion or validation follows.
+The fresh repeated boss/Wily objective remains active and unachieved.
+
+Before another mechanism or experiment, consolidate the causal implications of
+the completed conditional line and the already integrated #285/#288 evidence.
+Distinguish a generation failure, insufficient allocation to already retained
+states, and an insufficient-resource starting state. State which distinctions
+are identifiable from existing artifacts and which remain confounded. Prefer
+an exact finite model or source-backed counterexample to another instrumentation
+project. Any new measurement must change a concrete decision and begin with its
+cheapest falsifier and frozen stopping rule. The current negative does not earn
+another variant sweep or an unchanged fresh campaign. Resource/terminal-policy
+interaction remains explicitly unmeasured, not silently proven or promoted.
+
+Keep msr1/ms02 available for evidence-backed, separately registered work. The
+only immediate ms02 task is a bounded Linux compile/Clippy check of the upstream
+compatibility merge; it executes no VM or emulator. Complete publication and CI
+integration in the existing draft PR #287, then continue the scientific decision
+from these closed results rather than rerunning them.

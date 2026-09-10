@@ -340,3 +340,40 @@ frames**, below its separate 4M ceiling. Resumed totals are 1,083,261,532 admitt
 search and **53,710,239 known auxiliary frames**, with earlier physical-cost gaps
 preserved. This qualification earns a separately frozen cheap conditional
 falsifier, not a larger search allocation or an untouched validation panel.
+
+## RC01: stop local-retry efficacy allocation after two censored ties
+
+The [prospectively frozen comparison](rc01-decision.md) uses four new paired
+seeds and the original E01 root. Both arms keep the 250k admitted-frame horizon,
+512 MiB archive, selector, action law and four workers. Only the retry flag
+differs. Arms run sequentially on the same msr1 CPUs in balanced order.
+
+| Pair | Arm | Jobs | Admitted frames | Local retries | Seconds | Ridley defeated |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| 1 | Control | 2,587 | 250,180 | 0 | 38.02 | No |
+| 1 | Retry | 1,868 | 250,693 | 1,064 | 37.02 | No |
+| 2 | Retry | 1,904 | 250,526 | 1,072 | 38.05 | No |
+| 2 | Control | 2,625 | 250,485 | 0 | 38.02 | No |
+
+All four fixed horizons complete, with bounded drain recorded separately.
+Full campaign/checkpoint replay and two root-local/two complete-prefix witness
+replays pass. Reported peak child RSS stays below54 MiB. The candidate actually
+exercises retries; its lower job count reflects more attempts within a job,
+not a milestone improvement. Restricted milestone costs are250k in every cell.
+
+The [frozen scorer](score_retry_screen.py) therefore stops after two censored
+ties: zero strict wins, so three wins in four pairs are impossible. Pairs3/4
+remain unrun. This rejects escalation at this supplied root, endpoint and
+horizon; it establishes neither population equivalence nor global impossibility.
+No HP endpoint, new seed bank, larger horizon or selected root rescues this gate.
+The retry mechanism remains opt-in, with no efficacy claim or default promotion.
+
+The [analysis](rc01-analysis.json) recomputes from compressed `rc01-output/`;
+all28 endpoint evidence tests pass. The [ledger](ledger-after-rc01.json) charges
+**3,914,100 known auxiliary frames** (1,001,884 admitted challenge, the same
+replay-admitted work, and1,910,332 helper physical frames including22,296 setup).
+The four processes consume151.10 summed wall seconds. All services are terminal
+and there are no pair3/4 outputs. Resumed totals are1,083,261,532 admitted search
+and **57,624,339 known auxiliary frames**. Unknown engine setup, unadmitted work
+and reconstruction remain separate; exact total-physical-work equality is not
+claimed. The original fresh repeated boss/Wily objective remains unachieved.

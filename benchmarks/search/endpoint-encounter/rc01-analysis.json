@@ -1,0 +1,266 @@
+{
+  "format": "metroid-local-retry-rc01-analysis-v1",
+  "registration_sha256": "840f49f9374b3059ba6b8e6a97473a252285462296d8855ed2d051a4e7dd16aa",
+  "decision": "stop_futility",
+  "strict_wins": 0,
+  "completed_pairs": 2,
+  "unrun_pairs": 2,
+  "restricted_cost_ratio_upper": 1.0,
+  "pairs": [
+    {
+      "control": {
+        "format": "metroid-archive-capability-ap01-analysis-v1",
+        "registration_sha256": "840f49f9374b3059ba6b8e6a97473a252285462296d8855ed2d051a4e7dd16aa",
+        "decision": "no_defeat_at_horizon",
+        "fixed_horizon_completed": true,
+        "milestone_reached": false,
+        "observed_first_milestone": null,
+        "stop_reason": "frame_limit",
+        "executions": 2587,
+        "admitted_frames": 250180,
+        "admitted_drain_frames": 180,
+        "known_auxiliary_frames": 977886,
+        "cost": {
+          "admitted_search_frames": 250180,
+          "campaign_replay_admitted_frames": 250180,
+          "direct_physical_frames": 477526,
+          "direct_setup_frames": 5574
+        },
+        "witness_endpoint": {
+          "area": 20,
+          "bosses": 0,
+          "door": 5,
+          "ending": false,
+          "energy_tanks": 1,
+          "equipment": 17,
+          "health": 79,
+          "map_x": 17,
+          "map_y": 29,
+          "missile_capacity": 20,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 5,
+          "x": 239,
+          "y": 113
+        },
+        "artifacts_sha256": {
+          "result.json": "582944afe9bcc15d28256782165f9b5042427ef641d86d24f9d942e06df50b33",
+          "stream.jsonl": "f8a5b25088a8727d11e1d05ed31786e1b5eaa8fa56dbfa76bb598343c30e258f",
+          "checkpoint.bin": "f5a125488f04cfdcb74b6a668ecc46b60588ea9461c8695003b09b30b7abb7f6",
+          "origin.bin": "35b2677423102a0997d1762b8b448766a9e0219eba4173a28a8693b6892294eb",
+          "campaign.json": "cf003c07cc38bf7b539e656396715c71c78dccf61bab2c640a979ff54ca6a69d",
+          "witness-local.json": "88018d5de854815ab48ae77019c9eddfc027238696a87f17f84c1f6fe7604e71",
+          "witness-full.json": "94083df36b53f709d5730f111416a28b4142c6405d60ff33f827fa967aaa5417"
+        },
+        "scope": "One supplied original encounter and reused diagnostic seed; no matched-control or fresh-discovery inference.",
+        "unknown": "Engine target setup, unadmitted work and reconstruction remain additional unknown costs. Campaign replay admitted frames are an inferred component, not total physical replay work.",
+        "restricted_interval": [
+          250000,
+          250000
+        ],
+        "retry_attempts": 0,
+        "process": {
+          "cell": "rc01-p1-control",
+          "returncode": 0,
+          "stop_reason": null,
+          "wall_seconds": 38.01843103003921,
+          "maxrss_kib": 54560,
+          "user_seconds": 46.296529,
+          "system_seconds": 0.185186,
+          "cpu_seconds": 46.481715
+        }
+      },
+      "candidate": {
+        "format": "metroid-archive-capability-ap01-analysis-v1",
+        "registration_sha256": "840f49f9374b3059ba6b8e6a97473a252285462296d8855ed2d051a4e7dd16aa",
+        "decision": "no_defeat_at_horizon",
+        "fixed_horizon_completed": true,
+        "milestone_reached": false,
+        "observed_first_milestone": null,
+        "stop_reason": "frame_limit",
+        "executions": 1868,
+        "admitted_frames": 250693,
+        "admitted_drain_frames": 693,
+        "known_auxiliary_frames": 979148,
+        "cost": {
+          "admitted_search_frames": 250693,
+          "campaign_replay_admitted_frames": 250693,
+          "direct_physical_frames": 477762,
+          "direct_setup_frames": 5574
+        },
+        "witness_endpoint": {
+          "area": 20,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 1,
+          "equipment": 17,
+          "health": 79,
+          "map_x": 17,
+          "map_y": 29,
+          "missile_capacity": 20,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 1,
+          "x": 212,
+          "y": 196
+        },
+        "artifacts_sha256": {
+          "result.json": "7aa9957338cd668e39be24c6e8418fe069f1078bead7e0241d44e43e952186fb",
+          "stream.jsonl": "5147710bb5b2f83b21f0a16d78f74e72994bf1d19ec95c03a81ad29c2d697ae7",
+          "checkpoint.bin": "849e6619bc472b8b66a77ef6ba68fecd39b758d3853b21d6c5a93692aa7a3a9b",
+          "origin.bin": "35b2677423102a0997d1762b8b448766a9e0219eba4173a28a8693b6892294eb",
+          "campaign.json": "dd588505b30d943f6e95d28110f36d0761eeadda99683be5395623b65e84fc0f",
+          "witness-local.json": "79fdf6214617c6fcca8c9d3d6fac41f0cf2e9dfb6c0b753aaac9f46ae4fdfa67",
+          "witness-full.json": "d3c40b8163dcd2fb033f8c78a1018b52c2bef2cbff79b696c3e360e73eff35f1"
+        },
+        "scope": "One supplied original encounter and reused diagnostic seed; no matched-control or fresh-discovery inference.",
+        "unknown": "Engine target setup, unadmitted work and reconstruction remain additional unknown costs. Campaign replay admitted frames are an inferred component, not total physical replay work.",
+        "restricted_interval": [
+          250000,
+          250000
+        ],
+        "retry_attempts": 1064,
+        "process": {
+          "cell": "rc01-p1-candidate",
+          "returncode": 0,
+          "stop_reason": null,
+          "wall_seconds": 37.018608229001984,
+          "maxrss_kib": 41460,
+          "user_seconds": 44.949248,
+          "system_seconds": 0.216526,
+          "cpu_seconds": 45.165774
+        }
+      }
+    },
+    {
+      "control": {
+        "format": "metroid-archive-capability-ap01-analysis-v1",
+        "registration_sha256": "840f49f9374b3059ba6b8e6a97473a252285462296d8855ed2d051a4e7dd16aa",
+        "decision": "no_defeat_at_horizon",
+        "fixed_horizon_completed": true,
+        "milestone_reached": false,
+        "observed_first_milestone": null,
+        "stop_reason": "frame_limit",
+        "executions": 2625,
+        "admitted_frames": 250485,
+        "admitted_drain_frames": 485,
+        "known_auxiliary_frames": 978080,
+        "cost": {
+          "admitted_search_frames": 250485,
+          "campaign_replay_admitted_frames": 250485,
+          "direct_physical_frames": 477110,
+          "direct_setup_frames": 5574
+        },
+        "witness_endpoint": {
+          "area": 20,
+          "bosses": 0,
+          "door": 2,
+          "ending": false,
+          "energy_tanks": 1,
+          "equipment": 17,
+          "health": 79,
+          "map_x": 18,
+          "map_y": 29,
+          "missile_capacity": 20,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 5,
+          "x": 1,
+          "y": 113
+        },
+        "artifacts_sha256": {
+          "result.json": "e9aa36830b0fb5a4c0de43e46846333f036826c9af76902b5ecc031e543b7749",
+          "stream.jsonl": "94ce2784f1e85df88e2054721b95c0be3065913ff697d0b0cb6e9bd33a0f7f03",
+          "checkpoint.bin": "d6dbe088710dd9b7018fc5e5701eb54fd1e80d531a36d2ef514c16d497ee2096",
+          "origin.bin": "35b2677423102a0997d1762b8b448766a9e0219eba4173a28a8693b6892294eb",
+          "campaign.json": "8f63fca86f11d1d5189e20ecf2a8938494b7d354b814bb7f977b3b810d75137d",
+          "witness-local.json": "50ac8b770a410659a5fb6918194ed65b5a5ecefe8e56ffde2ddca3c9a5808cfa",
+          "witness-full.json": "1100d8723b31539a7567d92b2c1aaf9dc6e6abb05864c988e669c54c9dd35ea4"
+        },
+        "scope": "One supplied original encounter and reused diagnostic seed; no matched-control or fresh-discovery inference.",
+        "unknown": "Engine target setup, unadmitted work and reconstruction remain additional unknown costs. Campaign replay admitted frames are an inferred component, not total physical replay work.",
+        "restricted_interval": [
+          250000,
+          250000
+        ],
+        "retry_attempts": 0,
+        "process": {
+          "cell": "rc01-p2-control",
+          "returncode": 0,
+          "stop_reason": null,
+          "wall_seconds": 38.01940070197452,
+          "maxrss_kib": 49848,
+          "user_seconds": 46.063002,
+          "system_seconds": 0.24087299999999998,
+          "cpu_seconds": 46.303875
+        }
+      },
+      "candidate": {
+        "format": "metroid-archive-capability-ap01-analysis-v1",
+        "registration_sha256": "840f49f9374b3059ba6b8e6a97473a252285462296d8855ed2d051a4e7dd16aa",
+        "decision": "no_defeat_at_horizon",
+        "fixed_horizon_completed": true,
+        "milestone_reached": false,
+        "observed_first_milestone": null,
+        "stop_reason": "frame_limit",
+        "executions": 1904,
+        "admitted_frames": 250526,
+        "admitted_drain_frames": 526,
+        "known_auxiliary_frames": 978986,
+        "cost": {
+          "admitted_search_frames": 250526,
+          "campaign_replay_admitted_frames": 250526,
+          "direct_physical_frames": 477934,
+          "direct_setup_frames": 5574
+        },
+        "witness_endpoint": {
+          "area": 20,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 1,
+          "equipment": 17,
+          "health": 79,
+          "map_x": 17,
+          "map_y": 29,
+          "missile_capacity": 20,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 1,
+          "x": 142,
+          "y": 107
+        },
+        "artifacts_sha256": {
+          "result.json": "2b9cb9044ddd1c9a1d6a287e311ff05b79363c04c6163440f587e490250baeec",
+          "stream.jsonl": "9076a9c9ba976bd5b7265e367088955457262fd10be94a595625ef6ed97a8201",
+          "checkpoint.bin": "417d4b6273ce46ce6da07c3b7f5d592ecfb5a335dbdf213f577ce9af9784f366",
+          "origin.bin": "35b2677423102a0997d1762b8b448766a9e0219eba4173a28a8693b6892294eb",
+          "campaign.json": "0af896397e3dff28141ade52b1540522516a7288cc5ec895a43f8616d7682a16",
+          "witness-local.json": "a0ec8340b8be5521a9f81b0a44d903eee76c8bb8be03a3734d10d0782214438a",
+          "witness-full.json": "da13b36417155fa8e2b6ef0410752ba41bd928b0dcc91f8793a4d542c6eac964"
+        },
+        "scope": "One supplied original encounter and reused diagnostic seed; no matched-control or fresh-discovery inference.",
+        "unknown": "Engine target setup, unadmitted work and reconstruction remain additional unknown costs. Campaign replay admitted frames are an inferred component, not total physical replay work.",
+        "restricted_interval": [
+          250000,
+          250000
+        ],
+        "retry_attempts": 1072,
+        "process": {
+          "cell": "rc01-p2-candidate",
+          "returncode": 0,
+          "stop_reason": null,
+          "wall_seconds": 38.04810263396939,
+          "maxrss_kib": 51104,
+          "user_seconds": 46.064902,
+          "system_seconds": 0.18037899999999998,
+          "cpu_seconds": 46.245281
+        }
+      }
+    }
+  ],
+  "known_auxiliary_frames": 3914100,
+  "scope": "New paired conditional seeds from the supplied original E01 root. Not fresh discovery or exact total-physical-work equality.",
+  "unknown": "Engine setup, unadmitted work and reconstruction remain unknown; admitted attempted frames, direct helper work and process costs are recorded."
+}

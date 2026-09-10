@@ -1,7 +1,8 @@
 """The allocation gate preserves censoring, interval uncertainty and resources."""
 import copy
+from pathlib import Path
 import unittest
-from score_retry_screen import assess
+from score_retry_screen import assess, panel
 
 
 def pair(candidate, control, complete=True):
@@ -11,6 +12,13 @@ def pair(candidate, control, complete=True):
 
 
 class RetryScreenGate(unittest.TestCase):
+    def test_saved_screen_stops_after_two_verified_censored_pairs(self):
+        root = Path(__file__).parent
+        result = panel(root, root / 'rc01-output', 2)
+        self.assertEqual(result['decision'], 'stop_futility')
+        self.assertEqual(result['strict_wins'], 0)
+        self.assertEqual(result['known_auxiliary_frames'], 3914100)
+
     def test_two_censored_ties_stop_without_remaining_pairs(self):
         p = pair([250000, 250000], [250000, 250000])
         self.assertEqual(assess([p])['decision'], 'continue')
