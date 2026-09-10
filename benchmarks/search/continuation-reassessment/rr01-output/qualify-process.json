@@ -1,0 +1,15 @@
+{
+  "phase": "qualify",
+  "command": [
+    "/root/harmony-depth-transfer-20260909/builds/retention-replay-x86-001/metroid-retention-replay",
+    "/root/harmony-depth-transfer-20260909/retention-replay-rr01-001/rr01-qualify-request.json",
+    "/root/harmony-depth-transfer-20260909/runs/retention-replay-rr01/qualify"
+  ],
+  "request_sha256": "d9efa8edf9d61b673537d59f5597785f5620fdfddce23b052eb3d300e3c14bc1",
+  "exit_code": 1,
+  "wall_seconds": 0.20113354991190135,
+  "cpu_seconds": 0.039111999999999994,
+  "peak_rss_kib": 35212,
+  "killed": null,
+  "ended_utc": "2026-09-10T17:56:25.114861+00:00"
+}

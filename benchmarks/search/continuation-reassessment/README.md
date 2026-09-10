@@ -404,9 +404,24 @@ watchdogs, 450-second service, 4 GiB memory and 1 GiB output bounds accompany
 500k/750k prospective physical frame ceilings; no fresh search is allocated.
 The [frozen query](rr01-query.md) covers both rejected candidates and displaced
 incumbents, distinguishes resource equality, and keeps unavailable observations
-unknown. Any failure stops without automatic retry. No native RR01 execution
-is recorded yet; a positive diagnostic would still require the issue #281
-paired continuation counterexample before changing a policy.
+unknown. Any failure stops without automatic retry. Qualification then failed
+at its first root restore: the saved snapshot embeds the original ARM core
+hash, which the ms02 build must reject. It consumed 0.201 seconds wall; full
+inspection and the local-loss query remain unrun. This was an avoidable
+preflight error, not evidence against the retention hypothesis. The corrected
+caller rejects cross-build raw replay before constructing a target. A positive
+future diagnostic would still require the issue #281 paired continuation
+counterexample before changing a policy.
+
+The [closed failure analysis](rr01-closure.md), exact native artifacts and
+[ledger](ledger-after-rr01.json) preserve the failed registration and separate
+929 source-inferred setup frames from missing runtime counter receipts. No
+replay job ran. Cumulative resumed known auxiliary work is 67,879,266 frames;
+admitted search remains 2,982,484,247. Verify this closure without an emulator:
+
+```sh
+python3 benchmarks/search/continuation-reassessment/verify_rr01_failure.py
+```
 
 ## Ordering findings stay separate from this candidate
 

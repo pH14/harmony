@@ -116,6 +116,13 @@ struct Prepared {
 }
 
 fn prepare(q: &Request, original: &[u8], game: &MetroidGame) -> Result<Prepared> {
+    // QuickNES snapshots bind the exact core binary in their header. A stream
+    // declaration cannot make a foreign-build snapshot importable. Check this
+    // before creating either target; reconstruction from actions is a separate
+    // protocol and must not rewrite the saved snapshot's identity.
+    if q.original_core_sha256 != q.core.sha256 {
+        return Err("raw snapshot replay requires the original QuickNES core build".into());
+    }
     if !valid_sha(&q.original_core_sha256)
         || !valid_sha(&q.root_snapshot_sha256)
         || !(QUALIFY_JOBS..=5_000).contains(&q.expected_jobs)
@@ -171,16 +178,9 @@ fn prepare(q: &Request, original: &[u8], game: &MetroidGame) -> Result<Prepared>
         .get("emulator_backend")
         .ok_or("runtime backend missing")?
         .clone();
-    let prefix = runtime_backend
-        .strip_suffix(&q.core.sha256)
-        .ok_or("runtime core identity missing")?;
-    let original_backend = format!("{prefix}{}", q.original_core_sha256);
-    let mut expected_original = runtime.clone();
-    expected_original.insert("emulator_backend".into(), original_backend.clone());
-    if header.game_policies != expected_original {
-        return Err(
-            "original policy or backend identity differs beyond the declared core hash".into(),
-        );
+    let original_backend = runtime_backend.clone();
+    if header.game_policies != runtime {
+        return Err("original policy or backend identity differs from runtime".into());
     }
     let (mut jobs, mut frames, mut prefix_end, mut offset, mut prefix_frames) =
         (0_u64, 0_u64, 0, 0, 0);
@@ -230,11 +230,8 @@ fn prepare(q: &Request, original: &[u8], game: &MetroidGame) -> Result<Prepared>
     if worst_frames > q.physical_frame_ceiling {
         return Err("frame ceiling cannot cover the first mismatching job and setup".into());
     }
-    // Only this explicitly declared identity field changes. Keep every selected
-    // job byte intact; do not reserialize or repair any result/decision record.
-    let mut value: Value = serde_json::from_str(header_line)?;
-    value["emulator_backend"] = Value::String(runtime_backend.clone());
-    let mut stream = serde_json::to_vec(&value)?;
+    // Keep the original header and every selected job byte intact.
+    let mut stream = header_line.as_bytes().to_vec();
     stream.push(b'\n');
     stream.extend_from_slice(selected_body.as_bytes());
     Ok(Prepared {
@@ -336,10 +333,10 @@ fn evaluate(q: &Request, output: &Path, executable_sha256: &str) -> Result<Value
     write(
         &output.join("derivation.json"),
         &json!({"binding":binding,"phase":q.phase,
-        "changed_header_fields":["emulator_backend"],"original_backend":prepared.original_backend,
+        "changed_header_fields":[],"original_backend":prepared.original_backend,
         "runtime_backend":prepared.runtime_backend,"selected_jobs":prepared.jobs,
         "selected_frames":prepared.frames,"derived_stream_sha256":sha(&prepared.stream),
-        "scope":"explicit cross-build derivation; immutable original retained; selected job bytes unchanged"}),
+        "scope":"same-build prefix selection; original header and selected job bytes unchanged"}),
     )?;
     fs::write(output.join("derived-stream.jsonl"), &prepared.stream)?;
     let mut inspector = MetroidTarget::from_rom_bytes_headless(&rom, &q.core.path, &q.core.sha256)?
@@ -491,7 +488,7 @@ mod tests {
             final_checkpoint: pin('9'),
             rom: pin('c'),
             core: pin('d'),
-            original_core_sha256: "e".repeat(64),
+            original_core_sha256: "d".repeat(64),
             root_snapshot_sha256: "f".repeat(64),
             expected_root_context: json!({"fixture":true}),
             expected_jobs: 5,
@@ -519,11 +516,6 @@ mod tests {
         for (key, value) in game.policies(&MetroidCampaignRun) {
             header[&key] = value.into();
         }
-        header["emulator_backend"] = header["emulator_backend"]
-            .as_str()
-            .unwrap()
-            .replace(&q.core.sha256, &q.original_core_sha256)
-            .into();
         let mut bytes = serde_json::to_vec(&header).unwrap();
         bytes.push(b'\n');
         for sequence in 1..=5 {
@@ -552,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn declaration_changes_only_backend_and_preserves_exact_original_job_bytes() {
+    fn selection_preserves_exact_original_header_and_job_bytes() {
         let (mut q, game, original) = fixture();
         for phase in [Phase::Qualify, Phase::Inspect] {
             q.phase = phase;
@@ -569,10 +561,6 @@ mod tests {
                 .unwrap()
                 .split_once('\n')
                 .unwrap();
-            let mut before: Value = serde_json::from_str(before).unwrap();
-            let after: Value = serde_json::from_str(after).unwrap();
-            assert_ne!(before["emulator_backend"], after["emulator_backend"]);
-            before["emulator_backend"] = after["emulator_backend"].clone();
             assert_eq!(before, after);
             let expected: String = body
                 .split_inclusive('\n')
@@ -589,6 +577,22 @@ mod tests {
             );
             assert_eq!(prepared.complete_body_sha256, sha(body.as_bytes()));
         }
+    }
+
+    #[test]
+    fn actual_rr01_cross_build_request_fails_before_reading_a_stream_or_creating_a_target() {
+        let q: Request = serde_json::from_str(include_str!(
+            "../../../../benchmarks/search/continuation-reassessment/rr01-qualify-request.json"
+        ))
+        .unwrap();
+        let game = MetroidGame::new(&[], Path::new("unused"), &q.core.sha256);
+        let Err(error) = prepare(&q, b"", &game) else {
+            panic!("the frozen incompatible request must fail before stream parsing");
+        };
+        assert_eq!(
+            error.to_string(),
+            "raw snapshot replay requires the original QuickNES core build"
+        );
     }
 
     #[test]

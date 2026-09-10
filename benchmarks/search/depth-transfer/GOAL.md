@@ -5,6 +5,9 @@ Retain the original repeated Metroid boss / MM2 Wily 4 objective, matched contro
 replayed witnesses, and untouched validation criterion. Precursor progress is
 useful evidence and does not complete that objective.
 
+Current machine allocation: **msr1 has been reassigned; do not access it.** All
+future native work uses ms02 only. Earlier host allocations below are historical.
+
 The user resumed this goal on 2026-09-09 after requesting integration of PRs #285
 and #288, and authorized unrestricted use of msr1 and ms02, clearing space and
 transferring files among both machines and the local device. That authorization
@@ -595,7 +598,7 @@ boundary. It changes no search policy and cannot count as a generated state or
 fresh witness. Keep the original S01 suffix bank and controls; no selected later
 root, larger capacity, new seed bank or retry-policy rescue.
 
-The source pass begins at2026-09-10 07:08:55 UTC with a45-minute ceiling. It uses
+The source pass begins at 2026-09-10 07:08:55 UTC with a45-minute ceiling. It uses
 existing bounded RAM hooks, adds no unsafe code and verifies the exact serialized
 resource offsets, all other RAM and no clock advance. No-op/bounds/rollback and
 wrong-address counterexamples pass; independent Python code derives the complete
@@ -837,7 +840,7 @@ must be added, and setup/unadmitted gaps remain unknown. All older failed gates
 remain closed.
 
 The unchanged second-wave seeds, identities, arm orders and full resource bounds
-pass the zero-emulation preflight. Pairs2/3 start at2026-09-10T11:23:33Z on ms02
+pass the zero-emulation preflight. Pairs2/3 start at 2026-09-10T11:23:33Z on ms02
 only, using cores0–3 and4–7 respectively. Their specific service handles are
 harmony-continuation-cd01-pair-2-20260910.service and
 harmony-continuation-cd01-pair-3-20260910.service. Both5,900-second service bounds
@@ -1024,3 +1027,32 @@ observation permits only a further paired continuation decision; unavailable
 context stays unknown. Failure stops without automatic retry or changed inputs.
 No RR01 native call has occurred yet, all previous failed gates remain closed,
 and the full boss/Wily/transfer/untouched-validation goal remains unachieved.
+
+## Decision after RR01 qualification
+
+RR01 closed on 2026-09-10 at 17:56:25 UTC with qualification failed and inspection
+unrun. The process used 0.201 seconds wall and 0.039 seconds CPU. Its first root
+restore rejected the original snapshot's ARM core hash against the ms02 build;
+no campaign replay job or retention competition ran. The exact-build guard was
+already visible in source, so this avoidable allocation is a preflight design
+failure, not a scientific negative result. Preserve the frozen requests, native
+binary, failure and service journal in ../continuation-reassessment/rr01-output.
+
+The pinned failure path implies 929 constructor frames before the rejected root
+restore. This is source-inferred work, not a persisted runtime frame receipt.
+The closed ledger separates that inference from the controller's zero sum of
+completed reports, retains historical accounting gaps and charges no prospective
+ceiling as measured work. Resumed totals are 2,982,484,247 admitted search and
+67,879,266 known auxiliary frames including that 929-frame inference.
+
+The corrected raw-replay caller requires the original core identity before
+constructing either target; its regression uses the actual frozen RR01 request.
+RR01 remains failed without retry. Do not weaken QuickNES's import guard or
+rewrite an imported snapshot's build identity. A distinct ms02 reconstruction
+could instead use the exact already-searched prefix, requiring source-qualified
+comparison of all root/checkpoint fields except the separately checked core
+identity, plus every original job's frames, digest and ordered decisions.
+First establish that contract and its counterexamples without emulation; then
+freeze any new reconstruction allocation separately. See rr01-closure.md in
+the continuation-reassessment directory. No policy change, fresh search, longer
+horizon or new seed is allocated, and the original goal remains unachieved.

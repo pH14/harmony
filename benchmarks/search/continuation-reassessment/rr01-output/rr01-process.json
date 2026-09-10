@@ -1,0 +1,48 @@
+{
+  "format": "retention-replay-rr01-process-v1",
+  "registration_sha256": "44a0e8ab5d667bd709c3e758c0c10c5e90675317227a5c9f2ea51f9dbeada8c3",
+  "started_utc": "2026-09-10T17:56:24.912353+00:00",
+  "hostname": "ms02",
+  "cpus": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "cgroup": "/system.slice/harmony-retention-replay-rr01-20260910.service",
+  "cgroup_limits": {
+    "memory.max": "4294967296",
+    "memory.swap.max": "0",
+    "pids.max": "64"
+  },
+  "invocation_id": "628120c3542d44a5bd41cf743a623ec4",
+  "phases": [
+    {
+      "phase": "qualify",
+      "command": [
+        "/root/harmony-depth-transfer-20260909/builds/retention-replay-x86-001/metroid-retention-replay",
+        "/root/harmony-depth-transfer-20260909/retention-replay-rr01-001/rr01-qualify-request.json",
+        "/root/harmony-depth-transfer-20260909/runs/retention-replay-rr01/qualify"
+      ],
+      "request_sha256": "d9efa8edf9d61b673537d59f5597785f5620fdfddce23b052eb3d300e3c14bc1",
+      "exit_code": 1,
+      "wall_seconds": 0.20113354991190135,
+      "cpu_seconds": 0.039111999999999994,
+      "peak_rss_kib": 35212,
+      "killed": null,
+      "ended_utc": "2026-09-10T17:56:25.114861+00:00"
+    }
+  ],
+  "decision": "qualification_failed_inspection_unrun",
+  "admitted_search_frames": 0,
+  "ended_utc": "2026-09-10T17:56:25.115032+00:00",
+  "known_auxiliary_frames": 0,
+  "accounting_gap": "Replay constructor counters and unsuccessful partial replay work are unavailable, not zero.",
+  "files": {
+    "qualify.log": "c0613d4bba54975ea70479d9a23de83157e7ab1497b9a1efdc4501557648d1ec",
+    "qualify-process.json": "a9653d61a2f5ff0502f72af6cbb464c7c87f79e9d58021a0d7f3e544f7bb566f",
+    "qualify/derivation.json": "c03795867042ceb398986196a1de8fe0d9fc64cb650c53b7fd617b9b8e783410",
+    "qualify/derived-stream.jsonl": "aa7836ffd2f4dabaac36c5d3767cac35680efb57e7d7920a7646758a3c0e808e",
+    "qualify/failure.json": "f6539d3d9a6456764f8c4960819b3d8a2d5363cff894e4bd7f047c7236e3006f"
+  }
+}

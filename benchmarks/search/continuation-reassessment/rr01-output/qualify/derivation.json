@@ -1,0 +1,23 @@
+{
+  "binding": {
+    "complete_body_sha256": "cab2361417972b5475774c9b5944ffda41562ff3791a15a6d4a9d1b7eb0411df",
+    "executable_sha256": "533107504a3853409841b30c0a9d8a28a6bb5c805f72d8892ea5d9ea155270a2",
+    "final_checkpoint_sha256": "454d55597dfe3014fc11ebde87c17a2f419648893c7ace1f22c7e5bec309f850",
+    "origin_sha256": "35b2677423102a0997d1762b8b448766a9e0219eba4173a28a8693b6892294eb",
+    "original_core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+    "original_stream_sha256": "9ad315a76c38276c673fccd2b660a250254a8a74bc92d9f4a77670702a53a32c",
+    "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+    "root_snapshot_sha256": "487a63a62f716207f45b67ad5c812e467f722c4def54d5d50b98fe94b2ad9d73",
+    "runtime_core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda"
+  },
+  "changed_header_fields": [
+    "emulator_backend"
+  ],
+  "derived_stream_sha256": "aa7836ffd2f4dabaac36c5d3767cac35680efb57e7d7920a7646758a3c0e808e",
+  "original_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-motion-endpoint-context-v6;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+  "phase": "qualify",
+  "runtime_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-motion-endpoint-context-v6;sha256=a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+  "scope": "explicit cross-build derivation; immutable original retained; selected job bytes unchanged",
+  "selected_frames": 865,
+  "selected_jobs": 4
+}

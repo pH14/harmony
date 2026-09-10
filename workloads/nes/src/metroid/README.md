@@ -427,9 +427,12 @@ report, bound to the same executable and inputs, before replaying the complete
 stream with capture. Every recorded job must reproduce its frames, result
 digest and ordered decisions; the full final raw checkpoint must also match.
 
-An explicit cross-build derivation changes only the declared backend core hash
-in the header and preserves selected job bytes verbatim. It never relabels the
-runtime core with the original hash or edits a snapshot/result to fit. A separate
+Raw snapshots require the exact original core binary: QuickNES embeds that
+binary's SHA-256 in each snapshot and rejects another build before importing
+its payload. The caller rejects unequal original/runtime core identities before
+constructing a target and preserves the original header and selected job bytes
+verbatim. Reconstructing a state from its actions on another build needs a
+separate protocol; changing a stream declaration cannot qualify raw import. A separate
 paused target then reads captured states with exact restore and unchanged-clock
 checks. Output includes raw contexts, qualified boss-slot observations, player
 resources, local disposition and input/snapshot hashes. HP255 remains unavailable;

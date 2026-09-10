@@ -1,0 +1,8 @@
+{
+  "actual_frames": "unavailable on failure; prospective ceiling is not measured work",
+  "elapsed_seconds": 0.03712634,
+  "error": "machine backend failed: snapshot is not compatible with this QuickNES revision/build",
+  "executable_sha256": "533107504a3853409841b30c0a9d8a28a6bb5c805f72d8892ea5d9ea155270a2",
+  "request_sha256": "d9efa8edf9d61b673537d59f5597785f5620fdfddce23b052eb3d300e3c14bc1",
+  "status": "incomplete"
+}
