@@ -626,6 +626,27 @@ impl fmt::Display for Selector {
 /// # Errors
 ///
 /// Returns an error when the text has no number or an unknown unit.
+/// Refuse an artifact a workspace was not recorded against.
+///
+/// A campaign records the digests it ran, and an investigation of it has to
+/// boot those same bytes for a replay to mean anything. A workspace that
+/// recorded no digest pins nothing, so an empty `want` accepts what is at hand.
+///
+/// # Errors
+///
+/// Returns an error naming both digests when they differ.
+pub fn check_pinned(what: &str, want: &str, have: &[u8]) -> Result<(), Box<dyn Error>> {
+    let found = format!("{:x}", Sha256::digest(have));
+    if !want.is_empty() && want != found {
+        return Err(format!(
+            "the {what} available here hashes {found}, but this workspace was \
+             recorded against {want}; supply the pinned artifact"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 pub fn parse_duration(text: &str) -> Result<u64, Box<dyn Error>> {
     let text = text.trim();
     let (number, unit) = text
@@ -679,6 +700,35 @@ pub fn format_duration(nanos: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A replay has to boot the bytes the campaign ran, so an artifact that
+    /// does not match what the workspace recorded is refused by name.
+    #[test]
+    fn an_artifact_that_does_not_match_its_pin_is_refused() {
+        let error =
+            check_pinned("workload image", "00ff", b"artifact").expect_err("a mismatched artifact");
+        let text = error.to_string();
+        assert!(text.contains("workload image"), "{text}");
+        assert!(
+            text.contains("00ff"),
+            "the message names what was recorded: {text}"
+        );
+        let found = format!("{:x}", Sha256::digest(b"artifact"));
+        assert!(text.contains(&found), "and what is at hand: {text}");
+    }
+
+    /// A workspace assembled without a run records no digest, and pins nothing.
+    #[test]
+    fn an_empty_pin_accepts_the_artifact_at_hand() {
+        check_pinned("guest kernel", "", b"anything").expect("an unpinned artifact");
+    }
+
+    #[test]
+    fn an_artifact_matching_its_pin_is_accepted() {
+        let want = format!("{:x}", Sha256::digest(b"artifact"));
+        check_pinned("fault agent", &want, b"artifact").expect("a matching artifact");
+    }
+
     use crate::target::FaultStop;
 
     fn facts() -> WorkspaceFacts {

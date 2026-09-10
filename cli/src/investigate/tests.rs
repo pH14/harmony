@@ -5,7 +5,8 @@
 
 use super::{
     Command, Common, ExecArgs, ExportArgs, InspectArgs, RunArgs, branches, describe_workspace,
-    exec_request, findings, humanize, inspect, run, run_bound, write_text,
+    exec_request, findings, humanize, inspect, is_scalar, render, resolve_moment, run, run_bound,
+    write_text,
 };
 use faults_workload::declarations::Declarations;
 use faults_workload::target::{FaultAction, FaultObservations};
@@ -493,6 +494,122 @@ fn advancing_off_a_kvm_host_says_so_and_names_what_still_works() {
     let message = error.to_string();
     assert!(message.contains("Linux KVM host"), "{message}");
     assert!(message.contains("inspect"), "{message}");
+}
+
+/// A value that prints on its key's own line, as against one that opens an
+/// indented block. Text and JSON come from one document, so this decides the
+/// shape of every text rendering.
+#[test]
+fn only_values_without_structure_print_beside_their_key() {
+    for scalar in [
+        serde_json::json!("text"),
+        serde_json::json!(7),
+        serde_json::json!(true),
+        serde_json::Value::Null,
+    ] {
+        assert!(is_scalar(&scalar), "{scalar} prints beside its key");
+    }
+    for structured in [serde_json::json!({"a": 1}), serde_json::json!([1, 2])] {
+        assert!(
+            !is_scalar(&structured),
+            "{structured} opens an indented block"
+        );
+    }
+}
+
+/// Each level of nesting indents by exactly two spaces, in objects and in
+/// arrays alike, so a reader can tell what a line belongs to.
+#[test]
+fn nesting_indents_by_one_level_each_time() {
+    let mut out = String::new();
+    write_text(
+        &serde_json::json!({"outer": {"middle": {"inner": "leaf"}}}),
+        0,
+        &mut out,
+    );
+    assert_eq!(out, "outer:\n  middle:\n    inner: leaf\n", "{out}");
+
+    let mut out = String::new();
+    write_text(
+        &serde_json::json!({"items": [{"name": "first"}, {"name": "second"}]}),
+        0,
+        &mut out,
+    );
+    assert_eq!(
+        out, "items:\n  -\n    name: first\n  -\n    name: second\n",
+        "{out}"
+    );
+}
+
+/// Both renderings carry the same facts, and the JSON one is a whole document
+/// a pipe can read.
+#[test]
+fn the_two_renderings_come_from_one_document() {
+    let value = serde_json::json!({"branch": "trace", "moment": "m-0002"});
+    let text = render(&value, false);
+    assert_eq!(text, "branch: trace\nmoment: m-0002\n", "{text}");
+    let json = render(&value, true);
+    assert!(json.ends_with('\n'), "{json}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&json).expect("valid json"),
+        value
+    );
+}
+
+/// A virtual time inside an array is a duration a reader can act on, the same
+/// as one at the top level.
+#[test]
+fn every_virtual_time_is_humanized_however_deeply_it_is_nested() {
+    let mut value = serde_json::json!({
+        "moments": [{"id": "m-0002", "virtual_time": 9_300_000_000_u64}]
+    });
+    humanize(&mut value);
+    let item = &value["moments"][0];
+    assert_eq!(item["virtual_time"], "9.3s");
+    assert_eq!(item["virtual_time_nanos"], 9_300_000_000_u64);
+}
+
+/// `branch@time` names a point on that branch. Two branches can hold a point
+/// at the same virtual time, and the selector must not return the other one.
+#[test]
+fn a_branch_selector_resolves_on_its_own_branch() {
+    let (_dir, mut workspace) = fixture();
+    workspace
+        .commit(vec![
+            Record::Moment(Box::new(MomentRecord {
+                id: "m-0003".to_owned(),
+                branch: Some("other".to_owned()),
+                virtual_time: 9_300_000_000,
+                history: History::Recorded,
+                checkpoint: Some("cafe".to_owned()),
+                state_hash: Some("cafe".to_owned()),
+                stop: None,
+                observations: None,
+            })),
+            Record::Branch(Box::new(Branch {
+                name: "other".to_owned(),
+                source: "bug-1".to_owned(),
+                start: "m-0003".to_owned(),
+                head: "m-0003".to_owned(),
+                history: History::Recorded,
+                continuation_end: 12_300_000_000,
+                inherited_actions: vec![FaultAction::Hook(3)],
+                probe: false,
+                pending_command: None,
+            })),
+        ])
+        .expect("commit");
+
+    let selector = super::Selector::parse("trace@9.3s").expect("selector");
+    assert_eq!(
+        resolve_moment(&workspace, &selector).expect("a point on trace"),
+        "m-0002"
+    );
+    let selector = super::Selector::parse("other@9.3s").expect("selector");
+    assert_eq!(
+        resolve_moment(&workspace, &selector).expect("a point on other"),
+        "m-0003"
+    );
 }
 
 fn args(target: &str, view: Option<&str>) -> InspectArgs {

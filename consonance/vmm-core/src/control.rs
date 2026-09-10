@@ -333,6 +333,20 @@ struct ActiveExec {
     cursor: usize,
 }
 
+impl ActiveExec {
+    /// Feed the serial bytes this command has not seen yet, and report whether
+    /// its completion sentinel has landed.
+    ///
+    /// A capture shorter than the cursor feeds nothing: only a restore shortens
+    /// it, and a restore abandons the command anyway.
+    fn feed(&mut self, output: &[u8]) -> bool {
+        let fresh = output.get(self.cursor..).unwrap_or_default();
+        self.cursor = output.len();
+        self.session.feed(fresh);
+        self.session.is_done()
+    }
+}
+
 pub struct ControlServer<B: Backend<A: Vendor>> {
     /// The live VM. `None` only after a fatal error already tore it down (or
     /// transiently inside a `branch`/`replay`, where the old VM must be dropped
@@ -2444,14 +2458,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let Some(active) = self.active_exec.as_mut() else {
             return Ok(None);
         };
-        let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
-        let output = vmm.serial_output();
-        if output.len() > active.cursor {
-            let fresh = output[active.cursor..].to_vec();
-            active.cursor = output.len();
-            active.session.feed(&fresh);
-        }
-        if !active.session.is_done() {
+        let output = self
+            .vmm
+            .as_ref()
+            .ok_or(ServeError::Poisoned)?
+            .serial_output();
+        if !active.feed(output) {
             return Ok(None);
         }
         let outcome = self
@@ -2650,6 +2662,8 @@ mod tests {
     //! (which composes this server with the explorer's
     //! socket `Machine`).
 
+    use super::ActiveExec;
+    use crate::exec::ExecSession;
     use control_proto::{
         Answer, CapFlags, ControlError, CrashKind, HashScope, HostFault, Moment, READ_CAP, Reply,
         Reproducer, Request, Resolution, SnapId, StopConditions, StopMask, StopReason,
@@ -2817,6 +2831,79 @@ mod tests {
         v.restore_guest_memory(&image).unwrap();
         assert_eq!(v.step().unwrap(), crate::vmm::Step::Continued); // RDTSC → synchronized
         v
+    }
+
+    /// The completion sentinel an interactive guest shell prints for
+    /// `ExecSession::new(_, 0)`: the marker, `$?`, and the marker again.
+    const SENTINEL: &[u8] = b"hi\nHXEC-0-:0:HXEC-0-\n";
+
+    /// A command in flight completes as soon as its sentinel reaches the serial
+    /// capture, and the reply carries what the command printed.
+    ///
+    /// The capture only ever grows while a command is in flight, so the poll
+    /// feeds each byte exactly once and never rescans what it already saw.
+    #[test]
+    fn a_command_completes_when_its_sentinel_reaches_the_serial_capture() {
+        let serial = |b: u8| {
+            Exit::Arch(X86Exit::Io {
+                port: 0x3F8,
+                size: 1,
+                write: Some(u32::from(b)),
+            })
+        };
+        let mut exits: Vec<Exit<X86>> = SENTINEL.iter().copied().map(serial).collect();
+        exits.push(Exit::Common(CommonExit::Idle));
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        server.vmm = Some(vmm_at_sync(exits, 500, 0xBA5E));
+        server.active_exec = Some(ActiveExec {
+            session: ExecSession::new("echo hi", 0),
+            cursor: 0,
+        });
+
+        // Nothing has been printed yet, so the command is still running.
+        assert!(matches!(server.poll_exec(), Ok(None)));
+
+        let vmm = server.vmm.as_mut().expect("a live vm");
+        while vmm.serial_output().len() < SENTINEL.len() {
+            vmm.step().expect("step");
+        }
+        match server.poll_exec().expect("poll") {
+            Some(Reply::ExecResult { output, ok }) => {
+                assert!(ok, "the sentinel names status 0");
+                assert!(
+                    output.starts_with(b"hi"),
+                    "the reply carries what the command printed: {:?}",
+                    String::from_utf8_lossy(&output)
+                );
+            }
+            other => panic!("expected a completed command, got {other:?}"),
+        }
+        assert!(
+            server.active_exec.is_none(),
+            "a completed command leaves nothing in flight"
+        );
+    }
+
+    /// A capture shorter than the cursor is what a restore leaves behind. The
+    /// poll must not index past its end.
+    #[test]
+    fn a_shortened_capture_feeds_nothing_rather_than_panicking() {
+        let mut active = ActiveExec {
+            session: ExecSession::new("echo hi", 0),
+            cursor: 64,
+        };
+        assert!(!active.feed(b"short"), "nothing to feed, nothing completed");
+        assert_eq!(active.cursor, 5, "the cursor follows the capture it saw");
+
+        // Each byte is fed once: a command whose whole sentinel arrives from
+        // the cursor onward completes, and feeding the same bytes again does
+        // not change the answer.
+        let mut active = ActiveExec {
+            session: ExecSession::new("echo hi", 0),
+            cursor: 0,
+        };
+        assert!(active.feed(SENTINEL), "the sentinel completes the command");
+        assert_eq!(active.cursor, SENTINEL.len());
     }
 
     /// A server whose live VM is at a synchronized point and whose factory

@@ -2,11 +2,6 @@
 //! Search package selection and execution backend dispatch.
 use clap::ValueEnum;
 use nes_workload::package::{SearchOptions, search_native};
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
-))]
-use sha2::Digest;
 use std::{error::Error, path::PathBuf, process::ExitCode};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -325,14 +320,7 @@ pub fn prepared_artifacts(
         ("guest kernel", kernel_sha256, &prepared.artifacts.kernel),
         ("fault agent", fault_agent_sha256, &prepared.artifacts.agent),
     ] {
-        let found = format!("{:x}", sha2::Sha256::digest(have));
-        if !want.is_empty() && want != found {
-            return Err(format!(
-                "the {what} available here hashes {found}, but this workspace was \
-                 recorded against {want}; supply the pinned artifact"
-            )
-            .into());
-        }
+        faults_workload::workspace::check_pinned(what, want, have)?;
     }
     Ok(prepared.artifacts)
 }

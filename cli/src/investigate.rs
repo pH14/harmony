@@ -212,7 +212,7 @@ pub fn run(common: &Common, command: Command) -> Result<ExitCode, Box<dyn Error>
     };
     let mut value = value;
     humanize(&mut value);
-    print(&value, common.json);
+    print!("{}", render(&value, common.json));
     Ok(ExitCode::SUCCESS)
 }
 
@@ -655,18 +655,19 @@ fn humanize(value: &mut serde_json::Value) {
     }
 }
 
-/// Print one result as indented text or as its versioned JSON.
-fn print(value: &serde_json::Value, json: bool) {
+/// Render one result as indented text or as its versioned JSON.
+///
+/// Both renderings come from the same document, so the two carry the same
+/// facts by construction rather than by matching two writers.
+fn render(value: &serde_json::Value, json: bool) -> String {
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
-        );
-        return;
+        let mut text = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
+        text.push('\n');
+        return text;
     }
     let mut out = String::new();
     write_text(value, 0, &mut out);
-    print!("{out}");
+    out
 }
 
 /// Render the same document as text: one `key: value` line per fact, nested

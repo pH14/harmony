@@ -228,8 +228,21 @@ exclude_re = [
     "workloads/oci/src/cache\\.rs.*replace key ->",
     # `preflight::run` composes the live host probes above, and `print_text`
     # is println-only reporting with no test-observable return (same category
-    # as the loud-log entries in (c)).
+    # as the loud-log entries in (c)). The bundle report it prints is built by
+    # `BundleReport::read` and `bundle_blockers`, both unit-tested and gated.
     "cli/src/preflight\\.rs.*(print_text|in run)",
+    # `investigate::guest` is the workspace verbs' KVM composition root: it
+    # resolves the recorded artifacts and boots a guest, so the oracle host
+    # cannot enter it — the same category as `oci::runner::execute` above. The
+    # refusal on a host without KVM is unit-tested, and the advance path is
+    # verified by the historical-bugs investigation acceptance job. The
+    # document each verb builds, and the two renderings of it, stay gated.
+    "cli/src/investigate\\.rs.*(in guest|replace guest ->)",
+    # `search`'s fault-artifact staging runs docker and writes an initramfs;
+    # `prepared_artifacts` then resolves what a workspace recorded. Neither can
+    # run on the oracle host. The digest comparison they feed lives in
+    # `faults_workload::workspace::check_pinned` and is unit-tested.
+    "cli/src/search\\.rs.*(prepare_fault_artifacts|prepared_artifacts)",
     # In `tree`'s skip guard, `meta.rdev() != 0` is true only for device
     # nodes, which an unprivileged test cannot create (mknod needs root); the
     # fifo/socket halves of the guard ARE killed by the tree test's fifo and
