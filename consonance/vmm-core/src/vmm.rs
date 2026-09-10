@@ -1259,15 +1259,6 @@ where
         self.vtime.as_ref().map(|vt| vt.clock.vns())
     }
 
-    /// Whether the SDK has finished handling its current stop. Backend completion
-    /// retirement and vCPU-state representability are checked by their owning paths.
-    pub(crate) fn can_snapshot(&self) -> bool {
-        !self
-            .sdk
-            .as_ref()
-            .is_some_and(|sdk| sdk.pending_stop.is_some())
-    }
-
     /// Restore the V-time + entropy state captured by [`Vmm::save_vtime`]: rebuild
     /// the clock at `snap.vns`, re-apply the guest clock offset, and restore the
     /// entropy stream position.
@@ -1387,21 +1378,14 @@ where
     /// inherits the parent's epoch and continues in lockstep with it.
     ///
     /// # Errors
-    /// [`VmmError::ContractViolation`] while an SDK stop is pending,
-    /// or if the live vCPU carries the PAE-only `kvm_sregs2` flags/pdptrs or
+    /// [`VmmError::ContractViolation`] if the live vCPU carries the PAE-only `kvm_sregs2` flags/pdptrs or
     /// `debugregs.flags` (all zero for the 64-bit determinism guest — see
     /// [`crate::snapshot::unrepresentable_state`]); [`VmmError::Backend`] if reading the
     /// live vCPU state fails (a snapshot **fails closed** rather than sealing a zeroed or
     /// lossy vCPU).
     pub fn save_vm_state(&self) -> Result<<B::A as Vendor>::Snapshot, VmmError> {
-        // The boundary gate is the shared `can_snapshot()` predicate (so the SDK
-        // snapshot-point surface can never advertise a point this rejects); when
-        // it fails, report WHICH precondition failed for a precise diagnostic.
-        if !self.can_snapshot() {
-            return Err(VmmError::ContractViolation(
-                "save_vm_state while an SDK stop is pending".to_string(),
-            ));
-        }
+        // SDK stops and outstanding requests are captured independently by
+        // sdk_snapshot; their presence does not require guest execution here.
         // Read the vCPU **fallibly**: a `Backend::save` failure must abort the
         // snapshot, not seal a `VcpuState::default()` (the swallowing `current_vcpu`
         // does for the best-effort hash). Use the terminal-captured state if present.
@@ -2677,12 +2661,7 @@ where
         if let Some(s) = self.sdk.as_mut() {
             snap.recorded.restore_into(&mut s.env)?;
             s.events = snap.events.clone();
-            // Restore the deferred snapshot-point flag: it is hash-folded
-            // (round-8), so a verbatim replay must reproduce it exactly. The
-            // branch path (`sdk_restore_events`) deliberately leaves it at the
-            // fresh `false` from `enable_sdk` — a reseeded fork re-runs from the
-            // restored image (where `setup_complete` is already past) and must not
-            // re-surface an already-sealed deferred point.
+            // Stops and deferred points remain owed at the captured boundary.
             s.pending_snapshot = snap.pending_snapshot;
             s.pending_stop = snap.pending_stop.clone();
             s.coverage_thresholds = snap.coverage_thresholds.clone();
@@ -2690,13 +2669,15 @@ where
         Ok(())
     }
 
-    /// Restore only the **event prefix** of a captured [`SdkSnapshot`] (the branch
-    /// path): a branch reseeds, so the seeded streams start fresh from the new
-    /// seed (`enable_sdk`), but the shared prefix events — the declared catalog —
-    /// carry over so the fork's never-fired report is complete.
+    /// Restore the shared event prefix and pending protocol work for an
+    /// explicitly reseeded branch. The new environment is already installed;
+    /// a new seed does not consume a captured stop or answer an outstanding
+    /// request. Verbatim continuation uses `sdk_restore` instead.
     pub fn sdk_restore_events(&mut self, snap: &SdkSnapshot) {
         if let Some(s) = self.sdk.as_mut() {
             s.events = snap.events.clone();
+            s.pending_snapshot = snap.pending_snapshot;
+            s.pending_stop = snap.pending_stop.clone();
             s.coverage_thresholds = snap.coverage_thresholds.clone();
         }
     }
@@ -3447,24 +3428,13 @@ where
         }
     }
 
-    /// Take the deferred `setup_complete` snapshot point **iff** the VM is now at a
-    /// **sealable** boundary — the FULL `save_vm_state` precondition
-    /// ([`Vmm::can_snapshot`]: synchronized AND no staged RNG completion), plus an
-    /// exact exit-count V-time to stamp the point. The control loop
-    /// calls this after a `Continued` step; `true` means surface
-    /// `StopReason::SnapshotPoint` here — a point where the explorer's eager
-    /// `save_vm_state` seal succeeds, not `NotQuiescent`.
-    ///
-    /// **Round-4 P1:** gating on exact time alone surfaced a point at the
-    /// first synchronized exit after `setup_complete` even when that exit was an
-    /// RDRAND/RDSEED (a staged RNG completion), which `save_vm_state` rejects — and
-    /// clearing `pending_snapshot` on that unsealable surface LOST the point. Now
-    /// `pending_snapshot` is cleared ONLY when the point is actually surfaced (a
-    /// sealable boundary), so an RNG boundary defers it to the next clean one.
+    /// Surface a deferred SDK snapshot point once its doorbell completion has
+    /// retired and no other SDK stop is awaiting delivery. This controls stop
+    /// ordering only: saving can preserve either pending stop verbatim.
     pub fn take_snapshot_point(&mut self) -> bool {
         if !self.sdk_snapshot_reentry_required
-            && self.can_snapshot()
             && let Some(sdk) = self.sdk.as_mut()
+            && sdk.pending_stop.is_none()
             && sdk.pending_snapshot
         {
             sdk.pending_snapshot = false;
@@ -5262,12 +5232,14 @@ mod tests {
             let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
             enable_nominal(&mut vmm, 7);
             vmm.sdk.as_mut().unwrap().pending_stop = Some(stop);
-            assert!(!vmm.can_snapshot());
+            assert!(vmm.save_vm_state().is_ok());
             let snapshot = vmm.sdk_snapshot().unwrap().unwrap();
             let pending = vmm.take_sdk_stop().unwrap();
             vmm.sdk_restore(&snapshot).unwrap();
+            assert_eq!(vmm.take_sdk_stop(), Some(pending.clone()));
+            vmm.sdk_restore_events(&snapshot);
             assert_eq!(vmm.take_sdk_stop(), Some(pending));
-            assert!(vmm.can_snapshot());
+            assert!(vmm.save_vm_state().is_ok());
             assert!(vmm.sdk_snapshot().is_ok());
         }
     }
@@ -5296,8 +5268,12 @@ mod tests {
         assert_ne!(restored.state_hash().unwrap(), before);
         restored.sdk_restore(&snapshot).unwrap();
         assert_eq!(restored.state_hash().unwrap(), before);
-        assert_eq!(restored.take_sdk_stop(), Some(stop));
+        assert_eq!(restored.take_sdk_stop(), Some(stop.clone()));
+        let mut branched = build();
+        branched.sdk_restore_events(&snapshot);
+        assert_eq!(branched.take_sdk_stop(), Some(stop));
         let answer = channel::Answer::Data(vec![4, 5, 6]);
+        branched.resolve_service_answer(answer.clone()).unwrap();
         assert_eq!(
             source.resolve_service_answer(answer.clone()).unwrap(),
             (31, question.clone())
@@ -5309,6 +5285,10 @@ mod tests {
         let source_response = source.guest_slice(RESP_GPA as u64, HC_PAGE).unwrap();
         let restored_response = restored.guest_slice(RESP_GPA as u64, HC_PAGE).unwrap();
         assert_eq!(restored_response, source_response);
+        assert_eq!(
+            branched.guest_slice(RESP_GPA as u64, HC_PAGE).unwrap(),
+            source_response
+        );
         assert_eq!(restored.state_hash().unwrap(), source.state_hash().unwrap());
         assert_eq!(restored.sdk_events(), source.sdk_events());
         assert!(
@@ -5354,7 +5334,9 @@ mod tests {
         assert_eq!(fork.state_hash().unwrap(), h_true);
         let mut events_only = mk();
         events_only.sdk_restore_events(&snap);
-        assert_eq!(events_only.state_hash().unwrap(), h_false);
+        assert_eq!(events_only.state_hash().unwrap(), h_true);
+        assert!(events_only.take_snapshot_point());
+        assert!(!events_only.take_snapshot_point());
     }
 
     /// `Vmm::run()` STOPS at a cooperating-SDK assertion — it does not swallow it by

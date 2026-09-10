@@ -24,7 +24,7 @@ Snapshots can be restored into a copy-on-write memory mapping. SDK state
 capture retains pending stops and unanswered service requests without consuming
 them, including the response sequence and request identity. Portable format 4
 carries this state; version 3 remains readable with no pending stop. Whole-VM
-capture still has backend and SDK-stop guards; it is side-effect-free for a
+capture preserves pending SDK stops and is side-effect-free for a
 pending pvclock registration, carrying its GPA, `armed = false` state, and page
 bytes so the next handshake resumes from the same state.
 Pvclock-bearing device records explicitly preserve the registered page GPA,

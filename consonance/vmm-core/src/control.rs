@@ -1991,9 +1991,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // **replay** (`seed` is `None`) continues the seeded streams from the
         // snapshot's position AND keeps the event prefix — so a fork from a mid-run
         // SDK snapshot reproduces. A **branch** reseeds (`enable_sdk` just set fresh
-        // streams from the new seed), so it takes only the shared prefix events —
-        // the declared catalog the never-fired report needs — and lets the new seed
-        // drive the fork's future.
+        // streams from the new seed), so it preserves the event prefix and pending
+        // protocol work while the new environment drives subsequent requests.
         if let Some(s) = sdk_snap {
             let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
             if seed.is_some() {
@@ -3080,14 +3079,15 @@ mod tests {
             ctx: [19_u16.to_le_bytes().as_slice(), b"choose"].concat(),
         });
         assert_eq!(s.handle(&request).unwrap(), Ok(expected.clone()));
-        assert_eq!(s.handle(&request).unwrap(), Ok(expected));
+        assert_eq!(s.handle(&request).unwrap(), Ok(expected.clone()));
         assert_eq!(s.vmm().unwrap().state_hash().unwrap(), stopped_hash);
-        assert_eq!(
-            s.snapshot().unwrap(),
-            Err(ControlError::SnapshotRefused {
-                reason: "save_vm_state while an SDK stop is pending".into(),
-            })
-        );
+        let counts = s.vmm().unwrap().exit_counts();
+        let pending = snap(&mut s);
+        let mut artifact = Vec::new();
+        let receipt = s.export_portable_snapshot(pending, &mut artifact).unwrap();
+        assert_eq!(receipt.state_hash, stopped_hash);
+        assert_eq!(receipt.at, Moment(at));
+        assert_eq!(s.vmm().unwrap().exit_counts(), counts);
         assert_eq!(s.vmm().unwrap().effective_vns(), Some(at));
         assert_eq!(s.vmm().unwrap().state_hash().unwrap(), stopped_hash);
         assert_eq!(
@@ -3157,6 +3157,45 @@ mod tests {
         assert_eq!(ServiceAnswer::decode(bytes).unwrap(), answer);
         let recorded = s.recorded_env().clone();
         assert_eq!(recorded.answers().get(&(at, 19, 77)), Some(&answer));
+
+        // A separate session restores the unanswered request from the complete
+        // portable artifact. It must neither re-invoke the service nor invent
+        // a response before the matching resolution arrives.
+        let mut cold = payload_server();
+        cold.set_service_factory(std::sync::Arc::clone(&s.service_factory));
+        hello(&mut cold);
+        let imported = cold.import_portable_snapshot(artifact.as_slice()).unwrap();
+        cold.restore(imported.id, None).unwrap().unwrap();
+        assert_eq!(cold.vmm().unwrap().state_hash().unwrap(), stopped_hash);
+        assert_eq!(cold.handle(&request).unwrap(), Ok(expected));
+        assert_eq!(cold.vmm().unwrap().effective_vns(), Some(at));
+        assert!(matches!(
+            cold.handle(&Request::Run {
+                until,
+                resolve: Some(Resolution {
+                    vtime: Moment(at),
+                    service: 19,
+                    id: control_proto::DecisionId(77),
+                    answer: Answer(answer.encode()),
+                }),
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline { .. }))
+        ));
+        assert_eq!(
+            cold.vmm().unwrap().guest_slice(0xf000, 4096).unwrap(),
+            response
+        );
+        assert_eq!(cold.vmm().unwrap().state_hash().unwrap(), expected_hash);
+        assert_eq!(
+            cold.vmm().unwrap().sdk_events(),
+            s.vmm().unwrap().sdk_events()
+        );
+        assert_eq!(
+            cold.recorded_env().answers().get(&(at, 19, 77)),
+            Some(&answer)
+        );
+        assert!(cold.vmm().unwrap().pending_service_question().is_none());
         s.restore(
             origin,
             Some(&Reproducer {
