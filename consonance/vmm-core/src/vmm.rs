@@ -7960,6 +7960,76 @@ mod tests {
     }
 
     #[test]
+    fn public_snapshot_path_accepts_boundary_exception_vector31() {
+        // Vector 31 is the highest valid active exception vector. Exercise both
+        // KVM shapes through save, the public trait codec, and fresh restore so
+        // an over-strict >= 31 guard cannot pass by only rejecting vector 32.
+        let cases = [
+            (
+                "pending",
+                vmm_backend::VcpuEvents {
+                    exception_pending: 1,
+                    exception_nr: 31,
+                    exception_has_error_code: 1,
+                    exception_error_code: 0xCAFE,
+                    ..Default::default()
+                },
+            ),
+            (
+                "injected",
+                vmm_backend::VcpuEvents {
+                    exception_injected: 1,
+                    exception_nr: 31,
+                    exception_has_error_code: 1,
+                    exception_error_code: 0xBEEF,
+                    ..Default::default()
+                },
+            ),
+        ];
+
+        for (name, events) in cases {
+            let mut state = nonzero_state();
+            state.events = events;
+            let source = full_vmm(state, vec![], 0, 1);
+            let saved = source
+                .save_vm_state()
+                .unwrap_or_else(|error| panic!("{name} vector 31 must save: {error:?}"));
+            let bytes = <vm_state::VmState as SnapshotRecords>::encode(&saved)
+                .unwrap_or_else(|error| panic!("{name} vector 31 must encode: {error:?}"));
+            let decoded = <vm_state::VmState as SnapshotRecords>::decode(&bytes)
+                .unwrap_or_else(|error| panic!("{name} vector 31 must decode: {error:?}"));
+            let device = snapshot::decode_device_blob(&decoded.devices.0)
+                .unwrap_or_else(|error| panic!("{name} device blob must decode: {error:?}"));
+            assert_eq!(
+                device.events.exception_nr, 31,
+                "{name} vector survives codec"
+            );
+            assert_eq!(
+                device.events.exception_pending, events.exception_pending,
+                "{name} pending shape survives codec"
+            );
+            assert_eq!(
+                device.events.exception_injected, events.exception_injected,
+                "{name} injected shape survives codec"
+            );
+
+            let mut cold = full_vmm(VcpuState::default(), vec![], 0, 1);
+            cold.restore_snapshot(source.guest_memory(), &decoded)
+                .unwrap_or_else(|error| panic!("{name} vector 31 must restore: {error:?}"));
+            assert_eq!(
+                cold.backend.save().unwrap().events,
+                snapshot::events_for_restore(&events),
+                "{name} vector 31 survives fresh import"
+            );
+            assert_eq!(
+                cold.save_vm_state().unwrap().encode().unwrap(),
+                bytes,
+                "{name} vector 31 re-encodes identically"
+            );
+        }
+    }
+
+    #[test]
     fn save_vm_state_rejects_invalid_active_exception_shapes() {
         let invalid = [
             (
