@@ -11,10 +11,13 @@
 
 pub mod archive;
 pub mod bundle;
+pub mod checkpoint;
+pub mod declarations;
 pub mod package;
 pub mod prepare;
 pub mod report;
 pub mod target;
+pub mod workspace;
 
 #[cfg(all(
     feature = "consonance",

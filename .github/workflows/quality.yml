@@ -86,6 +86,13 @@ jobs:
           cargo deny --manifest-path consonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses
       - name: cargo nextest
         run: cargo nextest run --all-features
+      # This standalone manifest owns the retained workspace journal and its
+      # process-interruption tests; root workspace checks do not include it.
+      - name: workloads/faults gates (out-of-workspace manifest)
+        run: |
+          cargo fmt --manifest-path workloads/faults/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path workloads/faults/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --locked --manifest-path workloads/faults/Cargo.toml --all-features
       - name: N6 instruction sweep generators and negative controls
         run: |
           python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
