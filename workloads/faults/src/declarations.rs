@@ -214,10 +214,23 @@ impl Declarations {
             }
         }
         for node in &mut declarations.nodes {
-            node.description = node_descriptions.get(&node.name).cloned();
+            node.description = node_descriptions.remove(&node.name);
         }
         for hook in &mut declarations.hooks {
-            hook.description = hook_descriptions.get(&hook.id).cloned();
+            hook.description = hook_descriptions.remove(&hook.id);
+        }
+        // A description for something the bundle does not declare is a typo
+        // that would otherwise be dropped in silence, leaving a finding to
+        // report the meaning as undeclared.
+        if let Some(name) = node_descriptions.keys().next() {
+            return Err(format!(
+                "a fault bundle describes node {name:?}, which it does not declare"
+            ));
+        }
+        if let Some(id) = hook_descriptions.keys().next() {
+            return Err(format!(
+                "a fault bundle describes hook {id}, which it does not declare"
+            ));
         }
         declarations.check_unique()?;
         Ok(declarations)
@@ -234,6 +247,15 @@ impl Declarations {
         assertions.sort_unstable();
         if assertions.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err("a fault bundle declares one assertion id twice".to_owned());
+        }
+        let mut names: Vec<&str> = self
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.name.as_str())
+            .collect();
+        names.sort_unstable();
+        if names.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err("a fault bundle declares one diagnostic name twice".to_owned());
         }
         Ok(())
     }
@@ -399,6 +421,27 @@ diagnostic amcheck sh -c cat /run/amcheck.out
         assert!(declarations.assertions.is_empty());
         assert_eq!(declarations.node(0).expect("node 0").description, None);
         assert_eq!(declarations.hook(1).expect("hook 1").description, None);
+    }
+
+    /// A description whose subject is misspelled would attach to nothing and
+    /// leave the finding reporting an undeclared meaning.
+    #[test]
+    fn describing_something_the_bundle_does_not_declare_is_refused() {
+        let error = Declarations::parse("node a /bin/a\ndescribe node b whatever\n")
+            .expect_err("an unmatched node description");
+        assert!(error.contains("\"b\""), "{error}");
+        let error = Declarations::parse("node a /bin/a\ndescribe hook 9 whatever\n")
+            .expect_err("an unmatched hook description");
+        assert!(error.contains("hook 9"), "{error}");
+    }
+
+    /// Two diagnostics of one name would make `inspect <name>` ambiguous.
+    #[test]
+    fn a_repeated_diagnostic_name_is_refused() {
+        let error =
+            Declarations::parse("node a /bin/a\ndiagnostic d /bin/x\ndiagnostic d /bin/y\n")
+                .expect_err("a repeated diagnostic name");
+        assert!(error.contains("diagnostic name twice"), "{error}");
     }
 
     #[test]

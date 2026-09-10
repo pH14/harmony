@@ -27,10 +27,13 @@ Stage and check the image without a VM:
 
 ```bash
 harmony preflight
+harmony preflight --bundle path/to/bundle
 ```
 
 `preflight` names the host's support-matrix cell and whether the guest kernel
-and base initramfs are installed. Execution needs a Linux x86-64 or aarch64
+and base initramfs are installed. With `--bundle` it also reports what the
+image declares about itself and refuses a bundle whose declarations name
+something it does not have. Execution needs a Linux x86-64 or aarch64
 KVM host; preparation, bundle checking, and workspace reading run anywhere.
 
 ## Pin every input

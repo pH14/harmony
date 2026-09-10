@@ -51,6 +51,22 @@ record() {
 # between them and every command restores what it needs from the workspace.
 w() { "${harmony}" -w "${workspace}" --json "$@"; }
 
+# The declarations an investigation reads come from the image's own bundle, so
+# check them before spending a guest boot on it.
+bundle=bugs/historical/${CASE_ID}/image/bundle
+if "${harmony}" preflight --bundle "${bundle}" >"reports/${CASE_ID}.bundle.txt" 2>&1; then
+    record "the workload bundle declares what it reports" 0 \
+        "$(grep -c '^ *assert ' "reports/${CASE_ID}.bundle.txt") properties declared"
+else
+    # preflight also fails on host readiness, so separate the two.
+    if grep -q '^ *complete yes' "reports/${CASE_ID}.bundle.txt"; then
+        record "the workload bundle declares what it reports" 0 "complete"
+    else
+        record "the workload bundle declares what it reports" 1 \
+            "$(sed -n '/^bundle/,$p' "reports/${CASE_ID}.bundle.txt" | tail -3 | tr '\n' ' ')"
+    fi
+fi
+
 echo "::group::replay the committed input into a workspace"
 timeout -k 30 1800 "${harmony}" search --package faults \
     "oci-images/pgcic-${VULNERABLE_VERSION}.oci" \

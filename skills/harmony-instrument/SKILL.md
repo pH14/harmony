@@ -32,6 +32,17 @@ choose. Quote arguments that contain spaces; the agent's tokenizer handles
 Check a bundle on any host, including a development machine with no VM:
 
 ```bash
+harmony preflight --bundle path/to/bundle
+```
+
+That lists the nodes, hooks, properties, and diagnostics the bundle declares,
+and exits non-zero when a declaration names something the bundle does not have
+or when a property has no hook to evaluate it. Do this before a campaign: a
+finding can only report meanings the bundle wrote down.
+
+The agent's own check reads the same file for the alphabet it supervises:
+
+```bash
 cargo run --manifest-path workloads/fault-agent/Cargo.toml -- --check-bundle --bundle path/to/bundle
 ```
 

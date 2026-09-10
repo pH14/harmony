@@ -50,6 +50,10 @@ enum Command {
         /// Emit the report as JSON instead of text.
         #[arg(long)]
         json: bool,
+        /// Also report what this workload bundle file declares, and what a
+        /// search or an investigation would find missing in it.
+        #[arg(long, value_name = "FILE")]
+        bundle: Option<std::path::PathBuf>,
     },
     /// Run OCI container workloads deterministically.
     #[command(subcommand)]
@@ -85,7 +89,7 @@ fn main() -> ExitCode {
     let common = cli.common;
     let result = match cli.command {
         Command::Search(args) => search::run(args),
-        Command::Preflight { json } => preflight::run(json),
+        Command::Preflight { json, bundle } => preflight::run(json, bundle.as_deref()),
         Command::Oci(OciCommand::Run(args)) => oci::run(args),
         Command::Findings => investigate::run(&common, investigate::Command::Findings),
         Command::Branches => investigate::run(&common, investigate::Command::Branches),

@@ -60,6 +60,13 @@ cargo run --manifest-path workloads/fault-agent/Cargo.toml -- \
   --check-bundle --bundle path/to/bundle
 ```
 
+That checks the alphabet the agent supervises. `harmony preflight --bundle
+path/to/bundle` reads the same file through the host's parser and reports the
+declarations too: what each property claims, which hook evaluates it, and the
+diagnostics an investigation can run. It exits non-zero when a declaration
+names something the bundle does not have, which is worth knowing before a
+campaign rather than after one.
+
 ## Hook directives
 
 A hook reports its own assertions by writing one directive per stdout line,
