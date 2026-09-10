@@ -78,6 +78,17 @@ jobs:
           test "${verdicts}" = "fail"
           jq -e '.arms.skills.passed == 0 and .arms.documentation.passed == 0' \
             runs/smoke/report.json >/dev/null
+      - name: Check grading the frozen submissions again says the same thing
+        run: |
+          set -euo pipefail
+          # Grading rules change after attempts run, so the frozen submissions
+          # have to be regradable. Applying the same rules must not move a
+          # verdict, and the report must say the verdicts were graded again.
+          ./benchmarks/skills/eval.py grade \
+            --harmony target/release/harmony --out runs/smoke >/dev/null
+          verdicts=$(jq -r '.attempts[].verdict' runs/smoke/report.json | sort -u)
+          test "${verdicts}" = "fail"
+          jq -e '.regraded == true' runs/smoke/report.json >/dev/null
       - name: Check an attempt is given only its own materials
         run: |
           set -euo pipefail
