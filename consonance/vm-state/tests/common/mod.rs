@@ -90,8 +90,10 @@ pub fn arb_sregs() -> impl Strategy<Value = VcpuSregs> {
             any::<u64>(),
         ),
         any::<u64>(),
+        any::<u64>(),
+        any::<[u64; 4]>(),
     )
-        .prop_map(|(seg, scal, apic_base)| VcpuSregs {
+        .prop_map(|(seg, scal, apic_base, flags, pdptrs)| VcpuSregs {
             cs: seg[0],
             ds: seg[1],
             es: seg[2],
@@ -111,6 +113,8 @@ pub fn arb_sregs() -> impl Strategy<Value = VcpuSregs> {
             cr8: scal.8,
             efer: scal.9,
             apic_base,
+            flags,
+            pdptrs,
         })
 }
 
@@ -123,11 +127,13 @@ pub fn arb_debugregs() -> impl Strategy<Value = DebugRegs> {
         proptest::collection::vec(any::<u64>(), 4..=4),
         any::<u64>(),
         any::<u64>(),
+        any::<u64>(),
     )
-        .prop_map(|(db, dr6, dr7)| DebugRegs {
+        .prop_map(|(db, dr6, dr7, flags)| DebugRegs {
             db: [db[0], db[1], db[2], db[3]],
             dr6,
             dr7,
+            flags,
         })
 }
 
@@ -330,6 +336,8 @@ pub fn fully_populated() -> VmState {
             cr8: 0x0000_0000_0000_0000,
             efer: 0x0000_0000_0000_0d01,
             apic_base: 0x0000_0000_fee0_0900,
+            flags: 0,
+            pdptrs: [0; 4],
         },
         xcrs: Xcrs {
             xcr0: 0x0000_0000_0000_0007,
@@ -338,6 +346,7 @@ pub fn fully_populated() -> VmState {
             db: [0x10, 0x20, 0x30, 0x40],
             dr6: 0x0000_0000_ffff_0ff0,
             dr7: 0x0000_0000_0000_0400,
+            flags: 0,
         },
         events: VcpuEvents {
             exception_pending: true,

@@ -26,17 +26,9 @@ use crate::snapshot::SnapshotError;
 // vm_state adapter — pure, bidirectional conversions between the live machine's
 // `vmm_backend` value types and `vm-state`'s plain-data records.
 //
-// The live `VcpuState` carries a superset of `vm-state`'s `VcpuEvents` /
-// `VcpuSregs` (KVM exposes more pending-event and SREGS2 detail than the
-// determinism model's typed records carry). The typed `vm-state::VcpuEvents` is a
-// reduced 6-field subset; task 41 captures the **full** `kvm_vcpu_events` in the
-// vmm-core-owned device blob (see `DeviceState::events`) and makes it authoritative
-// on restore, so an **in-flight interrupt/exception injection** — a non-quiescent
-// point — now round-trips bit-identically rather than being fail-closed-rejected.
-// The still-dropped `kvm_sregs2` `flags`/`pdptrs` (PAE-only; the long-mode /
-// paging-off determinism guest never uses the PAE PDPTRs) and `debugregs.flags` are
-// zero at any V-time point, so refusing a (non-existent) non-zero value there only
-// guards misuse.
+// The typed records carry the full SREGS2 and debug-register state. The legacy
+// typed VcpuEvents subset is supplemented by DeviceState::events, which carries
+// the full pending-event state and is authoritative on restore.
 // ===========================================================================
 
 /// `VcpuState.regs` → `vm_state::VcpuRegs` (identical field set, flat copy).
@@ -136,8 +128,7 @@ fn unpack_segment(s: &Segment) -> vmm_backend::Segment {
 }
 
 /// `VcpuState.sregs` → `vm_state::VcpuSregs` (segments packed, descriptor tables
-/// flattened to base/limit pairs; `kvm_sregs2` `flags`/`pdptrs` are not carried —
-/// zero at the quiescent snapshot point, see the module note).
+/// flattened to base/limit pairs, with SREGS2 flags and PAE PDPTRs preserved).
 pub(crate) fn to_vm_sregs(s: &vmm_backend::VcpuSregs) -> VcpuSregs {
     VcpuSregs {
         cs: pack_segment(&s.cs),
@@ -159,12 +150,12 @@ pub(crate) fn to_vm_sregs(s: &vmm_backend::VcpuSregs) -> VcpuSregs {
         cr8: s.cr8,
         efer: s.efer,
         apic_base: s.apic_base,
+        flags: s.flags,
+        pdptrs: s.pdptrs,
     }
 }
 
-/// `vm_state::VcpuSregs` → `VcpuState.sregs` (reverse of [`to_vm_sregs`];
-/// `flags`/`pdptrs` restore to zero — valid for the long-mode / paging-off guests
-/// the determinism model snapshots).
+/// `vm_state::VcpuSregs` → `VcpuState.sregs` (reverse of [`to_vm_sregs`]).
 pub(crate) fn from_vm_sregs(s: &VcpuSregs) -> vmm_backend::VcpuSregs {
     vmm_backend::VcpuSregs {
         cs: unpack_segment(&s.cs),
@@ -190,18 +181,18 @@ pub(crate) fn from_vm_sregs(s: &VcpuSregs) -> vmm_backend::VcpuSregs {
         cr8: s.cr8,
         efer: s.efer,
         apic_base: s.apic_base,
-        flags: 0,
-        pdptrs: [0; 4],
+        flags: s.flags,
+        pdptrs: s.pdptrs,
     }
 }
 
-/// `VcpuState.debugregs` → `vm_state::DebugRegs` (the always-zero KVM `flags` is
-/// dropped).
+/// `VcpuState.debugregs` → `vm_state::DebugRegs`, including backend flags.
 pub(crate) fn to_vm_debugregs(d: &vmm_backend::DebugRegs) -> DebugRegs {
     DebugRegs {
         db: d.db,
         dr6: d.dr6,
         dr7: d.dr7,
+        flags: d.flags,
     }
 }
 
@@ -211,7 +202,7 @@ pub(crate) fn from_vm_debugregs(d: &DebugRegs) -> vmm_backend::DebugRegs {
         db: d.db,
         dr6: d.dr6,
         dr7: d.dr7,
-        flags: 0,
+        flags: d.flags,
     }
 }
 
@@ -465,67 +456,11 @@ pub(crate) fn events_for_restore(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vc
     c
 }
 
-/// Return `Some(reason)` if `vcpu` carries machine state the snapshot would
-/// **silently zero** on restore — so [`crate::vmm::Vmm::save_vm_state`] can **fail
-/// closed** instead of sealing a lossy blob (rather than the restore side silently
-/// dropping it).
-///
-/// **This is the class-closing audit of `VcpuState`.** Every field is either captured
-/// by the typed records / device blob, or asserted zero here, so a saved blob is
-/// **provably lossless-or-rejected**:
-/// - *Captured:* `regs` (all), `sregs` segments + descriptor tables + CRs + EFER +
-///   APIC_BASE, `xcr0`, `debugregs.db`/`dr6`/`dr7`, **the full `events` record**
-///   (every `kvm_vcpu_events` field — task 41, captured verbatim in the device blob,
-///   no longer a reduced subset), `mp_state`, `msrs`, `xsave`.
-/// - *Asserted zero here (not carried):* `sregs.flags`/`sregs.pdptrs` (PAE-only;
-///   64-bit guest), `debugregs.flags` (KVM "currently always 0").
-///
-/// **Events are no longer rejected wholesale.** Task 41 captures the *entire* `kvm_vcpu_events`
-/// (in-flight interrupt/exception injection, SMM, etc.) in the device blob and re-establishes it
-/// on restore via `KVM_SET_VCPU_EVENTS`, so a **non-quiescent** point — an interrupt in flight —
-/// is now snapshottable rather than fail-closed-rejected. That is the whole point of this task.
-/// **Two cap-gated event fields are the exception** (PR #12 round 7): `triple_fault_pending` and
-/// `exception_has_payload` are rejected here, because their `KVM_SET_VCPU_EVENTS` validity bits
-/// need per-VM capabilities (`KVM_CAP_X86_TRIPLE_FAULT_EVENT` / `KVM_CAP_EXCEPTION_PAYLOAD`) this
-/// backend does not enable — so a captured value could not be restored. Rejecting at *save* keeps
-/// the codec **provably lossless-or-rejected** and save/restore symmetric (see below). The other
-/// remaining fail-closed fields are the PAE-only `sregs.flags`/`pdptrs` and `debugregs.flags`,
-/// all zero for the 64-bit / paging-off determinism guest at any V-time point.
-///
-/// (Two further non-`VcpuState` gaps are handled at *restore*, not here: a non-empty
-/// `timers` section is rejected, and a staged backend completion is **defined out** —
-/// a snapshot is taken only at a clean, V-time-synchronized boundary with no staged
-/// RNG completion; see [`crate::vmm::Vmm::save_vm_state`] / [`crate::vmm::Vmm::restore_vm_state`].)
-///
-/// Returns `None` for any representable point (quiescent **or** with an interrupt in
-/// flight). Pure.
+/// The configured backend does not enable the optional event capabilities
+/// checked below. All SREGS2 and debug-register fields are carried by the
+/// versioned CPU records, including nonzero PAE PDPTRs.
 pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'static str> {
-    let s = &vcpu.sregs;
-    if s.flags != 0 {
-        return Some(
-            "kvm_sregs2 flags is set (e.g. PDPTRS_VALID) — the vm_state subset does not carry it; \
-             the determinism guest is 64-bit / paging-off, so a snapshot here is unrepresentable",
-        );
-    }
-    if s.pdptrs.iter().any(|&p| p != 0) {
-        return Some(
-            "PAE PDPTRs are non-zero — not carried by the vm_state subset (the determinism guest \
-             is 64-bit / paging-off, where PDPTRs are unused)",
-        );
-    }
-    if vcpu.debugregs.flags != 0 {
-        return Some(
-            "kvm_debugregs flags is set — the vm_state DebugRegs record carries DR0..3/DR6/DR7 but \
-             not the flags field (KVM defines it as currently always 0)",
-        );
-    }
-    // The full `kvm_vcpu_events` record IS captured now (device blob, task 41), so an in-flight
-    // injection round-trips — except the two cap-gated fields KVM cannot restore here; see
-    // [`cap_unrestorable_events`] (applied symmetrically at save and at restore-before-mutation).
-    if let Some(reason) = cap_unrestorable_events(&vcpu.events) {
-        return Some(reason);
-    }
-    None
+    cap_unrestorable_events(&vcpu.events)
 }
 
 /// Reason a `kvm_vcpu_events` record **cannot be restored on this backend** — it would set a

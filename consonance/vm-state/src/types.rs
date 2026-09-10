@@ -50,8 +50,8 @@ pub struct Segment {
     pub flags: u8,
 }
 
-/// Segment and system registers, control registers, `EFER`, and the APIC base —
-/// the contents of `KVM_GET_SREGS2`.
+/// Segment and system registers, control registers, `EFER`, APIC base, and the
+/// extended `KVM_GET_SREGS2` fields retained by the x86 v5 wire record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[allow(missing_docs)] // the register/segment names are self-documenting
 pub struct VcpuSregs {
@@ -74,6 +74,10 @@ pub struct VcpuSregs {
     pub cr8: u64,
     pub efer: u64,
     pub apic_base: u64,
+    /// `SREGS2.flags`, including KVM's additional x86 state flags.
+    pub flags: u64,
+    /// `SREGS2.pdptrs`, the four page-directory-pointer registers.
+    pub pdptrs: [u64; 4],
 }
 
 /// Extended control registers — `KVM_GET_XCRS`. Only `XCR0` is captured; the
@@ -85,7 +89,8 @@ pub struct Xcrs {
     pub xcr0: u64,
 }
 
-/// Debug registers — `KVM_GET_DEBUGREGS`: `DR0..DR3`, `DR6`, `DR7`.
+/// Debug registers — `KVM_GET_DEBUGREGS`: `DR0..DR3`, `DR6`, `DR7`, and the
+/// extended flags retained by the x86 v5 wire record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct DebugRegs {
     /// `DR0`..`DR3` debug-address registers.
@@ -94,6 +99,8 @@ pub struct DebugRegs {
     pub dr6: u64,
     /// `DR7` debug-control register.
     pub dr7: u64,
+    /// `KVM_GET_DEBUGREGS.flags`, including the debug state validity flags.
+    pub flags: u64,
 }
 
 /// Pending-event and interrupt-shadow state — `KVM_GET_VCPU_EVENTS`.

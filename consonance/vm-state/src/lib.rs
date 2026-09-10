@@ -25,13 +25,14 @@
 //! for identical state, so the layout is an explicitly specified little-endian
 //! binary container (house style — cf. `hypercall-proto`'s frames), not a text
 //! format and not a third-party crate's byte layout. The format **version is
-//! part of the determinism contract**: [`VmState::decode`] accepts the legacy v3
-//! record set and the v4 record set, and rejects every other version
+//! part of the determinism contract**: x86 [`VmState::decode`] accepts the v3,
+//! v4, and v5 record sets, and rejects every other version
 //! ([`VmStateError::UnsupportedVersion`]) rather than silently misreading. The
-//! v3 writer shape is retained when the engine-owned state is empty; a nonempty
-//! engine state selects v4 and appends its required TLV. Every required tag is
-//! present exactly once; a missing, unknown, duplicate, or out-of-order section
-//! is a decode error, never a best-effort zero-filled restore.
+//! v3 writer shape is retained when the engine-owned state and extended x86 CPU
+//! fields are empty; a nonempty engine state selects v4 unless those CPU fields
+//! require the v5 records. Every required tag is present exactly once; a
+//! missing, unknown, duplicate, or out-of-order section is a decode error,
+//! never a best-effort zero-filled restore.
 //!
 //! ## What this crate deliberately does *not* hold
 //!
@@ -73,14 +74,16 @@ pub use types::{
 /// magic `0x31504348`).
 pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 
-/// The newest format version this build writes and decodes.
+/// The newest x86 format version this build writes and decodes.
 ///
 /// **v3** removes the retired instruction-count conversion ratio from the
 /// virtual-time section; virtual time is now accumulated directly from VM exits.
 /// **v4** adds a required trailing engine-owned opaque state section when that
-/// state is nonempty. For byte compatibility, [`VmState::encode`] and
-/// [`Arm64VmState::encode`] retain the v3 bytes when the engine state is empty;
-/// [`VmState::decode`] and [`Arm64VmState::decode`] accept both v3 and v4.
+/// state is nonempty. **v5** uses extended x86 SREGS and DEBUGREGS records when
+/// their newly captured fields are nonzero; its engine-state section is
+/// optional. For byte compatibility, x86 encoding retains the v3 or v4 bytes
+/// whenever those new CPU fields are zero. ARM remains on its v3/v4 record set;
+/// [`Arm64VmState::decode`] rejects x86-only v5 blobs.
 /// **v2** (`docs/ARCHITECTURE.md`) added the container header's **arch
 /// tag**: the register/sysreg record set a blob carries is per-architecture, and
 /// the record *tags* alone cannot tell an x86 `REGS` section from an arm64 one —
@@ -88,10 +91,16 @@ pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 /// that a loud [`VmStateError::UnsupportedArch`] instead of a silent
 /// reinterpretation. A v1 blob (no tag) is rejected at the version gate, never
 /// parsed with the v2 reader.
-pub const VM_STATE_VERSION: u16 = 4;
+pub const VM_STATE_VERSION: u16 = 5;
+
+/// The v4 record version used for the engine-state extension. This remains
+/// crate-private because the public latest version is the x86 v5 format, while
+/// ARM continues to use this v4 shape.
+pub(crate) const VM_STATE_ENGINE_VERSION: u16 = 4;
 
 /// The legacy format version retained for byte-identical snapshots whose
-/// engine-owned state is empty. It remains readable but is never emitted for a
+/// engine-owned state and extended CPU fields are empty. It remains readable
+/// but is never emitted for a
 /// nonempty [`VmState::engine_state`] or [`Arm64VmState::engine_state`].
 pub const VM_STATE_LEGACY_VERSION: u16 = 3;
 
@@ -146,7 +155,8 @@ pub struct VmState {
     /// CPUID/MSR behavior has since changed; **compared by vmm-core, not here**.
     pub contract_hash: [u8; 32],
     /// Opaque state owned by the architecture-neutral engine. Empty preserves
-    /// the legacy v3 wire shape; nonempty state is carried by the v4 trailing
-    /// engine-state section. The codec does not interpret these bytes.
+    /// the v3 wire shape when the extended x86 CPU fields are also empty;
+    /// nonempty state selects v4 when those fields are zero and v5 otherwise.
+    /// The codec does not interpret these bytes.
     pub engine_state: Vec<u8>,
 }

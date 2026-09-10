@@ -9,7 +9,8 @@ mod common;
 use common::fully_populated;
 use vm_state::VmState;
 
-/// The recorded encoding of [`fully_populated`], lowercase hex. Regenerate with
+/// The recorded encoding of [`fully_populated`], lowercase hex, from the v3
+/// writer at c950d497. Regenerate with
 /// the `print_golden` test below (run with `--ignored --nocapture`) only when a
 /// format change is intentional.
 ///
@@ -24,6 +25,19 @@ fn to_hex(bytes: &[u8]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+fn from_hex(hex: &str) -> Vec<u8> {
+    let hex = hex.trim();
+    assert_eq!(hex.len() % 2, 0);
+    hex.as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let hi = (pair[0] as char).to_digit(16).unwrap();
+            let lo = (pair[1] as char).to_digit(16).unwrap();
+            ((hi << 4) | lo) as u8
+        })
+        .collect()
 }
 
 #[test]
@@ -41,6 +55,21 @@ fn golden_blob_round_trips() {
     let s = fully_populated();
     let bytes = s.encode().unwrap();
     assert_eq!(VmState::decode(&bytes), Ok(s));
+}
+
+#[test]
+fn c950_v4_fixture_round_trips_with_legacy_bytes() {
+    // This fixture was emitted by the pre-v5 writer at c950d497 with the
+    // engine payload [0xca, 0xfe]. It proves that adding the x86 v5 records did
+    // not rewrite an existing v4 blob on decode/encode.
+    let bytes = from_hex(include_str!("fixtures/vm-state-v4-c950d497.hex"));
+    assert_eq!(VmState::peek_version(&bytes), Ok(4));
+    let decoded = VmState::decode(&bytes).unwrap();
+    assert_eq!(decoded.engine_state, [0xca, 0xfe]);
+    assert_eq!(decoded.sregs.flags, 0);
+    assert_eq!(decoded.sregs.pdptrs, [0; 4]);
+    assert_eq!(decoded.debugregs.flags, 0);
+    assert_eq!(decoded.encode().unwrap(), bytes);
 }
 
 #[test]

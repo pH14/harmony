@@ -84,6 +84,7 @@ pub struct vm_state::DebugRegs
 pub vm_state::DebugRegs::db: [u64; 4]
 pub vm_state::DebugRegs::dr6: u64
 pub vm_state::DebugRegs::dr7: u64
+pub vm_state::DebugRegs::flags: u64
 pub struct vm_state::DeviceBlob(pub alloc::vec::Vec<u8>)
 pub struct vm_state::MsrBlock(pub alloc::collections::btree::map::BTreeMap<u32, u64>)
 pub struct vm_state::Segment
@@ -138,6 +139,7 @@ pub vm_state::VcpuSregs::cs: vm_state::Segment
 pub vm_state::VcpuSregs::ds: vm_state::Segment
 pub vm_state::VcpuSregs::efer: u64
 pub vm_state::VcpuSregs::es: vm_state::Segment
+pub vm_state::VcpuSregs::flags: u64
 pub vm_state::VcpuSregs::fs: vm_state::Segment
 pub vm_state::VcpuSregs::gdt_base: u64
 pub vm_state::VcpuSregs::gdt_limit: u16
@@ -145,6 +147,7 @@ pub vm_state::VcpuSregs::gs: vm_state::Segment
 pub vm_state::VcpuSregs::idt_base: u64
 pub vm_state::VcpuSregs::idt_limit: u16
 pub vm_state::VcpuSregs::ldt: vm_state::Segment
+pub vm_state::VcpuSregs::pdptrs: [u64; 4]
 pub vm_state::VcpuSregs::ss: vm_state::Segment
 pub vm_state::VcpuSregs::tr: vm_state::Segment
 pub struct vm_state::VmState

@@ -1379,11 +1379,9 @@ where
     /// inherits the parent's epoch and continues in lockstep with it.
     ///
     /// # Errors
-    /// [`VmmError::ContractViolation`] if the live vCPU carries the PAE-only `kvm_sregs2` flags/pdptrs or
-    /// `debugregs.flags` (all zero for the 64-bit determinism guest — see
-    /// [`crate::snapshot::unrepresentable_state`]); [`VmmError::Backend`] if reading the
-    /// live vCPU state fails (a snapshot **fails closed** rather than sealing a zeroed or
-    /// lossy vCPU).
+    /// [`VmmError::ContractViolation`] for a state requiring backend capabilities
+    /// absent from this composition; [`VmmError::Backend`] if reading the live
+    /// vCPU fails. Capture never substitutes a default or incomplete CPU record.
     pub fn save_vm_state(&self) -> Result<<B::A as Vendor>::Snapshot, VmmError> {
         // SDK stops and outstanding requests are captured independently by
         // sdk_snapshot; their presence does not require guest execution here.
@@ -1394,11 +1392,8 @@ where
             Some(s) => s.clone(),
             None => self.backend.save()?,
         };
-        // Fail closed on machine state the representable `vm_state` subset would
-        // silently zero on restore (`kvm_sregs2` flags/pdptrs, or pending-event
-        // injection/SMM/triple-fault bookkeeping) — sealing a lossy blob is worse
-        // than refusing it. Zero at a real quiescent snapshot point (64-bit guest, no
-        // armed injection); a non-zero value is a misuse / a non-quiescent snapshot.
+        // Validate capability-dependent state before encoding. CPU register
+        // fields themselves are retained by the vendor's versioned records.
         <B::A as Vendor>::check_sealable_vcpu(&vcpu)?;
         // Task 110: a pending pvclock registration is representable in the
         // versioned device record. Carry its GPA and `armed = false` alongside
@@ -7097,9 +7092,7 @@ mod tests {
         v
     }
 
-    /// A non-trivial but quiescent-point-representable `VcpuState` (the dropped
-    /// `kvm_vcpu_events` injection bookkeeping and `kvm_sregs2` flags/pdptrs are
-    /// zero, as they are after an exit is fully serviced).
+    /// A non-trivial CPU fixture with no pending event injection.
     fn nonzero_state() -> VcpuState {
         let mut msrs = std::collections::BTreeMap::new();
         msrs.insert(0xC000_0080u32, 0x501);
@@ -7737,34 +7730,57 @@ mod tests {
     }
 
     #[test]
-    fn save_vm_state_fails_closed_on_unrepresentable_sregs() {
-        // `kvm_sregs2` flags/pdptrs are not carried; the determinism guest is 64-bit /
-        // paging-off (they are 0). A non-zero value would be silently zeroed on
-        // restore, so the snapshot fails closed instead of sealing a lossy blob.
-        let mut flags = nonzero_state();
-        flags.sregs.flags = 1; // e.g. PDPTRS_VALID
-        let v = full_vmm(flags, vec![], 0, 1);
-        assert!(matches!(
-            v.save_vm_state(),
-            Err(VmmError::ContractViolation(_))
-        ));
+    fn cpu_snapshot_preserves_pae_and_debug_flags_without_guest_execution() {
+        for fields in 1..8 {
+            let mut cpu = nonzero_state();
+            if fields & 1 != 0 {
+                cpu.sregs.flags = 1;
+            }
+            if fields & 2 != 0 {
+                cpu.sregs.pdptrs = [0x1001, 0x2001, 0x3001, 0x4001];
+            }
+            if fields & 4 != 0 {
+                cpu.debugregs.flags = 1;
+            }
+            let exits = vec![
+                Exit::Arch(X86Exit::Io {
+                    port: 0x3f8,
+                    size: 1,
+                    write: Some(0x58),
+                }),
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+            ];
+            let mut source = full_vmm(cpu.clone(), exits.clone(), 0, 7);
+            source.wire_snapshot_hashing();
+            let before_hash = source.state_hash().unwrap();
+            let before_counts = source.exit_counts();
+            let saved = source.save_vm_state().unwrap();
+            let bytes = saved.encode().unwrap();
+            let decoded = vm_state::VmState::decode(&bytes).unwrap();
+            assert_eq!(source.state_hash().unwrap(), before_hash);
+            assert_eq!(source.exit_counts(), before_counts);
+            assert_eq!(source.effective_vns(), Some(0));
+            assert_eq!(decoded.sregs.flags, cpu.sregs.flags);
+            assert_eq!(decoded.sregs.pdptrs, cpu.sregs.pdptrs);
+            assert_eq!(decoded.debugregs.flags, cpu.debugregs.flags);
 
-        let mut pdptr = nonzero_state();
-        pdptr.sregs.pdptrs[2] = 0xDEAD_BEEF;
-        let v2 = full_vmm(pdptr, vec![], 0, 1);
-        assert!(matches!(
-            v2.save_vm_state(),
-            Err(VmmError::ContractViolation(_))
-        ));
-
-        // `kvm_debugregs.flags` (not carried) — DR0..3/DR6/DR7 ARE carried.
-        let mut dbg = nonzero_state();
-        dbg.debugregs.flags = 1;
-        let v3 = full_vmm(dbg, vec![], 0, 1);
-        assert!(matches!(
-            v3.save_vm_state(),
-            Err(VmmError::ContractViolation(_))
-        ));
+            let mut cold = full_vmm(VcpuState::default(), exits, 0, 7);
+            cold.wire_snapshot_hashing();
+            cold.restore_snapshot(source.guest_memory(), &decoded)
+                .unwrap();
+            assert_eq!(cold.state_hash().unwrap(), before_hash);
+            assert_eq!(cold.save_vm_state().unwrap().encode().unwrap(), bytes);
+            for _ in 0..2 {
+                assert_eq!(source.step().unwrap(), cold.step().unwrap());
+                assert_eq!(source.state_hash().unwrap(), cold.state_hash().unwrap());
+                assert_eq!(source.effective_vns(), cold.effective_vns());
+            }
+            assert_eq!(source.serial_output(), cold.serial_output());
+            assert_eq!(
+                source.save_vm_state().unwrap().encode().unwrap(),
+                cold.save_vm_state().unwrap().encode().unwrap()
+            );
+        }
     }
 
     #[test]
@@ -8589,10 +8605,10 @@ mod tests {
         // Both serviced exits staged backend completions. A live backend cannot
         // restore over either until the completion-only entry has retired it.
         vmm.retire_pending_completion().unwrap();
-        // Make the vCPU unsealable (PAE-only sregs flags — the same lever the
-        // existing fail-closed seal tests use).
+        // A synthetic event requiring a capability this backend does not enable
+        // must still reject before touching the page. PAE state is now supported.
         let mut bad = vmm.backend.save().unwrap();
-        bad.sregs.flags = 1;
+        bad.events.triple_fault_pending = 1;
         vmm.backend.restore(&bad).unwrap();
         vmm.saved_state = None;
         assert!(
@@ -8611,7 +8627,7 @@ mod tests {
         );
         // And a SUCCESSFUL seal at the same point leaves the page equally
         // untouched — the epoch keeps its mid-run value (r4: sealed verbatim).
-        bad.sregs.flags = 0;
+        bad.events.triple_fault_pending = 0;
         vmm.backend.restore(&bad).unwrap();
         vmm.save_vm_state().unwrap();
         assert_eq!(

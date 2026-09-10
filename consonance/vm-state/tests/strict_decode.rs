@@ -13,6 +13,7 @@ use vm_state::{
 /// magic:u32 + version:u16 + arch:u16 + section_count:u16 (10 bytes; the v2
 /// arch tag did not add padding).
 const HEADER_LEN: usize = 10;
+const ENGINE_VERSION: u16 = 4;
 
 /// Split a valid blob into its `(section_count_field, [(tag, payload)])`.
 fn split(blob: &[u8]) -> (u16, Vec<(u16, Vec<u8>)>) {
@@ -61,6 +62,15 @@ fn valid_v4(engine_state: &[u8]) -> Vec<u8> {
     state.encode().unwrap()
 }
 
+fn valid_v5(engine_state: &[u8]) -> Vec<u8> {
+    let mut state = fully_populated();
+    state.sregs.flags = 0x0102_0304_0506_0708;
+    state.sregs.pdptrs = [0x10, 0x20, 0x30, 0x40];
+    state.debugregs.flags = 0x090a_0b0c_0d0e_0f10;
+    state.engine_state = engine_state.to_vec();
+    state.encode().unwrap()
+}
+
 #[test]
 fn bad_magic() {
     let mut blob = valid();
@@ -88,7 +98,11 @@ fn legacy_v3_decodes_with_empty_engine_state() {
         VM_STATE_LEGACY_VERSION
     );
     assert_eq!(u16::from_le_bytes(blob[8..10].try_into().unwrap()), 13);
-    assert!(VmState::decode(&blob).unwrap().engine_state.is_empty());
+    let decoded = VmState::decode(&blob).unwrap();
+    assert!(decoded.engine_state.is_empty());
+    assert_eq!(decoded.sregs.flags, 0);
+    assert_eq!(decoded.sregs.pdptrs, [0; 4]);
+    assert_eq!(decoded.debugregs.flags, 0);
 }
 
 #[test]
@@ -97,7 +111,7 @@ fn v4_engine_state_round_trips_multiple_payloads() {
         let blob = valid_v4(&payload);
         assert_eq!(
             u16::from_le_bytes(blob[4..6].try_into().unwrap()),
-            VM_STATE_VERSION
+            ENGINE_VERSION
         );
         assert_eq!(
             u16::from_le_bytes(blob[8..10].try_into().unwrap()),
@@ -120,15 +134,97 @@ fn v4_engine_state_section_is_required_nonempty_and_last() {
     let mut empty = sections.clone();
     empty.last_mut().unwrap().1.clear();
     assert_eq!(
-        VmState::decode(&pack_version(VM_STATE_VERSION, count, &empty)),
+        VmState::decode(&pack_version(ENGINE_VERSION, count, &empty)),
         Err(VmStateError::InvalidField)
     );
 
     let mut missing = sections.clone();
     missing.pop();
     assert_eq!(
-        VmState::decode(&pack_version(VM_STATE_VERSION, count - 1, &missing)),
+        VmState::decode(&pack_version(ENGINE_VERSION, count - 1, &missing)),
         Err(VmStateError::MissingSection(14))
+    );
+
+    let mut duplicate = sections.clone();
+    duplicate.push(sections.last().unwrap().clone());
+    assert_eq!(
+        VmState::decode(&pack_version(ENGINE_VERSION, count + 1, &duplicate)),
+        Err(VmStateError::DuplicateTag(14))
+    );
+
+    let mut out_of_order = sections;
+    let last = out_of_order.len() - 1;
+    out_of_order.swap(last - 1, last);
+    assert_eq!(
+        VmState::decode(&pack_version(ENGINE_VERSION, count, &out_of_order)),
+        Err(VmStateError::SectionOrder(13))
+    );
+
+    let mut trailing = good;
+    trailing.push(0);
+    assert_eq!(VmState::decode(&trailing), Err(VmStateError::TrailingBytes));
+}
+
+#[test]
+fn v5_extended_cpu_fields_round_trip_with_optional_engine_state() {
+    for (engine_state, section_count) in [(&[][..], 13), (&[0xCA, 0xFE][..], 14)] {
+        let blob = valid_v5(engine_state);
+        assert_eq!(
+            u16::from_le_bytes(blob[4..6].try_into().unwrap()),
+            VM_STATE_VERSION
+        );
+        assert_eq!(
+            u16::from_le_bytes(blob[8..10].try_into().unwrap()),
+            section_count
+        );
+        let decoded = VmState::decode(&blob).unwrap();
+        assert_eq!(decoded.sregs.flags, 0x0102_0304_0506_0708);
+        assert_eq!(decoded.sregs.pdptrs, [0x10, 0x20, 0x30, 0x40]);
+        assert_eq!(decoded.debugregs.flags, 0x090a_0b0c_0d0e_0f10);
+        assert_eq!(decoded.engine_state, engine_state);
+        assert_eq!(decoded.encode().unwrap(), blob);
+    }
+}
+
+#[test]
+fn each_extended_cpu_field_selects_v5() {
+    for field in 0..3 {
+        let mut state = fully_populated();
+        match field {
+            0 => state.sregs.flags = 1,
+            1 => state.sregs.pdptrs[2] = 2,
+            2 => state.debugregs.flags = 3,
+            _ => unreachable!(),
+        }
+        let blob = state.encode().unwrap();
+        assert_eq!(
+            u16::from_le_bytes(blob[4..6].try_into().unwrap()),
+            VM_STATE_VERSION
+        );
+        assert_eq!(VmState::decode(&blob).unwrap(), state);
+    }
+}
+
+#[test]
+fn v5_engine_state_is_optional_but_nonempty_when_present() {
+    let good = valid_v5(&[1, 2, 3]);
+    let (count, sections) = split(&good);
+    assert_eq!(count, 14);
+
+    let mut missing = sections.clone();
+    missing.pop();
+    assert_eq!(
+        VmState::decode(&pack_version(VM_STATE_VERSION, count - 1, &missing))
+            .unwrap()
+            .engine_state,
+        Vec::<u8>::new()
+    );
+
+    let mut empty = sections.clone();
+    empty.last_mut().unwrap().1.clear();
+    assert_eq!(
+        VmState::decode(&pack_version(VM_STATE_VERSION, count, &empty)),
+        Err(VmStateError::InvalidField)
     );
 
     let mut duplicate = sections.clone();
@@ -145,10 +241,88 @@ fn v4_engine_state_section_is_required_nonempty_and_last() {
         VmState::decode(&pack_version(VM_STATE_VERSION, count, &out_of_order)),
         Err(VmStateError::SectionOrder(13))
     );
+}
 
-    let mut trailing = good;
-    trailing.push(0);
-    assert_eq!(VmState::decode(&trailing), Err(VmStateError::TrailingBytes));
+#[test]
+fn x86_version_selection_keeps_zero_extension_bytes_legacy_compatible() {
+    let v3 = fully_populated().encode().unwrap();
+    assert_eq!(u16::from_le_bytes(v3[4..6].try_into().unwrap()), 3);
+    assert_eq!(v3.len(), fully_populated().encode().unwrap().len());
+
+    let mut v4_state = fully_populated();
+    v4_state.engine_state = vec![1, 2, 3];
+    let v4 = v4_state.encode().unwrap();
+    assert_eq!(
+        u16::from_le_bytes(v4[4..6].try_into().unwrap()),
+        ENGINE_VERSION
+    );
+    assert_eq!(u16::from_le_bytes(v4[8..10].try_into().unwrap()), 14);
+    let decoded = VmState::decode(&v4).unwrap();
+    assert_eq!(decoded.sregs.flags, 0);
+    assert_eq!(decoded.sregs.pdptrs, [0; 4]);
+    assert_eq!(decoded.debugregs.flags, 0);
+}
+
+#[test]
+fn v5_rejects_zero_extended_fields_and_fixed_length_mismatches() {
+    let good = valid_v5(&[]);
+    let (count, sections) = split(&good);
+    assert_eq!(count, 13);
+
+    let mut zero_extension = sections.clone();
+    for (tag, payload) in &mut zero_extension {
+        match *tag {
+            2 => {
+                let start = payload.len() - 40;
+                payload[start..].fill(0);
+            }
+            4 => {
+                let start = payload.len() - 8;
+                payload[start..].fill(0);
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        VmState::decode(&pack_version(VM_STATE_VERSION, count, &zero_extension)),
+        Err(VmStateError::InvalidField)
+    );
+
+    for tag in [2, 4] {
+        let mut truncated = sections.clone();
+        truncated
+            .iter_mut()
+            .find(|(section_tag, _)| *section_tag == tag)
+            .unwrap()
+            .1
+            .pop();
+        assert_eq!(
+            VmState::decode(&pack_version(VM_STATE_VERSION, count, &truncated)),
+            Err(VmStateError::InvalidField),
+            "v5 section {tag} truncation"
+        );
+
+        let mut extended = sections.clone();
+        extended
+            .iter_mut()
+            .find(|(section_tag, _)| *section_tag == tag)
+            .unwrap()
+            .1
+            .push(0);
+        assert_eq!(
+            VmState::decode(&pack_version(VM_STATE_VERSION, count, &extended)),
+            Err(VmStateError::InvalidField),
+            "v5 section {tag} extension"
+        );
+    }
+}
+
+#[test]
+fn v5_truncations_never_panic() {
+    let blob = valid_v5(&[1, 2, 3]);
+    for n in 0..blob.len() {
+        let _ = VmState::decode(&blob[..n]);
+    }
 }
 
 /// The v2 arch tag is a **hard gate on the record set**: a blob whose sections are

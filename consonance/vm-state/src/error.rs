@@ -15,10 +15,9 @@ pub enum VmStateError {
     /// The header magic was not [`VM_STATE_MAGIC`](crate::VM_STATE_MAGIC).
     #[error("bad magic: {0:#010x}")]
     BadMagic(u32),
-    /// The header version is neither the legacy v3 format nor
-    /// [`VM_STATE_VERSION`](crate::VM_STATE_VERSION). Decoding refuses a
-    /// version it does not understand rather than silently misreading a future
-    /// layout.
+    /// The header version is not a record version supported by the selected
+    /// architecture. Decoding refuses a version it does not understand rather
+    /// than silently misreading a future layout.
     #[error("unsupported version: {0}")]
     UnsupportedVersion(u16),
     /// The container's **arch tag** names a record set this build does not carry

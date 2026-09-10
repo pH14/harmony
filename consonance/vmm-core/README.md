@@ -44,6 +44,11 @@ SDK reentry state. Nonempty records use VM-state container v4; ordinary runnable
 states retain v3 bytes. Legacy v3 records remain readable with the historical
 runnable lifecycle default. A terminal restore does not enter the guest again.
 
+X86 CPU capture retains SREGS2 flags and cached PAE PDPTRs, plus debug-register
+flags. Nonzero extended fields select VM-state v5; zero values retain v3/v4
+bytes. Cached PDPTRs are distinct from the current PDPT contents in guest RAM
+and must survive restore without reloading them from that memory.
+
 ## Architecture boundary
 
 The engine uses only common exits, guest-physical addresses, bytes, and typed

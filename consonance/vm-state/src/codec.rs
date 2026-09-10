@@ -21,13 +21,17 @@ use crate::types::{
     VtimeState, Xcrs, XsaveImage,
 };
 use crate::wire::{
-    DebugRegsWire, EventsWire, HeaderWire, MsrPairWire, RegsWire, SregsWire, TimerEntryWire,
-    VtimeWire, XcrsWire,
+    DebugRegsWire, DebugRegsWireV5, EventsWire, HeaderWire, MsrPairWire, RegsWire, SregsWire,
+    SregsWireV5, TimerEntryWire, VtimeWire, XcrsWire,
 };
-use crate::{ARCH_X86_64, VM_STATE_LEGACY_VERSION, VM_STATE_MAGIC, VM_STATE_VERSION, VmState};
+use crate::{
+    ARCH_X86_64, VM_STATE_ENGINE_VERSION, VM_STATE_LEGACY_VERSION, VM_STATE_MAGIC,
+    VM_STATE_VERSION, VmState,
+};
 
 // Section tags, in their canonical ascending order. Every legacy tag is present
-// exactly once; the v4 engine-state tag is required when the field is nonempty.
+// exactly once; the v4 engine-state tag is required when the field is nonempty,
+// while v5 permits it to be absent.
 const TAG_REGS: u16 = 1;
 const TAG_SREGS: u16 = 2;
 const TAG_XCRS: u16 = 3;
@@ -45,15 +49,15 @@ const TAG_CONTRACT_HASH: u16 = 13;
 /// The number of sections in the legacy x86 blob.
 const LEGACY_SECTION_COUNT: u16 = 13;
 
-/// The number of sections in a v4 x86 blob carrying engine state.
+/// The number of sections in an x86 blob carrying engine state.
 const ENGINE_SECTION_COUNT: u16 = LEGACY_SECTION_COUNT + 1;
 
 /// The engine-owned state section follows every existing x86 section.
 const TAG_ENGINE_STATE: u16 = 14;
 
 /// Length of the fixed container header (magic + version + arch tag + section
-/// count). 10 bytes since v2 (the arch tag); v4 adds a TLV section without
-/// changing this header.
+/// count). 10 bytes since v2 (the arch tag); v4/v5 add sections or extend
+/// records without changing this header.
 const HEADER_LEN: usize = 10;
 
 const MP_STATE_RUNNABLE: u8 = 0;
@@ -65,9 +69,11 @@ impl VmState {
     /// Encode to the versioned TLV blob. Deterministic: equal `VmState` ⇒ equal
     /// bytes (MSRs via the `BTreeMap`'s sorted order; timer entries written in the
     /// `(deadline_vns, seq)` order the caller already holds them in — see the
-    /// errors below; all fixed records fully initialized with no padding). An
-    /// empty engine-state field retains the legacy v3 bytes; a nonempty field
-    /// selects v4 and appends one TLV.
+    /// errors below; all fixed records fully initialized with no padding). Empty
+    /// engine state and zero extended CPU fields retain the legacy v3 bytes.
+    /// Nonempty engine state selects v4 when the extended CPU fields are zero.
+    /// Any nonzero extended CPU field selects x86 v5, whose engine-state section
+    /// is optional.
     ///
     /// # Errors
     ///
@@ -80,10 +86,20 @@ impl VmState {
     /// - [`VmStateError::InvalidField`] if a variable-length section would exceed
     ///   `u32::MAX` bytes (not reachable for any real machine state).
     pub fn encode(&self) -> Result<Vec<u8>, VmStateError> {
-        let (version, section_count) = if self.engine_state.is_empty() {
+        let extended_cpu = has_extended_cpu_fields(self);
+        let (version, section_count) = if extended_cpu {
+            (
+                VM_STATE_VERSION,
+                if self.engine_state.is_empty() {
+                    LEGACY_SECTION_COUNT
+                } else {
+                    ENGINE_SECTION_COUNT
+                },
+            )
+        } else if self.engine_state.is_empty() {
             (VM_STATE_LEGACY_VERSION, LEGACY_SECTION_COUNT)
         } else {
-            (VM_STATE_VERSION, ENGINE_SECTION_COUNT)
+            (VM_STATE_ENGINE_VERSION, ENGINE_SECTION_COUNT)
         };
         let mut out = Vec::new();
         out.extend_from_slice(
@@ -99,13 +115,29 @@ impl VmState {
         );
 
         put_section(&mut out, TAG_REGS, RegsWire::from(&self.regs).as_bytes())?;
-        put_section(&mut out, TAG_SREGS, SregsWire::from(&self.sregs).as_bytes())?;
+        if version == VM_STATE_VERSION {
+            put_section(
+                &mut out,
+                TAG_SREGS,
+                SregsWireV5::from(&self.sregs).as_bytes(),
+            )?;
+        } else {
+            put_section(&mut out, TAG_SREGS, SregsWire::from(&self.sregs).as_bytes())?;
+        }
         put_section(&mut out, TAG_XCRS, XcrsWire::from(&self.xcrs).as_bytes())?;
-        put_section(
-            &mut out,
-            TAG_DEBUGREGS,
-            DebugRegsWire::from(&self.debugregs).as_bytes(),
-        )?;
+        if version == VM_STATE_VERSION {
+            put_section(
+                &mut out,
+                TAG_DEBUGREGS,
+                DebugRegsWireV5::from(&self.debugregs).as_bytes(),
+            )?;
+        } else {
+            put_section(
+                &mut out,
+                TAG_DEBUGREGS,
+                DebugRegsWire::from(&self.debugregs).as_bytes(),
+            )?;
+        }
         put_section(
             &mut out,
             TAG_EVENTS,
@@ -127,9 +159,10 @@ impl VmState {
     }
 
     /// Decode a blob produced by [`VmState::encode`]. Strict: validates magic,
-    /// the supported v3/v4 version, section count, ordering, and every field;
+    /// the supported v3/v4/v5 version, section count, ordering, and every field;
     /// never panics on arbitrary input. A v3 blob decodes with an empty
-    /// engine-state field; a v4 blob must carry nonempty engine state.
+    /// engine-state field; a v4 blob must carry nonempty engine state; a v5 blob
+    /// carries nonzero extended x86 CPU state and may omit engine state.
     ///
     /// # Errors
     ///
@@ -145,7 +178,10 @@ impl VmState {
             return Err(VmStateError::BadMagic(magic));
         }
         let version = header.version.get();
-        if version != VM_STATE_LEGACY_VERSION && version != VM_STATE_VERSION {
+        if version != VM_STATE_LEGACY_VERSION
+            && version != VM_STATE_ENGINE_VERSION
+            && version != VM_STATE_VERSION
+        {
             return Err(VmStateError::UnsupportedVersion(version));
         }
         // The arch tag gates the RECORDS: this build carries only the x86-64
@@ -202,8 +238,14 @@ impl VmState {
 
             match tag {
                 TAG_REGS => regs = Some(VcpuRegs::from(&read_fixed::<RegsWire>(payload)?)),
+                TAG_SREGS if version == VM_STATE_VERSION => {
+                    sregs = Some(VcpuSregs::from(&read_fixed::<SregsWireV5>(payload)?));
+                }
                 TAG_SREGS => sregs = Some(VcpuSregs::from(&read_fixed::<SregsWire>(payload)?)),
                 TAG_XCRS => xcrs = Some(Xcrs::from(&read_fixed::<XcrsWire>(payload)?)),
+                TAG_DEBUGREGS if version == VM_STATE_VERSION => {
+                    debugregs = Some(DebugRegs::from(&read_fixed::<DebugRegsWireV5>(payload)?));
+                }
                 TAG_DEBUGREGS => {
                     debugregs = Some(DebugRegs::from(&read_fixed::<DebugRegsWire>(payload)?));
                 }
@@ -222,7 +264,9 @@ impl VmState {
                 TAG_HYPERCALL => hypercall = Some(payload.to_vec()),
                 TAG_DEVICES => devices = Some(DeviceBlob(payload.to_vec())),
                 TAG_CONTRACT_HASH => contract_hash = Some(decode_contract_hash(payload)?),
-                TAG_ENGINE_STATE if version == VM_STATE_VERSION => {
+                TAG_ENGINE_STATE
+                    if version == VM_STATE_ENGINE_VERSION || version == VM_STATE_VERSION =>
+                {
                     engine_state = Some(payload.to_vec());
                 }
                 TAG_ENGINE_STATE => return Err(VmStateError::UnknownTag(TAG_ENGINE_STATE)),
@@ -236,12 +280,28 @@ impl VmState {
 
         let engine_state = match version {
             VM_STATE_LEGACY_VERSION => Vec::new(),
-            VM_STATE_VERSION => {
+            VM_STATE_ENGINE_VERSION => {
                 let state = engine_state.ok_or(VmStateError::MissingSection(TAG_ENGINE_STATE))?;
                 if state.is_empty() {
                     return Err(VmStateError::InvalidField);
                 }
                 state
+            }
+            VM_STATE_VERSION => {
+                let sregs = sregs
+                    .as_ref()
+                    .ok_or(VmStateError::MissingSection(TAG_SREGS))?;
+                let debugregs = debugregs
+                    .as_ref()
+                    .ok_or(VmStateError::MissingSection(TAG_DEBUGREGS))?;
+                if !has_extended_cpu_values(sregs, debugregs) {
+                    return Err(VmStateError::InvalidField);
+                }
+                match engine_state {
+                    Some(state) if state.is_empty() => return Err(VmStateError::InvalidField),
+                    Some(state) => state,
+                    None => Vec::new(),
+                }
             }
             _ => unreachable!("version was checked above"),
         };
@@ -282,6 +342,14 @@ impl VmState {
         }
         Ok(header.version.get())
     }
+}
+
+fn has_extended_cpu_fields(state: &VmState) -> bool {
+    has_extended_cpu_values(&state.sregs, &state.debugregs)
+}
+
+fn has_extended_cpu_values(sregs: &VcpuSregs, debugregs: &DebugRegs) -> bool {
+    sregs.flags != 0 || sregs.pdptrs != [0; 4] || debugregs.flags != 0
 }
 
 /// Append one `tag:u16 len:u32 payload` section.

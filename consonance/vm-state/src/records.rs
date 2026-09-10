@@ -70,7 +70,8 @@ pub trait SnapshotRecords: Sized {
     fn timers(&self) -> &TimerQueueState;
 
     /// The engine-owned opaque lifecycle state. Empty for a legacy-compatible
-    /// snapshot; nonempty bytes select the v4 trailing engine-state section.
+    /// snapshot; nonempty bytes select the trailing engine-state section for
+    /// the record version selected by the architecture's codec.
     fn engine_state(&self) -> &[u8];
 
     /// Replace the engine-owned opaque lifecycle state before encoding. The
