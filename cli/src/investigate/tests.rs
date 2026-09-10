@@ -438,6 +438,7 @@ fn a_verb_without_a_workspace_names_the_flag_that_supplies_one() {
     let common = Common {
         workspace: None,
         json: false,
+        ..Common::default()
     };
     let error = run(&common, Command::Findings).expect_err("no workspace");
     assert!(error.to_string().contains("-w DIR"), "{error}");
@@ -449,6 +450,7 @@ fn export_writes_the_recorded_reproducer_separately_from_evidence() {
     let common = Common {
         workspace: Some(dir.path().join("pg")),
         json: true,
+        ..Common::default()
     };
     run(
         &common,
@@ -480,6 +482,7 @@ fn advancing_off_a_kvm_host_says_so_and_names_what_still_works() {
     let common = Common {
         workspace: Some(dir.path().join("pg")),
         json: false,
+        ..Common::default()
     };
     let error = run(
         &common,

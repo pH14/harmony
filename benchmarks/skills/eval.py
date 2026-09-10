@@ -236,6 +236,7 @@ def command_run(args: argparse.Namespace) -> int:
         facts = fixture.prepare_preparation(
             fixture_root, REPOSITORY,
             Path(args.source_tarball) if args.source_tarball else None)
+        facts["execution_host"] = _execution_host()
     elif args.recorded_workspace:
         facts = fixture.adopt(Path(args.recorded_workspace), fixture_root)
     else:
@@ -261,6 +262,18 @@ def command_run(args: argparse.Namespace) -> int:
         records.append(record)
     _write_report(out, records)
     return 0
+
+
+def _execution_host() -> str:
+    """What the runner host can actually do for a preparation attempt.
+
+    A panel that cannot build or cannot run says so in its report rather than
+    leaving a reader to assume the attempt had both.
+    """
+    parts = []
+    parts.append("docker" if shutil.which("docker") else "no docker")
+    parts.append("KVM" if Path("/dev/kvm").exists() else "no KVM")
+    return "; ".join(parts)
 
 
 def _preparation_checks(out: Path, harmony: Path) -> list[tuple[str, bool, str]]:
@@ -454,6 +467,9 @@ def _markdown(summary: dict) -> str:
                   "not a real investigation.", ""]
     if summary.get("isolation"):
         lines += [f"Isolation: {summary['isolation']}.", ""]
+    host = (summary.get("fixture") or {}).get("execution_host")
+    if host:
+        lines += [f"Execution host: {host}.", ""]
     lines += ["| Arm | Attempts | Passed | Failed | Infrastructure |",
               "| --- | --- | --- | --- | --- |"]
     for arm, facts in summary["arms"].items():

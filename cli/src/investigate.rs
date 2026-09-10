@@ -19,7 +19,7 @@ use faults_workload::investigate::{
 use faults_workload::workspace::{Selector, Workspace, format_duration, parse_duration};
 
 /// Where the workspace lives and how results are printed.
-#[derive(clap::Args, Clone, Debug)]
+#[derive(clap::Args, Clone, Debug, Default)]
 pub struct Common {
     /// The workspace directory a search wrote.
     #[arg(short = 'w', long = "workspace", global = true, value_name = "DIR")]
@@ -27,6 +27,16 @@ pub struct Common {
     /// Emit the versioned JSON result instead of text.
     #[arg(long, global = true)]
     pub json: bool,
+    /// The controlled guest kernel to boot, when it is not installed beside
+    /// this binary or named by HARMONY_GUEST_DIR.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub kernel: Option<PathBuf>,
+    /// The guest base image the workload is staged into.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub base_initramfs: Option<PathBuf>,
+    /// The guest fault agent the workload image supervises with.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub fault_agent: Option<PathBuf>,
 }
 
 /// One investigation verb.
@@ -174,7 +184,7 @@ pub fn run(common: &Common, command: Command) -> Result<ExitCode, Box<dyn Error>
                 probe: false,
                 request_id: args.request_id.clone(),
             };
-            let mut engine = guest(&workspace)?;
+            let mut engine = guest(&workspace, common)?;
             serde_json::to_value(faults_workload::investigate::fork(
                 &mut workspace,
                 engine.as_mut(),
@@ -187,7 +197,7 @@ pub fn run(common: &Common, command: Command) -> Result<ExitCode, Box<dyn Error>
                 bound: run_bound(&args)?,
                 request_id: args.request_id.clone(),
             };
-            let mut engine = guest(&workspace)?;
+            let mut engine = guest(&workspace, common)?;
             serde_json::to_value(faults_workload::investigate::run(
                 &mut workspace,
                 engine.as_mut(),
@@ -196,7 +206,7 @@ pub fn run(common: &Common, command: Command) -> Result<ExitCode, Box<dyn Error>
         }
         Command::Exec(args) => {
             let request = exec_request(&args)?;
-            let mut engine = guest(&workspace)?;
+            let mut engine = guest(&workspace, common)?;
             serde_json::to_value(faults_workload::investigate::exec(
                 &mut workspace,
                 engine.as_mut(),
@@ -595,6 +605,7 @@ fn resolve_moment(workspace: &Workspace, selector: &Selector) -> Result<String, 
 ))]
 fn guest(
     workspace: &Workspace,
+    common: &Common,
 ) -> Result<Box<dyn faults_workload::investigate::Continuation>, Box<dyn Error>> {
     let facts = workspace.facts();
     let artifacts = crate::search::prepared_artifacts(
@@ -602,6 +613,9 @@ fn guest(
         facts.image_sha256.as_str(),
         facts.kernel_sha256.as_str(),
         facts.fault_agent_sha256.as_str(),
+        common.kernel.clone(),
+        common.base_initramfs.clone(),
+        common.fault_agent.clone(),
     )?;
     let config = faults_workload::consonance::FaultConfig {
         knobs: facts.knobs.clone(),
@@ -623,6 +637,7 @@ fn guest(
 )))]
 fn guest(
     _workspace: &Workspace,
+    _common: &Common,
 ) -> Result<Box<dyn faults_workload::investigate::Continuation>, Box<dyn Error>> {
     Err("advancing a workspace needs a Linux KVM host; \
          findings, branches, inspect, and export read the retained history anywhere"

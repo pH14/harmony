@@ -309,8 +309,11 @@ pub fn prepared_artifacts(
     image_sha256: &str,
     kernel_sha256: &str,
     fault_agent_sha256: &str,
+    kernel: Option<PathBuf>,
+    base: Option<PathBuf>,
+    agent: Option<PathBuf>,
 ) -> Result<faults_workload::Artifacts, Box<dyn Error>> {
-    let prepared = prepare_fault_artifacts(image, None, None, None)?;
+    let prepared = prepare_fault_artifacts(image, kernel, base, agent)?;
     for (what, want, have) in [
         (
             "workload image",

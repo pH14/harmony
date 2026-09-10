@@ -49,7 +49,15 @@ record() {
 
 # Each verb is a separate process, which is the point: guest time is frozen
 # between them and every command restores what it needs from the workspace.
-w() { "${harmony}" -w "${workspace}" --json "$@"; }
+# The guest artifacts are named here because this runner has none installed;
+# the workspace's recorded digests still decide whether they are the right ones.
+w() {
+    "${harmony}" -w "${workspace}" --json \
+        --kernel "${kernel}" \
+        --base-initramfs "${base_initramfs}" \
+        --fault-agent "${agent}" \
+        "$@"
+}
 
 # The declarations an investigation reads come from the image's own bundle, so
 # check them before spending a guest boot on it.
