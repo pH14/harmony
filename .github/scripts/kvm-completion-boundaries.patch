@@ -1,0 +1,49 @@
+diff --git a/consonance/vmm-backend/src/kvm_sys.rs b/consonance/vmm-backend/src/kvm_sys.rs
+index 7a57b655..07eb2094 100644
+--- a/consonance/vmm-backend/src/kvm_sys.rs
++++ b/consonance/vmm-backend/src/kvm_sys.rs
+@@ -326,11 +326,12 @@ impl KvmBackend {
+                 Some((exit, pending)) => {
+                     self.counts.bump(exit.reason());
+                     self.pending = pending;
+-                    // Read exits become staged when complete_* writes their
+-                    // result. Write exits have no trait-level pending value,
+-                    // but KVM retains their fast-PIO/MMIO callback until the
+-                    // next entry, so mark them here for restore retirement.
++                    // A write needs no host response, but KVM still retains its
++                    // PIO/MMIO completion. Finish that already-issued operation
++                    // without guest execution before returning a stopped boundary.
++                    // Reads reach the same boundary through complete_* below.
+                     self.completion_staged = decoded_exit_stages_completion(&exit, pending);
++                    self.retire_pending_completion()?;
+                     return Ok(exit);
+                 }
+                 None => continue, // run-loop control exit; re-enter
+@@ -879,21 +880,24 @@ impl Backend for KvmBackend {
+         apply_complete_read(self.run_page(), self.pending, value)?;
+         self.pending = Pending::None;
+         self.completion_staged = true;
+-        Ok(())
++        // Completion is part of servicing this exit, not the next guest run.
++        // KVM_RUN with immediate_exit commits only the supplied result, so a
++        // subsequent save sees the same state a normal continuation would use.
++        self.retire_pending_completion()
+     }
+ 
+     fn complete_fault(&mut self) -> Result<()> {
+         apply_complete_fault(self.run_page(), self.pending)?;
+         self.pending = Pending::None;
+         self.completion_staged = true;
+-        Ok(())
++        self.retire_pending_completion()
+     }
+ 
+     fn complete_ok(&mut self) -> Result<()> {
+         apply_complete_ok(self.run_page(), self.pending)?;
+         self.pending = Pending::None;
+         self.completion_staged = true;
+-        Ok(())
++        self.retire_pending_completion()
+     }
+ 
+     fn complete_hypercall(&mut self, _ret: u64) -> Result<()> {

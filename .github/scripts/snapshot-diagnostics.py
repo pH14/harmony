@@ -82,3 +82,43 @@ if "--retire-completions" in sys.argv[2:]:
             self.backend.retire_pending_completion()?;
             self.completion_staged = false;
         }''')
+
+if "--check-execution-identity" in sys.argv[2:]:
+    replace('.github/scripts/historical-investigate.sh',
+        '''[[ $(jq -cS '.properties, .virtual_time_nanos, .state_hash' <<<"${inspected}") \\
+   == $(jq -cS '.properties, .virtual_time_nanos, .state_hash' <<<"${after}") ]] \\
+''',
+        '''inspection_before=$(jq -cS '[.properties, .virtual_time_nanos, .state_hash]' <<<"${inspected}")
+inspection_after=$(jq -cS '[.properties, .virtual_time_nanos, .state_hash]' <<<"${after}")
+[[ "${inspection_before}" == "${inspection_after}" ]] \\
+''')
+    replace('.github/scripts/historical-investigate.sh',
+        """whole_time=$(jq -r '.virtual_time_nanos' "reports/${CASE_ID}.run-whole.json")""",
+        '''whole_time=$(jq -r '.virtual_time_nanos' "reports/${CASE_ID}.run-whole.json")
+[[ "${whole_hash}" == "${target_hash}" && "${whole_time}" == "${target_time}" ]] \\
+    && record "original and cold continuation have identical state and moment" 0 "${whole_hash}@${whole_time}" \\
+    || record "original and cold continuation have identical state and moment" 1 "original ${target_hash}@${target_time}; cold ${whole_hash}@${whole_time}"''')
+
+if "--check-execution-identity" in sys.argv[2:]:
+    replace('workloads/faults/src/consonance.rs',
+        '''            live.session
+                .state_hash()
+                .map_err(|error| format!("state hash: {error}"))''',
+        '''            let hash = live.session.state_hash()
+                .map_err(|error| format!("state hash: {error}"))?;
+            let events = live.session.sdk_events()
+                .map_err(|error| format!("diagnostic events: {error}"))?;
+            let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+            std::fs::write(format!("reports/original-sdk-events-{hex}-{}.json", std::process::id()),
+                serde_json::to_vec(&events).map_err(|error| error.to_string())?)
+                .map_err(|error| error.to_string())?;
+            Ok(hash)''')
+    replace('workloads/faults/src/investigate/live.rs',
+        '''        Ok(hash.iter().map(|byte| format!("{byte:02x}")).collect())''',
+        '''        let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+        let events = self.session.sdk_events()
+            .map_err(|error| format!("diagnostic events: {error}"))?;
+        std::fs::write(format!("reports/continuation-sdk-events-{hex}-{}.json", std::process::id()),
+            serde_json::to_vec(&events).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+        Ok(hex)''')

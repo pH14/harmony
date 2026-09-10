@@ -11,6 +11,10 @@ on:
         description: Test zero-instruction completion retirement after serviced exits
         type: boolean
         default: false
+      backend_boundaries:
+        description: Test backend-owned completion with raw report hashes and execution identity checks
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -54,13 +58,23 @@ jobs:
       - name: Record provenance and instrument reference
         env:
           RETIRE_COMPLETIONS: ${{ inputs.retire_completions }}
+          BACKEND_BOUNDARIES: ${{ inputs.backend_boundaries }}
         run: |
           mkdir -p reference/reports
           git -C reference rev-parse HEAD > reference/reports/reference-head.txt
           sha256sum reference/guest/* reference/oci-images/* reference/tools/* > reference/reports/input-sha256.txt
           flags=()
           if [[ "$RETIRE_COMPLETIONS" == true ]]; then flags+=(--retire-completions); fi
+          if [[ "$BACKEND_BOUNDARIES" == true ]]; then
+            test "$RETIRE_COMPLETIONS" == false
+            git -C reference apply ../diagnostics/.github/scripts/kvm-completion-boundaries.patch
+            git -C reference apply ../diagnostics/.github/scripts/report-digest.patch
+            flags+=(--check-execution-identity)
+          fi
           python3 diagnostics/.github/scripts/snapshot-diagnostics.py reference "${flags[@]}"
+          if [[ "$BACKEND_BOUNDARIES" == true ]]; then
+            python3 diagnostics/.github/scripts/snapshot-inspection-tests.py reference/.github/scripts/historical-investigate.sh
+          fi
           git -C reference diff > reference/reports/instrumentation.patch
       - uses: Swatinem/rust-cache@v2
         with:
@@ -73,7 +87,7 @@ jobs:
           cp target/release/harmony tools/harmony
           chmod +x tools/*
           sha256sum tools/* > reports/instrumented-tools-sha256.txt
-      - name: Run unchanged investigation acceptance on KVM
+      - name: Run investigation acceptance on KVM
         working-directory: reference
         env:
           CASE_ID: postgres-cic-corruption
@@ -83,11 +97,15 @@ jobs:
           ORACLE_ASSERTION: 2
           KNOBS: faultlab.churn_rows=20 faultlab.churn_slices=2 faultlab.churn_rounds=1200
         run: |
+          trap 'cp "$GITHUB_STEP_SUMMARY" reports/step-summary.md' EXIT
           test -c /dev/kvm
           sudo chmod 666 /dev/kvm
           uname -a > reports/host.txt
           lscpu >> reports/host.txt
           .github/scripts/historical-investigate.sh bugs/historical/postgres-cic-corruption/witness.json 2>&1 | tee reports/investigation.log
+      - name: Compare original, cold and split guest events
+        if: ${{ inputs.backend_boundaries }}
+        run: python3 diagnostics/.github/scripts/snapshot-events-check.py reference/reports postgres-cic-corruption | tee reference/reports/events-check.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -107,12 +125,19 @@ jobs:
         run: |
           mkdir -p reports
           git rev-parse HEAD > reports/head.txt
-          cp .github/scripts/snapshot-completion-test.rs consonance/vmm-backend/tests/kvm_smoke.rs
+          filter=completion_retirement
+          if [[ '${{ inputs.backend_boundaries }}' == true ]]; then
+            git apply .github/scripts/kvm-completion-boundaries.patch
+            cp .github/scripts/snapshot-completion-boundary-test.rs consonance/vmm-backend/tests/kvm_smoke.rs
+            filter=serviced_pio_is_exactly_snapshottable_without_guest_execution
+          else
+            cp .github/scripts/snapshot-completion-test.rs consonance/vmm-backend/tests/kvm_smoke.rs
+          fi
           git diff > reports/test.patch
           test -c /dev/kvm
           sudo chmod 666 /dev/kvm
           uname -a > reports/host.txt
-          cargo test --locked -p vmm-backend --test kvm_smoke completion_retirement -- --ignored --test-threads=1 2>&1 | tee reports/completion.log
+          cargo test --locked -p vmm-backend --test kvm_smoke "$filter" -- --ignored --test-threads=1 2>&1 | tee reports/completion.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
