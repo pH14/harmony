@@ -125,7 +125,8 @@ PANELS = {
     ),
     "integration": Panel(
         name="integration",
-        needs_kvm=True,
+        # Preparation stops at an image and a bundle, so nothing here boots.
+        needs_kvm=False,
         tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
         bash_allow=["harmony", *READING, *BUILDING],
         prompt=INTEGRATION_PROMPT,

@@ -46,6 +46,7 @@ class Attempt:
     adapter_version: str = ""
     seconds: float = 0.0
     tool_calls: int = 0
+    denials: list[str] = field(default_factory=list)
     infrastructure_error: str = ""
 
 
@@ -131,6 +132,7 @@ class ClaudeCodeAdapter:
         usage: dict = {}
         text = ""
         tool_calls = 0
+        denials: list[str] = []
         stopped_by = "completed"
         assert process.stdout is not None
         for line in process.stdout:
@@ -147,6 +149,7 @@ class ClaudeCodeAdapter:
             if event.get("type") == "result":
                 usage = event.get("usage", {})
                 text = event.get("result", "") or ""
+                denials = _denied(event)
             spent = time.monotonic() - started
             if spent > budget.wall_seconds:
                 stopped_by = "wall_seconds"
@@ -169,7 +172,8 @@ class ClaudeCodeAdapter:
             exit_status=status, stopped_by=stopped_by, transcript=transcript,
             text=text, usage=usage, model=self.model,
             adapter_version=self.version(), seconds=seconds,
-            tool_calls=tool_calls, infrastructure_error=infrastructure,
+            tool_calls=tool_calls, denials=denials,
+            infrastructure_error=infrastructure,
         )
 
 
@@ -182,6 +186,15 @@ def _tool_uses(event: dict) -> int:
         return 0
     return sum(1 for item in content
                if isinstance(item, dict) and item.get("type") == "tool_use")
+
+
+def _denied(event: dict) -> list[str]:
+    """The commands the attempt's own permission rules refused."""
+    refused = []
+    for item in event.get("permission_denials") or []:
+        command = (item.get("tool_input") or {}).get("command")
+        refused.append(command or item.get("tool_name", "unknown"))
+    return refused
 
 
 def _tokens(usage: dict) -> int:

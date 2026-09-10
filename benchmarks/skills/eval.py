@@ -123,7 +123,12 @@ def prepare(attempt_dir: Path, panel: panels.Panel, arm: str, harmony: Path,
         shutil.copytree(REPOSITORY / "skills", destination)
         supplied.append(".claude/skills/")
 
-    allow = [f"Bash({name}:*)" for name in panel.bash_allow]
+    # The staged binary sits on PATH and in the attempt directory, and an
+    # attempt may reach it either way, so both spellings are allowed.
+    spellings = list(panel.bash_allow)
+    if "harmony" in spellings:
+        spellings += ["./bin/harmony", "bin/harmony"]
+    allow = [f"Bash({name}:*)" for name in spellings]
     settings = {"permissions": {"allow": allow, "deny": [], "defaultMode": "default"}}
     (attempt_dir / ".claude" / "settings.json").parent.mkdir(exist_ok=True)
     (attempt_dir / ".claude" / "settings.json").write_text(json.dumps(settings, indent=1))
@@ -195,7 +200,12 @@ def one_attempt(out: Path, panel: panels.Panel, arm: str, index: int,
     else:
         checks = grader(Path(frozen["path"]), result.transcript, baseline, harmony)
         artifact = [check for check in checks if check.kind == "artifact"]
-        verdict = "pass" if all(check.passed for check in artifact) else "fail"
+        if result.denials and not any(check.passed for check in artifact):
+            # The runner's own allowlist stopped the attempt before it could
+            # produce anything, which says nothing about the agent.
+            verdict = "infrastructure"
+        else:
+            verdict = "pass" if all(check.passed for check in artifact) else "fail"
 
     record = {
         "format": FORMAT,
@@ -209,6 +219,7 @@ def one_attempt(out: Path, panel: panels.Panel, arm: str, index: int,
         "infrastructure_error": result.infrastructure_error,
         "seconds": round(result.seconds, 1),
         "tool_calls": result.tool_calls,
+        "denials": result.denials,
         "usage": result.usage,
         "adapter": adapter.name,
         "model": result.model,
@@ -445,6 +456,8 @@ def _write_report(out: Path, records: list[dict]) -> None:
              ("attempt", "arm", "verdict", "stopped_by", "seconds", "tool_calls")}
             for record in records
         ],
+        "refused": sorted({command for record in records
+                           for command in record.get("denials") or []}),
     }
     (out / "report.json").write_text(json.dumps(summary, indent=1))
     (out / "report.md").write_text(_markdown(summary))
@@ -484,6 +497,11 @@ def _markdown(summary: dict) -> str:
     for name in names:
         row = [summary["arms"][arm]["checks"].get(name, "-") for arm in summary["arms"]]
         lines.append(f"| {name} | " + " | ".join(row) + " |")
+    if summary.get("refused"):
+        lines += ["", "## Commands the allowlist refused", "",
+                  "An attempt that produced nothing after a refusal is recorded "
+                  "as an infrastructure result.", ""]
+        lines += [f"* `{command}`" for command in summary["refused"][:20]]
     lines += ["", "## Attempts", "",
               "| Attempt | Arm | Verdict | Stopped by | Seconds | Tool calls |",
               "| --- | --- | --- | --- | --- | --- |"]

@@ -34,11 +34,16 @@ matched budgets, and every attempt keeps its own record.
 
 Three panels ship:
 
-| Panel | Starts from | Needs |
-| --- | --- | --- |
-| `investigation` | A workspace holding a recorded finding | Nothing beyond the CLI |
-| `integration` | The pinned PostgreSQL release and a contract for `CREATE INDEX CONCURRENTLY` | Docker and KVM |
-| `end-to-end` | The same, plus the workspace commands | Docker and KVM |
+| Panel | Starts from | Needs | Wall | Tokens | Tool calls |
+| --- | --- | --- | --- | --- | --- |
+| `investigation` | A workspace holding a recorded finding | Nothing beyond the CLI | 30 min | 2M | 400 |
+| `integration` | The pinned PostgreSQL release and a contract for `CREATE INDEX CONCURRENTLY` | Docker | 90 min | 16M | 800 |
+| `end-to-end` | The same, plus the workspace commands | Docker and KVM | 150 min | 24M | 1200 |
+
+Both arms of a panel run under that panel's ceilings; `--wall-seconds`,
+`--total-tokens`, and `--tool-calls` override them for every arm at once. The
+token count includes cache reads, so it tracks how many turns an attempt took
+rather than how hard the panel is.
 
 The preparation panels stage the release from
 `bugs/historical/postgres-cic-corruption/case.json`'s pin and verify its
