@@ -215,7 +215,7 @@ pub fn sample_action(
         Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault vocabulary alternative")?))
     };
     let node = u16::try_from(pick(rand, usize::from(vocabulary.nodes()))?)?;
-    match pick(rand, 8)? {
+    match pick(rand, 9)? {
         0 => Ok(FaultAction::Wait),
         1 => Ok(FaultAction::Kill(node)),
         2 => Ok(FaultAction::KillAt {
@@ -240,9 +240,18 @@ pub fn sample_action(
             hooks => Ok(FaultAction::Hook(hooks[pick(rand, hooks.len())?])),
         },
         6 => Ok(FaultAction::Interrupt(VECTORS[pick(rand, VECTORS.len())?])),
-        _ => match vocabulary.places() {
+        7 => match vocabulary.places() {
             [] => Ok(FaultAction::Wait),
             places => Ok(FaultAction::Park {
+                node,
+                addr: places[pick(rand, places.len())?],
+                hits: PARK_HITS[pick(rand, PARK_HITS.len())?],
+                hold_us: PARK_HOLD_US[pick(rand, PARK_HOLD_US.len())?],
+            }),
+        },
+        _ => match vocabulary.places() {
+            [] => Ok(FaultAction::Wait),
+            places => Ok(FaultAction::ParkKill {
                 node,
                 addr: places[pick(rand, places.len())?],
                 hits: PARK_HITS[pick(rand, PARK_HITS.len())?],
@@ -463,6 +472,7 @@ mod tests {
             FaultAction::Hook(_) => 5,
             FaultAction::Interrupt(_) => 6,
             FaultAction::Park { .. } => 7,
+            FaultAction::ParkKill { .. } => 8,
         };
         for _ in 0..2_000 {
             let action =
@@ -494,9 +504,20 @@ mod tests {
                     assert!(PARK_HITS.contains(&hits));
                     assert!(PARK_HOLD_US.contains(&hold_us));
                 }
+                FaultAction::ParkKill {
+                    node,
+                    addr,
+                    hits,
+                    hold_us,
+                } => {
+                    assert!(node < vocabulary.nodes());
+                    assert!(vocabulary.places().contains(&addr));
+                    assert!(PARK_HITS.contains(&hits));
+                    assert!(PARK_HOLD_US.contains(&hold_us));
+                }
             }
         }
-        assert_eq!(kinds.len(), 8, "every action kind is reachable");
+        assert_eq!(kinds.len(), 9, "every action kind is reachable");
     }
 
     #[test]
@@ -505,7 +526,10 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(5);
         for _ in 0..2_000 {
             let action = sample_action(&mut rand, &placeless, 500_000_000).expect("draw");
-            assert!(!matches!(action, FaultAction::Park { .. }));
+            assert!(!matches!(
+                action,
+                FaultAction::Park { .. } | FaultAction::ParkKill { .. }
+            ));
         }
     }
 

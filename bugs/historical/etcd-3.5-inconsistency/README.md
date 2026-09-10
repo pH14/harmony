@@ -37,8 +37,9 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
 - **Fault surface**: a hard process kill followed by the normal supervisor restart, while the
   clients are applying entries. This targets the small interval between consistent-index
   persistence and the corresponding entry apply. `KillAt` makes the crash Moment a generic
-  searchable coordinate inside an action; it does not introduce a case-specific delay or probe
-  sequence.
+  searchable coordinate inside an action; automatically resolved syscall places provide
+  breakpoint boundaries, and `ParkKill` crashes exactly when one is hit. Neither introduces a
+  case-specific delay, address, or probe sequence.
 - **Oracle**: the hook journals each acknowledged put outside etcd, then after a deterministic
   restart reads every journaled key from the recovered member. An acknowledged-but-missing or
   changed value is the case's only failing assertion. A down member, empty journal, or failed

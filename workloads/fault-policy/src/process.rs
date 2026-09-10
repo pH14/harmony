@@ -48,6 +48,11 @@ mod tests {
                 hits: 28,
                 hold: Span(2_000_000),
             },
+            Fault::ProcParkKill {
+                addr: 0x4b_0e86,
+                hits: 28,
+                hold: Span(2_000_000),
+            },
         ] {
             let bytes = process_target(3, &f);
             assert_eq!(decode_process_target(&bytes), Some((3, f)));

@@ -375,6 +375,17 @@ pub enum Fault {
         /// How long the thread is held.
         hold: Span,
     },
+    /// Kill the node when the breakpoint reaches its `hits`-th execution.
+    /// The kernel still supplies a short hold so the supervisor can observe
+    /// the breakpoint before delivering the process-group kill. Byte tag `20`.
+    ProcParkKill {
+        /// User virtual address of the instruction in the node's process.
+        addr: u64,
+        /// The hit that crashes, counted from 1 over every thread of the node.
+        hits: u32,
+        /// Temporary hold while the supervisor observes the breakpoint.
+        hold: Span,
+    },
 }
 
 impl Fault {
@@ -393,7 +404,8 @@ impl Fault {
             | Self::ProcKill
             | Self::ProcRestart
             | Self::RunHook(_)
-            | Self::ProcPark { .. } => DecisionClass::Process,
+            | Self::ProcPark { .. }
+            | Self::ProcParkKill { .. } => DecisionClass::Process,
             Self::BuggifyFire => DecisionClass::Buggify,
         }
     }

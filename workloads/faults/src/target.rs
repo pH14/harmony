@@ -102,6 +102,19 @@ pub enum FaultAction {
         /// Length of the hold in microseconds.
         hold_us: u32,
     },
+    /// Kill the node when its thread reaches an automatically resolved
+    /// execution place for the selected hit. The kernel breakpoint supplies a
+    /// short hold so the agent can observe the hit before delivering SIGKILL.
+    ParkKill {
+        /// The node.
+        node: u16,
+        /// User virtual address of the instruction in the node's process.
+        addr: u64,
+        /// The hit that crashes, counted from 1.
+        hits: u32,
+        /// Temporary hold in microseconds while the agent observes the hit.
+        hold_us: u32,
+    },
 }
 
 /// Portable campaign snapshot: the action prefix that reaches an endpoint plus
@@ -235,6 +248,25 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                 process_target(
                     node,
                     &Fault::ProcPark {
+                        addr,
+                        hits,
+                        hold: Span(u64::from(hold_us).saturating_mul(1_000)),
+                    },
+                ),
+                (start, end),
+            )),
+            perturb: None,
+        },
+        FaultAction::ParkKill {
+            node,
+            addr,
+            hits,
+            hold_us,
+        } => ActionDelta {
+            standing: Some(standing(
+                process_target(
+                    node,
+                    &Fault::ProcParkKill {
                         addr,
                         hits,
                         hold: Span(u64::from(hold_us).saturating_mul(1_000)),
@@ -639,6 +671,32 @@ mod tests {
             Some((
                 1,
                 Fault::ProcPark {
+                    addr: 0x4b_0e86,
+                    hits: 28,
+                    hold: Span(2_000_000),
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn park_kill_carries_its_place_hit_and_hold() {
+        let fault = action_delta(
+            FaultAction::ParkKill {
+                node: 1,
+                addr: 0x4b_0e86,
+                hits: 28,
+                hold_us: 2_000,
+            },
+            WINDOWS.window(0),
+        )
+        .standing
+        .expect("park kill installs a standing fault");
+        assert_eq!(
+            decode_process_target(&fault.target),
+            Some((
+                1,
+                Fault::ProcParkKill {
                     addr: 0x4b_0e86,
                     hits: 28,
                     hold: Span(2_000_000),

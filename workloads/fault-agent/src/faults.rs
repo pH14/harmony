@@ -36,6 +36,9 @@ pub struct NodeFaults {
     /// `Fault::ProcPark` — a breakpoint is armed on the node for the window's
     /// duration, and the thread that takes its k-th hit is held there.
     pub park: Option<Park>,
+    /// `Fault::ProcParkKill` — a breakpoint is armed and the node is killed
+    /// when its k-th hit is observed by the supervisor.
+    pub park_kill: Option<Park>,
 }
 
 impl NodeFaults {
@@ -83,7 +86,12 @@ impl ActiveFaults {
                 }
                 return;
             }
-            Fault::ProcKill | Fault::ProcPause(_) | Fault::ProcRestart | Fault::ProcPark { .. } => {
+            Fault::ProcKill
+            | Fault::ProcPause(_)
+            | Fault::ProcRestart
+            | Fault::ProcPark { .. }
+            | Fault::ProcParkKill { .. } =>
+            {
             }
             // Every other fault belongs to a class the guest does not apply;
             // the host enforces those itself.
@@ -103,6 +111,13 @@ impl ActiveFaults {
             Fault::ProcRestart => flags.restart = true,
             Fault::ProcPark { addr, hits, hold } => {
                 flags.park = Some(Park {
+                    addr: *addr,
+                    hits: *hits,
+                    hold_nanos: hold.0,
+                });
+            }
+            Fault::ProcParkKill { addr, hits, hold } => {
+                flags.park_kill = Some(Park {
                     addr: *addr,
                     hits: *hits,
                     hold_nanos: hold.0,
@@ -194,6 +209,7 @@ mod tests {
                 restart: true,
                 kill: false,
                 park: None,
+                park_kill: None,
             }
         );
         assert_eq!(active.node(2), NodeFaults::default());
@@ -243,6 +259,27 @@ mod tests {
         );
         // A park names the node without marking it faulted: the node keeps
         // running, so a death under it is still unexpected.
+        assert!(!active.node(1).any());
+    }
+
+    #[test]
+    fn a_park_kill_decodes_into_its_parameters() {
+        let process = DecisionClass::Process.as_u16();
+        let park = Fault::ProcParkKill {
+            addr: 0x4b0e86,
+            hits: 28,
+            hold: Span(2_000_000),
+        };
+        let entries = [(process, target(1, &park))];
+        let active = ActiveFaults::from_entries(entries.iter().map(|(c, t)| (*c, t.as_slice(), 0)));
+        assert_eq!(
+            active.node(1).park_kill,
+            Some(Park {
+                addr: 0x4b0e86,
+                hits: 28,
+                hold_nanos: 2_000_000,
+            })
+        );
         assert!(!active.node(1).any());
     }
 

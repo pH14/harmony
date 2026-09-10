@@ -45,14 +45,15 @@ time ([`target`](src/target.rs)):
 | `Restart(node)` | the node is killed and comes back inside the horizon |
 | `Hook(id)` | the agent runs that hook once |
 | `Park(node, addr, hits, hold)` | guest threads are held at an execution place |
+| `ParkKill(node, addr, hits, hold)` | the node is killed when a thread reaches the execution place |
 | `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's seal when settling carried it past that start |
 
 `KillAt` is the generic crash-coordinate primitive. Its coordinate is part of
 the action and is sampled over the complete deterministic window, so the same
 fault policy can search a narrow crash interval without adding workload timing
 knobs. Automatically resolved Park places add deterministic event boundaries
-for stripped binaries; a future breakpoint or storage boundary can use the
-same action and replay format.
+for stripped binaries, and `ParkKill` turns one into a generic breakpoint
+crash coordinate without a workload-specific address or timing.
 
 Every action but `Interrupt` becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the agent's

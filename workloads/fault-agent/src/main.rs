@@ -165,6 +165,8 @@ mod real {
         /// The park armed on the node's process group, while its window is
         /// open.
         park: Option<park::Handle>,
+        /// Whether a hit on the armed park should kill the node.
+        park_kill: bool,
     }
 
     /// A launched hook and the output file it writes directives to.
@@ -195,6 +197,7 @@ mod real {
                 spec: spec.clone(),
                 child: None,
                 park: None,
+                park_kill: false,
             })
             .collect();
         for (id, node) in nodes.iter_mut().enumerate() {
@@ -296,7 +299,18 @@ mod real {
                     tick,
                 )?;
             }
-            watch_parks(nodes, &mut supervisor, tick);
+            for node in watch_parks(nodes, &mut supervisor, tick) {
+                supervisor.note_killed(node);
+                apply(
+                    Action::Kill(node),
+                    bundle,
+                    nodes,
+                    &mut hooks,
+                    &mut launches,
+                    &args.hook_dir,
+                    tick,
+                )?;
+            }
             drain_hooks(&mut hooks, &mut supervisor, sdk, tick)?;
             for (reg, value) in registers.updates(supervisor.snapshot()) {
                 sdk.state_set(reg, value)
@@ -367,6 +381,7 @@ mod real {
                 // breakpoints harmlessly until the handle drops.
                 if let Some(entry) = nodes.get_mut(usize::from(node)) {
                     entry.park = None;
+                    entry.park_kill = false;
                 }
                 signal_node(nodes, node, libc::SIGKILL);
             }
@@ -380,6 +395,7 @@ mod real {
                 // live service must treat readiness as part of their oracle.
                 if let Some(entry) = nodes.get_mut(usize::from(node)) {
                     entry.park = None;
+                    entry.park_kill = false;
                     entry.child = Some(spawn_node(&entry.spec)?);
                 }
             }
@@ -402,11 +418,42 @@ mod real {
                             &format!("park node {node} armed on {} thread(s)", handle.tasks()),
                         );
                         entry.park = Some(handle);
+                        entry.park_kill = false;
                     }
                     Err(error) => log(tick, &format!("park node {node}: {error}")),
                 }
             }
+            Action::ParkKill(node, park) => {
+                let Some(entry) = nodes.get_mut(usize::from(node)) else {
+                    return Ok(());
+                };
+                let Some(pid) = entry
+                    .child
+                    .as_ref()
+                    .and_then(|child| libc::pid_t::try_from(child.id()).ok())
+                else {
+                    log(tick, &format!("crash node {node}: node is not running"));
+                    return Ok(());
+                };
+                match park::arm(pid, &park) {
+                    Ok(handle) => {
+                        log(
+                            tick,
+                            &format!(
+                                "crash node {node} armed on {} thread(s)",
+                                handle.tasks()
+                            ),
+                        );
+                        entry.park = Some(handle);
+                        entry.park_kill = true;
+                    }
+                    Err(error) => log(tick, &format!("crash node {node}: {error}")),
+                }
+            }
             Action::Unpark(node) => {
+                if let Some(entry) = nodes.get_mut(usize::from(node)) {
+                    entry.park_kill = false;
+                }
                 if let Some(handle) = nodes
                     .get_mut(usize::from(node))
                     .and_then(|entry| entry.park.take())
@@ -436,7 +483,8 @@ mod real {
     }
 
     /// Log each park's hit and release once, and count the hits.
-    fn watch_parks(nodes: &mut [Node], supervisor: &mut Supervisor, tick: u64) {
+    fn watch_parks(nodes: &mut [Node], supervisor: &mut Supervisor, tick: u64) -> Vec<u16> {
+        let mut kills = Vec::new();
         for (id, node) in nodes.iter_mut().enumerate() {
             let Some(handle) = node.park.as_mut() else {
                 continue;
@@ -458,6 +506,9 @@ mod real {
                         status.hits, status.pc, status.pid
                     ),
                 );
+                if node.park_kill {
+                    kills.push(id as u16);
+                }
             }
             if status.state == park::RELEASED && !handle.release_logged {
                 handle.release_logged = true;
@@ -470,6 +521,7 @@ mod real {
                 );
             }
         }
+        kills
     }
 
     /// Send `signal` to a node's whole process group, so a node that forks
