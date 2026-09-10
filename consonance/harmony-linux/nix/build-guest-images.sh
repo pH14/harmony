@@ -63,17 +63,19 @@ case "$host_arch" in
             echo "FAIL: --serialization-gate is x86_64-only" >&2
             exit 1
         }
-        [ -n "$rom" ] || usage
         [ "$(id -u)" -eq 0 ] || {
             echo "FAIL: the PostgreSQL snapshot build requires root" >&2
             exit 1
         }
-        [ -f "$rom" ] || { echo "FAIL: ROM does not exist: $rom" >&2; exit 1; }
-        rom_sha=$(sha256sum "$rom" | awk '{print $1}')
-        [ "$rom_sha" = "$HARMONY_NIX_SMB_SHA256" ] || {
-            echo "FAIL: ROM sha256 mismatch (want $HARMONY_NIX_SMB_SHA256, got $rom_sha)" >&2
-            exit 1
-        }
+        if [ "$minimal_only" -eq 0 ]; then
+            [ -n "$rom" ] || usage
+            [ -f "$rom" ] || { echo "FAIL: ROM does not exist: $rom" >&2; exit 1; }
+            rom_sha=$(sha256sum "$rom" | awk '{print $1}')
+            [ "$rom_sha" = "$HARMONY_NIX_SMB_SHA256" ] || {
+                echo "FAIL: ROM sha256 mismatch (want $HARMONY_NIX_SMB_SHA256, got $rom_sha)" >&2
+                exit 1
+            }
+        fi
         ;;
     x86_64)
         [ "$minimal_only" -eq 0 ] || {
@@ -197,23 +199,26 @@ fi
 
 stage=$work/stage
 if [ "$host_arch" = aarch64 ]; then
-    echo "== N5: build owned musl and the Cargo-lock-derived NES agent offline"
+    echo "== N5: build owned musl"
     (
         cd "$linux_dir"
         # shellcheck source=../linux/lib-build.sh disable=SC1091
         . ./lib-build.sh
         build_arm64_game_musl
     )
-    if ! agent_output=$(HARMONY_MUSL_PREFIX="$build_root/musl-arm64-game-prefix" \
-        bash "$repo/workloads/tetanes-guest/build.sh"); then
-        printf '%s\n' "$agent_output" >&2
-        echo "FAIL: offline NES agent build or image audit failed" >&2
-        exit 1
+    if [ "$minimal_only" -eq 0 ]; then
+        echo "== N5: build the Cargo-lock-derived NES agent offline"
+        if ! agent_output=$(HARMONY_MUSL_PREFIX="$build_root/musl-arm64-game-prefix" \
+            bash "$repo/workloads/tetanes-guest/build.sh"); then
+            printf '%s\n' "$agent_output" >&2
+            echo "FAIL: offline NES agent build or image audit failed" >&2
+            exit 1
+        fi
+        printf '%s\n' "$agent_output"
+        agent=$(printf '%s\n' "$agent_output" | tail -1)
+        [ -x "$agent" ] || { echo "FAIL: offline NES agent missing: $agent" >&2; exit 1; }
+        export HARMONY_TETANES_AGENT=$agent
     fi
-    printf '%s\n' "$agent_output"
-    agent=$(printf '%s\n' "$agent_output" | tail -1)
-    [ -x "$agent" ] || { echo "FAIL: offline NES agent missing: $agent" >&2; exit 1; }
-    export HARMONY_TETANES_AGENT=$agent
 
     echo "== N5: build minimal ARM kernel and initramfs"
     (cd "$linux_dir" && ./build-arm64-kernel.sh && ./build-arm64-initramfs.sh)

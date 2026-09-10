@@ -91,7 +91,7 @@ The portable library — bundle parsing, fault decoding, reconciliation, directi
 parsing, register bookkeeping — builds and tests on any host. The binary adds
 the Linux glue: the `/dev/harmony` ioctl transport, the `/dev/harmony-park`
 ioctls, process spawning into per-node process groups, and process-group
-signalling. Off x86-64 Linux only `--check-bundle` runs.
+signalling. On non-Linux hosts only `--check-bundle` runs.
 
 The standing poll rides the generic SDK opaque service request under
 `fault_policy::STANDING_NAMESPACE`, with the poll tick as the request id and an
@@ -105,7 +105,8 @@ canonical order, so two same-seed runs issue the same signals in the same order.
 ## Guest build
 
 `build.sh` produces the fully static musl binary the guest image carries. It
-must run on x86-64 Linux and prints the binary path on its last line.
+must run on native Linux and selects the matching x86-64 or arm64 musl target
+from the host architecture. It prints the binary path on its last line.
 
 ```sh
 ./workloads/fault-agent/build.sh

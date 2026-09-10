@@ -2,17 +2,32 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Build the fault agent for the faultlab guest image: a fully static musl
 # binary, because Harmony denies ring-3 RDTSC and glibc's dynamic loader
-# executes one before `main`. Run on x86-64 Linux; emit the binary path on
-# stdout's last line.
+# executes one before `main`. Run on native Linux (x86-64 or arm64); emit the
+# binary path on stdout's last line.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-target=x86_64-unknown-linux-musl
-
-if [ "$(uname -sm)" != "Linux x86_64" ]; then
-    echo "fault-agent: guest build needs x86-64 Linux (the box); use 'cargo test' for the portable gates" >&2
+os=$(uname -s)
+arch=$(uname -m)
+if [ "$os" != Linux ]; then
+    echo "fault-agent: guest build needs native Linux (x86_64 or aarch64); use 'cargo test' for the portable gates" >&2
     exit 1
 fi
+
+case "$arch" in
+    x86_64)
+        target=x86_64-unknown-linux-musl
+        rustflags_var=CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS
+        ;;
+    aarch64|arm64)
+        target=aarch64-unknown-linux-musl
+        rustflags_var=CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS
+        ;;
+    *)
+        echo "fault-agent: unsupported Linux architecture '$arch'; expected x86_64 or aarch64" >&2
+        exit 1
+        ;;
+esac
 
 rustup target list --installed | grep -qx "$target" || {
     echo "FAIL: install the guest target with: rustup target add $target" >&2
@@ -23,7 +38,7 @@ flags="-C target-feature=+crt-static"
 if [ -n "${HARMONY_BUILD_PATH_PREFIX:-}" ]; then
     flags="$flags --remap-path-prefix=$HARMONY_BUILD_PATH_PREFIX=/build"
 fi
-CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="$flags" \
+env "$rustflags_var=$flags" \
     cargo build --locked --release --target "$target" --bin fault-agent >&2
 agent=$PWD/target/$target/release/fault-agent
 

@@ -4,6 +4,7 @@ ARG GO_IMAGE=golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90
 
 FROM ${GO_IMAGE} AS instrumented-build
 
+ARG TARGETARCH
 ARG ETCD_VERSION=3.5.2
 ARG ETCD_SOURCE_SHA256=ecb4d2bc76e48ae504d9a00b50bcc906503c4d0324acf9dee79d97d16f7282ad
 ARG ANTITHESIS_SDK_VERSION=0.8.0
@@ -12,8 +13,13 @@ ARG ETCD_SOURCE_BASE=https://github.com/etcd-io/etcd/archive/refs/tags
 SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates curl gcc libc6-dev make \
+    && apt-get install --yes --no-install-recommends ca-certificates curl gcc libc6-dev make patch \
     && rm -rf /var/lib/apt/lists/*
+
+RUN case "${TARGETARCH}" in \
+        amd64|arm64) ;; \
+        *) echo "unsupported target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac
 
 WORKDIR /build
 RUN curl --fail --silent --show-error --location --retry 3 \
@@ -33,17 +39,30 @@ RUN curl --fail --silent --show-error --location --retry 3 \
 # go command.
 RUN go install "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-toolexec@v${ANTITHESIS_SDK_VERSION}"
 
+COPY bugs/historical/etcd-3.5-inconsistency/image/patches/antithesis-sdk-go-v0.8.0-linux-arm64.patch \
+     /build/antithesis-sdk-go-v0.8.0-linux-arm64.patch
+
+RUN sdk_cache_dir="$(go env GOMODCACHE)/github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
+    && test -d "${sdk_cache_dir}" \
+    && mkdir -p /build/antithesis-sdk-go \
+    && cp -a "${sdk_cache_dir}/." /build/antithesis-sdk-go/ \
+    && chmod -R u+w /build/antithesis-sdk-go \
+    && patch --batch --forward --fuzz=0 -d /build/antithesis-sdk-go -p1 \
+       < /build/antithesis-sdk-go-v0.8.0-linux-arm64.patch \
+    && grep -F -q 'linux && (amd64 || arm64) && cgo' \
+       /build/antithesis-sdk-go/internal/voidstar_handler.go
+
 RUN mkdir -p /out/etcd /out/symbols \
-    && sdk_dir="$(go env GOMODCACHE)/github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
+    && sdk_dir=/build/antithesis-sdk-go \
     && test -d "${sdk_dir}" \
     && (cd /build/etcd/server \
-        && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOFLAGS=-trimpath \
+        && CGO_ENABLED=1 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
            ANTITHESIS_SDK_MODULE_DIR="${sdk_dir}" \
            ANTITHESIS_SYMBOLS_DIR=/out/symbols \
            ANTITHESIS_SYMBOL_PREFIX=etcd-server \
            go build -toolexec=antithesis-go-toolexec -buildvcs=false -o /out/etcd/etcd .) \
     && (cd /build/etcd/etcdctl \
-        && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOFLAGS=-trimpath \
+        && CGO_ENABLED=1 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
            ANTITHESIS_SDK_MODULE_DIR="${sdk_dir}" \
            ANTITHESIS_SYMBOLS_DIR=/out/symbols \
            ANTITHESIS_SYMBOL_PREFIX=etcdctl \

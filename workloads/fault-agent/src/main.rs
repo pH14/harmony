@@ -12,9 +12,8 @@
 //! Everything that decides lives in the library (`harmony_fault_agent`); this
 //! binary is the Linux glue — the `/dev/harmony` ioctl transport, the
 //! `/dev/harmony-park` ioctls, process spawning, process-group signalling, and
-//! the hook output files. Off x86-64
-//! Linux only `--check-bundle` runs, which is how an image build validates a
-//! bundle on the dev host.
+//! the hook output files. On non-Linux hosts only `--check-bundle` runs, which
+//! is how an image build validates a bundle on the dev host.
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -81,7 +80,7 @@ fn check_bundle(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(target_os = "linux")]
 mod real {
     use super::Args;
     use fault_policy::STANDING_NAMESPACE;
@@ -1146,16 +1145,16 @@ mod real {
     }
 }
 
-/// Off the box target the supervision path has no transport and no processes to
+/// Off Linux the supervision path has no transport and no processes to
 /// supervise; `--check-bundle` is the mode that runs on the dev host.
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(target_os = "linux"))]
 mod real {
     use super::Args;
 
     pub fn run(_args: &Args) -> Result<(), String> {
         Err(
             "the /dev/harmony transport and process supervision are only available on \
-             x86-64 Linux (the guest); use --check-bundle on the dev host"
+             Linux (the guest); use --check-bundle on the dev host"
                 .to_string(),
         )
     }

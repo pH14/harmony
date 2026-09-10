@@ -15,6 +15,13 @@ The SDK has two relevant pieces:
   implementation of the public runtime ABI. Each `notify_coverage` call is an instrumented
   application event.
 
+The historical etcd image pins SDK Go `v0.8.0` and applies the MIT-licensed
+`bugs/historical/etcd-3.5-inconsistency/image/patches/antithesis-sdk-go-v0.8.0-linux-arm64.patch`
+before the nested SDK build. The patch broadens the upstream cgo handler's Linux
+build constraints from amd64 to amd64 or arm64; it does not alter the handler's
+ABI or event behavior. The Docker `TARGETARCH` selects the matching native Go
+and `libvoidstar.so` build for `linux/amd64` or `linux/arm64`.
+
 The generic process fault `ProcEventKill { ordinal }` sends a positive ordinal to an inherited Unix
 socket. `libvoidstar.so` consumes the arm in a runtime thread and kills its own process group
 synchronously after that many future callbacks. Zero disarms it. The ordinal is serialized in the
