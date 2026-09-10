@@ -7,6 +7,10 @@ on:
         description: Run the pinned historical investigation
         type: boolean
         default: true
+      retire_completions:
+        description: Test zero-instruction completion retirement after serviced exits
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -48,11 +52,15 @@ jobs:
           name: harmony-tools-34441848506
           path: reference/tools
       - name: Record provenance and instrument reference
+        env:
+          RETIRE_COMPLETIONS: ${{ inputs.retire_completions }}
         run: |
           mkdir -p reference/reports
           git -C reference rev-parse HEAD > reference/reports/reference-head.txt
           sha256sum reference/guest/* reference/oci-images/* reference/tools/* > reference/reports/input-sha256.txt
-          python3 diagnostics/.github/scripts/snapshot-diagnostics.py reference
+          flags=()
+          if [[ "$RETIRE_COMPLETIONS" == true ]]; then flags+=(--retire-completions); fi
+          python3 diagnostics/.github/scripts/snapshot-diagnostics.py reference "${flags[@]}"
           git -C reference diff > reference/reports/instrumentation.patch
       - uses: Swatinem/rust-cache@v2
         with:

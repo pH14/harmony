@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Instrument the pinned reference without changing its transitions or retries."""
+"""Observe the pinned reference; optionally test completion-only retirement."""
 from pathlib import Path
 import sys
 
@@ -70,3 +70,15 @@ replace('consonance/vmm-core/src/vmm.rs',
 replace('consonance/vmm-core/src/vmm.rs',
     '        self.completion_staged = exit.stages_completion();',
     '        self.completion_staged = exit.stages_completion();\n        self.diagnostic_last_exit = Some(format!("{:?}", exit.reason()));')
+
+if "--retire-completions" in sys.argv[2:]:
+    replace('consonance/vmm-core/src/vmm.rs',
+        '        <B::A as Vendor>::post_exit(self)?;',
+        '''        <B::A as Vendor>::post_exit(self)?;
+        // Diagnostic experiment: finish only the already serviced backend
+        // operation before exposing a stopped step. Keep the existing SDK
+        // snapshot-point latch so this experiment isolates CPU completion.
+        if self.completion_staged {
+            self.backend.retire_pending_completion()?;
+            self.completion_staged = false;
+        }''')
