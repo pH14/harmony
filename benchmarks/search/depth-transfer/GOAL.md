@@ -1369,3 +1369,18 @@ exists; source/replay qualification and a new prospective comparison are needed.
 Keep the 1M conditional horizon and necessary controls; no PG02 retry or horizon
 rescue. Fresh development, confirmation, MM2 and untouched validation remain
 required by the full active, unachieved goal.
+
+
+## Scoped return source qualification
+
+Implemented explicit matched-coin control and half-redirect policies inside the
+existing eligible group-walk window. The uniform quarter and historical IDs stay
+unchanged. Production fixtures verify the conditional allocation identity,
+active/residency/action/exhaustion/recency boundaries, deferred reset and an
+adverse ordinary-only success world. Full generic replay under memory pressure
+passes for both new IDs; its fixture has no qualified alternatives, so a separate
+native implementation qualification must exercise a real changed parent before
+an efficacy panel. Source checks: 172 generic tests plus interface, seven caller
+tests with/without progress feature, strict searcher/caller Clippy. No native
+frames allocated or spent by this source change. Use ms02 only. All prior closed
+allocations and the ledger remain unchanged; the full goal remains active.

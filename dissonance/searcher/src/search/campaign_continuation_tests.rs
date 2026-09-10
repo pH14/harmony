@@ -759,6 +759,10 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         (4, false, false, 2),
         (1, true, false, 3),
         (4, true, false, 3),
+        (1, true, false, 4),
+        (4, true, false, 4),
+        (1, true, false, 5),
+        (4, true, false, 5),
     ] {
         let config = CampaignConfig {
             campaign_seed: 947,
@@ -780,7 +784,17 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
                 _ => DrawMixture::EnergySpliceContinuation { scale: 6 },
             },
             retention: RetentionPolicy::AdmitAlive,
-            selector: if mode == 3 {
+            selector: if mode == 4 {
+                SelectorPolicy::EnergyProgressCheapestScopedReturnControl(RetireThresholds {
+                    entry: 3,
+                    groups: vec![],
+                })
+            } else if mode == 5 {
+                SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(RetireThresholds {
+                    entry: 3,
+                    groups: vec![],
+                })
+            } else if mode == 3 {
                 SelectorPolicy::EnergyProgressNoCost(RetireThresholds {
                     entry: 3,
                     groups: vec![],

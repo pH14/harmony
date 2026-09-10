@@ -12,8 +12,8 @@ use nes_workload::{
     },
     search::{
         archive::{
-            MAX_ARCHIVE_ENTRIES, RetentionPolicy, ScopedProgress, SlotRetentionPolicy,
-            selector_policy_from_identifier,
+            MAX_ARCHIVE_ENTRIES, RetentionPolicy, ScopedProgress, SelectorPolicy,
+            SlotRetentionPolicy, selector_policy_from_identifier,
         },
         campaign::{
             CampaignCheckpoint, CampaignConfig, CampaignExecutionOptions, CampaignOrigin,
@@ -67,6 +67,8 @@ struct Request {
     #[serde(default)]
     slot_retention: Option<String>,
     #[serde(default)]
+    selector: Option<String>,
+    #[serde(default)]
     expected_retention_progress: Option<ScopedProgress>,
     #[serde(default)]
     measure_physical_work: bool,
@@ -86,6 +88,32 @@ fn slot_policy(q: &Request) -> Result<SlotRetentionPolicy> {
     }
     Ok(policy)
 }
+fn selector_policy(q: &Request) -> Result<SelectorPolicy> {
+    let policy = selector_policy_from_identifier(
+        q.selector
+            .as_deref()
+            .unwrap_or("room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"),
+        3,
+    )?;
+    // This bounded caller admits only the unchanged law and its matched return
+    // experiment, at fixed thresholds. Other selectors need a separate caller
+    // qualification; a supplied string must not silently broaden the panel.
+    let thresholds = match &policy {
+        SelectorPolicy::EnergyProgressCheapest(t)
+        | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(t)
+        | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(t) => t,
+        _ => return Err("selector is outside this caller's qualified family".into()),
+    };
+    if thresholds.entry != 3 || thresholds.groups != [6, 12, 2] {
+        return Err("caller selector thresholds must remain 3,6,12,2".into());
+    }
+    if !cfg!(feature = "metroid-retention-progress")
+        && !matches!(policy, SelectorPolicy::EnergyProgressCheapest(_))
+    {
+        return Err("scoped return requires the explicit Metroid feature build".into());
+    }
+    Ok(policy)
+}
 fn valid_limits(q: &Request, execute: bool) -> bool {
     (1..=4).contains(&q.workers)
         && (1..=20_000).contains(&q.executions)
@@ -98,6 +126,7 @@ fn valid_limits(q: &Request, execute: bool) -> bool {
         && matches!(q.milestone.as_str(), "kraid_defeated" | "ridley_defeated")
         && (!execute || q.expected_snapshot_sha256.is_some())
         && slot_policy(q).is_ok()
+        && selector_policy(q).is_ok()
 }
 fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -337,10 +366,7 @@ fn evaluate(q: &Request, output: &Path, execute: bool, cost: &mut Cost) -> Resul
         suffix: suffix_shape_from_identifier("one_to_six")?,
         mixture: draw_mixture_from_identifier("alphabet_only")?,
         retention: RetentionPolicy::AdmitAlive,
-        selector: selector_policy_from_identifier(
-            "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
-            3,
-        )?,
+        selector: selector_policy(q)?,
         victory_input_path: Some(output.join("victory-input.json")),
     };
     let (milestone, _) = game
@@ -521,6 +547,40 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
     use nes_workload::metroid::target::ButtonChord;
+    #[test]
+    fn selector_requests_preserve_omission_and_validate_before_io() {
+        let legacy: Value = serde_json::from_str(include_str!(
+            "../../../../benchmarks/search/endpoint-encounter/ap01-request.json"
+        ))
+        .unwrap();
+        assert!(legacy.get("selector").is_none());
+        let mut q: Request = serde_json::from_value(legacy.clone()).unwrap();
+        let default = selector_policy(&q).unwrap();
+        q.selector = Some("room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2".into());
+        assert_eq!(selector_policy(&q).unwrap(), default);
+        for name in ["control", "half"] {
+            let id = format!(
+                "room_cell_uniform_128_energy_progress_cheapest_scoped_return_{name}_v1:3,6,12,2"
+            );
+            let mut serialized = legacy.clone();
+            serialized["selector"] = json!(id);
+            let parsed: Request = serde_json::from_value(serialized).unwrap();
+            assert_eq!(
+                valid_limits(&parsed, true),
+                cfg!(feature = "metroid-retention-progress")
+            );
+        }
+        for id in [
+            "room_cell_uniform_128",
+            "room_cell_uniform_128_energy_progress_cheapest_v1:4,6,12,2",
+            "room_cell_uniform_128_energy_progress_cheapest_scoped_return_half_v1:3,6,12",
+            "room_cell_uniform_128_energy_progress_cheapest_scoped_return_half_v1:0,6,12,2",
+            "room_cell_uniform_128_energy_progress_cheapest_scoped_return_half_v2:3,6,12,2",
+        ] {
+            q.selector = Some(id.into());
+            assert!(!valid_limits(&q, true), "{id}");
+        }
+    }
     #[test]
     fn execution_safety_cap_accepts_the_frame_screen_without_relaxing_frames() {
         let mut q: Request = serde_json::from_str(include_str!(

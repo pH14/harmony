@@ -332,6 +332,12 @@ pub enum SelectorPolicy {
     /// The cost-sorted order remains only to preserve random coupling when all
     /// old weights were equal; it does not change the uniform within-cell law.
     EnergyProgressNoCost(RetireThresholds),
+    /// Semantic cost selection with one additional fair coin after every cell
+    /// proposal, ignored. Matched RNG control for scoped return experiments.
+    EnergyProgressCheapestScopedReturnControl(RetireThresholds),
+    /// The matched control with half-probability redirection to the same slot's
+    /// qualified, strictly higher-progress member inside the offered window.
+    EnergyProgressCheapestScopedReturnHalf(RetireThresholds),
 }
 
 /// The recorded identifier of a parent selector.
@@ -356,6 +362,14 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
         }
         SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => format!(
             "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:{}",
+            threshold_values(scales)
+        ),
+        SelectorPolicy::EnergyProgressCheapestScopedReturnControl(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_progress_cheapest_scoped_return_control_v1:{}",
+            threshold_values(scales)
+        ),
+        SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_progress_cheapest_scoped_return_half_v1:{}",
             threshold_values(scales)
         ),
         SelectorPolicy::EnergyProgressNoCost(scales) => format!(
@@ -409,6 +423,10 @@ pub fn selector_policy_from_identifier(
     let energy_prefix = format!("{SELECTOR_IDENTIFIER}_energy:");
     let frontier_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier:");
     let key_count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:");
+    let return_control_prefix =
+        format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_scoped_return_control_v1:");
+    let return_half_prefix =
+        format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_scoped_return_half_v1:");
     let no_cost_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_no_cost_v1:");
     let semantic_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_v1:");
     let progress_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_count_v1:");
@@ -422,6 +440,8 @@ pub fn selector_policy_from_identifier(
         EnergyFrontierCheapestCount,
         EnergyProgressCheapest,
         EnergyProgressNoCost,
+        ScopedReturnControl,
+        ScopedReturnHalf,
         EnergyProgressCheapestCount,
         EnergyFrontierCheapestKeyCount,
     }
@@ -429,6 +449,10 @@ pub fn selector_policy_from_identifier(
         (values, Parsed::Retire)
     } else if let Some(values) = identifier.strip_prefix(&key_count_prefix) {
         (values, Parsed::EnergyFrontierCheapestKeyCount)
+    } else if let Some(values) = identifier.strip_prefix(&return_control_prefix) {
+        (values, Parsed::ScopedReturnControl)
+    } else if let Some(values) = identifier.strip_prefix(&return_half_prefix) {
+        (values, Parsed::ScopedReturnHalf)
     } else if let Some(values) = identifier.strip_prefix(&no_cost_prefix) {
         (values, Parsed::EnergyProgressNoCost)
     } else if let Some(values) = identifier.strip_prefix(&semantic_prefix) {
@@ -467,6 +491,12 @@ pub fn selector_policy_from_identifier(
     Ok(match selector {
         Parsed::EnergyFrontierCheapestKeyCount => {
             SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
+        }
+        Parsed::ScopedReturnControl => {
+            SelectorPolicy::EnergyProgressCheapestScopedReturnControl(thresholds)
+        }
+        Parsed::ScopedReturnHalf => {
+            SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(thresholds)
         }
         Parsed::EnergyProgressNoCost => SelectorPolicy::EnergyProgressNoCost(thresholds),
         Parsed::EnergyProgressCheapest => SelectorPolicy::EnergyProgressCheapest(thresholds),
@@ -3593,7 +3623,10 @@ where
     fn audits_selection_cost(&self) -> bool {
         matches!(
             self.selector_policy,
-            SelectorPolicy::EnergyProgressCheapest(_) | SelectorPolicy::EnergyProgressNoCost(_)
+            SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_)
+                | SelectorPolicy::EnergyProgressNoCost(_)
         )
     }
 
@@ -3601,6 +3634,8 @@ where
         matches!(
             self.selector_policy,
             SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_)
                 | SelectorPolicy::EnergyProgressNoCost(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         )
@@ -3910,6 +3945,8 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(scales)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales)
             | SelectorPolicy::EnergyProgressCheapest(scales)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(scales)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(scales)
             | SelectorPolicy::EnergyProgressNoCost(scales)
             | SelectorPolicy::EnergyProgressCheapestCount(scales) => (scales, true),
             _ => return Ok(rand.below(count)),
@@ -4061,6 +4098,8 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
             | SelectorPolicy::EnergyProgressCheapest(thresholds)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(thresholds)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(thresholds)
             | SelectorPolicy::EnergyProgressNoCost(thresholds)
             | SelectorPolicy::EnergyProgressCheapestCount(thresholds) => {
                 self.since_retained[id] < thresholds.entry
@@ -4079,6 +4118,8 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
             | SelectorPolicy::EnergyProgressCheapest(_)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(_)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_)
             | SelectorPolicy::EnergyProgressNoCost(_)
             | SelectorPolicy::EnergyProgressCheapestCount(_) => true,
             SelectorPolicy::Retire(thresholds) => {
@@ -4138,6 +4179,8 @@ where
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
                 | SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_)
                 | SelectorPolicy::EnergyProgressNoCost(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
@@ -4203,6 +4246,26 @@ where
         } else {
             window[rand.below(NonZeroUsize::new(window.len()).ok_or("empty tie window")?)]
         };
+        // Both experimental policies consume exactly one extra coin on every
+        // cell draw, even for a singleton or unavailable progress. The uniform
+        // exploration path never enters here. Historical policies consume none.
+        let id = match self.selector_policy {
+            SelectorPolicy::EnergyProgressCheapestScopedReturnControl(_)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_) => {
+                let redirect = rand.below(NonZeroUsize::new(2).expect("two is nonzero")) != 0;
+                if redirect
+                    && matches!(
+                        self.selector_policy,
+                        SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_)
+                    )
+                {
+                    self.scoped_return_parent(id, window)
+                } else {
+                    id
+                }
+            }
+            _ => id,
+        };
         Ok((
             id,
             ConcentrationDraw {
@@ -4210,6 +4273,48 @@ where
                 entered_window,
             },
         ))
+    }
+
+    /// Redirect only within the exact eligible window supplied by the existing
+    /// walk. That window already enforces residency, action limits, recency and
+    /// exhaustion (including the unchanged all-exhausted reset). Rechecking
+    /// streaks here would incorrectly veto that reset. Qualified retention has
+    /// at most two members per slot, so only one alternate can be examined.
+    fn scoped_return_parent(&self, proposed: usize, window: &[usize]) -> usize {
+        if !matches!(
+            self.slot_retention,
+            SlotRetentionPolicy::ResourceGuardedProgress2
+                | SlotRetentionPolicy::ResourceGuardedProgressQuality2
+        ) {
+            return proposed;
+        }
+        let key = self.entries[proposed].key;
+        let Some(members) = self.slots.get(&key.group(0)).filter(|ids| ids.len() == 2) else {
+            return proposed;
+        };
+        let Some(other) = members.iter().copied().find(|id| *id != proposed) else {
+            return proposed;
+        };
+        if !window.contains(&other) {
+            return proposed;
+        }
+        let alternate = self.entries[other].key;
+        match (
+            key.retention_progress(),
+            alternate.retention_progress(),
+            key.retention_resources(),
+            alternate.retention_resources(),
+        ) {
+            (Some(base), Some(next), Some(resources), Some(other_resources))
+                if base.scope == next.scope
+                    && next.value > base.value
+                    && other_resources[0] >= resources[0]
+                    && other_resources[1] >= resources[1] =>
+            {
+                other
+            }
+            _ => proposed,
+        }
     }
 
     /// Optional observation-only conditional cost-rank statistics.
@@ -4503,6 +4608,8 @@ where
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
                 | SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_)
                 | SelectorPolicy::EnergyProgressNoCost(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
@@ -4581,6 +4688,8 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
             | SelectorPolicy::EnergyProgressCheapest(_)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(_)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_)
             | SelectorPolicy::EnergyProgressNoCost(_)
             | SelectorPolicy::EnergyProgressCheapestCount(_) => new_cell_descendant,
             SelectorPolicy::GroupUniform => false,
@@ -4617,6 +4726,8 @@ where
         | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
         | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
         | SelectorPolicy::EnergyProgressCheapest(thresholds)
+        | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(thresholds)
+        | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(thresholds)
         | SelectorPolicy::EnergyProgressNoCost(thresholds)
         | SelectorPolicy::EnergyProgressCheapestCount(thresholds) = &self.selector_policy
         {
@@ -4696,6 +4807,10 @@ where
 #[cfg(test)]
 #[path = "archive_abstraction_tests.rs"]
 mod abstraction_tests;
+
+#[cfg(test)]
+#[path = "archive_scoped_return_tests.rs"]
+mod scoped_return_tests;
 
 #[cfg(test)]
 #[path = "archive_progress_tests.rs"]

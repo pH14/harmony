@@ -194,6 +194,26 @@ not the full historical cross-location preference/Pareto implementation, and
 it does not restore the prototype's improvement-replay queues. Its separate
 identifier permits an ablation without changing any existing selector's behavior.
 
+`room_cell_uniform_128_energy_progress_cheapest_scoped_return_control_v1:<thresholds>`
+and `..._scoped_return_half_v1:<thresholds>` are explicit research policies. Both
+inherit semantic cost selection and consume one extra fair coin after every
+**group-walk cell proposal**, including singleton windows. Control ignores it;
+half redirects on heads only to a strictly higher `retention_progress()` value in
+the same known scope, with both known resource axes no worse. Only the two
+`resource_guarded_progress` retention policies qualify, and the alternate must
+already belong to the exact eligible 128-member recency window. The unchanged
+uniform quarter consumes no extra coin. Active residency, action ceilings,
+exhaustion and the existing all-exhausted reset remain owned by the original
+walk. At most one other slot member is examined; there is no extra persistent
+state, global ranking, or cache. The optional cost audit still describes the
+**proposal** weights, before a possible redirect.
+
+The control and half policy have matching RNG consumption from an identical
+history. Their histories can diverge after a different parent; old selector IDs
+retain their original random streams. Neither higher recorded progress nor this
+allocation rule guarantees a better future. The [finite checks and counterexample](../../benchmarks/search/continuation-reassessment/scoped-return-design.md)
+state the conditional claim and experimental limits.
+
 `room_cell_uniform_128_energy_progress_no_cost_v1:<thresholds>` is an ablation of
 `energy_progress_cheapest_v1`. It removes the between-cell historical cost rank
 and makes the newest sampleable within-cell window uniform. It preserves the

@@ -187,3 +187,12 @@ retention or enforce a physical limit; use the registered search, process, memor
 and output bounds and qualify the physical-cost identity before an efficacy panel.
 QuickNES's lifetime clock survives restore/reset, and its destructor unloads and
 deinitializes the core without calling the frame runner.
+
+The challenge caller also accepts an optional `selector` identifier. Omission
+keeps `room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2`. Its only
+additional choices are the `..._scoped_return_control_v1:3,6,12,2` and
+`..._scoped_return_half_v1:3,6,12,2` variants, requiring the explicit
+`metroid-retention-progress` feature. Other laws, versions and thresholds fail
+validation before file/core I/O. All arms of a return experiment must use the
+same feature build; use the coin-consuming control to separate redirection from
+changed random tapes. This caller remains a supplied-state qualification tool.
