@@ -1283,3 +1283,22 @@ becomes unattainable. No seed list or native PG02 allocation exists yet. See
 ../continuation-reassessment/pg02-design.md. A pass earns fresh-development
 assessment, not goal completion; independent confirmation, MM2 and untouched
 validation remain required.
+
+## PG02 prospective efficacy allocation
+
+Registered 2026-09-10T22:13:08.329157+00:00; native work ends by 2026-09-10T22:53:08.329157+00:00,
+with synthesis by 2026-09-10T23:13:08.329157+00:00. Four new conditional seeds compare
+ordinary, fixed progress, and scoped capacity retention at 1M admitted frames each.
+Every cell has 20,000 jobs, a 60-second search watchdog, 180 seconds including
+replay, 4 GiB process memory, and disjoint four-CPU placement for at most two
+concurrent cells. Complete physical receipts and full replay are required.
+The prospective safety allocation is 96M physical frames including conservative
+parent-reconstruction drain; the efficacy acceptance gate remains 2,880 drain
+frames. See ../continuation-reassessment/pg02-registration.json and fixed scorer.
+
+Require three strict wins and at least 15% lower restricted physical cost against
+each comparator. Check futility after complete seed triples; first invalid cell
+stops without retry. A pass earns a separate fresh-development decision, not
+goal completion. All prior allocations stay closed; msr1 is unavailable. No PG02
+native execution has occurred at publication time. The tested caller changes only
+the permitted execution ceiling, preserving its 1M admitted-frame cap.

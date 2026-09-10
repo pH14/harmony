@@ -538,3 +538,9 @@ is already admitted. All 17 native artifacts verify offline. The service is stop
 and unused allocation released. See `pm01-results.md`, `verify_pm01.py`, and the
 unallocated next efficacy-screen design in `pg02-design.md`. New totals are
 2,983,485,644 admitted / 71,300,232 known auxiliary; historical gaps are preserved.
+
+PG02 now has a separate prospective registration in `pg02-registration.json`.
+Four new conditional seeds compare the fixed progress rule against ordinary and
+scoped capacity retention at 1M admitted frames. Its frozen scorer stops for
+futility after complete triples and rejects premature cutoffs or incomplete
+accounting. Native work is restricted to ms02; no PG02 cell has run at publication.
