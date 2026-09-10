@@ -130,7 +130,7 @@ if [ "$("$busybox_obj/busybox" echo dispatcher-ok)" != dispatcher-ok ]; then
     echo "FAIL: arm64 faultlab BusyBox dispatcher cannot invoke an applet" >&2
     exit 1
 fi
-if ! "$busybox_obj/busybox" ip link help >/dev/null 2>&1; then
+if ! "$busybox_obj/busybox" ip link show lo >/dev/null 2>&1; then
     echo "FAIL: arm64 faultlab BusyBox ip lacks the link subcommand" >&2
     exit 1
 fi
