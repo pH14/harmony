@@ -1,0 +1,2834 @@
+[
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t03-anchor-corrected-s4/metroid-full-s4-w4-m8192/summary.json",
+    "sha256": "cfebab8ddaa05b6b0d23384cca95a865b014fc400dd4c366c0e86c0cdac999e3",
+    "case": "t03-anchor-corrected-s4",
+    "seed": 4,
+    "frames": 380102776,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 2772507,
+          "route_action_end_frame": 64620
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 12
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 657550,
+          "route_action_end_frame": 34882
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 2834909,
+          "route_action_end_frame": 81836
+        },
+        "kraid_defeated": null,
+        "long_beam": {
+          "execution": 1505743,
+          "route_action_end_frame": 49483
+        },
+        "missile_capacity": {
+          "execution": 356357,
+          "route_action_end_frame": 13931
+        },
+        "morph_ball": {
+          "execution": 164,
+          "route_action_end_frame": 1109
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 361853,
+          "route_action_end_frame": 16137
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 15
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "long_beam",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-control-s3001028078/metroid-full-s3001028078-w4-m8192/summary.json",
+    "sha256": "01dea522c63bb6d099bfbc689807f824c7e3a5c14b6322e9cfe49227c5921de1",
+    "case": "t04-validation-control-s3001028078",
+    "seed": 3001028078,
+    "frames": 372734179,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 1569551,
+          "route_action_end_frame": 46403
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 9
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 629951,
+          "route_action_end_frame": 37107
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1672212,
+          "route_action_end_frame": 63003
+        },
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 254333,
+          "route_action_end_frame": 13117
+        },
+        "morph_ball": {
+          "execution": 379,
+          "route_action_end_frame": 771
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 275024,
+          "route_action_end_frame": 17186
+        },
+        "ridley_area": {
+          "execution": 2034850,
+          "route_action_end_frame": 85959
+        },
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 20
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "missile_capacity",
+      "morph_ball",
+      "norfair",
+      "ridley_area"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t03-anchor-corrected-s5/metroid-full-s5-w4-m8192/summary.json",
+    "sha256": "c00f7015323a100a923fef2acd9ffae865c9f1dc1e00352145fa972207669571",
+    "case": "t03-anchor-corrected-s5",
+    "seed": 5,
+    "frames": 364178451,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 938694,
+          "route_action_end_frame": 56913
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 68
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 144673,
+          "route_action_end_frame": 16254
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1327670,
+          "route_action_end_frame": 103645
+        },
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 169281,
+          "route_action_end_frame": 24198
+        },
+        "morph_ball": {
+          "execution": 505,
+          "route_action_end_frame": 901
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 173824,
+          "route_action_end_frame": 26994
+        },
+        "ridley_area": {
+          "execution": 1226882,
+          "route_action_end_frame": 97185
+        },
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 2,
+      "max_missile_capacity": 25
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "missile_capacity",
+      "morph_ball",
+      "norfair",
+      "ridley_area"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-corrected-s3217532177/metroid-full-s3217532177-w4-m8192/summary.json",
+    "sha256": "54272d2b49f7cc9d256929133eba5a2a581e38d41cc8c0c79158523583f64766",
+    "case": "t04-validation-corrected-s3217532177",
+    "seed": 3217532177,
+    "frames": 371567102,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 1696924,
+          "route_action_end_frame": 50383
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 6
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 418956,
+          "route_action_end_frame": 37218
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1777437,
+          "route_action_end_frame": 66587
+        },
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 104815,
+          "route_action_end_frame": 13625
+        },
+        "morph_ball": {
+          "execution": 378,
+          "route_action_end_frame": 554
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 107385,
+          "route_action_end_frame": 16568
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 25
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/l04-anchor-middle-s3/metroid-full-s3-w4-m8192/summary.json",
+    "sha256": "754b0e802cc87f995912d831a284bd2186c89e4a5ccad4e8d0d7ff0104050b11",
+    "case": "l04-anchor-middle-s3",
+    "seed": 3,
+    "frames": 332305364,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 2560868,
+          "route_action_end_frame": 65980
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 14
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 308901,
+          "route_action_end_frame": 33225
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 2641107,
+          "route_action_end_frame": 83388
+        },
+        "kraid_defeated": null,
+        "long_beam": {
+          "execution": 1236600,
+          "route_action_end_frame": 46354
+        },
+        "missile_capacity": {
+          "execution": 138290,
+          "route_action_end_frame": 12303
+        },
+        "morph_ball": {
+          "execution": 361,
+          "route_action_end_frame": 829
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 139892,
+          "route_action_end_frame": 14777
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 20
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "long_beam",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/r01-development-control-s5/metroid-full-s5-w4-m8192/summary.json",
+    "sha256": "67f3400d7ea5568ba012e77f0a27311227fe5f97758e09a2a6efbe77eedfbb5c",
+    "case": "r01-development-control-s5",
+    "seed": 5,
+    "frames": 60787050,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 68
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 144673,
+          "route_action_end_frame": 16254
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 169281,
+          "route_action_end_frame": 24198
+        },
+        "morph_ball": {
+          "execution": 505,
+          "route_action_end_frame": 901
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 173824,
+          "route_action_end_frame": 26994
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "energy_tank",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-corrected-s3001028078/metroid-full-s3001028078-w4-m8192/summary.json",
+    "sha256": "11adee77c93cdc63d4530c351af947fd08184e16bdc5ef406909362c983ea132",
+    "case": "t04-validation-corrected-s3001028078",
+    "seed": 3001028078,
+    "frames": 370990972,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 1443348,
+          "route_action_end_frame": 43406
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 9
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 690899,
+          "route_action_end_frame": 36901
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1516262,
+          "route_action_end_frame": 58719
+        },
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 254333,
+          "route_action_end_frame": 13117
+        },
+        "morph_ball": {
+          "execution": 379,
+          "route_action_end_frame": 771
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 275024,
+          "route_action_end_frame": 17186
+        },
+        "ridley_area": {
+          "execution": 2134379,
+          "route_action_end_frame": 81738
+        },
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 20
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "missile_capacity",
+      "morph_ball",
+      "norfair",
+      "ridley_area"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/l04-development-mean-s3/metroid-full-s3-w4-m8192/summary.json",
+    "sha256": "2185ef1b085ca9d6be8851c3287a0823b1b8ed6a038fe9df06819e6b0008454f",
+    "case": "l04-development-mean-s3",
+    "seed": 3,
+    "frames": 52545868,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 51
+        },
+        "ending": null,
+        "energy_tank": null,
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 54490,
+          "route_action_end_frame": 12915
+        },
+        "morph_ball": {
+          "execution": 420,
+          "route_action_end_frame": 973
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 56799,
+          "route_action_end_frame": 15146
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 0,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-control-s1154364703/metroid-full-s1154364703-w4-m8192/summary.json",
+    "sha256": "1e27b4585a294db1c1ce74c66825a3bb59084ce5188f1861e3c292f003963879",
+    "case": "t04-validation-control-s1154364703",
+    "seed": 1154364703,
+    "frames": 374627120,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 1125384,
+          "route_action_end_frame": 47421
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 74
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 601760,
+          "route_action_end_frame": 38365
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1214646,
+          "route_action_end_frame": 64960
+        },
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 230377,
+          "route_action_end_frame": 13350
+        },
+        "morph_ball": {
+          "execution": 288,
+          "route_action_end_frame": 530
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 235927,
+          "route_action_end_frame": 16087
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 2,
+      "max_missile_capacity": 25
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/r01-development-resource-s3/metroid-full-s3-w4-m8192/summary.json",
+    "sha256": "e0dd09ce6e46ad1233f5adf5379a73e1605597111a8804626d04e393cd148f98",
+    "case": "r01-development-resource-s3",
+    "seed": 3,
+    "frames": 61871463,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 51
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 352883,
+          "route_action_end_frame": 36982
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 135155,
+          "route_action_end_frame": 14111
+        },
+        "morph_ball": {
+          "execution": 361,
+          "route_action_end_frame": 437
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 137980,
+          "route_action_end_frame": 16513
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "energy_tank",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/r01-development-control-s3/metroid-full-s3-w4-m8192/summary.json",
+    "sha256": "164781245b35f8c17cee928a16c3aefb2f01c23cb23bec33ca910829183b2e4a",
+    "case": "r01-development-control-s3",
+    "seed": 3,
+    "frames": 62098859,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 51
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 369048,
+          "route_action_end_frame": 39407
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 135155,
+          "route_action_end_frame": 14111
+        },
+        "morph_ball": {
+          "execution": 361,
+          "route_action_end_frame": 437
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 137386,
+          "route_action_end_frame": 16610
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "energy_tank",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/r02-long-resource-s3/metroid-full-s3-w4-m8192/summary.json",
+    "sha256": "d535b9902d2de9a911fa97ca5c95654b5a25ff43ca9c280e90ebf2375567864d",
+    "case": "r02-long-resource-s3",
+    "seed": 3,
+    "frames": 392442771,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 51
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 352883,
+          "route_action_end_frame": 36982
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": {
+          "execution": 2062143,
+          "route_action_end_frame": 52553
+        },
+        "missile_capacity": {
+          "execution": 135155,
+          "route_action_end_frame": 14111
+        },
+        "morph_ball": {
+          "execution": 361,
+          "route_action_end_frame": 437
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 137980,
+          "route_action_end_frame": 16513
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "energy_tank",
+      "long_beam",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/r01-development-control-s4/metroid-full-s4-w4-m8192/summary.json",
+    "sha256": "1bfe7d539bf9ba9eed76a5e0a1baf0af02c6e216bad985a56b409b8c53647437",
+    "case": "r01-development-control-s4",
+    "seed": 4,
+    "frames": 62589148,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 12
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 423120,
+          "route_action_end_frame": 36345
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 173696,
+          "route_action_end_frame": 13550
+        },
+        "morph_ball": {
+          "execution": 164,
+          "route_action_end_frame": 1109
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 179540,
+          "route_action_end_frame": 15702
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "energy_tank",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-control-s4163552957/metroid-full-s4163552957-w4-m8192/summary.json",
+    "sha256": "21daaee9e79b383dd494688bf817c1680bf56cd1c284e87564197e30a44e36cb",
+    "case": "t04-validation-control-s4163552957",
+    "seed": 4163552957,
+    "frames": 363889417,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 1746513,
+          "route_action_end_frame": 65433
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 82
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 413413,
+          "route_action_end_frame": 36177
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1851212,
+          "route_action_end_frame": 83929
+        },
+        "kraid_defeated": null,
+        "long_beam": {
+          "execution": 1212606,
+          "route_action_end_frame": 49383
+        },
+        "missile_capacity": {
+          "execution": 67008,
+          "route_action_end_frame": 12753
+        },
+        "morph_ball": {
+          "execution": 562,
+          "route_action_end_frame": 967
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 74220,
+          "route_action_end_frame": 14845
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 25
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "long_beam",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t02-development-corrected-s3/metroid-full-s3-w4-m8192/summary.json",
+    "sha256": "6961e6730dcc71a2be7f2a361425ec9f25537cdb8066fe38aef4b8998a5793ed",
+    "case": "t02-development-corrected-s3",
+    "seed": 3,
+    "frames": 60731080,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 51
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 487706,
+          "route_action_end_frame": 38747
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 135155,
+          "route_action_end_frame": 14111
+        },
+        "morph_ball": {
+          "execution": 361,
+          "route_action_end_frame": 437
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 137386,
+          "route_action_end_frame": 16610
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "energy_tank",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/l03-development-middle-s5/metroid-full-s5-w4-m8192/summary.json",
+    "sha256": "1fb5ef3a27f0492e87a24dbd1946439e96ed9bef3891acaf6713302a3754d385",
+    "case": "l03-development-middle-s5",
+    "seed": 5,
+    "frames": 55634238,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 68
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 365855,
+          "route_action_end_frame": 34569
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 138149,
+          "route_action_end_frame": 13337
+        },
+        "morph_ball": {
+          "execution": 293,
+          "route_action_end_frame": 480
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 140547,
+          "route_action_end_frame": 16014
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "energy_tank",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-control-s2089362731/metroid-full-s2089362731-w4-m8192/summary.json",
+    "sha256": "5419ab7597f1a6914f1885f7cd07d064fb9b55c3b5018a7524df17b5f455b667",
+    "case": "t04-validation-control-s2089362731",
+    "seed": 2089362731,
+    "frames": 374844261,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 1067854,
+          "route_action_end_frame": 43719
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 10
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 330308,
+          "route_action_end_frame": 34901
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1194017,
+          "route_action_end_frame": 59423
+        },
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 95342,
+          "route_action_end_frame": 12297
+        },
+        "morph_ball": {
+          "execution": 273,
+          "route_action_end_frame": 721
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 97768,
+          "route_action_end_frame": 14853
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 2,
+      "max_missile_capacity": 25
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/d01-long/metroid-full-s3-w4-m8192/summary.json",
+    "sha256": "a2be4ed831c7806e00a70cf8afcb8ada28a515b6e58ced973e22cd2655d575b4",
+    "case": "d01-long",
+    "seed": 3,
+    "frames": 382101298,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 2847297,
+          "route_action_end_frame": 77393
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 51
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 369048,
+          "route_action_end_frame": 39407
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 2937978,
+          "route_action_end_frame": 92904
+        },
+        "kraid_defeated": null,
+        "long_beam": {
+          "execution": 1761899,
+          "route_action_end_frame": 59415
+        },
+        "missile_capacity": {
+          "execution": 135155,
+          "route_action_end_frame": 14111
+        },
+        "morph_ball": {
+          "execution": 361,
+          "route_action_end_frame": 437
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 137386,
+          "route_action_end_frame": 16610
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 15
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "long_beam",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/r01-development-resource-s4/metroid-full-s4-w4-m8192/summary.json",
+    "sha256": "873697614f1778e5c8c55733631d59054bb8659eeb4ce9f7fb2ee320db8d65e8",
+    "case": "r01-development-resource-s4",
+    "seed": 4,
+    "frames": 61252128,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 12
+        },
+        "ending": null,
+        "energy_tank": null,
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 173696,
+          "route_action_end_frame": 13550
+        },
+        "morph_ball": {
+          "execution": 164,
+          "route_action_end_frame": 1109
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 180692,
+          "route_action_end_frame": 16549
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 0,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-corrected-s2955146978/metroid-full-s2955146978-w4-m8192/summary.json",
+    "sha256": "3f0d213c5ff1bc12f7075939bb181072fbc9f22111b46fae0a65d7dfd2cac3bb",
+    "case": "t04-validation-corrected-s2955146978",
+    "seed": 2955146978,
+    "frames": 371814477,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 2510470,
+          "route_action_end_frame": 74939
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 50
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 337074,
+          "route_action_end_frame": 38436
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 2810924,
+          "route_action_end_frame": 117620
+        },
+        "kraid_defeated": null,
+        "long_beam": {
+          "execution": 1387458,
+          "route_action_end_frame": 55536
+        },
+        "missile_capacity": {
+          "execution": 134817,
+          "route_action_end_frame": 13816
+        },
+        "morph_ball": {
+          "execution": 36,
+          "route_action_end_frame": 455
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 138020,
+          "route_action_end_frame": 16198
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 15
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "long_beam",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t02-development-corrected-s4/metroid-full-s4-w4-m8192/summary.json",
+    "sha256": "0c7e5ee3ac871ba85f42d0d5c636a58363f3ae09f4fec93e9bf0f9de6507ef4d",
+    "case": "t02-development-corrected-s4",
+    "seed": 4,
+    "frames": 66253803,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 12
+        },
+        "ending": null,
+        "energy_tank": null,
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 356357,
+          "route_action_end_frame": 13931
+        },
+        "morph_ball": {
+          "execution": 164,
+          "route_action_end_frame": 1109
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 361853,
+          "route_action_end_frame": 16137
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 0,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/r01-development-resource-s5/metroid-full-s5-w4-m8192/summary.json",
+    "sha256": "8b87537221497f19f203e29c3c2cc164322e0dd0865ed6ce8965f12d9e15e352",
+    "case": "r01-development-resource-s5",
+    "seed": 5,
+    "frames": 61958621,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 68
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 144673,
+          "route_action_end_frame": 16254
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 169281,
+          "route_action_end_frame": 24198
+        },
+        "morph_ball": {
+          "execution": 505,
+          "route_action_end_frame": 901
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 171037,
+          "route_action_end_frame": 26704
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "energy_tank",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/l03-development-middle-s4/metroid-full-s4-w4-m8192/summary.json",
+    "sha256": "4eb896f87c441748a72abe0a73af0051946a4768ce7ed722d02a366395eeaa16",
+    "case": "l03-development-middle-s4",
+    "seed": 4,
+    "frames": 55509524,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 12
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 89769,
+          "route_action_end_frame": 15946
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 98204,
+          "route_action_end_frame": 11940
+        },
+        "morph_ball": {
+          "execution": 105,
+          "route_action_end_frame": 432
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 114330,
+          "route_action_end_frame": 13832
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "energy_tank",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-corrected-s2089362731/metroid-full-s2089362731-w4-m8192/summary.json",
+    "sha256": "1ddf01ab7cc012771080eef9ffc1ea7f21f831589a15dc39bb8d6a2a22daf5c6",
+    "case": "t04-validation-corrected-s2089362731",
+    "seed": 2089362731,
+    "frames": 372464671,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 982907,
+          "route_action_end_frame": 41623
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 10
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 245289,
+          "route_action_end_frame": 33505
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1095912,
+          "route_action_end_frame": 57810
+        },
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 95342,
+          "route_action_end_frame": 12297
+        },
+        "morph_ball": {
+          "execution": 273,
+          "route_action_end_frame": 721
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 97768,
+          "route_action_end_frame": 14853
+        },
+        "ridley_area": {
+          "execution": 1348118,
+          "route_action_end_frame": 79049
+        },
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 25
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "missile_capacity",
+      "morph_ball",
+      "norfair",
+      "ridley_area"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-control-s2955146978/metroid-full-s2955146978-w4-m8192/summary.json",
+    "sha256": "6f289ad11a6a84fa6f6726f7ef2b6f246d9af5202763a000f2099c8e9c288354",
+    "case": "t04-validation-control-s2955146978",
+    "seed": 2955146978,
+    "frames": 363310771,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 1256500,
+          "route_action_end_frame": 46697
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 50
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 684234,
+          "route_action_end_frame": 37481
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1321361,
+          "route_action_end_frame": 60976
+        },
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 134817,
+          "route_action_end_frame": 13816
+        },
+        "morph_ball": {
+          "execution": 36,
+          "route_action_end_frame": 455
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 138020,
+          "route_action_end_frame": 16198
+        },
+        "ridley_area": {
+          "execution": 1894140,
+          "route_action_end_frame": 84469
+        },
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 25
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "missile_capacity",
+      "morph_ball",
+      "norfair",
+      "ridley_area"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t02-development-corrected-s5/metroid-full-s5-w4-m8192/summary.json",
+    "sha256": "57f4ae6737ca5619897a93ab78c2ac4eadb86191219b3a6e5ece362fc24afb5e",
+    "case": "t02-development-corrected-s5",
+    "seed": 5,
+    "frames": 60787050,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 68
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 144673,
+          "route_action_end_frame": 16254
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 169281,
+          "route_action_end_frame": 24198
+        },
+        "morph_ball": {
+          "execution": 505,
+          "route_action_end_frame": 901
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 173824,
+          "route_action_end_frame": 26994
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "energy_tank",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-corrected-s4163552957/metroid-full-s4163552957-w4-m8192/summary.json",
+    "sha256": "3cd0245f0a93768b5be831388172666bd59948f99f4cd046ff1e784c51a3d21c",
+    "case": "t04-validation-corrected-s4163552957",
+    "seed": 4163552957,
+    "frames": 378736645,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 2178336,
+          "route_action_end_frame": 69030
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 82
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 411107,
+          "route_action_end_frame": 34573
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 2268271,
+          "route_action_end_frame": 85547
+        },
+        "kraid_defeated": null,
+        "long_beam": {
+          "execution": 1431970,
+          "route_action_end_frame": 52425
+        },
+        "missile_capacity": {
+          "execution": 67008,
+          "route_action_end_frame": 12753
+        },
+        "morph_ball": {
+          "execution": 562,
+          "route_action_end_frame": 967
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 74220,
+          "route_action_end_frame": 14845
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 15
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "long_beam",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/e01-development-control-s3/metroid-full-s3-w4-m8192/summary.json",
+    "sha256": "f7a20f293946d40a242e39c48789791a4f01473410df69f97517508bf89b4d9e",
+    "case": "e01-development-control-s3",
+    "seed": 3,
+    "frames": 60139573,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 51
+        },
+        "ending": null,
+        "energy_tank": null,
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 332529,
+          "route_action_end_frame": 12282
+        },
+        "morph_ball": {
+          "execution": 251,
+          "route_action_end_frame": 656
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 338661,
+          "route_action_end_frame": 15062
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 0,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-corrected-s3860178203/metroid-full-s3860178203-w4-m8192/summary.json",
+    "sha256": "77e035787588cb0ed46b7892afa7dacd35513b4795e25398922a4916eccd29d4",
+    "case": "t04-validation-corrected-s3860178203",
+    "seed": 3860178203,
+    "frames": 378302076,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 5
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 320091,
+          "route_action_end_frame": 33227
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": {
+          "execution": 1107861,
+          "route_action_end_frame": 46738
+        },
+        "missile_capacity": {
+          "execution": 93366,
+          "route_action_end_frame": 13664
+        },
+        "morph_ball": {
+          "execution": 52,
+          "route_action_end_frame": 636
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 94601,
+          "route_action_end_frame": 16645
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "energy_tank",
+      "long_beam",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-control-s2825471318/metroid-full-s2825471318-w4-m8192/summary.json",
+    "sha256": "59da03d529ab6e26d57dd5211a7e6c19d9e1d58175040cfe52b36eea3dcce937",
+    "case": "t04-validation-control-s2825471318",
+    "seed": 2825471318,
+    "frames": 376921855,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 1087905,
+          "route_action_end_frame": 46445
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 4
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 459615,
+          "route_action_end_frame": 36816
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1189499,
+          "route_action_end_frame": 65215
+        },
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 111505,
+          "route_action_end_frame": 13098
+        },
+        "morph_ball": {
+          "execution": 1995,
+          "route_action_end_frame": 518
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 119152,
+          "route_action_end_frame": 15540
+        },
+        "ridley_area": {
+          "execution": 1539998,
+          "route_action_end_frame": 86822
+        },
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 20
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "missile_capacity",
+      "morph_ball",
+      "norfair",
+      "ridley_area"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-control-s781462287/metroid-full-s781462287-w4-m8192/summary.json",
+    "sha256": "b9bc01a288708f24d065a25ec00fa9d55406feb131c79bfe515db156148c9513",
+    "case": "t04-validation-control-s781462287",
+    "seed": 781462287,
+    "frames": 360979790,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 1136633,
+          "route_action_end_frame": 42455
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 66
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 436691,
+          "route_action_end_frame": 33740
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1282947,
+          "route_action_end_frame": 56602
+        },
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 81134,
+          "route_action_end_frame": 13686
+        },
+        "morph_ball": {
+          "execution": 122,
+          "route_action_end_frame": 660
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 83502,
+          "route_action_end_frame": 16265
+        },
+        "ridley_area": {
+          "execution": 1798575,
+          "route_action_end_frame": 80216
+        },
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 30
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "missile_capacity",
+      "morph_ball",
+      "norfair",
+      "ridley_area"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-corrected-s2825471318/metroid-full-s2825471318-w4-m8192/summary.json",
+    "sha256": "87b55148989c2b98e8ddbcda05a0c06ddb840c561e7cf3cc741871f3a0077e62",
+    "case": "t04-validation-corrected-s2825471318",
+    "seed": 2825471318,
+    "frames": 365625794,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 1351187,
+          "route_action_end_frame": 46004
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 4
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 819341,
+          "route_action_end_frame": 36614
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1473852,
+          "route_action_end_frame": 61777
+        },
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 119816,
+          "route_action_end_frame": 12473
+        },
+        "morph_ball": {
+          "execution": 1995,
+          "route_action_end_frame": 518
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 124552,
+          "route_action_end_frame": 15323
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 25
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-corrected-s2037612408/metroid-full-s2037612408-w4-m8192/summary.json",
+    "sha256": "fd6882aac1fa7fd184f15127b698455db9fbca814264ec87f77191cb6aa46fb6",
+    "case": "t04-validation-corrected-s2037612408",
+    "seed": 2037612408,
+    "frames": 371994473,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 2251793,
+          "route_action_end_frame": 67194
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 117
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 325804,
+          "route_action_end_frame": 36207
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 2339412,
+          "route_action_end_frame": 82391
+        },
+        "kraid_defeated": null,
+        "long_beam": {
+          "execution": 1239467,
+          "route_action_end_frame": 49772
+        },
+        "missile_capacity": {
+          "execution": 64044,
+          "route_action_end_frame": 14240
+        },
+        "morph_ball": {
+          "execution": 149,
+          "route_action_end_frame": 1138
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 67778,
+          "route_action_end_frame": 16421
+        },
+        "ridley_area": {
+          "execution": 2946067,
+          "route_action_end_frame": 108882
+        },
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 15
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "long_beam",
+      "missile_capacity",
+      "morph_ball",
+      "norfair",
+      "ridley_area"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-control-s2037612408/metroid-full-s2037612408-w4-m8192/summary.json",
+    "sha256": "95e16012d015bc7255f4a4b4d98f7a48f69871885c856bc4f71214259c8b681e",
+    "case": "t04-validation-control-s2037612408",
+    "seed": 2037612408,
+    "frames": 364178538,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 1299665,
+          "route_action_end_frame": 45180
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 117
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 625878,
+          "route_action_end_frame": 37317
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1394274,
+          "route_action_end_frame": 63110
+        },
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 170736,
+          "route_action_end_frame": 13371
+        },
+        "morph_ball": {
+          "execution": 149,
+          "route_action_end_frame": 1138
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 182351,
+          "route_action_end_frame": 16399
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 25
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/l04-development-mean-s4/metroid-full-s4-w4-m8192/summary.json",
+    "sha256": "da7c801bfe97a53315248e7b2d0e0f811a6a2eaea25b712d71ffa2cdcb8f2d8f",
+    "case": "l04-development-mean-s4",
+    "seed": 4,
+    "frames": 56762360,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 12
+        },
+        "ending": null,
+        "energy_tank": null,
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 208309,
+          "route_action_end_frame": 13327
+        },
+        "morph_ball": {
+          "execution": 434,
+          "route_action_end_frame": 620
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 232368,
+          "route_action_end_frame": 15865
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 0,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/l03-development-middle-s3/metroid-full-s3-w4-m8192/summary.json",
+    "sha256": "885660949c79a34ad23e3be430150669b1e17e26ebc915c91ec8114f7a429242",
+    "case": "l03-development-middle-s3",
+    "seed": 3,
+    "frames": 55445838,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 14
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 308901,
+          "route_action_end_frame": 33225
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 138290,
+          "route_action_end_frame": 12303
+        },
+        "morph_ball": {
+          "execution": 361,
+          "route_action_end_frame": 829
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 139892,
+          "route_action_end_frame": 14777
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "energy_tank",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-corrected-s1154364703/metroid-full-s1154364703-w4-m8192/summary.json",
+    "sha256": "bb39734c0b8eca9c8c1b5fa90947844ca0313d8946bb9cfa63b6da23af116f15",
+    "case": "t04-validation-corrected-s1154364703",
+    "seed": 1154364703,
+    "frames": 378940307,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 2534644,
+          "route_action_end_frame": 66870
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 74
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 433167,
+          "route_action_end_frame": 38252
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 2600281,
+          "route_action_end_frame": 82298
+        },
+        "kraid_defeated": null,
+        "long_beam": {
+          "execution": 1077392,
+          "route_action_end_frame": 50233
+        },
+        "missile_capacity": {
+          "execution": 155794,
+          "route_action_end_frame": 12899
+        },
+        "morph_ball": {
+          "execution": 288,
+          "route_action_end_frame": 530
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 164399,
+          "route_action_end_frame": 16208
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 15
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "long_beam",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-corrected-s781462287/metroid-full-s781462287-w4-m8192/summary.json",
+    "sha256": "9a0a4987f8aa7664b1715d4c93b5194553cb73da0dee0bc329b472a9f8ddc30f",
+    "case": "t04-validation-corrected-s781462287",
+    "seed": 781462287,
+    "frames": 375852713,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 2814046,
+          "route_action_end_frame": 62701
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 66
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 392823,
+          "route_action_end_frame": 36895
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 2912441,
+          "route_action_end_frame": 77086
+        },
+        "kraid_defeated": null,
+        "long_beam": {
+          "execution": 1140799,
+          "route_action_end_frame": 47447
+        },
+        "missile_capacity": {
+          "execution": 109473,
+          "route_action_end_frame": 14032
+        },
+        "morph_ball": {
+          "execution": 122,
+          "route_action_end_frame": 660
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 115806,
+          "route_action_end_frame": 16189
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "long_beam",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-control-s3217532177/metroid-full-s3217532177-w4-m8192/summary.json",
+    "sha256": "07452e992a99627f7ef8aa77e6b6471d152eb69ebdcc70b4b76342458de41e7b",
+    "case": "t04-validation-control-s3217532177",
+    "seed": 3217532177,
+    "frames": 377205445,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 1696924,
+          "route_action_end_frame": 50383
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 6
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 418956,
+          "route_action_end_frame": 37218
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1777437,
+          "route_action_end_frame": 66587
+        },
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 104815,
+          "route_action_end_frame": 13625
+        },
+        "morph_ball": {
+          "execution": 378,
+          "route_action_end_frame": 554
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 107385,
+          "route_action_end_frame": 16568
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 2,
+      "max_missile_capacity": 20
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/e01-development-resource-s3/metroid-full-s3-w4-m8192/summary.json",
+    "sha256": "145ee82369de55d4373b15ff97c944c4e5e07e3258cdd0674fca8bbcdd13614c",
+    "case": "e01-development-resource-s3",
+    "seed": 3,
+    "frames": 60784340,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 51
+        },
+        "ending": null,
+        "energy_tank": null,
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 332529,
+          "route_action_end_frame": 12282
+        },
+        "morph_ball": {
+          "execution": 251,
+          "route_action_end_frame": 656
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 333893,
+          "route_action_end_frame": 14803
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 0,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/t04-validation-control-s3860178203/metroid-full-s3860178203-w4-m8192/summary.json",
+    "sha256": "4590d8526100dda09d9f526b2d0c742025c1dbd49f46cdf4e634f69afbcc5b40",
+    "case": "t04-validation-control-s3860178203",
+    "seed": 3860178203,
+    "frames": 374166059,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_ending_v2",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 2550191,
+          "route_action_end_frame": 66803
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 5
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 357985,
+          "route_action_end_frame": 35525
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 2668347,
+          "route_action_end_frame": 84917
+        },
+        "kraid_defeated": null,
+        "long_beam": {
+          "execution": 1059020,
+          "route_action_end_frame": 47378
+        },
+        "missile_capacity": {
+          "execution": 130651,
+          "route_action_end_frame": 14059
+        },
+        "morph_ball": {
+          "execution": 52,
+          "route_action_end_frame": 636
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 136209,
+          "route_action_end_frame": 16461
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 15
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "long_beam",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/l04-anchor-control-s3/metroid-full-s3-w4-m8192/summary.json",
+    "sha256": "2a81053a83204a3a0ef8383b5c7d810a2b59a0f46fb8bf3d3c19c295ddf204cb",
+    "case": "l04-anchor-control-s3",
+    "seed": 3,
+    "frames": 366396624,
+    "executions": 3000000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 1487653,
+          "route_action_end_frame": 48562
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 51
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 487706,
+          "route_action_end_frame": 38747
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1556014,
+          "route_action_end_frame": 64170
+        },
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 135155,
+          "route_action_end_frame": 14111
+        },
+        "morph_ball": {
+          "execution": 361,
+          "route_action_end_frame": 437
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 137386,
+          "route_action_end_frame": 16610
+        },
+        "ridley_area": {
+          "execution": 1987951,
+          "route_action_end_frame": 88224
+        },
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 25
+    },
+    "milestone_witness_names": [
+      "bombs",
+      "brinstar",
+      "energy_tank",
+      "kraid_area",
+      "missile_capacity",
+      "morph_ball",
+      "norfair",
+      "ridley_area"
+    ]
+  },
+  {
+    "path": "/root/harmony-alternative-futures-20260908/runs/l04-development-mean-s5/metroid-full-s5-w4-m8192/summary.json",
+    "sha256": "6e58924a7cdf91d8f4b07375f8d5028a29a562de4ccd5ba827e655159a863436",
+    "case": "l04-development-mean-s5",
+    "seed": 5,
+    "frames": 56548476,
+    "executions": 500000,
+    "stop_reason": "execution_limit",
+    "status": "complete",
+    "terminal": "death_or_bcd_underflow_or_ending_v3",
+    "named_progress": {
+      "first_seen": {
+        "bombs": null,
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 68
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 403868,
+          "route_action_end_frame": 35816
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": null,
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 185338,
+          "route_action_end_frame": 13091
+        },
+        "morph_ball": {
+          "execution": 826,
+          "route_action_end_frame": 1200
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 191788,
+          "route_action_end_frame": 15470
+        },
+        "ridley_area": null,
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 10
+    },
+    "milestone_witness_names": [
+      "brinstar",
+      "energy_tank",
+      "missile_capacity",
+      "morph_ball",
+      "norfair"
+    ]
+  }
+]

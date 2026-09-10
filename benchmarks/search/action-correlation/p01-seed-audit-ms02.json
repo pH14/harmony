@@ -1,0 +1,42 @@
+{
+  "recorded_utc": "2026-09-10T00:55:58.750597+00:00",
+  "host": "ms02",
+  "seeds": [
+    1805348997,
+    1911459263,
+    3483428449,
+    4271701205
+  ],
+  "roots": [
+    "/root/harmony",
+    "/root/harmony-255",
+    "/root/harmony-alternative-futures-20260908",
+    "/root/harmony-alternative-futures-followup-20260909",
+    "/root/harmony-at-api-target",
+    "/root/harmony-at-fixes",
+    "/root/harmony-at-fixture",
+    "/root/harmony-at-guest",
+    "/root/harmony-at-guest-seeded",
+    "/root/harmony-at-old",
+    "/root/harmony-depth-transfer-20260909",
+    "/root/harmony-fault-corpus",
+    "/root/harmony-fault-library",
+    "/root/harmony-pr253-diag",
+    "/root/harmony-pr253-soak",
+    "/root/harmony-pr253-trace-bounded",
+    "/root/harmony-pr253-trace-repeat",
+    "/root/harmony-roms",
+    "/root/harmony-search-eval",
+    "/root/harmony-searcher-scaling"
+  ],
+  "files_checked": 1888,
+  "matches": [],
+  "skipped": [
+    {
+      "path": "/root/harmony-alternative-futures-20260908/benchmarks/search/._candidate-registration-005.json",
+      "reason": "'utf-16-be' codec can't decode byte 0xa7 in position 162: truncated data"
+    }
+  ],
+  "scanned_path_content_digest": "cc2b98a8e6f2cdfb4f0ee675441665f7d8173caee387eb49046a9da7e0bf99de",
+  "scope": "Saved summary, registration and seed JSON files under /root/harmony* excluding repository/build caches and assets; files above 8 MiB are explicitly skipped. Unrecorded historical use cannot be certified."
+}

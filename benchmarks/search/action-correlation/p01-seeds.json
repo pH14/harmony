@@ -1,0 +1,11 @@
+{
+  "recorded_utc": "2026-09-10T00:54:41.169451+00:00",
+  "method": "Four secrets.randbits(32) draws after closing D01 and before any P01 outcomes. Audit saved research records on both hosts before registration/dispatch.",
+  "seeds": [
+    3483428449,
+    1805348997,
+    4271701205,
+    1911459263
+  ],
+  "role": "Independent prospective whole-persistence confirmation; neither recycled D01 seeds nor untouched boss/Wily validation."
+}

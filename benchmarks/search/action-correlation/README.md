@@ -1,10 +1,12 @@
 # Changing one control component at a time
 
-The completed depth-transfer gate failed, and the qualified E03 diagnostic found
-no classified encounter in eight selected development tapes. Those findings do
-not establish campaign-wide absence or explain the causal failure. This study
-examines a distinct, inexpensive action proposal; it claims no game improvement
-yet. Retention, parent selection, observations, terminal semantics and fresh
+The component-refresh candidate failed its registered gate after two seeds.
+Its matched whole-command control reached the energy tank on both seeds while
+ordinary actions were censored; that exploratory result requires a separate
+prospective confirmation. The earlier depth-transfer gate also failed, and the
+qualified E03 diagnostic found no classified encounter in eight selected tapes.
+These findings do not establish campaign-wide absence or explain the causal
+failure. Retention, parent selection, observations, terminal semantics and fresh
 origins remain fixed. Existing failed duration and continuation experiments
 remain failed.
 
@@ -54,7 +56,9 @@ repeats the entire previous command with probability `37/210`, otherwise draws
 from `μ`. It has the same `43/216` self-transition probability and exactly the
 same truncated geometric full-command run-length law as the candidate. Special
 taps and durations also have the same law. A candidate gain over that control
-would distinguish component correlation from whole-command persistence.
+would rule out a difference in this local complete-command run-length law.
+It would not separate individual-, pair- and triple-component contributions
+or adaptive archive effects.
 
 ## Exact checks and limits
 
@@ -165,14 +169,81 @@ At registration, no performance outcome has been inspected. Passing both gates
 would earn independent confirmation and same-policy MM2 transfer; neither a
 qualification nor a precursor win completes the original boss/Wily goal.
 
-The first completed triplet (seed `3735135754`, ms02) is unfavorable to the
-component candidate: it and ordinary actions both fail to attain the energy
-tank by 50M frames; the matched whole-command control attains it at 34,826,915.
-All three cells verify and finish normally. The triplet uses 134,829,399 admitted
-search frames and 426,276 known witness-replay frames. See
-[the partial-wave record](d01-after-triplet1.json). The ARM triplet remains in
-progress, so the panel gate is unresolved and the second wave remains unrun.
-This single exploratory whole-command result does not earn its promotion.
+The [completed first wave](d01-analysis.json) fails the component gate:
+
+| Fresh seed / host | Ordinary | Component refresh | Matched whole-command persistence |
+| --- | --- | --- | --- |
+| `3192859461` / msr1 | Censored at 50M | Censored at 50M | 40,323,515 |
+| `3735135754` / ms02 | Censored at 50M | Censored at 50M | 34,826,915 |
+
+Costs are first admitted milestone observations. All six cells verify and finish
+normally. Component refresh has zero strict wins against either control; three
+wins in four are impossible. Triplets 2/3, component confirmation, transfer and
+untouched validation remain **unrun**. The historical
+[first completed triplet](d01-after-triplet1.json) remains available separately.
+
+The whole-command control has two exploratory wins and 24.85% lower mean
+restricted cost than ordinary actions. It was not the registered candidate and
+does not inherit the component gate or count as a successful confirmed policy.
+Its two results motivate a new frozen test of the unchanged policy; they must
+not be pooled with that test or used to tune the repeat probability.
+
+This wave spends 275,155,794 admitted search frames and 790,792 known witness
+replay frames. The [closed first-block ledger](ledger-after-d01.json) is
+**647,118,811 admitted search and 44,909,399 known auxiliary frames**. Setup and
+unadmitted-work gaps remain explicit. Both experiment services are finished.
+
+## Scientific critique and existing evidence
+
+The [Fable 5.1 xhigh critique](fable-feedback.md), exact supplied input and
+[verified provenance](fable-consultation-provenance.json) are preserved. The
+[adjudication](fable-adjudication.md) accepts its distinction between proposal
+mathematics and useful game progress, resolves two suspected implementation
+gaps by source inspection, and rejects overly strong inferences from an empty
+final archive or a single damaging continuation.
+
+The existing named-progress aggregate observes live collected action boundaries
+throughout admitted work, including observations on rejected candidates. It is
+not restricted to the final witness or archive. None of the six D01 cells has a
+recorded Bombs or boss-area observation before its stop. This is a scoped
+negative measurement, not absence on every physical frame or later in a run.
+The [43-run inventory](long-campaign-inventory-ms02.json) includes longer prior
+campaigns that did reach boss areas without recorded defeats. Different horizons,
+policies and reused seeds must not be pooled into a new performance comparison.
+
+The long T03 seed-5 Ridley-area tape has input hash `03e1adf0185bb5dc…`, exactly the
+already completed NQ02 fixture. Its `boss-context` and real-self-restore passes
+both have zero classified frames. A further replay would duplicate measured
+work. E03's eight tapes and this distinct qualification tape provide no positive
+native fight, and they are not a campaign census. No observer change or new
+instrumentation follows from these negatives. The available long-run reports
+also omit complete snapshot archives, so reconstructing 33.9M frames merely to
+obtain a final census is not justified.
+
+## P01: independent prospective persistence test
+
+The [next decision](p01-decision.md) nominates the unchanged whole-command
+policy from its two exploratory results, while keeping D01 closed. The
+[registration](p01-registration.json) freezes four new paired seeds, separate
+from D01 and untouched boss/Wily validation. Pair 0/2 use msr1 and pair 1/3 use
+ms02; arm order is balanced across the panel. Each pair holds source, host,
+CPU set and all other settings fixed.
+
+Only pairs 0/1 launch initially. Their completion must leave three wins in four
+attainable before pairs 2/3 can run. The fixed 50M-frame energy-tank endpoint,
+15% mean restricted-cost improvement and 1.25 resource-ratio gates are unchanged.
+The next block reserves at most 400M nominal search frames plus bounded drain,
+4M known auxiliary frames and a 02:50 UTC deadline on 2026-09-10. Every cell
+retains the previous 20-minute search and complete process/output bounds. This
+new allocation is explicit; it does not rewrite the closed block's ceilings.
+
+[score_persistence.py](score_persistence.py) verifies the frozen host-local
+records and uses the existing milestone and four-pair scoring contracts. Five
+planted checks cover eight-cell completion, partial positive evidence, censored
+futility, identity corruption and cost preservation after measurement failure.
+They execute no emulator and are explicitly synthetic, not P01 measurements.
+A pass earns a separately registered transfer/depth decision, not a boss/Wily
+claim. A failure closes the proposal without tuning or another precursor panel.
 
 Registrations freeze verifier bytes as well as native builds. To reproduce
 Q01/Q02, use `verify_native.py` from commit `8e390f3b`; QX01 uses the revision at

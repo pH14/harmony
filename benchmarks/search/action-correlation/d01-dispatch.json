@@ -12,7 +12,8 @@
       "root": "/root/harmony-retention-theory-20260908",
       "unit": "harmony-action-d01-triplet0-20260909.service",
       "started_utc": "2026-09-09T23:51:02+00:00",
-      "last_verified_state": "active/running; ordinary completed, component running"
+      "last_verified_state": "terminal successful service; all three cells complete",
+      "completed_evidence": "d01-analysis.json"
     },
     {
       "triplet": 1,
@@ -21,11 +22,12 @@
       "unit": "harmony-action-d01-triplet1-20260909.service",
       "started_utc": "2026-09-09T23:51:09+00:00",
       "last_verified_state": "inactive/dead, Result=success; all three cells complete",
-      "completed_evidence": "d01-after-triplet1.json"
+      "completed_evidence": "d01-analysis.json"
     }
   ],
   "second_wave_dispatched": false,
-  "next_action": "Retrieve completed results.json for triplets 0 and 1 as triplet-0-results.json and triplet-1-results.json. Run score_development.py against d01-registration.json. Require both triplets complete and both comparison gates attainable, sufficient deadline reservation, and remaining frame/auxiliary balance before dispatching the already registered triplets 2 and 3. Preserve all failures and do not retry implicitly.",
-  "goal": "Active; original repeated fresh boss/Wily objective remains unmet. No performance conclusion from partial triplets.",
-  "last_checked_utc": "2026-09-10T00:11:33.951711+00:00"
+  "next_action": "D01 is closed. Preserve the whole-control signal separately and register P01 on fresh seeds before dispatch; see p01-decision.md.",
+  "goal": "Active; original repeated fresh boss/Wily objective remains unmet. Component refresh failed the registered gate.",
+  "last_checked_utc": "2026-09-10T00:36:03.948246+00:00",
+  "decision": "stop_action_correlation_line"
 }

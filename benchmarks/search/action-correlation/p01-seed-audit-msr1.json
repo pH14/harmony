@@ -1,0 +1,27 @@
+{
+  "recorded_utc": "2026-09-10T00:55:51.483855+00:00",
+  "host": "msr1",
+  "seeds": [
+    1805348997,
+    1911459263,
+    3483428449,
+    4271701205
+  ],
+  "roots": [
+    "/root/harmony-item5-fullchord-target",
+    "/root/harmony-nested-validation-20260904",
+    "/root/harmony-retention-theory-20260908",
+    "/root/harmony-roms",
+    "/root/harmony-searcher-over-consonance",
+    "/root/harmony-searcher-over-consonance-ci-13f46607-fix3",
+    "/root/harmony-searcher-over-consonance-ci-ada0-fix2",
+    "/root/harmony-searcher-over-consonance-ci-e88dd329-loop",
+    "/root/harmony-searcher-over-consonance-runs",
+    "/root/harmony-smb-completion-evidence"
+  ],
+  "files_checked": 266,
+  "matches": [],
+  "skipped": [],
+  "scanned_path_content_digest": "1dcfd3bae86b8853b9bb338f23dd5cabcaa6b6433ccbf791bc3e8ad73e39b0b0",
+  "scope": "Saved summary, registration and seed JSON files under /root/harmony* excluding repository/build caches and assets; files above 8 MiB are explicitly skipped. Unrecorded historical use cannot be certified."
+}

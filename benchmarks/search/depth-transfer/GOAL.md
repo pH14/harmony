@@ -181,3 +181,67 @@ host. Stop further dispatch if either three-win criterion becomes impossible,
 measurement fails, or resources fail. No replacement seeds or parameter sweep
 follow. A pass earns a new independent confirmation decision; it does not make
 the original breakthrough objective complete.
+
+## Decision after the action-correlation critique and initial comparisons
+
+The completed component candidate has zero strict wins against ordinary actions
+on the first two seeds; both arms are censored at 50M on both seeds. Three wins
+in four are impossible. All six first-wave cells are complete; preserve actual
+costs and leave triplets 2/3 unrun. The matched-whole control has two favorable
+exploratory results and is not a confirmed successful policy.
+
+Fable 5.1 xhigh independently reviewed the new record on 2026-09-10, with no
+tools and a ten-minute limit. The verified response and accepted/corrected
+claims are in ../action-correlation/fable-adjudication.md. It confirms the
+finite kernel calculations, while correctly challenging the weak link between
+precursor gains and the boss/Wily objective. Its proposed inferences from an
+empty final archive or one local HP decrease are too strong and are not adopted.
+
+A zero-emulation artifact inventory found no long Metroid campaign checkpoint
+among the named campaign files in the specified research trees; the largest
+persisted runs were below 0.71M frames. Therefore do not spend another 33.9M
+reconstruction merely for a final-archive census. Preserve the distinction
+between missing evidence, final cached states, and states ever observed or
+retained.
+
+The source audit found that the existing named-progress aggregate already covers
+live collected action-boundary observations throughout admitted work, independent
+of retention. No D01 cell recorded Bombs or boss-area entry before its stop.
+The proposed long Ridley-area tape is exactly the completed NQ02 fixture, whose
+context and restore passes have zero classified frames. Do not spend another
+replay or add area counters to duplicate those measurements. No observer change
+or broad telemetry framework is earned. Observed boss context would not alone
+prove fight capability, and one damaging continuation would not establish an
+allocation bottleneck.
+
+## Next bounded decision: independent persistence confirmation
+
+Close the first block at 647,118,811 admitted search and 44,909,399 known auxiliary
+frames (../action-correlation/ledger-after-d01.json), below its original ceilings.
+Keep its unrun cells and physical-cost gaps explicit. Under the user's continuing
+authorization, allocate a separate P01 block to test the now-complete whole-control
+signal. See ../action-correlation/p01-decision.md and p01-registration.json for
+the evidence, distinct decision, exact seeds and source/build identities.
+
+This test is motivated by two exploratory energy-tank wins, not by the critique
+alone. Freeze the unchanged whole-repeat operator against ordinary actions on
+four fresh paired seeds; exclude D01 from the score. Use one pair per host in
+each of two waves, opposite arm order and the existing four-CPU/8-GiB/50M-frame
+settings. Maximum 400M nominal admitted frames plus bounded in-flight drain,
+4M known auxiliary frames, and an absolute 2026-09-10 02:50 UTC deadline. Retain
+20-minute search, 180-second finish, 1,410-second outer, 12-GiB process and 4-GiB
+output limits per cell. No cell starts without its complete time reservation.
+
+After both first-wave pairs finish, stop if three strict wins in four are
+impossible, measurement fails or resource bounds fail. Otherwise complete only
+the remaining registered pairs. Passing needs three strict wins, at least 15%
+lower mean restricted milestone cost and aggregate CPU/elapsed totals at most
+1.25 times ordinary controls. Both-censored pairs tie. No seed replacement,
+repeat-probability tuning, horizon increase or combination with the no-cost
+selector is earned.
+
+A failure closes this proposal. A pass earns a separately registered same-policy
+MM2 transfer and later-depth decision, not an assumption that energy-tank gains
+cause boss progress. Untouched validation still requires qualified development
+at the useful target and complete affordable matched panels. The original full
+matched-control boss/Wily goal remains active and unachieved.
