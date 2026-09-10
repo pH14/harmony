@@ -377,3 +377,49 @@ and there are no pair3/4 outputs. Resumed totals are1,083,261,532 admitted searc
 and **57,624,339 known auxiliary frames**. Unknown engine setup, unadmitted work
 and reconstruction remain separate; exact total-physical-work equality is not
 claimed. The original fresh repeated boss/Wily objective remains unachieved.
+
+## RF01: full resources do not produce a defeat in the fixed episode bank
+
+The [registered joint intervention](rf01-registration.json) repeats the original
+E01/S01 encounter and suffix bank, then changes only health79→1999 tenths and
+missiles0→20 within existing capacities. The historical control reproduces all
+six saved artifacts byte for byte. The independent full-snapshot model matches
+both native snapshots exactly: only the three named RAM bytes and cached decoded
+resource fields differ. No equipment, boss, position or clock change is allowed.
+
+| Cell | Ordinary trials with surviving damage | Ordinary defeats | Passive defeats | Seconds | Physical frames including verification |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Historical resources | 1/32 | 0/32 | 0/32 | 54.03 | 378,525 |
+| Artificial full resources | 7/32 | 0/32 | 0/32 | 82.04 | 496,427 |
+
+All ordinary and passive episodes die before their command/frame limits. Each
+cell's first ordinary damage witness occurs after268 continuation frames and
+passes two held-command replays. The artificial witness records the resource
+operation at the exact3314-action prefix boundary with before/after snapshot
+hashes; it cannot be replayed or described as an ordinary action-only witness.
+The other six artificial-state damage observations are recorded trials, not
+independently held-replayed witnesses. Passive command partitions follow a shared
+released-button trajectory and do not provide32 independent replications.
+
+The [frozen scorer](verify_resource_counterfactual.py) recomputes the
+[analysis](rf01-analysis.json) from the losslessly compressed `rf01-output/`.
+No surviving defeat means the registered oracle line closes. More survival or
+damage does not rescue this gate, reopen retry or justify resource-policy
+allocation. The negative concerns this one root, joint intervention, reused
+bank and episode bounds; it establishes neither global impossibility nor that
+resources never matter. Different death times give unequal physical exposure,
+so the observed contrast is not a matched-work efficiency result.
+
+The [closed ledger](ledger-after-rf01.json) charges874,952 known auxiliary frames,
+including237,608 prefix frames,161,056 trial frames and476,288 held-replay frames.
+The5,574 setup frames are already included. Both services are inactive/dead with
+successful exit status and peak child RSS below11 MiB. Resumed totals are
+1,083,261,532 admitted search and **58,499,291 known auxiliary frames**; earlier
+physical-work gaps and the expired tranche remain separate.
+
+Source checks pass144 feature-enabled NES library tests, four controller-probe
+tests, strict Clippy and three focused Miri tests on ms02. The required root
+pre-push gates pass1,184 tests with23 skipped in35.864 seconds. All33 endpoint
+evidence tests pass, including rejection of a changed non-resource byte, a
+missing witness operation and an incomplete process presented as a negative.
+This closes a causal diagnostic; the repeated fresh boss/Wily goal is unachieved.

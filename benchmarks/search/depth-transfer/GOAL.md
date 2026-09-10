@@ -609,3 +609,30 @@ joint-resource panel. Its primary outcome is surviving Ridley defeat; more
 survival or damage is explanatory only. Even a positive earns only an audit of
 whether fresh search can actually supply useful resource states. Keep the retry
 candidate stopped, the existing ledgers frozen and the original goal unachieved.
+
+## RF01 closed; end the single-root controller diagnostic line
+
+RF01 completes exact historical compatibility and the single full-resource
+intervention. Full health/ammunition produces7/32 ordinary surviving-damage
+observations versus1/32, but all ordinary/passive episodes die and neither cell
+has a defeat. Before/after state identity and both saved witnesses' two held
+replays pass. The secondary damage count does not reopen allocation. No larger
+resource panel, selected root, longer horizon, replacement bank or retry rescue
+follows. Resource retention with corrected terminal semantics remains unmeasured.
+
+Both services are terminal. The block uses874,952 known auxiliary frames and
+136.07 summed process wall seconds. Resumed totals are1,083,261,532 admitted
+search and58,499,291 known auxiliary frames, with frozen historical totals and
+unknown physical costs preserved. See ../endpoint-encounter/ledger-after-rf01.json.
+The artificial operation never enters fresh search or ordinary witness inputs.
+
+The original goal remains active and unachieved. Close this controller line and
+return the next decision to a generic search mechanism. Use the existing code,
+retained-state ancestry and failed-gate inventory to identify a distinct causal
+change; an observational resource association or already visited map is
+insufficient. Before more implementation or emulator allocation, state what the
+candidate changes beyond existing selection/yield/barren mechanisms, its cheapest
+executable falsifier, its adverse case and the fresh useful endpoint it could
+improve. Do not build another observer or reopen a failed screen from a secondary
+metric. Any earned native block must be separately frozen and bounded on msr1
+or ms02. Keep publication and later work in the single draft PR #287.

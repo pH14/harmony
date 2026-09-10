@@ -1,0 +1,18 @@
+{
+  "format": "rf01-publication-verification-v1",
+  "verified_utc": "2026-09-10T07:48:46.479404+00:00",
+  "rust_source_commit": "f47ad6c1651b019703a661347d3d3f97ac0e1673",
+  "root_pre_push": {
+    "format": "pass",
+    "clippy": "all-features/all-targets warnings denied; pass",
+    "tests_passed": 1184,
+    "tests_skipped": 23,
+    "test_seconds": 35.864,
+    "log_sha256": "2e49e7be1ba3d044bfe54432e2a27f1328a6ca030f2844cf34443b23e250f3d3"
+  },
+  "endpoint_evidence_tests": 33,
+  "endpoint_evidence_test_seconds": 0.607,
+  "compressed_analysis_recomputation": "byte-identical",
+  "native_services": "inactive/dead, exit0, MainPID0",
+  "additional_native_retries": 0
+}
