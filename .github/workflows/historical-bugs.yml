@@ -20,11 +20,11 @@ on:
         type: boolean
         default: false
       msr_snapshot:
-        description: Qualify scalar MSR and PIO snapshot completion boundaries
+        description: Qualify MSR, PIO and fragmented MMIO snapshot completion boundaries
         type: boolean
         default: false
       candidate_ref:
-        description: Exact candidate commit or branch for CPU snapshot qualification
+        description: Exact candidate commit or branch for snapshot qualification
         type: string
         default: codex/snapshot-cpu-state
 permissions:
@@ -232,6 +232,7 @@ jobs:
           sudo chmod 666 /dev/kvm
           cargo test --locked -p vmm-backend --lib 2>&1 | tee reports/portable.log
           cargo test --locked -p vmm-backend --test kvm_smoke serviced_ -- --ignored --test-threads=1 --nocapture 2>&1 | tee reports/scalar-kvm.log
+          cargo test --locked -p vmm-core --test x86_cpu_snapshots live_kvm::mmio_rmw_finishes_before_full_vmm_snapshot -- --ignored --test-threads=1 --nocapture 2>&1 | tee reports/mmio-vmm-kvm.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
