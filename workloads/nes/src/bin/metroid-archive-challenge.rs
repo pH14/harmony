@@ -18,9 +18,11 @@ use nes_workload::{
         campaign::{
             CampaignCheckpoint, CampaignConfig, CampaignExecutionOptions, CampaignOrigin,
             Evaluation, Reporting, ResultBuffering, SnapshotCheckpoint, SnapshotCheckpointEntry,
-            replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
+            replay_campaign_checkpointed, replay_campaign_checkpointed_measured,
+            run_campaign_checkpointed_measured, run_campaign_checkpointed_with_options,
         },
         draw::{draw_mixture_from_identifier, suffix_shape_from_identifier},
+        physical_work::{PhysicalWorkMeter, PhysicalWorkReceipt},
     },
     target::{ExitKind, Target},
 };
@@ -66,6 +68,8 @@ struct Request {
     slot_retention: Option<String>,
     #[serde(default)]
     expected_retention_progress: Option<ScopedProgress>,
+    #[serde(default)]
+    measure_physical_work: bool,
 }
 
 fn slot_policy(q: &Request) -> Result<SlotRetentionPolicy> {
@@ -129,8 +133,29 @@ struct Cost {
     direct_setup_frames: u64,
     admitted_search_frames: u64,
     campaign_replay_admitted_frames: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_engine: Option<PhysicalWorkReceipt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay_engine: Option<PhysicalWorkReceipt>,
 }
 impl Cost {
+    /// Used only after successful completion of every direct helper and engine
+    /// call. Setup and admitted frames are components, never additional charges.
+    fn complete_physical(&self) -> Option<Value> {
+        let search = self.search_engine?.complete_frames()?;
+        let replay = self.replay_engine?.complete_frames()?;
+        let total = self
+            .direct_physical_frames
+            .checked_add(search)?
+            .checked_add(replay)?;
+        Some(json!({
+            "total": total, "direct_helpers": self.direct_physical_frames,
+            "search_engine": search, "replay_engine": replay,
+            "search_outside_admission": search.checked_sub(self.admitted_search_frames)?,
+            "replay_outside_admission": replay.checked_sub(self.campaign_replay_admitted_frames)?,
+            "scope": "Complete successfully constructed target lifetimes through final clock reads. Target destructors do not emulate frames in this pinned Metroid adapter. Not a live stopping counter."
+        }))
+    }
     fn room(&self, frames: u64, limit: u64) -> Result<()> {
         if self
             .direct_physical_frames
@@ -323,23 +348,41 @@ fn evaluate(q: &Request, output: &Path, execute: bool, cost: &mut Cost) -> Resul
         .ok_or("unknown milestone")?;
     let mut stream = BufWriter::new(fs::File::create(output.join("stream.jsonl"))?);
     let mut progress = LineWriter::new(fs::File::create(output.join("progress.jsonl"))?);
-    let (report, final_checkpoint) = run_campaign_checkpointed_with_options(
-        &game,
-        &config,
-        &origin,
-        &mut stream,
-        Some(&mut progress),
-        CampaignExecutionOptions {
-            frame_budget: Some(q.frames),
-            stop_after_milestone: Some(milestone),
-            result_buffering: if q.result_slots == 1 {
-                ResultBuffering::OnePerWorker
-            } else {
-                ResultBuffering::TwoPerWorker
-            },
-            slot_retention: slot_policy(q)?,
+    let options = CampaignExecutionOptions {
+        frame_budget: Some(q.frames),
+        stop_after_milestone: Some(milestone),
+        result_buffering: if q.result_slots == 1 {
+            ResultBuffering::OnePerWorker
+        } else {
+            ResultBuffering::TwoPerWorker
         },
-    )?;
+        slot_retention: slot_policy(q)?,
+    };
+    let outcome = if q.measure_physical_work {
+        let meter = PhysicalWorkMeter::default();
+        let result = run_campaign_checkpointed_measured(
+            &game,
+            &config,
+            &origin,
+            &mut stream,
+            Some(&mut progress),
+            options,
+            &meter,
+        );
+        // Read after the scoped workers have joined, on success or error.
+        cost.search_engine = Some(meter.receipt());
+        result
+    } else {
+        run_campaign_checkpointed_with_options(
+            &game,
+            &config,
+            &origin,
+            &mut stream,
+            Some(&mut progress),
+            options,
+        )
+    };
+    let (report, final_checkpoint) = outcome?;
     stream.flush()?;
     progress.flush()?;
     cost.admitted_search_frames = report.frames_emulated;
@@ -357,8 +400,21 @@ fn evaluate(q: &Request, output: &Path, execute: bool, cost: &mut Cost) -> Resul
     write(&output.join("campaign.json"), &value)?;
     fs::write(output.join("checkpoint.bin"), final_checkpoint.to_bytes()?)?;
     let stream_bytes = fs::read(output.join("stream.jsonl"))?;
-    let (verified, verified_checkpoint) =
-        replay_campaign_checkpointed(&game, &stream_bytes, None, Some(&checkpoint))?;
+    let replay_outcome = if q.measure_physical_work {
+        let meter = PhysicalWorkMeter::default();
+        let result = replay_campaign_checkpointed_measured(
+            &game,
+            &stream_bytes,
+            None,
+            Some(&checkpoint),
+            &meter,
+        );
+        cost.replay_engine = Some(meter.receipt());
+        result
+    } else {
+        replay_campaign_checkpointed(&game, &stream_bytes, None, Some(&checkpoint))
+    };
+    let (verified, verified_checkpoint) = replay_outcome?;
     cost.campaign_replay_admitted_frames = verified.frames_emulated;
     if serde_json::to_value(&verified)? != serde_json::to_value(&report)?
         || verified_checkpoint != final_checkpoint
@@ -409,8 +465,7 @@ fn evaluate(q: &Request, output: &Path, execute: bool, cost: &mut Cost) -> Resul
     }
     write(&output.join("witness-local.json"), &local)?;
     write(&output.join("witness-full.json"), &full)?;
-    Ok(
-        json!({"format":"metroid-archive-challenge-result-v1","scope":"supplied-state capability; never fresh validation",
+    let mut result = json!({"format":"metroid-archive-challenge-result-v1","scope":"supplied-state capability; never fresh validation",
         "complete":complete,"milestone":q.milestone,"milestone_reached_within_budget":reached,
         "first_milestone":report.first_milestone,"executions":report.executions_completed,
         "frames":report.frames_emulated,"frame_budget_overshoot":report.frames_emulated.saturating_sub(q.frames),
@@ -421,8 +476,18 @@ fn evaluate(q: &Request, output: &Path, execute: bool, cost: &mut Cost) -> Resul
             "dead":local_first.dead,"emulator_sha256":emulator_hash(&local_first.snapshot)?,
             "local_input_sha256":hash(&fs::read(output.join("witness-local.json"))?),
             "full_input_sha256":hash(&fs::read(output.join("witness-full.json"))?)},"cost":cost,
-        "unknown":"Engine target setup, unadmitted work and reconstruction remain additional unknown costs. Campaign replay admitted frames are an inferred component, not total physical replay work."}),
-    )
+        "unknown":"Engine target setup, unadmitted work and reconstruction remain additional unknown costs. Campaign replay admitted frames are an inferred component, not total physical replay work."});
+    if q.measure_physical_work {
+        result["format"] = json!("metroid-archive-challenge-physical-result-v2");
+        result["physical_frames"] = cost
+            .complete_physical()
+            .ok_or("engine lifetimes did not yield complete physical accounting")?;
+        result
+            .as_object_mut()
+            .ok_or("result is not an object")?
+            .remove("unknown");
+    }
+    Ok(result)
 }
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
@@ -466,6 +531,7 @@ mod tests {
             slot_policy(&q).unwrap(),
             SlotRetentionPolicy::Representative
         );
+        assert!(!q.measure_physical_work);
         assert!(valid_limits(&q, true));
         q.slot_retention = Some("resource_guarded_progress_2_v0".into());
         assert!(!valid_limits(&q, true));
@@ -488,6 +554,44 @@ mod tests {
             valid_limits(&q, true),
             cfg!(feature = "metroid-retention-progress")
         );
+    }
+    #[test]
+    fn physical_totals_count_each_component_once_and_reject_incomplete_receipts() {
+        let mut cost = Cost {
+            direct_physical_frames: 100,
+            direct_setup_frames: 35,
+            admitted_search_frames: 42,
+            campaign_replay_admitted_frames: 42,
+            search_engine: Some(PhysicalWorkReceipt {
+                construction_attempts: 5,
+                targets_created: 5,
+                targets_closed: 5,
+                constructor_frames: 35,
+                closed_post_constructor_frames: 42,
+                invalid_counter: false,
+            }),
+            replay_engine: Some(PhysicalWorkReceipt {
+                construction_attempts: 1,
+                targets_created: 1,
+                targets_closed: 1,
+                constructor_frames: 7,
+                closed_post_constructor_frames: 42,
+                invalid_counter: false,
+            }),
+        };
+        let full = cost.complete_physical().unwrap();
+        assert_eq!(full["total"], 226); // 100 + (35 + 42) + (7 + 42).
+        assert_eq!(full["search_outside_admission"], 35);
+        assert_eq!(full["replay_outside_admission"], 7);
+        cost.search_engine.as_mut().unwrap().targets_closed = 4;
+        assert!(cost.complete_physical().is_none());
+        cost.search_engine.as_mut().unwrap().targets_closed = 5;
+        cost.admitted_search_frames = 100;
+        assert!(cost.complete_physical().is_none());
+        let legacy = serde_json::to_value(Cost::default()).unwrap();
+        assert!(legacy.get("search_engine").is_none());
+        assert!(legacy.get("replay_engine").is_none());
+        assert!(Cost::default().complete_physical().is_none());
     }
     #[test]
     fn inherited_and_post_budget_events_do_not_pass() {

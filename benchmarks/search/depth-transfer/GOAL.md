@@ -1230,3 +1230,21 @@ A qualification pass alone earns no fresh-policy budget. Independent confirmatio
 MM2 transfer and untouched validation remain outstanding; every earlier failed
 gate stays closed. msr1 remains unavailable. The full research goal is active
 and unachieved.
+
+## PM01 source accounting decision
+
+The successful coordinator already drains and admits every reserved job; job
+clock deltas include reconstruction. The new reporting-only lifetime meter can
+check the remaining constructor cost and retain executed work after an error.
+It changes no stream fields, retention rule, projection or action law. It is not
+a live frame limiter; incomplete target lifetimes and failed constructors remain
+unavailable rather than zero. No unsafe code changed.
+
+Source checks pass: 167 generic tests plus one interface test, 154 NES library
+tests, both five-test caller variants and strict Clippy. The audit predicts
+983,632 total physical frames for the existing PG01 progress cell, including
+five search constructors and one replay constructor at 929 frames each. Next
+publish/build on ms02, then separately register that exact measurement with
+byte-identical campaign/checkpoint/witness gates. This source decision allocates
+no native work or utility panel. PG01 and earlier gates remain closed, msr1 is
+unavailable, and the original discovery/transfer/untouched goal remains active.

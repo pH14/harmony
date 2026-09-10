@@ -1,0 +1,81 @@
+{
+  "format": "retention-pm01-source-checks-v1",
+  "recorded_utc": "2026-09-10T21:30:51.742178+00:00",
+  "status": "passed",
+  "native_rom_frames": 0,
+  "native_qualification": "unallocated and unrun",
+  "note": "Final generic suite and both caller variants include the clock saturation guard. The NES library suite passed before that guard; the added edge is covered in the final generic suite and final strict Clippy/caller builds. No unsafe code changed.",
+  "checks": [
+    {
+      "name": "searcher-suite",
+      "command": "cargo test --locked --manifest-path dissonance/searcher/Cargo.toml --all-features",
+      "results": [
+        "test result: ok. 167 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.77s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ],
+      "gzip": "pm01-source-output/searcher-suite.log.gz",
+      "raw_bytes": 17132,
+      "raw_sha256": "041c03ca56bbae36b32f6b77fa62cadcf8b5bcc62d82bacde1ccda8b63a258d8",
+      "gzip_bytes": 4696,
+      "gzip_sha256": "31a6add308a84b5210bf9946e2a260bc67ba66305d14ba9b88ee7c4f478e99c3"
+    },
+    {
+      "name": "searcher-clippy",
+      "command": "cargo clippy --locked --manifest-path dissonance/searcher/Cargo.toml --all-targets --all-features -- -D warnings",
+      "results": [],
+      "gzip": "pm01-source-output/searcher-clippy.log.gz",
+      "raw_bytes": 175,
+      "raw_sha256": "7c0d1161f94122d6a2437ce46d29b0c619090ee73e9e5c0cc049417784f44d42",
+      "gzip_bytes": 163,
+      "gzip_sha256": "9caf85789fe9cea90c4f7f797eb66eb06435a9a3e3e5914b2c158fd23796de58"
+    },
+    {
+      "name": "nes-library",
+      "command": "cargo test --locked --manifest-path workloads/nes/Cargo.toml --lib --bin metroid-archive-challenge --features metroid-retention-progress",
+      "results": [
+        "test result: ok. 154 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 24.73s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ],
+      "gzip": "pm01-source-output/nes-library.log.gz",
+      "raw_bytes": 15002,
+      "raw_sha256": "fce42965bc721a8476202524e7e54cb411ef9e429b0bc33a5eb1b3b3de440d88",
+      "gzip_bytes": 4224,
+      "gzip_sha256": "eec59c415a3918c62f3eea554e6b0ddd2be0ac1f68ad87bf6b30b2d2dbde57bc"
+    },
+    {
+      "name": "caller-default",
+      "command": "cargo test --locked --manifest-path workloads/nes/Cargo.toml --bin metroid-archive-challenge",
+      "results": [
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ],
+      "gzip": "pm01-source-output/caller-default.log.gz",
+      "raw_bytes": 899,
+      "raw_sha256": "2fffa32f68f5fce5ff7fb1e72547bfcdb1c2972f10920aaf3a37585e2ae99500",
+      "gzip_bytes": 502,
+      "gzip_sha256": "7b3f8d1b02ae3498a29c8bdb220b07b4386a317d6351062e1a326f92c91b119c"
+    },
+    {
+      "name": "caller-progress",
+      "command": "cargo test --locked --manifest-path workloads/nes/Cargo.toml --bin metroid-archive-challenge --features metroid-retention-progress",
+      "results": [
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ],
+      "gzip": "pm01-source-output/caller-progress.log.gz",
+      "raw_bytes": 796,
+      "raw_sha256": "49ca91af2af587effa6abc5a87e919e9ee15046135747b66a5aa0670fbd030cd",
+      "gzip_bytes": 481,
+      "gzip_sha256": "c09e10fcbfd594eb73c8d2570b3bb72d35afa582d3d32f98cbd02be24c857f65"
+    },
+    {
+      "name": "nes-clippy",
+      "command": "cargo clippy --locked --manifest-path workloads/nes/Cargo.toml --all-targets --features metroid-retention-progress -- -D warnings",
+      "results": [],
+      "gzip": "pm01-source-output/nes-clippy.log.gz",
+      "raw_bytes": 276,
+      "raw_sha256": "c573c940de43771613f1e136b9a0d0a38bc33516e9c6309f7fb48c52b37c4f0a",
+      "gzip_bytes": 182,
+      "gzip_sha256": "7a0d7629925f7969a2d5a426957bf846eb8b4ed4eec69bb4a230dbd384916f55"
+    }
+  ]
+}

@@ -340,3 +340,31 @@ work. The temporary snapshot and one first-witness input add bounded memory
 outside the archive's logical budget, measured under the process RSS cap just
 like worker result buffers. This is an experimental execution mechanism, not a
 claim that survivability is useful progress. Live dead ends can make it worse.
+
+
+### Physical work receipts
+
+`run_campaign_checkpointed_measured` and `replay_campaign_checkpointed_measured`
+accept a fresh `physical_work::PhysicalWorkMeter` for each phase. It reads every
+successfully constructed target's lifetime clock after construction and just
+before destruction, including workers whose results are discarded after an error.
+The optional guard adds no clock reads when measurement is omitted. Its receipt
+is separate from campaign reports, recorded bytes, RNG, keys and admission state;
+host overhead can still affect a wall-time cutoff.
+
+`PhysicalWorkReceipt::complete_frames()` returns a total only after every
+constructor and lifetime closes, with no counter regression, saturation, overflow
+or poisoned meter. During execution, live-target work is incomplete. Failed
+constructors expose no target clock, and an externally killed process may never
+produce a receipt. Target destructors are outside the clock contract; workloads
+must establish that they do not emulate frames there before claiming complete
+physical-frame accounting. The meter is reporting only, not a live budget limiter.
+
+For a successful fully drained Metroid snapshot-root campaign, admitted job
+frames already include action reconstruction. Lifetime measurement can check
+whether the remaining work is precisely constructor setup. Do not infer that
+identity for an errored or interrupted run, or for another workload without its
+own clock audit. Constructor frames are components of the lifetime total and must
+not be charged again. Source checks compare measured and unmeasured streams,
+reports and checkpoints under one/four workers and both result-buffer sizes;
+planted write failure verifies that unrecorded job work remains counted.

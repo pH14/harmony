@@ -173,3 +173,17 @@ Use the same `metroid-motion-context,metroid-boss-context-audit` feature identit
 as the capture. The finite diagnostic changes no archive policy. Its bounds and
 limitations are documented in
 [PC01](../../benchmarks/search/continuation-reassessment/pc01-design.md).
+
+
+The standalone `metroid-archive-challenge` request optionally sets
+`measure_physical_work: true`. It then attaches separate search/replay lifetime
+receipts and emits `metroid-archive-challenge-physical-result-v2`, whose
+`physical_frames.total` sums direct helpers and both complete engine lifetimes.
+Constructor setup and admitted work are components, not extra charges. Failed
+engine calls retain available receipts in `usage.json`; failed construction or
+process termination must remain incomplete. Omission preserves the earlier
+request/result and campaign-stream formats. This observation flag does not change
+retention or enforce a physical limit; use the registered search, process, memory
+and output bounds and qualify the physical-cost identity before an efficacy panel.
+QuickNES's lifetime clock survives restore/reset, and its destructor unloads and
+deinitializes the core without calling the frame runner.

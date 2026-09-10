@@ -513,3 +513,13 @@ verifies without emulation; see `pg01-results.md` and `verify_pg01.py`. Costs ad
 and its unused allocation released. Physical engine work remains partly unknown;
 close or tightly bound that gap before registering a conditional efficacy panel.
 No fresh-policy development or utility panel is allocated by this qualification.
+
+PM01 now supplies an optional target-lifetime meter for complete engine costs.
+The source audit predicts that clean Metroid snapshot-root runs omit constructor
+setup from admitted counts; replay-prefix actions are already counted, and all
+reserved work drains on success. The new meter observes whole target lifetimes,
+including discarded work on error paths, outside campaign state. Source checks
+pass (167 generic tests plus one interface test, 154 NES library tests, both
+five-test caller variants and strict Clippy). See `pm01-design.md` and
+`pm01-source-checks.json`. Next publish/build, then separately register one exact
+PG01 progress-cell measurement qualification. No native allocation has begun.

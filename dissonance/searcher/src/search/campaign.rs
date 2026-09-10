@@ -45,6 +45,7 @@ use crate::search::draw::{
 pub const SPLICE_ACTION_CAP: usize = 128;
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
 use crate::search::parallel::{ResultSlots, with_worker_pool};
+use crate::search::physical_work::{PhysicalWorkMeter, TrackedTarget};
 use crate::search::rand::RomuDuoJrRand;
 
 /// A campaign's finished report and its whole-tree snapshot checkpoint.
@@ -2937,8 +2938,46 @@ pub fn run_campaign_checkpointed_with_options<G: CampaignInterfaces>(
     config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
     stream: &mut dyn Write,
+    progress: Option<&mut dyn Write>,
+    options: CampaignExecutionOptions,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    run_campaign_checkpointed_inner(game, config, origin, stream, progress, options, None)
+}
+
+/// Run with independent target-lifetime accounting. The caller can read the
+/// meter after success or error; failed constructors remain unknown. The meter
+/// adds no campaign fields and implements no physical-work stopping rule.
+/// Its host overhead can change a wall-time cutoff.
+///
+/// # Errors
+/// Returns the same errors as the unmeasured entry point.
+pub fn run_campaign_checkpointed_measured<G: CampaignInterfaces>(
+    game: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    stream: &mut dyn Write,
+    progress: Option<&mut dyn Write>,
+    options: CampaignExecutionOptions,
+    meter: &PhysicalWorkMeter,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    run_campaign_checkpointed_inner(game, config, origin, stream, progress, options, Some(meter))
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_campaign_checkpointed_inner<G: CampaignInterfaces>(
+    game: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    stream: &mut dyn Write,
     mut progress: Option<&mut dyn Write>,
     options: CampaignExecutionOptions,
+    meter: Option<&PhysicalWorkMeter>,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
@@ -3009,9 +3048,10 @@ where
     core.archive
         .enable_continuations(config.mixture.uses_continuations());
     let mut counters = CampaignCounters::new(config.workers);
-    let mut bootstrap_target = game.new_target().map_err(|error| -> Box<dyn Error> {
-        format!("failed to build the bootstrap target: {error}").into()
-    })?;
+    let mut bootstrap_target =
+        TrackedTarget::new(game, meter).map_err(|error| -> Box<dyn Error> {
+            format!("failed to build the bootstrap target: {error}").into()
+        })?;
     let frames_before = game.frames_clocked(&bootstrap_target);
     counters.tree_import =
         bootstrap_core(game, &config.run, &mut core, &mut bootstrap_target, origin)?;
@@ -3053,7 +3093,7 @@ where
     let retention = config.retention;
     with_worker_pool(
         config.workers,
-        |_| game.new_target(),
+        |_| TrackedTarget::new(game, meter),
         |target, spec: JobSpec<G>| {
             let reservation = spec.reservation;
             let frames_before = game.frames_clocked(target);
@@ -3800,6 +3840,44 @@ pub fn replay_campaign_checkpointed<G: CampaignInterfaces>(
 where
     G::ArchiveReport: Serialize,
 {
+    replay_campaign_checkpointed_inner(game, stream_bytes, origin_report, origin_checkpoint, None)
+}
+
+/// Replay with a separate target-lifetime receipt, including constructor and
+/// any work performed before a replay error. A failed constructor stays unknown.
+///
+/// # Errors
+/// Returns the same replay errors as the unmeasured entry point.
+pub fn replay_campaign_checkpointed_measured<G: CampaignInterfaces>(
+    game: &G,
+    stream_bytes: &[u8],
+    origin_report: Option<&G::ArchiveReport>,
+    origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
+    meter: &PhysicalWorkMeter,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    replay_campaign_checkpointed_inner(
+        game,
+        stream_bytes,
+        origin_report,
+        origin_checkpoint,
+        Some(meter),
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn replay_campaign_checkpointed_inner<G: CampaignInterfaces>(
+    game: &G,
+    stream_bytes: &[u8],
+    origin_report: Option<&G::ArchiveReport>,
+    origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
+    meter: Option<&PhysicalWorkMeter>,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
     let stream_sha256 = format!("{:x}", Sha256::digest(stream_bytes));
     let text = std::str::from_utf8(stream_bytes)?;
     let mut lines = text.lines();
@@ -3988,7 +4066,7 @@ where
     core.archive
         .enable_continuations(replay_mixture.uses_continuations());
     let mut counters = CampaignCounters::new(header.workers);
-    let mut target = game.new_target().map_err(|error| -> Box<dyn Error> {
+    let mut target = TrackedTarget::new(game, meter).map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
     })?;
     let frames_before = game.frames_clocked(&target);

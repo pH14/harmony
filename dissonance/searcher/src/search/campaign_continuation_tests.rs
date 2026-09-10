@@ -170,7 +170,12 @@ impl InputPolicy for TestGame {
 
 impl TargetExecution for TestGame {
     fn new_target(&self) -> Result<Self::Target, String> {
-        Ok(TestTarget::default())
+        // Constructor work must be visible to lifetime accounting without
+        // entering snapshots or the campaign's historical admission clock.
+        Ok(TestTarget {
+            frames: 7,
+            ..TestTarget::default()
+        })
     }
     fn reset(&self, target: &mut Self::Target) {
         target.value = 0;
@@ -381,6 +386,150 @@ fn milestone_config(workers: u32) -> CampaignConfig<TestGame> {
             groups: vec![],
         }),
         victory_input_path: None,
+    }
+}
+
+#[test]
+fn lifetime_meter_preserves_campaign_bytes_and_closes_search_and_replay_costs() {
+    for workers in [1, 4] {
+        let mut config = milestone_config(workers);
+        config.execution_budget = 60;
+        let options = CampaignExecutionOptions {
+            frame_budget: Some(40),
+            ..Default::default()
+        };
+        let mut ordinary = Vec::new();
+        let baseline = run_campaign_checkpointed_with_options(
+            &TestGame,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut ordinary,
+            None,
+            options,
+        )
+        .unwrap();
+        for result_buffering in [ResultBuffering::OnePerWorker, ResultBuffering::TwoPerWorker] {
+            let meter = PhysicalWorkMeter::default();
+            let mut measured = Vec::new();
+            let outcome = run_campaign_checkpointed_measured(
+                &TestGame,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut measured,
+                None,
+                CampaignExecutionOptions {
+                    result_buffering,
+                    ..options
+                },
+                &meter,
+            )
+            .unwrap();
+            assert_eq!(ordinary, measured, "meter altered deterministic bytes");
+            assert_eq!(
+                serde_json::to_value(&baseline.0).unwrap(),
+                serde_json::to_value(&outcome.0).unwrap()
+            );
+            assert_eq!(baseline.1, outcome.1);
+            let receipt = meter.receipt();
+            assert_eq!(receipt.targets_created, u64::from(workers) + 1);
+            assert_eq!(receipt.constructor_frames, 7 * (u64::from(workers) + 1));
+            assert_eq!(
+                receipt.complete_frames(),
+                Some(outcome.0.frames_emulated + receipt.constructor_frames)
+            );
+            let replay_meter = PhysicalWorkMeter::default();
+            let replay = replay_campaign_checkpointed_measured(
+                &TestGame,
+                &measured,
+                None,
+                None,
+                &replay_meter,
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(&outcome.0).unwrap(),
+                serde_json::to_value(&replay.0).unwrap()
+            );
+            assert_eq!(outcome.1, replay.1);
+            let receipt = replay_meter.receipt();
+            assert_eq!(receipt.targets_created, 1);
+            assert_eq!(receipt.constructor_frames, 7);
+            assert_eq!(
+                receipt.complete_frames(),
+                Some(replay.0.frames_emulated + 7)
+            );
+        }
+    }
+}
+
+#[test]
+fn lifetime_meter_counts_work_when_output_fails_before_any_job_is_recorded() {
+    struct HeaderOnlyWriter(usize);
+    impl Write for HeaderOnlyWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.0 == 0 {
+                return Err(std::io::Error::other("planted stream failure"));
+            }
+            self.0 -= 1;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let config = milestone_config(4);
+    let meter = PhysicalWorkMeter::default();
+    let result = run_campaign_checkpointed_measured(
+        &TestGame,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut HeaderOnlyWriter(2),
+        None,
+        CampaignExecutionOptions::default(),
+        &meter,
+    );
+    assert!(result.is_err());
+    let receipt = meter.receipt();
+    assert_eq!(receipt.targets_created, 5);
+    assert_eq!(receipt.targets_closed, 5);
+    assert_eq!(receipt.constructor_frames, 35);
+    assert!(
+        receipt.complete_frames().unwrap() > 35,
+        "unrecorded physical job work vanished"
+    );
+}
+
+#[test]
+fn lifetime_meter_does_not_rewind_with_snapshots_and_live_receipts_are_incomplete() {
+    use crate::search::physical_work::TrackedTarget;
+    let meter = PhysicalWorkMeter::default();
+    let mut target = TrackedTarget::new(&TestGame, Some(&meter)).unwrap();
+    assert_eq!(meter.receipt().complete_frames(), None);
+    target.apply(&TestAction::new(1, 5));
+    let snapshot = target.snapshot().unwrap();
+    target.apply(&TestAction::new(2, 3));
+    TestGame.restore(&mut target, &snapshot).unwrap();
+    TestGame.reset(&mut target);
+    target.apply(&TestAction::new(3, 2));
+    drop(target);
+    let receipt = meter.receipt();
+    assert_eq!(receipt.constructor_frames, 7);
+    assert_eq!(receipt.closed_post_constructor_frames, 10);
+    assert_eq!(receipt.complete_frames(), Some(17));
+}
+
+#[test]
+fn lifetime_meter_rejects_a_regressed_or_saturated_target_clock() {
+    use crate::search::physical_work::TrackedTarget;
+    for clock in [6, u64::MAX] {
+        let meter = PhysicalWorkMeter::default();
+        let mut target = TrackedTarget::new(&TestGame, Some(&meter)).unwrap();
+        target.frames = clock;
+        drop(target);
+        let receipt = meter.receipt();
+        assert_eq!(receipt.targets_created, receipt.targets_closed);
+        assert!(receipt.invalid_counter);
+        assert_eq!(receipt.complete_frames(), None);
     }
 }
 
