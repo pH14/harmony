@@ -42,3 +42,11 @@ This experiment changes a previously unavailable fact; it is not another claim
 that precursor gains imply a boss-level improvement. msr1 remains available for
 independent episode qualification if the census yields one, rather than running
 a slower duplicate of the same diagnosis.
+
+The result reader `analyze_census.py` implements these frozen decisions without
+emulation. It charges the new encounter replays in addition to ordinary witness
+costs, requires the exact producing artifact and endpoint replay for a positive,
+and refuses to turn an incomplete horizon or missing eligible samples into a
+negative result. Four planted-evidence tests cover these boundaries; their
+synthetic fixtures are not game-performance evidence. This reader was added
+while the already-registered census was running and changes no allocation or gate.
