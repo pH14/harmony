@@ -378,3 +378,21 @@ outputs are refused. Register external process, wall and file limits before
 native inspection. Raw HP is a state observation, not lifetime damage. Active
 membership needs the producing run's exact replacement/retirement semantics
 and evidence; it is not encoded in `SnapshotCheckpoint`.
+
+### Experimental local terminal retry
+
+`MetroidGame::with_local_terminal_retry(true)` records
+`local_terminal_retry=one_per_live_boundary_predrawn_attempts_v1`. The default
+omits it and preserves legacy streams. Replay requires the identical policy.
+Only independent `alphabet_only` draws and `admit_alive` are supported. The
+shared `searcher::rollout::LocalRetry` helper uses the next already drawn command
+after restoring the last live snapshot; failed attempts consume the original
+cap and remain in observations, death counts, result digests and physical cost.
+Emulator failures, victory and second consecutive death stop normally.
+
+The standalone archive challenge accepts `local_terminal_retry: true`. If no
+boss milestone occurs, it verifies the first surviving retry input against the
+original worker-snapshot digest, then replays it twice locally and twice with
+the searched prefix from genesis. A retry count without a surviving witness
+cannot pass this qualification. This mechanism is unqualified for fresh-search
+performance until its bounded native and matched-work gates pass.

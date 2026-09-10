@@ -70,3 +70,36 @@ stops the candidate. A useful conditional result still has to pass fresh paired
 development, independent confirmation, MM2 transfer and untouched validation
 before fulfilling the original goal. Do not select another damage root or
 promote/tune a policy from the six inspected snapshots.
+
+## Feasibility outcome and the actual bounded law
+
+The source pass produces a small shared retry state helper and one explicit
+branch marker in worker results. The generic coordinator removes the abandoned
+dead action from surviving inputs, while retaining every attempt's evidence
+and charging the target's monotonic physical frame counter. Metroid and MM2
+use the same helper. Defaults omit the new metadata and execution-policy field.
+No archive, selector, input alphabet, action duration or scheduling rule changes.
+
+The implemented law consumes the **same pre-drawn one-to-six attempt sequence**
+as control. It draws no replacement beyond that sequence. Every failed attempt
+consumes the existing job/input cap. A second consecutive death stops; a live
+step starts a new opportunity. Errors and victories never trigger restore.
+The prior uncapped-per-stage formula is therefore only explanatory. The exact
+[`derive_predrawn_retry.py`](derive_predrawn_retry.py) model includes the real
+finite cap: at K=5,q=1/4, expected work is 3868 versus 57536/23 (about 2501.6), not
+1364 versus 191. Seven aliased steps cannot be reached under either six-attempt
+policy. These are toy implications, not native gain estimates.
+
+Five generic fixture checks exercise aliased and distinct keys, surviving input
+composition, attempted work, repeated ordinary death, errors, victory, cap
+exhaustion, restore failure, restored milestones and an alive trap. The first
+surviving retry report also pins its original worker snapshot digest. A native
+qualification must replay its linear input against that snapshot; a retry count
+without an actual surviving replay cannot pass. Default serialization uses the
+complete old action vector; retry positions append after it to avoid ambiguous
+optional fields inside postcard action encodings.
+
+The source/fixture decision permits one separately registered native
+qualification: exact historical default artifacts plus one/two-buffer candidate
+runs from the original E01 root. It does not yet permit a performance panel,
+new root, added HP reward or longer search.

@@ -93,6 +93,7 @@ pub struct MetroidGame {
     prefix: Vec<ButtonChord>,
     identity: String,
     chord_correlation: crate::chord_correlation::ChordCorrelation,
+    local_terminal_retry: bool,
     champion_input_path: Option<PathBuf>,
     milestone_input_dir: Option<PathBuf>,
     #[cfg(feature = "metroid-boss-context-audit")]
@@ -139,6 +140,7 @@ impl MetroidGame {
             prefix,
             identity,
             chord_correlation: crate::chord_correlation::ChordCorrelation::Independent,
+            local_terminal_retry: false,
             champion_input_path: None,
             milestone_input_dir: None,
             #[cfg(feature = "metroid-boss-context-audit")]
@@ -152,6 +154,14 @@ impl MetroidGame {
     #[must_use]
     pub fn with_terminal_policy(mut self, policy: MetroidTerminalPolicy) -> Self {
         self.terminal_policy = policy;
+        self
+    }
+
+    /// Opt in to one ordinary-death retry per live boundary. Attempts consume
+    /// the existing pre-drawn suffix; all failed work stays charged and recorded.
+    #[must_use]
+    pub fn with_local_terminal_retry(mut self, enabled: bool) -> Self {
+        self.local_terminal_retry = enabled;
         self
     }
 
@@ -400,6 +410,8 @@ struct MetroidResultAction<'a> {
 #[derive(Serialize)]
 struct MetroidResult<'a> {
     actions: Vec<MetroidResultAction<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    discard_previous_dead_actions: Vec<usize>,
 }
 
 fn metroid_result_sha256(result: &MetroidCampaignJobResult) -> Result<String, Box<dyn Error>> {
@@ -422,7 +434,10 @@ fn metroid_result_sha256(result: &MetroidCampaignJobResult) -> Result<String, Bo
                 }),
         })
         .collect();
-    postcard_value_sha256(&MetroidResult { actions })
+    postcard_value_sha256(&MetroidResult {
+        actions,
+        discard_previous_dead_actions: result.discarded_attempt_positions(),
+    })
 }
 
 /// Fixed configuration for one live campaign.
@@ -523,6 +538,7 @@ fn target_archive_key(target: &MetroidTarget) -> MetroidArchiveKey {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Mirrors the existing bounded worker request plus its opt-in retry policy.
 fn execute_suffix(
     target: &mut MetroidTarget,
     genesis: (u8, u8),
@@ -531,6 +547,7 @@ fn execute_suffix(
     suffix: &[ButtonChord],
     max_actions: usize,
     retention: RetentionPolicy,
+    local_terminal_retry: bool,
 ) -> Result<MetroidCampaignJobResult, Box<dyn Error>> {
     if retention != RetentionPolicy::AdmitAlive {
         return Err("Metroid campaigns admit every live candidate".into());
@@ -542,11 +559,28 @@ fn execute_suffix(
     if target.is_dead() {
         return Ok(CampaignJobResult { actions });
     }
+    let live = if local_terminal_retry {
+        Some((
+            target
+                .snapshot()
+                .ok_or("local retry parent snapshot failed")?,
+            aggregate,
+        ))
+    } else {
+        None
+    };
+    let mut retry = crate::search::rollout::LocalRetry::new(live);
     for action in suffix {
         if length >= max_actions {
             break;
         }
+        // Failed attempts consume this same cap; a retry draws no extra action.
         length = length.saturating_add(1);
+        let restored = retry.restore_pending(|snapshot| target.restore(snapshot))?;
+        let discard_previous_dead = restored.is_some();
+        if let Some(live_milestones) = restored {
+            aggregate = live_milestones;
+        }
         target.apply(action);
         merge_action_milestones(&mut aggregate, target, genesis_items, genesis_tanks);
         let observations = target.last_action_observations().to_vec();
@@ -565,7 +599,17 @@ fn execute_suffix(
                 snapshot,
             })
         };
+        let continue_rollout = retry.observe(
+            crate::search::rollout::Outcome {
+                dead,
+                victory,
+                failed,
+            },
+            candidate.as_ref().map(|candidate| &candidate.snapshot),
+            aggregate,
+        )?;
         actions.push(CampaignActionResult {
+            discard_previous_dead,
             action: *action,
             observations,
             milestones: aggregate,
@@ -574,7 +618,7 @@ fn execute_suffix(
             failed,
             candidate,
         });
-        if dead || victory || failed {
+        if !continue_rollout {
             break;
         }
     }
@@ -823,6 +867,12 @@ impl InputPolicy for MetroidGame {
                 self.chord_correlation.identifier().to_owned(),
             );
         }
+        if self.local_terminal_retry {
+            policies.insert(
+                "local_terminal_retry".to_owned(),
+                "one_per_live_boundary_predrawn_attempts_v1".to_owned(),
+            );
+        }
         policies
     }
 
@@ -866,6 +916,13 @@ impl InputPolicy for MetroidGame {
             && mixture.mixture != DrawMixture::AlphabetOnly
         {
             return Err("action correlation currently requires alphabet_only".into());
+        }
+        if self.local_terminal_retry
+            && (mixture.mixture != DrawMixture::AlphabetOnly
+                || self.chord_correlation
+                    != crate::chord_correlation::ChordCorrelation::Independent)
+        {
+            return Err("local terminal retry requires independent alphabet_only draws".into());
         }
         let mut suffix = draw_suffix(
             shape,
@@ -999,6 +1056,7 @@ impl TargetExecution for MetroidGame {
             suffix,
             max_actions,
             retention,
+            self.local_terminal_retry,
         )
     }
 }
@@ -1246,6 +1304,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn local_retry_identity_draws_and_semantic_digest_are_explicit() {
+        let ordinary = MetroidGame::new(&[0], Path::new("unused"), "test");
+        let old = ordinary.policies(&MetroidCampaignRun);
+        let candidate =
+            MetroidGame::new(&[0], Path::new("unused"), "test").with_local_terminal_retry(true);
+        let new = candidate.policies(&MetroidCampaignRun);
+        assert!(!old.contains_key("local_terminal_retry"));
+        assert_eq!(new.len(), old.len() + 1);
+        assert!(ordinary.resolve_recorded(&new).is_err());
+        assert!(candidate.resolve_recorded(&old).is_err());
+        assert!(candidate.resolve_recorded(&new).is_ok());
+        let mix = MixtureDraw {
+            mixture: DrawMixture::AlphabetOnly,
+            weight: 0,
+            splice_weight: 0,
+        };
+        for seed in 0..32 {
+            assert_eq!(
+                ordinary
+                    .expand_suffix(&MetroidCampaignRun, &(), SuffixShape::OneToSix, mix, seed)
+                    .unwrap(),
+                candidate
+                    .expand_suffix(&MetroidCampaignRun, &(), SuffixShape::OneToSix, mix, seed)
+                    .unwrap()
+            );
+        }
+        let mut result = CampaignJobResult::<MetroidGame> {
+            actions: vec![CampaignActionResult {
+                discard_previous_dead: false,
+                action: ButtonChord::new(1, 1),
+                observations: vec![],
+                milestones: MetroidMilestones::default(),
+                dead: true,
+                victory: false,
+                failed: false,
+                candidate: None,
+            }],
+        };
+        let old_hash = metroid_result_sha256(&result).unwrap();
+        result.actions[0].discard_previous_dead = true;
+        assert_ne!(old_hash, metroid_result_sha256(&result).unwrap());
+    }
+
+    #[test]
     fn correlation_identity_is_strict_and_suffix_local() {
         use crate::chord_correlation::ChordCorrelation;
         let ordinary = MetroidGame::new(&[0], Path::new("unused"), "test");
@@ -1348,6 +1450,7 @@ mod tests {
             log_line: String::new(),
         };
         let action = MetroidCampaignActionResult {
+            discard_previous_dead: false,
             action: ButtonChord::new(0, 1),
             observations: vec![observation],
             milestones: MetroidMilestones::default(),
@@ -1451,6 +1554,7 @@ mod tests {
             std::env::temp_dir().join(format!("metroid-endpoint-test-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let action = MetroidCampaignActionResult {
+            discard_previous_dead: false,
             action: ButtonChord::new(0, 1),
             observations: vec![endpoint_observation(Some(1))],
             milestones: MetroidMilestones::default(),

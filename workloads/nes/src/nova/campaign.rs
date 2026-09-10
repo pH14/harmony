@@ -839,6 +839,7 @@ mod tests {
             .expect("shared-state wire representation");
         CampaignJobResult {
             actions: vec![CampaignActionResult {
+                discard_previous_dead: false,
                 action: ButtonChord::new(0x81, 3),
                 observations: vec![observation.clone()],
                 milestones: NovaMilestones::default(),

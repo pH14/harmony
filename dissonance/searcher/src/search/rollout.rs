@@ -164,6 +164,7 @@ pub fn execute_suffix<G: CampaignInterfaces + ?Sized>(
             })
         };
         actions.push(CampaignActionResult {
+            discard_previous_dead: false,
             action: *action,
             observations,
             milestones,
@@ -177,4 +178,116 @@ pub fn execute_suffix<G: CampaignInterfaces + ?Sized>(
         }
     }
     Ok(CampaignJobResult { actions })
+}
+
+/// One opt-in retry from the preceding live state, within an already bounded
+/// sequence of ordinary draws. It draws no extra actions and owns one temporary
+/// snapshot. Every attempted action must remain in the worker result and cost.
+/// Only `dead && !failed && !victory` can request a restore. A second consecutive
+/// dead attempt stops; a live step starts a new opportunity.
+pub struct LocalRetry<S, M> {
+    live: Option<(S, M)>,
+    pending: bool,
+    retrying: bool,
+}
+impl<S: Clone, M: Copy> LocalRetry<S, M> {
+    pub fn new(live: Option<(S, M)>) -> Self {
+        Self {
+            live,
+            pending: false,
+            retrying: false,
+        }
+    }
+
+    /// Restore only when the preceding recorded attempt requested a retry.
+    /// The returned milestones replace the abandoned branch's accumulator.
+    pub fn restore_pending(
+        &mut self,
+        restore: impl FnOnce(&S) -> Result<(), Box<dyn Error>>,
+    ) -> Result<Option<M>, Box<dyn Error>> {
+        if !self.pending {
+            return Ok(None);
+        }
+        let (snapshot, milestones) = self.live.as_ref().ok_or("retry lacks a live snapshot")?;
+        restore(snapshot)?;
+        self.pending = false;
+        self.retrying = true;
+        Ok(Some(*milestones))
+    }
+
+    /// Return whether another pre-drawn action may execute. The caller still
+    /// enforces its existing attempt, input and physical-work limits.
+    pub fn observe(
+        &mut self,
+        outcome: Outcome,
+        snapshot: Option<&S>,
+        milestones: M,
+    ) -> Result<bool, Box<dyn Error>> {
+        if outcome.failed || outcome.victory {
+            return Ok(false);
+        }
+        if outcome.dead {
+            self.pending = self.live.is_some() && !self.retrying;
+            return Ok(self.pending);
+        }
+        if self.live.is_some() {
+            self.live = Some((
+                snapshot
+                    .ok_or("live retry boundary lacks a snapshot")?
+                    .clone(),
+                milestones,
+            ));
+        }
+        self.retrying = false;
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod local_retry_tests {
+    use super::*;
+    #[test]
+    fn restores_prior_milestones_and_propagates_restore_failures() {
+        let mut retry = LocalRetry::new(Some((7_u8, 10_u8)));
+        assert!(
+            retry
+                .observe(
+                    Outcome {
+                        dead: true,
+                        ..Outcome::default()
+                    },
+                    None,
+                    99
+                )
+                .unwrap()
+        );
+        assert!(
+            retry
+                .restore_pending(|_| Err("restore failed".into()))
+                .is_err()
+        );
+        let mut restored = 0;
+        assert_eq!(
+            retry
+                .restore_pending(|snapshot| {
+                    restored = *snapshot;
+                    Ok(())
+                })
+                .unwrap(),
+            Some(10)
+        );
+        assert_eq!(restored, 7);
+        assert!(
+            !retry
+                .observe(
+                    Outcome {
+                        dead: true,
+                        ..Outcome::default()
+                    },
+                    None,
+                    88
+                )
+                .unwrap()
+        );
+    }
 }

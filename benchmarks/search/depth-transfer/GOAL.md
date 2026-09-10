@@ -474,10 +474,10 @@ matched-work development/independent/transfer gates. Keep all work in PR #287.
 ## CI01 closed; one bounded local-retry feasibility decision
 
 CI01 reads the existing AP01 checkpoint in 1.02 seconds, with 589 verified paused
-restores, 929 setup frames and zero action execution. It identifies557 active
+restores, 929 setup frames and zero action execution. It identifies 557 active
 states: six have classified boss HP below 140, including 129. All six have
 health 79 and zero missiles. The HP 129 state receives four recorded follow-up
-jobs  / 179 frames, all without retention candidates. Full prior campaign replay
+jobs / 179 frames, all without retention candidates. Full prior campaign replay
 passes. This is retained/revisited conditional progress, not a fresh defeat or
 proof of the global bottleneck. The service is terminal. Cumulative resumed
 accounting is 1,083,261,532 admitted search and 52,196,349 known auxiliary frames.
@@ -493,3 +493,34 @@ No emulator allocation, new root, fresh panel, parameter sweep or policy
 promotion exists yet. A qualified implementation still needs a prospectively
 frozen cheap matched-work falsifier, then the original independent/transfer/
 untouched gates. Do not interpret this diagnostic or model as goal completion.
+
+## Local-retry source/fixture decision completed
+
+The bounded source pass implements one shared temporary-snapshot retry helper,
+explicit attempted-action branch markers, canonical result encoding, and
+validated linear input construction. Metroid and MM2 use the same helper,
+behind an opt-in recorded policy. The same pre-drawn suffix is consumed; failed
+attempts use its existing cap. No extra RNG draws, geometry, HP field, reward,
+archive key, retention rule or parent selector enters the mechanism.
+
+Five generic fixture checks pass, including ordinary-death recovery, errors,
+second death, caps, restoring milestones, aliasing, distinct cells, linear
+witnesses, canonical hashes, restore failure and the alive-trap counterexample.
+All 152 searcher tests plus its interface check and 142 feature-enabled NES
+library tests pass; strict all-target Clippy and the three challenge tests pass.
+The default serialized representation remains covered by an executable byte
+comparison, but native default artifact identity still needs qualification.
+
+The revised exact finite-cap model is explanatory, not a native gain estimate.
+It materially limits the earlier uncapped-per-stage benefit; a seven-step
+aliased chain is unreachable under either six-attempt law.
+
+This earns only one separately registered native qualification on msr1: an
+unchanged 16-job historical default and two identical 128-job candidate runs
+with one/two result buffers, all from the original E01 root and reused seed.
+Require exact baseline artifacts, a surviving retry whose linear input matches
+the original worker snapshot, full campaign replay and buffering identity.
+Freeze source/build/assets/requests plus at most 4M known auxiliary frames and
+short external limits before execution. No retries or automatic performance
+panel follow a qualification failure. The original scientific objective remains
+active and unachieved.

@@ -291,3 +291,30 @@ the limits of coordinate-extreme retention, and check stable partition
 refinement against exhaustive product-graph equivalence. These are finite
 counterexamples, not correctness proofs for workload keys. The assumptions and
 research predictions are in [`retention theory`](../../benchmarks/search/retention-theory/theory.md).
+
+### Bounded local terminal retries
+
+`rollout::LocalRetry` manages one temporary live snapshot and its milestone
+accumulator. An opt-in workload may restore it once after an ordinary dead
+attempt, then consume the next command from its existing pre-drawn suffix.
+A second consecutive death, victory, error or exhausted attempt cap stops the
+rollout. Success saves a new live boundary. The helper draws no extra actions,
+reads no key or reward, and never modifies lifetime work accounting.
+
+Every attempt remains in `CampaignJobResult.actions`, including deaths and
+failures. `discard_previous_dead` marks the next attempt's restored origin.
+The coordinator validates the predecessor, removes only that dead command from
+the pending surviving input, and retains all observations and physical work.
+It reports executed retry counts and a bounded first viable retry input with
+its exact worker-snapshot digest, allowing independent linear witness replay.
+Custom workload result digests must include `discarded_attempt_positions()`.
+Those positions serialize **after** the complete legacy action vector; inserting
+optional flags between postcard action fields would be ambiguous. Empty retry
+metadata is omitted, preserving existing result/report bytes.
+
+The ordinary archive, selector and admission window remain unchanged. Attempts
+consume the existing job/input cap; a retry cannot add draws or evade charged
+work. The temporary snapshot and one first-witness input add bounded memory
+outside the archive's logical budget, measured under the process RSS cap just
+like worker result buffers. This is an experimental execution mechanism, not a
+claim that survivability is useful progress. Live dead ends can make it worse.

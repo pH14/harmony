@@ -68,3 +68,16 @@ continued gameplay. Keep them in the evidence, then qualify chainability by
 replaying the ordinary award/menu transition and next-stage entry with the
 awarded inventory retained. The R03b Metal qualification records this case
 for both policies, with twice-replayed Heat entry at full health.
+
+### Experimental local terminal retry
+
+`Mm2Game::with_local_terminal_retry(true)` opts into the shared bounded
+`searcher::rollout::LocalRetry` mechanism. It records
+`local_terminal_retry=one_per_live_boundary_predrawn_attempts_v1`; legacy runs
+omit the field, and replay rejects mismatched contexts. Only independent
+`alphabet_only` draws with `admit_alive` are supported. A normal death permits
+one restore to the preceding live snapshot and the next pre-drawn command.
+Failed attempts still consume the original cap and physical work. Boss success,
+emulator errors and a second consecutive death stop. Retry markers participate
+in result digests, and the generic coordinator keeps surviving inputs linear.
+Native transfer/performance is unmeasured; this adds no default policy change.

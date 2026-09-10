@@ -57,6 +57,8 @@ struct Request {
     wall_seconds: u64,
     direct_frame_limit: u64,
     milestone: String,
+    #[serde(default)]
+    local_terminal_retry: bool,
 }
 
 fn valid_limits(q: &Request, execute: bool) -> bool {
@@ -228,6 +230,7 @@ fn evaluate(q: &Request, output: &Path, execute: bool, cost: &mut Cost) -> Resul
     }
 
     let game = MetroidGame::new(&rom, &q.core, &q.core_sha256)
+        .with_local_terminal_retry(q.local_terminal_retry)
         .with_terminal_policy(MetroidTerminalPolicy::BcdUnderflow)
         .with_milestone_input_dir(output.join("milestone-inputs"));
     let snapshots = SnapshotCheckpoint {
@@ -322,11 +325,29 @@ fn evaluate(q: &Request, output: &Path, execute: bool, cost: &mut Cost) -> Resul
                 .join("milestone-inputs")
                 .join(format!("{}.json", q.milestone)),
         )?)?
+    } else if q.local_terminal_retry {
+        report
+            .first_local_retry
+            .as_ref()
+            .ok_or("no surviving retry exercised")?
+            .input
+            .clone()
     } else {
         serde_json::from_value(value["archive"]["champion_input"].clone())?
     };
     let full = concat(&prefix, &local);
     let local_first = replay(q, &rom, &local, Some(root), cost)?;
+    if q.local_terminal_retry && !reached {
+        let witness = report
+            .first_local_retry
+            .as_ref()
+            .ok_or("retry witness missing")?;
+        if local_first.dead
+            || hash(&postcard::to_allocvec(&local_first.snapshot)?) != witness.snapshot_sha256
+        {
+            return Err("linear input differs from the original surviving retry snapshot".into());
+        }
+    }
     for from_root in [true, false, false] {
         let next = if from_root {
             replay(q, &rom, &local, Some(root), cost)?
