@@ -1,0 +1,54 @@
+{
+  "format": "continuation-cc01-closed-service-audit-v1",
+  "recorded_utc": "2026-09-10T14:20:09.480526+00:00",
+  "host": "ms02",
+  "pairs": [
+    {
+      "pair": 0,
+      "unit": "harmony-continuation-cc01-pair-0-20260910.service",
+      "service": {
+        "MainPID": "0",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead"
+      },
+      "output_exists": true
+    },
+    {
+      "pair": 1,
+      "unit": "harmony-continuation-cc01-pair-1-20260910.service",
+      "service": {
+        "MainPID": "0",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead"
+      },
+      "output_exists": true
+    },
+    {
+      "pair": 2,
+      "unit": "harmony-continuation-cc01-pair-2-20260910.service",
+      "service": {
+        "MainPID": "0",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead"
+      },
+      "output_exists": false,
+      "journal_empty": true
+    },
+    {
+      "pair": 3,
+      "unit": "harmony-continuation-cc01-pair-3-20260910.service",
+      "service": {
+        "MainPID": "0",
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead"
+      },
+      "output_exists": false,
+      "journal_empty": true
+    }
+  ],
+  "emulated_frames": 0
+}

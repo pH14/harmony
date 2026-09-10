@@ -1,0 +1,48 @@
+{
+  "format": "continuation-cc01-closed-ledger-v1",
+  "recorded_utc": "2026-09-10T14:21:07.373898+00:00",
+  "decision": "stop_continuation_confirmation_line",
+  "prior_ledger_sha256": "0ec49753ac9fa484dfbed232979ac71122c71a21244292c2d4c9d726a3d66782",
+  "registration_sha256": "674742836b1deb7208f42be4cf99029ef87a53ef914f5bd9e26ddaf25b82755d",
+  "analysis_sha256": "fcca4be008c58e591568854509ef9c03195d6f9ec4b60c890bf200e49674fb47",
+  "admitted_search_frames": 601721522,
+  "bounded_stop_drain_frames": 3326,
+  "known_auxiliary_frames": 1583144,
+  "services": {
+    "0": {
+      "service_invocation": "1839ff5525a14cf78233afa8aa965a9a",
+      "service_elapsed_seconds": 2449.155819,
+      "service_cpu_nanoseconds": 7542268924000,
+      "service_memory_peak_bytes": 3250782208
+    },
+    "1": {
+      "service_invocation": "2729e0b22f82488eb4e12851e7492707",
+      "service_elapsed_seconds": 2135.035289,
+      "service_cpu_nanoseconds": 6558521846000,
+      "service_memory_peak_bytes": 2351685632
+    }
+  },
+  "cumulative_since_user_resumption_admitted_search_frames": 2982484247,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 67878337,
+  "unrun_pairs": [
+    2,
+    3
+  ],
+  "descriptive_completed_wave": {
+    "pairs": 2,
+    "control_mean_restricted_frames": 134470791.5,
+    "candidate_mean_restricted_frames": 166388306.5,
+    "candidate_to_control_cost_ratio": 1.2373564894202322,
+    "candidate_to_control_cpu_ratio": 1.2392314203994144,
+    "candidate_to_control_elapsed_ratio": 1.2941649729474227,
+    "interpretation": "Descriptive for the completed first wave only; the frozen gate stops at zero strict wins. No full four-pair or pooled development efficacy claim."
+  },
+  "accounting_note": "All actual CC01 work is added once to the closed CD01 cumulative ledger. Both started services completed; remaining pairs have no outputs or service journal. No unknown work is assigned zero.",
+  "limits": [
+    "Independent confirmation failed its allocation gate; the development pass remains historical and is not pooled to rescue it.",
+    "Admitted work includes in-job origin reconstruction and actual bounded drain. Setup, unadmitted work and any out-of-job reconstruction remain explicit unknowns.",
+    "Known auxiliary work follows the existing twice-replayed held-witness convention. Service and cell CPU totals are separate scopes.",
+    "Earlier expired tranches and failed gates remain separate and closed."
+  ],
+  "next_decision": "Close this nominee; no second wave, transfer, longer horizon, replacement seed, endpoint rescue or bank/order pivot is earned. Synthesize the failed confirmation and assess a distinct evidence-backed direction using existing artifacts before any new allocation. The original boss/Wily objective remains active and unachieved."
+}

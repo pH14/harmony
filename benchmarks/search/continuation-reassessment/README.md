@@ -301,7 +301,7 @@ python3 benchmarks/search/continuation-reassessment/verify_cd01_native.py --prot
 python3 benchmarks/search/continuation-reassessment/score_cd01.py --registration benchmarks/search/continuation-reassessment/cd01-registration.json --evidence benchmarks/search/continuation-reassessment/cd01-output --out /tmp/cd01-analysis.json
 ```
 
-## CC01: independent confirmation is registered
+## CC01: independent confirmation failed
 
 The [confirmation decision](cc01-decision.md) and
 [registration](cc01-registration.json) freeze fresh seeds 833917373, 4204540845,
@@ -331,8 +331,46 @@ earn only the already-frozen remaining pairs, subject to the same deadline.
 Require three strict wins, 15% lower mean restricted cost, and CPU/wall ratios
 at most 1.25. Preserve censored ties and incomplete measurements. A failure
 closes this confirmation line; a pass earns a separately bounded same-mechanism
-MM2 transfer decision. Confirmation native execution is not yet recorded here.
-Untouched boss/Wily validation and the original goal remain outstanding.
+MM2 transfer decision.
+
+Both first-wave pairs started on ms02 at 13:02:59 UTC on September 10 after
+the [preflight](cc01-preflight.json) passed. The [dispatch record](cc01-dispatch.jsonl)
+preserves the exact service handles and limits. Both services finished by
+13:43:49 UTC, with all four cells complete. The [frozen score](cc01-analysis.json)
+stops at zero strict wins: three wins in four pairs are now impossible.
+
+| Fresh seed | Control first Bombs | Continuation first Bombs | Outcome |
+| --- | ---: | ---: | --- |
+| 833917373 | 139,784,604 | 182,858,882 | loss |
+| 4204540845 | 129,156,979 | 149,917,731 | loss |
+
+All four Bombs witnesses replay alive, and both independent native audits pass.
+The complete [native evidence](cc01-output) includes raw archives, results,
+service journals and verifier reports. The [closure audit](cc01-closed-service-audit.json)
+confirms both services are terminal and pairs2/3 have neither outputs nor service
+history. They remain unrun; no second wave or MM2 transfer is earned.
+
+On the two completed pairs, continuation uses 23.7% more restricted admitted
+work; its event-stopped CPU and wall ratios are 1.239 and 1.294. These describe
+the completed wave only. The registered decision fails on win count, and no
+full four-pair effect or population conclusion is available. The earlier four
+development wins remain valid observations, but they did not replicate here.
+Do not pool development with confirmation or rescue this nominee through a
+longer horizon, replacement seed, endpoint switch, or bank/order change.
+
+The [closed ledger](ledger-after-cc01.json) charges 601,721,522 admitted frames,
+including 3,326 stop-drain frames, and 1,583,144 known auxiliary frames. Resumed
+totals are 2,982,484,247 admitted search and 67,878,337 known auxiliary frames.
+Setup, unadmitted work and any out-of-job reconstruction remain unknown. No
+boss/Wily improvement or untouched validation has been established.
+
+Recompute the failed confirmation without emulation:
+
+```sh
+python3 benchmarks/search/continuation-reassessment/verify_cd01_native.py --protocol benchmarks/search/continuation-reassessment --evidence benchmarks/search/continuation-reassessment/cc01-output --pair 0 --prefix cc01 --registration-commit e3931c94518f99b20500ef0dc41bf235a5e6c3fd --out /tmp/cc01-pair-0-verification.json
+python3 benchmarks/search/continuation-reassessment/verify_cd01_native.py --protocol benchmarks/search/continuation-reassessment --evidence benchmarks/search/continuation-reassessment/cc01-output --pair 1 --prefix cc01 --registration-commit e3931c94518f99b20500ef0dc41bf235a5e6c3fd --out /tmp/cc01-pair-1-verification.json
+python3 benchmarks/search/continuation-reassessment/score_cc01.py --registration benchmarks/search/continuation-reassessment/cc01-registration.json --evidence benchmarks/search/continuation-reassessment/cc01-output --out /tmp/cc01-analysis.json
+```
 
 ## Ordering findings stay separate from this candidate
 

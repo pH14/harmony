@@ -913,3 +913,34 @@ A pass earns a bounded same-mechanism MM2 transfer decision; a failure closes
 the nominee. No CC01 native execution is recorded yet. Independent confirmation,
 MM2 and untouched boss/Wily validation remain incomplete, and the full goal
 remains active and unachieved.
+
+## CC01 completed: independent confirmation failed
+
+Both first-wave services finish by 2026-09-10T13:43:49Z with all four registered
+cells complete. Continuation loses both pairs: first Bombs costs are 182,858,882
+versus 139,784,604 control frames, and 149,917,731 versus 129,156,979. Both native
+audits pass, all four attainment witnesses replay alive, and service/resource
+measurements are complete. The frozen scorer returns
+stop_continuation_confirmation_line because three strict wins are impossible.
+Pairs2/3 have no outputs or service history and remain unrun. All CC01 services
+are terminal. msr1 remains reassigned and was not accessed.
+
+Preserve the four development wins and these two independent losses in their
+separate panels. The development result did not replicate. No pooling, second
+wave, replacement seed, longer horizon, earlier-endpoint rescue or bank/order
+pivot is earned. Same-mechanism MM2 transfer and untouched validation are also
+unearned; this confirmation nominee is closed.
+
+CC01 spends 601,721,522 admitted frames, including 3,326 stop-drain frames, and
+1,583,144 known auxiliary frames. The closed resumed ledger is 2,982,484,247
+admitted search and 67,878,337 known auxiliary frames; setup, unadmitted work
+and any out-of-job reconstruction remain explicit unknowns. Publish the exact
+native evidence, closed ledger and result in PR287 before another allocation.
+
+The next work is a bounded assessment of existing evidence and source: identify
+a distinct falsifiable mechanism that could improve useful depth, or record
+why the available evidence does not yet support one. Failed gates remain closed.
+Do not spend a fresh control, qualification replay or parameter sweep merely
+because ms02 is available. Any later native allocation needs its own concrete
+decision, favorable evidence and full prospective bounds. The original matched
+boss/Wily and untouched-validation goal remains active and unachieved.
