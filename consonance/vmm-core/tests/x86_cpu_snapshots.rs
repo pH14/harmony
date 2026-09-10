@@ -475,6 +475,8 @@ mod live_kvm {
         state.sregs.ds.base = 0;
         state.sregs.ds.selector = 0;
         state.sregs.ds.limit = u32::MAX;
+        // VM entry requires page granularity for this 4 GiB effective limit.
+        state.sregs.ds.g = 1;
         state.regs.rip = MMIO_CODE_GPA as u64;
         state.regs.rflags = 0x2;
         state.regs.rbx = 0;
