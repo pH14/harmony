@@ -65,9 +65,9 @@ impl ControlState {
             }),
             _ => return Err("control failure tag"),
         };
-        let recorded = InputSpec::decode(take(&mut input, recorded_len)?)
+        let recorded = InputSpec::decode_snapshot(take(&mut input, recorded_len)?)
             .map_err(|_| "recorded control inputs")?;
-        let pending = InputSpec::decode(take(&mut input, pending_len)?)
+        let pending = InputSpec::decode_snapshot(take(&mut input, pending_len)?)
             .map_err(|_| "pending control inputs")?;
         if !input.is_empty() {
             return Err("trailing control state");
@@ -146,7 +146,7 @@ fn number(input: &mut &[u8]) -> Result<u64, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use environment::channel::Effect;
+    use environment::channel::{Effect, MAX_CHANNEL_BYTES};
 
     fn state() -> ControlState {
         let mut recorded = InputSpec::seeded(9);
@@ -177,6 +177,18 @@ mod tests {
         }
     }
 
+    fn large_input_spec(seed: u64) -> InputSpec {
+        const EFFECT_BYTES: usize = 400_000;
+        let mut spec = InputSpec::seeded(seed);
+        for (at, fill) in [(1, 0x11), (2, 0x22), (3, 0x33)] {
+            spec.record_effect(
+                at,
+                Effect::write_memory(at, vec![fill; EFFECT_BYTES]).unwrap(),
+            );
+        }
+        spec
+    }
+
     #[test]
     fn control_round_trip_and_legacy_absence() {
         let state = state();
@@ -191,6 +203,30 @@ mod tests {
             ControlState::decode(&runnable.encode()).unwrap(),
             Some(runnable)
         );
+    }
+
+    #[test]
+    fn control_round_trip_accepts_large_recorded_and_pending_inputs() {
+        for (recorded, pending, large_recorded) in [
+            (large_input_spec(9), InputSpec::seeded(0), true),
+            (InputSpec::seeded(9), large_input_spec(0), false),
+        ] {
+            let state = ControlState {
+                recorded,
+                pending,
+                poisoned: None,
+                exec_nonce: 17,
+            };
+            assert_eq!(
+                (state.recorded.encode().len() > MAX_CHANNEL_BYTES),
+                large_recorded
+            );
+            assert_eq!(
+                (state.pending.encode().len() > MAX_CHANNEL_BYTES),
+                !large_recorded
+            );
+            assert_eq!(ControlState::decode(&state.encode()).unwrap(), Some(state));
+        }
     }
 
     #[test]

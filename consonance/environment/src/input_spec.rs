@@ -186,10 +186,25 @@ impl InputSpec {
         Self::decode(&bytes)?;
         Ok(bytes)
     }
+    /// Decode an input specification received as one bounded transport blob.
+    ///
+    /// Transport callers are limited to [`MAX_CHANNEL_BYTES`] total bytes;
+    /// nested values are checked by the shared snapshot parser as well.
     pub fn decode(bytes: &[u8]) -> Result<Self, ChannelError> {
         if bytes.len() > MAX_CHANNEL_BYTES {
             return Err(ChannelError::TooLarge);
         }
+        Self::decode_snapshot(bytes)
+    }
+
+    /// Decode a captured input specification with strict nested validation.
+    ///
+    /// A snapshot may contain a history made of many individually bounded
+    /// effects and therefore exceed the one-message transport limit. The
+    /// caller supplies the already bounded snapshot section; this method
+    /// preserves all per-value limits, ordering checks, truncation checks, and
+    /// trailing-byte rejection from [`Self::decode`].
+    pub fn decode_snapshot(bytes: &[u8]) -> Result<Self, ChannelError> {
         let mut r = Reader(bytes);
         if r.take(4)? != b"HENV" || r.u16()? != Self::BLOB_VERSION {
             return Err(ChannelError::Malformed);
@@ -481,6 +496,37 @@ mod tests {
             invalid[index] ^= 1;
             assert_eq!(InputSpec::decode(&invalid), Err(ChannelError::Malformed));
         }
+    }
+
+    #[test]
+    fn snapshot_decode_allows_aggregate_history_beyond_transport_limit() {
+        const EFFECT_BYTES: usize = 400_000;
+        let mut spec = InputSpec::seeded(7);
+        for (at, fill) in [(1, 0x11), (2, 0x22), (3, 0x33)] {
+            spec.record_effect(
+                at,
+                Effect::write_memory(at, vec![fill; EFFECT_BYTES]).unwrap(),
+            );
+        }
+        let bytes = spec.encode();
+        assert!(bytes.len() > MAX_CHANNEL_BYTES);
+        assert_eq!(InputSpec::decode(&bytes), Err(ChannelError::TooLarge));
+        assert_eq!(InputSpec::decode_snapshot(&bytes).unwrap(), spec);
+    }
+
+    #[test]
+    fn snapshot_decode_rejects_an_oversized_individual_value() {
+        let mut spec = InputSpec::seeded(0);
+        spec.record_effect(1, Effect::write_memory(0, vec![7]).unwrap());
+        let mut bytes = spec.encode();
+        let effect_count_offset = 4 + 2 + 8 + 4 + spec.config.encode().len();
+        let value_len_offset = effect_count_offset + 4 + 8 + 4 + 1 + 8;
+        bytes[value_len_offset..value_len_offset + 4]
+            .copy_from_slice(&((MAX_CHANNEL_BYTES + 1) as u32).to_le_bytes());
+        assert_eq!(
+            InputSpec::decode_snapshot(&bytes),
+            Err(ChannelError::TooLarge)
+        );
     }
 
     #[test]
