@@ -1,0 +1,234 @@
+{
+  "format": "retention-pq01-cached-state-history-v1",
+  "scope": "All cached endpoints, including reconstruction history; not an active-state census. Historical visits are observed, opportunity and policy counterfactuals are unmeasured. Final-cache conditioning is selection bias. HP is snapshot-local, not lifetime damage or an efficacy endpoint.",
+  "parent_draws_definition": "Executed parent choices from job records; two skip records in each arm are excluded. These are not all selector calls.",
+  "arms": {
+    "ordinary": {
+      "jobs": 10720,
+      "frames": 1000601,
+      "total_cached": 1752,
+      "excluded": {
+        "unclassified_or_ambiguous": 1415
+      },
+      "root_scope": {
+        "states": 337,
+        "selected_states": 324,
+        "parent_draws": 1875,
+        "unselected_states": 13,
+        "hp_counts": {
+          "133": 1,
+          "135": 1,
+          "137": 40,
+          "138": 77,
+          "139": 31,
+          "140": 187
+        },
+        "health_counts": {
+          "16": 21,
+          "23": 6,
+          "30": 4,
+          "37": 12,
+          "44": 5,
+          "51": 6,
+          "58": 8,
+          "65": 14,
+          "72": 9,
+          "79": 252
+        },
+        "missile_counts": {
+          "0": 337
+        }
+      },
+      "lower_hp": {
+        "states": 150,
+        "selected_states": 144,
+        "parent_draws": 806,
+        "unselected_states": 6,
+        "hp_counts": {
+          "133": 1,
+          "135": 1,
+          "137": 40,
+          "138": 77,
+          "139": 31
+        },
+        "health_counts": {
+          "16": 16,
+          "23": 1,
+          "30": 2,
+          "37": 10,
+          "44": 1,
+          "51": 2,
+          "58": 8,
+          "65": 4,
+          "72": 7,
+          "79": 99
+        },
+        "missile_counts": {
+          "0": 150
+        }
+      },
+      "equal_root_resources_lower_hp": {
+        "states": 99,
+        "selected_states": 97,
+        "parent_draws": 587,
+        "unselected_states": 2,
+        "hp_counts": {
+          "133": 1,
+          "135": 1,
+          "137": 23,
+          "138": 53,
+          "139": 21
+        },
+        "health_counts": {
+          "79": 99
+        },
+        "missile_counts": {
+          "0": 99
+        }
+      }
+    },
+    "progress": {
+      "jobs": 10769,
+      "frames": 1000290,
+      "total_cached": 1693,
+      "excluded": {
+        "unclassified_or_ambiguous": 1135
+      },
+      "root_scope": {
+        "states": 558,
+        "selected_states": 484,
+        "parent_draws": 2267,
+        "unselected_states": 74,
+        "hp_counts": {
+          "94": 1,
+          "95": 6,
+          "96": 1,
+          "97": 1,
+          "98": 25,
+          "108": 5,
+          "109": 7,
+          "110": 77,
+          "113": 2,
+          "114": 1,
+          "115": 6,
+          "116": 56,
+          "118": 1,
+          "121": 46,
+          "122": 5,
+          "123": 25,
+          "124": 31,
+          "125": 64,
+          "126": 4,
+          "127": 2,
+          "128": 12,
+          "129": 15,
+          "130": 1,
+          "132": 2,
+          "139": 1,
+          "140": 161
+        },
+        "health_counts": {
+          "16": 1,
+          "23": 18,
+          "30": 7,
+          "37": 22,
+          "44": 3,
+          "51": 10,
+          "58": 10,
+          "65": 19,
+          "72": 4,
+          "79": 464
+        },
+        "missile_counts": {
+          "0": 558
+        }
+      },
+      "lower_hp": {
+        "states": 397,
+        "selected_states": 333,
+        "parent_draws": 1403,
+        "unselected_states": 64,
+        "hp_counts": {
+          "94": 1,
+          "95": 6,
+          "96": 1,
+          "97": 1,
+          "98": 25,
+          "108": 5,
+          "109": 7,
+          "110": 77,
+          "113": 2,
+          "114": 1,
+          "115": 6,
+          "116": 56,
+          "118": 1,
+          "121": 46,
+          "122": 5,
+          "123": 25,
+          "124": 31,
+          "125": 64,
+          "126": 4,
+          "127": 2,
+          "128": 12,
+          "129": 15,
+          "130": 1,
+          "132": 2,
+          "139": 1
+        },
+        "health_counts": {
+          "16": 1,
+          "23": 2,
+          "30": 7,
+          "37": 16,
+          "44": 2,
+          "51": 8,
+          "58": 6,
+          "65": 14,
+          "72": 3,
+          "79": 338
+        },
+        "missile_counts": {
+          "0": 397
+        }
+      },
+      "equal_root_resources_lower_hp": {
+        "states": 338,
+        "selected_states": 281,
+        "parent_draws": 1195,
+        "unselected_states": 57,
+        "hp_counts": {
+          "94": 1,
+          "95": 6,
+          "96": 1,
+          "97": 1,
+          "98": 25,
+          "108": 5,
+          "109": 7,
+          "110": 73,
+          "113": 2,
+          "114": 1,
+          "115": 6,
+          "116": 34,
+          "121": 26,
+          "122": 5,
+          "123": 24,
+          "124": 28,
+          "125": 57,
+          "126": 4,
+          "127": 2,
+          "128": 12,
+          "129": 15,
+          "130": 1,
+          "132": 1,
+          "139": 1
+        },
+        "health_counts": {
+          "79": 338
+        },
+        "missile_counts": {
+          "0": 338
+        }
+      }
+    }
+  }
+}

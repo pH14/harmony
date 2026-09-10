@@ -555,3 +555,14 @@ failure diagnosis and closure without emulation; audit_pg02.py checks the docume
 schema correction without changing the frozen scorer or validating the incomplete
 panel. See pg02-results.md. No retry or new native allocation is earned by this
 correction. Totals: 2,985,486,535 admitted / 74,266,963 known auxiliary.
+
+PQ01 is closed and passes its bounded paused-read gate. It reads all 3,445 cached
+states from the two original PG02 checkpoints, with two additional origin controls,
+using exactly 1,858 setup frames and zero gameplay actions in 0.678 seconds. The
+best cached boss HP is 94 in progress versus 133 in ordinary, at original player
+health 79. Lower-HP states receive 1,403/806 executed parent choices; no boss defeat
+occurs. A recorded HP95-to94 return follows a 1,926-job first-selection delay.
+These are conditional cached-state observations, not an active-state census or
+an efficacy pass. See pq01-results.md, verify_pq01.py and scoped-return-design.md.
+The latter proposes a bounded same-slot return question for source falsification;
+no new policy or native allocation exists. PG02 remains invalid and closed.

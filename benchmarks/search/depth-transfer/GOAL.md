@@ -1341,3 +1341,31 @@ stops; preserve all launched receipts and pre-collection resources. The fixed
 query describes cached HP/resources and actual parent choices, with survivor
 bias and unresolved active membership explicit. It cannot validate or resume
 PG02. No native query has run at publication. Full goal remains unachieved.
+
+## PQ01 closure and next mechanism-level question
+
+Both paused reads pass in 0.678207 seconds total, with 3,447 exact restore checks
+(3,445 cached snapshots plus two origin controls). Cost is exactly 1,858 constructor
+frames and zero search/continuation frames. All 13 native artifacts and the frozen
+analysis verify offline. Service CPU is 0.644752 seconds, peak memory 146,354,176 bytes,
+and swap zero. The owned ms02 service is stopped and unused allocation released.
+There is no msr1 access.
+
+Progress's best cached same-scope boss HP is 94 versus 133 in ordinary, at original
+health79/missiles0. Lower-HP cached states receive 1,403/806 executed extensions.
+Progress ID2014 (HP95) is first selected 1,926 jobs after creation and produces
+ID2572 (HP94); that new state's first selection follows 2,617 jobs later. Cached
+history can be inactive, so these gaps do not estimate continuous opportunities.
+Both arms still have no living defeat and the capacity comparator is unrun.
+PG02 stays invalid and closed; this proxy evidence is not an efficacy gate pass.
+
+Resumed ledger: 2,985,486,535 admitted / 74,268,821 known auxiliary. Historical gaps
+are unchanged. Next audit and falsify a bounded same-slot progress-return rule
+in source: preserve the existing slot proposal and all admissibility constraints,
+then redirect some eligible proposals to the qualified higher-progress member.
+The conditional allocation identity and adverse cases are documented in
+../continuation-reassessment/scoped-return-design.md. No native policy allocation
+exists; source/replay qualification and a new prospective comparison are needed.
+Keep the 1M conditional horizon and necessary controls; no PG02 retry or horizon
+rescue. Fresh development, confirmation, MM2 and untouched validation remain
+required by the full active, unachieved goal.

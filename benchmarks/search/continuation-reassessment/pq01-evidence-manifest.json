@@ -1,0 +1,111 @@
+{
+  "format": "retention-pq01-evidence-v1",
+  "registration_sha256": "26cdd99794068ac99558da0332d0d61c8658d4d3440f7894f529e387703ae21c",
+  "remote_manifest_sha256": "6629c8693f8626969989fa037eba11617814048017f6ad0e5e0ecd4a69e33ea1",
+  "files": [
+    {
+      "path": "complete.json",
+      "raw_bytes": 2113,
+      "raw_sha256": "95e6156784a2bc944e37590a89332fc70687ed09514714e226c01c50d79ccd70",
+      "gzip": "pq01-output/complete.json.gz",
+      "gzip_bytes": 737,
+      "gzip_sha256": "4f957754d77f2740cc6e53fb1bd8551149e61b0e0068d7e6a5f3f6a45791933b"
+    },
+    {
+      "path": "ordinary-process.json",
+      "raw_bytes": 614,
+      "raw_sha256": "94278f9c7b239bcdee69ffb68dcefb20c0a2e215e433b6a5b6e33eaed1b5a477",
+      "gzip": "pq01-output/ordinary-process.json.gz",
+      "gzip_bytes": 339,
+      "gzip_sha256": "8cac73de0ae00c6550d50dc6d09078355c4b970745184a86bd4a649a42d3488f"
+    },
+    {
+      "path": "ordinary-start.json",
+      "raw_bytes": 411,
+      "raw_sha256": "b49e1044780e702b060450d865398605cacbe1348419657691b6c93a46827dc3",
+      "gzip": "pq01-output/ordinary-start.json.gz",
+      "gzip_bytes": 243,
+      "gzip_sha256": "a6584e15ad4e12249f5b23aab9e87d827678018190824425585d0713d386e876"
+    },
+    {
+      "path": "ordinary.json",
+      "raw_bytes": 4727791,
+      "raw_sha256": "4c214f74ecb61631b19dacc611954e59855e8a0364a348e12813051dead9745d",
+      "gzip": "pq01-output/ordinary.json.gz",
+      "gzip_bytes": 165731,
+      "gzip_sha256": "6da448f662f059179541f913c2ea62afa3227f8d14976aaaa2a5f09f57dbe653"
+    },
+    {
+      "path": "ordinary.log",
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "gzip": "pq01-output/ordinary.log.gz",
+      "gzip_bytes": 20,
+      "gzip_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "progress-process.json",
+      "raw_bytes": 614,
+      "raw_sha256": "47356a10fb7242e645face32970bf8ab8383d889829ca4047ad09d7b7b563a3c",
+      "gzip": "pq01-output/progress-process.json.gz",
+      "gzip_bytes": 337,
+      "gzip_sha256": "aa2cc06dcd6dc9e5ae4f86ba6e982dcdc9395a08a2fa74f674afa268762d9ca9"
+    },
+    {
+      "path": "progress-start.json",
+      "raw_bytes": 411,
+      "raw_sha256": "5624f66be75860e2fa0dde4ab227a2ce40053f5b6b6dad014fcf7ebf2b2c6eb5",
+      "gzip": "pq01-output/progress-start.json.gz",
+      "gzip_bytes": 242,
+      "gzip_sha256": "fc37e2984d7c13a79d7cc0f33d4a68e73707ce1f6c53d269885eed5f292167a2"
+    },
+    {
+      "path": "progress.json",
+      "raw_bytes": 4569012,
+      "raw_sha256": "ec973129f23ac2a9ff4ee8f1604abf4dce9f9ea074843cd1db164a8b2ebb03ac",
+      "gzip": "pq01-output/progress.json.gz",
+      "gzip_bytes": 163651,
+      "gzip_sha256": "198bc3ba86898d0cfc3e7c051efff87508e7cc72de5715f91e4e9f6b30be079d"
+    },
+    {
+      "path": "progress.log",
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "gzip": "pq01-output/progress.log.gz",
+      "gzip_bytes": 20,
+      "gzip_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "service-journal.jsonl",
+      "raw_bytes": 8002,
+      "raw_sha256": "dd0385868b751fa68ff68db7ddfcbc6a97a979677de6d88a5ea765e20def8710",
+      "gzip": "pq01-output/service-journal.jsonl.gz",
+      "gzip_bytes": 1789,
+      "gzip_sha256": "6dab66ff3e4dd571e6612401291c1e1ec70f49f67e5cdc1f95246f3121ea49ec"
+    },
+    {
+      "path": "service-stopped.json",
+      "raw_bytes": 418,
+      "raw_sha256": "663b1788fd7725e6e9b6ffeb41ef06d4f62c784047d58b60582047ce2c4f01e2",
+      "gzip": "pq01-output/service-stopped.json.gz",
+      "gzip_bytes": 228,
+      "gzip_sha256": "11f505a91dadbd6a3999d7d0c6668ea633606d00870e71245ab371b4519925db"
+    },
+    {
+      "path": "service-terminal.json",
+      "raw_bytes": 429,
+      "raw_sha256": "ac0a878c966181b31b822a40111129c3e12e13afc4e8c3042ebc45f54517cf45",
+      "gzip": "pq01-output/service-terminal.json.gz",
+      "gzip_bytes": 261,
+      "gzip_sha256": "c4106169b517b7c6b0a054a9fbdf3fd761cf1eaf9e1e49846344d1fa31e5d7b7"
+    },
+    {
+      "path": "start.json",
+      "raw_bytes": 428,
+      "raw_sha256": "a22c7cc5686ccaa84869073ba27139eb726fab277ac22b3b43c0b6d977326048",
+      "gzip": "pq01-output/start.json.gz",
+      "gzip_bytes": 300,
+      "gzip_sha256": "714a3bbc5e3165b5fbb92b94c257b45bab8ca4d62ef30a87830bc6cc6cc434ac"
+    }
+  ]
+}

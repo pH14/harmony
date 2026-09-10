@@ -1,0 +1,17 @@
+{
+  "format": "retention-ledger-after-pq01-v1",
+  "before": {
+    "admitted_search": 2985486535,
+    "known_auxiliary": 74266963
+  },
+  "pq01": {
+    "admitted_search": 0,
+    "known_auxiliary": 1858
+  },
+  "pq01_total_measured_physical": 1858,
+  "scope": "Two ordinary constructor initializations only. Every paused restore/read preserves clock and complete snapshot. Zero search, continuations or campaign replay. PG02 remains invalid and closed; historical incomplete components are unchanged.",
+  "after": {
+    "admitted_search": 2985486535,
+    "known_auxiliary": 74268821
+  }
+}
