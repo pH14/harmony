@@ -467,3 +467,11 @@ cannot improve that baseline. The new fixtures demonstrate conditional source
 behavior, not prevalence or useful lost transitions in a native campaign. Do
 not combine an ordering fix with the unchanged continuation candidate: doing
 so would abandon the mechanism supported by the historical comparison.
+
+The frozen RR02 pair is now exported without emulation in `pc01-pair/`; all3770
+records and four selected payload hashes pass. [PC01](pc01-design.md) specifies
+a32-tail comparison of the actual complete states, counting new HP loss from
+separate fresh baselines and retaining both directions and unavailable intervals.
+The source probe verifies every measured boundary by a held-action replay.
+Native work requires a separate published registration; the exported local
+inputs are not boot-replay witnesses.

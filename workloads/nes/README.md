@@ -149,3 +149,16 @@ a different policy context rejects replay. Defaults and explicit
 These are research choices, not demonstrated game improvements. The
 [finite model and counterexample](../../benchmarks/search/action-correlation/README.md)
 explain what is proved and what remains empirical.
+
+## Exact local-retention diagnostics
+
+`metroid-retention-replay extract REQUEST OUT` exports a pinned competition
+from a complete capture without constructing an emulator. It checks the full
+footer and both snapshot/input hashes; the exported inputs are checkpoint-local.
+`metroid-retention-pair draws SEEDS BANK` freezes ordinary shared continuations,
+and `metroid-retention-pair run REQUEST OUT` compares exact captured states with
+per-frame boss diagnostics, verified restores and held-command boundary replay.
+Use the same `metroid-motion-context,metroid-boss-context-audit` feature identity
+as the capture. The finite diagnostic changes no archive policy. Its bounds and
+limitations are documented in
+[PC01](../../benchmarks/search/continuation-reassessment/pc01-design.md).

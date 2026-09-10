@@ -33,6 +33,8 @@ const SETUP: u64 = 929;
 const QUALIFY_JOBS: u64 = 4;
 #[path = "metroid-retention-replay/correspondence.rs"]
 mod correspondence;
+#[path = "metroid-retention-replay/extract.rs"]
+mod extract;
 
 // Host telemetry is outside replay state and cannot supply a draw or decision.
 #[allow(clippy::disallowed_methods)]
@@ -638,6 +640,11 @@ fn evaluate(q: &Request, output: &Path, executable_sha256: &str, cost: &mut Cost
 
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if let [mode, request, output] = args.as_slice()
+        && mode == "extract"
+    {
+        return extract::run(Path::new(request), Path::new(output));
+    }
     let [request, output] = args.as_slice() else {
         return Err("usage: metroid-retention-replay REQUEST OUT".into());
     };
