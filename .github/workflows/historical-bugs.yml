@@ -15,6 +15,14 @@ on:
         description: Test backend-owned completion with raw report hashes and execution identity checks
         type: boolean
         default: false
+      cpu_snapshot:
+        description: Qualify versioned CPU snapshots with the PAE cached-PDPTR witness
+        type: boolean
+        default: false
+      candidate_ref:
+        description: Exact candidate commit or branch for CPU snapshot qualification
+        type: string
+        default: codex/snapshot-cpu-state
 permissions:
   contents: read
   actions: read
@@ -115,6 +123,7 @@ jobs:
           if-no-files-found: error
 
   completion:
+    if: ${{ !inputs.cpu_snapshot }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -152,5 +161,35 @@ jobs:
         if: always()
         with:
           name: completion-kvm-${{ github.run_id }}
+          path: reports
+          retention-days: 14
+
+  cpu-snapshot:
+    if: ${{ inputs.cpu_snapshot }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_ref }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: snapshot-cpu-candidate
+      - name: Qualify CPU snapshot continuation on real KVM
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          git rev-parse HEAD > reports/candidate-head.txt
+          test -c /dev/kvm
+          sudo chmod 666 /dev/kvm
+          uname -a > reports/host.txt
+          lscpu >> reports/host.txt
+          cargo test --locked -p vm-state -p vmm-core --lib 2>&1 | tee reports/portable.log
+          cargo test --locked -p vmm-core --test x86_cpu_snapshots -- --ignored --test-threads=1 --nocapture 2>&1 | tee reports/pae-kvm.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cpu-snapshot-kvm-${{ github.run_id }}
           path: reports
           retention-days: 14
