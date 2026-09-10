@@ -523,3 +523,10 @@ pass (167 generic tests plus one interface test, 154 NES library tests, both
 five-test caller variants and strict Clippy). See `pm01-design.md` and
 `pm01-source-checks.json`. Next publish/build, then separately register one exact
 PG01 progress-cell measurement qualification. No native allocation has begun.
+
+PM01 is now separately registered. The pinned source built on ms02 in18.15seconds
+without emulation. One measured PG01 progress cell must reproduce eight exact
+artifacts and the983,632-frame lifetime prediction; the original root,seed,policy
+and limits stay fixed. The native process has120seconds,4GiB and CPUs0–3; the
+service has180seconds and the distinct physical allocation is3M frames. See
+`pm01-registration.json`. No PM01 emulator call has occurred at publication time.

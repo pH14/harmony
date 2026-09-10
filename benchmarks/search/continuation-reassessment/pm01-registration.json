@@ -1,0 +1,68 @@
+{
+  "format": "retention-pm01-registration-v1",
+  "registered_utc": "2026-09-10T21:40:00.591764+00:00",
+  "deadline_utc": "2026-09-10T22:00:00.591764+00:00",
+  "synthesis_deadline_utc": "2026-09-10T22:20:00.591764+00:00",
+  "host": "ms02",
+  "msr1": "reassigned; never accessed",
+  "source_commit": "e562e17840cc10fbd3901005ce23df2ed928acda",
+  "binary": "/root/harmony-depth-transfer-20260909/builds/physical-meter-x86-001/metroid-archive-challenge", "binary_path_note": "# pragma: allowlist secret -- public local build path",
+  "binary_sha256": "400ad54eb044917cf81b0981721c399b203334a2c1de3735b134cac13b64c807",
+  "build_info": "/root/harmony-depth-transfer-20260909/builds/physical-meter-x86-001/build-info.json",
+  "build_info_sha256": "6549d5d68f0840ff58f4fd1fcb9e4cc9953cfc7b892e43a887eeb353080a40a7",
+  "protocol": "/root/harmony-depth-transfer-20260909/protocol/pm01-20260910",
+  "protocol_sha256": {
+    "pm01-request.json": "8a791c86ff9f5080fd17e116167e9fce94df78878191a45adf9a1f6a05e19be9",
+    "pm01-design.md": "4294b6cf342a0de2149028995f5ad1a87247ac051b9d1efe8ec45fd218f6558f",
+    "run_pm01.py": "37514a2655082e77b2f23e50ed33abb890a60e88103c784e277c0989eca5d436",
+    "run_pc01.py": "18d90b084728f9b79ddb399d0cab5d3215d333fc5a06a92c65051048a75df752",
+    "run_pg01.py": "5eb502b82c9d253011d67274c09ead99201691d449b6d9e51993382c94a63500",
+    "test_pm01.py": "b451bbc71340c0d3aa40d61e84666205f5e567b396d27962b1084638c1022d3f",
+    "pg01-prefix.json": "5126eee64820c99697194dec63a20c44491ec7f913d49e77e4fefb97f4f319c5",
+    "pg01-progress-request.json": "02aadadc4b232e35d7f5e9afa10aa79540ad03cffeeb57e54fc8f662a06e01bd",
+    "pg01-output/progress/result.json.gz": "fa8f4874f3ca8ff847ecfe286fd149baadab22e5cbf088765b2456a292e8334c"
+  },
+  "output": "/root/harmony-depth-transfer-20260909/runs/physical-meter-pm01",
+  "service": "harmony-physical-meter-pm01-20260910.service",
+  "service_runtime_seconds": 180,
+  "process_runtime_seconds": 120,
+  "cpus": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "cgroup_limits": {
+    "memory.max": "4294967296",
+    "memory.swap.max": "0",
+    "pids.max": "64"
+  },
+  "output_limit_bytes": 268435456,
+  "file_limit_bytes": 134217728,
+  "cell": {
+    "require_alternate": true,
+    "max_drain_frames": 2880
+  },
+  "physical_frame_allocation": 3000000,
+  "successful_source_frame_bound": 2511334,
+  "frame_bound_derivation": "Direct helper cap 2M + twice (250k admitted plus 2880 drain) + 5574 constructor frames. Counter reads do not stop work; the registered search/direct/process guards apply. Failed construction or interruption has incomplete exact receipts and cannot qualify.",
+  "expected_physical_frames": 983632,
+  "expected_admitted_frames": 250320,
+  "expected_jobs": 2650,
+  "expected_artifacts": {
+    "campaign.json": "8788faef4c85fa937b10d5866e5a33a7c205e9c35d01a5ece4858dc5404dfc14",
+    "checkpoint.bin": "b27503d72a6f98e9eabf54aa94e9fc2a679f3dfe6c01904ed2c88efd61034d72",
+    "origin.bin": "9a1577f32b63de9299a2313cd7cc550d076fd79ac8a227972c4ca85a5dc2ca9b",
+    "root-snapshot.json": "e7b124686162681fcdda6fa0feb457c12ee7f399667b3f69fc05195937378cf7",
+    "root.json": "4077063d96aa3915ea4800740854c60f3a2fe2e7b4edbb880a24dcef32f61d84",
+    "stream.jsonl": "8f87c262262fd539b553870162f2e5eab49eb62aa8d362f0afb31dd2ce107fc9",
+    "witness-full.json": "aa5ece3a6834fe83a7e8a54fe4f28a274921743840cbdc81fb2830b96f570feb",
+    "witness-local.json": "7ecd3995587991732cc4e9ff8fdf33a932a10dc07dfb3ab5f8c68a76e8343316"
+  },
+  "ledger_before": {
+    "admitted_search": 2983235324,
+    "known_auxiliary": 70566920
+  },
+  "gate": "One measured execution of the existing PG01 progress cell. Require all previous activation and replay checks, all eight frozen artifact hashes, complete 5-search/1-replay target lifetimes and the exact 983632-frame prediction. First failure closes this allocation without a retry or changed seed/root/policy/horizon. No utility or fresh-search panel is allocated.",
+  "historical_scope": "Measurement qualification only; old PG01 and earlier gates remain closed. Do not retroactively label historical inferred components as measured."
+}

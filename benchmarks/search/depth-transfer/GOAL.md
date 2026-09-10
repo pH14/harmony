@@ -1248,3 +1248,14 @@ publish/build on ms02, then separately register that exact measurement with
 byte-identical campaign/checkpoint/witness gates. This source decision allocates
 no native work or utility panel. PG01 and earlier gates remain closed, msr1 is
 unavailable, and the original discovery/transfer/untouched goal remains active.
+
+PM01 is separately registered at 2026-09-10T21:40:00.591764+00:00, with native work ending
+by 2026-09-10T22:00:00.591764+00:00 and synthesis by 2026-09-10T22:20:00.591764+00:00.
+The exact published source built on ms02 without emulation. One existing PG01
+progress cell has a distinct3M-frame physical allocation,250k admitted limit plus
+2880drain,2M direct-helper limit,30seconds search,120seconds process and180seconds
+service with4GiB/CPUs0–3. Its successful source bound is2,511,334frames. Require
+eight unchanged artifact hashes and exactly983,632measured total frames,including
+all constructors. No retry; no native PM01 call has happened at registration
+publication time. This earns an efficacy-panel decision only,not fresh-policy
+or validation budget. All previous allocations remain closed.
