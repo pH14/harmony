@@ -123,6 +123,9 @@ fn serviced_pio_is_exactly_snapshottable_without_guest_execution() {
             configure(&mut backend);
             backend.write_guest(Gpa(0x1000), &code).expect("load stub");
             enter_real_mode_at(&mut backend, 0x1000);
+            let mut initial = backend.save().expect("initialize instruction witness");
+            initial.regs.rbx = 0;
+            backend.restore(&initial).expect("reset BX witness");
             if mode == 2 {
                 backend
                     .restore(snapshot.as_ref().expect("retired snapshot"))
@@ -143,6 +146,7 @@ fn serviced_pio_is_exactly_snapshottable_without_guest_execution() {
                 }
                 if mode == 1 {
                     let before = backend.save().expect("pre-retirement state");
+                    assert_eq!(before.regs.rbx, 0, "eager completion executes no INC");
                     assert_eq!(
                         before.regs.rip, 0x1006,
                         "serviced PIO has already completed"
