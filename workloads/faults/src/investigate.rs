@@ -895,11 +895,18 @@ fn source_execution(
             let finding = workspace
                 .finding(id)
                 .ok_or_else(|| unknown_finding(workspace, id))?;
-            Ok((
-                finding.actions.clone(),
-                finding.virtual_time(),
-                finding.id.clone(),
-            ))
+            // A recorded execution ends where its windows run out, which is
+            // the same line the guest advances to. The finding's own moment is
+            // earlier whenever the recording stopped on the assertion, and a
+            // continuation replaying the input stops there for that reason
+            // rather than for want of recorded input.
+            let facts = workspace.facts();
+            let end = facts.root_seal.saturating_add(
+                facts
+                    .horizon_nanos
+                    .saturating_mul(finding.actions.len() as u64),
+            );
+            Ok((finding.actions.clone(), end, finding.id.clone()))
         }
         Selector::BranchHead(name) => {
             let branch = named_branch(workspace, name)?;
@@ -1035,6 +1042,41 @@ pub fn stop_from_observations(stop: FaultStop, deadline_reached: bool) -> StopRe
             StopReason::VirtualDeadline
         }
         _ => StopReason::VirtualDeadline,
+    }
+}
+
+/// What a step must do about the action window it sits in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WindowEntry {
+    /// Install the standing-fault list for every action up to this window.
+    pub open: bool,
+    /// Stage the window's one-shot host perturbation.
+    pub stage: bool,
+}
+
+/// Whether a step at `now` enters the window starting at `start`.
+///
+/// A window is entered once per continuation. Settling carries a run past a
+/// boundary, so a point inside a window it has not opened is still an entry;
+/// comparing `now` against `start` alone opens only the window a run starts
+/// exactly on and leaves every later one without its standing faults.
+///
+/// A fresh process installs the standing list again for the window it restored
+/// into, which is the same bytes as before and changes nothing. A one-shot
+/// perturbation belongs to the crossing of the window's start, so a restore
+/// landing inside a window an earlier run already crossed does not stage it.
+#[must_use]
+pub fn window_entry(
+    now: u64,
+    start: u64,
+    index: usize,
+    opened: Option<usize>,
+    first_step: bool,
+) -> WindowEntry {
+    let open = opened != Some(index);
+    WindowEntry {
+        open,
+        stage: open && (!first_step || now <= start),
     }
 }
 

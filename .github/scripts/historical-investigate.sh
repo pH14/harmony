@@ -163,10 +163,14 @@ whole_evaluated=$(jq -r '(.evaluated // []) | join(",")' \
     || record "the cold fork reproduced the recorded verdict" 1 \
        "violated [${whole_violations}], evaluated [${whole_evaluated}], wanted ${ORACLE_ASSERTION}"
 
+# The branch sits wherever the advance above stopped, which is the failure when
+# the continuation reproduced it and the input's end when it did not. `--extend`
+# runs the command under the environment the last window left standing either
+# way, so these checks report on `exec` rather than on the advance.
 echo "::group::a guest command and its retry"
-w exec whole --within 1s --request-id diagnostic-1 -- \
+w exec whole --extend --within 1s --request-id diagnostic-1 -- \
     sh -c 'cat /run/amcheck.*.out' >"reports/${CASE_ID}.exec.json" || true
-w exec whole --within 1s --request-id diagnostic-1 -- \
+w exec whole --extend --within 1s --request-id diagnostic-1 -- \
     sh -c 'cat /run/amcheck.*.out' >"reports/${CASE_ID}.exec-retry.json" || true
 echo "::endgroup::"
 history=$(jq -r '.history // ""' "reports/${CASE_ID}.exec.json")

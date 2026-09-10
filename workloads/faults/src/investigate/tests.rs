@@ -1030,3 +1030,47 @@ fn every_outcome_names_a_next_valid_command() {
         run_outcome.next
     );
 }
+
+#[test]
+fn every_window_a_continuation_crosses_is_opened() {
+    // Settling carries a run past a boundary, so the point that starts a window
+    // is rarely the boundary itself. Each window the run sits in is opened once.
+    let mut opened = None;
+    let mut entered = Vec::new();
+    for (step, (now, index)) in [(1_000, 0), (1_501, 1), (2_003, 2), (2_400, 2)]
+        .into_iter()
+        .enumerate()
+    {
+        let entry = window_entry(now, 1_000 + 500 * index as u64, index, opened, step == 0);
+        if entry.open {
+            entered.push((index, entry.stage));
+            opened = Some(index);
+        }
+    }
+    assert_eq!(entered, vec![(0, true), (1, true), (2, true)]);
+}
+
+#[test]
+fn a_restore_inside_a_window_reinstalls_it_without_staging_it_again() {
+    // The standing list is the same bytes each time, so a fresh process must
+    // install it again. The one-shot perturbation already fired for this window
+    // in the process that crossed its start.
+    let entry = window_entry(2_200, 2_000, 2, None, true);
+    assert_eq!(
+        entry,
+        WindowEntry {
+            open: true,
+            stage: false
+        }
+    );
+
+    // A restore that lands on a boundary has not crossed that window yet.
+    let boundary = window_entry(2_000, 2_000, 2, None, true);
+    assert_eq!(
+        boundary,
+        WindowEntry {
+            open: true,
+            stage: true
+        }
+    );
+}
