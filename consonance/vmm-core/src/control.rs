@@ -481,6 +481,36 @@ struct SnapshotMeta {
     control_state: Vec<u8>,
 }
 
+/// A sparse sidecar carries both replay state and its seal-time hash preimage.
+/// The final control chunk must describe the same state in both representations.
+fn validate_control_hash_suffix(
+    mut suffix: &[u8],
+    control: &[u8],
+) -> Result<(), PortableSnapshotError> {
+    let malformed = || PortableSnapshotError::Malformed("sparse control hash preimage");
+    while !suffix.is_empty() {
+        let header = suffix.get(..12).ok_or_else(malformed)?;
+        let length = u64::from_le_bytes(header[4..12].try_into().map_err(|_| malformed())?);
+        let length = usize::try_from(length).map_err(|_| malformed())?;
+        let end = 12_usize.checked_add(length).ok_or_else(malformed)?;
+        let payload = suffix.get(12..end).ok_or_else(malformed)?;
+        let tail = &suffix[end..];
+        if &header[..4] == b"CPLN" {
+            return if !control.is_empty() && payload == control && tail.is_empty() {
+                Ok(())
+            } else {
+                Err(malformed())
+            };
+        }
+        suffix = tail;
+    }
+    if control.is_empty() {
+        Ok(()) // legacy sidecars predate the control chunk
+    } else {
+        Err(malformed())
+    }
+}
+
 /// Hash the exact canonical `MEM\0` chunk followed by its seal-time suffix.
 ///
 /// RAM is streamed directly into SHA-256, avoiding a second full-image copy
@@ -845,6 +875,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
         ControlState::decode_for_policy(&portable.control_state, &portable.policy)
             .map_err(PortableSnapshotError::Malformed)?;
+        validate_control_hash_suffix(&portable.state_blob_suffix, &portable.control_state)?;
         let id = self.next_snap;
         let next_snap = self
             .next_snap
@@ -5232,6 +5263,81 @@ mod tests {
         let after = destination.snapshot_store_stats();
         assert_eq!(after.snapshots, before.snapshots);
         assert_eq!(after.stored_unique_pages, before.stored_unique_pages);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "portable import allocates snapshot-store mappings")]
+    fn accumulated_transport_inputs_survive_local_and_portable_replay() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let floor = source.vmm().unwrap().effective_vns().unwrap();
+        for at in 1..=128 {
+            let effect =
+                environment::channel::Effect::write_memory(0, vec![at as u8; 10_000]).unwrap();
+            assert_eq!(
+                source
+                    .handle(&Request::Perturb {
+                        fault: control_proto::HostFault(effect.encode()),
+                        at: Moment(floor + at),
+                    })
+                    .unwrap(),
+                Ok(Reply::Unit)
+            );
+        }
+        assert!(
+            source.capture_control_state().pending.encode().len()
+                > environment::channel::MAX_CHANNEL_BYTES
+        );
+        let before = hash(&mut source);
+        let cut = snap(&mut source);
+        let mut artifact = Vec::new();
+        source.export_portable_snapshot(cut, &mut artifact).unwrap();
+        assert_eq!(
+            source.handle(&Request::Replay(cut)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut source), before);
+        let mut cold = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut cold);
+        let imported = cold.import_portable_snapshot(artifact.as_slice()).unwrap();
+        assert_eq!(
+            cold.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut cold), before);
+        assert_eq!(cold.schedule, source.schedule);
+        assert_eq!(cold.schedule.len(), 128);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "sparse snapshot import uses mapped snapshot storage")]
+    fn sparse_import_rejects_a_different_control_hash_preimage() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let cut = snap(&mut source);
+        let meta = source.snapshot_meta.get_mut(&cut.0).unwrap();
+        let mut changed = super::ControlState::decode(&meta.control_state)
+            .unwrap()
+            .unwrap();
+        changed.exec_nonce += 1;
+        // Both control records are well formed, but replay would use a different
+        // command nonce from the one covered by the retained hash preimage.
+        meta.control_state = changed.encode();
+        let sparse = source.export_sparse_snapshot(cut, cut).unwrap();
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let base = snap(&mut destination);
+        let before = destination.snapshot_store_stats();
+        let before_hash = hash(&mut destination);
+        assert!(matches!(
+            destination.import_sparse_snapshot(base, sparse),
+            Err(PortableSnapshotError::Malformed(
+                "sparse control hash preimage"
+            ))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before);
+        assert_eq!(destination.latest_snapshot(), Some(base));
+        assert_eq!(hash(&mut destination), before_hash);
     }
 
     #[test]
