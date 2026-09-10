@@ -72,10 +72,15 @@ with the boot that reaches setup.
 [`campaign`](src/campaign.rs) implements the game-neutral campaign interface
 over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
 which pairs the sometimes-assertion set with node liveness, unexpected deaths,
-and hook progress. `EventKill` draws choose a binary scale before a coordinate,
+EventKill-fired outcomes, and hook progress. `EventKill` outcomes are decoded
+from the agent's dedicated monotonic fired counter rather than inferred from
+aggregate unexpected deaths. `EventKill` draws choose a binary scale before a coordinate,
 so finite event prefixes are searchable without a workload-specific upper
-bound. A coordinate that fires increments the unexpected-death state and keeps
-that prefix available for generic dyadic refinement.
+bound. Each observed ordinal remains distinct as fired or unfired evidence; the
+coordinator keeps those bounds per action prefix and node, then probes the
+exact midpoint while retaining a fired endpoint as a branchable prefix. The
+selected parent prefix is materialized for both live and recorded draws, so the
+same observation fold and refinement state is rebuilt during stream replay.
 
 ## Running it
 

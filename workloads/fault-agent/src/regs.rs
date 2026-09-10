@@ -8,9 +8,10 @@
 //! | 3 | hooks started |
 //! | 4 | hooks finished |
 //! | 5 | bitmap of the `assert_sometimes` ids a hook reported |
-//! | 6 | node exits with no fault in force |
+//! | 6 | node exits not expected from Kill or Restart |
 //! | 7 | node starts after the initial one |
 //! | 8 | threads the guest kernel parked at a place |
+//! | 9 | node deaths observed while an EventKill arm was active |
 //!
 //! The tick register is emitted every tick so the host always has a fresh
 //! liveness signal; the others are emitted only when their value changes, which
@@ -32,6 +33,8 @@ pub const REG_UNEXPECTED_DEATHS: u32 = 6;
 pub const REG_RESTARTS: u32 = 7;
 /// Threads the guest kernel parked at a place.
 pub const REG_PARKED: u32 = 8;
+/// Node deaths observed while an EventKill arm was active.
+pub const REG_EVENT_KILLS_FIRED: u32 = 9;
 
 /// The number of `assert_sometimes` ids [`REG_SOMETIMES`] can hold. A hit at a
 /// higher id still reaches the host as an assertion event; it just has no bit.
@@ -63,12 +66,14 @@ pub struct RegisterSnapshot {
     pub restarts: u64,
     /// [`REG_PARKED`].
     pub parked: u64,
+    /// [`REG_EVENT_KILLS_FIRED`].
+    pub event_kills_fired: u64,
 }
 
 impl RegisterSnapshot {
     /// The `(register, value)` pairs in register order.
     #[must_use]
-    pub fn pairs(&self) -> [(u32, u64); 8] {
+    pub fn pairs(&self) -> [(u32, u64); 9] {
         [
             (REG_TICKS, self.ticks),
             (REG_ALIVE, self.alive),
@@ -78,6 +83,7 @@ impl RegisterSnapshot {
             (REG_UNEXPECTED_DEATHS, self.unexpected_deaths),
             (REG_RESTARTS, self.restarts),
             (REG_PARKED, self.parked),
+            (REG_EVENT_KILLS_FIRED, self.event_kills_fired),
         ]
     }
 }
@@ -140,6 +146,7 @@ mod tests {
                 (REG_UNEXPECTED_DEATHS, 0),
                 (REG_RESTARTS, 0),
                 (REG_PARKED, 0),
+                (REG_EVENT_KILLS_FIRED, 0),
             ]
         );
     }
@@ -167,6 +174,21 @@ mod tests {
 
         snapshot.ticks = 4;
         assert_eq!(regs.updates(snapshot), [(REG_TICKS, 4)]);
+    }
+
+    #[test]
+    fn event_kill_fired_is_published_as_its_own_monotonic_register() {
+        let mut regs = Registers::new();
+        regs.updates(RegisterSnapshot::default());
+        let updates = regs.updates(RegisterSnapshot {
+            ticks: 1,
+            event_kills_fired: 1,
+            ..RegisterSnapshot::default()
+        });
+        assert_eq!(
+            updates,
+            [(REG_TICKS, 1), (REG_EVENT_KILLS_FIRED, 1)]
+        );
     }
 
     #[test]

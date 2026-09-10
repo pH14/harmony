@@ -24,8 +24,11 @@ nothing else.
 A window is identified by its target and its start, so two `RunHook` windows
 for one hook that touch launch it twice even when no poll falls in between.
 
-A node that exits while no fault names it is an unexpected death: the agent
-counts it and starts the node again on the next tick.
+A node exit that is not marked expected by Kill or Restart is an unexpected
+death: the agent counts it and starts the node again on the next tick. A death
+observed with an EventKill arm installed also increments the dedicated
+EventKill-fired counter; Kill and Restart windows mark their deaths expected
+and do not increment either event outcome.
 Each instrumented start also receives an internal, monotonically increasing
 process incarnation id. The automatic coverage stream uses that id instead of
 the recyclable Linux PID; it is guest state, so snapshots and replay reproduce
@@ -90,8 +93,11 @@ read as a healthy run.
 The agent publishes IJON state registers the host reads back as SDK events:
 completed ticks, the alive bitmap, hook actions accepted and finished, the bitmap of
 reported `assert_sometimes` ids, unexpected deaths, restarts, and parked
-threads. The tick register is emitted every tick so liveness is always fresh;
-the others are emitted only when they change.
+threads, and EventKill-fired deaths. The tick register is emitted every tick so
+liveness is always fresh; the others are emitted only when they change. The
+EventKill-fired register is monotonic and is separate from unexpected deaths so
+the host can identify the outcome of an EventKill action without inferring it
+from aggregate process exits.
 
 ## Boundaries
 

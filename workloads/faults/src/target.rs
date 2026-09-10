@@ -41,12 +41,14 @@ pub mod reg {
     pub const HOOKS_FINISHED: u32 = 4;
     /// Bitmap of `sometimes` sites hit, first 48 ids.
     pub const SOMETIMES: u32 = 5;
-    /// Nodes that died with no fault active.
+    /// Node exits not expected from Kill or Restart.
     pub const UNEXPECTED_DEATHS: u32 = 6;
     /// Nodes the agent restarted.
     pub const RESTARTS: u32 = 7;
     /// Threads the guest kernel parked at a place.
     pub const PARKED: u32 = 8;
+    /// Node deaths observed while an EventKill arm was active.
+    pub const EVENT_KILLS_FIRED: u32 = 9;
 }
 
 const NS_SHIFT: u32 = 24;
@@ -390,8 +392,11 @@ pub struct FaultObservations {
     pub hooks_started: u64,
     /// Hooks completed.
     pub hooks_finished: u64,
-    /// Nodes that died with no fault active.
+    /// Node exits not expected from Kill or Restart.
     pub unexpected_deaths: u64,
+    /// Node deaths observed while an EventKill arm was active.
+    #[serde(default)]
+    pub event_kills_fired: u64,
     /// Nodes the agent restarted.
     pub restarts: u64,
     /// Threads the guest kernel parked at a place.
@@ -418,6 +423,7 @@ impl FaultObservations {
             hooks_started: value(reg::HOOKS_STARTED),
             hooks_finished: value(reg::HOOKS_FINISHED),
             unexpected_deaths: value(reg::UNEXPECTED_DEATHS),
+            event_kills_fired: value(reg::EVENT_KILLS_FIRED),
             restarts: value(reg::RESTARTS),
             parked: value(reg::PARKED),
             sometimes_register: value(reg::SOMETIMES),
@@ -747,6 +753,7 @@ mod tests {
             assert_event(64, DISP_HIT),
             state_event(reg::ALIVE, STATE_SET, 0b101),
             state_event(reg::HOOKS_FINISHED, STATE_SET, 2),
+            state_event(reg::EVENT_KILLS_FIRED, STATE_SET, 3),
             state_event(reg::SOMETIMES, STATE_SET, 0b11),
         ])
         .expect("decode");
@@ -754,6 +761,7 @@ mod tests {
         assert_eq!(observations.moment, 77);
         assert_eq!(observations.alive, 0b101);
         assert_eq!(observations.hooks_finished, 2);
+        assert_eq!(observations.event_kills_fired, 3);
         assert_eq!(observations.sometimes_register, 0b11);
         assert_eq!(observations.sometimes, BTreeSet::from([0, 63, 64]));
         assert_eq!(
@@ -763,6 +771,26 @@ mod tests {
         );
         assert!(!observations.is_bug());
         assert_eq!(observations.exit_kind(), ExitKind::Ok);
+    }
+
+    #[test]
+    fn observations_accept_old_serialized_inputs_without_the_new_register() {
+        let old = r#"{
+            "moment": 77,
+            "ticks": 1,
+            "alive": 1,
+            "hooks_started": 0,
+            "hooks_finished": 0,
+            "unexpected_deaths": 0,
+            "restarts": 0,
+            "parked": 0,
+            "sometimes_register": 0,
+            "sometimes": [],
+            "violations": [],
+            "stop": "Deadline"
+        }"#;
+        let observations: FaultObservations = serde_json::from_str(old).expect("decode old");
+        assert_eq!(observations.event_kills_fired, 0);
     }
 
     #[test]

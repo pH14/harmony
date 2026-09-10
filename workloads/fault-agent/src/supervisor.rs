@@ -80,8 +80,10 @@ pub struct Counters {
     pub hooks_started: u64,
     /// Hooks that have exited.
     pub hooks_finished: u64,
-    /// Node exits with no fault in force.
+    /// Node exits not expected from Kill or Restart.
     pub unexpected_deaths: u64,
+    /// Node deaths observed while the node's EventKill arm was active.
+    pub event_kills_fired: u64,
     /// Node starts after the initial one.
     pub restarts: u64,
     /// Bitmap of the `assert_sometimes` ids a hook has reported.
@@ -99,6 +101,10 @@ struct NodeState {
     /// makes `ProcKill` permanent and `ProcRestart` the only fault that brings
     /// a node back.
     expected_down: bool,
+    /// The EventKill arm currently installed in this process, if any. The
+    /// standing-fault answer can close before the process exit is reaped, so
+    /// this process-owned state is what identifies the death's arm.
+    event_kill_armed: Option<u64>,
 }
 
 /// The agent's model of its nodes and the last answer it applied.
@@ -124,6 +130,7 @@ impl Supervisor {
                     alive: true,
                     paused: false,
                     expected_down: false,
+                    event_kill_armed: None,
                 };
                 node_count
             ],
@@ -158,8 +165,12 @@ impl Supervisor {
             }
             state.alive = false;
             state.paused = false;
+            let event_kill_armed = state.event_kill_armed.take().is_some();
             if !state.expected_down {
                 self.counters.unexpected_deaths += 1;
+                if event_kill_armed {
+                    self.counters.event_kills_fired += 1;
+                }
             }
         }
 
@@ -177,6 +188,7 @@ impl Supervisor {
                     actions.push(Action::Kill(node));
                     state.alive = false;
                     state.paused = false;
+                    state.event_kill_armed = None;
                 }
                 state.expected_down = true;
             }
@@ -192,9 +204,11 @@ impl Supervisor {
                 match now.event_kill {
                     Some(ordinal) if state.alive => {
                         actions.push(Action::ArmEventKill(node, ordinal));
+                        state.event_kill_armed = Some(ordinal);
                     }
                     None if was.event_kill.is_some() && state.alive => {
                         actions.push(Action::DisarmEventKill(node));
+                        state.event_kill_armed = None;
                     }
                     _ => {}
                 }
@@ -213,12 +227,14 @@ impl Supervisor {
                 state.alive = true;
                 state.paused = false;
                 state.expected_down = false;
+                state.event_kill_armed = None;
                 self.counters.restarts += 1;
                 // Event-kill is a one-shot arm owned by the process.  If the
                 // process died while its standing window remained open, the
                 // replacement needs the same arm after it starts.
                 if let Some(ordinal) = now.event_kill {
                     actions.push(Action::ArmEventKill(node, ordinal));
+                    state.event_kill_armed = Some(ordinal);
                 }
             }
         }
@@ -239,12 +255,14 @@ impl Supervisor {
             actions.push(Action::Start(node));
             self.nodes[index].alive = true;
             self.nodes[index].paused = false;
+            self.nodes[index].event_kill_armed = None;
             self.counters.restarts += 1;
             // A standing event-kill window survives the crash, but its arm
             // does not: it lives in the old process.  Re-arm the replacement
             // in action order, immediately after its Start action.
             if let Some(ordinal) = active.node(node).event_kill {
                 actions.push(Action::ArmEventKill(node, ordinal));
+                self.nodes[index].event_kill_armed = Some(ordinal);
             }
         }
 
@@ -300,6 +318,7 @@ impl Supervisor {
             hooks_finished: self.counters.hooks_finished,
             sometimes: self.counters.sometimes,
             unexpected_deaths: self.counters.unexpected_deaths,
+            event_kills_fired: self.counters.event_kills_fired,
             restarts: self.counters.restarts,
             parked: self.counters.parked,
         }
@@ -376,6 +395,45 @@ mod tests {
             sup.tick(&ActiveFaults::new(), &[]),
             [Action::DisarmEventKill(0)]
         );
+    }
+
+    #[test]
+    fn an_event_kill_death_has_a_dedicated_fired_counter() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, Fault::ProcEventKill { ordinal: 19 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 19)]);
+        assert_eq!(
+            sup.tick(&event, &[0]),
+            [Action::Start(0), Action::ArmEventKill(0, 19)]
+        );
+        assert_eq!(sup.counters().event_kills_fired, 1);
+        // The generic death register retains its existing meaning and still
+        // records the process exit as an unexpected death.
+        assert_eq!(sup.counters().unexpected_deaths, 1);
+    }
+
+    #[test]
+    fn an_event_kill_death_is_counted_after_its_window_closes() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, Fault::ProcEventKill { ordinal: 19 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 19)]);
+        // The process exits before the next standing poll observes that the
+        // EventKill window has closed. The installed arm is still evidence.
+        assert_eq!(sup.tick(&ActiveFaults::new(), &[0]), [Action::Start(0)]);
+        assert_eq!(sup.counters().event_kills_fired, 1);
+    }
+
+    #[test]
+    fn a_kill_expected_death_does_not_increment_the_event_counter() {
+        let mut sup = Supervisor::new(1);
+        let both = active(&[
+            (0, Fault::ProcKill),
+            (0, Fault::ProcEventKill { ordinal: 19 }),
+        ]);
+        assert_eq!(sup.tick(&both, &[]), [Action::Kill(0)]);
+        assert_eq!(sup.tick(&both, &[0]), []);
+        assert_eq!(sup.counters().event_kills_fired, 0);
+        assert_eq!(sup.counters().unexpected_deaths, 0);
     }
 
     #[test]
@@ -584,6 +642,7 @@ mod tests {
         assert_eq!(snap.hooks_finished, 1);
         assert_eq!(snap.sometimes, 1 << 3);
         assert_eq!(snap.unexpected_deaths, 1);
+        assert_eq!(snap.event_kills_fired, 0);
         assert_eq!(snap.restarts, 1);
     }
 

@@ -267,6 +267,9 @@ pub struct FaultTarget {
     actions: Vec<FaultAction>,
     observation: FaultObservations,
     action_observations: Vec<FaultObservations>,
+    /// Whether each action applied since the last restore fired its
+    /// instrumented EventKill, aligned with the replayed action list.
+    event_kill_outcomes: Vec<Option<bool>>,
     failed: bool,
     horizons_clocked: u64,
     guest_horizons_run: u64,
@@ -296,6 +299,7 @@ impl FaultTarget {
             config,
             actions: Vec::new(),
             action_observations: vec![observation.clone()],
+            event_kill_outcomes: Vec::new(),
             observation,
             failed: false,
             horizons_clocked: 0,
@@ -338,6 +342,12 @@ impl FaultTarget {
     #[must_use]
     pub fn last_action_observations(&self) -> &[FaultObservations] {
         &self.action_observations
+    }
+
+    /// Outcomes aligned with actions applied since the last restore.
+    #[must_use]
+    pub fn event_kill_outcomes(&self) -> &[Option<bool>] {
+        &self.event_kill_outcomes
     }
 
     /// Whether the current endpoint found a bug.
@@ -408,6 +418,7 @@ impl FaultTarget {
         match result {
             Ok(observation) => {
                 self.actions.clear();
+                self.event_kill_outcomes.clear();
                 self.guest_horizons_run = 0;
                 self.observation = observation.clone();
                 self.action_observations = vec![observation];
@@ -436,6 +447,7 @@ impl FaultTarget {
             }
         })?;
         self.actions.clone_from(&snapshot.actions);
+        self.event_kill_outcomes.clear();
         self.observation = match rebuilt {
             None => snapshot.observation.clone(),
             // The prefix ended at its horizon when first run and somewhere
@@ -496,10 +508,14 @@ impl FaultTarget {
         });
         match result {
             Ok((observation, ran)) => {
+                let fired = matches!(action, FaultAction::EventKill { .. })
+                    && observation.event_kills_fired > self.observation.event_kills_fired;
                 self.actions.push(action);
                 self.horizons_clocked = self.horizons_clocked.saturating_add(1);
                 self.guest_horizons_run = self.guest_horizons_run.saturating_add(ran);
                 self.observation = observation.clone();
+                self.event_kill_outcomes
+                    .push(matches!(action, FaultAction::EventKill { .. }).then_some(fired));
                 self.action_observations.push(observation);
             }
             Err(error) => {
