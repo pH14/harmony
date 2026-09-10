@@ -5,6 +5,8 @@ Build from the repository with `cargo build --release -p harmony-cli`.
 Run `target/release/harmony preflight` to inspect host support and guest
 artifacts. Add `--bundle path/to/bundle` to report what a workload image
 declares about itself and what an investigation of it would find missing.
+With `--bundle` the exit status answers about the bundle, so a complete one
+still succeeds on a machine with no hypervisor or guest artifacts installed.
 See the [harmony-linux README](../consonance/harmony-linux/README.md) for guest image builds. Set `HARMONY_GUEST_DIR`
 to the artifact directory when using an external build.
 

@@ -267,6 +267,15 @@ fn blockers(
     blockers
 }
 
+/// Whether the report answers the question its command asked: about the named
+/// bundle when there is one, and about this host otherwise.
+fn ready(report: &Report) -> bool {
+    match &report.bundle {
+        Some(bundle) => bundle.error.is_none() && bundle.blockers.is_empty(),
+        None => report.ready,
+    }
+}
+
 pub fn run(json: bool, bundle: Option<&Path>) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let host = HostReport::detect();
     let guest = GuestArtifacts::locate(host.isa);
@@ -300,11 +309,9 @@ pub fn run(json: bool, bundle: Option<&Path>) -> Result<ExitCode, Box<dyn std::e
     } else {
         print_text(&report);
     }
-    let bundle_ready = report
-        .bundle
-        .as_ref()
-        .is_none_or(|b| b.error.is_none() && b.blockers.is_empty());
-    Ok(if report.ready && bundle_ready {
+    // Reading a bundle needs no hypervisor, so `--bundle` answers about the
+    // file: a complete bundle on a host with no guest artifacts still succeeds.
+    Ok(if ready(&report) {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -453,6 +460,47 @@ diagnostic amcheck /usr/bin/pg_amcheck --heapallindexed
             found.iter().any(|b| b.contains("describe hook 1")),
             "{found:?}"
         );
+    }
+
+    /// An agent is told to check its bundle with `preflight --bundle` while it
+    /// builds an image, on a host with no guest artifacts installed. A nonzero
+    /// exit there would report a host gap as a bundle problem.
+    #[test]
+    fn a_named_bundle_decides_the_exit_status_on_a_host_with_no_guest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bundle");
+        std::fs::write(&path, COMPLETE).unwrap();
+        let mut report = report_without_a_guest();
+        assert!(!ready(&report), "no bundle named: the host decides");
+
+        report.bundle = Some(BundleReport::read(&path));
+        assert!(ready(&report), "a complete bundle on an unequipped host");
+
+        let bare = dir.path().join("bare");
+        std::fs::write(&bare, "node a /bin/a\n").unwrap();
+        report.bundle = Some(BundleReport::read(&bare));
+        assert!(!ready(&report), "an incomplete bundle still fails");
+    }
+
+    fn report_without_a_guest() -> Report {
+        Report {
+            os: "linux",
+            isa: Isa::X86_64,
+            nested: Detected::No,
+            container: Detected::No,
+            hypervisor: Hypervisor::Unsupported("no supported hypervisor".to_owned()),
+            matrix_cell: MatrixCell::Unsupported,
+            run_loop: false,
+            guest: GuestArtifacts {
+                dir: None,
+                kernel: None,
+                initramfs: Vec::new(),
+            },
+            base_initramfs: None,
+            ready: false,
+            blockers: vec!["controlled guest kernel missing".to_owned()],
+            bundle: None,
+        }
     }
 
     /// The report names what the bundle declares, including whether it has a

@@ -122,8 +122,8 @@ meaning=$(jq -r '.properties[0].meaning // ""' <<<"${inspected}")
 
 rewind_ns=$((HORIZON_MS * 1000000 * 3))
 
-# Without --extend the advance stops at the source's recorded end, which is
-# the finding's own moment, so a generous bound still lands exactly there.
+# Without --extend the advance stops at the recorded execution's end, which is
+# at or past the finding's own moment, so a generous bound reaches it.
 echo "::group::cold fork and one long advance"
 w fork bug-1 --rewind "${rewind_ns}ns" --name whole >"reports/${CASE_ID}.fork-whole.json"
 w run whole --for "$((rewind_ns * 2))ns" >"reports/${CASE_ID}.run-whole.json"
@@ -144,10 +144,24 @@ split_time=$(jq -r '.virtual_time_nanos' "reports/${CASE_ID}.run-split-2.json")
     || record "splitting an advance changes nothing" 1 \
        "whole ${whole_hash}@${whole_time} vs split ${split_hash}@${split_time}"
 
-[[ ${whole_time} == "${target_time}" ]] \
+[[ ${whole_time} -ge ${target_time} ]] \
     && record "the cold fork reached the recorded moment" 0 "${whole_time}ns" \
     || record "the cold fork reached the recorded moment" 1 \
        "reached ${whole_time}ns, recorded ${target_time}ns"
+
+# Reaching the moment is not the claim that matters. A fork with no
+# intervention replays the recorded execution, so it must run the same hooks
+# and report the same violated property; anything less means the continuation
+# did not reproduce what the search found.
+whole_violations=$(jq -r '(.violations // []) | join(",")' \
+    "reports/${CASE_ID}.run-whole.json")
+whole_evaluated=$(jq -r '(.evaluated // []) | join(",")' \
+    "reports/${CASE_ID}.run-whole.json")
+[[ ",${whole_violations}," == *",${ORACLE_ASSERTION},"* ]] \
+    && record "the cold fork reproduced the recorded verdict" 0 \
+       "violated ${whole_violations}" \
+    || record "the cold fork reproduced the recorded verdict" 1 \
+       "violated [${whole_violations}], evaluated [${whole_evaluated}], wanted ${ORACLE_ASSERTION}"
 
 echo "::group::a guest command and its retry"
 w exec whole --within 1s --request-id diagnostic-1 -- \
