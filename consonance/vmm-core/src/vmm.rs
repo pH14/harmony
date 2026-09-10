@@ -7847,10 +7847,10 @@ mod tests {
             },
             "exception_error_code",
         );
-        // Two cap-gated event fields are fail-closed-REJECTED at save (PR #12 round 7): their
-        // `KVM_SET_VCPU_EVENTS` validity bits need `KVM_CAP_X86_TRIPLE_FAULT_EVENT` /
-        // `KVM_CAP_EXCEPTION_PAYLOAD`, which this backend does not enable — a captured value
-        // could not be restored, so save fails closed rather than seal an unrestorable snapshot.
+        // Triple fault remains fail-closed-REJECTED at save (PR #12 round 7): its
+        // `KVM_SET_VCPU_EVENTS` validity bit needs `KVM_CAP_X86_TRIPLE_FAULT_EVENT`, which this
+        // backend does not enable. Exception payload support is enabled, so a payload-bearing
+        // exception is captured and restored by the focused whole-VMM test below.
         let rejects = |events: vmm_backend::VcpuEvents, needle: &str| {
             let mut st = nonzero_state();
             st.events = events;
@@ -7860,7 +7860,9 @@ mod tests {
                     msg.contains(needle),
                     "reject reason should name {needle:?}, got: {msg}"
                 ),
-                other => panic!("a cap-gated event field must fail closed at save, got {other:?}"),
+                other => {
+                    panic!("a triple-fault event field must fail closed at save, got {other:?}")
+                }
             }
         };
         rejects(
@@ -7870,14 +7872,6 @@ mod tests {
             },
             "triple_fault_pending",
         );
-        rejects(
-            vmm_backend::VcpuEvents {
-                exception_has_payload: 1,
-                exception_payload: 0xCAFE,
-                ..Default::default()
-            },
-            "exception_has_payload",
-        );
         // A clean quiescent point still snapshots (no regression), and the validity-mask
         // `flags` is carried like any other field now.
         let v_ok = full_vmm(nonzero_state(), vec![], 0, 1);
@@ -7885,6 +7879,139 @@ mod tests {
             v_ok.save_vm_state().is_ok(),
             "a quiescent point still snapshots"
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+    )]
+    fn save_vm_state_preserves_pending_exception_payload_through_fresh_restore() {
+        // Exception payload is part of the full device event record. Exercise the public VMM
+        // save/encode/decode/restore interfaces with a pending page fault carrying both an
+        // error code and opaque payload, including the no-execution/no-time-advance capture
+        // boundary and the exact bytes/hash produced by a fresh restore.
+        let events = vmm_backend::VcpuEvents {
+            exception_pending: 1,
+            exception_nr: 14,
+            exception_has_error_code: 1,
+            exception_error_code: 0xCAFE,
+            exception_has_payload: 1,
+            exception_payload: 0x1234_5678_9ABC_DEF0,
+            ..Default::default()
+        };
+        let mut source_state = nonzero_state();
+        source_state.events = events;
+        let mut source = full_vmm(source_state, vec![], 0, 1);
+        source.wire_snapshot_hashing();
+
+        let before_counts = source.exit_counts();
+        let before_vns = source.effective_vns();
+        let before_hash = source.state_hash().unwrap();
+        let saved = source
+            .save_vm_state()
+            .expect("a payload-bearing pending exception is restorable");
+        let bytes = <vm_state::VmState as SnapshotRecords>::encode(&saved)
+            .expect("the payload snapshot encodes");
+        let decoded = <vm_state::VmState as SnapshotRecords>::decode(&bytes)
+            .expect("the payload snapshot decodes");
+        assert_eq!(decoded, saved, "trait codec preserves the full snapshot");
+        let dev = snapshot::decode_device_blob(&decoded.devices.0)
+            .expect("the decoded device blob carries events");
+        assert_eq!(
+            dev.events,
+            snapshot::canonical_events(&events),
+            "the pending exception vector/error code/payload are serialized canonically"
+        );
+
+        // Capture is observational: it must not run a guest step, advance V-time, or alter the
+        // backend's exit counters. Repeated capture must retain byte identity too.
+        assert_eq!(source.exit_counts(), before_counts);
+        assert_eq!(source.effective_vns(), before_vns);
+        assert_eq!(source.state_hash().unwrap(), before_hash);
+        assert_eq!(
+            <vm_state::VmState as SnapshotRecords>::encode(&source.save_vm_state().unwrap())
+                .unwrap(),
+            bytes,
+            "repeated capture has stable VM bytes"
+        );
+        assert_eq!(source.state_hash().unwrap(), before_hash);
+
+        // Restore through the full snapshot interface into a fresh VM. The backend receives the
+        // restore form, which adds validity bits needed to clear stale target state while keeping
+        // the active exception, error code, and opaque payload intact.
+        let mut cold = full_vmm(VcpuState::default(), vec![], 9999, 1);
+        cold.wire_snapshot_hashing();
+        cold.restore_snapshot(source.guest_memory(), &decoded)
+            .expect("fresh restore accepts the payload-bearing exception");
+        assert_eq!(
+            cold.backend.save().unwrap().events,
+            snapshot::events_for_restore(&events),
+            "fresh restore re-establishes the pending exception payload"
+        );
+        assert_eq!(cold.state_hash().unwrap(), before_hash);
+        assert_eq!(
+            <vm_state::VmState as SnapshotRecords>::encode(&cold.save_vm_state().unwrap()).unwrap(),
+            bytes,
+            "fresh restore re-encodes to the saved VM bytes"
+        );
+        assert_eq!(cold.exit_counts(), before_counts);
+        assert_eq!(cold.effective_vns(), before_vns);
+    }
+
+    #[test]
+    fn save_vm_state_rejects_invalid_active_exception_shapes() {
+        let invalid = [
+            (
+                vmm_backend::VcpuEvents {
+                    exception_injected: 1,
+                    exception_pending: 1,
+                    exception_nr: 14,
+                    ..Default::default()
+                },
+                "exception_injected",
+            ),
+            (
+                vmm_backend::VcpuEvents {
+                    exception_pending: 1,
+                    exception_nr: 2,
+                    ..Default::default()
+                },
+                "vector 2",
+            ),
+            (
+                vmm_backend::VcpuEvents {
+                    exception_pending: 1,
+                    exception_nr: 32,
+                    ..Default::default()
+                },
+                "above 31",
+            ),
+            (
+                vmm_backend::VcpuEvents {
+                    exception_injected: 1,
+                    exception_nr: 13,
+                    exception_has_payload: 1,
+                    exception_payload: 0xCAFE,
+                    ..Default::default()
+                },
+                "exception_has_payload",
+            ),
+        ];
+        for (events, needle) in invalid {
+            let mut state = nonzero_state();
+            state.events = events;
+            let vmm = full_vmm(state, vec![], 0, 1);
+            match vmm.save_vm_state() {
+                Err(VmmError::ContractViolation(message)) => assert!(
+                    message.contains(needle),
+                    "save rejection should identify {needle:?}, got: {message}"
+                ),
+                other => panic!(
+                    "save must reject invalid active exception shape {events:?}, got {other:?}"
+                ),
+            }
+        }
     }
 
     #[test]
@@ -7940,11 +8067,11 @@ mod tests {
         miri,
         ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
     )]
-    fn restore_vm_state_rejects_a_cap_gated_event_blob_before_mutation() {
+    fn restore_vm_state_rejects_invalid_event_blobs_before_mutation() {
         // PR #12 round 8 — restore's reject-before-mutation (atomic) contract. A foreign /
-        // malformed v3 blob whose `kvm_vcpu_events` would set a cap-disabled validity bit
-        // (`VALID_TRIPLE_FAULT` / `VALID_PAYLOAD`) makes `KVM_SET_VCPU_EVENTS` return `-EINVAL`
-        // only AFTER earlier `KVM_SET_*` ioctls inside `Backend::restore` already mutated the
+        // malformed v3 blob whose `kvm_vcpu_events` has an invalid active exception shape or
+        // would set the cap-disabled `VALID_TRIPLE_FAULT` bit makes `KVM_SET_VCPU_EVENTS` reject
+        // it only AFTER earlier `KVM_SET_*` ioctls inside `Backend::restore` already mutated the
         // target vCPU. `restore_vm_state` must reject the blob up front (mirroring the
         // `save_vm_state` guard) so it never half-mutates the target.
         let reject = |bad: vmm_backend::VcpuEvents, needle: &str| {
@@ -7954,7 +8081,7 @@ mod tests {
             marked.events.interrupt_nr = 0x99;
             let mut b = full_vmm(marked, vec![], 0, 1);
             let before = b.backend.save().unwrap();
-            // Forge an external blob (valid except for the cap-gated event field).
+            // Forge an external blob (valid except for the selected invalid event shape).
             let a = full_vmm(nonzero_state(), vec![], 0, 1);
             let mut s = a.save_vm_state().unwrap();
             let mut dev = snapshot::decode_device_blob(&s.devices.0).unwrap();
@@ -7966,7 +8093,7 @@ mod tests {
                     msg.contains(needle),
                     "reject reason should name {needle:?}, got: {msg}"
                 ),
-                other => panic!("restore must reject a cap-gated event blob, got {other:?}"),
+                other => panic!("restore must reject an invalid event blob, got {other:?}"),
             }
             // ...and must NOT have mutated the target vCPU (reject before mutation).
             assert_eq!(
@@ -7985,7 +8112,32 @@ mod tests {
         reject(
             vmm_backend::VcpuEvents {
                 exception_injected: 1,
+                exception_pending: 1,
                 exception_nr: 14,
+                ..Default::default()
+            },
+            "exception_injected",
+        );
+        reject(
+            vmm_backend::VcpuEvents {
+                exception_pending: 1,
+                exception_nr: 2,
+                ..Default::default()
+            },
+            "vector 2",
+        );
+        reject(
+            vmm_backend::VcpuEvents {
+                exception_pending: 1,
+                exception_nr: 32,
+                ..Default::default()
+            },
+            "above 31",
+        );
+        reject(
+            vmm_backend::VcpuEvents {
+                exception_injected: 1,
+                exception_nr: 13,
                 exception_has_payload: 1,
                 exception_payload: 0xCAFE,
                 ..Default::default()

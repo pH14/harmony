@@ -180,6 +180,15 @@ impl KvmBackend {
             });
         }
         let vm = kvm.create_vm().map_err(kvm_err)?;
+        // The legacy event ABI conflates pending and injected exceptions, then
+        // clears `pending` on SET. Exact stopped-state restoration needs the
+        // complete event ABI even when an exception carries no payload.
+        vm.enable_cap(&kvm_enable_cap {
+            cap: kvm_bindings::KVM_CAP_EXCEPTION_PAYLOAD,
+            args: [1, 0, 0, 0],
+            ..Default::default()
+        })
+        .map_err(kvm_err)?;
         // KVM_IRQCHIP_NONE: we deliberately do NOT call create_irq_chip / split
         // irqchip. The guest LAPIC is the userspace xAPIC (R1).
         let vcpu = vm.create_vcpu(0).map_err(kvm_err)?;
@@ -879,13 +888,14 @@ impl Backend for KvmBackend {
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
-        let scalar_pio = matches!(self.pending, Pending::IoIn { .. });
+        let scalar_completion = matches!(self.pending, Pending::IoIn { .. } | Pending::Rdmsr);
         apply_complete_read(self.run_page(), self.pending, value)?;
         self.pending = Pending::None;
         self.completion_staged = true;
-        if scalar_pio {
-            // Commit the supplied IN result without executing the next guest
-            // instruction, so save observes the completed scalar PIO boundary.
+        if scalar_completion {
+            // Commit the supplied IN/RDMSR result without executing the next
+            // guest instruction. Unlike MMIO, these callbacks cannot yield
+            // another fragment of the current instruction.
             self.retire_pending_completion()?;
         }
         Ok(())
@@ -895,14 +905,17 @@ impl Backend for KvmBackend {
         apply_complete_fault(self.run_page(), self.pending)?;
         self.pending = Pending::None;
         self.completion_staged = true;
-        Ok(())
+        // Queue the MSR exception before exposing the stop; delivering it
+        // and executing its handler belong to the next guest entry.
+        self.retire_pending_completion()
     }
 
     fn complete_ok(&mut self) -> Result<()> {
         apply_complete_ok(self.run_page(), self.pending)?;
         self.pending = Pending::None;
         self.completion_staged = true;
-        Ok(())
+        // Retire the acknowledged WRMSR without executing its successor.
+        self.retire_pending_completion()
     }
 
     fn complete_hypercall(&mut self, _ret: u64) -> Result<()> {
@@ -976,7 +989,7 @@ impl Backend for KvmBackend {
             .set_debug_regs(&to_kvm_debugregs(&state.debugregs))
             .map_err(kvm_err)?;
         self.vcpu
-            .set_vcpu_events(&to_kvm_events(&state.events))
+            .set_vcpu_events(&to_kvm_restore_events(&state.events))
             .map_err(kvm_err)?;
         let mp = kvm_mp_state {
             mp_state: mp_to_kvm(state.mp_state),

@@ -91,10 +91,9 @@ fn non_quiescent_in_flight_events_round_trip_through_the_engine() {
     // engine path (vm_state encode → snapshot_base → materialize → restore_snapshot),
     // and the restored VM's backend carries the exact in-flight events. Task 39 would
     // have fail-closed-rejected the save here (0/8392 snapshottable on the live guest).
-    // (No exception_has_payload / triple_fault here: those two cap-gated fields are
-    // fail-closed-rejected at save — KVM_CAP_EXCEPTION_PAYLOAD / KVM_CAP_X86_TRIPLE_FAULT_EVENT
-    // are not enabled, so a captured value could not be restored; PR #12 round 7. A genuine
-    // in-flight exception with an error code IS restorable and round-trips here.)
+    // This injected exception has an error code but no pending payload. Payload-bearing
+    // pending exceptions have a separate whole-VMM round-trip test; triple fault remains
+    // rejected because this backend does not enable KVM_CAP_X86_TRIPLE_FAULT_EVENT.
     let in_flight = VcpuEvents {
         interrupt_injected: 1,
         interrupt_nr: 0x34,
