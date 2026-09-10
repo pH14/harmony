@@ -572,6 +572,9 @@ impl MetroidTarget {
             || self.is_dead()
             || self.is_victory()
             || state.energy_tanks > 6
+            || state.health == 0
+            || state.health > (u16::from(state.energy_tanks) + 1) * 1000 - 1
+            || state.missiles > state.missile_capacity
             || health == 0
             || health > (u16::from(state.energy_tanks) + 1) * 1000 - 1
             || missiles > state.missile_capacity
@@ -1026,6 +1029,13 @@ mod observation_tests {
             assert!(target.diagnostic_set_resources(health, missiles).is_err());
             assert_eq!(target.snapshot().unwrap(), before);
         }
+        target.machine.poke_wram(HEALTH_LOW, 0);
+        target.machine.poke_wram(HEALTH_HIGH, 0x20);
+        target.current_wram = target.machine.read_wram().unwrap();
+        target.observation.decoded.health = 2000;
+        let invalid = target.snapshot().unwrap();
+        assert!(target.diagnostic_set_resources(1999, 0).is_err());
+        assert_eq!(target.snapshot().unwrap(), invalid);
     }
 
     #[test]
