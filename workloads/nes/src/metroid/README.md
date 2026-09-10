@@ -337,3 +337,27 @@ matching emulator bytes. Per-trial flushed logs and final usage report actual
 frames, including setup and replay. External wall, process-memory and output
 limits are still required. This helper does not change search or supply fresh
 validation. See the [contract](../../../../benchmarks/search/endpoint-encounter/control-contract.md).
+
+### Archive challenge from a supplied searched state
+
+`metroid-archive-challenge prepare REQUEST OUT` checks one bounded searched input
+and its qualified mechanical/raw/emulator identity, replays it twice, and writes
+the complete root snapshot and its digest. `run REQUEST OUT` requires that frozen
+snapshot digest. It uses the existing generic `CampaignOrigin::SnapshotRoot`,
+ordinary Metroid selector and action law, corrected terminal predicate, and a
+registered Kraid/Ridley-defeat milestone. Archive actions and costs start at the
+supplied root; the original prefix never enters search as a donor or solution.
+
+The challenge bounds workers, jobs, frames, actions, memory, result slots, search
+wall time and direct helper replay work. It preserves the stream and checkpoint,
+requires full campaign replay, then verifies one milestone/champion input twice
+from the root and twice as a complete prefix-plus-local input from genesis. All
+four endpoints must match in snapshot and same-boundary raw context. An inherited
+root event or an event beyond the admitted frame ceiling does not pass.
+
+The command changes no engine, archive, target or legacy evaluator behavior.
+Supplied-state results are diagnostic capability, never fresh discovery. Helper
+setup/replay frames and campaign admitted/replayed-admitted frames are separate;
+engine setup, unadmitted work and reconstruction remain additional unknown costs.
+External process/output/wall caps and prospective registration are required.
+See the [challenge contract](../../../../benchmarks/search/endpoint-encounter/archive-challenge-contract.md).
