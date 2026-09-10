@@ -37,6 +37,12 @@ class Panel:
     bash_allow: list[str]
     prompt: str
     materials: list[str] = field(default_factory=list)
+    # Both arms of a panel run under the panel's own ceilings. The token
+    # ceiling counts cache reads, so it scales with the number of turns a
+    # panel's work takes rather than with its difficulty.
+    wall_seconds: int = 1_800
+    total_tokens: int = 2_000_000
+    tool_calls: int = 400
 
 
 INVESTIGATION_PROMPT = """\
@@ -125,6 +131,9 @@ PANELS = {
         prompt=INTEGRATION_PROMPT,
         materials=["source", "CONTRACT.md", "EXECUTION.md", "SDK-README.md",
                    "WORKLOAD-README.md"],
+        wall_seconds=5_400,
+        total_tokens=16_000_000,
+        tool_calls=800,
     ),
     "end-to-end": Panel(
         name="end-to-end",
@@ -134,6 +143,9 @@ PANELS = {
         prompt=END_TO_END_PROMPT,
         materials=["source", "CONTRACT.md", "EXECUTION.md", "SDK-README.md",
                    "WORKLOAD-README.md", "CLI-README.md"],
+        wall_seconds=9_000,
+        total_tokens=24_000_000,
+        tool_calls=1_200,
     ),
 }
 
@@ -278,6 +290,30 @@ def _programs(bundle: Path) -> set[str]:
     return found
 
 
+def _missing_programs(attempt_dir: Path, recipe: str, named: set[str]) -> list[str]:
+    """The programs a bundle names that the submission neither writes nor builds."""
+    written = {path.name for path in attempt_dir.rglob("*")
+               if path.is_file() and (attempt_dir / "source") not in path.parents}
+    return sorted(argv for argv in named
+                  if Path(argv).name not in written and Path(argv).name not in recipe)
+
+
+def _claims_coverage_guidance(report: str) -> bool:
+    """Whether a report says the guest's instrumentation guides the search.
+
+    A sentence that mentions the library or coverage guidance and denies it is
+    the accurate statement, so only an undenied mention counts as a claim.
+    """
+    denials = ("not", "n't", " no ", "without", "unused", "out of scope",
+               "unqualified", "absent")
+    for sentence in re.split(r"(?<=[.!?\n])\s+", report.lower()):
+        if "libvoidstar" not in sentence and "coverage-guided" not in sentence:
+            continue
+        if not any(word in sentence for word in denials):
+            return True
+    return False
+
+
 def _source_digest(root: Path) -> str:
     """The digest of the supplied release, ignoring anything unpacked beside it."""
     tarballs = sorted(root.glob("*.tar.bz2"))
@@ -298,6 +334,7 @@ def grade_integration(attempt_dir: Path, transcript: list[dict],
         path.read_text(errors="replace")
         for path in sorted(attempt_dir.glob("Dockerfile*")))
     named = _programs(bundle_path)
+    missing = _missing_programs(attempt_dir, recipe, named)
 
     checks = [
         Check("submitted a report", bool(report.strip()),
@@ -326,15 +363,11 @@ def grade_integration(attempt_dir: Path, transcript: list[dict],
               _source_digest(attempt_dir / "source") == baseline,
               "compared the release tarball before and after"),
         Check("wrote the programs the bundle names",
-              bool(named) and all(
-                  (attempt_dir / Path(argv).name).exists()
-                  or Path(argv).name in recipe for argv in named),
-              f"bundle names {', '.join(sorted(named)) or 'nothing'}"),
+              bool(named) and not missing,
+              f"bundle names {', '.join(sorted(named)) or 'nothing'}"
+              + (f"; missing {', '.join(missing)}" if missing else "")),
         Check("did not claim coverage-guided exploration",
-              "libvoidstar" not in lowered
-              or any(word in lowered for word in
-                     ("no exploration signal", "not consumed", "consumes no",
-                      "adds no")),
+              not _claims_coverage_guidance(report),
               "the fault search consumes no basic-block identities",
               kind="claim"),
         Check("said what the integration does not cover",

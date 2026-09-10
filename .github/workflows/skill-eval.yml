@@ -113,7 +113,9 @@ jobs:
     name: Panel with a real model
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    # A preparation attempt builds PostgreSQL and may run a campaign, so both
+    # arms of one attempt can reach the panel's wall ceiling.
+    timeout-minutes: 350
     environment: skill-eval
     env:
       # The provider is chosen here and nowhere else: fixtures, skills and
@@ -161,7 +163,7 @@ jobs:
           mkdir -p cache
           curl -fsSL --retry 3 -o cache/source.tar.bz2 "${url}"
           echo "${want}  cache/source.tar.bz2" | sha256sum -c -
-      - name: Run the panel under explicit ceilings
+      - name: Run the panel under its declared ceilings
         run: |
           set -euo pipefail
           extra=()
@@ -173,9 +175,6 @@ jobs:
             --attempts "${ATTEMPTS}" \
             --model "${MODEL}" \
             --harmony target/release/harmony \
-            --wall-seconds 1800 \
-            --total-tokens 2000000 \
-            --tool-calls 400 \
             "${extra[@]}" \
             --out runs/panel
       - name: Publish the result

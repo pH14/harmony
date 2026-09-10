@@ -244,9 +244,10 @@ def command_run(args: argparse.Namespace) -> int:
     (out / "fixture.json").write_text(json.dumps(facts, indent=1))
 
     adapter = adapters.build(args.adapter, model=args.model, effort=args.effort)
-    budget = adapters.Budget(wall_seconds=args.wall_seconds,
-                             total_tokens=args.total_tokens,
-                             tool_calls=args.tool_calls)
+    budget = adapters.Budget(
+        wall_seconds=args.wall_seconds or panel.wall_seconds,
+        total_tokens=args.total_tokens or panel.total_tokens,
+        tool_calls=args.tool_calls or panel.tool_calls)
 
     # Matched pairs in a randomized order, so a systematic drift in provider
     # behavior over the session cannot land on one arm.
@@ -525,9 +526,12 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--panel", required=True, choices=sorted(panels.PANELS))
     run.add_argument("--attempts", type=int, default=3)
     run.add_argument("--seed", type=int, default=7)
-    run.add_argument("--wall-seconds", type=int, default=1800)
-    run.add_argument("--total-tokens", type=int, default=2_000_000)
-    run.add_argument("--tool-calls", type=int, default=400)
+    run.add_argument("--wall-seconds", type=int,
+                     help="overrides the panel's own wall-clock ceiling")
+    run.add_argument("--total-tokens", type=int,
+                     help="overrides the panel's own token ceiling")
+    run.add_argument("--tool-calls", type=int,
+                     help="overrides the panel's own tool-call ceiling")
     run.add_argument("--recorded-workspace",
                      help="a workspace a real search wrote, instead of a "
                           "derived fixture")
