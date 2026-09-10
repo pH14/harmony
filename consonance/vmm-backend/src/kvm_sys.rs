@@ -159,6 +159,7 @@ pub struct KvmBackend {
     accepted_irq: VecDeque<u8>,
     counts: ExitCounts,
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    run_progress: std::sync::Arc<crate::RunProgress>,
 }
 
 impl KvmBackend {
@@ -220,6 +221,7 @@ impl KvmBackend {
             accepted_irq: VecDeque::new(),
             counts: ExitCounts::default(),
             cancel_run: std::sync::Arc::default(),
+            run_progress: std::sync::Arc::default(),
         })
     }
 
@@ -843,7 +845,9 @@ impl Backend for KvmBackend {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
-        self.enter_guest()
+        let exit = self.enter_guest()?;
+        self.run_progress.record_exit();
+        Ok(exit)
     }
 
     fn inject(&mut self, event: Injection) -> Result<()> {
@@ -1005,5 +1009,9 @@ impl Backend for KvmBackend {
     /// event or advances virtual time.
     fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
         Some(std::sync::Arc::clone(&self.cancel_run))
+    }
+
+    fn run_progress(&self) -> Option<std::sync::Arc<crate::RunProgress>> {
+        Some(std::sync::Arc::clone(&self.run_progress))
     }
 }

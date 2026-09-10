@@ -1159,6 +1159,8 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     /// Host-only latch used by the session watchdog to abandon a vCPU that
     /// stops returning from KVM_RUN. A canceled backend is never resumed.
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Host-only sequence of guest exits returned by the backend.
+    run_progress: std::sync::Arc<crate::RunProgress>,
 }
 
 impl<K: Arm64Kvm> Arm64KvmBackend<K> {
@@ -1183,6 +1185,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             reported_active_irq: None,
             counts: ExitCounts::default(),
             cancel_run: std::sync::Arc::default(),
+            run_progress: std::sync::Arc::default(),
         }
     }
 
@@ -1494,7 +1497,9 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 
     fn run(&mut self) -> Result<Exit<Arm64>> {
         self.ensure_runnable()?;
-        self.enter_guest()
+        let exit = self.enter_guest()?;
+        self.run_progress.record_exit();
+        Ok(exit)
     }
 
     fn inject(&mut self, event: crate::arch::arm64::Arm64Injection) -> Result<()> {
@@ -1626,6 +1631,10 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     /// host-only event and the abandoned VM cannot re-enter guest code.
     fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
         Some(std::sync::Arc::clone(&self.cancel_run))
+    }
+
+    fn run_progress(&self) -> Option<std::sync::Arc<crate::RunProgress>> {
+        Some(std::sync::Arc::clone(&self.run_progress))
     }
 }
 
@@ -2897,11 +2906,14 @@ mod tests {
         });
         let mut b = Arm64KvmBackend::new(fake);
         b.set_policy(&Arm64Policy::default()).unwrap();
+        let progress = b.run_progress().expect("live backend reports progress");
+        assert_eq!(progress.sequence(), 0);
 
         assert!(matches!(
             b.run().unwrap(),
             Exit::Common(CommonExit::Mmio { write: Some(_), .. })
         ));
+        assert_eq!(progress.sequence(), 1);
         assert_eq!(
             b.kvm()
                 .calls
@@ -2911,6 +2923,7 @@ mod tests {
             1
         );
         assert_eq!(b.run().unwrap(), CommonExit::Shutdown.into());
+        assert_eq!(progress.sequence(), 2);
         assert_eq!(
             b.kvm()
                 .calls

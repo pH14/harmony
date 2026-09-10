@@ -20,6 +20,7 @@ pub mod arch;
 mod backend;
 mod error;
 mod exit;
+mod progress;
 mod types;
 
 // The `Backend` contract tests (`docs/TESTING.md`): the shared exam
@@ -102,6 +103,7 @@ pub use arch::{Arch, ArchExit};
 pub use backend::Backend;
 pub use error::{BackendError, Result};
 pub use exit::{Capabilities, CommonExit, Exit, ExitCounts, ExitReason, HypercallFrame};
+pub use progress::RunProgress;
 pub use types::{Gpa, MpState};
 
 #[cfg(feature = "mock")]

@@ -755,13 +755,17 @@ fn drive_guarded(
     abandoned: &mut bool,
     request: &Request,
 ) -> Result<Reply, Box<dyn Error>> {
-    let cancel = client.transport().vmm().and_then(Vmm::cancellation_flag);
-    let Some((limit, cancel)) = guarded_run_plan(*abandoned, wall_limit, cancel)? else {
+    let (cancel, progress) = client.transport().vmm().map_or((None, None), |vmm| {
+        (vmm.cancellation_flag(), vmm.run_progress())
+    });
+    let Some((limit, cancel, progress)) =
+        guarded_run_plan(*abandoned, wall_limit, cancel, progress)?
+    else {
         return client
             .request(request)
             .map_err(|error| SessionError::Control(error.to_string()).into());
     };
-    let watchdog = Watchdog::start(limit, cancel).map_err(|error| {
+    let watchdog = Watchdog::start(limit, cancel, progress).map_err(|error| {
         SessionError::Control(format!("cannot arm the wall-clock bound: {error}"))
     })?;
     let reply = client.request(request);

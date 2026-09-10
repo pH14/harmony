@@ -120,8 +120,9 @@ impl SessionConfig {
         self
     }
 
-    /// Abandon a run that spends more than `wall_limit` of host time inside
-    /// the guest. Available where the backend can be interrupted mid-run.
+    /// Abandon a run that spends more than `wall_limit` of uninterrupted host
+    /// time without a guest exit. Available where the backend reports exits and
+    /// can be interrupted mid-run.
     #[must_use]
     pub fn with_wall_limit(mut self, wall_limit: Duration) -> Self {
         self.wall_limit = Some(wall_limit);
@@ -568,10 +569,11 @@ pub enum SessionError {
 /// The backend's host-only latch: set to take a run away from a guest that has
 /// stopped returning to the host.
 type CancelLatch = Arc<std::sync::atomic::AtomicBool>;
+type RunProgress = Arc<vmm_backend::RunProgress>;
 
 /// One armed host wall-clock bound: how much host time the run may spend, and
 /// the latch that ends it.
-type GuardedRun = (Duration, CancelLatch);
+type GuardedRun = (Duration, CancelLatch, RunProgress);
 
 /// Decide how one control request runs under the session's host wall-clock
 /// bound. `None` runs the request unguarded; `Some` carries the bound to arm
@@ -589,6 +591,7 @@ fn guarded_run_plan(
     abandoned: bool,
     wall_limit: Option<Duration>,
     cancel: Option<CancelLatch>,
+    progress: Option<RunProgress>,
 ) -> Result<Option<GuardedRun>, Box<dyn Error>> {
     if abandoned {
         return Err(SessionError::Abandoned.into());
@@ -599,7 +602,8 @@ fn guarded_run_plan(
     // Reported rather than ignored: a caller that asked for the bound would
     // otherwise wait forever on the first guest that stops taking exits.
     let cancel = cancel.ok_or(SessionError::Unboundable)?;
-    Ok(Some((limit, cancel)))
+    let progress = progress.ok_or(SessionError::Unboundable)?;
+    Ok(Some((limit, cancel, progress)))
 }
 
 /// Build the input specification one service branch records: the branch seed,
@@ -1423,27 +1427,34 @@ mod tests {
     fn an_unbounded_session_runs_every_request_unguarded() {
         let latch = Arc::new(std::sync::atomic::AtomicBool::new(false));
         assert!(
-            guarded_run_plan(false, None, Some(latch))
+            guarded_run_plan(false, None, Some(latch), None)
                 .unwrap()
                 .is_none()
         );
-        assert!(guarded_run_plan(false, None, None).unwrap().is_none());
+        assert!(guarded_run_plan(false, None, None, None).unwrap().is_none());
     }
 
     #[test]
     fn a_bounded_session_arms_the_backend_latch() {
         let latch = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let progress = Arc::new(vmm_backend::RunProgress::default());
         let limit = Duration::from_secs(30);
-        let (armed, armed_latch) = guarded_run_plan(false, Some(limit), Some(Arc::clone(&latch)))
-            .expect("a latched backend can be bounded")
-            .expect("the bound is armed");
+        let (armed, armed_latch, armed_progress) = guarded_run_plan(
+            false,
+            Some(limit),
+            Some(Arc::clone(&latch)),
+            Some(Arc::clone(&progress)),
+        )
+        .expect("a progressing backend can be bounded")
+        .expect("the bound is armed");
         assert_eq!(armed, limit);
         assert!(Arc::ptr_eq(&armed_latch, &latch));
+        assert!(Arc::ptr_eq(&armed_progress, &progress));
     }
 
     #[test]
     fn a_backend_without_a_latch_reports_the_bound_it_cannot_honor() {
-        let error = guarded_run_plan(false, Some(Duration::from_secs(30)), None)
+        let error = guarded_run_plan(false, Some(Duration::from_secs(30)), None, None)
             .expect_err("an unbounded backend cannot take a bound");
         assert!(
             matches!(
@@ -1461,7 +1472,7 @@ mod tests {
             (Some(Duration::from_secs(30)), Some(Arc::clone(&latch))),
             (None, None),
         ] {
-            let error = guarded_run_plan(true, wall_limit, cancel)
+            let error = guarded_run_plan(true, wall_limit, cancel, None)
                 .expect_err("an abandoned session runs nothing");
             assert!(
                 matches!(

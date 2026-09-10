@@ -19,7 +19,9 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU8, Ordering},
     mpsc,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use vmm_backend::RunProgress;
 
 /// The request and the expiring guard race for the run. Whichever reaches the
 /// outcome first decides it, so a reply that arrives just before expiry is
@@ -37,7 +39,11 @@ pub struct Watchdog {
 
 impl Watchdog {
     #[cfg(not(miri))]
-    pub fn start(budget: Duration, cancel: Arc<AtomicBool>) -> std::io::Result<Self> {
+    pub fn start(
+        budget: Duration,
+        cancel: Arc<AtomicBool>,
+        progress: Arc<RunProgress>,
+    ) -> std::io::Result<Self> {
         install_signal()?;
         // SAFETY: pthread_self returns the calling thread's live identifier.
         // The non-Send guard joins the only user of it before this thread exits.
@@ -48,7 +54,7 @@ impl Watchdog {
         let thread = std::thread::Builder::new()
             .name("harmony-timeout".into())
             .spawn(move || {
-                watch(receiver, budget, &watched, &cancel, || {
+                watch(receiver, budget, &watched, &cancel, &progress, || {
                     // SAFETY: owner stays alive until this sender has been joined.
                     // SIGUSR1 has a no-op handler and is unblocked on that thread.
                     let _ = unsafe { libc::pthread_kill(owner, libc::SIGUSR1) };
@@ -81,15 +87,38 @@ impl Drop for Watchdog {
     }
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "this host resource guard deliberately measures wall-clock inactivity and is excluded from deterministic state"
+)]
 fn watch(
     done: mpsc::Receiver<()>,
     budget: Duration,
     outcome: &AtomicU8,
     cancel: &AtomicBool,
+    progress: &RunProgress,
     mut kick: impl FnMut(),
 ) {
-    if done.recv_timeout(budget) != Err(mpsc::RecvTimeoutError::Timeout) {
-        return;
+    const SAMPLE_INTERVAL: Duration = Duration::from_millis(10);
+
+    let mut sequence = progress.sequence();
+    let mut last_exit = Instant::now();
+    loop {
+        let remaining = budget.saturating_sub(last_exit.elapsed());
+        match done.recv_timeout(remaining.min(SAMPLE_INTERVAL)) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        let current = progress.sequence();
+        if current != sequence {
+            sequence = current;
+            last_exit = Instant::now();
+            continue;
+        }
+        if last_exit.elapsed() < budget {
+            continue;
+        }
+        break;
     }
     if outcome
         .compare_exchange(RUNNING, EXPIRED, Ordering::AcqRel, Ordering::Acquire)
@@ -167,8 +196,9 @@ mod tests {
             }
             drop(tx);
             let cancel = AtomicBool::new(false);
+            let progress = RunProgress::default();
             let outcome = AtomicU8::new(RUNNING);
-            watch(rx, Duration::ZERO, &outcome, &cancel, || {
+            watch(rx, Duration::ZERO, &outcome, &cancel, &progress, || {
                 panic!("normal completion sent a signal")
             });
             assert!(!cancel.load(Ordering::Acquire));
@@ -180,9 +210,10 @@ mod tests {
     fn expiry_publishes_cancellation_before_signaling() {
         let (tx, rx) = mpsc::channel();
         let cancel = AtomicBool::new(false);
+        let progress = RunProgress::default();
         let outcome = AtomicU8::new(RUNNING);
         let mut signals = 0;
-        watch(rx, Duration::ZERO, &outcome, &cancel, || {
+        watch(rx, Duration::ZERO, &outcome, &cancel, &progress, || {
             assert!(cancel.load(Ordering::Acquire));
             signals += 1;
             tx.send(()).unwrap();
@@ -196,8 +227,9 @@ mod tests {
     fn a_request_that_returns_first_keeps_its_reply_and_the_vm() {
         let (_tx, rx) = mpsc::channel();
         let cancel = AtomicBool::new(false);
+        let progress = RunProgress::default();
         let outcome = AtomicU8::new(CLAIMED);
-        watch(rx, Duration::ZERO, &outcome, &cancel, || {
+        watch(rx, Duration::ZERO, &outcome, &cancel, &progress, || {
             panic!("a claimed run was signaled")
         });
         assert!(!cancel.load(Ordering::Acquire));
@@ -208,13 +240,19 @@ mod tests {
     #[cfg(not(miri))]
     fn only_the_first_of_the_request_and_the_expiry_claims_the_run() {
         let cancel = Arc::new(AtomicBool::new(false));
-        let unexpired = Watchdog::start(Duration::from_secs(60), Arc::clone(&cancel)).unwrap();
+        let progress = Arc::new(RunProgress::default());
+        let unexpired = Watchdog::start(
+            Duration::from_secs(60),
+            Arc::clone(&cancel),
+            Arc::clone(&progress),
+        )
+        .unwrap();
         assert!(unexpired.claim(), "the request returned first");
         assert!(!unexpired.claim(), "the run is claimed only once");
         drop(unexpired);
         assert!(!cancel.load(Ordering::Acquire));
 
-        let expired = Watchdog::start(Duration::ZERO, Arc::clone(&cancel)).unwrap();
+        let expired = Watchdog::start(Duration::ZERO, Arc::clone(&cancel), progress).unwrap();
         for _ in 0..1000 {
             if cancel.load(Ordering::Acquire) {
                 break;
@@ -229,7 +267,9 @@ mod tests {
     #[cfg(not(miri))]
     fn real_signal_cancellation_and_guard_join() {
         let cancel = Arc::new(AtomicBool::new(false));
-        let guard = Watchdog::start(Duration::ZERO, Arc::clone(&cancel)).unwrap();
+        let progress = Arc::new(RunProgress::default());
+        let guard =
+            Watchdog::start(Duration::ZERO, Arc::clone(&cancel), Arc::clone(&progress)).unwrap();
         for _ in 0..1000 {
             if cancel.load(Ordering::Acquire) {
                 break;
@@ -239,7 +279,7 @@ mod tests {
         assert!(cancel.load(Ordering::Acquire));
         drop(guard);
         let canceled = Arc::new(AtomicBool::new(false));
-        drop(Watchdog::start(Duration::from_secs(60), Arc::clone(&canceled)).unwrap());
+        drop(Watchdog::start(Duration::from_secs(60), Arc::clone(&canceled), progress).unwrap());
         assert!(!canceled.load(Ordering::Acquire));
     }
     #[test]

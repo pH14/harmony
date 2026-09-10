@@ -19,6 +19,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 use crate::arch::Arch;
 use crate::error::Result;
 use crate::exit::{Capabilities, Exit, ExitCounts};
+use crate::progress::RunProgress;
 use crate::types::Gpa;
 
 /// The trap apparatus, decoupled from the deterministic VMM above it.
@@ -248,6 +249,14 @@ pub trait Backend {
     fn cancellation_flag(&self) -> Option<Arc<AtomicBool>> {
         None
     }
+
+    /// Host-only progress emitted after each guest exit returned by [`Self::run`].
+    /// A client may use this to distinguish a guest that is actively taking
+    /// exits from one stuck inside a substrate entry. The progress sequence is
+    /// never guest-visible and is not part of snapshots or determinism hashes.
+    fn run_progress(&self) -> Option<Arc<RunProgress>> {
+        None
+    }
 }
 
 /// Blanket forward so the composition root can inject a concrete backend as a
@@ -336,6 +345,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn cancellation_flag(&self) -> Option<Arc<AtomicBool>> {
         (**self).cancellation_flag()
+    }
+
+    fn run_progress(&self) -> Option<Arc<RunProgress>> {
+        (**self).run_progress()
     }
 }
 
