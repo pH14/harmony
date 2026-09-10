@@ -27,24 +27,27 @@ RUN curl --fail --silent --show-error --location --retry 3 \
 # This is Antithesis's current documented Go instrumentation pass. The wrapper
 # rewrites compiler inputs at build time and emits symbol tables automatically.
 # ANTITHESIS_SDK_MODULE_DIR supplies its runtime without modifying upstream
-# etcd's modules.
+# etcd's modules. Keep object-compatibility flags at their Go defaults: the
+# wrapper resolves that SDK in a nested Go build, so object-compatibility flags
+# such as -trimpath belong in inherited GOFLAGS rather than only on the outer
+# go command.
 RUN go install "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-toolexec@v${ANTITHESIS_SDK_VERSION}"
 
 RUN mkdir -p /out/etcd /out/symbols \
     && sdk_dir="$(go env GOMODCACHE)/github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
     && test -d "${sdk_dir}" \
     && (cd /build/etcd/server \
-        && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+        && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOFLAGS=-trimpath \
            ANTITHESIS_SDK_MODULE_DIR="${sdk_dir}" \
            ANTITHESIS_SYMBOLS_DIR=/out/symbols \
            ANTITHESIS_SYMBOL_PREFIX=etcd-server \
-           go build -toolexec=antithesis-go-toolexec -trimpath -buildvcs=false -o /out/etcd/etcd .) \
+           go build -toolexec=antithesis-go-toolexec -buildvcs=false -o /out/etcd/etcd .) \
     && (cd /build/etcd/etcdctl \
-        && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+        && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOFLAGS=-trimpath \
            ANTITHESIS_SDK_MODULE_DIR="${sdk_dir}" \
            ANTITHESIS_SYMBOLS_DIR=/out/symbols \
            ANTITHESIS_SYMBOL_PREFIX=etcdctl \
-           go build -toolexec=antithesis-go-toolexec -trimpath -buildvcs=false -o /out/etcd/etcdctl .) \
+           go build -toolexec=antithesis-go-toolexec -buildvcs=false -o /out/etcd/etcdctl .) \
     && test -x /out/etcd/etcd \
     && test -x /out/etcd/etcdctl \
     && set -- /out/symbols/*.sym.tsv \
