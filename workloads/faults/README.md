@@ -66,6 +66,13 @@ Virtual time can cross several horizons in one guest step, so it cannot replace
 the cursor or skip later actions. Each action still installs its own prefix in
 order, including when consecutive transitions occur at the same moment.
 
+[`continuation`](src/continuation.rs) owns this cursor across bounded runs and
+cold restores. Capturing a checkpoint and restoring it neither run the guest
+nor activate an action. Reproduction follows the recorded actions by ordinal;
+a time bound returns before activating another action at the same moment.
+Extending beyond the last action retains the final environment. A runtime or
+capture failure makes the controller unusable until a fresh restore.
+
 A campaign never encodes the virtual-time trace, so the session is configured
 to defer sparse checkpoint hashing. Each due checkpoint would otherwise hash
 all of a gigabyte-class guest's RAM inside the run that reached it, starting
@@ -91,6 +98,10 @@ staging files and unreferenced blobs do not become history. The retained
 version 1 bytes and adds a version 2 action cursor. Legacy checkpoints lack
 that transition position; it cannot be reconstructed from their timestamp.
 Both readers validate page ordering, lengths, and complete input.
+The [`retained execution`](src/retained.rs) envelope (`HARMEXEC` version 1)
+stores the machine checkpoint, action windows, and complete action list
+together. Cold continuation validates that saved plan before restoring it;
+a raw machine checkpoint alone does not supply the plan.
 [`declarations`](src/declarations.rs) retains workload-authored descriptions and
 property meanings without inferring a verdict from a silent assertion.
 

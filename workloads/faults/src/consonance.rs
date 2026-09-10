@@ -33,7 +33,10 @@ use searcher::target::ExitKind;
 use sha2::{Digest, Sha256};
 
 use crate::action_execution::{ActionExecution, ActionRuntime};
+use crate::checkpoint::Checkpoint;
+use crate::continuation::{ContinuationRuntime, RecordedContinuation, stop_moment};
 use crate::execution::ActionCursor;
+use crate::retained::RetainedContinuation;
 
 use crate::target::{
     ActionWindows, FaultAction, FaultObservations, FaultSnapshot, FaultStop, decode_sdk_events,
@@ -213,6 +216,103 @@ impl ActionRuntime for Session {
 
     fn run_action_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
         self.run_until(deadline)
+    }
+}
+
+impl ContinuationRuntime for Session {
+    fn capture(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.snapshot()
+    }
+
+    fn release(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+        self.drop_snapshot(snapshot)
+    }
+
+    fn export(&mut self, snapshot: SnapId, at: u64) -> Result<Checkpoint, Box<dyn Error>> {
+        let sparse = self.export_sparse_snapshot(snapshot, None)?;
+        Ok(Checkpoint {
+            setup: sparse.setup(),
+            at,
+            image_identity: sparse.image_identity(),
+            pages: sparse
+                .pages()
+                .iter()
+                .map(|(gfn, bytes)| (*gfn, bytes.to_vec()))
+                .collect(),
+            sidecar: sparse.sidecar(),
+            cursor: None,
+        })
+    }
+
+    fn restore(&mut self, checkpoint: &Checkpoint) -> Result<(), Box<dyn Error>> {
+        Session::restore(
+            self,
+            &PortableSnapshot {
+                setup: checkpoint.setup,
+                at: checkpoint.at,
+                image_identity: checkpoint.image_identity,
+                pages: checkpoint.pages.clone(),
+                sidecar: checkpoint.sidecar.clone(),
+            },
+        )
+    }
+}
+
+/// Boot a fault session at setup, or cold-restore its retained VM and action cursor.
+pub fn boot_continuation(
+    kernel: &[u8],
+    initramfs: &[u8],
+    config: &FaultConfig,
+    actions: Vec<FaultAction>,
+    checkpoint: Option<&RetainedContinuation>,
+) -> Result<RecordedContinuation<Session>, Box<dyn Error>> {
+    if let Some(retained) = checkpoint {
+        retained.validate()?;
+        if retained.actions != actions || retained.windows.horizon_nanos != config.horizon_nanos {
+            return Err("retained continuation plan differs from the requested execution".into());
+        }
+    }
+    let mut session = Session::new_with_config_and_payloads(
+        kernel,
+        initramfs,
+        config.session_config(),
+        Vec::new(),
+    )?;
+    session.set_service_factory(service_factory());
+    let windows = ActionWindows {
+        root_seal: session.setup_at(),
+        horizon_nanos: config.horizon_nanos,
+    };
+    match checkpoint {
+        Some(retained) => {
+            if retained.windows != windows || retained.actions != actions {
+                return Err(
+                    "retained continuation plan differs from the requested execution".into(),
+                );
+            }
+            RecordedContinuation::restore(session, retained)
+        }
+        None => Ok(RecordedContinuation::from_setup(session, windows, actions)),
+    }
+}
+
+impl RecordedContinuation<Session> {
+    pub fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
+        self.inspect(Session::state_hash)
+    }
+
+    pub fn sdk_events(
+        &mut self,
+    ) -> Result<Vec<consonance_client::session::SdkEvent>, Box<dyn Error>> {
+        self.inspect(Session::sdk_events)
+    }
+
+    pub fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
+        self.inspect(Session::console_tail)
+    }
+
+    pub fn read_memory(&mut self, gpa: u64, len: u32) -> Result<Vec<u8>, Box<dyn Error>> {
+        self.inspect(|session| session.read(gpa, len))
     }
 }
 
@@ -789,19 +889,6 @@ fn observations_at(
 ) -> Result<FaultObservations, String> {
     let capture = decode_sdk_events(events)?;
     Ok(FaultObservations::new(moment, &capture, stop))
-}
-
-/// The control endpoint is authoritative even when no SDK report was emitted
-/// there. SDK event timestamps describe their events, not the enclosing stop.
-pub(crate) fn stop_moment(stop: &StopReason) -> u64 {
-    match stop {
-        StopReason::Deadline { vtime }
-        | StopReason::Quiescent { vtime }
-        | StopReason::Crash { vtime, .. }
-        | StopReason::Decision { vtime, .. }
-        | StopReason::SnapshotPoint { vtime }
-        | StopReason::Assertion { vtime, .. } => vtime.0,
-    }
 }
 
 /// Deterministic memory charge for one resident snapshot.

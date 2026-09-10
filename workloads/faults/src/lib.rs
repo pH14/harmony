@@ -14,11 +14,15 @@ pub mod action_execution;
 pub mod archive;
 pub mod bundle;
 pub mod checkpoint;
+#[cfg(feature = "consonance")]
+pub mod continuation;
 pub mod declarations;
 pub mod execution;
 pub mod package;
 pub mod prepare;
 pub mod report;
+#[cfg(feature = "consonance")]
+pub mod retained;
 pub mod target;
 pub mod workspace;
 
