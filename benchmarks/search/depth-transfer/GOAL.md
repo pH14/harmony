@@ -695,3 +695,31 @@ a distinct causal change, a cheap falsifier and an adverse case before a new
 bounded registration. Repeating failed families or adding an observer does not
 meet that bar. The original fresh boss/Wily objective remains active and
 unachieved; this closure is useful negative evidence, not a breakthrough.
+
+## Offline reassessment: early milestones can reverse later utility
+
+The full saved 012 progress logs recover a historical alphabet-continuation
+signal in admitted frames: first energy-tank mean cost is about43% worse, while
+first-Bombs mean cost is about43% better, with all three Bombs pairs strictly
+winning across their checkpoint intervals. Seeds3/5 lose early and win later.
+See ../continuation-reassessment/README.md. These reused legacy-terminal runs
+are neither fresh confirmation nor a current corrected-terminal result; CPU
+sets differed, and no boss was defeated. All closed gates remain closed.
+
+Reassess the unchanged existing alphabet-continuation mechanism at the depth
+where its historical signal occurs. Do not bundle the separately demonstrated
+splice/queue ordering issues into it, and do not treat early-tank improvement
+as a necessary condition for every later mechanism. Before any new fresh panel,
+separately freeze a short corrected-terminal qualification of all six original
+first-Bombs witnesses using the existing probe. A failed witness stops this
+escalation basis with no replacement. A pass would qualify compatibility only;
+fresh development, independent confirmation, MM2 and untouched validation are
+still required. This offline audit allocates no emulator work and changes no
+historical ledger, deadline, candidate or outcome.
+
+FW01 separately freezes all six original Bombs witnesses on the unchanged NQ02
+probe, with 1,185,240 expected auxiliary frames and a1.3M ceiling. One CPU,
+4GiB service memory,180 seconds per case,20 minutes for the whole block and the
+fixed 2026-09-10T10:11:58Z deadline apply. Stop at the first failure, without
+retry or replacement; preserve partial known work and its remaining unknown
+advancement within the charged case bound. No fresh search is registered.

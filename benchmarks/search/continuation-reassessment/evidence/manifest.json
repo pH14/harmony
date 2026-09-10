@@ -1,0 +1,96 @@
+{
+  "source_host": "ms02",
+  "source_root": "/root/harmony-search-eval/runs",
+  "files": [
+    {
+      "file": "metroid-long-continuation-012/metroid-full-s3-w4-m8192/campaign/progress.jsonl",
+      "bytes": 66260221,
+      "sha256": "a50bdb3f6d0180e6431ebccfe5d860fda791d5f437529b35ceb0546e29bfedad"
+    },
+    {
+      "file": "metroid-long-continuation-012/metroid-full-s3-w4-m8192/campaign/result.json",
+      "bytes": 10278,
+      "sha256": "f18912ba929aed53f5474ee0781c2c8887d9f3eb1a03a95ec72954f9e0ea9c6c"
+    },
+    {
+      "file": "metroid-long-continuation-012/metroid-full-s3-w4-m8192/summary.json",
+      "bytes": 16704,
+      "sha256": "590d844dca56a669a4bee8f1c4d98b7baf74b9837028502142adfe004bc9186a"
+    },
+    {
+      "file": "metroid-long-continuation-012/metroid-full-s4-w4-m8192/campaign/progress.jsonl",
+      "bytes": 66820187,
+      "sha256": "7cda49b6b024324c5d03eb63fad35c996ed8b308b9f70cd133065bce1d3031a9"
+    },
+    {
+      "file": "metroid-long-continuation-012/metroid-full-s4-w4-m8192/campaign/result.json",
+      "bytes": 11684,
+      "sha256": "eaf2d5bd468e06547a95c2405ad9463605baace8ec9aeefd8f593f9d83269101"
+    },
+    {
+      "file": "metroid-long-continuation-012/metroid-full-s4-w4-m8192/summary.json",
+      "bytes": 18164,
+      "sha256": "db2084e10ce35ae7d223f13320098f41967b18391239af81f9564550a81f9117"
+    },
+    {
+      "file": "metroid-long-continuation-012/metroid-full-s5-w4-m8192/campaign/progress.jsonl",
+      "bytes": 67251249,
+      "sha256": "ab6a08ee0fd9128d93fe001ec1ab7437b5ea551d9ffbb90dab20eade95482465"
+    },
+    {
+      "file": "metroid-long-continuation-012/metroid-full-s5-w4-m8192/campaign/result.json",
+      "bytes": 10278,
+      "sha256": "46076d098dc82650bf0e5e9ea06279cb6dfa5f9e35cbffbab469271ed80ebfc2"
+    },
+    {
+      "file": "metroid-long-continuation-012/metroid-full-s5-w4-m8192/summary.json",
+      "bytes": 16703,
+      "sha256": "6aca85083295bdf11dcc293b0c05b096c197fe8fd9dcfb3c48246d8429514f62"
+    },
+    {
+      "file": "metroid-long-control-012/metroid-full-s3-w4-m8192/campaign/progress.jsonl",
+      "bytes": 65833670,
+      "sha256": "8194572c802a9b58e7073d09980a814afe6061b2bdd2f1eb598412cfd658d5d7"
+    },
+    {
+      "file": "metroid-long-control-012/metroid-full-s3-w4-m8192/campaign/result.json",
+      "bytes": 11677,
+      "sha256": "271844a341b4af054ff9209836ca73f27777bdcbe231a690b564a700affd816d"
+    },
+    {
+      "file": "metroid-long-control-012/metroid-full-s3-w4-m8192/summary.json",
+      "bytes": 18105,
+      "sha256": "1cbfef5917a8adbff20450308b4ca451ab9b8c8152ffdd4c3829f13f3e1303d2"
+    },
+    {
+      "file": "metroid-long-control-012/metroid-full-s4-w4-m8192/campaign/progress.jsonl",
+      "bytes": 66556870,
+      "sha256": "ebebdb6cb59b0e47b12b836c18eb1b908bf0d955b70b3ff9c26caec7576efdc9"
+    },
+    {
+      "file": "metroid-long-control-012/metroid-full-s4-w4-m8192/campaign/result.json",
+      "bytes": 11694,
+      "sha256": "339f85b259ef086475535157f160e3a99487805027cdb9fd81bf9f5d3ffe196c"
+    },
+    {
+      "file": "metroid-long-control-012/metroid-full-s4-w4-m8192/summary.json",
+      "bytes": 18125,
+      "sha256": "988a32ebb03785601efaf8d9fe55e88f31f6eb33432aa598b6dd1089a515d72e"
+    },
+    {
+      "file": "metroid-long-control-012/metroid-full-s5-w4-m8192/campaign/progress.jsonl",
+      "bytes": 66873737,
+      "sha256": "eba768269c487744597fa14d297135bd8371a81cf8de62ddc852171d2b99f580"
+    },
+    {
+      "file": "metroid-long-control-012/metroid-full-s5-w4-m8192/campaign/result.json",
+      "bytes": 13001,
+      "sha256": "156e4f7ab47b6913299af25bd5cb1ecacf69afa6a053e265adaf04b0ad95a5f5"
+    },
+    {
+      "file": "metroid-long-control-012/metroid-full-s5-w4-m8192/summary.json",
+      "bytes": 19485,
+      "sha256": "89826f8035e51ce52fc6447fb080b3956dfb7bd185f862e20f19b2d23708bc5a"
+    }
+  ]
+}

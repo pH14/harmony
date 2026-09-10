@@ -6777,6 +6777,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn legacy_splice_availability_changes_under_location_relabeling() {
+        #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+        struct PlaceKey {
+            place: u8,
+            position: u8,
+        }
+        impl ArchiveKey for PlaceKey {
+            type Group = (u8, u8);
+            type Lineage = ();
+            fn groups() -> usize {
+                3
+            }
+            fn group(self, depth: usize) -> Self::Group {
+                match depth {
+                    0 => (self.place, self.position),
+                    1 => (self.place, 0),
+                    2 => (0, 0),
+                    _ => panic!("invalid test depth"),
+                }
+            }
+            fn progress_cmp(_: Self::Group, _: Self::Group) -> Ordering {
+                Ordering::Equal
+            }
+            fn complete(self, _: Option<(Self, &())>) -> Self {
+                self
+            }
+            fn record(_: &mut (), _: Self) {}
+        }
+        let tail = |from, to| {
+            let mut archive = Archive::<u8, PlaceKey, (), ()>::new(|_| 1);
+            archive.selector_policy = SelectorPolicy::EnergyProgressCheapest(RetireThresholds {
+                entry: 3,
+                groups: vec![],
+            });
+            let mut offer = |parent, place, position, action| {
+                archive
+                    .insert(
+                        parent,
+                        0,
+                        ArchiveCandidate {
+                            suffix: vec![action],
+                            key: PlaceKey { place, position },
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .unwrap()
+                    .unwrap()
+            };
+            let donor = offer(None, from, 1, 0);
+            let leaf = offer(Some(donor), to, 0, 7);
+            let arrival = offer(None, from, 0, 9);
+            assert_eq!((donor, leaf, arrival), (0, 1, 2));
+            archive
+                .splice_tail_for_campaign(arrival, 64, 8)
+                .map(|splice| splice.actions)
+        };
+        // The same route, parent, semantic progress relation and insertion order.
+        // Only the opaque labels of the two places are exchanged. The legacy
+        // full-key descendant cache loses the route whose destination sorts low.
+        assert_eq!(tail(0, 1), Some(vec![7]));
+        assert_eq!(tail(1, 0), None);
+    }
+
     /// Selection must run on every geometry the key contract allows, down to
     /// a single group depth where the walk class, the selection cell, and the
     /// retention slot are all depth 0.

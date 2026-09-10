@@ -136,6 +136,42 @@ mod tests {
     }
 
     #[test]
+    fn legacy_partial_batch_priority_depends_on_destination_labels() {
+        // The same three observed edges, arrival order and action payloads;
+        // only the opaque destination names change. A one-attempt budget
+        // exposes label priority even though draining the whole batch does not.
+        let mut first_counts = BTreeMap::new();
+        for labels in [
+            [1, 2, 3],
+            [1, 3, 2],
+            [2, 1, 3],
+            [2, 3, 1],
+            [3, 1, 2],
+            [3, 2, 1],
+        ] {
+            let mut bank = ContinuationBank::default();
+            for (index, destination) in labels.into_iter().enumerate() {
+                let index = u8::try_from(index).unwrap();
+                bank.record(0_u8, destination, 10, 11 + u64::from(index), &[index]);
+            }
+            bank.improved(0, 20);
+            let attempts: Vec<_> = std::iter::from_fn(|| bank.pop()).collect();
+            assert!(attempts.iter().all(|attempt| attempt.parent == 20));
+            let actions: Vec<_> = attempts.iter().map(|attempt| attempt.actions[0]).collect();
+            assert_eq!(
+                actions
+                    .iter()
+                    .copied()
+                    .collect::<std::collections::BTreeSet<_>>(),
+                [0, 1, 2].into_iter().collect()
+            );
+            assert_eq!(labels[usize::from(actions[0])], 3);
+            *first_counts.entry(actions[0]).or_insert(0) += 1;
+        }
+        assert_eq!(first_counts, BTreeMap::from([(0, 2), (1, 2), (2, 2)]));
+    }
+
+    #[test]
     fn latest_exit_replaces_the_old_tape_and_memory_stays_bounded() {
         let mut bank = ContinuationBank::default();
         bank.record(1_u32, 2, 0, 1, &[1_u8]);

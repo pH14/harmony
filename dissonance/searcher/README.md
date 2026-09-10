@@ -126,6 +126,15 @@ cannot change serial replay. Only same-slot `preference_cmp` is consulted;
 preferences are never compared between unrelated locations. A workload that
 reports no preference improvements gets no continuation attempts.
 
+The existing queue prioritizes newer improvement batches; within each batch,
+destination-key iteration followed by a stack pop tries larger destination
+labels first. Separately, ordinary splicing's descendant cache ranks full keys.
+Source relabeling fixtures expose both effects, including a learned route that
+becomes unavailable when only location names change. They preserve legacy
+behavior and make no native efficacy claim. See the
+[continuation reassessment](../../benchmarks/search/continuation-reassessment/README.md)
+for the scope of these findings and the separate historical depth-cost audit.
+
 These are experiments, not new defaults. Promote policies based on paired game
 panels, fresh SMB completion, and resource costs through
 [`benchmarks/search`](../../benchmarks/search/README.md). The generic resource
