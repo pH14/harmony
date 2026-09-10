@@ -123,7 +123,27 @@ record/input/encoding/output caps, interrupted and extra-byte files, incompatibl
 encodings, and unchanged policy identity without constructing a target. The
 149-test NES library suite with AP01's motion/context features and strict
 all-target Clippy pass. This proves the capture plumbing's checked behavior,
-not cross-build replay compatibility or a scientific outcome. The standalone
-strict replay/paused-inspection command, its source tests, prospective native
-registration, ms02 build/qualification and actual AP01 observation are still
-required. No native work is allocated by this implementation.
+not cross-build replay compatibility or a scientific outcome.
+
+The standalone `metroid-retention-replay` caller is now implemented with four
+source tests and strict Clippy. Qualification uses exactly the first four
+original jobs (865 frames), after a paused restore of the pinned root. Full
+inspection requires a successful qualification bound to the executable and all
+inputs, including the original final checkpoint. The replayer checks each job's
+frames, result digest and decisions; inspection also requires byte-identical
+final raw checkpoint bytes before accepting cross-build observations. The
+selected job bytes are never reserialized; only the explicitly declared backend
+core-hash field is rebound in the derived header. Missing state and HP255 remain
+unavailable. No fresh job, action draw, seed or supplied root is selected.
+
+The prospective qualification/inspection ceilings are 500,000 and 750,000
+physical frames, respectively. These cover recorded work plus the first
+divergent job's possible 4,096-action origin reconstruction, six suffix actions
+at up to 120 frames, and two 929-frame setup allowances. They are bounds, not
+measured expenditure. Successful known work is the verified replay frames plus
+the inspector's measured 929-frame setup; the generic replay constructor's
+counter is unexposed and remains an explicit gap. The caller has a hard process
+watchdog capped at 300 seconds; separate external memory, output and service
+caps are still necessary. Native build, prospective registration, qualification
+and the actual AP01 observation remain required. No emulator work has been
+allocated by the source implementation or tests.

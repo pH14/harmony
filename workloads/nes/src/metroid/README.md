@@ -418,6 +418,33 @@ Only a successful terminal read establishes file completeness. Native use still
 requires pinned assets, exact per-job replay equality and external process,
 wall, memory and output limits. The builder API adds no ordinary evaluator flag.
 
+`metroid-retention-replay REQUEST OUT` is the standalone caller for the saved
+short ordinary AP01 protocol. Its strict request pins the original stream,
+single-snapshot origin, original final checkpoint, root snapshot, ROM, runtime
+core and original core identity. `qualify` restores the known root and replays
+the first four recorded jobs. `inspect` requires the successful qualification
+report, bound to the same executable and inputs, before replaying the complete
+stream with capture. Every recorded job must reproduce its frames, result
+digest and ordered decisions; the full final raw checkpoint must also match.
+
+An explicit cross-build derivation changes only the declared backend core hash
+in the header and preserves selected job bytes verbatim. It never relabels the
+runtime core with the original hash or edits a snapshot/result to fit. A separate
+paused target then reads captured states with exact restore and unchanged-clock
+checks. Output includes raw contexts, qualified boss-slot observations, player
+resources, local disposition and input/snapshot hashes. HP255 remains unavailable;
+these are state comparisons, not lifetime damage or retention utility.
+
+The program rejects incomplete lines, incompatible policies, unexpected skips
+and bounds outside the supported protocol before replay. A request must cover
+recorded work plus one worst-case divergent job's origin/suffix actions and both
+constructor allowances; it cannot exceed 1.5M frames. A 1–300 second process
+watchdog also bounds native work. External memory/process/output limits remain
+required. Each input is at most 32 MiB; context output is at most 32 MiB in
+addition to the capture limit. Failed replay work and the generic replayer's
+unexposed constructor counter remain explicit accounting gaps, not zero work.
+No native qualification or inspection is implied by successful source tests.
+
 ### Experimental local terminal retry
 
 `MetroidGame::with_local_terminal_retry(true)` records

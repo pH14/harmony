@@ -995,3 +995,14 @@ standalone replay/paused-inspection caller and its input/identity checks, then
 freeze a distinct bounded qualification and diagnostic registration before
 using ms02. Expected full-slot observations are 3,770. msr1 remains unavailable;
 all frame ledgers and completed failed gates remain unchanged.
+
+The strict standalone caller now compiles and its four source tests plus
+strict Clippy pass. Its qualification prefix is four original jobs/865 frames;
+full inspection needs the same executable/input qualification, all original
+job checks, 3,770 capture rows and a byte-identical original final raw checkpoint.
+Cross-build header derivation is explicit and does not alter job bytes or raw
+snapshots. Next build the pinned source on ms02, then separately register the
+two-stage diagnostic with 500k/750k prospective physical ceilings, short wall
+watchdogs and external resource bounds. These allow one mismatching job and
+setup; they are not measured costs or fresh search. No native stage is yet
+registered or launched, and msr1 remains unavailable.
