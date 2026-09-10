@@ -1,0 +1,23 @@
+{
+  "format": "retention-reconstruction-rr02-closed-ledger-v1",
+  "recorded_utc": "2026-09-10T19:02:59.759983+00:00",
+  "decision": "consider_earliest_local_counterexample",
+  "prior_ledger_sha256": "90ef5d98325acf2b9f981cbebb9dc72e028713faf9b15b73e25033b8f34338c4",
+  "registration_sha256": "a1d2b8429a0ea06fd6a75ca3c1409d78601be44e37e1d54144d856ca2fabc7c7",
+  "analysis_sha256": "6ef98ba9ea071a320e53c44c477b4e5124f163f4669fdcd85c17c38817189a59",
+  "evidence_manifest_sha256": "50efc6d2824ab09aa7f12bdf59676d04953e4be63998eebd08f1d8c22647e202",
+  "closure_verification_sha256": "6ac31447ea74c4098e47026de451bfb50599757d03f1f9f213b6ce04687f1d84",
+  "admitted_search_frames": 0,
+  "known_auxiliary_frames": 488740,
+  "known_inspector_setup_frames": 1858,
+  "known_reconstruction_frames": 235750,
+  "verified_campaign_replay_frames": 251132,
+  "cumulative_since_user_resumption_admitted_search_frames": 2982484247,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 68368006,
+  "service_invocation": "a9777c13ae8741b5ada4c012a16d10a5",
+  "controller_elapsed_seconds": 11.419415,
+  "service_cpu_nanoseconds": 11230771000,
+  "service_memory_peak_bytes": 278851584,
+  "accounting_note": "Both completed stages are charged once from exact direct counters and verified replay frames. Generic replay constructor counters remain unexposed, not zero. Earlier source-inferred RR01 setup and historical unknown work remain explicitly labeled in the prior ledgers. The 1.55M prospective ceiling is not measured work.",
+  "next_decision": "Use the frozen earliest pair at competition692/execution423 for a separately designed paired continuation counterexample. Equal resource fields do not isolate HP; preserve both complete snapshots and shared continuation choices. No policy, fresh search, seed/horizon rescue, transfer or untouched validation is earned by this local query. msr1 unavailable; original goal active and unmet."
+}

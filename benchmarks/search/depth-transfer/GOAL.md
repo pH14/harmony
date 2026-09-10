@@ -436,7 +436,7 @@ Full campaign replay, two root-local/two complete-prefix witness replays and
 one/two-slot artifact identity all pass. This costs 1,200,260 known auxiliary
 frames within its separate 4M block.
 
-The separately registered AP01 pilot uses the original HP140 encounter and
+The separately registered AP01 pilot uses the original HP 140 encounter and
 unchanged ordinary policy, with qualification seed 2026090902 reused explicitly.
 It reaches the fixed 250k horizon in 38.02 seconds: 2,548 jobs, 250,267 admitted
 frames including 267 drain, no Ridley defeat, and all replay checks pass. Its
@@ -452,7 +452,7 @@ add boss-HP rewards or promote a policy from the conditional diagnostics.
 First inspect the **existing** AP01 final checkpoint and stream. The final
 sidecar has 557 active entries, 588 resident snapshots, zero snapshot evictions
 or entry drops, and no missing cached-active snapshots. There were 1,882 live
-classified endpoint observations. The champion's HP140 says nothing about all
+classified endpoint observations. The champion's HP 140 says nothing about all
 other branches. Source inspection confirms that checkpoint export includes all
 cached snapshots, including inactive history; an inspector must distinguish
 resident/cached presence from active selection.
@@ -591,7 +591,7 @@ from these closed results rather than rerunning them.
 
 Read the current #285/#288 syntheses and preserve their negative/conditional
 limits. AP01's cache has health16–79, no missiles; the six lower-boss-HP states
-all have health79. This does not identify resources as a cause. Follow
+all have health 79. This does not identify resources as a cause. Follow
 ../endpoint-encounter/resource-counterfactual-decision.md for one diagnostic
 that fills the already-earned health/missile capacities at the original E01
 boundary. It changes no search policy and cannot count as a generated state or
@@ -1084,3 +1084,31 @@ the 3770-row local-loss query is explicitly scoped to the reconstructed ms02
 campaign. A positive result permits only a paired continuation decision on the
 actual captured states. Any failed gate stops without retry or relaxed equality.
 No native RR02 process has been started at registration publication time.
+
+## Decision after RR02
+
+Both registered stages completed successfully on ms02 in 2.804 and 8.612 seconds.
+The complete known-artifact correspondence, original job results and 3,770-row
+capture pass. The frozen query finds 22 lower-HP rejected candidates among 1,717
+comparable competitions; all 22 have equal measured player resources. The other
+2053 comparisons are unclassified and unavailable. These 22 distinct rejected
+snapshots share 10 incumbents in one reconstructed pilot, not independent trials.
+
+The frozen earliest pair is competition 692/execution 423: rejected boss HP 137
+versus retained 140, with identical registered player resources. Position, pose,
+motion metadata and boss status also differ. The next decision is a bounded paired
+continuation counterexample on those exact complete states; no scalar-HP utility
+claim follows. First export and verify that already selected capture record with
+no emulator work. Freeze shared continuation inputs, outcomes, equal physical
+horizon and stop gates before a separately allocated continuation experiment.
+Do not replace the pair after seeing outcomes, edit its HP, skip censoring or
+promote a new retention policy from this query alone.
+
+The closed ledger adds 488,740 known auxiliary frames, for resumed totals of
+2,982,484,247 admitted search and 68,368,006 known auxiliary frames. Generic replay
+constructor counters and older accounting gaps remain explicit unknowns. RR02's
+service is terminal and successful. Raw evidence, source/result identities,
+compressed artifact hashes and full offline verification are preserved in
+../continuation-reassessment/rr02-results.md. RR01 and all failed policy gates
+remain closed. No fresh-search improvement, transfer or untouched boss/Wily
+success has been established; the original goal remains active and unachieved.

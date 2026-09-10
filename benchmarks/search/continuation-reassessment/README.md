@@ -436,6 +436,17 @@ applies to the reconstructed ms02 campaign; historical discarded-state identity
 is not established by equality of the known artifacts. Any failure stops without
 retry. RR01 and all failed policy gates remain closed.
 
+[RR02 completes both stages](rr02-results.md): the known root/checkpoint
+correspondence and all original job results pass, with 3,770 complete competition
+observations. The frozen query finds 22 distinct lower-HP rejected states with
+equal measured player resources among 1,717 comparable events; 2,053 unclassified
+events remain unavailable. The earliest pair is HP 137 versus 140 at
+competition 692/execution 423. Its other state differences remain visible, so the
+next decision is a paired continuation counterexample, not a policy promotion.
+The two phases take 2.804/8.612 seconds and charge 488,740 known auxiliary frames.
+The [closed ledger](ledger-after-rr02.json) and compressed native evidence are
+verified by `python3 benchmarks/search/continuation-reassessment/verify_rr02.py`.
+
 ## Ordering findings stay separate from this candidate
 
 Two new source fixtures expose existing limitations without changing policies:

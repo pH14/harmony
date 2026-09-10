@@ -1,0 +1,23 @@
+{
+  "format": "retention-reconstruction-rr02-closure-v1",
+  "decision": "consider_earliest_local_counterexample",
+  "service_invocation": "a9777c13ae8741b5ada4c012a16d10a5",
+  "controller_elapsed_seconds": 11.419415,
+  "service_cpu_nanoseconds": 11230771000,
+  "service_memory_peak_bytes": 278851584,
+  "service_state": {
+    "MainPID": "0",
+    "ActiveState": "inactive",
+    "SubState": "dead"
+  },
+  "known_auxiliary_frames": 488740,
+  "admitted_search_frames": 0,
+  "counts": {
+    "competitions": 3770,
+    "comparable": 1717,
+    "lower_hp_lost": 22,
+    "equal_resource_lower_hp_lost": 22,
+    "unclassified": 2053
+  },
+  "accounting_gap": "Direct inspector and prefix counters, plus completed replay frames, are charged from reports/failures or the latest receipt. The generic replayer constructor and unsuccessful partial work, or work after the last flushed receipt on a watchdog exit, remain unknown; a prospective ceiling is not measured work."
+}
