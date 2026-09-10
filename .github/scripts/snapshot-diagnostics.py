@@ -51,6 +51,8 @@ replace('consonance/vmm-core/src/control.rs',
         if let Some(vmm) = self.vmm.as_ref() {
             eprintln!("CONTROL_AFTER op={operation} at={:?} components={:x?}",
                 vmm.effective_vns(), vmm.state_components());
+            eprintln!("COMPLETION op={operation} staged={} last_exit={:?}",
+                vmm.completion_staged, vmm.diagnostic_last_exit);
             eprintln!("STATE_SUFFIX op={operation} at={:?} bytes={:02x?}",
                 vmm.effective_vns(), vmm.state_blob_suffix());
         }
@@ -58,3 +60,13 @@ replace('consonance/vmm-core/src/control.rs',
     }
 
     fn handle_uninstrumented(&mut self, req: &Request) -> Result<Result<Reply, ControlError>, ServeError> {''')
+
+replace('consonance/vmm-core/src/vmm.rs',
+    '    pub(crate) completion_staged: bool,',
+    '    pub(crate) completion_staged: bool,\n    pub(crate) diagnostic_last_exit: Option<String>,')
+replace('consonance/vmm-core/src/vmm.rs',
+    '            completion_staged: false,',
+    '            completion_staged: false,\n            diagnostic_last_exit: None,')
+replace('consonance/vmm-core/src/vmm.rs',
+    '        self.completion_staged = exit.stages_completion();',
+    '        self.completion_staged = exit.stages_completion();\n        self.diagnostic_last_exit = Some(format!("{:?}", exit.reason()));')
