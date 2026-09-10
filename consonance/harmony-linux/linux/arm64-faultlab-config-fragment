@@ -23,7 +23,8 @@ CONFIG_UNIX=y
 CONFIG_INET=y
 CONFIG_NETDEVICES=y
 CONFIG_NET_CORE=y
-CONFIG_LOOPBACK=y
+# Linux 6.18 builds drivers/net/loopback.o whenever CONFIG_NET is enabled; it
+# no longer exposes a separate CONFIG_LOOPBACK symbol.
 
 # Linux Go runtimes (including etcd) use futexes, epoll, eventfd, timerfd, and
 # signal handling in their ordinary process and netpoll paths. The agent also

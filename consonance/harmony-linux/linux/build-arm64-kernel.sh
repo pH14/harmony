@@ -228,7 +228,7 @@ case "$arm64_profile" in
         # explicit: tinyconfig otherwise makes missing netpoll/filesystem
         # support look like a workload failure much later in a run.
         assert_y BINFMT_SCRIPT PROC_FS FUTEX MMU SHMEM TMPFS FILE_LOCKING \
-            MULTIUSER ADVISE_SYSCALLS NET UNIX INET NETDEVICES NET_CORE LOOPBACK \
+            MULTIUSER ADVISE_SYSCALLS NET UNIX INET NETDEVICES NET_CORE \
             EPOLL EVENTFD SIGNALFD TIMERFD INOTIFY_USER SYSCTL
         assert_off DEVMEM HARMONY_PARK
         ;;
