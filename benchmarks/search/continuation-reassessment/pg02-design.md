@@ -16,8 +16,12 @@ ordinary, `resource_guarded_progress_2_v1`, and
 so a candidate win isolates its higher-progress ranking from that capacity rule.
 
 The proposed horizon is 1M admitted search frames plus the fixed 4,645 constructor
-frames: B = 1,004,645 physical search frames, with at most 2,880 drain frames recorded
-separately. Raising the caller's execution safety ceiling from 5,000 to 20,000 is a
+frames: B = 1,004,645 physical search frames. Accept at most 2,880 drain frames,
+recorded separately. This is an acceptance gate, not a universal safety bound:
+four outstanding jobs may reconstruct up to 4,096 actions each, with at most
+120 frames per action. The conservative drain bound is therefore 1,966,080 frames.
+Budget this larger bound even though exceeding the smaller gate invalidates the
+screen. Raising the caller's execution safety ceiling from 5,000 to 20,000 is a
 required bounded preflight change; otherwise an execution stop could censor the
 frame comparison early. Keep a short search watchdog and at most 180 seconds per
 whole cell, including full replay and witness checks. Register every CPU, memory,

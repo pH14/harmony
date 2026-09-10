@@ -401,7 +401,10 @@ registered Kraid/Ridley-defeat milestone. Archive actions and costs start at the
 supplied root; the original prefix never enters search as a donor or solution.
 
 The challenge bounds workers, jobs, frames, actions, memory, result slots, search
-wall time and direct helper replay work. It preserves the stream and checkpoint,
+wall time and direct helper replay work. Its caller permits at most 20,000 jobs
+and 1M admitted frames; a job-limit stop before a registered frame horizon is not
+a completed frame comparison. Parent reconstruction counts toward admitted work;
+in-flight drain bounds must include it, not just the new suffix. It preserves the stream and checkpoint,
 requires full campaign replay, then verifies one milestone/champion input twice
 from the root and twice as a complete prefix-plus-local input from genesis. All
 four endpoints must match in snapshot and same-boundary raw context. An inherited

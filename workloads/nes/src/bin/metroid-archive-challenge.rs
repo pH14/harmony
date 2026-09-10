@@ -88,7 +88,7 @@ fn slot_policy(q: &Request) -> Result<SlotRetentionPolicy> {
 }
 fn valid_limits(q: &Request, execute: bool) -> bool {
     (1..=4).contains(&q.workers)
-        && (1..=5000).contains(&q.executions)
+        && (1..=20_000).contains(&q.executions)
         && (1..=1_000_000).contains(&q.frames)
         && (1..=8192).contains(&q.actions)
         && (16..=8192).contains(&q.memory_mib)
@@ -521,6 +521,23 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
     use nes_workload::metroid::target::ButtonChord;
+    #[test]
+    fn execution_safety_cap_accepts_the_frame_screen_without_relaxing_frames() {
+        let mut q: Request = serde_json::from_str(include_str!(
+            "../../../../benchmarks/search/endpoint-encounter/ap01-request.json"
+        ))
+        .unwrap();
+        q.executions = 20_000;
+        q.frames = 1_000_000;
+        assert!(valid_limits(&q, true));
+        q.executions = 20_001;
+        assert!(!valid_limits(&q, true));
+        q.executions = 0;
+        assert!(!valid_limits(&q, true));
+        q.executions = 20_000;
+        q.frames = 1_000_001;
+        assert!(!valid_limits(&q, true));
+    }
     #[test]
     fn legacy_request_and_explicit_policy_feature_gates_are_checked_before_io() {
         let mut q: Request = serde_json::from_str(include_str!(
