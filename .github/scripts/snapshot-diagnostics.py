@@ -51,6 +51,8 @@ replace('consonance/vmm-core/src/control.rs',
         if let Some(vmm) = self.vmm.as_ref() {
             eprintln!("CONTROL_AFTER op={operation} at={:?} components={:x?}",
                 vmm.effective_vns(), vmm.state_components());
+            eprintln!("STATE_SUFFIX op={operation} at={:?} bytes={:02x?}",
+                vmm.effective_vns(), vmm.state_blob_suffix());
         }
         result
     }

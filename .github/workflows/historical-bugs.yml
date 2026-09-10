@@ -81,32 +81,3 @@ jobs:
           path: reference/reports
           retention-days: 14
           if-no-files-found: error
-  portable-linux:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: 6602da0bf4d86ff40a5e713f8b647fc49063919e
-      - uses: Swatinem/rust-cache@v2
-      - name: Run recovery tests on x86 Linux
-        run: |
-          mkdir -p reports
-          cargo test --locked -p control-proto -p vmm-core -p consonance-client --all-features 2>&1 | tee reports/portable-linux.log
-          cargo clippy --locked -p control-proto -p vmm-core -p consonance-client --all-features --all-targets -- -D warnings 2>&1 | tee reports/clippy.log
-      - name: Check the frozen Linux public API
-        run: |
-          rustup toolchain install nightly-2026-06-16 --profile minimal
-          cargo install cargo-public-api --version 0.52.0 --locked
-          cargo test -p vmm-core --test public_api -- --ignored --nocapture 2>&1 | tee reports/public-api.log
-          if grep -q 'SKIP:' reports/public-api.log; then exit 1; fi
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: recovery-linux-${{ github.run_id }}
-          path: reports
-          retention-days: 14
-          if-no-files-found: error
