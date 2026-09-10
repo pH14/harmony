@@ -165,7 +165,7 @@ mod real {
         child: Option<Child>,
         /// The parent end of the synchronous event-kill control channel. The
         /// child inherits the peer as `HARMONY_EVENT_KILL_FD`; the instrumented
-        /// runtime consumes commands from it without supervisor polling.
+        /// runtime consumes commands from it directly.
         event_control: Option<OwnedFd>,
         /// The park armed on the node's process group, while its window is
         /// open.

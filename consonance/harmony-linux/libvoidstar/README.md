@@ -16,8 +16,7 @@ ranges to modules injected by the Go instrumentor.
 Instrumented workloads may also inherit `HARMONY_EVENT_KILL_FD`. The library
 reads positive `u64` arm values from that socket and kills its own process group
 after that many future instrumented callbacks. This is a synchronous
-instrumented-event coordinate: it does not inspect instructions, read hardware
-counters, poll a supervisor, or use a timer. Zero disarms the coordinate.
+instrumented-event coordinate. Zero disarms the coordinate.
 Gate harnesses may additionally pass `HARMONY_EVENT_REPORT_FD`; immediately
 before an armed event kill, the bridge writes the selected ordinal and the
 generated global edge id as two little-endian `u64` values. Production search

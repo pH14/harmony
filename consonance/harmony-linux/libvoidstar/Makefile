@@ -6,6 +6,7 @@ WARNINGS := -Wall -Wextra -Werror -Wconversion -Wpedantic
 LIB := $(BUILD_DIR)/libvoidstar.so
 ABI_TEST := $(BUILD_DIR)/abi-test
 EVENT_KILL_TEST := $(BUILD_DIR)/event-kill-test
+EVENT_GATE_TEST := $(BUILD_DIR)/event-gate-test
 UNAME_S := $(shell uname -s)
 
 ifeq ($(UNAME_S),Darwin)
@@ -30,9 +31,13 @@ $(ABI_TEST): tests/abi_test.c voidstar.c | $(BUILD_DIR)
 $(EVENT_KILL_TEST): tests/event_kill_test.c voidstar.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(WARNINGS) -pthread -o $@ tests/event_kill_test.c
 
-check: $(LIB) $(ABI_TEST) $(EVENT_KILL_TEST)
+$(EVENT_GATE_TEST): tests/event_gate_test.c voidstar.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(WARNINGS) -pthread -o $@ tests/event_gate_test.c
+
+check: $(LIB) $(ABI_TEST) $(EVENT_KILL_TEST) $(EVENT_GATE_TEST)
 	$(ABI_TEST)
 	$(EVENT_KILL_TEST)
+	$(EVENT_GATE_TEST)
 	./check-symbols.sh $(LIB)
 
 clean:

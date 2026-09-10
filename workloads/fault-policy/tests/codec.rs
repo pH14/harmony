@@ -9,7 +9,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{arb_action, arb_answer, arb_host_fault, arb_spec, canon, config};
-use fault_policy::{Action, Answer, EnvError, EnvSpec, HostFault};
+use fault_policy::{Action, Answer, EnvError, EnvSpec, Fault, HostFault};
 use proptest::prelude::*;
 
 proptest! {
@@ -149,6 +149,12 @@ fn action_from_plane_conversions() {
 
     let ans = Answer::Supply(vec![1, 2, 3, 4]);
     assert_eq!(Action::from(ans.clone()), Action::Guest(ans));
+}
+
+#[test]
+fn event_kill_zero_ordinal_is_rejected_by_the_shared_codec() {
+    let bytes = Answer::Fault(Fault::ProcEventKill { ordinal: 0 }).encode();
+    assert_eq!(Answer::decode(&bytes), Err(EnvError::Malformed));
 }
 
 #[test]

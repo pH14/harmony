@@ -217,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn event_kill_decodes_as_an_ordinal_without_becoming_a_timer_fault() {
+    fn event_kill_decodes_as_an_instrumented_ordinal() {
         let process = DecisionClass::Process.as_u16();
         let target = target(2, &Fault::ProcEventKill { ordinal: 77 });
         let active = ActiveFaults::from_entries([(process, target.as_slice(), 11)].into_iter());

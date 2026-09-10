@@ -65,6 +65,12 @@ mod tests {
     }
 
     #[test]
+    fn rejects_zero_event_ordinal() {
+        let bytes = process_target(3, &Fault::ProcEventKill { ordinal: 0 });
+        assert_eq!(decode_process_target(&bytes), None);
+    }
+
+    #[test]
     fn a_retired_tag_does_not_decode() {
         // Tag 18 is unassigned; a target naming it is refused rather than
         // reinterpreted as a neighbouring process fault.

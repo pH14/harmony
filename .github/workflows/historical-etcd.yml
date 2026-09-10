@@ -6,12 +6,16 @@ on:
     paths:
       - .github/scripts/historical-*.sh
       - .github/workflows/historical-etcd.yml
+      - Cargo.lock
+      - Cargo.toml
       - bugs/historical/etcd-3.5-inconsistency/**
       - cli/**
-      - consonance/harmony-linux/**
-      - workloads/fault-agent/**
-      - workloads/fault-policy/**
-      - workloads/faults/**
+      - consonance/**
+      - dissonance/**
+      - flake.lock
+      - flake.nix
+      - scripts/render-historical-bugs.py
+      - workloads/**
   workflow_dispatch:
   schedule:
     - cron: "30 6 * * *"
@@ -249,9 +253,59 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  differential:
+    name: Replay the discovered execution on both arms
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: [manifest, guest, images, tools, search]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-guest-${{ github.run_id }}
+          path: guest
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-images-${{ github.run_id }}
+          path: oci-images
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-tools-${{ github.run_id }}
+          path: tools
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-search-vulnerable-${{ github.run_id }}
+          path: discovery
+      - name: Grant nested KVM access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Replay one discovered execution unchanged on both arms
+        env:
+          CASE_ID: ${{ needs.manifest.outputs.case_id }}
+          HORIZON_MS: ${{ needs.manifest.outputs.horizon_ms }}
+          RAM_MIB: ${{ needs.manifest.outputs.ram_mib }}
+          KNOBS: ${{ needs.manifest.outputs.knobs }}
+          VULNERABLE_VERSION: ${{ needs.manifest.outputs.vulnerable_version }}
+          CONTROL_VERSION: ${{ needs.manifest.outputs.control_version }}
+          ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}
+          ORACLE_EVIDENCE: ${{ needs.manifest.outputs.oracle_evidence }}
+        run: |
+          .github/scripts/historical-replay.sh discovery \
+            "discovery/${CASE_ID}.vulnerable.search/first-bug-input.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: etcd-differential-${{ github.run_id }}
+          path: reports
+          if-no-files-found: warn
+          retention-days: 30
+
   report:
     name: Render the etcd museum entry
-    needs: [search]
+    needs: [search, differential]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -269,6 +323,11 @@ jobs:
         continue-on-error: true
         with:
           name: etcd-search-control-${{ github.run_id }}
+          path: reports
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: etcd-differential-${{ github.run_id }}
           path: reports
       - name: Render the roster from this run's reports
         run: |

@@ -163,7 +163,13 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
         F_BLOCK_NOSPC => Fault::BlockNospc,
         F_PROC_PAUSE => Fault::ProcPause(Span(r.u64()?)),
         F_PROC_KILL => Fault::ProcKill,
-        F_PROC_EVENT_KILL => Fault::ProcEventKill { ordinal: r.u64()? },
+        F_PROC_EVENT_KILL => {
+            let ordinal = r.u64()?;
+            if ordinal == 0 {
+                return Err(EnvError::Malformed);
+            }
+            Fault::ProcEventKill { ordinal }
+        }
         F_PROC_RESTART => Fault::ProcRestart,
         F_BUGGIFY_FIRE => Fault::BuggifyFire,
         F_RUN_HOOK => Fault::RunHook(r.u32()?),

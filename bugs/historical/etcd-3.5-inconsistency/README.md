@@ -40,8 +40,7 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
   persistence and the corresponding entry apply. Dissonance represents the crash coordinate as
   the ordinal of an instrumented deterministic event. The Antithesis runtime receives that
   ordinal over an inherited control channel and kills the node synchronously after that many
-  future callbacks; no timer, address, hardware counter, polling loop, or workload-specific
-  probe sequence is involved.
+  future callbacks.
 - **Oracle**: the hook journals each acknowledged put outside etcd, then after a deterministic
   restart reads the recovered prefix once and compares the unique acknowledged key/value set. An
   acknowledged-but-missing or changed value is the case's only failing assertion. A down member,

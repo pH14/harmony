@@ -54,13 +54,19 @@ static _Atomic uint64_t harmony_next_edge_offset;
  * the Antithesis instrumentor. It counts future callbacks from the moment an
  * arm is acknowledged, so an action never misses merely because startup
  * events consumed the process-global counter. The callback performs the kill
- * synchronously, so no supervisor timer, polling loop, address, or hardware
- * counter is involved.
+ * synchronously.
+ *
+ * The high bit closes admission while the low bits count callbacks that have
+ * already entered. Keeping both in one atomic word makes close-vs-enter a
+ * single compare-and-swap race: either the callback increments first and the
+ * closer waits for it, or the closer sets the bit first and the callback waits.
  */
+#define HARMONY_EVENT_GATE_CLOSED (UINT64_C(1) << 63)
+#define HARMONY_EVENT_GATE_READERS (~HARMONY_EVENT_GATE_CLOSED)
+
 static _Atomic uint64_t harmony_event_remaining;
 static _Atomic uint64_t harmony_event_target;
-static _Atomic uint64_t harmony_event_inflight;
-static _Atomic bool harmony_event_updating;
+static _Atomic uint64_t harmony_event_gate;
 static _Atomic bool harmony_event_enabled;
 static pthread_once_t harmony_event_control_once = PTHREAD_ONCE_INIT;
 static int harmony_event_control_fd = -1;
@@ -105,6 +111,52 @@ static int read_event_command(int fd, uint64_t *value)
     return 0;
 }
 
+static void event_gate_close(void)
+{
+    uint64_t state = atomic_load_explicit(&harmony_event_gate, memory_order_acquire);
+
+    for (;;) {
+        if ((state & HARMONY_EVENT_GATE_CLOSED) != 0)
+            break;
+        if (atomic_compare_exchange_weak_explicit(
+                &harmony_event_gate, &state, state | HARMONY_EVENT_GATE_CLOSED,
+                memory_order_acq_rel, memory_order_acquire))
+            break;
+    }
+    while ((atomic_load_explicit(&harmony_event_gate, memory_order_acquire) &
+            HARMONY_EVENT_GATE_READERS) != 0)
+        (void)sched_yield();
+}
+
+static void event_gate_reopen(void)
+{
+    /* Close waits for the reader count to reach zero before this store. */
+    atomic_store_explicit(&harmony_event_gate, 0, memory_order_release);
+}
+
+static void event_gate_enter(void)
+{
+    uint64_t state = atomic_load_explicit(&harmony_event_gate, memory_order_acquire);
+
+    for (;;) {
+        if ((state & HARMONY_EVENT_GATE_CLOSED) != 0 ||
+            (state & HARMONY_EVENT_GATE_READERS) == HARMONY_EVENT_GATE_READERS) {
+            (void)sched_yield();
+            state = atomic_load_explicit(&harmony_event_gate, memory_order_acquire);
+            continue;
+        }
+        if (atomic_compare_exchange_weak_explicit(
+                &harmony_event_gate, &state, state + 1, memory_order_acq_rel,
+                memory_order_acquire))
+            return;
+    }
+}
+
+static void event_gate_leave(void)
+{
+    (void)atomic_fetch_sub_explicit(&harmony_event_gate, 1, memory_order_release);
+}
+
 static void *event_control_main(void *unused)
 {
     uint64_t target;
@@ -112,9 +164,7 @@ static void *event_control_main(void *unused)
 
     (void)unused;
     while (read_event_command(harmony_event_control_fd, &target) == 0) {
-        atomic_store_explicit(&harmony_event_updating, true, memory_order_release);
-        while (atomic_load_explicit(&harmony_event_inflight, memory_order_acquire) != 0)
-            (void)sched_yield();
+        event_gate_close();
         put_u64(acknowledgement, target);
         if (target == 0) {
             atomic_store_explicit(&harmony_event_remaining, 0, memory_order_release);
@@ -126,11 +176,13 @@ static void *event_control_main(void *unused)
         if (write_all(harmony_event_control_fd, acknowledgement, sizeof(acknowledgement)) != 0) {
             atomic_store_explicit(&harmony_event_remaining, 0, memory_order_release);
             atomic_store_explicit(&harmony_event_target, 0, memory_order_release);
-            atomic_store_explicit(&harmony_event_updating, false, memory_order_release);
+            atomic_store_explicit(&harmony_event_enabled, false, memory_order_release);
+            event_gate_reopen();
             break;
         }
-        atomic_store_explicit(&harmony_event_updating, false, memory_order_release);
+        event_gate_reopen();
     }
+    atomic_store_explicit(&harmony_event_enabled, false, memory_order_release);
     (void)close(harmony_event_control_fd);
     harmony_event_control_fd = -1;
     return NULL;
@@ -343,26 +395,9 @@ bool notify_coverage(uint64_t edge)
 
     (void)edge;
     (void)pthread_once(&harmony_event_control_once, event_control_start);
-    /*
-     * Enter on the callback side of the arm barrier. The control thread closes
-     * the gate and drains callbacks that entered before it publishes a new
-     * count. Callbacks that arrive later wait. Its acknowledgement therefore
-     * linearizes between two complete callback invocations: no callback that
-     * began before the arm can consume the newly armed ordinal.
-     */
     if (atomic_load_explicit(&harmony_event_enabled, memory_order_acquire)) {
-        for (;;) {
-            (void)atomic_fetch_add_explicit(
-                &harmony_event_inflight, 1, memory_order_acq_rel);
-            if (!atomic_load_explicit(&harmony_event_updating, memory_order_acquire)) {
-                event_entered = true;
-                break;
-            }
-            (void)atomic_fetch_sub_explicit(
-                &harmony_event_inflight, 1, memory_order_acq_rel);
-            while (atomic_load_explicit(&harmony_event_updating, memory_order_acquire))
-                (void)sched_yield();
-        }
+        event_gate_enter();
+        event_entered = true;
         remaining = atomic_load_explicit(&harmony_event_remaining, memory_order_acquire);
         while (remaining != 0) {
             if (atomic_compare_exchange_weak_explicit(
@@ -389,8 +424,7 @@ bool notify_coverage(uint64_t edge)
         coverage_exchange(harmony_coverage.counter) != 0)
         harmony_coverage.threshold = UINT64_MAX;
     if (event_entered)
-        (void)atomic_fetch_sub_explicit(
-            &harmony_event_inflight, 1, memory_order_acq_rel);
+        event_gate_leave();
     return false;
 }
 
