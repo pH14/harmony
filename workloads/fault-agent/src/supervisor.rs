@@ -196,6 +196,12 @@ impl Supervisor {
                 state.paused = false;
                 state.expected_down = false;
                 self.counters.restarts += 1;
+                // Event-kill is a one-shot arm owned by the process.  If the
+                // process died while its standing window remained open, the
+                // replacement needs the same arm after it starts.
+                if let Some(ordinal) = now.event_kill {
+                    actions.push(Action::ArmEventKill(node, ordinal));
+                }
             }
         }
 
@@ -216,6 +222,12 @@ impl Supervisor {
             self.nodes[index].alive = true;
             self.nodes[index].paused = false;
             self.counters.restarts += 1;
+            // A standing event-kill window survives the crash, but its arm
+            // does not: it lives in the old process.  Re-arm the replacement
+            // in action order, immediately after its Start action.
+            if let Some(ordinal) = active.node(node).event_kill {
+                actions.push(Action::ArmEventKill(node, ordinal));
+            }
         }
 
         self.previous = active.clone();
@@ -319,6 +331,54 @@ mod tests {
             [Action::DisarmEventKill(0)]
         );
         assert_eq!(sup.alive_bitmap(), 1);
+    }
+
+    #[test]
+    fn an_event_kill_window_rearms_a_replacement_process() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, Fault::ProcEventKill { ordinal: 19 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 19)]);
+
+        // The event arm kills the process.  The standing window is unchanged,
+        // so the replacement must be armed explicitly after it starts.
+        assert_eq!(
+            sup.tick(&event, &[0]),
+            [Action::Start(0), Action::ArmEventKill(0, 19)]
+        );
+
+        // The re-armed process can die again and is treated identically while
+        // the window remains open.
+        assert_eq!(
+            sup.tick(&event, &[0]),
+            [Action::Start(0), Action::ArmEventKill(0, 19)]
+        );
+
+        // Once the window closes, the live replacement is disarmed normally.
+        assert_eq!(
+            sup.tick(&ActiveFaults::new(), &[]),
+            [Action::DisarmEventKill(0)]
+        );
+    }
+
+    #[test]
+    fn an_event_kill_rearms_after_restart_window_closes() {
+        let mut sup = Supervisor::new(1);
+        let both = active(&[
+            (0, Fault::ProcEventKill { ordinal: 23 }),
+            (0, Fault::ProcRestart),
+        ]);
+        // Restart takes the running process down, so there is no control
+        // channel to arm yet.
+        assert_eq!(sup.tick(&both, &[]), [Action::Kill(0)]);
+        assert_eq!(sup.tick(&both, &[0]), []);
+
+        // The restart closes while event-kill remains standing.  Start first,
+        // then arm the new process.
+        let event = active(&[(0, Fault::ProcEventKill { ordinal: 23 })]);
+        assert_eq!(
+            sup.tick(&event, &[]),
+            [Action::Start(0), Action::ArmEventKill(0, 23)]
+        );
     }
 
     #[test]
