@@ -127,6 +127,23 @@ for directory in dev proc sys; do
     $BB mkdir -p "$ROOT/$directory"
     $BB mount --bind "/$directory" "$ROOT/$directory"
 done
+stage=diagnostic-shell
+echo "FAULT_INIT_STAGE=$stage" >&2
+# `harmony -w W exec` types a command at a shell reading the guest console and
+# watches the console for its completion marker, so the workload's filesystem
+# context needs one. The workload image is not required to carry a shell, so
+# the base image's static busybox is staged beside the agent. One supervisor
+# process owns the shell and reaps it, because the agent waits only on the
+# nodes it started and would otherwise accumulate zombies.
+$BB cp "$BB" "$ROOT/opt/harmony/busybox"
+$BB chmod 0755 "$ROOT/opt/harmony/busybox"
+$BB chroot "$ROOT" /opt/harmony/busybox sh -c '
+    PS1="# "
+    export PS1
+    while true; do
+        /opt/harmony/busybox setsid -c /opt/harmony/busybox sh -i \
+            </dev/console >/dev/console 2>&1 || true
+    done' &
 stage=chroot-agent
 echo "FAULT_INIT_STAGE=$stage" >&2
 exec $BB chroot "$ROOT" /opt/harmony/fault-agent \
@@ -191,7 +208,11 @@ ready /usr/bin/etcdctl endpoint health
             .expect("devtmpfs mount check");
         let mount = contains(b"$BB mount -t devtmpfs dev /dev").expect("devtmpfs mount");
         assert!(check < mount, "the mount is guarded by /proc/mounts");
-        assert!(contains(b"|| true").is_none());
+        let shell = contains(b"stage=diagnostic-shell").expect("diagnostic-shell stage");
+        assert!(
+            contains(b"|| true").is_none_or(|at| at > shell),
+            "startup must abort on a failed mount; only the respawn loop tolerates a failure"
+        );
         assert!(contains(b"stage=mount-proc").is_some());
         assert!(contains(b"$BB mount --bind \"$ROOT\" \"$ROOT\"").is_some());
         let bind_rootfs = contains(b"stage=bind-rootfs").expect("bind-rootfs stage");
@@ -203,6 +224,10 @@ ready /usr/bin/etcdctl endpoint health
             "root bind must precede child mounts"
         );
         assert!(bind_pseudo < chroot, "child mounts must precede chroot");
+        assert!(
+            bind_pseudo < shell && shell < chroot,
+            "the diagnostic shell starts inside the prepared rootfs, before the agent"
+        );
         assert!(contains(b"FAULT_INIT_EXIT stage=$stage rc=$rc").is_some());
         assert!(
             contains(b"/opt/harmony/fault-agent \\\n    --bundle /etc/harmony/bundle --hook-dir /run/fault-agent")
@@ -218,6 +243,30 @@ ready /usr/bin/etcdctl endpoint health
                 .status()
                 .unwrap()
                 .success()
+        );
+    }
+
+    #[test]
+    fn the_diagnostic_shell_runs_in_the_workloads_own_filesystem_context() {
+        let contains = |needle: &[u8]| {
+            INIT.windows(needle.len())
+                .position(|window| window == needle)
+        };
+        assert!(
+            contains(b"$BB cp \"$BB\" \"$ROOT/opt/harmony/busybox\"").is_some(),
+            "a workload image is not required to carry a shell of its own"
+        );
+        assert!(
+            contains(b"chroot \"$ROOT\" /opt/harmony/busybox").is_some(),
+            "the shell must see the workload's files, not the initramfs root"
+        );
+        assert!(
+            contains(b"setsid -c").is_some(),
+            "the sentinel scheme needs a controlling tty so input is echoed"
+        );
+        assert!(
+            contains(b"</dev/console >/dev/console").is_some(),
+            "exec injects on the console the shell must be reading"
         );
     }
 

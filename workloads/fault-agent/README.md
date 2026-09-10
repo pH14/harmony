@@ -37,6 +37,16 @@ hook <id> <argv...>      a one-shot command a RunHook fault launches
 ready <argv...>          a command that exits 0 once setup is done
 ```
 
+Four further lines describe the workload for investigation. The agent skips
+them; the host reads them so `harmony -w W inspect` can name what a property
+means and who reports it.
+
+```text
+describe node|hook <id> <text...>
+assert always|sometimes|reachable <id> [from <hook>] <text...>
+diagnostic <name> <argv...>
+```
+
 A node's id is its line order among `node` lines, from 0 — the same id the host
 names in a `DecisionClass::Process` target, so the two sides agree without a
 handshake. The image's init mounts `/proc`, `/sys` and `/dev` and nothing else,
