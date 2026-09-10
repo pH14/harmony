@@ -23,8 +23,15 @@ state, timer state, virtual time, entropy, control state, and protocol state.
 Snapshots can be restored into a copy-on-write memory mapping. SDK state
 capture retains pending stops and unanswered service requests without consuming
 them, including the response sequence and request identity. Portable format 4
-carries this state; version 3 remains readable with no pending stop. Whole-VM
-capture preserves pending SDK stops and is side-effect-free for a
+carries this state; version 3 remains readable without pending stops. Portable
+format 5 adds pending host effects and reseeds, the recorded input prefix,
+schedule failure, and command nonce. Replay restores these without reseeding or
+reapplying consumed inputs; an explicit branch selects a new plan and retains
+the command nonce. Whole-state hashes include this control state, including the
+recorded prefix used for duplicate-input rejection. Legacy v3/v4 artifacts remain
+readable with their historical empty control-state default; their recorded hash
+uses the old coverage. The codec retains v4 bytes when control state is absent.
+Whole-VM capture preserves pending SDK stops and is side-effect-free for a
 pending pvclock registration, carrying its GPA, `armed = false` state, and page
 bytes so the next handshake resumes from the same state.
 Pvclock-bearing device records explicitly preserve the registered page GPA,

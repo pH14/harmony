@@ -36,6 +36,7 @@
 //! guest state and replay hashes.
 
 pub mod control;
+mod control_state;
 mod engine_state;
 // Task 81 — the `exec` improvisation's pure sentinel state machine (what bytes to
 // type at the serial shell + how to detect completion/status). Portable and

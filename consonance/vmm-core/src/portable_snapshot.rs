@@ -6,7 +6,11 @@
 //! evidence cut, and lineage taint in handle-keyed side tables.
 //! This module serializes that complete replay state together with materialized
 //! RAM and the canonical vendor VM-state blob. The format is fixed-order,
-//! little-endian, length-bounded, and protected by a trailing SHA-256 digest.
+//! little-endian, length-bounded, and protected by a trailing SHA-256 digest
+//! for complete artifacts. Version 5 conditionally carries an opaque
+//! control-plane state section after the existing body; empty control state
+//! retains the byte layout of v4. Readers also retain v3 compatibility, and
+//! SDK pending-stop fields remain available in every format from v4 onward.
 
 use std::{
     collections::BTreeMap,
@@ -22,22 +26,26 @@ use crate::vmm::{SdkSnapshot, SdkStop};
 use snapshot_store::PAGE_SIZE;
 
 const MAGIC: [u8; 8] = *b"HMSNAP01";
-const VERSION: u16 = 4;
+const V3_VERSION: u16 = 3;
+const LEGACY_VERSION: u16 = 4;
+const VERSION: u16 = 5;
 const FLAG_SDK: u16 = 1;
 const FLAG_TAINTED: u16 = 1 << 1;
 const KNOWN_FLAGS: u16 = FLAG_SDK | FLAG_TAINTED;
 
 const MAX_VM_STATE_LEN: usize = 16 * 1024 * 1024;
 const MAX_SDK_LEN: usize = 64 * 1024 * 1024;
+const MAX_CONTROL_LEN: usize = MAX_SDK_LEN;
 const MAX_POLICY_LEN: usize = 1024 * 1024;
 const SPARSE_MAGIC: [u8; 8] = *b"HMSSNAP1";
-const SPARSE_VERSION: u16 = 4;
+const SPARSE_VERSION: u16 = VERSION;
 const SPARSE_FLAG_SDK: u16 = 1;
 const SPARSE_FLAG_TAINTED: u16 = 1 << 1;
 const SPARSE_KNOWN_FLAGS: u16 = SPARSE_FLAG_SDK | SPARSE_FLAG_TAINTED;
 const MAX_SUFFIX_LEN: usize = 16 * 1024 * 1024;
 const MAX_SPARSE_SIDECAR_LEN: usize = MAX_VM_STATE_LEN
     .saturating_add(MAX_SDK_LEN)
+    .saturating_add(MAX_CONTROL_LEN)
     .saturating_add(MAX_POLICY_LEN)
     .saturating_add(MAX_SUFFIX_LEN)
     .saturating_add(128);
@@ -85,6 +93,9 @@ pub(crate) struct SparsePortableSidecar {
     pub(crate) trace_schedules: u64,
     pub(crate) tainted: bool,
     pub(crate) state_blob_suffix: Vec<u8>,
+    /// Opaque control-server state. Empty keeps the v4 sidecar layout; a
+    /// nonempty value selects the v5 extension.
+    pub(crate) control_state: Vec<u8>,
 }
 
 pub(crate) struct SparsePortableSidecarRef<'a> {
@@ -97,6 +108,9 @@ pub(crate) struct SparsePortableSidecarRef<'a> {
     pub(crate) trace_schedules: u64,
     pub(crate) tainted: bool,
     pub(crate) state_blob_suffix: &'a [u8],
+    /// Opaque control-server state. Empty keeps the v4 sidecar layout; a
+    /// nonempty value selects the v5 extension.
+    pub(crate) control_state: &'a [u8],
 }
 
 /// A complete decoded portable snapshot.
@@ -111,6 +125,9 @@ pub(crate) struct PortableSnapshot {
     pub(crate) trace_schedules: u64,
     pub(crate) tainted: bool,
     pub(crate) state_hash: [u8; 32],
+    /// Opaque control-server state. Empty keeps the v4 artifact layout; a
+    /// nonempty value selects the v5 extension.
+    pub(crate) control_state: Vec<u8>,
 }
 
 /// Borrowed form used while streaming an existing store layer to disk.
@@ -125,6 +142,9 @@ pub(crate) struct PortableSnapshotRef<'a> {
     pub(crate) trace_schedules: u64,
     pub(crate) tainted: bool,
     pub(crate) state_hash: [u8; 32],
+    /// Opaque control-server state. Empty keeps the v4 artifact layout; a
+    /// nonempty value selects the v5 extension.
+    pub(crate) control_state: &'a [u8],
 }
 
 /// Strict portable-snapshot encode/decode failure.
@@ -173,6 +193,11 @@ impl PortableSnapshotRef<'_> {
     pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<(), PortableSnapshotError> {
         let sdk = self.sdk.map(encode_sdk).transpose()?;
         let policy = self.policy.encode();
+        let version = if self.control_state.is_empty() {
+            LEGACY_VERSION
+        } else {
+            VERSION
+        };
         if self.vm_state.is_empty() {
             return Err(PortableSnapshotError::BadFlags);
         }
@@ -180,6 +205,7 @@ impl PortableSnapshotRef<'_> {
         check_len("vm_state", self.vm_state.len(), MAX_VM_STATE_LEN)?;
         check_len("sdk", sdk.as_ref().map_or(0, Vec::len), MAX_SDK_LEN)?;
         check_len("policy", policy.len(), MAX_POLICY_LEN)?;
+        check_len("control_state", self.control_state.len(), MAX_CONTROL_LEN)?;
 
         let mut flags = 0;
         if sdk.is_some() {
@@ -191,12 +217,15 @@ impl PortableSnapshotRef<'_> {
 
         let mut out = HashWriter::new(&mut writer);
         out.write_all(&MAGIC)?;
-        put_u16(&mut out, VERSION)?;
+        put_u16(&mut out, version)?;
         put_u16(&mut out, flags)?;
         put_len(&mut out, self.memory.len())?;
         put_len(&mut out, self.vm_state.len())?;
         put_len(&mut out, sdk.as_ref().map_or(0, Vec::len))?;
         put_len(&mut out, policy.len())?;
+        if version == VERSION {
+            put_len(&mut out, self.control_state.len())?;
+        }
         put_u64(&mut out, self.at)?;
         put_u64(&mut out, self.sdk_events)?;
         put_u64(&mut out, self.trace_events)?;
@@ -208,6 +237,9 @@ impl PortableSnapshotRef<'_> {
             out.write_all(bytes)?;
         }
         out.write_all(&policy)?;
+        if version == VERSION {
+            out.write_all(self.control_state)?;
+        }
         // Finish the authenticated body before consuming the hash adapter;
         // the digest itself is then written and flushed through the original
         // writer below.
@@ -231,7 +263,7 @@ impl PortableSnapshot {
             return Err(PortableSnapshotError::BadMagic);
         }
         let version = get_u16(&mut input)?;
-        if version != 3 && version != VERSION {
+        if version != V3_VERSION && version != LEGACY_VERSION && version != VERSION {
             return Err(PortableSnapshotError::BadVersion(version));
         }
         let flags = get_u16(&mut input)?;
@@ -249,8 +281,17 @@ impl PortableSnapshot {
         let vm_state_len = bounded_len(&mut input, "vm_state", MAX_VM_STATE_LEN)?;
         let sdk_len = bounded_len(&mut input, "sdk", MAX_SDK_LEN)?;
         let policy_len = bounded_len(&mut input, "policy", MAX_POLICY_LEN)?;
+        let control_len = if version == VERSION {
+            bounded_len(&mut input, "control_state", MAX_CONTROL_LEN)?
+        } else {
+            0
+        };
         let has_sdk = flags & FLAG_SDK != 0;
-        if vm_state_len == 0 || has_sdk != (sdk_len != 0) || policy_len == 0 {
+        if vm_state_len == 0
+            || has_sdk != (sdk_len != 0)
+            || policy_len == 0
+            || (version == VERSION && control_len == 0)
+        {
             return Err(PortableSnapshotError::BadFlags);
         }
         let at = get_u64(&mut input)?;
@@ -263,6 +304,7 @@ impl PortableSnapshot {
         let vm_state = read_vec(&mut input, vm_state_len)?;
         let sdk_bytes = read_vec(&mut input, sdk_len)?;
         let policy_bytes = read_vec(&mut input, policy_len)?;
+        let control_state = read_vec(&mut input, control_len)?;
         let calculated = input.finish();
         let mut recorded = [0; 32];
         reader.read_exact(&mut recorded)?;
@@ -288,6 +330,7 @@ impl PortableSnapshot {
             trace_schedules,
             tainted: flags & FLAG_TAINTED != 0,
             state_hash,
+            control_state,
         })
     }
 }
@@ -302,6 +345,11 @@ pub(crate) fn encode_sparse_sidecar(
 ) -> Result<Vec<u8>, PortableSnapshotError> {
     let sdk = sidecar.sdk.map(encode_sdk).transpose()?;
     let policy = sidecar.policy.encode();
+    let version = if sidecar.control_state.is_empty() {
+        LEGACY_VERSION
+    } else {
+        VERSION
+    };
     if sidecar.vm_state.is_empty() {
         return Err(PortableSnapshotError::BadFlags);
     }
@@ -312,6 +360,11 @@ pub(crate) fn encode_sparse_sidecar(
         "state_blob_suffix",
         sidecar.state_blob_suffix.len(),
         MAX_SUFFIX_LEN,
+    )?;
+    check_len(
+        "control_state",
+        sidecar.control_state.len(),
+        MAX_CONTROL_LEN,
     )?;
 
     let mut flags = 0;
@@ -324,12 +377,15 @@ pub(crate) fn encode_sparse_sidecar(
 
     let mut out = Vec::new();
     out.extend_from_slice(&SPARSE_MAGIC);
-    put_u16(&mut out, SPARSE_VERSION)?;
+    put_u16(&mut out, version)?;
     put_u16(&mut out, flags)?;
     put_len(&mut out, sidecar.vm_state.len())?;
     put_len(&mut out, sdk.as_ref().map_or(0, Vec::len))?;
     put_len(&mut out, policy.len())?;
     put_len(&mut out, sidecar.state_blob_suffix.len())?;
+    if version == SPARSE_VERSION {
+        put_len(&mut out, sidecar.control_state.len())?;
+    }
     put_u64(&mut out, sidecar.at)?;
     put_u64(&mut out, sidecar.sdk_events)?;
     put_u64(&mut out, sidecar.trace_events)?;
@@ -340,6 +396,9 @@ pub(crate) fn encode_sparse_sidecar(
     }
     out.extend_from_slice(&policy);
     out.extend_from_slice(sidecar.state_blob_suffix);
+    if version == SPARSE_VERSION {
+        out.extend_from_slice(sidecar.control_state);
+    }
     check_len("sidecar", out.len(), MAX_SPARSE_SIDECAR_LEN)?;
     Ok(out)
 }
@@ -357,7 +416,7 @@ pub(crate) fn decode_sparse_sidecar(
         return Err(PortableSnapshotError::BadMagic);
     }
     let version = input.u16()?;
-    if version != 3 && version != SPARSE_VERSION {
+    if version != V3_VERSION && version != LEGACY_VERSION && version != SPARSE_VERSION {
         return Err(PortableSnapshotError::BadVersion(version));
     }
     let flags = input.u16()?;
@@ -368,8 +427,17 @@ pub(crate) fn decode_sparse_sidecar(
     let sdk_len = input.bounded_len("sdk", MAX_SDK_LEN)?;
     let policy_len = input.bounded_len("policy", MAX_POLICY_LEN)?;
     let suffix_len = input.bounded_len("state_blob_suffix", MAX_SUFFIX_LEN)?;
+    let control_len = if version == SPARSE_VERSION {
+        input.bounded_len("control_state", MAX_CONTROL_LEN)?
+    } else {
+        0
+    };
     let has_sdk = flags & SPARSE_FLAG_SDK != 0;
-    if vm_state_len == 0 || policy_len == 0 || has_sdk != (sdk_len != 0) {
+    if vm_state_len == 0
+        || policy_len == 0
+        || has_sdk != (sdk_len != 0)
+        || (version == SPARSE_VERSION && control_len == 0)
+    {
         return Err(PortableSnapshotError::BadFlags);
     }
     let at = input.u64()?;
@@ -380,6 +448,7 @@ pub(crate) fn decode_sparse_sidecar(
     let sdk_bytes = input.section(sdk_len)?;
     let policy_bytes = input.section(policy_len)?;
     let state_blob_suffix = input.section(suffix_len)?;
+    let control_state = input.section(control_len)?;
     input.finish("sparse sidecar")?;
     let sdk = has_sdk
         .then(|| decode_sdk(&sdk_bytes, version))
@@ -395,6 +464,7 @@ pub(crate) fn decode_sparse_sidecar(
         trace_schedules,
         tainted: flags & SPARSE_FLAG_TAINTED != 0,
         state_blob_suffix,
+        control_state,
     })
 }
 
@@ -798,13 +868,16 @@ mod tests {
     #[test]
     fn wire_constants_are_exact_contract_values() {
         assert_eq!(MAGIC, *b"HMSNAP01");
-        assert_eq!(VERSION, 4);
+        assert_eq!(V3_VERSION, 3);
+        assert_eq!(LEGACY_VERSION, 4);
+        assert_eq!(VERSION, 5);
         assert_eq!((FLAG_SDK, FLAG_TAINTED, KNOWN_FLAGS), (1, 2, 3));
         assert_eq!(MAX_VM_STATE_LEN, 16 * 1024 * 1024);
         assert_eq!(MAX_SDK_LEN, 64 * 1024 * 1024);
+        assert_eq!(MAX_CONTROL_LEN, MAX_SDK_LEN);
         assert_eq!(MAX_POLICY_LEN, 1024 * 1024);
         assert_eq!(SPARSE_MAGIC, *b"HMSSNAP1");
-        assert_eq!(SPARSE_VERSION, 4);
+        assert_eq!(SPARSE_VERSION, VERSION);
         assert_eq!(
             (SPARSE_FLAG_SDK, SPARSE_FLAG_TAINTED, SPARSE_KNOWN_FLAGS),
             (1, 2, 3)
@@ -812,7 +885,12 @@ mod tests {
         assert_eq!(MAX_SUFFIX_LEN, 16 * 1024 * 1024);
         assert_eq!(
             MAX_SPARSE_SIDECAR_LEN,
-            MAX_VM_STATE_LEN + MAX_SDK_LEN + MAX_POLICY_LEN + MAX_SUFFIX_LEN + 128
+            MAX_VM_STATE_LEN
+                + MAX_SDK_LEN
+                + MAX_CONTROL_LEN
+                + MAX_POLICY_LEN
+                + MAX_SUFFIX_LEN
+                + 128
         );
 
         for old_version in [1_u16, 2] {
@@ -840,6 +918,7 @@ mod tests {
             trace_schedules: 5,
             tainted: true,
             state_hash: [0xa5; 32],
+            control_state: &[],
         }
         .write_to(&mut bytes)
         .unwrap();
@@ -848,6 +927,27 @@ mod tests {
 
     fn encoded() -> Vec<u8> {
         encoded_with_memory_len(8192)
+    }
+
+    fn encoded_with_control_state(control_state: &[u8]) -> Vec<u8> {
+        let (memory, vm_state, sdk, policy) = fixture();
+        let mut bytes = Vec::new();
+        PortableSnapshotRef {
+            memory: &memory,
+            vm_state: &vm_state,
+            sdk: Some(&sdk),
+            policy: &policy,
+            at: 23,
+            sdk_events: 2,
+            trace_events: 17,
+            trace_schedules: 5,
+            tainted: true,
+            state_hash: [0xa5; 32],
+            control_state,
+        }
+        .write_to(&mut bytes)
+        .unwrap();
+        bytes
     }
 
     fn sparse_sidecar_fixture() -> Vec<u8> {
@@ -862,6 +962,24 @@ mod tests {
             trace_schedules: 5,
             tainted: true,
             state_blob_suffix: b"canonical-suffix",
+            control_state: &[],
+        })
+        .unwrap()
+    }
+
+    fn sparse_sidecar_fixture_with_control_state(control_state: &[u8]) -> Vec<u8> {
+        let (_, vm_state, sdk, policy) = fixture();
+        encode_sparse_sidecar(&SparsePortableSidecarRef {
+            vm_state: &vm_state,
+            sdk: Some(&sdk),
+            policy: &policy,
+            at: 23,
+            sdk_events: 2,
+            trace_events: 17,
+            trace_schedules: 5,
+            tainted: true,
+            state_blob_suffix: b"canonical-suffix",
+            control_state,
         })
         .unwrap()
     }
@@ -870,6 +988,10 @@ mod tests {
     fn sparse_sidecar_is_versioned_non_memory_state_only() {
         let bytes = sparse_sidecar_fixture();
         assert_eq!(&bytes[..8], b"HMSSNAP1");
+        assert_eq!(
+            u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
+            LEGACY_VERSION
+        );
         let decoded = decode_sparse_sidecar(&bytes).unwrap();
         assert_eq!(decoded.vm_state, b"strict-vm-state");
         assert_eq!(decoded.sdk.as_ref().unwrap().events.len(), 2);
@@ -879,9 +1001,167 @@ mod tests {
         assert_eq!(decoded.trace_events, 17);
         assert_eq!(decoded.trace_schedules, 5);
         assert!(decoded.tainted);
+        assert!(decoded.control_state.is_empty());
         // The sparse sidecar has no memory length, RAM section, or state hash.
         assert!(!bytes.windows(4).any(|tag| tag == b"MEM\0"));
         assert!(!bytes.windows(4).any(|tag| tag == b"SHA2"));
+    }
+
+    #[test]
+    fn v5_complete_snapshot_round_trips_multiple_control_states() {
+        for control_state in [
+            vec![0x01],
+            vec![0x00, 0xfe, 0xa5],
+            (0u8..=255).collect::<Vec<_>>(),
+        ] {
+            let bytes = encoded_with_control_state(&control_state);
+            assert_eq!(
+                u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
+                VERSION
+            );
+            // v5 adds one u64 length after the four v4 section lengths.
+            assert_eq!(
+                u64::from_le_bytes(bytes[44..52].try_into().unwrap()),
+                control_state.len() as u64
+            );
+            let decoded = PortableSnapshot::read_from(bytes.as_slice(), 8192).unwrap();
+            assert_eq!(decoded.control_state, control_state);
+
+            let mut reencoded = Vec::new();
+            PortableSnapshotRef {
+                memory: &decoded.memory,
+                vm_state: &decoded.vm_state,
+                sdk: decoded.sdk.as_ref(),
+                policy: &decoded.policy,
+                at: decoded.at,
+                sdk_events: decoded.sdk_events,
+                trace_events: decoded.trace_events,
+                trace_schedules: decoded.trace_schedules,
+                tainted: decoded.tainted,
+                state_hash: decoded.state_hash,
+                control_state: &decoded.control_state,
+            }
+            .write_to(&mut reencoded)
+            .unwrap();
+            assert_eq!(reencoded, bytes);
+        }
+    }
+
+    #[test]
+    fn v5_sparse_sidecar_round_trips_multiple_control_states() {
+        for control_state in [
+            vec![0x01],
+            vec![0x00, 0xfe, 0xa5],
+            (0u8..=255).collect::<Vec<_>>(),
+        ] {
+            let bytes = sparse_sidecar_fixture_with_control_state(&control_state);
+            assert_eq!(
+                u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
+                SPARSE_VERSION
+            );
+            // v5 adds one u64 length after the four v4 sidecar lengths.
+            assert_eq!(
+                u64::from_le_bytes(bytes[44..52].try_into().unwrap()),
+                control_state.len() as u64
+            );
+            let decoded = decode_sparse_sidecar(&bytes).unwrap();
+            assert_eq!(decoded.control_state, control_state);
+
+            let reencoded = encode_sparse_sidecar(&SparsePortableSidecarRef {
+                vm_state: &decoded.vm_state,
+                sdk: decoded.sdk.as_ref(),
+                policy: &decoded.policy,
+                at: decoded.at,
+                sdk_events: decoded.sdk_events,
+                trace_events: decoded.trace_events,
+                trace_schedules: decoded.trace_schedules,
+                tainted: decoded.tainted,
+                state_blob_suffix: &decoded.state_blob_suffix,
+                control_state: &decoded.control_state,
+            })
+            .unwrap();
+            assert_eq!(reencoded, bytes);
+        }
+    }
+
+    #[test]
+    fn v5_complete_snapshot_control_state_is_nonempty_bounded_trailing_and_authenticated() {
+        let good = encoded_with_control_state(&[1, 2, 3]);
+
+        let mut missing = good.clone();
+        missing[44..52].copy_from_slice(&0_u64.to_le_bytes());
+        refresh_digest(&mut missing);
+        assert!(matches!(
+            PortableSnapshot::read_from(missing.as_slice(), 8192),
+            Err(PortableSnapshotError::BadFlags)
+        ));
+
+        let mut oversized = good.clone();
+        oversized[44..52].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(matches!(
+            PortableSnapshot::read_from(oversized.as_slice(), 8192),
+            Err(PortableSnapshotError::Length {
+                section: "control_state",
+                ..
+            })
+        ));
+
+        let mut truncated = good.clone();
+        truncated.truncate(truncated.len() - 1);
+        assert!(PortableSnapshot::read_from(truncated.as_slice(), 8192).is_err());
+
+        let mut trailing = good.clone();
+        trailing.push(0);
+        assert!(matches!(
+            PortableSnapshot::read_from(trailing.as_slice(), 8192),
+            Err(PortableSnapshotError::Malformed("trailing bytes"))
+        ));
+
+        // The final body byte belongs to control_state, so it must be covered by
+        // the complete-artifact digest just like every earlier section.
+        let mut corrupted = good;
+        let body_last = corrupted.len() - 33;
+        corrupted[body_last] ^= 1;
+        assert!(matches!(
+            PortableSnapshot::read_from(corrupted.as_slice(), 8192),
+            Err(PortableSnapshotError::DigestMismatch)
+        ));
+    }
+
+    #[test]
+    fn v5_sparse_sidecar_control_state_is_nonempty_bounded_trailing_and_total() {
+        let good = sparse_sidecar_fixture_with_control_state(&[1, 2, 3]);
+
+        let mut missing = good.clone();
+        missing[44..52].copy_from_slice(&0_u64.to_le_bytes());
+        assert!(matches!(
+            decode_sparse_sidecar(&missing),
+            Err(PortableSnapshotError::BadFlags)
+        ));
+
+        let mut oversized = good.clone();
+        oversized[44..52].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(matches!(
+            decode_sparse_sidecar(&oversized),
+            Err(PortableSnapshotError::Length {
+                section: "control_state",
+                ..
+            })
+        ));
+
+        let mut trailing = good.clone();
+        trailing.push(0);
+        assert!(matches!(
+            decode_sparse_sidecar(&trailing),
+            Err(PortableSnapshotError::Malformed("sparse sidecar"))
+        ));
+
+        for end in 0..good.len() {
+            assert!(
+                decode_sparse_sidecar(&good[..end]).is_err(),
+                "truncated v5 sidecar prefix {end} was accepted"
+            );
+        }
     }
 
     #[test]
@@ -929,6 +1209,7 @@ mod tests {
                 trace_schedules: 5,
                 tainted,
                 state_blob_suffix: b"canonical-suffix",
+                control_state: &[],
             })
             .unwrap();
             let decoded = decode_sparse_sidecar(&bytes).unwrap();
@@ -993,6 +1274,7 @@ mod tests {
                 trace_schedules: 0,
                 tainted: false,
                 state_hash: [0; 32],
+                control_state: &[],
             })
             .write_to(&mut artifact),
             Err(PortableSnapshotError::BadFlags)
@@ -1010,6 +1292,7 @@ mod tests {
                 trace_schedules: 0,
                 tainted: false,
                 state_blob_suffix: b"suffix",
+                control_state: &[],
             }),
             Err(PortableSnapshotError::BadFlags)
         ));
@@ -1043,6 +1326,7 @@ mod tests {
             trace_schedules: 0,
             tainted: false,
             state_hash: [7; 32],
+            control_state: &[],
         }
         .write_to(&mut bytes)
         .unwrap();
@@ -1078,6 +1362,7 @@ mod tests {
                 trace_schedules: 0,
                 tainted: false,
                 state_hash: [0; 32],
+                control_state: &[],
             }
             .write_to(&mut section_without_flag)
             .unwrap();
@@ -1187,6 +1472,7 @@ mod tests {
             trace_schedules: 0,
             tainted: false,
             state_hash: [0; 32],
+            control_state: &[],
         }
         .write_to(FlushFails(Vec::new()));
         assert!(matches!(result, Err(PortableSnapshotError::Io(_))));
@@ -1225,6 +1511,7 @@ mod tests {
             trace_schedules: 0,
             tainted: false,
             state_hash: [0; 32],
+            control_state: &[],
         }
         .write_to(FlushCounter {
             bytes: Vec::new(),
@@ -1248,6 +1535,10 @@ mod tests {
     #[test]
     fn complete_snapshot_round_trips_byte_exactly() {
         let bytes = encoded();
+        assert_eq!(
+            u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
+            LEGACY_VERSION
+        );
         let decoded = PortableSnapshot::read_from(bytes.as_slice(), 8192).unwrap();
         assert_eq!(decoded.memory, fixture().0);
         assert_eq!(decoded.vm_state, b"strict-vm-state");
@@ -1268,6 +1559,7 @@ mod tests {
         assert_eq!(decoded.trace_schedules, 5);
         assert!(decoded.tainted);
         assert_eq!(decoded.state_hash, [0xa5; 32]);
+        assert!(decoded.control_state.is_empty());
     }
 
     #[test]
@@ -1384,6 +1676,7 @@ mod tests {
                 trace_schedules: 0,
                 tainted: false,
                 state_hash: [0; 32],
+                control_state: &[],
             }
             .write_to(&mut full)
             .unwrap();
@@ -1399,6 +1692,7 @@ mod tests {
                 trace_schedules: 0,
                 tainted: false,
                 state_blob_suffix: b"suffix",
+                control_state: &[],
             })
             .unwrap();
             assert_eq!(
@@ -1439,5 +1733,83 @@ mod tests {
         let decoded = decode_sparse_sidecar(sparse).unwrap();
         assert_eq!(decoded.sdk.unwrap().pending_stop, None);
         assert_eq!(decoded.state_blob_suffix, b"canonical-suffix");
+    }
+
+    #[test]
+    fn version_four_complete_and_sparse_artifacts_remain_byte_stable() {
+        // Emitted by the pre-control-state writer at c950d497, not reconstructed
+        // by this implementation. See tests/fixtures/README.md for provenance.
+        let full = include_bytes!("../tests/fixtures/sdk-v4-full-pending.bin");
+        assert_eq!(
+            u16::from_le_bytes(full[8..10].try_into().unwrap()),
+            LEGACY_VERSION
+        );
+        let decoded = PortableSnapshot::read_from(full.as_slice(), 8192).unwrap();
+        assert!(decoded.control_state.is_empty());
+        assert_eq!(
+            decoded.sdk.as_ref().unwrap().pending_stop,
+            Some(SdkStop::Decision {
+                moment: 47,
+                seq: 3,
+                question: channel::Question::with_request_id(
+                    0x1234,
+                    7,
+                    b"portable-v4-decision".to_vec(),
+                )
+                .unwrap(),
+            })
+        );
+        let mut reencoded = Vec::new();
+        PortableSnapshotRef {
+            memory: &decoded.memory,
+            vm_state: &decoded.vm_state,
+            sdk: decoded.sdk.as_ref(),
+            policy: &decoded.policy,
+            at: decoded.at,
+            sdk_events: decoded.sdk_events,
+            trace_events: decoded.trace_events,
+            trace_schedules: decoded.trace_schedules,
+            tainted: decoded.tainted,
+            state_hash: decoded.state_hash,
+            control_state: &decoded.control_state,
+        }
+        .write_to(&mut reencoded)
+        .unwrap();
+        assert_eq!(reencoded.as_slice(), full);
+
+        let sparse = include_bytes!("../tests/fixtures/sdk-v4-sparse-pending.bin");
+        assert_eq!(
+            u16::from_le_bytes(sparse[8..10].try_into().unwrap()),
+            LEGACY_VERSION
+        );
+        let decoded = decode_sparse_sidecar(sparse).unwrap();
+        assert!(decoded.control_state.is_empty());
+        assert_eq!(
+            decoded.sdk.as_ref().unwrap().pending_stop,
+            Some(SdkStop::Decision {
+                moment: 47,
+                seq: 3,
+                question: channel::Question::with_request_id(
+                    0x1234,
+                    7,
+                    b"portable-v4-decision".to_vec(),
+                )
+                .unwrap(),
+            })
+        );
+        let reencoded = encode_sparse_sidecar(&SparsePortableSidecarRef {
+            vm_state: &decoded.vm_state,
+            sdk: decoded.sdk.as_ref(),
+            policy: &decoded.policy,
+            at: decoded.at,
+            sdk_events: decoded.sdk_events,
+            trace_events: decoded.trace_events,
+            trace_schedules: decoded.trace_schedules,
+            tainted: decoded.tainted,
+            state_blob_suffix: &decoded.state_blob_suffix,
+            control_state: &decoded.control_state,
+        })
+        .unwrap();
+        assert_eq!(reencoded.as_slice(), sparse);
     }
 }

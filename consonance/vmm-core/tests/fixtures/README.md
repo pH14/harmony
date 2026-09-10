@@ -8,6 +8,16 @@ The tests read these original version-3 bytes using the current reader. Keep
 them unchanged when modifying the writer so compatibility cannot pass merely
 because the test and writer changed together.
 
+`sdk-v4-full-pending.bin` and `sdk-v4-sparse-pending.bin` were emitted by the
+pre-control-state writer from an archived checkout of Harmony commit
+`c950d4972df8a8f433f2a7b1fe90f4b08c426504` (the exact source commit used for
+this compatibility boundary). They contain synthetic RAM, VM state, policy,
+coverage thresholds, and a pending SDK decision; no guest or private data.
+The current v5-capable reader must preserve that decision, and re-encoding the
+decoded records with an empty control state must reproduce the fixture bytes
+exactly. Keep these files immutable so compatibility cannot pass merely because
+the fixture and writer changed together.
+
 `harmony-x86-v4-armed.bin`, `harmony-x86-v4-unregistered.bin`, and
 `harmony-arm64-v5-pvclock.bin` through
 `harmony-arm64-v8-gic-doorbell-pvclock.bin` were emitted by the original device
