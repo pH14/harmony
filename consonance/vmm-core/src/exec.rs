@@ -3,15 +3,13 @@
 //! logic that turns "run a command at the serial shell" into an injected byte
 //! stream plus a completion detector. Task 81.
 //!
-//! `exec` is an **improvisation** (`docs/PROTOCOL.md`): a
-//! one-off command run inside a *forked* guest, **never recorded into any
-//! `Environment`** and carrying **no determinism guarantee**. The transport is
-//! deliberately crude — raw bytes on the guest's 8250 serial input, as if typed
-//! at a root shell — so this module owns none of task 61's deterministic
-//! guest-plane machinery. What it owns is the small, testable protocol on top of
-//! the shell: *what bytes to type*, and *how to know the command finished and with
-//! what status*. The airtight part of the task is the **taint guard**
-//! ([`crate::control`]), not this channel; this stays simple on purpose.
+//! `exec` is an off-record input (`docs/PROTOCOL.md`): a command delivered to
+//! the guest's serial shell, outside the original `Environment` reproducer.
+//! The control owner marks that lineage modified and retains the command
+//! parser in its snapshots; the VM retains unread serial input. Cold
+//! continuation therefore preserves the injected command without replaying it.
+//! This module owns the bytes to type and the completion detector, while the
+//! control server owns advancement, taint, and durable command identity.
 //!
 //! ## The sentinel scheme
 //!
@@ -56,8 +54,8 @@
 //!   [`ExecSession::finish_timeout`] remains available for an explicit abort.
 //! - **Marker collision.** If the command's *own* output contains the exact
 //!   `<M>:<digits>:<M>` pattern, the detector stops early on it. The distinctive
-//!   `HXEC-` tag plus the per-call `nonce` salt makes this astronomically unlikely
-//!   for textual output but is not impossible for arbitrary binary output —
+//!   `HXEC-` tag and per-call `nonce` distinguish ordinary textual output, but
+//!   a command can still emit a matching marker —
 //!   acceptable for a crude, off-record channel.
 //! - **Output cap.** Captured output is bounded at [`MAX_CAPTURE`]; past that,
 //!   bytes are dropped (and the session still completes on the sentinel if it

@@ -42,7 +42,13 @@ execution can resume; inconsistent state abandons the restored VM.
 Whole-state hashes include the UART queue and control state, including the
 recorded prefix used for duplicate-input rejection. Legacy v3/v4 artifacts remain
 readable with their historical empty control-state default; their recorded hash
-uses the old coverage. The codec retains v4 bytes when control state is absent.
+uses the old coverage. Representable states retain their v4/v5 bytes. Portable
+format 6 carries sections beyond the older fixed limits, including large unread
+UART input and SDK streams. It keeps the v5 field order and allows an empty
+control section. Complete imports allocate incrementally from bytes actually
+read; sparse imports bound lengths by the available input. Declared lengths
+alone cannot trigger an unbounded allocation. Legacy readers retain their
+original limits, while unsupported versions fail explicitly.
 Whole-VM capture preserves pending SDK stops and is side-effect-free for a
 pending pvclock registration, carrying its GPA, `armed = false` state, and page
 bytes so the next handshake resumes from the same state.

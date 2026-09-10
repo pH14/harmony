@@ -8595,6 +8595,57 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "portable restore uses snapshot-store mmap")]
+    fn large_valid_pending_command_remains_portable() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let base = snap(&mut source);
+        let request = Request::ExecStart {
+            cmd: "x".repeat(control_proto::MAX_FRAME_LEN - 64),
+        };
+        let mut frame = Vec::new();
+        control_proto::encode_request(1, &request, &mut frame)
+            .expect("accepted wire-sized command");
+        drop(frame);
+        let started = source.handle(&request).unwrap().unwrap();
+        drop(request);
+        let before = hash(&mut source);
+        let at = source.vmm.as_ref().unwrap().effective_vns();
+        let (cut, _) = snap_tainted(&mut source);
+        assert_eq!(hash(&mut source), before);
+        assert_eq!(source.vmm.as_ref().unwrap().effective_vns(), at);
+        for sparse in [false, true] {
+            let mut cold = server(vec![Exit::Common(CommonExit::Idle)]);
+            hello(&mut cold);
+            let imported = if sparse {
+                let cold_base = snap(&mut cold);
+                let artifact = source
+                    .export_sparse_snapshot(base, cut)
+                    .expect("valid stopped command exports sparsely without running");
+                cold.import_sparse_snapshot(cold_base, artifact).unwrap().id
+            } else {
+                let mut artifact = Vec::new();
+                source
+                    .export_portable_snapshot(cut, &mut artifact)
+                    .expect("valid stopped command exports without running");
+                cold.import_portable_snapshot(artifact.as_slice())
+                    .unwrap()
+                    .id
+            };
+            assert_eq!(replay(&mut cold, imported), Ok(Reply::Unit));
+            assert_eq!(hash(&mut cold), before, "all unread command bytes survive");
+            assert_eq!(cold.vmm.as_ref().unwrap().effective_vns(), at);
+            assert_eq!(cold.handle(&Request::ExecStatus).unwrap().unwrap(), started);
+            assert_eq!(cold.exec_nonce, 1, "restore did not inject another command");
+        }
+        assert_eq!(
+            hash(&mut source),
+            before,
+            "exports left the source unchanged"
+        );
+    }
+
+    #[test]
     #[cfg_attr(
         miri,
         ignore = "portable restore uses snapshot-store mmap; pure command codec is tested separately"
