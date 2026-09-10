@@ -1,0 +1,32 @@
+{
+  "started_utc": "2026-09-10T01:05:24.963929+00:00",
+  "host": "ms02",
+  "pair": "p01-pair-1",
+  "unit": "harmony-action-p01-pair1-20260910.service",
+  "registration_commit": "d1042f959035636975a47c6f018358a9971cb1c0",
+  "master_sha256": "32c857b6fd23ff78f54240d8b12d18f7e3c92d856aecfe8e1d46245a947a1731",
+  "subregistration_sha256": "1caeb28034777c26db03b6f4517bcbc2e282b65c322f7b5a64571853fce4bc2a",
+  "dispatch_archive_sha256": "e001d19954d10edf30f0cec0d614d86d2dc05fa9bc81742da8a7e24b839e4dfa",
+  "command": [
+    "systemd-run",
+    "--unit",
+    "harmony-action-p01-pair1-20260910",
+    "--property=RuntimeMaxSec=2900",
+    "--property=MemoryMax=12G",
+    "--property=KillMode=control-group",
+    "--property=TimeoutStopSec=5",
+    "--property=StandardOutput=append:/root/harmony-depth-transfer-20260909/action-persistence-20260910/p01-pair-1.log",
+    "--property=StandardError=append:/root/harmony-depth-transfer-20260909/action-persistence-20260910/p01-pair-1.log",
+    "/usr/bin/taskset",
+    "-c",
+    "0-3",
+    "/usr/bin/python3",
+    "/root/harmony-depth-transfer-20260909/action-persistence-20260910/runner/run_cells.py",
+    "--experiment",
+    "/root/harmony-depth-transfer-20260909",
+    "--registration",
+    "/root/harmony-depth-transfer-20260909/action-persistence-20260910/p01-pair-1-registration.json",
+    "--registration-commit",
+    "d1042f959035636975a47c6f018358a9971cb1c0"
+  ]
+}
