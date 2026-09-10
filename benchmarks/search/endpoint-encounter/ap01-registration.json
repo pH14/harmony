@@ -1,0 +1,51 @@
+{
+  "format": "metroid-archive-capability-pilot-ap01-registration-v1",
+  "registered_utc": "2026-09-10T04:58:13.478213+00:00",
+  "deadline_utc": "2026-09-10T05:18:13.478213+00:00",
+  "purpose": "One unchanged-archive capability pilot from the original E01 encounter, not a matched-work or fresh-search comparison.",
+  "host": "msr1",
+  "source_commit": "02798b443a448e57bc41e1f11307fd50092d20f7",
+  "source_tree_sha256": "39b97e3df52c8c75304a77a732713335ac1adadacfa2ce50ad4f14a8181e201e",
+  "source_archive_sha256": "c6617a06e3668e47b4ad5498580ccea36e4057e008d7fd315e019aa31703dc6b",
+  "binary": "builds/archive-challenge-001/metroid-archive-challenge",
+  "binary_sha256": "59a82d0142b387189773e3f7bd6afd1b926eb673e832c72a4c8564d28b6520a2",
+  "build_info_sha256": "37d936b5f73e068367f6ff539d3b9b4e1c2dcf0430539734fe8344e50a13ad1c",
+  "launcher_sha256": "8160d5c75f85833c9d0aeffa1bfc7777a85a4872e03b99eb66636438c70dc519",
+  "input_sha256": "5126eee64820c99697194dec63a20c44491ec7f913d49e77e4fefb97f4f319c5",
+  "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+  "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+  "block_known_auxiliary_ceiling": 3000000,
+  "prior_cumulative_known_auxiliary_frames": 51217468,
+  "funding": "Separate AP01 known-auxiliary block after AQ01 closure; no performance-search evidence.",
+  "cells": [
+    {
+      "id": "ap01",
+      "mode": "run",
+      "request": "ap01-request.json",
+      "request_sha256": "5efb4f850993149dc13dc29cae67665ddf5a968905a3eb54c0077005532fff5f",
+      "output": "archive-challenge-001/ap01",
+      "cpu": "0-3",
+      "memory_max": "2G",
+      "max_wall_seconds": 300,
+      "service_runtime_seconds": 330,
+      "file_limit_bytes": 268435456,
+      "output_limit_bytes": 536870912,
+      "direct_frame_ceiling": 2000000,
+      "engine_admitted_frame_ceiling": 250000,
+      "execution_ceiling": 5000
+    }
+  ],
+  "pass_rule": [
+    "Exact original qualified root, unchanged ordinary selector, action law and terminal policy.",
+    "Success requires ridley_defeated after execution zero within 250,000 admitted frames, with a live complete-prefix witness and four matching replays.",
+    "A negative completes only at the fixed frame horizon; execution or wall limits give censoring, not a fixed-horizon negative.",
+    "Full campaign replay must match report/checkpoint; preserve all costs and resource failures.",
+    "No automatic retry, bigger same-policy sweep, replacement seed or third selected damage root. A supplied-state success is not fresh discovery or a generic gain."
+  ],
+  "unknown": "Engine target setup, unadmitted work and reconstruction remain additional unknowns. This is an archive-only capability pilot, not a matched physical-work or memory comparison.",
+  "qualified_snapshot_sha256": "487a63a62f716207f45b67ad5c812e467f722c4def54d5d50b98fe94b2ad9d73",
+  "prepare_registration_sha256": "781d7da97b30101a6bdb71545aff16c9caf685124904c248fbc0025fd999fb9d",
+  "prepare_analysis_sha256": "f55950f7103c3fe63bd61f96e702dbce02c037bf825efc9750ec3ee251e2bc8a",
+  "known_auxiliary_frames_before": 0,
+  "qualification_analysis_sha256": "f704de6be3a04d4ea000c698899231d1bb0f9ff03e4b06a3160c2697595a41f2"
+}

@@ -55,6 +55,7 @@ def compare(protocol, evidence):
         assert usage['request_sha256'] == digest(raw(protocol, request_name))
         assert q['expected_snapshot_sha256'] == qualification['snapshot_sha256']
         assert report['root']['snapshot_sha256'] == qualification['snapshot_sha256']
+        assert digest(raw(root, 'root-snapshot.json')) == qualification['root_json_sha256']
         assert report['complete'] and report['stop_reason'] == 'execution_limit'
         assert report['executions'] == q['executions'] == 16
         assert not report['milestone_reached_within_budget'] and report['first_milestone'] is None

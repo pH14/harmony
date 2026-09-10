@@ -198,3 +198,40 @@ assumed to run a Metroid snapshot challenge unchanged. A bounded adapter must
 qualify root identity and complete-prefix replay, label supplied-state outcomes
 explicitly, and account for setup before any such allocation. No new native
 work follows merely from this implementation audit.
+
+## AQ01: the existing archive engine is qualified for the supplied root
+
+The standalone [challenge contract](archive-challenge-contract.md) uses the
+existing `CampaignOrigin::SnapshotRoot` and leaves the engine, target, selectors
+and legacy evaluators unchanged. Source `02798b44` is frozen and built on msr1
+with the same motion/endpoint observation features as C01. The separately
+[registered preparation](aq01-prepare-registration.json), at `be0111bb`, spends
+237,608 direct frames in two held replays; Python independently verifies the
+exported emulator bytes, raw context, decoded state, terminal markers and
+117,875-frame route count against E01. Preparation takes 32.01 seconds.
+
+The resulting snapshot digest is frozen in [two 16-job requests](aq01-run-registration.json)
+at `65873148`. They differ only in one/two physical result-buffer slots and use
+disjoint CPU sets. Both finish successfully in 21.01 / 28.01 seconds, with about
+21 MiB reported peak child RSS. Each admits 1,954 frames, completes full campaign
+replay, and verifies its one-action champion twice from the supplied root and
+twice as a full prefix-plus-local input from genesis. This is an integration
+fixture, not a capability result. Neither observes a defeat.
+
+[The verifier](verify_archive_challenge.py) confirms identical streams, origin
+and final checkpoints, reports, root snapshots and witness inputs between
+buffer configurations. The root-local/full-prefix distinction is explicit; an
+inherited root milestone or post-budget event cannot pass. Four planted
+corruption checks cover changed emulator bytes, a duplicated prefix and a
+missing campaign replay. All 15 endpoint evidence tests pass, as do the new
+Rust command's three focused tests and strict all-feature Clippy. Repository
+fast gates pass 1,159 tests with 23 skipped in 33.135 seconds.
+
+All raw qualification records are losslessly compressed in `aq01-output/`.
+The [analysis](aq01-analysis.json) totals **1,200,260 known auxiliary frames**:
+237,608 preparation, 954,836 campaign helper frames, 3,908 campaign admitted
+frames and 3,908 replay-admitted frames. This is below the separate 4M ceiling.
+All services are terminal. [The closed ledger](ledger-after-aq01.json) records
+1,083,261,532 resumed admitted search and 51,217,468 known auxiliary frames.
+Engine setup, unadmitted work and reconstruction remain additional unknown
+costs; this qualification makes no total-physical-work or throughput claim.
