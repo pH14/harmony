@@ -50,3 +50,10 @@ and refuses to turn an incomplete horizon or missing eligible samples into a
 negative result. Four planted-evidence tests cover these boundaries; their
 synthetic fixtures are not game-performance evidence. This reader was added
 while the already-registered census was running and changes no allocation or gate.
+
+At 64,325,902 admitted frames, a sparse live check found that Morph Ball, energy
+tank, missile-capacity and Norfair discovery executions, route frames and saved
+input hashes exactly match the selected historical T03 run. See
+`c01-early-bridge.json`. This uses existing output and no new emulator work. It
+supports relevance of the selected configuration through these four milestones;
+it does not establish complete historical replay or guarantee later encounters.
