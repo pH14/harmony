@@ -1,0 +1,19 @@
+{
+  "format": "endpoint-c01-e01-closed-ledger-v1",
+  "recorded_utc": "2026-09-10T03:32:33.156025+00:00",
+  "prior_ledger_sha256": "572144b801bf49908b12dedd4b7d33ed7236d0ff5b7454f2f0fc0cca1bffdedd",
+  "c01_nominal_admitted_search_limit": 250000000,
+  "c01_actual_admitted_search_frames": 240942610,
+  "c01_fixed_horizon_completed": false,
+  "c01_stop_reason": "wall_limit",
+  "c01_known_auxiliary_frames": 1120250,
+  "e01_known_auxiliary_frames": 356412,
+  "block_known_auxiliary_ceiling": 4000000,
+  "block_known_auxiliary_frames": 1476662,
+  "cumulative_since_user_resumption_admitted_search_frames": 1083261532,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 49098777,
+  "purpose": "C01 admitted search is a reused-seed diagnostic, excluded from fresh validation; E01 is standalone replay only.",
+  "unknown": "C01 setup, unadmitted work and unmeasured reconstruction remain additional unknowns. E01 includes its 2,787 setup frames. Compilation and tests are separate.",
+  "old_expired_tranche": "489,962,470 admitted search and 30,112,297 known auxiliary frames remain frozen and excluded from these renewed totals.",
+  "outcome": "C01 missed the fixed horizon but exported a twice-replayed positive encounter. E01 qualifies that episode independently. Neither supplies boss-defeat, retention-cause or fresh-performance evidence."
+}

@@ -54,3 +54,42 @@ on each host. This block charges 2,281,896 known auxiliary frames against its
 reconstruction and unadmitted work remain unknown. Cumulative resumed totals
 are 842,318,922 admitted performance-search and 47,622,115 known auxiliary frames
 in [the ledger](ledger-after-q01.json). No new performance allocation was used.
+
+## C01 and the first positive endpoint
+
+The [development census](c01-decision.md) stopped at its 35-minute search cap
+with 240,942,610 admitted frames. The planned 250M horizon was too high for that
+cap at the measured throughput; it is **incomplete**, with no extension or
+replacement. The evaluation process finished its witness checks successfully,
+then the frozen panel runner rejected the unexpected wall censoring. The failed
+panel and terminal service status are preserved, rather than relabeled passed.
+
+The completed output nevertheless contains an existential positive: 4,973
+classified endpoint observations among 5,061,181 eligible live endpoint
+observations. These are observations, not unique states or independent trials.
+The first event is execution 1,853,341, Ridley area, slot mask 1, at route action
+endpoint 117,875. Its saved input passes two identical endpoint replays. Both
+boss-area discovery events and the five earlier pickup/area events match the
+chosen historical development run. This does not establish complete historical
+identity or turn a reused seed into fresh validation.
+
+[E01](e01-registration.json) prospectively registers a separate standalone
+three-pass observation of that producing input on msr1. All passes agree on
+endpoint and emulator state. Python checks 20,782 consecutive retained intervals
+against native outputs and confirms the endpoint's classification. The tape
+contains 52 classified Ridley frames, from 117,824 through 117,875, and no observed
+boss HP decrease. Its endpoint has decoded health 79, zero missiles, missile
+capacity 20, equipment 17 and boss HP 140. This describes the saved first tape;
+damage and resources in the other campaign branches remain unmeasured. Fight
+capability, actual retention/selection history and any useful global policy
+change are still open questions.
+
+The [C01 reader](analyze_census.py) preserves reported observations and measured
+work while leaving the fixed-horizon gate incomplete. The separate
+[E01 verifier](verify_e01.py) proves the positive episode without depending on a
+complete negative census. Both machine services are terminal with no owned
+process remaining. C01 charges 1,120,250 known replay frames; E01 adds 356,412
+including setup. The [closed ledger](ledger-after-c01-e01.json) totals
+1,083,261,532 admitted search frames and 49,098,777 known auxiliary frames since
+resumption, with the old tranche and unknown costs kept separate. No further
+fresh search, local combat or observer extension has been dispatched.

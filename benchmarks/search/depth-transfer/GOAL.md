@@ -309,3 +309,37 @@ historical trajectory must reproduce under changed artifact identities. A
 positive earns independent standalone observation before any local combat;
 negative, no-area or incomplete outcomes earn no automatic extension or rerun.
 msr1 remains available for that independent qualification if needed.
+
+## Verified first encounter; next conditional control question
+
+C01 stopped at its unchanged 35-minute wall cap after 240,942,610 admitted frames,
+so its 250M census gate remains incomplete. The frame/time allocation was too
+ambitious at the measured throughput; do not rerun or extend it to repair that
+gate. Preserve its raw failure and actual costs. It nevertheless produced a
+first positive encounter input at execution 1,853,341 / route endpoint 117,875,
+with two identical evaluator replays. E01 separately qualifies that positive
+native episode on msr1 in three passes and with the existing Python decoder.
+Both services are terminal. See ../endpoint-encounter/ledger-after-c01-e01.json.
+
+This is a real sampled encounter, not a fresh victory or a capability proof.
+The first saved state has decoded health 79, zero missiles and boss HP 140;
+the saved tape shows only the initial 52 classified frames and no HP loss.
+The other 4,972 observed encounter endpoints are not resource- or damage-labeled.
+Do not infer that they all share the first state's limitations or that retention
+lost a useful state. No long census, parameter sweep or new observer framework
+is earned by this result.
+
+The next bounded task is a conditional control diagnosis from this exact
+replayed state. First define the claim, comparator and handling of its actual
+resource constraints. Prefer the existing action law and snapshot machinery;
+do not inject health, ammunition, routes or a scripted fight. A positive-root
+snapshot restore must preserve raw same-boundary context before suffix work.
+Freeze independent diagnostic seeds, per-trial and total frame/action limits,
+wall/process/output bounds, and the distinction between a surviving damage
+endpoint, death, boss exit and a verified defeat. Reset HP baselines per restore;
+no cumulative inherited damage totals. A local HP decrease cannot by itself
+establish a global allocation bottleneck. Any helper should be the smallest
+bounded probe needed for this decision, and first pass inexpensive planted
+counterexamples. No conditional input may count as fresh-search validation.
+The original repeated boss/Wily, matched-control and untouched-seed goal remains
+active and unmet; no further emulator allocation is implied by this design step.

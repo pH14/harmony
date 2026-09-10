@@ -120,3 +120,14 @@ audited buffering equality and the declared physical/decision projections at
 a reused 2,000-job fixture. It counts 6,628 eligible live endpoints and no
 classified encounter. This qualifies the ordinary negative path only; it does
 not supply a positive native episode or authorize unchanged performance sweeps.
+
+C01/E01 subsequently supply the positive native case. C01 stops short of its
+registered horizon at its unchanged wall cap, but its first positive artifact
+passes both evaluator endpoint replays. The separately registered E01 observer
+on msr1 reproduces that endpoint in three passes, and the existing Python
+classifier independently agrees on its retained native contexts. The first
+classified frame is 117,824; the first reported action endpoint is 117,875.
+These timestamps are deliberately distinct. The first tape shows no HP decrease,
+and the endpoint has decoded health 79 and zero missiles. See
+../endpoint-encounter/README.md for exact evidence and costs. This qualifies one
+actual encounter episode, not combat capability or the incomplete 250M census.
