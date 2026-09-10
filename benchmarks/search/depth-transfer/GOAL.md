@@ -1067,3 +1067,20 @@ so future local-loss evidence refers to the reconstructed ms02 campaign. Next
 build this exact source, then freeze a distinct bounded native registration if
 the build succeeds. No RR02 native execution is allocated by source tests, and
 RR01 remains closed.
+
+RR02 is separately registered at 2026-09-10T18:38:48.444815Z, with native work
+ending by 18:58:48.444815Z and synthesis by 19:18:48.444815Z. The published source
+build succeeded on ms02. Qualification reconstructs the fixed original prefix
+and replays four jobs under 90 seconds/650k prospective physical frames. A pass
+permits the fixed full reconstruction/replay/capture under 300 seconds/900k frames.
+The service has 510 seconds, CPUs 0–3, 4 GiB memory, 64 tasks and 1 GiB output. Total
+prospective auxiliary ceiling is 1.55M; no fresh search is allocated. Expected
+known work if both phases pass is 488,740 frames, with unexposed replay constructor
+counters kept separate. Counter receipts charge failed directly owned work.
+
+The query and new executable/inputs/scripts are frozen in the RR02 registration.
+Root/checkpoint correspondence and every known original job result must pass;
+the 3770-row local-loss query is explicitly scoped to the reconstructed ms02
+campaign. A positive result permits only a paired continuation decision on the
+actual captured states. Any failed gate stops without retry or relaxed equality.
+No native RR02 process has been started at registration publication time.

@@ -423,6 +423,19 @@ admitted search remains 2,982,484,247. Verify this closure without an emulator:
 python3 benchmarks/search/continuation-reassessment/verify_rr01_failure.py
 ```
 
+[RR02](rr02-registration.json) separately registers action reconstruction after
+the [source contract](rr02-source-contract.md) passes ten Rust tests, strict
+Clippy and six offline query/accounting/comparison tests. The exact ms02 build
+completed successfully. The 18:38:48–18:58:48 UTC allocation first reconstructs
+the same searched prefix and qualifies four original jobs; only a pass permits
+full reconstruction, replay and capture. Qualification/inspection use 90/300-second
+watchdogs and 650k/900k prospective physical ceilings, under a 510-second, 4 GiB,
+four-CPU, 1 GiB-output service. No fresh search is allocated. These are ceilings,
+not spent frames. The complete [query](rr02-query.md) is unchanged but explicitly
+applies to the reconstructed ms02 campaign; historical discarded-state identity
+is not established by equality of the known artifacts. Any failure stops without
+retry. RR01 and all failed policy gates remain closed.
+
 ## Ordering findings stay separate from this candidate
 
 Two new source fixtures expose existing limitations without changing policies:

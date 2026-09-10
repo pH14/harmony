@@ -1,0 +1,88 @@
+{
+  "format": "retention-reconstruction-rr02-registration-v1",
+  "registered_utc": "2026-09-10T18:38:48.444815+00:00",
+  "deadline_utc": "2026-09-10T18:58:48.444815+00:00",
+  "synthesis_deadline_utc": "2026-09-10T19:18:48.444815+00:00",
+  "host": "ms02",
+  "source_commit": "a4d10ab50b9e69c81eb0681f7d78789810e32f5f",
+  "source_archive_sha256": "51754e0037ba22b7072a3545245582b9533a4ec80fc0d4f6982fe6113c4246bc",
+  "binary": "/root/harmony-depth-transfer-20260909/builds/retention-replay-x86-002/metroid-retention-replay",
+  "binary_sha256": "089e05b933d99848d6772d4efeb2b4d43db217ceff1ec4fe989579cd868d7f4d",
+  "build_info": "/root/harmony-depth-transfer-20260909/builds/retention-replay-x86-002/build-info.json",
+  "build_info_sha256": "f729fbb3cc83511a1f9654a56ff595b1d48ab914c7b347bf011f3b214e5dd076",
+  "protocol": "/root/harmony-depth-transfer-20260909/retention-replay-rr02-001",
+  "output": "/root/harmony-depth-transfer-20260909/runs/retention-replay-rr02",
+  "inputs": "/root/harmony-depth-transfer-20260909/retention-replay-rr02-001/inputs",
+  "cpus": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "service_runtime_seconds": 510,
+  "cgroup_limits": {
+    "memory.max": "4294967296",
+    "memory.swap.max": "0",
+    "pids.max": "64"
+  },
+  "output_limit_bytes": 1073741824,
+  "admitted_search_frame_ceiling": 0,
+  "physical_auxiliary_frame_ceiling": 1550000,
+  "expected_competitions": 3770,
+  "expected_qualified_jobs": 4,
+  "expected_qualified_frames": 865,
+  "expected_full_jobs": 2548,
+  "expected_full_frames": 250267,
+  "expected_known_auxiliary_frames_if_both_pass": 488740,
+  "accounting": "Prospective 650k/900k physical ceilings include reconstruction, both constructors and one divergent job. Charge direct counters and verified replay frames; retain generic replay constructor/failed partial work or post-receipt watchdog work as unknown. No fresh search. Ceilings are not measured expenditure.",
+  "saved_inputs": [
+    {
+      "name": "stream.jsonl",
+      "bytes": 1039374,
+      "sha256": "9ad315a76c38276c673fccd2b660a250254a8a74bc92d9f4a77670702a53a32c",
+      "gzip_source": "/root/harmony-depth-transfer-20260909/source-retention-replay-002/benchmarks/search/endpoint-encounter/ap01-output/stream.jsonl.gz"
+    },
+    {
+      "name": "origin.bin",
+      "bytes": 23392,
+      "sha256": "35b2677423102a0997d1762b8b448766a9e0219eba4173a28a8693b6892294eb",
+      "gzip_source": "/root/harmony-depth-transfer-20260909/source-retention-replay-002/benchmarks/search/endpoint-encounter/ap01-output/origin.bin.gz"
+    },
+    {
+      "name": "checkpoint.bin",
+      "bytes": 12925769,
+      "sha256": "454d55597dfe3014fc11ebde87c17a2f419648893c7ace1f22c7e5bec309f850",
+      "gzip_source": "/root/harmony-depth-transfer-20260909/source-retention-replay-002/benchmarks/search/endpoint-encounter/ap01-output/checkpoint.bin.gz"
+    },
+    {
+      "name": "reconstruction-input.json",
+      "bytes": 105255,
+      "sha256": "5126eee64820c99697194dec63a20c44491ec7f913d49e77e4fefb97f4f319c5",
+      "plain_source": "/root/harmony-depth-transfer-20260909/source-retention-replay-002/benchmarks/search/endpoint-encounter/first-encounter-input.json"
+    }
+  ],
+  "protocol_sha256": {
+    "run_rr02.py": "633f432fd7a22acddda48f29301430ca3577b319ac925eb6826b33adf2e53946",
+    "score_rr02.py": "deba4f3735b1acb82ae7749d0af473fdeaa405ae637e29c8252ec994d832a912",
+    "test_rr02_evidence.py": "89df75941cecd3c6353837903d3f3946e676aab6d57f3c735165fbbe048e40a4",
+    "rr02-query.md": "8ed0d5a1d3005300bb107a82bb5d8eb4219661fe5ba998b002d752c2d55fe55e",
+    "rr02-qualify-request.json": "1c6daae4d27112f064b2f0eebc256d905bb92440ce954418ec66b7f15f091985",
+    "rr02-inspect-template.json": "b35f316519980dbb81a810e1f0ddfcf1650a321f01fdff7b8681852a7845f43d",
+    "rr02-build-info.json": "f729fbb3cc83511a1f9654a56ff595b1d48ab914c7b347bf011f3b214e5dd076",
+    "rr02-source-contract.md": "0d3affbd92b0aa5bdb607b8698c3a2500c3b84783f6c0c65297cf1ab9c193bdd"
+  },
+  "scorer_dependency_sha256": {
+    "benchmarks/search/endpoint-encounter/score_checkpoint_inspection.py": "c87370840986b3e18fcc7c1b5ee643786f80d795fcc0b80d4cc1dcf8ecd4ba83",
+    "benchmarks/search/endpoint-encounter/score_s01.py": "c806d63ba844f7b713d4945167a67e0e493c8942ce3b67e98241aabb8d34dda6",
+    "benchmarks/search/depth-transfer/boss_interval.py": "d833e9575ad4a26a5db5955738128f44c701065f4446f4834f3ff5cff89d3995",
+    "benchmarks/search/continuation-reassessment/score_rr01.py": "0299ea073795fb3b0bf26c59b31ed0f799fa25b2cd887bd84fcb7a4ab43f27c0",
+    "benchmarks/search/continuation-reassessment/test_rr01_evidence.py": "734d6df4f5db223b8a1d22f0705aa1e9e9b760657a37ebcbba6f96d03a1e0401"
+  },
+  "gate": "Reconstruct the original searched prefix normally on ms02; never import a foreign snapshot. Check complete root metadata/payload except verified core hash, context and four original jobs. Only a matching same-executable/input qualification permits full replay with all original job checks, exact correspondence of all588 final cached snapshots and3770 complete captured competitions. Any failure stops without retry, replacement input, altered query or longer horizon.",
+  "scope": "Local-loss evidence belongs to the reconstructed ms02 campaign. Known-artifact agreement does not establish identity of unrecorded ARM discarded states. No policy change or fresh-search allocation. RR01 stays closed; msr1 unavailable; full boss/Wily goal unachieved.",
+  "expected_final_checkpoint_entries": 588,
+  "reconstruction_input_sha256": "5126eee64820c99697194dec63a20c44491ec7f913d49e77e4fefb97f4f319c5",
+  "reconstruction_actions": 3314,
+  "reconstruction_frames": 117875,
+  "snapshot_comparison_policy": "quicknes-exact-snapshot-except-verified-core-v1"
+}
