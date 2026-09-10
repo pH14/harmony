@@ -1,8 +1,17 @@
 diff --git a/consonance/vmm-backend/src/kvm_sys.rs b/consonance/vmm-backend/src/kvm_sys.rs
-index 7a57b655..07eb2094 100644
+index 7a57b655..3a25ab4d 100644
 --- a/consonance/vmm-backend/src/kvm_sys.rs
 +++ b/consonance/vmm-backend/src/kvm_sys.rs
-@@ -326,11 +326,12 @@ impl KvmBackend {
+@@ -36,7 +36,7 @@ use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
+ 
+ use crate::arch::x86::Injection;
+ use crate::arch::x86::VcpuState;
+-use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Policy};
++use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Exit, X86Policy};
+ use crate::arch::x86::{canonicalize_regs, canonicalize_sregs, canonicalize_xsave};
+ use crate::backend::Backend;
+ use crate::error::{BackendError, Result};
+@@ -326,11 +326,14 @@ impl KvmBackend {
                  Some((exit, pending)) => {
                      self.counts.bump(exit.reason());
                      self.pending = pending;
@@ -10,40 +19,30 @@ index 7a57b655..07eb2094 100644
 -                    // result. Write exits have no trait-level pending value,
 -                    // but KVM retains their fast-PIO/MMIO callback until the
 -                    // next entry, so mark them here for restore retirement.
-+                    // A write needs no host response, but KVM still retains its
-+                    // PIO/MMIO completion. Finish that already-issued operation
-+                    // without guest execution before returning a stopped boundary.
-+                    // Reads reach the same boundary through complete_* below.
                      self.completion_staged = decoded_exit_stages_completion(&exit, pending);
-+                    self.retire_pending_completion()?;
++                    // Scalar PIO writes need no host response, but KVM retains
++                    // their completion. Finish it before exposing the boundary.
++                    // MMIO may return another fragment from a completion entry;
++                    // it requires a separate continuation-exit path.
++                    if matches!(exit, Exit::Arch(X86Exit::Io { write: Some(_), .. })) {
++                        self.retire_pending_completion()?;
++                    }
                      return Ok(exit);
                  }
                  None => continue, // run-loop control exit; re-enter
-@@ -879,21 +880,24 @@ impl Backend for KvmBackend {
+@@ -876,9 +879,15 @@ impl Backend for KvmBackend {
+     }
+ 
+     fn complete_read(&mut self, value: u64) -> Result<()> {
++        let scalar_pio = matches!(self.pending, Pending::IoIn { .. });
          apply_complete_read(self.run_page(), self.pending, value)?;
          self.pending = Pending::None;
          self.completion_staged = true;
--        Ok(())
-+        // Completion is part of servicing this exit, not the next guest run.
-+        // KVM_RUN with immediate_exit commits only the supplied result, so a
-+        // subsequent save sees the same state a normal continuation would use.
-+        self.retire_pending_completion()
++        if scalar_pio {
++            // Commit the supplied IN result without executing the next guest
++            // instruction, so save observes the completed scalar PIO boundary.
++            self.retire_pending_completion()?;
++        }
+         Ok(())
      }
  
-     fn complete_fault(&mut self) -> Result<()> {
-         apply_complete_fault(self.run_page(), self.pending)?;
-         self.pending = Pending::None;
-         self.completion_staged = true;
--        Ok(())
-+        self.retire_pending_completion()
-     }
- 
-     fn complete_ok(&mut self) -> Result<()> {
-         apply_complete_ok(self.run_page(), self.pending)?;
-         self.pending = Pending::None;
-         self.completion_staged = true;
--        Ok(())
-+        self.retire_pending_completion()
-     }
- 
-     fn complete_hypercall(&mut self, _ret: u64) -> Result<()> {
