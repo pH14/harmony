@@ -602,8 +602,11 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
         let armed = if has_pvclock_armed {
             match c.take(1)?[0] {
                 0 => false,
-                1 => true,
-                _ => return Err(SnapshotError::DeviceBlob("bad pvclock armed flag")),
+                _ => {
+                    return Err(SnapshotError::DeviceBlob(
+                        "current pvclock record must represent a pending registration",
+                    ));
+                }
             }
         } else {
             // Legacy writers refused to seal pending registrations, so a
@@ -613,11 +616,6 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
         if has_pvclock_armed && gpa.is_none() {
             return Err(SnapshotError::DeviceBlob(
                 "current pvclock record is missing its registered GPA",
-            ));
-        }
-        if has_pvclock_armed && armed {
-            return Err(SnapshotError::DeviceBlob(
-                "current pvclock record must represent a pending registration",
             ));
         }
         let virtual_time = match c.take(1)?[0] {
@@ -736,6 +734,12 @@ mod tests {
         }
     }
 
+    fn sample_with_pending_pvclock() -> Arm64DeviceState {
+        let mut pending = sample_with_pvclock();
+        pending.pvclock.as_mut().unwrap().armed = false;
+        pending
+    }
+
     fn sample_with_empty_pvclock() -> Arm64DeviceState {
         Arm64DeviceState {
             pvclock: Some(Arm64PvclockState {
@@ -786,14 +790,41 @@ mod tests {
 
     #[test]
     fn current_pvclock_record_round_trips_a_pending_registration() {
-        let mut pending = sample_with_pvclock();
-        pending.pvclock.as_mut().unwrap().armed = false;
+        let pending = sample_with_pending_pvclock();
         let blob = encode_device_blob(&pending).0;
         assert_eq!(
             u16::from_le_bytes([blob[4], blob[5]]),
             DEVICE_BLOB_VERSION_PVCLOCK
         );
         assert_eq!(decode_device_blob(&blob).unwrap(), pending);
+    }
+
+    #[test]
+    fn current_pvclock_versions_round_trip_every_device_composition() {
+        let mut gic_and_pvclock = sample_with_gic();
+        gic_and_pvclock.pvclock = sample_with_pending_pvclock().pvclock;
+
+        let mut doorbell_and_pvclock = sample_with_doorbell();
+        doorbell_and_pvclock.pvclock = sample_with_pending_pvclock().pvclock;
+
+        let mut all = sample_with_gic();
+        all.doorbell = sample_with_doorbell().doorbell;
+        all.pvclock = sample_with_pending_pvclock().pvclock;
+
+        for (state, version) in [
+            (sample_with_pending_pvclock(), DEVICE_BLOB_VERSION_PVCLOCK),
+            (gic_and_pvclock, DEVICE_BLOB_VERSION_GIC_PVCLOCK),
+            (doorbell_and_pvclock, DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK),
+            (all, DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK),
+        ] {
+            let blob = encode_device_blob(&state).0;
+            assert_eq!(u16::from_le_bytes([blob[4], blob[5]]), version);
+
+            // These samples carry non-default values in every optional record;
+            // equality therefore checks the complete GIC, doorbell, and
+            // pending-pvclock capture after decode.
+            assert_eq!(decode_device_blob(&blob).unwrap(), state);
+        }
     }
 
     #[test]
