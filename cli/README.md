@@ -48,6 +48,40 @@ adds `prepared.json` and `checkpoint.json`, and faults adds
 `bug-N.json` per bug. An explicit backend selection is checked before
 execution.
 
+## Investigating a finding
+
+A faults run writes its findings, pinned artifact identities, and retained
+evidence as a workspace. Open it with `-w` (or `--workspace`) and use the
+read-only commands from any host:
+
+```sh
+harmony -w W findings
+harmony -w W branches
+harmony -w W inspect bug-1
+harmony -w W fork bug-1 --rewind 3s --name trace
+harmony -w W run trace --for 4s --request-id trace-1
+harmony -w W inspect trace@head console --matches 'ERROR:'
+harmony -w W export bug-1 --out shared --evidence
+```
+
+`findings` lists recorded properties and verification scope. `branches` lists
+saved continuation endpoints. `inspect` reads a workspace, finding, branch
+point, or retained `console`, `events`, or `hash` view. `fork` starts a named
+continuation, and `run` advances it by bounded guest virtual time; advancing
+commands require Linux KVM. `export` writes the recorded reproducer and, with
+`--evidence`, investigation evidence separately.
+
+`--json` emits one machine-readable document. Its `virtual_time` fields remain
+numeric nanoseconds; text and JSON also include a human-readable duration.
+Pass `--request-id ID` to `fork` or `run` so a retry returns the committed
+result without constructing or running another guest. Global `--kernel`,
+`--base-initramfs`, and `--fault-agent` select pinned artifacts when the
+workspace's recorded artifacts are not installed.
+
+`--for` and `--within` are virtual time, not host waiting. `--wall-seconds`
+sets the total host seconds allowed for advancing the guest's action segments;
+artifact preparation and endpoint capture are outside that advance budget.
+
 ## OCI execution
 
 ```

@@ -18,6 +18,11 @@ in the fault agent's bundle format:
 | `setup <argv...>` | runs once, before any node starts |
 | `ready <argv...>` | must pass before the run's setup point is sealed |
 
+Optional `describe`, `assert`, and `diagnostic` lines supply the investigation
+declarations described below. Host preparation validates their syntax and
+references; the guest process supervisor ignores this metadata. They do not
+change the action alphabet or execution commands.
+
 [`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
 alphabet, and assembles a guest initramfs: the base image, the OCI rootfs, and
 a control member holding the static fault agent and this package's init. The
@@ -105,6 +110,21 @@ a raw machine checkpoint alone does not supply the plan.
 [`declarations`](src/declarations.rs) retains workload-authored descriptions and
 property meanings without inferring a verdict from a silent assertion.
 
+The CLI publishes this workspace after a search or replay. A replay retains
+its first reproduced finding from that run's actual observations and state
+digest. [`investigate`](src/investigate.rs) implements `fork` and bounded `run`:
+it verifies a restored source before advancing, then captures the checkpoint,
+hash, console, and SDK evidence for one endpoint and commits them with the
+branch head and reply. A committed request ID is bound to its arguments and is
+checked before artifact preparation or VM boot. Legacy hash encodings remain
+explicit in retained records.
+
+An `--until` condition considers only new reports. Assertion failures stop at
+their SDK boundary; other reports are observed at the enclosing action-segment
+stop. `--wall-seconds` bounds advancement and its observation work; artifact
+preparation, setup, and publication are separate operations. Event truncation
+keeps complete records and their original stream positions.
+
 ## Running it
 
 ```
@@ -133,8 +153,8 @@ sealed setup point and executes the recorded actions itself. Each run records
 the actions it applied beside the horizons it ran in the guest, and the two are
 equal when nothing came from a cache. A search replays every bug it records the
 same way, and reports the bug as confirmed only when the replay reproduced the
-evidence the campaign saw: the assertions it violated, or the same stop when
-the stop was the only evidence. `bug_found` and `first_bug_execution` come from
+complete recorded observations, including the stopped moment, assertion
+reports, and workload state registers. `bug_found` and `first_bug_execution` come from
 the confirmed bugs, so a hit that no replay reproduced is reported and does not
 count as a rediscovery.
 

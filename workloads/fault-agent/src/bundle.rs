@@ -18,6 +18,10 @@
 //! sides agree without a handshake. Blank lines and `#` comments are ignored.
 //! Arguments split on whitespace; a double-quoted argument keeps its spaces and
 //! honours `\"` and `\\`, which is what a `sh -c "..."` node needs.
+//!
+//! `describe`, `assert`, and `diagnostic` lines belong to the host-side
+//! declaration model. They are accepted as metadata and ignored by this
+//! process supervisor; any other keyword remains an error.
 
 /// The largest number of nodes a bundle may describe: the alive bitmap the
 /// agent publishes in a state register is one `u64`, one bit per node.
@@ -195,6 +199,10 @@ pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
                 }
                 bundle.setup = Some(argv);
             }
+            // Declaration lines describe nodes, hooks, properties, and
+            // diagnostics for investigation. The agent supervises processes
+            // and does not read them.
+            "describe" | "assert" | "diagnostic" => {}
             _ => return Err(BundleError::UnknownItem { line, word: item }),
         }
     }
@@ -376,6 +384,29 @@ ready /usr/bin/etcdctl endpoint health
     #[test]
     fn a_bundle_without_a_setup_line_declares_none() {
         assert_eq!(parse_bundle("node a /a\n").unwrap().setup, None);
+    }
+
+    #[test]
+    fn declaration_metadata_does_not_change_execution_configuration() {
+        let bare = parse_bundle(
+            "setup /bin/sh -c \"prepare service\"\n\
+             node service /bin/service --data /srv\n\
+             hook 7 /bin/check --strict\n\
+             ready /bin/ready --quiet\n",
+        )
+        .expect("bare bundle");
+        let with_metadata = parse_bundle(
+            "setup /bin/sh -c \"prepare service\"\n\
+             node service /bin/service --data /srv\n\
+             describe node service the supervised service\n\
+             hook 7 /bin/check --strict\n\
+             describe hook 7 verifies service health\n\
+             assert always 2 from 7 the service is healthy\n\
+             diagnostic output /bin/cat /run/service.out\n\
+             ready /bin/ready --quiet\n",
+        )
+        .expect("metadata is not an execution item");
+        assert_eq!(with_metadata, bare);
     }
 
     #[test]

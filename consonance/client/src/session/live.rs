@@ -312,6 +312,13 @@ impl Session {
         }
     }
 
+    /// Set the host watchdog for subsequent requests. This changes no guest
+    /// state and is excluded from execution identity. Callers enforcing one
+    /// bound across several requests can supply the remaining host duration.
+    pub fn set_wall_limit(&mut self, limit: std::time::Duration) {
+        self.config.wall_limit = Some(limit);
+    }
+
     /// Issue one control request with the session's host wall-clock bound armed.
     fn drive(&mut self, request: &Request) -> Result<Reply, Box<dyn Error>> {
         drive_guarded(

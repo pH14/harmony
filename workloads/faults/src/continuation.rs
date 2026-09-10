@@ -154,8 +154,43 @@ impl<R: ContinuationRuntime> RecordedContinuation<R> {
     }
 
     fn drive(&mut self, limit: Limit, extend: bool) -> Result<ContinuationStop, Box<dyn Error>> {
+        self.drive_callbacks(limit, extend, &mut |_| Ok(()), &mut |_, _| Ok(false))
+    }
+
+    /// Package observers may read reports and adjust the host watchdog between
+    /// action segments. They must not advance, restore, or mutate guest state.
+    #[cfg(any(
+        test,
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            not(miri)
+        )
+    ))]
+    pub(crate) fn drive_observed(
+        &mut self,
+        target: Option<u64>,
+        extend: bool,
+        before: &mut impl FnMut(&mut R) -> Result<(), Box<dyn Error>>,
+        after: &mut impl FnMut(&mut R, &StopReason) -> Result<bool, Box<dyn Error>>,
+    ) -> Result<ContinuationStop, Box<dyn Error>> {
+        self.drive_callbacks(
+            target.map_or(Limit::RecordedEnd, Limit::Moment),
+            extend,
+            before,
+            after,
+        )
+    }
+
+    fn drive_callbacks(
+        &mut self,
+        limit: Limit,
+        extend: bool,
+        before: &mut impl FnMut(&mut R) -> Result<(), Box<dyn Error>>,
+        after: &mut impl FnMut(&mut R, &StopReason) -> Result<bool, Box<dyn Error>>,
+    ) -> Result<ContinuationStop, Box<dyn Error>> {
         self.ensure_usable()?;
-        let result = self.drive_inner(limit, extend);
+        let result = self.drive_inner(limit, extend, before, after);
         if result.is_err() {
             self.poisoned = true;
         }
@@ -166,6 +201,8 @@ impl<R: ContinuationRuntime> RecordedContinuation<R> {
         &mut self,
         limit: Limit,
         extend: bool,
+        before: &mut impl FnMut(&mut R) -> Result<(), Box<dyn Error>>,
+        after: &mut impl FnMut(&mut R, &StopReason) -> Result<bool, Box<dyn Error>>,
     ) -> Result<ContinuationStop, Box<dyn Error>> {
         loop {
             if matches!(limit, Limit::Moment(target) if self.at >= target) {
@@ -177,6 +214,7 @@ impl<R: ContinuationRuntime> RecordedContinuation<R> {
             if ended && (!extend || matches!(limit, Limit::RecordedEnd)) {
                 return Ok(ContinuationStop::RecordedEnd);
             }
+            before(&mut self.runtime)?;
             if !ended && !cursor.active() {
                 let (parent, at) = self.runtime.capture()?;
                 let activated = if at != self.at {
@@ -209,7 +247,7 @@ impl<R: ContinuationRuntime> RecordedContinuation<R> {
                 return Err("runtime deadline returned before its requested moment".into());
             }
             self.at = at;
-            if !matches!(stop, StopReason::Deadline { .. }) {
+            if after(&mut self.runtime, &stop)? || !matches!(stop, StopReason::Deadline { .. }) {
                 return Ok(ContinuationStop::Guest(stop));
             }
         }

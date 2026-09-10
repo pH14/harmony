@@ -11,6 +11,92 @@ use environment::{channel::Effect, input_spec::ServiceConfig};
 use serde::{Deserialize, Serialize};
 use std::{cell::RefCell, collections::BTreeMap, error::Error, rc::Rc};
 
+#[test]
+fn an_observer_stops_before_the_next_action_and_retains_that_position_cold() {
+    let windows = ActionWindows {
+        root_seal: 100,
+        horizon_nanos: 20,
+    };
+    let runtime = ModelRuntime::new(100, 17);
+    let view = runtime.clone();
+    let mut continuation =
+        RecordedContinuation::from_setup(runtime, windows, vec![FaultAction::Wait; 3]);
+    let mut before_calls = 0;
+    let mut observed = Vec::new();
+    let stop = continuation
+        .drive_observed(
+            Some(160),
+            false,
+            &mut |_| {
+                before_calls += 1;
+                Ok(())
+            },
+            &mut |runtime, stop| {
+                observed.push((runtime.state().time, stop.clone()));
+                Ok(runtime.state().time == 120)
+            },
+        )
+        .expect("observer returns first observed endpoint");
+    assert_eq!(
+        stop,
+        ContinuationStop::Guest(StopReason::Deadline { vtime: Moment(120) })
+    );
+    assert_eq!(before_calls, 1);
+    assert_eq!(observed.len(), 1);
+    assert_eq!(view.trace.borrow().branch_calls, 1);
+    assert_eq!(
+        continuation.cursor(),
+        ActionCursor::from_parts(1, false).unwrap()
+    );
+    let saved = continuation.checkpoint().unwrap();
+    let cold_runtime = ModelRuntime::new(100, 99);
+    let cold_view = cold_runtime.clone();
+    let mut cold = RecordedContinuation::restore(cold_runtime, &saved).unwrap();
+    assert_eq!(cold_view.trace.borrow().run_calls, 0);
+    assert_eq!(cold.reproduce().unwrap(), ContinuationStop::RecordedEnd);
+    assert_eq!(cold_view.trace.borrow().branch_calls, 2);
+    continuation.reproduce().unwrap();
+    assert_eq!(view.state(), cold_view.state());
+}
+
+#[test]
+fn watchdog_and_observation_failures_poison_before_another_segment() {
+    let windows = ActionWindows {
+        root_seal: 100,
+        horizon_nanos: 20,
+    };
+    for fail_before in [true, false] {
+        let runtime = ModelRuntime::new(100, 17);
+        let view = runtime.clone();
+        let mut continuation =
+            RecordedContinuation::from_setup(runtime, windows, vec![FaultAction::Wait; 3]);
+        let failure = continuation
+            .drive_observed(
+                Some(160),
+                false,
+                &mut |_| {
+                    if fail_before {
+                        Err(error("watchdog expired"))
+                    } else {
+                        Ok(())
+                    }
+                },
+                &mut |_, _| Err(error("event read failed")),
+            )
+            .expect_err("failed callback aborts the operation");
+        assert!(failure.to_string().contains(if fail_before {
+            "watchdog expired"
+        } else {
+            "event read failed"
+        }));
+        let calls = view.trace.borrow().run_calls;
+        assert_eq!(calls, usize::from(!fail_before));
+        assert!(continuation.reproduce().is_err());
+        assert!(continuation.checkpoint().is_err());
+        assert_eq!(view.trace.borrow().run_calls, calls);
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 enum ModelEffect {
     WriteMemory { gpa: u64, bytes: Vec<u8> },

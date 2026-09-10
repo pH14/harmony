@@ -236,6 +236,98 @@ fn select_nes_base_initramfs(paths: &[PathBuf]) -> Option<PathBuf> {
         .cloned()
 }
 
+/// The pinned byte artifacts one fault run boots, plus the bundle the image
+/// declares itself with.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub struct FaultArtifacts {
+    /// The controlled guest kernel, the prepared initramfs, and the agent.
+    pub artifacts: faults_workload::Artifacts,
+    /// The bundle text, which names the nodes, hooks, properties, and
+    /// diagnostics an investigation reports.
+    pub bundle: String,
+    /// The action alphabet the bundle admits.
+    pub vocabulary: faults_workload::FaultVocabulary,
+}
+
+/// Stage a workload image against the installed or named guest artifacts.
+///
+/// # Errors
+///
+/// Returns an error naming the missing artifact and the flag or environment
+/// variable that supplies it.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub fn prepare_fault_artifacts(
+    image: &str,
+    kernel: Option<PathBuf>,
+    base: Option<PathBuf>,
+    agent: Option<PathBuf>,
+) -> Result<FaultArtifacts, Box<dyn Error>> {
+    let installed = crate::preflight::GuestArtifacts::locate(crate::host::HostReport::detect().isa);
+    let kernel = kernel
+        .or(installed.kernel)
+        .ok_or("controlled guest kernel missing: use --kernel or HARMONY_GUEST_DIR")?;
+    let base = base
+        .or_else(|| crate::oci::select_base_initramfs(&installed.initramfs).cloned())
+        .ok_or("guest base image missing: use --base-initramfs")?;
+    let agent = agent
+        .or_else(|| std::env::var_os("HARMONY_FAULT_AGENT").map(PathBuf::from))
+        .or_else(|| installed.dir.map(|dir| dir.join("fault-agent")))
+        .ok_or("fault agent missing: use --fault-agent or HARMONY_FAULT_AGENT")?;
+    let agent = std::fs::read(agent)?;
+    let prepared = faults_workload::prepare::prepare_oci(image, &std::fs::read(base)?, &agent)?;
+    Ok(FaultArtifacts {
+        artifacts: faults_workload::Artifacts {
+            kernel: std::fs::read(kernel)?,
+            initramfs: prepared.initramfs,
+            agent,
+        },
+        bundle: prepared.bundle,
+        vocabulary: prepared.vocabulary,
+    })
+}
+
+/// Stage the image a workspace pinned and refuse anything whose identity has
+/// changed. A workspace's history is only replayable against the artifacts it
+/// recorded, so a rebuilt image is named rather than silently substituted.
+///
+/// # Errors
+///
+/// Returns an error when an artifact is missing or its hash differs from the
+/// one the workspace pinned.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub fn prepared_artifacts(
+    image: &str,
+    image_sha256: &str,
+    kernel_sha256: &str,
+    fault_agent_sha256: &str,
+    kernel: Option<PathBuf>,
+    base: Option<PathBuf>,
+    agent: Option<PathBuf>,
+) -> Result<faults_workload::Artifacts, Box<dyn Error>> {
+    let prepared = prepare_fault_artifacts(image, kernel, base, agent)?;
+    for (what, want, have) in [
+        (
+            "workload image",
+            image_sha256,
+            &prepared.artifacts.initramfs,
+        ),
+        ("guest kernel", kernel_sha256, &prepared.artifacts.kernel),
+        ("fault agent", fault_agent_sha256, &prepared.artifacts.agent),
+    ] {
+        faults_workload::workspace::check_pinned(what, want, have)?;
+    }
+    Ok(prepared.artifacts)
+}
+
 fn run_faults_consonance(
     input: &std::path::Path,
     kernel: Option<PathBuf>,
@@ -250,41 +342,34 @@ fn run_faults_consonance(
         any(target_arch = "x86_64", target_arch = "aarch64")
     ))]
     {
-        let installed =
-            crate::preflight::GuestArtifacts::locate(crate::host::HostReport::detect().isa);
-        let kernel = kernel
-            .or(installed.kernel)
-            .ok_or("controlled guest kernel missing: use --kernel or HARMONY_GUEST_DIR")?;
-        let base = base
-            .or_else(|| crate::oci::select_base_initramfs(&installed.initramfs).cloned())
-            .ok_or("guest base image missing: use --base-initramfs")?;
-        let agent = agent
-            .or_else(|| std::env::var_os("HARMONY_FAULT_AGENT").map(PathBuf::from))
-            .or_else(|| installed.dir.map(|dir| dir.join("fault-agent")))
-            .ok_or("fault agent missing: use --fault-agent or HARMONY_FAULT_AGENT")?;
-        let agent = std::fs::read(agent)?;
-        let prepared = faults_workload::prepare::prepare_oci(
-            input.to_str().ok_or("OCI input must be UTF-8")?,
-            &std::fs::read(base)?,
-            &agent,
-        )?;
-        let artifacts = faults_workload::Artifacts {
-            kernel: std::fs::read(kernel)?,
-            initramfs: prepared.initramfs,
-            agent,
-        };
+        let image = input.to_str().ok_or("OCI input must be UTF-8")?;
+        let prepared = prepare_fault_artifacts(image, kernel, base, agent)?;
+        let artifacts = &prepared.artifacts;
         let report = match replay {
-            Some(actions) => {
-                faults_workload::package::replay(&artifacts, actions, repeat, options)?
-            }
+            Some(actions) => faults_workload::package::replay(artifacts, actions, repeat, options)?,
             None => {
                 let vocabulary = prepared
                     .vocabulary
                     .clone()
                     .with_places(options.places.clone())?;
-                faults_workload::package::search(&artifacts, &vocabulary, options)?
+                faults_workload::package::search(artifacts, &vocabulary, options)?
             }
         };
+        // Both modes leave a workspace an investigation can open. A search
+        // publishes its findings; a replay publishes a facts-only workspace
+        // alongside its report because replay has no finding records to add.
+        let workspace = faults_workload::workspace::publish(
+            &options.output,
+            image,
+            &prepared.bundle,
+            &report,
+            options,
+        )?;
+        println!(
+            "workspace   {}  ({} finding(s))",
+            options.output.display(),
+            workspace.findings().len()
+        );
         println!(
             "bug_found   {}  executions {}  horizons {}",
             report.bug_found, report.executions, report.horizons_clocked
@@ -395,12 +480,12 @@ mod tests {
         let mut args = args(Package::Faults, Backend::Consonance);
         args.horizon_ms = 250;
         args.ram_mib = 2048;
-        args.knobs = Some("faultlab.puts=20  faultlab.keys=4".to_owned());
+        args.knobs = Some("service.requests=20  service.keys=4".to_owned());
         args.wall_minutes = Some(30);
         let options = faults_options(&args).expect("options");
         assert_eq!(options.horizon_ms, 250);
         assert_eq!(options.ram_mib, 2048);
-        assert_eq!(options.knobs, ["faultlab.puts=20", "faultlab.keys=4"]);
+        assert_eq!(options.knobs, ["service.requests=20", "service.keys=4"]);
         assert_eq!(options.wall_minutes, Some(30));
         assert!(options.places.is_empty());
         assert_eq!(options.output, PathBuf::from("missing-output"));

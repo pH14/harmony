@@ -165,6 +165,10 @@ pub struct Finding {
     pub confirmed: bool,
     /// Whole-VM state hash the confirming replay observed, lowercase hex.
     pub state_hash: String,
+    /// Encoding of the recorded state hash. Older journals used the extra
+    /// SHA-256 report encoding and remain explicitly distinguishable.
+    #[serde(default)]
+    pub state_hash_encoding: crate::package::StateHashEncoding,
 }
 
 impl Finding {
@@ -191,6 +195,10 @@ pub struct MomentRecord {
     pub checkpoint: Option<String>,
     /// Whole-VM state hash, lowercase hex, when it was computed.
     pub state_hash: Option<String>,
+    /// Encoding of the state hash when present; missing legacy fields retain
+    /// their original report encoding.
+    #[serde(default)]
+    pub state_hash_encoding: crate::package::StateHashEncoding,
     /// Why the advance that produced it stopped.
     pub stop: Option<StopReason>,
     /// Endpoint observations, when the point is an endpoint.
@@ -262,6 +270,9 @@ pub struct RequestRecord {
     pub operation: String,
     /// The transaction sequence that committed it.
     pub sequence: u64,
+    /// A typed digest of the request's semantic arguments, excluding its id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
     /// The versioned JSON result the first run returned.
     pub result: serde_json::Value,
 }
@@ -1213,6 +1224,7 @@ mod tests {
             moment: "m-0001".to_owned(),
             confirmed: true,
             state_hash: "ab".to_owned(),
+            state_hash_encoding: crate::package::StateHashEncoding::LegacySha256OfDigest,
         }
     }
 
@@ -1360,6 +1372,7 @@ mod tests {
                 id: "diagnostic-1".to_owned(),
                 operation: "exec".to_owned(),
                 sequence: 2,
+                fingerprint: None,
                 result: serde_json::json!({ "exit_status": 0 }),
             }))])
             .expect("commit");
@@ -1524,6 +1537,7 @@ mod tests {
                 id: "request-1".to_owned(),
                 operation: "exec".to_owned(),
                 sequence,
+                fingerprint: None,
                 result: serde_json::json!({"exit_status": 0}),
             })),
         ]
@@ -1680,6 +1694,7 @@ mod tests {
                     id: "request-1".to_owned(),
                     operation: "exec".to_owned(),
                     sequence: 2,
+                    fingerprint: None,
                     result: serde_json::json!({"first": true}),
                 })),
             ])
@@ -1702,6 +1717,7 @@ mod tests {
                 id: "request-1".to_owned(),
                 operation: "exec".to_owned(),
                 sequence: 3,
+                fingerprint: None,
                 result: serde_json::json!({"first": false}),
             })),
         ] {
@@ -1870,6 +1886,40 @@ pub fn publish(
 ) -> Result<Workspace, Box<dyn Error>> {
     let declarations = Declarations::parse(bundle)?;
     let reports = read_bug_reports(root)?;
+    if reports.len() != report.bugs.len() {
+        return Err("numbered bug reports differ from the completed campaign summary".into());
+    }
+    let summaries: BTreeMap<_, _> = report.bugs.iter().map(|bug| (bug.execution, bug)).collect();
+    if summaries.len() != report.bugs.len() {
+        return Err("campaign summary repeats a bug execution".into());
+    }
+    for bug in &reports {
+        let summary = summaries
+            .get(&bug.execution)
+            .ok_or("bug report has no matching execution summary")?;
+        if summary.actions != bug.actions
+            || summary.stop != bug.observations.stop
+            || summary
+                .violations
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                != bug.observations.violations
+            || summary
+                .sometimes
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                != bug.observations.sometimes
+        {
+            return Err("bug report and execution summary describe different evidence".into());
+        }
+        if reports.first().is_some_and(|first| {
+            first.root_seal != bug.root_seal || first.horizon_nanos != bug.horizon_nanos
+        }) {
+            return Err("bug reports disagree on their recorded action windows".into());
+        }
+    }
     let facts = WorkspaceFacts {
         format: FORMAT.to_owned(),
         package: report.package.clone(),
@@ -1891,7 +1941,7 @@ pub fn publish(
     let mut workspace = Workspace::create(root, facts)?;
     let mut records = Vec::new();
     for (index, bug) in reports.iter().enumerate() {
-        let summary = report.bugs.get(index);
+        let summary = summaries[&bug.execution];
         let moment = format!("m-{:04}", index.saturating_add(1));
         records.push(Record::Moment(Box::new(MomentRecord {
             id: moment.clone(),
@@ -1899,7 +1949,8 @@ pub fn publish(
             virtual_time: bug.observations.moment,
             history: History::Recorded,
             checkpoint: None,
-            state_hash: summary.map(|summary| summary.state_hash.clone()),
+            state_hash: (!summary.state_hash.is_empty()).then(|| summary.state_hash.clone()),
+            state_hash_encoding: summary.state_hash_encoding,
             stop: Some(match bug.observations.stop {
                 crate::target::FaultStop::Assertion { point } => StopReason::Assertion { point },
                 crate::target::FaultStop::Crash => StopReason::Crash,
@@ -1923,10 +1974,9 @@ pub fn publish(
                 .copied()
                 .collect(),
             moment,
-            confirmed: summary.is_some_and(|summary| summary.confirmed),
-            state_hash: summary
-                .map(|summary| summary.state_hash.clone())
-                .unwrap_or_default(),
+            confirmed: summary.confirmed,
+            state_hash: summary.state_hash.clone(),
+            state_hash_encoding: summary.state_hash_encoding,
         })));
     }
     workspace.commit(records)?;
@@ -1936,10 +1986,10 @@ pub fn publish(
 /// The numbered bug reports a run wrote, in ordinal order.
 fn read_bug_reports(root: &Path) -> Result<Vec<crate::report::BugReport>, Box<dyn Error>> {
     let mut reports = Vec::new();
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Ok(reports);
-    };
-    for entry in entries.filter_map(Result::ok) {
+    let entries = std::fs::read_dir(root)?;
+    let mut seen = std::collections::BTreeSet::new();
+    for entry in entries {
+        let entry = entry?;
         let path = entry.path();
         let is_bug_report = path
             .file_name()
@@ -1950,7 +2000,15 @@ fn read_bug_reports(root: &Path) -> Result<Vec<crate::report::BugReport>, Box<dy
         if !is_bug_report {
             continue;
         }
-        reports.push(serde_json::from_str(&std::fs::read_to_string(&path)?)?);
+        let report: crate::report::BugReport =
+            serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+        if report.bug == 0
+            || path.file_name().and_then(|name| name.to_str()) != Some(report.file_name().as_str())
+            || !seen.insert(report.bug)
+        {
+            return Err("numbered bug report filename or ordinal is inconsistent".into());
+        }
+        reports.push(report);
     }
     reports.sort_by_key(|report: &crate::report::BugReport| report.bug);
     Ok(reports)
@@ -1963,6 +2021,42 @@ mod publish_tests {
     use crate::report::BugReport;
     use crate::target::{ActionWindows, FaultStop};
 
+    #[test]
+    fn missing_hash_encoding_in_legacy_records_keeps_the_legacy_meaning() {
+        let finding = Finding {
+            state_hash: "ab".repeat(32),
+            state_hash_encoding: crate::package::StateHashEncoding::EngineDigest,
+            ..Finding::default()
+        };
+        let moment = MomentRecord {
+            state_hash: Some("cd".repeat(32)),
+            state_hash_encoding: crate::package::StateHashEncoding::EngineDigest,
+            ..MomentRecord::default()
+        };
+        let mut legacy_finding = serde_json::to_value(&finding).unwrap();
+        legacy_finding
+            .as_object_mut()
+            .unwrap()
+            .remove("state_hash_encoding");
+        let mut legacy_moment = serde_json::to_value(&moment).unwrap();
+        legacy_moment
+            .as_object_mut()
+            .unwrap()
+            .remove("state_hash_encoding");
+        let decoded_finding: Finding = serde_json::from_value(legacy_finding).unwrap();
+        let decoded_moment: MomentRecord = serde_json::from_value(legacy_moment).unwrap();
+        assert_eq!(decoded_finding.state_hash, finding.state_hash);
+        assert_eq!(decoded_moment.state_hash, moment.state_hash);
+        assert_eq!(
+            decoded_finding.state_hash_encoding,
+            crate::package::StateHashEncoding::LegacySha256OfDigest
+        );
+        assert_eq!(
+            decoded_moment.state_hash_encoding,
+            crate::package::StateHashEncoding::LegacySha256OfDigest
+        );
+    }
+
     fn options(output: &Path) -> Options {
         Options {
             seed: 7,
@@ -1971,7 +2065,7 @@ mod publish_tests {
             actions: 24,
             horizon_ms: 500,
             ram_mib: 1024,
-            knobs: vec!["faultlab.churn_rows=20".to_owned()],
+            knobs: vec!["service.worker_count=20".to_owned()],
             places: Vec::new(),
             wall_minutes: Some(150),
             output: output.to_path_buf(),
@@ -2027,7 +2121,8 @@ mod publish_tests {
             stop: FaultStop::Assertion { point: 2 },
             violations: vec![2],
             sometimes: vec![24],
-            state_hash: "beef".to_owned(),
+            state_hash: "be".repeat(32),
+            state_hash_encoding: crate::package::StateHashEncoding::EngineDigest,
             confirmed: true,
             replay: None,
         });
@@ -2035,9 +2130,39 @@ mod publish_tests {
         let bundle = "node service /opt/harmony/node.sh\n\
                       hook 3 /opt/harmony/hooks.sh 3\n\
                       assert always 2 from 3 the service counter is nonnegative\n";
+        let mut mismatched = report.clone();
+        mismatched.bugs[0].actions.push(FaultAction::Wait);
+        assert!(
+            publish(
+                directory.path(),
+                "service-v1.oci",
+                bundle,
+                &mismatched,
+                &options(directory.path())
+            )
+            .is_err()
+        );
+        assert!(
+            !directory.path().join(JOURNAL_DIR).exists(),
+            "mismatched evidence is rejected before workspace publication"
+        );
+        let original = directory.path().join("bug-1.json");
+        let wrong_name = directory.path().join("bug-2.json");
+        std::fs::rename(&original, &wrong_name).expect("rename report");
+        assert!(
+            publish(
+                directory.path(),
+                "service-v1.oci",
+                bundle,
+                &report,
+                &options(directory.path())
+            )
+            .is_err()
+        );
+        std::fs::rename(&wrong_name, &original).expect("restore report name");
         let workspace = publish(
             directory.path(),
-            "pgcic-14.3.oci",
+            "service-v1.oci",
             bundle,
             &report,
             &options(directory.path()),
@@ -2046,14 +2171,22 @@ mod publish_tests {
         assert_eq!(workspace.facts().identity, report.identity);
         assert_eq!(workspace.facts().root_seal, 1_000);
         assert_eq!(workspace.facts().horizon_nanos, 500_000_000);
-        assert_eq!(workspace.facts().knobs, ["faultlab.churn_rows=20"]);
+        assert_eq!(workspace.facts().knobs, ["service.worker_count=20"]);
         let finding = workspace.finding("bug-1").expect("bug-1");
         assert_eq!(finding.execution, 1_212);
         assert_eq!(finding.violations, [2]);
         assert!(finding.confirmed);
-        assert_eq!(finding.state_hash, "beef");
+        assert_eq!(finding.state_hash, "be".repeat(32));
+        assert_eq!(
+            finding.state_hash_encoding,
+            crate::package::StateHashEncoding::EngineDigest
+        );
         assert_eq!(finding.virtual_time(), 4_000_000_000);
         let moment = workspace.moment(&finding.moment).expect("moment");
+        assert_eq!(
+            moment.state_hash_encoding,
+            crate::package::StateHashEncoding::EngineDigest
+        );
         assert_eq!(moment.stop, Some(StopReason::Assertion { point: 2 }));
         assert_eq!(
             moment.checkpoint, None,
@@ -2072,6 +2205,14 @@ mod publish_tests {
         drop(workspace);
         let reopened = Workspace::open(directory.path()).expect("open");
         assert_eq!(reopened.findings().len(), 1);
+        assert_eq!(
+            reopened.findings()[0].state_hash_encoding,
+            crate::package::StateHashEncoding::EngineDigest
+        );
+        assert_eq!(
+            reopened.moments()[0].state_hash_encoding,
+            crate::package::StateHashEncoding::EngineDigest
+        );
     }
 
     #[test]
@@ -2089,7 +2230,7 @@ mod publish_tests {
         );
         let workspace = publish(
             directory.path(),
-            "pgcic-14.4.oci",
+            "service-v2.oci",
             "node service /opt/harmony/node.sh\n",
             &report,
             &options(directory.path()),
@@ -2097,5 +2238,76 @@ mod publish_tests {
         .expect("publish");
         assert!(workspace.findings().is_empty());
         assert_eq!(workspace.facts().horizon_nanos, 500_000_000);
+    }
+
+    #[test]
+    fn a_failed_replay_publishes_no_endpoint_hash_or_confirmation() {
+        let directory = tempfile::tempdir().unwrap();
+        let observations = FaultObservations {
+            moment: 50,
+            stop: FaultStop::Assertion { point: 7 },
+            violations: [7].into_iter().collect(),
+            ..FaultObservations::default()
+        };
+        let actions = vec![FaultAction::Wait];
+        BugReport::new(
+            1,
+            1,
+            ActionWindows {
+                root_seal: 1,
+                horizon_nanos: 100,
+            },
+            &actions,
+            &observations,
+        )
+        .unwrap()
+        .write(directory.path())
+        .unwrap();
+        let mut report = Report::new(
+            "search",
+            &crate::package::Artifacts {
+                kernel: b"k".to_vec(),
+                initramfs: b"i".to_vec(),
+                agent: b"a".to_vec(),
+            },
+            "identity".to_owned(),
+            &options(directory.path()),
+        );
+        report.bugs.push(BugSummary {
+            execution: 1,
+            actions,
+            stop: observations.stop,
+            violations: vec![7],
+            sometimes: vec![],
+            state_hash: String::new(),
+            state_hash_encoding: crate::package::StateHashEncoding::EngineDigest,
+            confirmed: false,
+            replay: None,
+        });
+        let workspace = publish(
+            directory.path(),
+            "service.oci",
+            "node service /service\n",
+            &report,
+            &options(directory.path()),
+        )
+        .unwrap();
+        let finding = workspace.finding("bug-1").unwrap();
+        assert!(!finding.confirmed);
+        assert!(finding.state_hash.is_empty());
+        assert_eq!(
+            finding.state_hash_encoding,
+            crate::package::StateHashEncoding::EngineDigest
+        );
+        assert!(
+            workspace
+                .moment(&finding.moment)
+                .unwrap()
+                .state_hash
+                .is_none()
+        );
+        drop(workspace);
+        let reopened = Workspace::open(directory.path()).unwrap();
+        assert!(reopened.moment("m-0001").unwrap().state_hash.is_none());
     }
 }

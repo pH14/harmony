@@ -67,6 +67,19 @@ impl Options {
         }
         Ok(())
     }
+
+    /// Validate replay bounds and its fresh output directory before booting.
+    pub fn validate_replay(
+        &self,
+        actions: &[FaultAction],
+        repeat: u32,
+    ) -> Result<(), Box<dyn Error>> {
+        self.validate()?;
+        if repeat == 0 || actions.is_empty() {
+            return Err("replay needs a nonempty action list and a positive repeat count".into());
+        }
+        Ok(())
+    }
 }
 
 /// One bug the run found, with the action list that reproduces it.
@@ -334,6 +347,78 @@ fn state_digest_hex(digest: &[u8; 32]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Retain the first actual replay finding, keeping its observations and hash
+/// from that same run. Later repetitions remain separate replay results.
+#[cfg(any(
+    test,
+    all(
+        feature = "consonance",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )
+))]
+fn retain_replay_finding(
+    report: &mut Report,
+    bug: &crate::report::BugReport,
+    summary: &ReplaySummary,
+    output: &std::path::Path,
+) -> Result<(), Box<dyn Error>> {
+    if !summary.bug
+        || summary.stop != bug.observations.stop
+        || summary.violations
+            != bug
+                .observations
+                .violations
+                .iter()
+                .copied()
+                .collect::<Vec<_>>()
+        || summary.sometimes
+            != bug
+                .observations
+                .sometimes
+                .iter()
+                .copied()
+                .collect::<Vec<_>>()
+    {
+        return Err("replay finding and summary describe different observations".into());
+    }
+    if report.bugs.is_empty() {
+        fs::create_dir_all(output)?;
+        bug.write(output)?;
+        report.bugs.push(BugSummary {
+            execution: bug.execution,
+            actions: bug.actions.clone(),
+            stop: bug.observations.stop,
+            violations: summary.violations.clone(),
+            sometimes: summary.sometimes.clone(),
+            state_hash: summary.state_hash.clone(),
+            state_hash_encoding: summary.state_hash_encoding,
+            confirmed: true,
+            replay: Some(summary.clone()),
+        });
+        report.first_bug_execution = Some(bug.execution);
+    }
+    Ok(())
+}
+
+#[cfg(any(
+    test,
+    all(
+        feature = "consonance",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )
+))]
+fn replay_confirms_endpoint(
+    recorded: &FaultObservations,
+    observed: Option<&FaultObservations>,
+    replay: &ReplaySummary,
+) -> bool {
+    replay.bug && observed == Some(recorded)
+}
+
 #[cfg(all(
     feature = "consonance",
     target_os = "linux",
@@ -352,7 +437,7 @@ mod live {
 
     use super::{
         Artifacts, BugSummary, Options, ReplaySummary, Report, StateHashEncoding,
-        first_confirmed_bug, replay_confirms_bug,
+        first_confirmed_bug,
     };
     use crate::{
         bundle::FaultVocabulary,
@@ -472,15 +557,20 @@ mod live {
             // the hit is a rediscovery.
             let violations: Vec<u32> = bug.observations.violations.iter().copied().collect();
             let witness = match replay_once(artifacts, &config, &bug.actions) {
-                Ok(summary) => Some(summary),
+                Ok(witness) => Some(witness),
                 Err(error) => {
                     eprintln!("bug {} did not replay: {error}", bug.bug);
                     None
                 }
             };
-            let confirmed = witness.as_ref().is_some_and(|witness| {
-                replay_confirms_bug(bug.observations.stop, &violations, witness)
+            let confirmed = witness.as_ref().is_some_and(|(summary, observed)| {
+                super::replay_confirms_endpoint(
+                    &bug.observations,
+                    observed.as_ref().map(|bug| &bug.observations),
+                    summary,
+                )
             });
+            let witness = witness.map(|(summary, _)| summary);
             if !confirmed {
                 eprintln!(
                     "bug {} was not confirmed by replay and is reported unconfirmed",
@@ -499,7 +589,7 @@ mod live {
                     .unwrap_or_default(),
                 state_hash_encoding: witness
                     .as_ref()
-                    .map_or(StateHashEncoding::default(), |witness| {
+                    .map_or(StateHashEncoding::EngineDigest, |witness| {
                         witness.state_hash_encoding
                     }),
                 confirmed,
@@ -526,9 +616,7 @@ mod live {
         repeat: u32,
         options: &Options,
     ) -> Result<Report, Box<dyn Error>> {
-        if repeat == 0 {
-            return Err("--repeat must be positive".into());
-        }
+        options.validate_replay(actions, repeat)?;
         let config = config(options);
         let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
         let mut report = Report::new("replay", artifacts, identity, options);
@@ -537,8 +625,13 @@ mod live {
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         for run in 1..=repeat {
-            let mut summary = replay_once(artifacts, &config, actions)?;
+            let (mut summary, reproduction) = replay_once(artifacts, &config, actions)?;
             summary.run = run;
+            if let Some(mut bug) = reproduction {
+                bug.execution = u64::from(run);
+                super::retain_replay_finding(&mut report, &bug, &summary, &options.output)?;
+            }
+            report.executions = u64::from(run);
             report.horizons_clocked = report
                 .horizons_clocked
                 .saturating_add(summary.guest_horizons);
@@ -561,7 +654,7 @@ mod live {
         artifacts: &Artifacts,
         config: &FaultConfig,
         actions: &[FaultAction],
-    ) -> Result<ReplaySummary, Box<dyn Error>> {
+    ) -> Result<(ReplaySummary, Option<crate::report::BugReport>), Box<dyn Error>> {
         let mut target = FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, config)?;
         for action in actions {
             target.apply(*action);
@@ -583,7 +676,22 @@ mod live {
             target.horizons_clocked(),
             target.guest_horizons_run(),
         );
-        Ok(summary)
+        let reproduction = summary
+            .bug
+            .then(|| {
+                crate::report::BugReport::new(
+                    1,
+                    1,
+                    crate::target::ActionWindows {
+                        root_seal: target.root_seal(),
+                        horizon_nanos: config.horizon_nanos,
+                    },
+                    actions,
+                    observation,
+                )
+            })
+            .transpose()?;
+        Ok((summary, reproduction))
     }
 
     fn hostname() -> String {
@@ -602,6 +710,105 @@ pub use live::{replay, search};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirmation_requires_the_recorded_moment_and_all_observations() {
+        let recorded = FaultObservations {
+            moment: 123,
+            stop: FaultStop::Assertion { point: 7 },
+            violations: [7].into_iter().collect(),
+            sometimes: [8].into_iter().collect(),
+            ticks: 5,
+            ..FaultObservations::default()
+        };
+        let replay = ReplaySummary::from_observation(&recorded, [0x42; 32], 1, 1);
+        assert!(replay_confirms_endpoint(
+            &recorded,
+            Some(&recorded),
+            &replay
+        ));
+        let mut changed = recorded.clone();
+        changed.sometimes.clear();
+        assert!(!replay_confirms_endpoint(
+            &recorded,
+            Some(&changed),
+            &replay
+        ));
+        changed = recorded.clone();
+        changed.moment += 1;
+        assert!(!replay_confirms_endpoint(
+            &recorded,
+            Some(&changed),
+            &replay
+        ));
+        changed = recorded.clone();
+        changed.ticks += 1;
+        assert!(!replay_confirms_endpoint(
+            &recorded,
+            Some(&changed),
+            &replay
+        ));
+        assert!(!replay_confirms_endpoint(&recorded, None, &replay));
+    }
+
+    #[test]
+    fn replay_publishes_the_same_run_observations_and_raw_digest() {
+        let directory = tempfile::tempdir().unwrap();
+        let artifacts = Artifacts {
+            kernel: b"kernel".to_vec(),
+            initramfs: b"image".to_vec(),
+            agent: b"agent".to_vec(),
+        };
+        let mut report = Report::new("replay", &artifacts, "identity".to_owned(), &options());
+        let observations = FaultObservations {
+            moment: 123,
+            stop: FaultStop::Assertion { point: 7 },
+            violations: [7].into_iter().collect(),
+            ..FaultObservations::default()
+        };
+        let windows = crate::target::ActionWindows {
+            root_seal: 10,
+            horizon_nanos: 100,
+        };
+        let bug = crate::report::BugReport::new(1, 1, windows, &[FaultAction::Wait], &observations)
+            .unwrap();
+        let summary = ReplaySummary::from_observation(&observations, [0x42; 32], 1, 1);
+        let mut inconsistent = summary.clone();
+        inconsistent.violations = vec![8];
+        assert!(retain_replay_finding(&mut report, &bug, &inconsistent, directory.path()).is_err());
+        assert!(!directory.path().join(bug.file_name()).exists());
+        retain_replay_finding(&mut report, &bug, &summary, directory.path()).unwrap();
+        assert_eq!(report.bugs[0].state_hash, "42".repeat(32));
+        assert_eq!(
+            report.bugs[0].state_hash_encoding,
+            StateHashEncoding::EngineDigest
+        );
+        let first_bytes = fs::read(directory.path().join(bug.file_name())).unwrap();
+        let mut later = bug.clone();
+        later.execution = 2;
+        later.observations.moment = 124;
+        let later_summary = ReplaySummary::from_observation(&later.observations, [0x43; 32], 1, 1);
+        retain_replay_finding(&mut report, &later, &later_summary, directory.path()).unwrap();
+        assert_eq!(report.bugs.len(), 1);
+        assert_eq!(
+            fs::read(directory.path().join(bug.file_name())).unwrap(),
+            first_bytes
+        );
+        report.write(directory.path()).unwrap();
+        let workspace = crate::workspace::publish(
+            directory.path(),
+            "service.oci",
+            "node service /service\n",
+            &report,
+            &options(),
+        )
+        .unwrap();
+        let finding = workspace.finding("bug-1").unwrap();
+        assert_eq!(finding.observations, observations);
+        assert_eq!(finding.state_hash, summary.state_hash);
+        assert_eq!(finding.state_hash_encoding, StateHashEncoding::EngineDigest);
+        assert_eq!(workspace.facts().root_seal, windows.root_seal);
+    }
 
     fn options() -> Options {
         Options {
@@ -629,6 +836,23 @@ mod tests {
             .horizon_nanos(),
             u64::MAX
         );
+    }
+
+    #[test]
+    fn replay_rejects_invalid_bounds_and_preserves_existing_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut options = options();
+        options.output = directory.path().to_path_buf();
+        assert!(options.validate_replay(&[FaultAction::Wait], 1).is_ok());
+        assert!(options.validate_replay(&[], 1).is_err());
+        assert!(options.validate_replay(&[FaultAction::Wait], 0).is_err());
+        options.ram_mib = 0;
+        assert!(options.validate_replay(&[FaultAction::Wait], 1).is_err());
+        options.ram_mib = 1024;
+        let retained = directory.path().join("report.json");
+        fs::write(&retained, b"existing report").unwrap();
+        assert!(options.validate_replay(&[FaultAction::Wait], 1).is_err());
+        assert_eq!(fs::read(&retained).unwrap(), b"existing report");
     }
 
     #[test]

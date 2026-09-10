@@ -18,6 +18,8 @@ pub mod checkpoint;
 pub mod continuation;
 pub mod declarations;
 pub mod execution;
+#[cfg(feature = "consonance")]
+pub mod investigate;
 pub mod package;
 pub mod prepare;
 pub mod report;

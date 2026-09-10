@@ -133,6 +133,11 @@ impl FaultVocabulary {
     /// Returns an error on an unknown keyword, a malformed hook id, more nodes
     /// than a node id can carry, or a bundle with no node.
     pub fn parse(text: &str) -> Result<Self, String> {
+        // Validate the complete bundle first. The alphabet parser only needs
+        // node and hook counts, but investigation also relies on declaration
+        // syntax and references being checked rather than silently ignored.
+        crate::declarations::Declarations::parse(text)?;
+
         let mut nodes = 0_u16;
         let mut hooks = Vec::new();
         for (number, line) in text.lines().enumerate() {
@@ -160,7 +165,9 @@ impl FaultVocabulary {
                         format!("bundle line {line_number}: hook id {id:?} is not a u32: {error}")
                     })?);
                 }
-                "ready" | "setup" => {}
+                // Declaration lines carry meanings for inspection, not
+                // alphabet entries. `Declarations` validated them above.
+                "ready" | "setup" | "describe" | "assert" | "diagnostic" => {}
                 other => {
                     return Err(format!(
                         "bundle line {line_number}: unknown keyword {other:?}"
@@ -385,6 +392,41 @@ ready /usr/local/pgsql/bin/pg_isready
         assert!(FaultVocabulary::parse("node\n").is_err());
         assert!(FaultVocabulary::parse("node a /a\nservice s /s\n").is_err());
         assert!(FaultVocabulary::new(1, vec![1, 1]).is_err());
+    }
+
+    #[test]
+    fn declaration_metadata_does_not_change_the_action_alphabet() {
+        let bare = FaultVocabulary::parse(
+            "setup /bin/prep\nnode service /bin/service\nhook 1 /bin/check\nready /bin/ready\n",
+        )
+        .expect("bare bundle");
+        let with_metadata = FaultVocabulary::parse(
+            "setup /bin/prep\nnode service /bin/service\n\
+             describe node service the supervised service\n\
+             hook 1 /bin/check\n\
+             describe hook 1 checks the service\n\
+             assert always 2 from 1 the service is healthy\n\
+             diagnostic output /bin/cat /run/service.out\n\
+             ready /bin/ready\n",
+        )
+        .expect("bundle metadata is validated and ignored by the alphabet");
+        assert_eq!(with_metadata.nodes(), bare.nodes());
+        assert_eq!(with_metadata.hooks(), bare.hooks());
+    }
+
+    #[test]
+    fn malformed_declaration_references_are_rejected_before_alphabet_parse() {
+        let error = FaultVocabulary::parse(
+            "node service /bin/service\nhook 1 /bin/check\nassert always 2 from 99 missing hook\n",
+        )
+        .expect_err("an assertion cannot report through an undeclared hook");
+        assert!(error.contains("undeclared reporting hook 99"), "{error}");
+
+        let error = FaultVocabulary::parse(
+            "node service /bin/service\ndescribe node absent the wrong node\n",
+        )
+        .expect_err("a description cannot name an undeclared node");
+        assert!(error.contains("does not declare"), "{error}");
     }
 
     #[test]
