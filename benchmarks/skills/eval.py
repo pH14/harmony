@@ -166,6 +166,24 @@ def freeze(attempt_dir: Path, into: Path) -> dict:
     return {"digest": panels.digest_tree(frozen), "path": str(frozen)}
 
 
+def judge(panel_name: str, frozen: Path, transcript: list[dict], baseline: str,
+          harmony: Path, denials: list[str],
+          infrastructure_error: str | None) -> tuple[list[panels.Check], str]:
+    """Grade one frozen submission and decide the attempt's verdict."""
+    grader = panels.GRADERS.get(panel_name)
+    if grader is None:
+        return [], "ungraded"
+    if infrastructure_error:
+        return [], "infrastructure"
+    checks = grader(frozen, transcript, baseline, harmony)
+    artifact = [check for check in checks if check.kind == "artifact"]
+    if denials and not any(check.passed for check in artifact):
+        # The runner's own allowlist stopped the attempt before it could
+        # produce anything, which says nothing about the agent.
+        return checks, "infrastructure"
+    return checks, "pass" if all(check.passed for check in artifact) else "fail"
+
+
 def one_attempt(out: Path, panel: panels.Panel, arm: str, index: int,
                 adapter, budget: adapters.Budget, harmony: Path,
                 fixture_facts: dict) -> dict:
@@ -190,22 +208,9 @@ def one_attempt(out: Path, panel: panels.Panel, arm: str, index: int,
     (record_dir / "transcript.jsonl").write_text(
         "".join(json.dumps(event) + "\n" for event in result.transcript))
 
-    grader = panels.GRADERS.get(panel.name)
-    if grader is None:
-        checks: list[panels.Check] = []
-        verdict = "ungraded"
-    elif result.infrastructure_error:
-        checks = []
-        verdict = "infrastructure"
-    else:
-        checks = grader(Path(frozen["path"]), result.transcript, baseline, harmony)
-        artifact = [check for check in checks if check.kind == "artifact"]
-        if result.denials and not any(check.passed for check in artifact):
-            # The runner's own allowlist stopped the attempt before it could
-            # produce anything, which says nothing about the agent.
-            verdict = "infrastructure"
-        else:
-            verdict = "pass" if all(check.passed for check in artifact) else "fail"
+    checks, verdict = judge(
+        panel.name, Path(frozen["path"]), result.transcript, baseline, harmony,
+        result.denials, result.infrastructure_error)
 
     record = {
         "format": FORMAT,
@@ -214,6 +219,7 @@ def one_attempt(out: Path, panel: panels.Panel, arm: str, index: int,
         "arm": arm,
         "index": index,
         "verdict": verdict,
+        "baseline": baseline,
         "stopped_by": result.stopped_by,
         "exit_status": result.exit_status,
         "infrastructure_error": result.infrastructure_error,
@@ -346,6 +352,40 @@ def _preparation_checks(out: Path, harmony: Path) -> list[tuple[str, bool, str]]
     results.append(("it fails a submission that produced nothing",
                     not passed, "; ".join(passed) or "no check passed"))
 
+    # A bundle that names a script nobody wrote is caught; one that names a
+    # binary the build installs without naming it is not.
+    unwritten = out / "grader" / "unwritten"
+    if unwritten.exists():
+        shutil.rmtree(unwritten)
+    (unwritten / "source").mkdir(parents=True)
+    shutil.copytree(good, unwritten, dirs_exist_ok=True)
+    (unwritten / "bundle").write_text(
+        (good / "bundle").read_text()
+        + "\nnode late /usr/local/bin/never_written.sh\n"
+        + "describe node late a node whose program the submission never wrote\n")
+    built = out / "grader" / "built"
+    if built.exists():
+        shutil.rmtree(built)
+    (built / "source").mkdir(parents=True)
+    shutil.copytree(good, built, dirs_exist_ok=True)
+    # `make install` puts pg_isready under the prefix without the recipe ever
+    # naming it, which is how a correct submission reaches a named binary.
+    (built / "bundle").write_text(
+        (good / "bundle").read_text()
+        .replace("ready /opt/harmony/ready.sh",
+                 "ready /usr/local/pgsql/bin/pg_isready"))
+
+    def script_check(directory: Path) -> list[bool]:
+        return [check.passed for check in
+                panels.grade_integration(directory, [], baseline, harmony)
+                if check.name == "wrote the scripts the bundle names"]
+
+    late = script_check(unwritten)
+    installed = script_check(built)
+    results.append(("the script check catches an unwritten script and passes an "
+                    "installed binary", late == [False] and installed == [True],
+                    f"unwritten script: {late}; installed binary: {installed}"))
+
     # The coverage claim is graded from prose, so check both directions: a
     # report that claims the instrumentation guides the search is caught, and
     # one that says it is unused, wrapped across lines as reports are, is not.
@@ -472,6 +512,7 @@ def _write_report(out: Path, records: list[dict]) -> None:
         ],
         "refused": sorted({command for record in records
                            for command in record.get("denials") or []}),
+        "regraded": any(record.get("regraded") for record in records),
     }
     (out / "report.json").write_text(json.dumps(summary, indent=1))
     (out / "report.md").write_text(_markdown(summary))
@@ -498,6 +539,9 @@ def _markdown(summary: dict) -> str:
     host = (summary.get("fixture") or {}).get("execution_host")
     if host:
         lines += [f"Execution host: {host}.", ""]
+    if summary.get("regraded"):
+        lines += ["These verdicts come from grading the frozen submissions "
+                  "again under rules that changed after the attempts ran.", ""]
     lines += ["| Arm | Attempts | Passed | Failed | Infrastructure |",
               "| --- | --- | --- | --- | --- |"]
     for arm, facts in summary["arms"].items():
@@ -524,6 +568,56 @@ def _markdown(summary: dict) -> str:
                      ("attempt", "arm", "verdict", "stopped_by", "seconds",
                       "tool_calls")) + " |")
     return "\n".join(lines) + "\n"
+
+
+def _baseline(record: dict) -> str:
+    """What the attempt had to leave unchanged, for a record graded again."""
+    if record.get("baseline") is not None:
+        return record["baseline"]
+    materials = Path((record.get("fixture") or {}).get("materials") or "")
+    if (materials / "source").exists():
+        return panels.source_baseline(materials / "source")
+    if (materials / "workspace").exists():
+        return panels.baseline_finding(materials / "workspace")
+    raise SystemExit(f"{record['attempt']}: no baseline to grade against")
+
+
+def command_grade(args: argparse.Namespace) -> int:
+    """Grade frozen submissions again under the current rules.
+
+    Grading rules change after attempts run. Each submission is frozen with its
+    transcript and its digest, so the current rules reach it without a model
+    being spent again.
+    """
+    out = Path(args.out).resolve()
+    harmony = _harmony(args.harmony)
+    records = []
+    for path in sorted(out.glob("*/attempt.json")):
+        record = json.loads(path.read_text())
+        frozen = Path(record["submission"]["path"])
+        if not frozen.exists():
+            raise SystemExit(f"{record['attempt']}: {frozen} is gone")
+        if panels.digest_tree(frozen) != record["submission"]["digest"]:
+            raise SystemExit(f"{record['attempt']}: the frozen submission "
+                             f"changed since the run")
+        lines = (path.parent / "transcript.jsonl").read_text().splitlines()
+        checks, verdict = judge(
+            record["panel"], frozen, [json.loads(line) for line in lines if line],
+            _baseline(record), harmony, record.get("denials") or [],
+            record.get("infrastructure_error"))
+        before = record["verdict"]
+        record["checks"] = [asdict(check) for check in checks]
+        record["verdict"] = verdict
+        record["regraded"] = True
+        path.write_text(json.dumps(record, indent=1))
+        print(f"{record['attempt']}: {before} -> {verdict}",
+              file=sys.stderr, flush=True)
+        records.append(record)
+    if not records:
+        raise SystemExit(f"no attempts under {out}")
+    _write_report(out, records)
+    print((out / "report.md").read_text())
+    return 0
 
 
 def command_report(args: argparse.Namespace) -> int:
@@ -575,6 +669,12 @@ def main(argv: list[str] | None = None) -> int:
     report = sub.add_parser("report", help="rebuild the report from attempts")
     report.add_argument("--out", required=True)
     report.set_defaults(handler=command_report)
+
+    grade = sub.add_parser("grade",
+                           help="grade frozen submissions again, with no model")
+    grade.add_argument("--out", required=True)
+    grade.add_argument("--harmony")
+    grade.set_defaults(handler=command_grade)
 
     args = parser.parse_args(argv)
     return args.handler(args)

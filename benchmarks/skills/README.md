@@ -23,7 +23,11 @@ cargo build --release -p harmony-cli
 agent adapter is available. `run` prepares each attempt's isolated directory,
 launches the agent, freezes the submission, grades it, and writes
 `report.json` and `report.md`. Arms alternate in a shuffled order under
-matched budgets, and every attempt keeps its own record.
+matched budgets, and every attempt keeps its own record. `report` rebuilds the
+summary from the records. `grade` reads the frozen submissions again, applies
+the current rules, and rewrites both the records and the summary, so a grading
+change reaches attempts that already ran without a model being spent; a report
+whose verdicts came that way says so.
 
 | File | Owns |
 | --- | --- |
@@ -255,6 +259,12 @@ the contract above are met differently, and every attempt record says so:
   tools are confined to it and its commands are the allowlist, but it shares
   the runner and the operator's agent configuration. Each attempt records
   `isolation`, and the report prints it.
+- **The allowlist names programs, so it refuses compound shell commands.** A
+  pipeline, a `cd` followed by a second command, a heredoc, or a background
+  `&` is refused even when every program in it is allowed. Each attempt records
+  the refused commands and the report lists them, and an attempt that produced
+  nothing after a refusal is recorded as an infrastructure result rather than a
+  failure.
 
 PostgreSQL compiler instrumentation stays unqualified. The build, runtime,
 symbolization, and search-feedback path are not established, and the fault

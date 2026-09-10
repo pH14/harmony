@@ -110,9 +110,12 @@ ran, what stopped it, and what it did not reach.
 
 # Reading and building are the same everywhere; a preparation panel adds the
 # tools that turn source into an image and the CLI that runs it.
-READING = ["ls", "cat", "head", "tail", "grep", "wc", "jq", "find", "sed", "awk"]
-BUILDING = ["tar", "bzip2", "docker", "make", "sh", "cp", "mv", "mkdir",
-            "chmod", "sha256sum", "shasum", "printf", "echo", "test", "true"]
+READING = ["ls", "cat", "head", "tail", "grep", "wc", "jq", "find", "sed",
+           "awk", "sort", "uniq", "cut", "tr", "diff", "stat", "file",
+           "basename", "dirname", "env", "seq", "xargs"]
+BUILDING = ["tar", "bzip2", "docker", "make", "sh", "bash", "cp", "mv", "rm",
+            "mkdir", "chmod", "touch", "ln", "sha256sum", "shasum", "printf",
+            "echo", "test", "true"]
 
 PANELS = {
     "investigation": Panel(
@@ -291,11 +294,26 @@ def _programs(bundle: Path) -> set[str]:
     return found
 
 
-def _missing_programs(attempt_dir: Path, recipe: str, named: set[str]) -> list[str]:
-    """The programs a bundle names that the submission neither writes nor builds."""
+SCRIPT_SUFFIXES = (".sh", ".bash", ".py", ".pl")
+
+
+def _named_scripts(named: set[str]) -> list[str]:
+    """The scripts among the programs a bundle names.
+
+    A submission is answerable for its own scripts. Whether it provides a named
+    binary cannot be read off the submission: `make install` installs programs
+    the build recipe never mentions by name, and the base image supplies the
+    rest.
+    """
+    return sorted(argv for argv in named
+                  if Path(argv).name.endswith(SCRIPT_SUFFIXES))
+
+
+def _missing_scripts(attempt_dir: Path, recipe: str, scripts: list[str]) -> list[str]:
+    """The scripts a bundle names that the submission neither wrote nor writes."""
     written = {path.name for path in attempt_dir.rglob("*")
                if path.is_file() and (attempt_dir / "source") not in path.parents}
-    return sorted(argv for argv in named
+    return sorted(argv for argv in scripts
                   if Path(argv).name not in written and Path(argv).name not in recipe)
 
 
@@ -357,7 +375,8 @@ def grade_integration(attempt_dir: Path, transcript: list[dict],
         path.read_text(errors="replace")
         for path in sorted(attempt_dir.glob("Dockerfile*")))
     named = _programs(bundle_path)
-    missing = _missing_programs(attempt_dir, recipe, named)
+    scripts = _named_scripts(named)
+    missing = _missing_scripts(attempt_dir, recipe, scripts)
 
     checks = [
         Check("submitted a report", bool(report.strip()),
@@ -385,9 +404,10 @@ def grade_integration(attempt_dir: Path, transcript: list[dict],
         Check("left the supplied release unmodified",
               _source_digest(attempt_dir / "source") == baseline,
               "compared the release tarball before and after"),
-        Check("wrote the programs the bundle names",
+        Check("wrote the scripts the bundle names",
               bool(named) and not missing,
-              f"bundle names {', '.join(sorted(named)) or 'nothing'}"
+              f"bundle names {len(named)} programs, "
+              f"{', '.join(scripts) or 'no scripts'}"
               + (f"; missing {', '.join(missing)}" if missing else "")),
         Check("did not claim coverage-guided exploration",
               not claims_coverage_guidance(report),
