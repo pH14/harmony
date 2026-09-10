@@ -390,7 +390,7 @@ pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vcpu
     // [`events_for_restore`]. KVM treats a *clear* validity bit on `KVM_SET_VCPU_EVENTS` as
     // "leave that sub-record UNCHANGED", not "clear it", so restoring this active-only mask
     // onto a non-fresh vCPU would retain the prior occupant's stale state. `events_for_restore`
-    // forces the gated clear-on-restore bits on; this function stays active-only for the hash.
+    // forces the cap-free clear-on-restore bits on; this function stays active-only for the hash.
     let smm_active =
         c.smi_smm != 0 || c.smi_pending != 0 || c.smi_inside_nmi != 0 || c.smi_latched_init != 0;
     c.flags = if c.nmi_injected != 0 || c.nmi_pending != 0 || c.nmi_masked != 0 {
@@ -443,8 +443,9 @@ pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vcpu
 ///   backend does not enable, so setting the bit is `-EINVAL` (the round-6 box run proved this).
 ///   With the cap off there is **no** triple-fault sub-record to leak, so leaving it gated on
 ///   active (via [`canonical_events`]) is both safe and complete here.
-/// - `PAYLOAD` — stays gated on `exception_has_payload` (its cap is likewise not enabled); the
-///   exception sub-record (injected/nr/error_code) is applied by KVM unconditionally anyway.
+/// - `PAYLOAD` — remains active-only via [`canonical_events`]. The backend enables
+///   `KVM_CAP_EXCEPTION_PAYLOAD` and adds the SET-side validity bit when applying the restore
+///   record; the exception payload is therefore restored whenever `exception_has_payload` is set.
 /// - `SIPI_VECTOR` — stays gated (SET-only; round-2 handling).
 ///
 /// The **`state_hash`** uses [`canonical_events`] (active-only flags), not this — so forcing the
@@ -456,44 +457,77 @@ pub(crate) fn events_for_restore(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vc
     c
 }
 
-/// The configured backend does not enable the optional event capabilities
-/// checked below. All SREGS2 and debug-register fields are carried by the
-/// versioned CPU records, including nonzero PAE PDPTRs.
+/// The configured backend does not enable the optional triple-fault event capability checked
+/// below. Exception payload support is enabled by the backend. The active exception fields must
+/// also satisfy KVM's shape rules before canonicalization. All SREGS2 and debug-register fields
+/// are carried by the versioned CPU records, including nonzero PAE PDPTRs.
 pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'static str> {
-    cap_unrestorable_events(&vcpu.events)
+    unrestorable_events(&vcpu.events)
 }
 
-/// Reason a `kvm_vcpu_events` record **cannot be restored on this backend** — it would set a
-/// `KVM_SET_VCPU_EVENTS` validity bit gated behind a per-VM capability this backend does not
-/// enable, so the SET ioctl returns `-EINVAL`. `None` if every set bit is restorable.
+/// Purely validate the active exception fields in a `kvm_vcpu_events` record.
 ///
-/// KVM rejects `VALID_TRIPLE_FAULT` / `VALID_PAYLOAD` on SET unless
-/// `KVM_CAP_X86_TRIPLE_FAULT_EVENT` / `KVM_CAP_EXCEPTION_PAYLOAD` is enabled — **even with a
-/// zero payload**. This backend enables neither (only `DETERMINISTIC_INTERCEPTS` +
-/// `USER_SPACE_MSR`), and vmm-core cannot query per-cap state through the `Backend` trait, so
-/// these fields are unrestorable. The check is on the **fields** that drive the rebuilt mask
-/// (`triple_fault_pending → VALID_TRIPLE_FAULT`, `exception_has_payload → VALID_PAYLOAD`), so it
-/// catches exactly the records whose [`events_for_restore`] would carry a cap-disabled bit.
+/// Inactive exception fields may contain KVM's stale GET-side residuals and remain accepted;
+/// [`canonical_events`] removes those values before they reach the snapshot or hash. Active
+/// fields must match the KVM exception ABI: injection and pending are mutually exclusive, the
+/// vector is a valid exception vector other than the reserved vector 2, and an injected-only
+/// exception cannot carry a payload because KVM clears it.
+fn exception_shape_error(e: &vmm_backend::VcpuEvents) -> Option<&'static str> {
+    let injected = e.exception_injected != 0;
+    let pending = e.exception_pending != 0;
+    if injected && pending {
+        return Some(
+            "kvm_vcpu_events.exception_injected and exception_pending are both set; KVM requires \
+             an exception to be injected or pending, not both",
+        );
+    }
+    if (injected || pending) && e.exception_nr == 2 {
+        return Some(
+            "kvm_vcpu_events.exception_nr is vector 2, which is not a valid active exception \
+             vector for KVM",
+        );
+    }
+    if (injected || pending) && e.exception_nr > 31 {
+        return Some(
+            "kvm_vcpu_events.exception_nr is above 31, which is not a valid active exception \
+             vector for KVM",
+        );
+    }
+    if injected && e.exception_has_payload != 0 {
+        return Some(
+            "kvm_vcpu_events.exception_has_payload is set for an injected-only exception; KVM \
+             clears payload state for injected exceptions",
+        );
+    }
+    None
+}
+
+/// Reason a `kvm_vcpu_events` record **cannot be restored on this backend**. This includes an
+/// active exception shape that KVM would reject or normalize, and a validity bit gated behind a
+/// per-VM capability this backend does not enable. `None` if the record is restorable.
+///
+/// KVM rejects `VALID_TRIPLE_FAULT` on SET unless `KVM_CAP_X86_TRIPLE_FAULT_EVENT` is enabled —
+/// **even with a zero payload**. This backend leaves that capability disabled, while it enables
+/// `KVM_CAP_EXCEPTION_PAYLOAD`; vmm-core cannot query per-cap state through the `Backend` trait,
+/// so only the triple-fault field is unrestorable. The check is on the field that drives the
+/// rebuilt mask (`triple_fault_pending → VALID_TRIPLE_FAULT`), so it catches exactly the records
+/// whose [`events_for_restore`] would carry the cap-disabled bit.
 ///
 /// Applied **symmetrically**: [`unrepresentable_state`] uses it so `save_vm_state` never seals an
 /// unrestorable snapshot (save/restore symmetry, PR #12 round 7), and
 /// [`crate::vmm::Vmm::restore_vm_state`] uses it to reject an untrusted/foreign `dev.events` blob
 /// **before** any `Backend::restore` ioctl mutates the target vCPU — preserving restore's
 /// reject-before-mutation (atomic) contract (PR #12 round 8). A real `KVM_GET` on this backend
-/// never reports either field (a triple fault is a `KVM_EXIT_SHUTDOWN`; with the payload cap off
-/// KVM folds the payload via the legacy path, leaving `has_payload = 0`), so this never rejects a
-/// genuine captured point — it closes the contract for a synthetic / relayed / forward-compat blob.
-pub(crate) fn cap_unrestorable_events(e: &vmm_backend::VcpuEvents) -> Option<&'static str> {
+/// never reports the triple-fault field (a triple fault is a `KVM_EXIT_SHUTDOWN`), so this never
+/// rejects a genuine captured point — it closes the contract for a synthetic / relayed /
+/// forward-compat blob.
+pub(crate) fn unrestorable_events(e: &vmm_backend::VcpuEvents) -> Option<&'static str> {
+    if let Some(reason) = exception_shape_error(e) {
+        return Some(reason);
+    }
     if e.triple_fault_pending != 0 {
         return Some(
             "kvm_vcpu_events.triple_fault_pending is set, but KVM_CAP_X86_TRIPLE_FAULT_EVENT is not \
-             enabled on this backend — KVM_SET_VCPU_EVENTS would reject it (-EINVAL); fail closed \
-             rather than seal/restore an unrestorable snapshot",
-        );
-    }
-    if e.exception_has_payload != 0 {
-        return Some(
-            "kvm_vcpu_events.exception_has_payload is set, but KVM_CAP_EXCEPTION_PAYLOAD is not \
              enabled on this backend — KVM_SET_VCPU_EVENTS would reject it (-EINVAL); fail closed \
              rather than seal/restore an unrestorable snapshot",
         );
@@ -1711,8 +1745,9 @@ mod tests {
             force,
             "events_for_restore sets NMI_PENDING|SHADOW|SMM unconditionally"
         );
-        // TRIPLE_FAULT / PAYLOAD / SIPI stay gated — forcing TRIPLE_FAULT/PAYLOAD is -EINVAL
-        // without their caps, SIPI is SET-only. For a quiescent snapshot all three are clear.
+        // TRIPLE_FAULT / SIPI stay gated — forcing TRIPLE_FAULT is -EINVAL without its cap,
+        // while SIPI is SET-only. For a quiescent snapshot both are clear. PAYLOAD is active-only
+        // here; the backend supplies its SET-side validity bit for every restore.
         assert_eq!(
             setv.flags & KVM_VCPUEVENT_VALID_TRIPLE_FAULT,
             0,
@@ -1726,7 +1761,7 @@ mod tests {
         assert_eq!(
             setv.flags & KVM_VCPUEVENT_VALID_PAYLOAD,
             0,
-            "PAYLOAD stays gated on exception_has_payload"
+            "PAYLOAD is active-only for a quiescent snapshot"
         );
 
         // Restoring the clean snapshot onto the STALE vCPU clears every (cap-free) stale
@@ -1784,12 +1819,13 @@ mod tests {
     }
 
     #[test]
-    fn unrepresentable_state_fails_closed_on_cap_gated_event_fields() {
-        // PR #12 round 7 — save/restore symmetry. `triple_fault_pending` and
-        // `exception_has_payload` are the two `kvm_vcpu_events` fields whose
-        // `KVM_SET_VCPU_EVENTS` validity bit needs a per-VM capability this backend does not
-        // enable, so a captured value could NOT be restored (restore would be `-EINVAL`). Save
-        // must fail closed on them — but NOT over-reject any restorable in-flight state.
+    fn unrepresentable_state_only_rejects_triple_fault() {
+        // PR #12 round 7 — save/restore symmetry. `triple_fault_pending` is the
+        // `kvm_vcpu_events` field whose `KVM_SET_VCPU_EVENTS` validity bit needs a per-VM
+        // capability this backend does not enable, so a captured value could NOT be restored
+        // (restore would be `-EINVAL`). Exception payload support is enabled and must remain
+        // representable. Save must fail closed on triple fault — but NOT over-reject any other
+        // restorable in-flight state.
         let representable = |events: vmm_backend::VcpuEvents| vmm_backend::VcpuState {
             events,
             ..Default::default()
@@ -1812,6 +1848,15 @@ mod tests {
                 ..Default::default()
             },
             vmm_backend::VcpuEvents {
+                exception_pending: 1,
+                exception_nr: 14,
+                exception_has_error_code: 1,
+                exception_error_code: 0x18,
+                exception_has_payload: 1,
+                exception_payload: 0xCAFE,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
                 nmi_injected: 1,
                 nmi_pending: 1,
                 ..Default::default()
@@ -1830,7 +1875,7 @@ mod tests {
                 "a restorable in-flight field must NOT be rejected: {ok:?}"
             );
         }
-        // The two cap-gated fields fail closed, each naming the offending field.
+        // The remaining cap-gated field fails closed, naming the offending field.
         let tf = unrepresentable_state(&representable(vmm_backend::VcpuEvents {
             triple_fault_pending: 1,
             ..Default::default()
@@ -1840,16 +1885,92 @@ mod tests {
             tf.contains("triple_fault_pending"),
             "reject reason names the field: {tf}"
         );
-        let pl = unrepresentable_state(&representable(vmm_backend::VcpuEvents {
-            exception_has_payload: 1,
-            exception_payload: 0xCAFE,
-            ..Default::default()
-        }))
-        .expect("exception_has_payload must fail closed at save");
-        assert!(
-            pl.contains("exception_has_payload"),
-            "reject reason names the field: {pl}"
-        );
+    }
+
+    #[test]
+    fn exception_shape_validation_is_active_only_and_strict() {
+        let invalid = [
+            (
+                vmm_backend::VcpuEvents {
+                    exception_injected: 1,
+                    exception_pending: 1,
+                    exception_nr: 14,
+                    ..Default::default()
+                },
+                "exception_injected",
+            ),
+            (
+                vmm_backend::VcpuEvents {
+                    exception_pending: 1,
+                    exception_nr: 2,
+                    ..Default::default()
+                },
+                "exception_nr",
+            ),
+            (
+                vmm_backend::VcpuEvents {
+                    exception_pending: 1,
+                    exception_nr: 32,
+                    ..Default::default()
+                },
+                "exception_nr",
+            ),
+            (
+                vmm_backend::VcpuEvents {
+                    exception_injected: 1,
+                    exception_nr: 13,
+                    exception_has_payload: 1,
+                    exception_payload: 0xCAFE,
+                    ..Default::default()
+                },
+                "exception_has_payload",
+            ),
+        ];
+        for (events, field) in invalid {
+            let reason = exception_shape_error(&events)
+                .unwrap_or_else(|| panic!("invalid active exception must be rejected: {events:?}"));
+            assert!(
+                reason.contains(field),
+                "shape rejection should identify {field:?}, got: {reason}"
+            );
+            assert!(
+                unrestorable_events(&events).is_some(),
+                "the save/restore guard must use the same active-shape validation: {events:?}"
+            );
+        }
+
+        for accepted in [
+            vmm_backend::VcpuEvents {
+                exception_injected: 1,
+                exception_nr: 13,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                exception_pending: 1,
+                exception_nr: 14,
+                exception_has_error_code: 1,
+                exception_error_code: 0x18,
+                exception_has_payload: 1,
+                exception_payload: 0x1234,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                // Inactive residuals are accepted and canonicalized away later.
+                exception_nr: 0xFF,
+                exception_has_payload: 1,
+                exception_payload: 0xCAFE,
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                exception_shape_error(&accepted).is_none(),
+                "valid or inactive exception shape was rejected: {accepted:?}"
+            );
+            assert!(
+                unrestorable_events(&accepted).is_none(),
+                "valid or inactive exception must remain restorable: {accepted:?}"
+            );
+        }
     }
 
     #[test]
@@ -1885,8 +2006,8 @@ mod tests {
             "a VALID error_code (has_error_code=1) is preserved"
         );
 
-        // exception_payload is gated on exception_has_payload (a payload-bearing exception is
-        // ALSO fail-closed-rejected at save/restore — this gates the canonical form / hash):
+        // exception_payload is gated on exception_has_payload (this gates the canonical form /
+        // hash):
         let stale_pl = canonical_events(&vmm_backend::VcpuEvents {
             exception_injected: 1,
             exception_nr: 14,

@@ -784,6 +784,16 @@ pub(crate) fn from_kvm_events(e: &kvm_vcpu_events) -> VcpuEvents {
     }
 }
 
+/// Build a complete event replacement for the exception-payload ABI enabled
+/// by this backend. VALID_PAYLOAD also makes `exception.pending` authoritative;
+/// without it KVM clears pending even when the snapshot explicitly sets it.
+/// Always set it, including for an empty record, to clear displaced exceptions.
+pub(crate) fn to_kvm_restore_events(e: &VcpuEvents) -> kvm_vcpu_events {
+    let mut events = to_kvm_events(e);
+    events.flags |= kvm_bindings::KVM_VCPUEVENT_VALID_PAYLOAD;
+    events
+}
+
 pub(crate) fn to_kvm_events(e: &VcpuEvents) -> kvm_vcpu_events {
     let mut k = kvm_vcpu_events {
         sipi_vector: e.sipi_vector,

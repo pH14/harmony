@@ -19,11 +19,14 @@ an ISA-specific exit enum.
 Backends install a guest-visible CPU policy before the first run. Read-style
 exits remain pending until the matching completion method is called; resuming
 with an unserviced completion is an error. The x86 KVM backend finishes its
-scalar PIO callbacks with an immediate-exit entry before a serviced operation
-returns. This executes no following guest instruction and exposes the completed
+scalar PIO and MSR callbacks with an immediate-exit entry before a serviced
+operation returns. This executes no following guest instruction and exposes the completed
 CPU state to `save`; snapshot capture itself performs no entry. An unserviced
-read still requires its host response. Exit counters and capability flags are
-exposed for the VMM's reports. Virtual-time policy, device models, snapshot
+read still requires its host response. An MSR fault response queues the exception
+without delivering it or executing its handler. KVM construction enables the
+exception-payload API so pending exceptions remain distinct from injected ones
+and restores replace the complete exception record. Exit counters and capability
+flags are exposed for the VMM's reports. Virtual-time policy, device models, snapshot
 formats, and entropy live above this crate.
 
 The `contract-tests` feature exposes the shared backend contract exam, and the

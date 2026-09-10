@@ -875,3 +875,32 @@ fn restore_sregs_stops_at_either_failed_write() {
         assert_eq!(calls, failure);
     }
 }
+
+#[test]
+fn event_restore_preserves_pending_and_clears_displaced_exceptions() {
+    for event in [
+        VcpuEvents::default(),
+        VcpuEvents {
+            exception_pending: 1,
+            exception_nr: 13,
+            exception_has_error_code: 1,
+            ..Default::default()
+        },
+        VcpuEvents {
+            exception_pending: 1,
+            exception_nr: 14,
+            exception_has_error_code: 1,
+            exception_error_code: 7,
+            exception_has_payload: 1,
+            exception_payload: 0x1234_5000,
+            ..Default::default()
+        },
+    ] {
+        let set = to_kvm_restore_events(&event);
+        assert_ne!(set.flags & kvm_bindings::KVM_VCPUEVENT_VALID_PAYLOAD, 0);
+        let mut restored = from_kvm_events(&set);
+        // GET-side validity metadata is distinct from exception content.
+        restored.flags = event.flags;
+        assert_eq!(restored, event);
+    }
+}

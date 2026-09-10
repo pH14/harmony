@@ -877,14 +877,13 @@ impl<B: Backend<A = X86>> Vmm<B> {
         }
         // Decode the vmm-core device blob (total, never panics).
         let dev = records::decode_device_blob(&s.devices.0)?;
-        // Reject an UNRESTORABLE `kvm_vcpu_events` blob up front — a foreign /
-        // malformed v3 blob that sets a cap-disabled validity bit
-        // (`VALID_TRIPLE_FAULT`/`VALID_PAYLOAD`) would make `KVM_SET_VCPU_EVENTS`
-        // return `-EINVAL` only AFTER earlier `KVM_SET_*` ioctls inside
-        // `Backend::restore` already mutated the target vCPU. Validate here, while
-        // committing nothing, to preserve restore's reject-before-mutation (atomic)
-        // contract — symmetric with the `save_vm_state` guard (PR #12 round 8).
-        if let Some(reason) = records::cap_unrestorable_events(&dev.events) {
+        // Reject an UNRESTORABLE `kvm_vcpu_events` blob up front — a foreign / malformed v3
+        // blob with an invalid active exception shape or a cap-disabled validity bit would make
+        // `KVM_SET_VCPU_EVENTS` reject it only AFTER earlier `KVM_SET_*` ioctls inside
+        // `Backend::restore` already mutated the target vCPU. Validate here, while committing
+        // nothing, to preserve restore's reject-before-mutation (atomic) contract — symmetric
+        // with the `save_vm_state` guard (PR #12 round 8).
+        if let Some(reason) = records::unrestorable_events(&dev.events) {
             return Err(VmmError::ContractViolation(format!(
                 "restore_vm_state: {reason}"
             )));
@@ -941,9 +940,8 @@ impl<B: Backend<A = X86>> Vmm<B> {
         // stale NMI-pending / interrupt-shadow / SMM left on a NON-fresh target vCPU
         // (a clear bit means "leave unchanged" to `KVM_SET_VCPU_EVENTS`) — restore is
         // then independent of the prior occupant (the branch / restore-in-place case;
-        // PR #12 round 6). The cap-gated TRIPLE_FAULT/PAYLOAD were already rejected
-        // above. Idempotent for a self-produced blob; the `state_hash` still uses
-        // `canonical_events`.
+        // PR #12 round 6). Event shape and cap validation already ran above. Idempotent for a
+        // self-produced blob; the `state_hash` still uses `canonical_events`.
         vcpu.events = records::events_for_restore(&dev.events);
         let clock_offset = dev.tsc_adjust;
         Ok((
