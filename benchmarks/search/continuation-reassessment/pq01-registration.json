@@ -1,0 +1,68 @@
+{
+  "format": "retention-pq01-registration-v1",
+  "registered_utc": "2026-09-10T22:43:43.869079+00:00",
+  "deadline_utc": "2026-09-10T23:03:43.869079+00:00",
+  "synthesis_deadline_utc": "2026-09-10T23:23:43.869079+00:00",
+  "host": "ms02",
+  "msr1": "Unavailable; do not access.",
+  "source_commit": "e00b9cc8413ca7f6737d0b34f1636d477bc16287",
+  "binary": "/root/harmony-depth-transfer-20260909/builds/paused-query-x86-001/metroid-checkpoint-inspect", "binary_path_note": "# pragma: allowlist secret -- public local build path",
+  "binary_sha256": "0deb440b2d605e8d83622a3fee7d9089a5abbedf90b73f1dd472cf9fb6ec838e",
+  "build_info": "/root/harmony-depth-transfer-20260909/builds/paused-query-x86-001/build-info.json",
+  "build_info_sha256": "eacdacc041ae8b6359c998aa81c7a86a65aab24cd52de920d2188de7d1d696e0",
+  "protocol": "/root/harmony-depth-transfer-20260909/protocol/pq01-20260910",
+  "protocol_sha256": {
+    "read_pq01.py": "aa41d55781d782327156af770d0ea8139f85ab046812099df7ee714cb44f31a6",
+    "test_pq01.py": "2aeba3d8bf2438735be440020f8d96cfb0d743666d3919d247c3725e6713b0e4",
+    "analyze_pq01.py": "f96fcbe1dafdaed2d8e43e7e98f35f67d115b8bab40bcc82848e7a9b35dcad00",
+    "run_pg01.py": "5eb502b82c9d253011d67274c09ead99201691d449b6d9e51993382c94a63500",
+    "pq01-design.md": "a4ba19e3ae4986dc7eb8e1ddcfb2ae7d4a130c7c076b7ba462a2f19dd00cc99e",
+    "pq01-inventory-preflight.json": "4c2fdb40eba8b9742270a0f4cf832177e8d965af3c3c2b5e72b80afd36042586",
+    "pq01-ordinary-request.json": "bd2bbf1b0eaebe4a42b81c6e27d62fca5f5be40e6a52c49b0a68f9948cb9206f",
+    "pq01-ordinary-inventory.json.gz": "9626eeee4de65e1fb074ac3d20eca254797ddf56d1a82c5060cd1bb80d02c5f4",
+    "pq01-progress-request.json": "b71210db6a5bdd231d3d25a496722ac3fc0300d3837279db9bb99e98aae68e5d",
+    "pq01-progress-inventory.json.gz": "9474a1349579950558e927015ecacee284048ac77c4f9fb4fe0bc60a7e9f037f"
+  },
+  "analysis_dependency_sha256": {
+    "benchmarks/search/depth-transfer/boss_interval.py": "d833e9575ad4a26a5db5955738128f44c701065f4446f4834f3ff5cff89d3995",
+    "benchmarks/search/continuation-reassessment/pg02-output/p0-ordinary/campaign/stream.jsonl.gz": "daa96c8b3c6e0fd7f1244c8da66118cab0dfe6dd6a0176e70d07d1a1f59a4f91",
+    "benchmarks/search/continuation-reassessment/pg02-output/p0-progress/campaign/stream.jsonl.gz": "17f8af51d6f6dc69ccf2adf50ac1bfc5236e4ac93532eee76a956a82f4568f69"
+  },
+  "output": "/root/harmony-depth-transfer-20260909/runs/paused-query-pq01",
+  "service": "harmony-paused-query-pq01-20260910.service",
+  "service_runtime_seconds": 120,
+  "process_runtime_seconds": 45,
+  "cpus": [
+    8
+  ],
+  "cgroup_limits": {
+    "memory.max": "1073741824",
+    "memory.swap.max": "0",
+    "pids.max": "64"
+  },
+  "file_limit_bytes": 8388608,
+  "output_limit_bytes": 33554432,
+  "physical_frame_allocation": 2000,
+  "expected_physical_frames": 1858,
+  "search_frames": 0,
+  "continuation_frames": 0,
+  "cells": [
+    {
+      "id": "ordinary",
+      "request": "pq01-ordinary-request.json",
+      "inventory": "pq01-ordinary-inventory.json.gz"
+    },
+    {
+      "id": "progress",
+      "request": "pq01-progress-request.json",
+      "inventory": "pq01-progress-inventory.json.gz"
+    }
+  ],
+  "ledger_before": {
+    "admitted_search": 2985486535,
+    "known_auxiliary": 74266963
+  },
+  "gate": "Both original checkpoints must decode into exactly the frozen local inventory, match the original root context and snapshot, preserve complete snapshot/clock at every paused restore, and each report exactly 929 setup frames and zero continuation frames. First failure stops. No action, search, prefix replay, root selection, changed seed, or retry is allocated. Always preserve launched-cell receipts and capture service resources before collection.",
+  "interpretation": "Cached states include reconstruction history. Report fixed root-scope HP/resources and actual parent draws from the original streams, with final-cache conditioning and unmeasured opportunity explicit. This is not an active-state census or efficacy panel. It cannot repair or resume PG02. No automatic further allocation follows.",
+  "scope": "Separate bounded state read. PG02 and every earlier allocation remain closed; no native PQ01 call has occurred at publication time."
+}

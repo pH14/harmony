@@ -1328,3 +1328,16 @@ actual arm schemas. Capture failure resources before collection and charge all
 launched cells. No new native allocation exists. Independent confirmation, MM2
 transfer and untouched fresh validation remain required; the full goal stays
 active and unachieved.
+
+## PQ01 prospective paused-state query
+
+Registered 2026-09-10T22:43:43.869079+00:00; native ends by 2026-09-10T23:03:43.869079+00:00,
+synthesis by 2026-09-10T23:23:43.869079+00:00. Two original PG02 checkpoints have
+1,752/1,693 cached states. Local inventories decode with zero emulator frames.
+A separate 2,000-frame allowance covers exactly two 929-frame initializations
+and zero gameplay actions. Every paused read preserves full snapshot and clock.
+Use ms02 CPU8, 1 GiB, 45 seconds per child, 120 seconds service. First failure
+stops; preserve all launched receipts and pre-collection resources. The fixed
+query describes cached HP/resources and actual parent choices, with survivor
+bias and unresolved active membership explicit. It cannot validate or resume
+PG02. No native query has run at publication. Full goal remains unachieved.
