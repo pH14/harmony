@@ -12,3 +12,5 @@ pub mod target;
 
 /// Reporting-only bounded replacement-pair diagnostics.
 pub mod retention_audit;
+/// Exhaustive bounded snapshots for separately qualified replay diagnostics.
+pub mod retention_capture;

@@ -397,6 +397,27 @@ native inspection. Raw HP is a state observation, not lifetime damage. Active
 membership needs the producing run's exact replacement/retirement semantics
 and evidence; it is not encoded in `SnapshotCheckpoint`.
 
+`MetroidGame::with_retention_capture(path, identity)` provides an optional
+exhaustive capture for separately qualified short replays. It uses the existing
+read-only full-slot observer, requires the ordinary one-member local rule, and
+records both snapshots and checkpoint-local inputs with the current incumbent's
+stable ID. A missing incumbent snapshot remains unavailable. Exact-input
+duplicates and empty-slot admissions are outside this observer; recorded replay
+decisions must account for them separately. This capture does not decode HP,
+restore an emulator, or feed observations back into search.
+
+The framed postcard file binds the actual replay stream and origin hashes,
+snapshot format and key policy. It permits at most 5,000 competitions, 4,096
+actions per input, 256 KiB per encoded frame and 512 MiB per file. Encoding uses
+one fixed 256 KiB buffer; temporary input reconstruction, snapshot clones and I/O
+remain host overhead outside logical archive memory. Existing files are refused.
+An error prevents a completion footer; the finish hook disables further capture.
+`retention_capture::CaptureReader` streams one row at a time and rejects wrong
+encodings, bounds violations, missing or inconsistent footers and trailing data.
+Only a successful terminal read establishes file completeness. Native use still
+requires pinned assets, exact per-job replay equality and external process,
+wall, memory and output limits. The builder API adds no ordinary evaluator flag.
+
 ### Experimental local terminal retry
 
 `MetroidGame::with_local_terminal_retry(true)` records

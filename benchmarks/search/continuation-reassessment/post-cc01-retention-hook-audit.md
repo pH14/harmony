@@ -106,3 +106,24 @@ accounting, wall/process deadlines, memory/output ceilings, refusal behavior
 and failure artifacts. Favor one complete short replay and one paused target
 over repeated genesis replays or another search. There is no allocated native
 stage yet, no new action bank or seed, and no fresh-search panel earned here.
+
+## Capture implementation checkpoint
+
+`workloads/nes/src/metroid/retention_capture.rs` now implements the bounded
+workload capture and a streaming reader, attached through the existing
+`MetroidGame` retention callback. It does not inspect or restore an emulator.
+The file names the actual stream/origin hashes and the snapshot/key encodings;
+an incompatible decoder fails before rows. Storage is capped at 5,000
+competitions, 4,096 actions per input, 256 KiB per framed record and 512 MiB per
+file. Exact-output completeness requires a matching footer and EOF. Capture or
+read errors are sticky; missing incumbent snapshots remain explicit.
+
+Source tests exercise actual record round trips, missing state, output refusal,
+record/input/encoding/output caps, interrupted and extra-byte files, incompatible
+encodings, and unchanged policy identity without constructing a target. The
+149-test NES library suite with AP01's motion/context features and strict
+all-target Clippy pass. This proves the capture plumbing's checked behavior,
+not cross-build replay compatibility or a scientific outcome. The standalone
+strict replay/paused-inspection command, its source tests, prospective native
+registration, ms02 build/qualification and actual AP01 observation are still
+required. No native work is allocated by this implementation.

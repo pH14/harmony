@@ -983,3 +983,15 @@ on every distinct mechanism at the existing diagnostic root. The observer stays
 independent of the policy it measures; a future explicit policy using qualified
 state information would require a separate identity and evidence. The original
 matched boss/Wily goal remains active and unachieved.
+
+The existing-hook source falsifier is published: different-input same-key
+boundaries do compete, exact retained inputs bypass competition, and the
+observer distinguishes current slot membership from cached replaced states.
+A bounded optional Metroid capture now writes competition snapshots and
+checkpoint-local inputs outside policy state; its reader requires exact
+completion and rejects incompatible encodings. The AP01-feature library tests
+and strict Clippy pass without native ROM execution. Next complete the minimal
+standalone replay/paused-inspection caller and its input/identity checks, then
+freeze a distinct bounded qualification and diagnostic registration before
+using ms02. Expected full-slot observations are 3,770. msr1 remains unavailable;
+all frame ledgers and completed failed gates remain unchanged.

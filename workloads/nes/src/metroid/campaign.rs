@@ -100,6 +100,7 @@ pub struct MetroidGame {
     endpoint_encounter_path: Option<PathBuf>,
     terminal_policy: MetroidTerminalPolicy,
     retention_audit: Option<std::sync::Mutex<super::retention_audit::RetentionAudit>>,
+    retention_capture: Option<std::sync::Mutex<super::retention_capture::RetentionCapture>>,
 }
 
 impl MetroidGame {
@@ -146,6 +147,7 @@ impl MetroidGame {
             #[cfg(feature = "metroid-boss-context-audit")]
             endpoint_encounter_path: None,
             retention_audit: None,
+            retention_capture: None,
             terminal_policy: MetroidTerminalPolicy::Legacy,
         }
     }
@@ -226,6 +228,20 @@ impl MetroidGame {
             super::retention_audit::RetentionAudit::new(path),
         ));
         self
+    }
+
+    /// Capture all ordinary single-member competitions for a bounded replay.
+    /// The caller pins the actual replay stream/origin and accounts for host I/O.
+    /// No emulator work occurs here. Existing output paths are refused.
+    pub fn with_retention_capture(
+        mut self,
+        path: &Path,
+        identity: super::retention_capture::CaptureIdentity,
+    ) -> Result<Self, Box<dyn Error>> {
+        self.retention_capture = Some(std::sync::Mutex::new(
+            super::retention_capture::RetentionCapture::create(path, identity)?,
+        ));
+        Ok(self)
     }
 
     fn publish_milestones(
@@ -689,6 +705,12 @@ impl Reporting for MetroidGame {
                 .map_err(|_| "retention audit lock poisoned")?
                 .observe(event)?;
         }
+        if let Some(capture) = &self.retention_capture {
+            capture
+                .lock()
+                .map_err(|_| "retention capture lock poisoned")?
+                .observe(event)?;
+        }
         Ok(())
     }
 
@@ -697,6 +719,12 @@ impl Reporting for MetroidGame {
             audit
                 .lock()
                 .map_err(|_| "retention audit lock poisoned")?
+                .finish()?;
+        }
+        if let Some(capture) = &self.retention_capture {
+            capture
+                .lock()
+                .map_err(|_| "retention capture lock poisoned")?
                 .finish()?;
         }
         Ok(())
