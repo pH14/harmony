@@ -355,9 +355,8 @@ fn run_faults_consonance(
                 faults_workload::package::search(artifacts, &vocabulary, options)?
             }
         };
-        // Both modes leave a workspace an investigation can open. A search
-        // publishes its findings; a replay publishes a facts-only workspace
-        // alongside its report because replay has no finding records to add.
+        // Both modes publish the findings retained by their actual execution
+        // so investigation opens the same endpoint the report describes.
         let workspace = faults_workload::workspace::publish(
             &options.output,
             image,

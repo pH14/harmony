@@ -478,6 +478,22 @@ impl FaultTarget {
         })
     }
 
+    /// Read the complete SDK event prefix at the current stopped endpoint.
+    ///
+    /// This is a control-plane read: it does not run the guest or advance
+    /// virtual time. A read failure is returned to the caller so an endpoint
+    /// cannot be published with an invented empty event stream.
+    pub fn sdk_events(&self) -> Result<Vec<consonance_client::session::SdkEvent>, String> {
+        if self.failed {
+            return Err("SDK events are unavailable after a failed target operation".to_owned());
+        }
+        with_live(&self.config, |live| {
+            live.session
+                .sdk_events()
+                .map_err(|error| format!("SDK events: {error}"))
+        })
+    }
+
     /// The last bytes the guest wrote to its serial console.
     #[must_use]
     pub fn console_tail(&self) -> String {

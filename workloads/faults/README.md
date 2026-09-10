@@ -158,6 +158,11 @@ reports, and workload state registers. `bug_found` and `first_bug_execution` com
 the confirmed bugs, so a hit that no replay reproduced is reported and does not
 count as a rediscovery.
 
+Each successful replay also writes `replay-N-events.json` beside the report.
+This versioned sidecar retains the endpoint virtual time, direct engine digest,
+and complete SDK event stream; older outputs without a sidecar have no such
+event evidence.
+
 Search also writes
 `campaign-summary.json`, `stream.jsonl`, `progress.jsonl`,
 `first-bug-input.json`, and one `bug-N.json` per recorded bug

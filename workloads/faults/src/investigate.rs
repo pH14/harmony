@@ -33,17 +33,7 @@ pub const DEFAULT_WALL_SECONDS: u64 = 30;
 pub const EVIDENCE_LIMIT: usize = 256 * 1024;
 
 /// One SDK report the guest published, with its stream position.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SdkEventRecord {
-    /// Position in the guest's event stream. Positions start at zero.
-    pub position: u64,
-    /// Virtual time at which the guest published it.
-    pub virtual_time: u64,
-    /// Event id.
-    pub event: u32,
-    /// Raw payload, encoded as lowercase hexadecimal.
-    pub payload: String,
-}
+pub use crate::package::replay_evidence::SdkEventRecord;
 
 /// What a bounded run may do.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

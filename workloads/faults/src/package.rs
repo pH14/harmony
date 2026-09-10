@@ -119,6 +119,10 @@ pub enum StateHashEncoding {
     LegacySha256OfDigest,
 }
 
+/// Versioned complete SDK event evidence retained for each replay run.
+#[path = "package/replay_evidence.rs"]
+pub mod replay_evidence;
+
 /// One run of a replayed action list.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ReplaySummary {
@@ -347,6 +351,44 @@ fn state_digest_hex(digest: &[u8; 32]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Validate all endpoint evidence read from one stopped replay.
+///
+/// The event stream is decoded in full to rebuild the target observations, and
+/// the hash is checked on both sides of the read. This keeps a sidecar from
+/// claiming a different endpoint when a control-plane read fails or races an
+/// unexpected state change.
+#[cfg(any(
+    test,
+    all(
+        feature = "consonance",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )
+))]
+fn validate_replay_capture(
+    observation: &FaultObservations,
+    raw_events: &[(u64, u32, Vec<u8>)],
+    before_hash: [u8; 32],
+    after_hash: [u8; 32],
+) -> Result<Vec<replay_evidence::SdkEventRecord>, String> {
+    if before_hash != after_hash {
+        return Err("replay endpoint state changed while reading SDK events".to_owned());
+    }
+    if raw_events
+        .iter()
+        .any(|(virtual_time, _, _)| *virtual_time > observation.moment)
+    {
+        return Err("replay SDK events contain an event after the endpoint moment".to_owned());
+    }
+    let capture = crate::target::decode_sdk_events(raw_events)?;
+    let decoded = FaultObservations::new(observation.moment, &capture, observation.stop);
+    if decoded != *observation {
+        return Err("replay SDK events do not reproduce the target's full observations".to_owned());
+    }
+    replay_evidence::records_from_raw(raw_events)
+}
+
 /// Retain the first actual replay finding, keeping its observations and hash
 /// from that same run. Later repetitions remain separate replay results.
 #[cfg(any(
@@ -436,8 +478,8 @@ mod live {
     use serde_json::json;
 
     use super::{
-        Artifacts, BugSummary, Options, ReplaySummary, Report, StateHashEncoding,
-        first_confirmed_bug,
+        Artifacts, BugSummary, Options, ReplaySummary, Report, first_confirmed_bug,
+        replay_evidence::ReplayEventEvidence,
     };
     use crate::{
         bundle::FaultVocabulary,
@@ -550,27 +592,35 @@ mod live {
         )?;
         report.executions = campaign_report.campaign.executions_completed;
         report.horizons_clocked = campaign_report.campaign.frames_emulated;
-        for bug in &written {
+        for (index, bug) in written.iter().enumerate() {
             // A campaign hit is a claim about an action list, so each one is
             // replayed from a fresh session: the replay both supplies the
             // guest state hash the campaign never recorded and decides whether
             // the hit is a rediscovery.
             let violations: Vec<u32> = bug.observations.violations.iter().copied().collect();
+            let run = u32::try_from(index.saturating_add(1))?;
             let witness = match replay_once(artifacts, &config, &bug.actions) {
-                Ok(witness) => Some(witness),
+                Ok(mut witness) => {
+                    witness.summary.run = run;
+                    witness.events.run = run;
+                    witness.events.write(&options.output)?;
+                    Some(witness)
+                }
                 Err(error) => {
                     eprintln!("bug {} did not replay: {error}", bug.bug);
                     None
                 }
             };
-            let confirmed = witness.as_ref().is_some_and(|(summary, observed)| {
-                super::replay_confirms_endpoint(
-                    &bug.observations,
-                    observed.as_ref().map(|bug| &bug.observations),
-                    summary,
-                )
+            let confirmed = witness.as_ref().is_some_and(|witness| {
+                witness.reproduction.as_ref().is_some_and(|observed| {
+                    super::replay_confirms_endpoint(
+                        &bug.observations,
+                        Some(&observed.observations),
+                        &witness.summary,
+                    )
+                })
             });
-            let witness = witness.map(|(summary, _)| summary);
+            let summary = witness.as_ref().map(|witness| &witness.summary);
             if !confirmed {
                 eprintln!(
                     "bug {} was not confirmed by replay and is reported unconfirmed",
@@ -583,17 +633,13 @@ mod live {
                 stop: bug.observations.stop,
                 violations,
                 sometimes: bug.observations.sometimes.iter().copied().collect(),
-                state_hash: witness
-                    .as_ref()
-                    .map(|witness| witness.state_hash.clone())
-                    .unwrap_or_default(),
-                state_hash_encoding: witness
-                    .as_ref()
-                    .map_or(StateHashEncoding::EngineDigest, |witness| {
-                        witness.state_hash_encoding
+                state_hash: summary.map_or_else(String::new, |summary| summary.state_hash.clone()),
+                state_hash_encoding: summary
+                    .map_or(super::StateHashEncoding::EngineDigest, |summary| {
+                        summary.state_hash_encoding
                     }),
                 confirmed,
-                replay: witness,
+                replay: summary.cloned(),
             });
         }
         // A campaign hit no replay reproduced is not a rediscovery, so the
@@ -625,18 +671,22 @@ mod live {
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         for run in 1..=repeat {
-            let (mut summary, reproduction) = replay_once(artifacts, &config, actions)?;
-            summary.run = run;
-            if let Some(mut bug) = reproduction {
+            let mut witness = replay_once(artifacts, &config, actions)?;
+            witness.summary.run = run;
+            witness.events.run = run;
+            // The sidecar is durable evidence for the run and must exist
+            // before report.json (or its retained bug) is published.
+            witness.events.write(&options.output)?;
+            if let Some(mut bug) = witness.reproduction {
                 bug.execution = u64::from(run);
-                super::retain_replay_finding(&mut report, &bug, &summary, &options.output)?;
+                super::retain_replay_finding(&mut report, &bug, &witness.summary, &options.output)?;
             }
             report.executions = u64::from(run);
             report.horizons_clocked = report
                 .horizons_clocked
-                .saturating_add(summary.guest_horizons);
-            report.bug_found |= summary.bug;
-            report.replays.push(summary);
+                .saturating_add(witness.summary.guest_horizons);
+            report.bug_found |= witness.summary.bug;
+            report.replays.push(witness.summary);
         }
         report.wall_seconds = started.elapsed().as_secs();
         report.write(&options.output)?;
@@ -650,11 +700,17 @@ mod live {
     /// stand in for guest execution: the run boots, reaches the sealed setup
     /// point, and executes every action of the list. `run` is set by the
     /// caller that ordered the runs.
+    struct ReplayWitness {
+        summary: ReplaySummary,
+        reproduction: Option<crate::report::BugReport>,
+        events: ReplayEventEvidence,
+    }
+
     fn replay_once(
         artifacts: &Artifacts,
         config: &FaultConfig,
         actions: &[FaultAction],
-    ) -> Result<(ReplaySummary, Option<crate::report::BugReport>), Box<dyn Error>> {
+    ) -> Result<ReplayWitness, Box<dyn Error>> {
         let mut target = FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, config)?;
         for action in actions {
             target.apply(*action);
@@ -669,10 +725,21 @@ mod live {
             )
             .into());
         }
-        let observation = target.observation();
+        let observation = target.observation().clone();
+        let state_hash = target.state_hash()?;
+        let raw_events = target.sdk_events()?;
+        let after_hash = target.state_hash()?;
+        let event_records =
+            super::validate_replay_capture(&observation, &raw_events, state_hash, after_hash)?;
+        let events = ReplayEventEvidence::new(
+            1,
+            observation.moment,
+            super::state_digest_hex(&state_hash),
+            event_records,
+        )?;
         let summary = ReplaySummary::from_observation(
-            observation,
-            target.state_hash()?,
+            &observation,
+            state_hash,
             target.horizons_clocked(),
             target.guest_horizons_run(),
         );
@@ -687,11 +754,15 @@ mod live {
                         horizon_nanos: config.horizon_nanos,
                     },
                     actions,
-                    observation,
+                    &observation,
                 )
             })
             .transpose()?;
-        Ok((summary, reproduction))
+        Ok(ReplayWitness {
+            summary,
+            reproduction,
+            events,
+        })
     }
 
     fn hostname() -> String {
@@ -710,6 +781,29 @@ pub use live::{replay, search};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::target::decode_sdk_events;
+
+    #[test]
+    fn replay_capture_rejects_changed_events_moments_and_hashes() {
+        let raw_events = vec![(5, (1_u32 << 24) | 7, vec![1, 0, 0])];
+        let capture = decode_sdk_events(&raw_events).expect("valid violation event");
+        let observation = FaultObservations::new(10, &capture, FaultStop::Assertion { point: 7 });
+        let hash = [0x42; 32];
+        let records = validate_replay_capture(&observation, &raw_events, hash, hash)
+            .expect("the unchanged endpoint is accepted");
+        assert_eq!(records[0].position, 0);
+
+        let mut changed_payload = raw_events.clone();
+        changed_payload[0].2[0] = 0;
+        assert!(decode_sdk_events(&changed_payload).is_ok());
+        assert!(validate_replay_capture(&observation, &changed_payload, hash, hash).is_err());
+
+        let mut changed_moment = raw_events.clone();
+        changed_moment[0].0 = observation.moment + 1;
+        assert!(validate_replay_capture(&observation, &changed_moment, hash, hash).is_err());
+
+        assert!(validate_replay_capture(&observation, &raw_events, hash, [0x43; 32]).is_err());
+    }
 
     #[test]
     fn confirmation_requires_the_recorded_moment_and_all_observations() {
