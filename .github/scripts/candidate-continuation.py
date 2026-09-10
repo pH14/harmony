@@ -71,6 +71,12 @@ def same_endpoint(original, events, point, view):
     require(actual == events, "complete raw SDK event streams differ")
 
 
+def retained_identity(summary, point):
+    require(summary.get("state_hash_encoding") == "engine_digest", "legacy continuation digest")
+    require(summary.get("moment") == point.get("moment") and identity(summary) == identity(point),
+            "reply and retained moment name different endpoints")
+
+
 def self_test():
     original = {"format": "harmony-replay-events-v1", "run": 1, "virtual_time": 10,
                 "state_hash": "42" * 32, "state_hash_encoding": "engine_digest",
@@ -81,6 +87,14 @@ def self_test():
             "lines": [json.dumps(original["events"])]}
     events = original_evidence(original)
     same_endpoint(original, events, point, view)
+    retained = {**point, "state_hash_encoding": "engine_digest"}
+    retained_identity(retained, point)
+    try:
+        retained_identity({**retained, "state_hash_encoding": "legacy_sha256_of_digest"}, point)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("legacy continuation digest escaped")
     mutations = [
         ("time", lambda p, v: p.update(virtual_time=11)),
         ("digest", lambda p, v: p.update(state_hash="43" * 32)),
@@ -98,7 +112,7 @@ def self_test():
         except AssertionError:
             continue
         raise AssertionError(f"negative control escaped: {name}")
-    print("identity comparator: positive and seven negative controls passed")
+    print("identity comparator: positive and eight negative controls passed")
 
 
 def qualify(root):
@@ -134,8 +148,12 @@ def qualify(root):
                       "--out", str(workspace)], parse=False)
     original = json.loads((workspace / "replay-1-events.json").read_text())
     events = original_evidence(original)
+    report = json.loads((workspace / "report.json").read_text())
+    require(case["oracle"]["evidence"] in report["replays"][0]["sometimes"],
+            "replay lacks the qualified detector evidence")
     findings = w("findings", "findings")
     require(len(findings["findings"]) == 1, "replay must retain exactly one actual finding")
+    require(findings["findings"][0].get("verified") is True, "replay finding is unconfirmed")
     source = w("source-before", "inspect", "bug-1")
     require(source.get("state_hash_encoding") == "engine_digest", "finding digest encoding")
     require(identity(source) == identity(original), "sidecar and finding name different endpoints")
@@ -143,6 +161,8 @@ def qualify(root):
             "replay did not reproduce the qualified witness")
 
     def compare(label, point):
+        retained = w(f"{label}-point", "inspect", point["moment"])
+        retained_identity(retained, point)
         view = w(f"{label}-events", "inspect", point["moment"], "events", "--limit", "1000000")
         same_endpoint(original, events, point, view)
 

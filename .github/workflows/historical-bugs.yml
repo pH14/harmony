@@ -35,7 +35,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: snapshot-reproduction-${{ github.ref }}-${{ inputs.cpu_snapshot }}-${{ inputs.msr_snapshot }}
+  group: snapshot-reproduction-${{ github.ref }}-${{ inputs.cpu_snapshot }}-${{ inputs.msr_snapshot }}-${{ inputs.cli_continuation }}
   cancel-in-progress: false
 jobs:
   cli-continuation:
@@ -203,7 +203,7 @@ jobs:
           if-no-files-found: error
 
   completion:
-    if: ${{ !inputs.cpu_snapshot && !inputs.msr_snapshot }}
+    if: ${{ !inputs.cpu_snapshot && !inputs.msr_snapshot && !inputs.cli_continuation }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
