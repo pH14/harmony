@@ -386,7 +386,10 @@ No new instrumentation, emulator work or policy promotion follows.
 
 A [bounded Fable 5.1 xhigh review and adjudication](post-cc01-adjudication.md)
 then identifies a distinct representation question: whether lower classified
-boss HP is lost at a same-key boundary or a retention collision. The complete
+boss HP is lost in a retention collision. A subsequent source check disproves
+the proposed separate within-job same-key suppression: `previous_key` supplies
+completion context, and Metroid's completion is the identity. The existing
+retention hook sees every ordinary full-slot different-input competition. The complete
 AP01 stream has 3,295 rejected candidates but no endpoint HP records, so the
 saved evidence cannot answer that query. The next task is a minimal replay-only
 design for that exact short pilot, with explicit cross-host compatibility and

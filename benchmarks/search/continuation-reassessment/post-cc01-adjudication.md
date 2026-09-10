@@ -34,9 +34,21 @@ closed by the prefix bound.
 The existing key omits boss HP. That gives a distinct hypothesis from the failed
 continuation, retry, cutoff and resource proposals: two live endpoints at the
 same existing key can have different classified boss HP. Spatial/resource
-preference may reject the lower-HP endpoint, and within-job repeated-key
-suppression can prevent a candidate from reaching the retention competition.
-The hypothesis is about representation, not a new root or action bank.
+preference may reject the lower-HP endpoint. The hypothesis is about
+representation, not a new root or action bank.
+
+The subsequent source check rejects another premise in the review: there is
+**no within-job repeated-key suppression** on this path. `admit_job` passes every
+viable candidate to `insert_after_observed`. Its `previous_key` argument carries
+key-completion context across rejected boundaries; Metroid's `complete` method
+returns the key unchanged. Only an exact retained input returns before the
+ordinary slot competition. Same-key candidates with different inputs still
+compete and reach the existing observer. No earlier observation hook is needed
+for this query. Preserve the original review as received, rather than editing
+away this source-falsified claim.
+The [source falsifier and bounded design](post-cc01-retention-hook-audit.md)
+pin the historical implementation, exercise the observer's edge cases, and
+derive a 3,770-competition completeness check for the exact pilot.
 
 The review overstates the evidence. We have not observed a rejected HP128 child.
 A different-input same-key collision is not an exact-input duplicate. The six
@@ -66,9 +78,10 @@ identity must not be silently relabeled as x86: establish explicit ms02
 compatibility before any replay, and stop on mismatch.
 
 The concrete query is whether a live classified endpoint has lower same-boss
-snapshot-local HP than the representative kept in its current slot, or loses
-that distinction through within-job same-key suppression. Inspect both paths;
-a retention callback alone misses the latter. Preserve player resources,
+snapshot-local HP than the representative kept in its current slot and is
+rejected by the local rule. The existing retention callback covers those
+competitions; exact-input duplicates are a separate, counted disposition.
+Preserve player resources,
 classification availability, actual local competitors and disposition. Do not
 turn a gap between action endpoints into exact lifetime damage or assume that
 a sampled difference is globally uncovered utility.

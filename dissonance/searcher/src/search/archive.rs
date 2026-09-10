@@ -5228,6 +5228,114 @@ mod tests {
     }
 
     #[test]
+    fn same_key_observation_distinguishes_duplicates_current_slots_and_missing_snapshots() {
+        // Snapshot values are deliberately invisible to the key's quality rule.
+        // Distinct inputs with this same key must still reach the observer.
+        let mut archive = Archive::<u8, PreferredKey, (), u16>::new(|_| 1);
+        let key = PreferredKey {
+            slot: 7,
+            quality: 2,
+        };
+        let candidate = |suffix, key| ArchiveCandidate {
+            suffix,
+            key,
+            milestones: (),
+        };
+        assert_eq!(
+            archive
+                .insert(None, 0, candidate(vec![1], key), 140)
+                .unwrap(),
+            Some(0)
+        );
+        let mut events = Vec::new();
+        let mut observe = |event: &super::RetentionObservation<'_, u8, PreferredKey, u16>| {
+            let members = (event.slot_members)()?;
+            assert_eq!(event.slot_member_count, 1);
+            assert_eq!(members.len(), 1);
+            assert_eq!(members[0].snapshot, event.incumbent.1);
+            assert_eq!(members[0].key, event.incumbent.0);
+            assert_eq!(members[0].retained_by_local_rule, !event.replaces);
+            events.push((
+                event.execution,
+                *event.candidate.1,
+                event.incumbent.1.copied(),
+                members[0].id,
+                event.candidate_admitted,
+            ));
+            Ok(())
+        };
+        // Mimic two consecutive rejected boundaries from the same job. The
+        // second receives the first boundary's key, not a skip instruction.
+        for (suffix, previous, snapshot) in [(vec![2], None, 129), (vec![2, 3], Some(key), 128)] {
+            assert_eq!(
+                archive
+                    .insert_after_observed(
+                        Some(0),
+                        previous,
+                        1,
+                        candidate(suffix, key),
+                        snapshot,
+                        &mut observe,
+                    )
+                    .unwrap(),
+                (None, key)
+            );
+        }
+        // An exact retained input bypasses competition. Its snapshot must not
+        // be counted as another discarded different-input state.
+        assert_eq!(
+            archive
+                .insert_after_observed(None, None, 2, candidate(vec![1], key), 140, &mut observe)
+                .unwrap(),
+            (Some(0), key)
+        );
+        // A reserved job can still hold a replaced entry's snapshot.
+        let (_reserved_snapshot, _, reserved_id) = archive.pin_job_origin(0).unwrap();
+        let better = PreferredKey { quality: 3, ..key };
+        assert_eq!(
+            archive
+                .insert_after_observed(None, None, 3, candidate(vec![4], better), 131, &mut observe)
+                .unwrap(),
+            (Some(1), better)
+        );
+        assert!(!archive.active[0]);
+        assert_eq!(archive.entries[0].snapshot.as_deref(), Some(&140));
+        // The old snapshot remains cached, but the next competition must name
+        // the current slot member. Then expose a missing snapshot explicitly.
+        for (execution, snapshot) in [(4, 127), (5, 126)] {
+            if execution == 5 {
+                archive.entries[1].snapshot = None;
+            }
+            assert_eq!(
+                archive
+                    .insert_after_observed(
+                        Some(1),
+                        Some(better),
+                        execution,
+                        candidate(vec![5], better),
+                        snapshot,
+                        &mut observe,
+                    )
+                    .unwrap(),
+                (None, better)
+            );
+        }
+        assert_eq!(
+            events,
+            vec![
+                (1, 129, Some(140), 0, false),
+                (1, 128, Some(140), 0, false),
+                (3, 131, Some(140), 0, true),
+                (4, 127, Some(131), 1, false),
+                (5, 126, None, 1, false),
+            ]
+        );
+        assert_eq!(archive.retention_diagnostics.competitions, 5);
+        assert_eq!(archive.input_reconstructions.get(), 0);
+        archive.unpin_job_origin(reserved_id);
+    }
+
+    #[test]
     fn opaque_preference_displaces_only_a_weaker_same_slot_representative() {
         let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
         let insert = |archive: &mut Archive<u8, PreferredKey, (), ()>, input, quality| {

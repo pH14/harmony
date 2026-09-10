@@ -961,13 +961,16 @@ Adopt the distinct fight-progress representation question, not the review's
 unsupported claim that retention is already proved to be the bottleneck.
 The exact AP01 stream contains 2,548 jobs and 3,295 rejected candidates but no
 endpoint HP/context; cached final snapshots cannot fill that gap. Its ordinary
-key omits boss HP, and both within-job same-key suppression and local retention
-can matter. No actual rejected lower-HP endpoint has yet been established.
+key omits boss HP, so a local retention collision can discard that distinction.
+The subsequent source check falsifies the review's supposed within-job same-key
+suppression: `previous_key` supplies key-completion context, Metroid's completion
+is the identity, and every viable different-input candidate reaches the ordinary
+competition. No actual rejected lower-HP endpoint has yet been established.
 
 Next design a minimal replay-only inspection of this complete short pilot,
 using existing snapshot/classifier/retention hooks. It must preserve each
-original job's frames, result digest and admission decisions, cover the earlier
-same-key suppression path, and distinguish snapshot-local HP from lifetime
+original job's frames, result digest and admission decisions, count exact-input
+duplicates separately, and distinguish snapshot-local HP from lifetime
 damage or proven useful futures. Establish ms02 compatibility with the original
 ARM source/assets explicitly; do not silently rewrite identity or access msr1.
 Use source and planted counterexamples first. Any native replay requires its
