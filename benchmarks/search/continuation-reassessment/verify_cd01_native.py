@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check completed native CD01 pairs against their frozen identities and limits.
+"""Check completed native continuation pairs against their frozen identities and limits.
 
 This is artifact/resource verification, not a replacement for score_cd01.py.
 It reads saved evidence only and does not execute or replay the emulator.
@@ -16,9 +16,10 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def verify(protocol, evidence, pair):
-    name = f'cd01-pair-{pair}'
-    master_path = protocol / 'cd01-registration.json'
+def verify(protocol, evidence, pair, prefix='cd01', registration_commit='648a70474ea7477c4c3d41969f47a484b3813549'):
+    assert prefix in ('cd01', 'cc01')
+    name = f'{prefix}-pair-{pair}'
+    master_path = protocol / f'{prefix}-registration.json'
     master = json.loads(master_path.read_text())
     spec = next(p for p in master['panels'] if p['id'] == name)
     sub_path = protocol / spec['registration']
@@ -27,7 +28,7 @@ def verify(protocol, evidence, pair):
     panel_path = evidence / f'{name}-results.json'
     panel = json.loads(panel_path.read_text())
     assert panel['registration_sha256'] == spec['registration_sha256']
-    assert panel['registration_commit'] == '648a70474ea7477c4c3d41969f47a484b3813549'
+    assert panel['registration_commit'] == registration_commit
     assert panel['execution_complete'] and panel['allocation_stop'] is None
     assert [r['id'] for r in panel['records']] == [c['id'] for c in sub['cells']]
     journal_path = evidence / f'{name}-journal.jsonl'
@@ -113,7 +114,7 @@ def verify(protocol, evidence, pair):
                             'max_process_rss_bytes': summary['max_process_rss_bytes'],
                             'peak_disk_allocated_bytes_sampled': summary['peak_disk_allocated_bytes_sampled'],
                             'witness_sha256': witness_hashes})
-    return {'format': 'continuation-cd01-native-verification-v1', 'pair': pair, 'verified': True,
+    return {'format': f'continuation-{prefix}-native-verification-v1', 'pair': pair, 'verified': True,
             'registration_sha256': sha(master_path.read_bytes()), 'panel_sha256': sha(panel_path.read_bytes()),
             'native_archive_sha256': sha(archive_path.read_bytes()), 'journal_sha256': sha(journal_path.read_bytes()),
             'service_invocation': starts[0]['INVOCATION_ID'], 'service_elapsed_seconds': service_seconds,
@@ -127,8 +128,10 @@ if __name__ == '__main__':
     parser.add_argument('--protocol', type=Path, required=True)
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--pair', type=int, required=True)
+    parser.add_argument('--prefix', choices=('cd01', 'cc01'), default='cd01')
+    parser.add_argument('--registration-commit', default='648a70474ea7477c4c3d41969f47a484b3813549')
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
-    result = verify(args.protocol, args.evidence, args.pair)
+    result = verify(args.protocol, args.evidence, args.pair, args.prefix, args.registration_commit)
     args.out.write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps({k: result[k] for k in ('pair', 'verified', 'service_elapsed_seconds', 'service_memory_peak_bytes')}))

@@ -1,0 +1,47 @@
+{
+  "format": "continuation-cc01-ms02-seed-audit-v1",
+  "recorded_utc": "2026-09-10T12:14:07.985860+00:00",
+  "host": "ms02",
+  "seeds": [
+    833917373,
+    4204540845,
+    586667767,
+    2160473381
+  ],
+  "roots": [
+    "/root/harmony",
+    "/root/harmony-255",
+    "/root/harmony-alternative-futures-20260908",
+    "/root/harmony-alternative-futures-followup-20260909",
+    "/root/harmony-at-api-target",
+    "/root/harmony-at-fixes",
+    "/root/harmony-at-fixture",
+    "/root/harmony-at-guest",
+    "/root/harmony-at-guest-seeded",
+    "/root/harmony-at-old",
+    "/root/harmony-depth-transfer-20260909",
+    "/root/harmony-fault-corpus",
+    "/root/harmony-fault-library",
+    "/root/harmony-pr253-diag",
+    "/root/harmony-pr253-soak",
+    "/root/harmony-pr253-trace-bounded",
+    "/root/harmony-pr253-trace-repeat",
+    "/root/harmony-roms",
+    "/root/harmony-search-eval",
+    "/root/harmony-searcher-scaling"
+  ],
+  "files_checked": 4830,
+  "matches": [],
+  "skipped": [
+    {
+      "path": "/root/harmony-alternative-futures-20260908/benchmarks/search/._candidate-registration-005.json",
+      "reason": "'utf-16-be' codec can't decode byte 0xa7 in position 162: truncated data"
+    },
+    {
+      "path": "/root/harmony-depth-transfer-20260909/endpoint-q01-20260910/benchmarks/search/endpoint-encounter/._q01-registration.json",
+      "reason": "'utf-16-be' codec can't decode byte 0xa7 in position 162: truncated data"
+    }
+  ],
+  "scanned_path_content_digest": "5b37cf5ffd730efeada46c5e1be7480eaec8e183b96e7900bf18539b4c8c4896",
+  "scope": "Saved summary/result/registration/seed JSON and JSON.gz under /root/harmony* directories, excluding source/build caches and assets. Tar archives and unrecorded historical use are not certified; copied native panel records are included. No emulator execution or access to msr1."
+}

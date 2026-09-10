@@ -301,6 +301,39 @@ python3 benchmarks/search/continuation-reassessment/verify_cd01_native.py --prot
 python3 benchmarks/search/continuation-reassessment/score_cd01.py --registration benchmarks/search/continuation-reassessment/cd01-registration.json --evidence benchmarks/search/continuation-reassessment/cd01-output --out /tmp/cd01-analysis.json
 ```
 
+## CC01: independent confirmation is registered
+
+The [confirmation decision](cc01-decision.md) and
+[registration](cc01-registration.json) freeze fresh seeds 833917373, 4204540845,
+586667767 and 2160473381. The candidate, control, first-Bombs endpoint, 200M
+horizon, source, assets, selector, suffix and resource limits are unchanged.
+CC01 alone determines its gate; development outcomes are not pooled into it.
+The [thin adapter](score_cc01.py) uses the same frozen paired scorer and endpoint
+helper, with a separate confirmation decision label.
+
+The local saved-record audit finds no seed match in 224 records; the ms02 audit
+finds none in 4,830. Its initial decode failures are preserved and independently
+identified as two AppleDouble metadata sidecars. Their actual JSON records
+parse and contain none of these seeds. A transient local storage failure
+prevented two read-only preparation commands from starting; clearing only this
+task's rebuildable incremental compiler caches restored headroom. No emulator
+work or seed change occurred during these preparation checks.
+
+CD01 is complete and its unused allocation is released after synthesis and
+publication. CC01 receives its own maximum experimental window, ending at
+2026-09-10T16:27:03Z, followed by an hour reserved for synthesis. This does not
+add development cells or alter any earlier registration, outcome or failed gate.
+Start pairs0/1 only after publication and a zero-emulation preflight verifies
+that both worst-case 5,900-second waves fit. Each started pair remains a bounded
+sequential two-arm unit on one four-core group. A completed favorable wave may
+earn only the already-frozen remaining pairs, subject to the same deadline.
+
+Require three strict wins, 15% lower mean restricted cost, and CPU/wall ratios
+at most 1.25. Preserve censored ties and incomplete measurements. A failure
+closes this confirmation line; a pass earns a separately bounded same-mechanism
+MM2 transfer decision. Confirmation native execution is not yet recorded here.
+Untouched boss/Wily validation and the original goal remain outstanding.
+
 ## Ordering findings stay separate from this candidate
 
 Two new source fixtures expose existing limitations without changing policies:

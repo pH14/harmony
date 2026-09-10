@@ -1,0 +1,135 @@
+{
+  "horizon_frames": 200000000,
+  "nominal_search_limit": 1600000000,
+  "bounded_inflight_drain_per_cell": 4194304,
+  "known_auxiliary_limit": 32000000,
+  "scorer_sha256": "a68eac1b6677a37a2326bcffe38b7e198238f862308ae14006d707b6a57d0d63",
+  "helper_sha256": {
+    "score_screen.py": "507e727de3bccb1f6b791433def8f258b762f34809432a6176263e82b3b86036",
+    "named_milestone_endpoint.py": "f2badcaa078f4c80c858e78416221b51dbcd8cc624eee53c2f6b2784e0cc678e"
+  },
+  "milestone_stop": {
+    "name": "bombs",
+    "observation_policy": "metroid-named-progress-v2"
+  },
+  "identity_difference": "Only mixture alphabet_only versus unchanged alphabet_continuation_v1 differs within a pair. Source, terminal v3, key v10, selector cutoff3, suffix, memory, worker count, assets, CPU set and genesis origin match. Common seed labels do not imply identical random draws after adaptive dispatch diverges.",
+  "screen": {
+    "budget_frames": 200000000,
+    "milestone_stop": {
+      "name": "bombs",
+      "observation_policy": "metroid-named-progress-v2"
+    },
+    "required_strict_wins": 3,
+    "pairs": [
+      {
+        "seed": 833917373,
+        "control": "cc01-pair-0-control",
+        "candidate": "cc01-pair-0-candidate"
+      },
+      {
+        "seed": 4204540845,
+        "control": "cc01-pair-1-control",
+        "candidate": "cc01-pair-1-candidate"
+      },
+      {
+        "seed": 586667767,
+        "control": "cc01-pair-2-control",
+        "candidate": "cc01-pair-2-candidate"
+      },
+      {
+        "seed": 2160473381,
+        "control": "cc01-pair-3-control",
+        "candidate": "cc01-pair-3-candidate"
+      }
+    ],
+    "resources": {
+      "max_candidate_to_control_ratio": 1.25,
+      "measurement": "event_stopped_cell_totals_v1"
+    },
+    "criterion": "At least three strict wins and15% lower mean restricted first-Bombs admitted cost; event-stopped CPU and elapsed totals at most1.25 times control. Both-censored pairs are ties. Allocation rule, not population significance.",
+    "early_stop": "Stop further wave dispatch when three wins are mathematically impossible or any measurement/resource condition fails."
+  },
+  "cost_scope": "Admitted job costs include in-job origin reconstruction and bounded drained jobs. Charge measured held witness replays separately against32M known auxiliary allowance; stop further dispatch on overrun. Setup, unadmitted/failed work and any out-of-job reconstruction remain explicit unknowns. Preserve actual work even on failure.",
+  "drain_bound": "Eight outstanding jobs times4096 total replay-plus-suffix actions times128 frames per action. Continuation tails are not limited to the ordinary one-to-six draw. Only actual drain is charged and no beyond-horizon discovery counts as a200M hit.",
+  "format": "continuation-cc01-registration-v1",
+  "registered_utc": "2026-09-10T12:27:03.728909+00:00",
+  "deadline_utc": "2026-09-10T16:27:03.728909+00:00",
+  "synthesis_deadline_utc": "2026-09-10T17:27:03.728909+00:00",
+  "purpose": "Independent confirmation of unchanged continuation at first Bombs; CC01 outcomes alone determine its gate.",
+  "prior_block_ledger_sha256": "0ec49753ac9fa484dfbed232979ac71122c71a21244292c2d4c9d726a3d66782",
+  "decision_sha256": "642f9e72406070224048593a07fbe17aad3dbae06b7ad573c9a3312c17e175c7",
+  "panel_adapter_sha256": "5a84a83f580823db0eb6a7d2edcc649e06fb2785e219a30a5ee139da44c9ef97",
+  "native_verifier_sha256": "b886ff963530a7697b827e0398660a6696ee21910817954f96df2ace529c2c89",
+  "seed_registration_sha256": "9cad5680a76edbc53146d74aba6bae5cde8a3bd3b80abc76c5e72055dc0762a7",
+  "seed_audits_sha256": {
+    "local": "15a1ff8250889baa0c79db7fa5827d8230477e7e84387c0f510495e2bc1fac49",
+    "ms02": "237563bb66cda7747fc6dff6abc418dfe1d981842d2b76218548500b8429c2b1"
+  },
+  "development_analysis_sha256": "4409ab88c6a807abba4f9cd5b85e5991360dbc5a0e1662621e40ec73f0f043fe",
+  "development_registration_sha256": "68999f9437b2d43acab13d9411a80f8bd6b9361b85a0076ec92cc4551a30274d",
+  "native_qualification_sha256": "00abd0d74467c1717482399d24db5516662f507f7de702cbbe014cb721a57f91",
+  "schedule": "Two waves on ms02 only: pairs0/1 then, only if the fixed gate remains attainable and full service bounds fit, pairs2/3. Each started pair is a bounded sequential two-arm unit. Complete both started pairs unless their own resource/measurement failure interrupts them. No restart, replacement or extension.",
+  "panels": [
+    {
+      "id": "cc01-pair-0",
+      "seed": 833917373,
+      "host": "ms02",
+      "cpus": "0-3",
+      "arm_order": [
+        "control",
+        "candidate"
+      ],
+      "registration": "cc01-pair-0-registration.json",
+      "registration_sha256": "1e3e94a0f15e59c6782b166ca9128c9845e8a63d41b1c9b2ed0d6c86bb10ddb0",
+      "service_runtime_seconds": 5900
+    },
+    {
+      "id": "cc01-pair-1",
+      "seed": 4204540845,
+      "host": "ms02",
+      "cpus": "4-7",
+      "arm_order": [
+        "candidate",
+        "control"
+      ],
+      "registration": "cc01-pair-1-registration.json",
+      "registration_sha256": "d84453f20600cf1d72c43956bfa0786780be2b47d683f41d3e1c06f4f5c8954e",
+      "service_runtime_seconds": 5900
+    },
+    {
+      "id": "cc01-pair-2",
+      "seed": 586667767,
+      "host": "ms02",
+      "cpus": "0-3",
+      "arm_order": [
+        "candidate",
+        "control"
+      ],
+      "registration": "cc01-pair-2-registration.json",
+      "registration_sha256": "adb05fae06f44c5e601dd08a341a71818ef2804b6cd30ef3c718a8161adbf7b7",
+      "service_runtime_seconds": 5900
+    },
+    {
+      "id": "cc01-pair-3",
+      "seed": 2160473381,
+      "host": "ms02",
+      "cpus": "4-7",
+      "arm_order": [
+        "control",
+        "candidate"
+      ],
+      "registration": "cc01-pair-3-registration.json",
+      "registration_sha256": "4117bfc12a5607eed6df706dd9e42d3c2376eadc7a85660239308f80b3ec5751",
+      "service_runtime_seconds": 5900
+    }
+  ],
+  "early_closure": "All eight CD01 cells, native audits, final score and closed ledger are complete. Publish that complete result before CC01 emulator dispatch. Release the unused CD01 compute/synthesis reservation without adding or extending any development cell. This pass-earned confirmation has its own bounded window.",
+  "basis": [
+    "Complete CD01:4/4 strict wins;4/4 candidate Bombs attainments versus1/4 control; restricted cost ratio0.495345, CPU ratio0.491853, wall ratio0.519710. These select the unchanged nominee, not a pooled confirmation sample.",
+    "All five CD01 Bombs witnesses replay alive, all native identities and resource checks pass, and all four services terminate successfully.",
+    "Same qualified source/binaries/assets and200M horizon. CD01 cells finish in554.4\u20131493.8seconds, within2700 search/2910 process limits; this is feasibility evidence, not a guarantee for fresh seeds.",
+    "Two disjoint four-core groups with balanced sequential arm order,8GiB archives and12GiB services. Two worst-case5900-second waves fit within the14400-second experimental window."
+  ],
+  "pass": "Earns a separately bounded same-mechanism MM2 transfer decision; no automatic deeper or untouched validation.",
+  "failure": "Close independent confirmation of this nominee. No development pooling, replacement seed, longer horizon, endpoint substitution or bank/order pivot."
+}

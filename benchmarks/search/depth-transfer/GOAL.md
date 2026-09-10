@@ -880,3 +880,36 @@ Finish CD01 synthesis and publication before opening that separately bounded
 allocation. CD01's unused frame/time allowance is not an entitlement to more
 development runs. Independent confirmation, MM2 and untouched boss/Wily
 validation remain outstanding; the original goal is active and unachieved.
+
+## CC01 independent confirmation is registered
+
+CD01's complete development result, native verification, ledger and synthesis
+are closed. Release its unused compute/synthesis reservation after publication;
+do not spend it on additional development cells or alter its recorded limits.
+CC01 is a new allocation earned by that completed pass, not an extension or
+rescue of an earlier tranche. Its four-hour maximum experimental window ends
+at 2026-09-10T16:27:03Z; the following hour is reserved for synthesis.
+
+Freeze seeds 833917373, 4204540845, 586667767 and 2160473381, drawn after all CD01
+results and audits. Local/ms02 audits find no reuse in 224/4,830 records, with
+two verified nonrecord macOS metadata exclusions preserved separately. Keep
+the unchanged continuation policy, control, first-Bombs endpoint, 200M horizon,
+source, assets, cutoff3 selector, suffix, four workers and 8GiB archives. The
+same 12GiB memory, 4GiB output, 45-minute search, 2,910-second process and
+5,900-second pair-service bounds apply. Nominal search is at most 1.6B plus
+recorded bounded drain, with 32M known auxiliary frames separately allowed.
+
+Publish complete CD01 evidence before any CC01 emulator dispatch. Preflight
+must validate all frozen hashes, unused seeds/output directories, available
+resources and enough time for both worst-case waves. Initially launch pairs0/1
+on ms02 only. Complete each started bounded pair unless its own failure
+interrupts it; score the complete wave before deciding on registered pairs2/3.
+Stop further allocation at mathematical futility, measurement/resource failure,
+or insufficient time for a complete bounded wave. No restart or replacement.
+
+Use CC01 alone for three strict wins, 15% lower mean restricted Bombs cost and
+CPU/wall ratios no greater than 1.25. Do not pool development to rescue failure.
+A pass earns a bounded same-mechanism MM2 transfer decision; a failure closes
+the nominee. No CC01 native execution is recorded yet. Independent confirmation,
+MM2 and untouched boss/Wily validation remain incomplete, and the full goal
+remains active and unachieved.
