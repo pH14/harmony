@@ -1,499 +1,112 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
-name: Benchmarks / Historical bugs
-
-# Runs the historical-bug cases on GitHub-hosted runners with nested KVM. The
-# only case wired up so far is the PostgreSQL CREATE INDEX CONCURRENTLY
-# corruption; `bugs/historical/postgres-cic-corruption/case.json` holds every
-# pin, budget and pass threshold this workflow uses.
-
+# Diagnostic branch only: replay the pinned reference with observation logging.
+name: Snapshot KVM reproduction
 on:
-  pull_request:
-    paths:
-      - .github/scripts/historical-*.sh
-      - .github/workflows/historical-bugs.yml
-      - bugs/historical/postgres-cic-corruption/**
-      - cli/**
-      - consonance/harmony-linux/**
-      - scripts/render-historical-bugs.py
-      - workloads/fault-agent/**
-      - workloads/fault-policy/**
-      - workloads/faults/**
-  schedule:
-    # Nightly, so a search regression surfaces without waiting for a matching
-    # pull request.
-    - cron: "0 6 * * *"
-  workflow_dispatch:
-    inputs:
-      executions:
-        description: Execution ceiling per search campaign, overriding case.json
-        required: false
-        type: string
-
+  workflow_dispatch: {}
 permissions:
   contents: read
-
+  actions: read
 concurrency:
-  group: historical-bugs-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-defaults:
-  run:
-    shell: bash
-
-env:
-  CASE_DIR: bugs/historical/postgres-cic-corruption
-
+  group: snapshot-reproduction-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
-  manifest:
-    name: Read the case manifest
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      case_id: ${{ steps.read.outputs.case_id }}
-      horizon_ms: ${{ steps.read.outputs.horizon_ms }}
-      ram_mib: ${{ steps.read.outputs.ram_mib }}
-      seed: ${{ steps.read.outputs.seed }}
-      workers: ${{ steps.read.outputs.workers }}
-      actions: ${{ steps.read.outputs.actions }}
-      executions: ${{ steps.read.outputs.executions }}
-      wall_minutes: ${{ steps.read.outputs.wall_minutes }}
-      knobs: ${{ steps.read.outputs.knobs }}
-      oracle_assertion: ${{ steps.read.outputs.oracle_assertion }}
-      oracle_evidence: ${{ steps.read.outputs.oracle_evidence }}
-      witness: ${{ steps.read.outputs.witness }}
-      vulnerable_version: ${{ steps.read.outputs.vulnerable_version }}
-      vulnerable_sha256: ${{ steps.read.outputs.vulnerable_sha256 }}
-      control_version: ${{ steps.read.outputs.control_version }}
-      control_sha256: ${{ steps.read.outputs.control_sha256 }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Read case.json
-        id: read
-        env:
-          DISPATCH_EXECUTIONS: ${{ inputs.executions }}
-        run: |
-          set -euo pipefail
-          case_json="${CASE_DIR}/case.json"
-          jq -e 'has("id") and has("search") and has("run") and has("arms")
-            and (.oracle | has("assertion") and has("evidence"))' \
-            "${case_json}" >/dev/null
-          emit() { printf '%s=%s\n' "$1" "$2" >>"${GITHUB_OUTPUT}"; }
-          emit case_id "$(jq -r .id "${case_json}")"
-          emit horizon_ms "$(jq -r .run.horizon_ms "${case_json}")"
-          emit ram_mib "$(jq -r .run.ram_mib "${case_json}")"
-          emit seed "$(jq -r .search.seed "${case_json}")"
-          emit workers "$(jq -r .search.workers "${case_json}")"
-          emit actions "$(jq -r .search.actions "${case_json}")"
-          emit wall_minutes "$(jq -r .search.wall_minutes "${case_json}")"
-          emit vulnerable_version "$(jq -r .arms.vulnerable.version "${case_json}")"
-          emit vulnerable_sha256 "$(jq -r .arms.vulnerable.sha256 "${case_json}")"
-          emit control_version "$(jq -r .arms.control.version "${case_json}")"
-          emit control_sha256 "$(jq -r .arms.control.sha256 "${case_json}")"
-          # Both arms are judged on these two ids: the assertion whose violation
-          # is this bug, and the point its detector publishes on every verdict.
-          emit oracle_assertion "$(jq -r .oracle.assertion "${case_json}")"
-          emit oracle_evidence "$(jq -r .oracle.evidence "${case_json}")"
-          # The hooks read knobs from /proc/cmdline, so they travel as one
-          # space-separated --knobs string.
-          emit knobs "$(jq -r '.run.knobs | to_entries | map("\(.key)=\(.value)") | join(" ")' \
-            "${case_json}")"
-          # An empty witness output is how the witness job stays skipped.
-          emit witness "$(jq -r '.witness // ""' "${case_json}")"
-          executions="$(jq -r .search.executions "${case_json}")"
-          if [[ -n "${DISPATCH_EXECUTIONS}" ]]; then
-            executions="${DISPATCH_EXECUTIONS}"
-          fi
-          emit executions "${executions}"
-      - name: Summarize the manifest
-        run: |
-          set -euo pipefail
-          {
-            echo "## Case manifest"
-            echo
-            echo "| field | value |"
-            echo "|---|---|"
-            jq -r '
-              ["id", .id],
-              ["vulnerable", .arms.vulnerable.version],
-              ["control", .arms.control.version],
-              ["kernel profile", .kernel_profile],
-              ["oracle", "@\(.oracle.kind) \(.oracle.assertion) — \(.oracle.detector)"],
-              ["oracle verdict evidence", "@reachable \(.oracle.evidence)"],
-              ["horizon", "\(.run.horizon_ms) ms"],
-              ["ram", "\(.run.ram_mib) MiB"],
-              ["status", .status],
-              ["witness", (.witness // "none")]
-              | "| \(.[0]) | \(.[1]) |"
-            ' "${CASE_DIR}/case.json"
-          } >>"${GITHUB_STEP_SUMMARY}"
-
-  guest:
-    name: Build the faultlab kernel and the base initramfs
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
-      - name: Restore locked guest artifacts
-        id: guest-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: nix-guest-output
-          key: guest-faultlab-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/**') }}
-      - name: Build the guest images
-        if: steps.guest-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          mkdir -p nix-guest-output
-          nix run .#guest-images -- --output "${PWD}/nix-guest-output"
-      # The manifest covers every artifact the builder produced, so a restored
-      # cache is checked against the same bytes a fresh build is.
-      - name: Verify the locked guest artifacts
-        run: |
-          set -euo pipefail
-          (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
-          test -s nix-guest-output/x86_64/bzImage-faultlab
-          test -s nix-guest-output/x86_64/initramfs.cpio.gz
-      - name: Save successful guest build
-        if: steps.guest-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: nix-guest-output
-          key: ${{ steps.guest-cache.outputs.cache-primary-key }}
-      - name: Summarize the guest artifacts
-        run: |
-          set -euo pipefail
-          {
-            echo "## Guest artifacts"
-            echo
-            echo "| artifact | sha256 |"
-            echo "|---|---|"
-            for artifact in bzImage-faultlab initramfs.cpio.gz; do
-              echo "| ${artifact} | $(sha256sum "nix-guest-output/x86_64/${artifact}" | cut -d' ' -f1) |"
-            done
-          } >>"${GITHUB_STEP_SUMMARY}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: guest-images-${{ github.run_id }}
-          path: |
-            nix-guest-output/x86_64/bzImage-faultlab
-            nix-guest-output/x86_64/initramfs.cpio.gz
-          if-no-files-found: error
-          retention-days: 1
-
-  images:
-    name: Build both workload images
-    needs: manifest
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-      - name: Restore the saved image tars
-        id: image-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: oci-images
-          key: >-
-            pgcic-oci-v1-${{ hashFiles('bugs/historical/postgres-cic-corruption/image/**') }}-${{
-            needs.manifest.outputs.vulnerable_sha256 }}-${{ needs.manifest.outputs.control_sha256 }}
-      - name: Build and save both arms
-        if: steps.image-cache.outputs.cache-hit != 'true'
-        env:
-          VULNERABLE_VERSION: ${{ needs.manifest.outputs.vulnerable_version }}
-          VULNERABLE_SHA256: ${{ needs.manifest.outputs.vulnerable_sha256 }}
-          CONTROL_VERSION: ${{ needs.manifest.outputs.control_version }}
-          CONTROL_SHA256: ${{ needs.manifest.outputs.control_sha256 }}
-        run: |
-          set -euo pipefail
-          docker version
-          mkdir -p oci-images
-          build_arm() {
-            local version="$1" sha256="$2" out="$3"
-            docker build --pull \
-              --build-arg "PG_VERSION=${version}" \
-              --build-arg "PG_SHA256=${sha256}" \
-              --tag "harmony-pgcic:${version}" \
-              "${CASE_DIR}/image"
-            docker save --output "${out}" "harmony-pgcic:${version}"
-            test -s "${out}"
-          }
-          build_arm "${VULNERABLE_VERSION}" "${VULNERABLE_SHA256}" \
-            "oci-images/pgcic-${VULNERABLE_VERSION}.oci"
-          build_arm "${CONTROL_VERSION}" "${CONTROL_SHA256}" \
-            "oci-images/pgcic-${CONTROL_VERSION}.oci"
-      - name: Save successful image build
-        if: steps.image-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: oci-images
-          key: ${{ steps.image-cache.outputs.cache-primary-key }}
-      - name: Summarize the images
-        env:
-          VULNERABLE_VERSION: ${{ needs.manifest.outputs.vulnerable_version }}
-          CONTROL_VERSION: ${{ needs.manifest.outputs.control_version }}
-        run: |
-          set -euo pipefail
-          {
-            echo "## Workload images"
-            echo
-            echo "| arm | PostgreSQL | bytes | sha256 |"
-            echo "|---|---|---|---|"
-            for pair in "vulnerable:${VULNERABLE_VERSION}" "control:${CONTROL_VERSION}"; do
-              arm="${pair%%:*}"
-              version="${pair#*:}"
-              tar="oci-images/pgcic-${version}.oci"
-              echo "| ${arm} | ${version} | $(stat -c %s "${tar}") | $(sha256sum "${tar}" | cut -d' ' -f1) |"
-            done
-          } >>"${GITHUB_STEP_SUMMARY}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: oci-images-${{ github.run_id }}
-          path: oci-images
-          if-no-files-found: error
-          retention-days: 1
-
-  tools:
-    name: Build the CLI and the guest fault agent
+  reference:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
-      - name: Install the musl toolchain
+        with:
+          path: diagnostics
+      - uses: actions/checkout@v4
+        with:
+          ref: 7c1f9e89ab9eb232b8a72cdae29198dad11e9ce6
+          path: reference
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 34441848506
+          name: guest-images-34441848506
+          path: reference/guest
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 34441848506
+          name: oci-images-34441848506
+          path: reference/oci-images
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 34441848506
+          name: harmony-tools-34441848506
+          path: reference/tools
+      - name: Record provenance and instrument reference
         run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends musl-tools
-          rustup target add x86_64-unknown-linux-musl
+          mkdir -p reference/reports
+          git -C reference rev-parse HEAD > reference/reports/reference-head.txt
+          sha256sum reference/guest/* reference/oci-images/* reference/tools/* > reference/reports/input-sha256.txt
+          python3 diagnostics/.github/scripts/snapshot-diagnostics.py reference
+          git -C reference diff > reference/reports/instrumentation.patch
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            . -> target
-            workloads/fault-agent -> target
-      - name: Build harmony-cli and the static fault agent
+          workspaces: reference -> target
+          shared-key: snapshot-reference
+      - name: Build instrumented shipping CLI
+        working-directory: reference
         run: |
-          set -euo pipefail
-          cargo build --locked --release -p harmony-cli
-          cargo build --locked --release \
-            --manifest-path workloads/fault-agent/Cargo.toml \
-            --target x86_64-unknown-linux-musl
-          mkdir -p tools
+          cargo build --locked --release -p harmony-cli 2>&1 | tee reports/build.log
           cp target/release/harmony tools/harmony
-          cp workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent \
-            tools/fault-agent
-          file tools/fault-agent | grep -Eiq 'static'
-      - name: Summarize the tools
+          chmod +x tools/*
+          sha256sum tools/* > reports/instrumented-tools-sha256.txt
+      - name: Run unchanged investigation acceptance on KVM
+        working-directory: reference
+        env:
+          CASE_ID: postgres-cic-corruption
+          HORIZON_MS: 500
+          RAM_MIB: 1024
+          VULNERABLE_VERSION: '14.3'
+          ORACLE_ASSERTION: 2
+          KNOBS: faultlab.churn_rows=20 faultlab.churn_slices=2 faultlab.churn_rounds=1200
         run: |
-          set -euo pipefail
-          {
-            echo "## Tools"
-            echo
-            echo "| binary | sha256 |"
-            echo "|---|---|"
-            for binary in tools/harmony tools/fault-agent; do
-              echo "| ${binary##*/} | $(sha256sum "${binary}" | cut -d' ' -f1) |"
-            done
-          } >>"${GITHUB_STEP_SUMMARY}"
+          test -c /dev/kvm
+          sudo chmod 666 /dev/kvm
+          uname -a > reports/host.txt
+          lscpu >> reports/host.txt
+          .github/scripts/historical-investigate.sh bugs/historical/postgres-cic-corruption/witness.json 2>&1 | tee reports/investigation.log
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: harmony-tools-${{ github.run_id }}
-          path: tools
+          name: snapshot-reproduction-${{ github.run_id }}
+          path: reference/reports
+          retention-days: 14
           if-no-files-found: error
-          retention-days: 1
-
-  probe:
-    name: Probe replay · the window is reachable
-    needs: [manifest, guest, images, tools]
+  portable-linux:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
         with:
-          name: guest-images-${{ github.run_id }}
-          path: guest
-      - uses: actions/download-artifact@v4
-        with:
-          name: oci-images-${{ github.run_id }}
-          path: oci-images
-      - uses: actions/download-artifact@v4
-        with:
-          name: harmony-tools-${{ github.run_id }}
-          path: tools
-      - name: Grant nested KVM access
+          ref: 6602da0bf4d86ff40a5e713f8b647fc49063919e
+      - uses: Swatinem/rust-cache@v2
+      - name: Run recovery tests on x86 Linux
         run: |
-          set -euo pipefail
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | \
-            sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm
-      - name: Replay the probe on both arms
-        env:
-          CASE_ID: ${{ needs.manifest.outputs.case_id }}
-          HORIZON_MS: ${{ needs.manifest.outputs.horizon_ms }}
-          RAM_MIB: ${{ needs.manifest.outputs.ram_mib }}
-          VULNERABLE_VERSION: ${{ needs.manifest.outputs.vulnerable_version }}
-          CONTROL_VERSION: ${{ needs.manifest.outputs.control_version }}
-          KNOBS: ${{ needs.manifest.outputs.knobs }}
-          ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}
-          ORACLE_EVIDENCE: ${{ needs.manifest.outputs.oracle_evidence }}
-        run: .github/scripts/historical-replay.sh probe "${CASE_DIR}/probe.json"
+          mkdir -p reports
+          cargo test --locked -p control-proto -p vmm-core -p consonance-client --all-features 2>&1 | tee reports/portable-linux.log
+          cargo clippy --locked -p control-proto -p vmm-core -p consonance-client --all-features --all-targets -- -D warnings 2>&1 | tee reports/clippy.log
+      - name: Check the frozen Linux public API
+        run: |
+          rustup toolchain install nightly-2026-06-16 --profile minimal
+          cargo install cargo-public-api --version 0.52.0 --locked
+          cargo test -p vmm-core --test public_api -- --ignored --nocapture 2>&1 | tee reports/public-api.log
+          if grep -q 'SKIP:' reports/public-api.log; then exit 1; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: historical-probe-${{ github.run_id }}
+          name: recovery-linux-${{ github.run_id }}
           path: reports
-          if-no-files-found: warn
-          retention-days: 30
-
-  witness:
-    name: Witness replay · the committed input still reproduces
-    needs: [manifest, guest, images, tools]
-    if: needs.manifest.outputs.witness != ''
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: guest-images-${{ github.run_id }}
-          path: guest
-      - uses: actions/download-artifact@v4
-        with:
-          name: oci-images-${{ github.run_id }}
-          path: oci-images
-      - uses: actions/download-artifact@v4
-        with:
-          name: harmony-tools-${{ github.run_id }}
-          path: tools
-      - name: Grant nested KVM access
-        run: |
-          set -euo pipefail
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | \
-            sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm
-      - name: Replay the witness on both arms
-        env:
-          CASE_ID: ${{ needs.manifest.outputs.case_id }}
-          HORIZON_MS: ${{ needs.manifest.outputs.horizon_ms }}
-          RAM_MIB: ${{ needs.manifest.outputs.ram_mib }}
-          VULNERABLE_VERSION: ${{ needs.manifest.outputs.vulnerable_version }}
-          CONTROL_VERSION: ${{ needs.manifest.outputs.control_version }}
-          KNOBS: ${{ needs.manifest.outputs.knobs }}
-          ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}
-          ORACLE_EVIDENCE: ${{ needs.manifest.outputs.oracle_evidence }}
-          WITNESS: ${{ needs.manifest.outputs.witness }}
-        run: .github/scripts/historical-replay.sh witness "${WITNESS}"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: historical-witness-${{ github.run_id }}
-          path: reports
-          if-no-files-found: warn
-          retention-days: 30
-
-  search:
-    name: Search campaign
-    needs: [manifest, guest, images, tools]
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    # The wall cap in case.json bounds the campaign; the rest is image staging,
-    # guest boots and artifact handling.
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        arm: [vulnerable, control]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: guest-images-${{ github.run_id }}
-          path: guest
-      - uses: actions/download-artifact@v4
-        with:
-          name: oci-images-${{ github.run_id }}
-          path: oci-images
-      - uses: actions/download-artifact@v4
-        with:
-          name: harmony-tools-${{ github.run_id }}
-          path: tools
-      - name: Grant nested KVM access
-        run: |
-          set -euo pipefail
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | \
-            sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm
-      - name: Run the campaign
-        env:
-          CASE_ID: ${{ needs.manifest.outputs.case_id }}
-          ARM: ${{ matrix.arm }}
-          PG_VERSION: >-
-            ${{ matrix.arm == 'vulnerable' && needs.manifest.outputs.vulnerable_version
-            || needs.manifest.outputs.control_version }}
-          HORIZON_MS: ${{ needs.manifest.outputs.horizon_ms }}
-          RAM_MIB: ${{ needs.manifest.outputs.ram_mib }}
-          SEED: ${{ needs.manifest.outputs.seed }}
-          WORKERS: ${{ needs.manifest.outputs.workers }}
-          ACTIONS: ${{ needs.manifest.outputs.actions }}
-          EXECUTIONS: ${{ needs.manifest.outputs.executions }}
-          WALL_MINUTES: ${{ needs.manifest.outputs.wall_minutes }}
-          KNOBS: ${{ needs.manifest.outputs.knobs }}
-          ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}
-          ORACLE_EVIDENCE: ${{ needs.manifest.outputs.oracle_evidence }}
-        run: .github/scripts/historical-search.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: historical-search-${{ matrix.arm }}-${{ github.run_id }}
-          path: reports
-          if-no-files-found: warn
-          retention-days: 30
-
-  report:
-    name: report
-    needs: [manifest, guest, images, tools, probe, witness, search]
-    if: always()
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      actions: read
-    steps:
-      - uses: actions/checkout@v4
-      # A run where every replay died before writing a report still renders the
-      # roster, from the manifests alone.
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          pattern: historical-*-${{ github.run_id }}
-          path: reports
-          merge-multiple: true
-      - name: Render the roster from this run's reports
-        run: |
-          set -euo pipefail
-          python3 scripts/render-historical-bugs.py --reports reports
-          {
-            echo "## Roster"
-            echo
-            sed -n '/render-historical-bugs:begin/,/render-historical-bugs:end/p' \
-              bugs/historical/README.md | grep -v render-historical-bugs
-          } >>"${GITHUB_STEP_SUMMARY}"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: historical-roster-${{ github.run_id }}
-          path: bugs/historical/README.md
-          if-no-files-found: warn
-          retention-days: 30
-      - uses: actions/github-script@v7
-        if: always()
-        with:
-          script: |
-            await require('./.github/scripts/benchmark-report.cjs')({github, context, core});
+          retention-days: 14
+          if-no-files-found: error
