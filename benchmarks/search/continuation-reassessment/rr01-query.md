@@ -1,0 +1,35 @@
+# RR01: a local fight-state loss query
+
+Inspect the exact saved AP01 stream, not another search. Qualification is four
+original jobs/865 frames. Full inspection is 2,548 jobs/250,267 frames and must
+reproduce every job's frames, result digest and decisions, the original final
+raw checkpoint, and all 3,770 ordinary single-member slot competitions.
+
+The frozen query covers both possible local losers: a rejected candidate or a
+replaced incumbent. A comparison requires two living nonvictory states, exactly
+one qualified boss slot in each, matching area/slot/data-index/attribute identity,
+and available HP in both. Independently recompute the Rust classifications from
+raw context with the existing Python source-qualified classifier. Any mismatch
+is a measurement error. Missing, unclassified, multiple-slot, different-identity
+and HP255 observations remain unavailable; they are not negative comparisons.
+
+Count a local loss when the loser's snapshot-local HP is strictly lower than
+the local winner's. Stratify rejected candidates and replaced incumbents, and
+separately count exact equality of equipment, boss flags, missile capacity,
+energy tanks, health and missiles. Record the earliest positive pair overall
+and the earliest resource-equal pair by execution and competition order. Do not
+select a witness by a later continuation outcome or invent an HP/10 parameter.
+
+A positive observation establishes this finite representation loss only. It
+does not prove lifetime damage, a shared hidden encounter lifetime, global
+coverage, useful futures, defeat, or a search improvement. HP0 is not the named
+defeat predicate. A positive observation permits consideration of a bounded
+paired continuation counterexample as required by issue #281; it does not earn
+a policy change or fresh panel. A zero count has only the scope of the eligible
+comparisons; zero eligible rows means unavailable measurement.
+
+Any qualification, identity, replay, checkpoint, capture or resource failure
+stops RR01 without automatic retry, replacement inputs or a larger horizon.
+The original search stream and checkpoint remain immutable. msr1 is reassigned;
+only ms02 may run the native diagnostic. All previous failed policy gates and
+the closed search ledger remain unchanged.

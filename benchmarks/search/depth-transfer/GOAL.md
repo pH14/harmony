@@ -1006,3 +1006,21 @@ two-stage diagnostic with 500k/750k prospective physical ceilings, short wall
 watchdogs and external resource bounds. These allow one mismatching job and
 setup; they are not measured costs or fresh search. No native stage is yet
 registered or launched, and msr1 remains unavailable.
+
+RR01 is a separately bounded diagnostic allocation registered at
+2026-09-10T17:51:24.101315Z and ending at18:11:24.101315Z, with synthesis through
+18:31:24.101315Z. ms02's pinned eb6f0dcc source build completed without emulation.
+Its four-job qualification may spend at most500k physical frames/60seconds;
+only a verified pass permits the fixed full replay at750k/300seconds. The outer
+service is450seconds,4GiB,CPUs0–3,64tasks and1GiB output. These ceilings include
+one mismatching job's reconstruction and setup, not just expected865/250267
+recorded frames. No fresh search is allocated. The full phase must reproduce
+all original job results/decisions and the original raw final checkpoint and
+yield3770 complete competition observations.
+
+Freeze both local-loss directions and the resource-equal subgroup in
+../continuation-reassessment/rr01-query.md before observing results. A positive
+observation permits only a further paired continuation decision; unavailable
+context stays unknown. Failure stops without automatic retry or changed inputs.
+No RR01 native call has occurred yet, all previous failed gates remain closed,
+and the full boss/Wily/transfer/untouched-validation goal remains unachieved.

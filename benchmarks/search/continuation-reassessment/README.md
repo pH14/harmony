@@ -396,6 +396,18 @@ design for that exact short pilot, with explicit cross-host compatibility and
 unchanged per-job digests/decisions. No new policy panel or replay allocation is
 registered yet; the review's automatic 150M-frame proposal is not adopted.
 
+RR01 is now separately registered for 2026-09-10 17:51:24–18:11:24 UTC, with
+synthesis reserved through 18:31:24. It uses the compiled ms02 replay caller,
+first qualifying four original jobs, then conditionally inspecting the complete
+AP01 stream and original final raw checkpoint. The 60/300-second intrinsic
+watchdogs, 450-second service, 4 GiB memory and 1 GiB output bounds accompany
+500k/750k prospective physical frame ceilings; no fresh search is allocated.
+The [frozen query](rr01-query.md) covers both rejected candidates and displaced
+incumbents, distinguishes resource equality, and keeps unavailable observations
+unknown. Any failure stops without automatic retry. No native RR01 execution
+is recorded yet; a positive diagnostic would still require the issue #281
+paired continuation counterexample before changing a policy.
+
 ## Ordering findings stay separate from this candidate
 
 Two new source fixtures expose existing limitations without changing policies:
