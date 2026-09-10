@@ -2,10 +2,15 @@
 //! Bounded x86 CPU snapshot regression coverage.
 //!
 //! The live gate uses a deliberately small 32-bit protected-mode PAE guest. It
-//! fills the hardware PDPTR cache from one page directory, changes the guest
-//! PDPT in RAM without reloading CR3, and snapshots before the first guest
-//! entry. A complete save/encode/decode/restore must retain the cached page
-//! directory even though the RAM image now names another one.
+//! fills the hardware PDPTR cache from one page directory, emits a scalar UART
+//! warmup while RAM still names that directory, then changes the guest PDPT in
+//! RAM without reloading CR3 and snapshots at the resulting PIO boundary. A
+//! complete save/encode/decode/restore must retain the cached page directory
+//! even though the RAM image now names another one.
+//!
+//! The warmup makes the fixture's starting point a valid running stop. It does
+//! not claim a particular KVM first-entry cache behavior; the earlier
+//! pre-first-entry explanation remains an unproven hypothesis.
 //!
 //! The KVM test is ignored because it needs Linux x86-64 `/dev/kvm`; the small
 //! mock test keeps the same page-aligned mapping and ownership seam exercised
@@ -56,9 +61,19 @@ const PDPT_B_ENTRY: u64 = 0x6001;
 const SREGS2_FLAGS_PDPTRS_VALID: u64 = 1;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const IA32_EFER: u32 = 0xC000_0080;
+/// A scalar UART byte emitted before the RAM page-table mutation. It marks the
+/// running PIO boundary that every positive source arm reaches exactly once.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const WARMUP_MARKER: u8 = 0xA5;
+/// `mov edx, 0x3f8; mov al, WARMUP_MARKER; out dx, al`.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const WARMUP_LEN: usize = 5 + 2 + 1;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const WARMUP_RIP: usize = CODE_GPA + WARMUP_LEN;
 
-/// A short bound for this guest: one UART exit followed by one HLT exit. The
-/// bound is test control only and never enters guest-visible state or hashing.
+/// A short bound for this guest after the warmup: one UART exit followed by one
+/// HLT exit. The bound is test control only and never enters guest-visible state
+/// or hashing.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const MAX_STEPS: usize = 8;
 
@@ -112,13 +127,34 @@ fn guest_ram_image() -> GuestRam {
     let mut ram = GuestRam::new(RAM_LEN).expect("allocate guest RAM");
     let bytes = ram.as_mut_bytes();
 
-    // `mov al, [0x8000]; mov edx, 0x3f8; out dx, al; inc ebx; hlt` in a flat
-    // 32-bit code segment. The same bytes at the remapped physical address
-    // make a page directory mistake observable without introducing another
-    // exit. The UART port needs the DX form because OUT's immediate form is
-    // limited to an 8-bit port number.
+    // `mov edx, 0x3f8; mov al, WARMUP_MARKER; out dx, al; mov al, [0x8000];
+    // mov edx, 0x3f8; out dx, al; inc ebx; hlt` in a flat 32-bit code segment.
+    // The same bytes at the remapped physical address make a page directory
+    // mistake observable without introducing another exit. The UART port needs
+    // the DX form because OUT's immediate form is limited to an 8-bit port
+    // number.
     let program = [
-        0xA0, 0x00, 0x80, 0x00, 0x00, 0xBA, 0xF8, 0x03, 0x00, 0x00, 0xEE, 0x43, 0xF4,
+        0xBA,
+        0xF8,
+        0x03,
+        0x00,
+        0x00,
+        0xB0,
+        WARMUP_MARKER,
+        0xEE,
+        0xA0,
+        0x00,
+        0x80,
+        0x00,
+        0x00,
+        0xBA,
+        0xF8,
+        0x03,
+        0x00,
+        0x00,
+        0xEE,
+        0x43,
+        0xF4,
     ];
     put_bytes(bytes, CODE_GPA, &program);
     put_bytes(bytes, REMAPPED_CODE_GPA, &program);
@@ -232,6 +268,23 @@ fn switch_guest_pdpt_to_b<B: Backend<A = X86>>(vmm: &mut Vmm<B>) {
         .expect("replace PDPT in guest RAM");
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn run_warmup<B: Backend<A = X86>>(vmm: &mut Vmm<B>) {
+    // This is the canonical running PIO boundary: the first guest entry has
+    // already executed the scalar warmup OUT while RAM still points at PD A.
+    assert_eq!(
+        vmm.step().expect("run scalar UART warmup"),
+        Step::Continued,
+        "the warmup UART OUT is a serviced, non-terminal PIO exit"
+    );
+    let live = vmm.vcpu_record().expect("read warmup PIO boundary state");
+    assert_eq!(live.regs.rip, WARMUP_RIP as u64);
+    assert_eq!(live.regs.rbx, 0);
+    assert_eq!(vmm.serial(), &[WARMUP_MARKER]);
+    assert_eq!(vmm.exit_counts().io, 1);
+    assert_eq!(vmm.exit_counts().total(), 1);
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 struct Capture {
@@ -242,21 +295,26 @@ struct Capture {
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn capture_before_entry<B: Backend<A = X86>>(vmm: &Vmm<B>) -> Capture {
-    let live = vmm.vcpu_record().expect("read pre-entry vCPU state");
-    assert_eq!(live.regs.rip, CODE_GPA as u64);
+fn capture_at_warmup_boundary<B: Backend<A = X86>>(vmm: &Vmm<B>) -> Capture {
+    let live = vmm
+        .vcpu_record()
+        .expect("read warmup PIO boundary vCPU state");
+    assert_eq!(live.regs.rip, WARMUP_RIP as u64);
     assert_eq!(live.regs.rbx, 0);
-    assert_eq!(vmm.serial(), &[], "capture must precede guest UART output");
+    assert_eq!(vmm.serial(), &[WARMUP_MARKER]);
+    assert_eq!(vmm.exit_counts().io, 1);
     assert_eq!(
         vmm.exit_counts().total(),
-        0,
-        "capture must precede guest exits"
+        1,
+        "capture must retain exactly the warmup UART exit"
     );
-    assert_eq!(vmm.effective_vns(), Some(0));
+    let captured_vns = vmm
+        .effective_vns()
+        .expect("capture must retain assigned virtual time");
 
-    let before_hash = vmm.state_hash().expect("hash pre-entry state");
+    let before_hash = vmm.state_hash().expect("hash warmup-boundary state");
     let before_counts = vmm.exit_counts();
-    let state = vmm.save_vm_state().expect("save pre-entry VM state");
+    let state = vmm.save_vm_state().expect("save warmup-boundary VM state");
     assert_ne!(
         state.sregs.flags & SREGS2_FLAGS_PDPTRS_VALID,
         0,
@@ -266,7 +324,7 @@ fn capture_before_entry<B: Backend<A = X86>>(vmm: &Vmm<B>) -> Capture {
         state.sregs.pdptrs[0], PDPT_A_ENTRY,
         "save must carry the cached PD A pointer, not RAM's PD B entry"
     );
-    let encoded_state = state.encode().expect("encode pre-entry VM state");
+    let encoded_state = state.encode().expect("encode warmup-boundary VM state");
     let decoded = vm_state::VmState::decode(&encoded_state).expect("decode VM state");
     assert_eq!(decoded, state, "VM state must round-trip through its codec");
     assert_ne!(
@@ -282,12 +340,13 @@ fn capture_before_entry<B: Backend<A = X86>>(vmm: &Vmm<B>) -> Capture {
     );
     assert_eq!(vmm.exit_counts(), before_counts);
     assert_eq!(vmm.state_hash().unwrap(), before_hash);
-    assert_eq!(vmm.effective_vns(), Some(0));
+    assert_eq!(vmm.effective_vns(), Some(captured_vns));
+    assert_eq!(state.vtime.snapshot_vns, captured_vns);
     Capture {
         memory: vmm.guest_memory().to_vec(),
         state: decoded,
         encoded_state,
-        effective_vns: vmm.effective_vns(),
+        effective_vns: Some(captured_vns),
     }
 }
 
@@ -322,8 +381,8 @@ fn run_bounded<B: Backend<A = X86>>(
     }
     assert_eq!(
         vmm.serial(),
-        &[expected_byte],
-        "the cached page directory must select the expected data byte"
+        &[WARMUP_MARKER, expected_byte],
+        "the cached page directory must select the expected data byte after warmup"
     );
     let state = vmm.save_vm_state().expect("save endpoint VM state");
     assert_eq!(state.regs.rbx, 1, "guest INC EBX must retire exactly once");
@@ -379,32 +438,34 @@ mod live_kvm {
     fn pae_cached_pdptrs_survive_full_vmm_snapshot_restore() {
         require_kvm();
 
-        // Uninterrupted reference: configure with PD A, mutate RAM to PD B,
-        // then enter the guest without a snapshot operation in between.
+        // Uninterrupted reference: configure with PD A and execute the exact
+        // warmup that establishes the running PIO boundary before mutating RAM
+        // to PD B. No snapshot operation intervenes.
         let mut uninterrupted = fresh_vmm(true);
         wire_snapshot_path(&mut uninterrupted);
+        run_warmup(&mut uninterrupted);
         switch_guest_pdpt_to_b(&mut uninterrupted);
-        let saved_before_entry = uninterrupted.vcpu_record().expect("save cached PDPTRs");
+        let saved_at_warmup = uninterrupted.vcpu_record().expect("save cached PDPTRs");
         assert_ne!(
-            saved_before_entry.sregs.flags & SREGS2_FLAGS_PDPTRS_VALID,
+            saved_at_warmup.sregs.flags & SREGS2_FLAGS_PDPTRS_VALID,
             0,
             "KVM save must expose PDPTRS_VALID"
         );
-        assert_eq!(saved_before_entry.sregs.pdptrs[0], PDPT_A_ENTRY);
+        assert_eq!(saved_at_warmup.sregs.pdptrs[0], PDPT_A_ENTRY);
         let uninterrupted_endpoint = run_bounded(&mut uninterrupted, 0x42, PDPT_A_ENTRY);
 
-        // Save-and-continue: the capture happens before the first guest entry,
-        // then the same VMM continues. This proves save/encode/decode itself
+        // Save-and-continue: execute the same warmup, mutate RAM, and capture at
+        // the same running PIO boundary. This proves save/encode/decode itself
         // does not advance time, retire an instruction, or rewrite the cache.
         let mut save_and_continue = fresh_vmm(true);
         wire_snapshot_path(&mut save_and_continue);
+        run_warmup(&mut save_and_continue);
         switch_guest_pdpt_to_b(&mut save_and_continue);
-        let capture = capture_before_entry(&save_and_continue);
+        let capture = capture_at_warmup_boundary(&save_and_continue);
         assert_eq!(
             capture.memory[PDPT_GPA..PDPT_GPA + 8],
             PDPT_B_ENTRY.to_le_bytes()
         );
-        assert_eq!(capture.effective_vns, Some(0));
         let save_and_continue_endpoint = run_bounded(&mut save_and_continue, 0x42, PDPT_A_ENTRY);
 
         // Fresh restore: the target starts with RAM's original PD A entry and a
@@ -450,7 +511,7 @@ mod live_kvm {
         let negative_endpoint = run_bounded(&mut negative, 0x99, PDPT_B_ENTRY);
         assert_eq!(
             negative_endpoint.serial,
-            vec![0x99],
+            vec![WARMUP_MARKER, 0x99],
             "without PDPTRS_VALID, RAM's PD B must select the remapped data"
         );
         println!(
