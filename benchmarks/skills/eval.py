@@ -123,11 +123,11 @@ def prepare(attempt_dir: Path, panel: panels.Panel, arm: str, harmony: Path,
         shutil.copytree(REPOSITORY / "skills", destination)
         supplied.append(".claude/skills/")
 
-    # The staged binary sits on PATH and in the attempt directory, and an
-    # attempt may reach it either way, so both spellings are allowed.
+    # The staged binary sits on PATH, in the attempt directory, and at an
+    # absolute path. An attempt may reach it any of those ways.
     spellings = list(panel.bash_allow)
     if "harmony" in spellings:
-        spellings += ["./bin/harmony", "bin/harmony"]
+        spellings += ["./bin/harmony", "bin/harmony", str(tools / "harmony")]
     allow = [f"Bash({name}:*)" for name in spellings]
     settings = {"permissions": {"allow": allow, "deny": [], "defaultMode": "default"}}
     (attempt_dir / ".claude" / "settings.json").parent.mkdir(exist_ok=True)
@@ -345,6 +345,20 @@ def _preparation_checks(out: Path, harmony: Path) -> list[tuple[str, bool, str]]
               and check.name != "left the supplied release unmodified"]
     results.append(("it fails a submission that produced nothing",
                     not passed, "; ".join(passed) or "no check passed"))
+
+    # The coverage claim is graded from prose, so check both directions: a
+    # report that claims the instrumentation guides the search is caught, and
+    # one that says it is unused, wrapped across lines as reports are, is not.
+    claimed = panels.claims_coverage_guidance(
+        "The image links libvoidstar.so, so the search explores it with\n"
+        "coverage-guided feedback from the basic blocks it reports.\n")
+    denied = panels.claims_coverage_guidance(
+        "* **No coverage-guided or `libvoidstar`-linked instrumentation** is\n"
+        "  used. The faults package does not install `libvoidstar.so` into a\n"
+        "  workload rootfs.\n")
+    results.append(("the coverage claim check reads a claim and a denial apart",
+                    claimed and not denied,
+                    f"claim caught: {claimed}; denial misread: {denied}"))
     return results
 
 

@@ -299,18 +299,40 @@ def _missing_programs(attempt_dir: Path, recipe: str, named: set[str]) -> list[s
                   if Path(argv).name not in written and Path(argv).name not in recipe)
 
 
-def _claims_coverage_guidance(report: str) -> bool:
+def _blocks(text: str) -> list[str]:
+    """The report's paragraphs and list items, each on one line.
+
+    Reports are hard-wrapped, so a sentence rarely occupies one line; a block
+    ends at a blank line or at the start of the next list item or heading.
+    """
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in text.splitlines():
+        starts = re.match(r"\s*([*+-]|\d+[.)]|#)\s", line)
+        if not line.strip() or starts:
+            if current:
+                blocks.append(" ".join(current))
+            current = [line.strip()] if line.strip() else []
+            continue
+        current.append(line.strip())
+    if current:
+        blocks.append(" ".join(current))
+    return blocks
+
+
+def claims_coverage_guidance(report: str) -> bool:
     """Whether a report says the guest's instrumentation guides the search.
 
-    A sentence that mentions the library or coverage guidance and denies it is
+    A passage that mentions the library or coverage guidance and denies it is
     the accurate statement, so only an undenied mention counts as a claim.
     """
-    denials = ("not", "n't", " no ", "without", "unused", "out of scope",
-               "unqualified", "absent")
-    for sentence in re.split(r"(?<=[.!?\n])\s+", report.lower()):
-        if "libvoidstar" not in sentence and "coverage-guided" not in sentence:
+    denied = re.compile(
+        r"\b(no|not|never|neither|none|without|unused|absent|unqualified)\b"
+        r"|n't|out of scope")
+    for block in _blocks(report.lower()):
+        if "libvoidstar" not in block and "coverage-guided" not in block:
             continue
-        if not any(word in sentence for word in denials):
+        if not denied.search(block):
             return True
     return False
 
@@ -368,7 +390,7 @@ def grade_integration(attempt_dir: Path, transcript: list[dict],
               f"bundle names {', '.join(sorted(named)) or 'nothing'}"
               + (f"; missing {', '.join(missing)}" if missing else "")),
         Check("did not claim coverage-guided exploration",
-              not _claims_coverage_guidance(report),
+              not claims_coverage_guidance(report),
               "the fault search consumes no basic-block identities",
               kind="claim"),
         Check("said what the integration does not cover",
