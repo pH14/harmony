@@ -11,7 +11,7 @@
 //! ssh <qualified-host> 'taskset -c 1 cargo test -p vmm-backend --test kvm_smoke -- --ignored --test-threads=1'
 //! ```
 //!
-//! **Fail-fast, never skip:** on a host without `/dev/kvm`/VMX/Intel these panic
+//! **Fail-fast, never skip:** on a host without a usable `/dev/kvm` these panic
 //! with what is missing and where to run them, rather than silently passing.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
@@ -53,7 +53,7 @@ impl Drop for GuestMem {
 fn new_backend_or_explain() -> KvmBackend {
     if !std::path::Path::new("/dev/kvm").exists() {
         panic!(
-            "/dev/kvm missing — these live tests need bare-metal Intel x86-64 with VMX. \
+            "/dev/kvm missing — these live tests need Linux x86-64 with KVM. \
              Run on the determinism box: ssh <qualified-host> 'taskset -c 1 cargo test -p vmm-backend \
              --test kvm_smoke -- --ignored --test-threads=1'"
         );
@@ -61,7 +61,7 @@ fn new_backend_or_explain() -> KvmBackend {
     KvmBackend::new().unwrap_or_else(|e| {
         panic!(
             "KvmBackend::new failed ({e}); these need /dev/kvm + VMX on the determinism box \
-             (taskset -c 1). Not runnable on macOS or under nested virt."
+             (taskset -c 1), or a GitHub x86 runner with KVM access. Not runnable on macOS."
         )
     })
 }
@@ -97,36 +97,106 @@ fn enter_real_mode_at(backend: &mut KvmBackend, entry: u64) {
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
-fn bringup_smoke_out_then_hlt() {
-    // mov dx, 0x3f8 ; mov al, 0x42 ; out dx, al ; hlt
-    let code: &[u8] = &[0xBA, 0xF8, 0x03, 0xB0, 0x42, 0xEE, 0xF4];
-
-    let mut backend = new_backend_or_explain();
-    let mut mem = GuestMem::new(0x10000);
-    // SAFETY: `mem` outlives `backend` (dropped after it), is page-aligned, and
-    // is not aliased while the guest runs.
-    unsafe { backend.map_memory(Gpa(0), mem.as_mut_slice()) }.expect("map_memory");
-    configure(&mut backend);
-    backend.write_guest(Gpa(0x1000), code).expect("load stub");
-    enter_real_mode_at(&mut backend, 0x1000);
-
-    match backend.run().expect("run to OUT") {
-        Exit::Arch(X86Exit::Io {
-            port: 0x3F8,
-            size: 1,
-            write: Some(v),
-        }) => assert_eq!(v, 0x42),
-        other => panic!("expected OUT to 0x3f8, got {other:?}"),
+fn serviced_pio_is_exactly_snapshottable_without_guest_execution() {
+    // Each mode reaches the same I/O boundary. INC BX immediately after I/O
+    // witnesses any guest execution during completion retirement or capture.
+    for read in [false, true] {
+        let code = [
+            0xBA,
+            0xF8,
+            0x03,
+            0xB0,
+            0x42,
+            if read { 0xEC } else { 0xEE },
+            0x43,
+            0xF4,
+        ];
+        let mut snapshot = None;
+        let mut endpoints = Vec::new();
+        for mode in 0..3 {
+            // RAM outlives the backend mapping, including backend destruction.
+            let mut mem = GuestMem::new(0x10000);
+            let mut backend = new_backend_or_explain();
+            // SAFETY: mem is page-aligned, remains allocated until after backend
+            // is dropped, and no host slice aliases it while the guest runs.
+            unsafe { backend.map_memory(Gpa(0), mem.as_mut_slice()) }.expect("map_memory");
+            configure(&mut backend);
+            backend.write_guest(Gpa(0x1000), &code).expect("load stub");
+            enter_real_mode_at(&mut backend, 0x1000);
+            if mode == 2 {
+                backend
+                    .restore(snapshot.as_ref().expect("retired snapshot"))
+                    .expect("cold restore");
+            } else {
+                match backend.run().expect("run to I/O") {
+                    Exit::Arch(X86Exit::Io {
+                        port: 0x3F8,
+                        size: 1,
+                        write,
+                    }) => {
+                        assert_eq!(write, if read { None } else { Some(0x42) });
+                    }
+                    other => panic!("expected PIO, got {other:?}"),
+                }
+                if read {
+                    backend.complete_read(0x77).expect("stage input");
+                }
+                if mode == 1 {
+                    let before = backend.save().expect("pre-retirement state");
+                    assert_eq!(
+                        before.regs.rip, 0x1006,
+                        "serviced PIO has already completed"
+                    );
+                    assert_eq!(before.regs.rax & 0xff, if read { 0x77 } else { 0x42 });
+                    let counts = backend.exit_counts();
+                    backend.retire_pending_completion().expect("retire PIO");
+                    let sealed = backend.save().expect("capture completed PIO");
+                    assert_eq!(sealed.regs.rip, 0x1006, "stopped before INC BX");
+                    assert_eq!(
+                        sealed.regs.rbx, before.regs.rbx,
+                        "retirement executes no INC"
+                    );
+                    assert_eq!(sealed.regs.rax & 0xff, if read { 0x77 } else { 0x42 });
+                    assert_eq!(
+                        backend.exit_counts(),
+                        counts,
+                        "retirement produces no guest exit"
+                    );
+                    backend
+                        .retire_pending_completion()
+                        .expect("repeat retirement is inert");
+                    assert_eq!(
+                        backend.save().unwrap(),
+                        sealed,
+                        "capture/retirement is a fixpoint"
+                    );
+                    assert_eq!(
+                        before, sealed,
+                        "explicit retirement cannot change a stopped boundary"
+                    );
+                    snapshot = Some(before);
+                }
+            }
+            assert_eq!(
+                backend.run().expect("continue to HLT"),
+                Exit::Common(CommonExit::Idle)
+            );
+            let endpoint = backend.save().expect("endpoint");
+            assert_eq!(
+                endpoint.regs.rbx, 1,
+                "INC executes exactly once on continuation"
+            );
+            endpoints.push(endpoint);
+        }
+        assert_eq!(
+            endpoints[0], endpoints[1],
+            "uninterrupted equals retire-save-continue"
+        );
+        assert_eq!(
+            endpoints[0], endpoints[2],
+            "uninterrupted equals retire-save-close-restore-continue"
+        );
     }
-    assert_eq!(
-        backend.run().expect("run to HLT"),
-        Exit::Common(CommonExit::Idle)
-    );
-
-    let counts = backend.exit_counts();
-    assert_eq!(counts.io, 1, "exactly one IO exit");
-    assert_eq!(counts.idle, 1, "exactly one HLT exit");
-    assert_eq!(counts.total(), 2);
 }
 
 #[test]

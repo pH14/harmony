@@ -18,12 +18,13 @@ an ISA-specific exit enum.
 
 Backends install a guest-visible CPU policy before the first run. Read-style
 exits remain pending until the matching completion method is called; resuming
-with an unserviced completion is an error. PIO/MMIO stores have no value to
-complete, but KVM retains their fast-path callback until the next entry, so the
-backend marks them staged and retires them with an immediate-exit entry before
-an in-place restore. Exit counters and capability flags are exposed for the
-VMM's reports. Virtual-time policy, device models, snapshot formats, and
-entropy live above this crate.
+with an unserviced completion is an error. The x86 KVM backend finishes its
+scalar PIO callbacks with an immediate-exit entry before a serviced operation
+returns. This executes no following guest instruction and exposes the completed
+CPU state to `save`; snapshot capture itself performs no entry. An unserviced
+read still requires its host response. Exit counters and capability flags are
+exposed for the VMM's reports. Virtual-time policy, device models, snapshot
+formats, and entropy live above this crate.
 
 The `contract-tests` feature exposes the shared backend contract exam, and the
 `mock` feature enables portable fixtures:

@@ -36,7 +36,7 @@ use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
 
 use crate::arch::x86::Injection;
 use crate::arch::x86::VcpuState;
-use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Policy};
+use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Exit, X86Policy};
 use crate::arch::x86::{canonicalize_regs, canonicalize_sregs, canonicalize_xsave};
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
@@ -326,11 +326,14 @@ impl KvmBackend {
                 Some((exit, pending)) => {
                     self.counts.bump(exit.reason());
                     self.pending = pending;
-                    // Read exits become staged when complete_* writes their
-                    // result. Write exits have no trait-level pending value,
-                    // but KVM retains their fast-PIO/MMIO callback until the
-                    // next entry, so mark them here for restore retirement.
                     self.completion_staged = decoded_exit_stages_completion(&exit, pending);
+                    // Scalar PIO writes need no host response, but KVM retains
+                    // their completion. Finish it before exposing the boundary.
+                    // MMIO may return another fragment from a completion entry;
+                    // it requires a separate continuation-exit path.
+                    if matches!(exit, Exit::Arch(X86Exit::Io { write: Some(_), .. })) {
+                        self.retire_pending_completion()?;
+                    }
                     return Ok(exit);
                 }
                 None => continue, // run-loop control exit; re-enter
@@ -876,9 +879,15 @@ impl Backend for KvmBackend {
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
+        let scalar_pio = matches!(self.pending, Pending::IoIn { .. });
         apply_complete_read(self.run_page(), self.pending, value)?;
         self.pending = Pending::None;
         self.completion_staged = true;
+        if scalar_pio {
+            // Commit the supplied IN result without executing the next guest
+            // instruction, so save observes the completed scalar PIO boundary.
+            self.retire_pending_completion()?;
+        }
         Ok(())
     }
 
