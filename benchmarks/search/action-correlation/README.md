@@ -164,3 +164,17 @@ replay has a separate 5M allowance within the remaining block balance.
 At registration, no performance outcome has been inspected. Passing both gates
 would earn independent confirmation and same-policy MM2 transfer; neither a
 qualification nor a precursor win completes the original boss/Wily goal.
+
+The first completed triplet (seed `3735135754`, ms02) is unfavorable to the
+component candidate: it and ordinary actions both fail to attain the energy
+tank by 50M frames; the matched whole-command control attains it at 34,826,915.
+All three cells verify and finish normally. The triplet uses 134,829,399 admitted
+search frames and 426,276 known witness-replay frames. See
+[the partial-wave record](d01-after-triplet1.json). The ARM triplet remains in
+progress, so the panel gate is unresolved and the second wave remains unrun.
+This single exploratory whole-command result does not earn its promotion.
+
+Registrations freeze verifier bytes as well as native builds. To reproduce
+Q01/Q02, use `verify_native.py` from commit `8e390f3b`; QX01 uses the revision at
+`a200edb1`. Use the registered revision when recomputing historical results,
+without replacing old checker hashes with current ones.

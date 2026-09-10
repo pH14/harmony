@@ -1,0 +1,94 @@
+{
+  "format": "action-correlation-partial-wave-v1",
+  "as_of_utc": "2026-09-10T00:09:07.697636+00:00",
+  "registration_sha256": "ce8d0a4b38cde026149aee74c92fd97d54e21324529184b5df9495de8e18bafa",
+  "complete_triplets": [
+    1
+  ],
+  "unfinished_triplets": [
+    0
+  ],
+  "undispatched_triplets": [
+    2,
+    3
+  ],
+  "completed_triplet_search_frames": 134829399,
+  "completed_triplet_known_auxiliary_frames": 426276,
+  "cells": [
+    {
+      "id": "pair-1-component",
+      "admitted_search_frames": 50001286,
+      "known_auxiliary_frames": 107866,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": null,
+        "observed_through_frames": 50001286,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          50000000,
+          50000000
+        ]
+      },
+      "cpu_seconds": 1139.380057,
+      "elapsed_seconds": 360.2463912209496
+    },
+    {
+      "id": "pair-1-whole",
+      "admitted_search_frames": 34827421,
+      "known_auxiliary_frames": 215470,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": 34826915,
+        "observed_through_frames": 34827421,
+        "observed_full_budget": false,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          34826915,
+          34826915
+        ]
+      },
+      "cpu_seconds": 790.1060630000001,
+      "elapsed_seconds": 252.6024274349911
+    },
+    {
+      "id": "pair-1-ordinary",
+      "admitted_search_frames": 50000692,
+      "known_auxiliary_frames": 102940,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": null,
+        "observed_through_frames": 50000692,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          50000000,
+          50000000
+        ]
+      },
+      "cpu_seconds": 1135.2159589999999,
+      "elapsed_seconds": 358.1983241890557
+    }
+  ],
+  "raw_result_sha256": "56926417f9764a6216aa04035940193e07baa6fc4fb5bcd84831ab62bf195f29",
+  "decision": "Wait for the still-running registered ARM triplet. No second wave is authorized by this partial result.",
+  "interpretation": "The component candidate ties ordinary at the 50M cap and loses to matched whole-command persistence on this one seed. This is neither a complete panel nor a promotion gate for the whole-command control. The whole-command result is exploratory."
+}
