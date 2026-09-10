@@ -760,3 +760,24 @@ The three cells have180-second search,330-second process and1GiB output limits,
 8GiB archives and12GiB service memory, with an8M known-auxiliary ceiling. No
 fresh performance cell is registered. A failed qualification earns no retry
 or larger fixture; a pass returns to a separately frozen deeper-endpoint decision.
+
+CQ01 passes all three cells, with190 actual continuation jobs and275,130
+admitted frames each, full replay, identical ARM buffer artifacts and identical
+post-header ARM/x86 events. Both services are terminal. It charges1,670,658
+known auxiliary frames; resumed totals are1,273,426,135 admitted search and
+63,760,843 known auxiliary frames. No fresh performance result follows from this.
+
+Next freeze one fresh four-pair first-Bombs comparison of alphabet_only versus
+unchanged alphabet_continuation_v1. Consider the bounded200M horizon from the
+recorded historical/current endpoint costs and ms02 timing. Use ms02's faster
+cores0–7 as two nonoverlapping four-core groups, sequential arms within each
+pair with balanced order,8GiB archives and12GiB process envelopes. msr1 supplied
+architecture/buffering qualification; do not spend a deeper performance cell
+there when its measured throughput makes a complete horizon unlikely. Reserve
+the complete panel's hard limits before launch, and initially dispatch only two
+pairs. Require the existing three strict wins,15% restricted-cost improvement
+and1.25 resource-ratio limits; stop at mathematical futility or incomplete
+measurement. No longer horizon, early-milestone substitution, bank/order change
+or replacement seed rescues a failed panel. Fresh development is not yet
+registered or run. Independent confirmation, MM2 and untouched validation still
+stand between a precursor gain and the original active, unachieved goal.

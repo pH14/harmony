@@ -185,6 +185,32 @@ actual fourth-reservation continuation dispatch are required. Each process has
 two-cell service has720 seconds and x86 has360. The separate known auxiliary
 ceiling is8M. No fresh search, retry or automatic larger fixture is registered.
 
+CQ01 passes: all three runs execute190 continuation jobs among2,000 admitted
+jobs, at275,130 frames each. Every continuation uses its fourth reservation and
+recorded tail. Full replay succeeds, both ARM buffer variants have identical
+stream/campaign/checkpoint artifacts, and ARM/x86 post-header events match.
+The cells take18.28/17.28/8.04 seconds and charge1,670,658 known auxiliary frames,
+including inferred full campaign replay and twice-replayed held witnesses.
+Both services deactivate successfully. The exact source, native output, service
+journals and [closed ledger](ledger-after-cq01.json) remain available; cumulative
+resumed known auxiliary cost is63,760,843, with search unchanged at1,273,426,135.
+Initial read-only preflight used an older runner helper from the source snapshot;
+supplying the exact already-registered helper files fixed that path mistake
+before any emulator execution, without changing a registration or native input.
+
+The next fresh comparison should target Bombs with the unchanged candidate.
+Current timing argues for ms02's eight faster cores (0–7), split into two
+nonoverlapping four-core groups with sequential, balanced arms within each pair.
+ED01's50M cells take about357 seconds on ms02 versus862 on msr1; those timings
+are feasibility evidence, not a throughput guarantee at greater depth. The
+current corrected control's113.33M Bombs arrival and the historical candidate's
+88.8–263.3M range make a200M fixed horizon a reasonable bounded screen to
+consider; both-censored pairs must remain ties. A larger horizon is not earned
+by failure. Freeze all four new pairs, arm order, full wall reservation, work,
+memory and output bounds before dispatch. Run only the first two pairs initially
+and stop if the fixed three-win gate becomes impossible. CQ01 does not itself
+register or launch that performance panel.
+
 ## Ordering findings stay separate from this candidate
 
 Two new source fixtures expose existing limitations without changing policies:

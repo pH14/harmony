@@ -1,0 +1,471 @@
+[
+  {
+    "file": "ms02/results.json.gz",
+    "raw_bytes": 23412,
+    "raw_sha256": "30251b8ffef128538f7cd4d927e9ea12bae4efaf877c00cc05c81371c285f55b",
+    "gzip_bytes": 5608,
+    "gzip_sha256": "f64d9ffe699a5861d8704be5a2e7eb5dc89e91fc6ce70d6eff49f29249301493"
+  },
+  {
+    "file": "ms02/service-journal.jsonl.gz",
+    "raw_bytes": 6574,
+    "raw_sha256": "6dc4d151db733ae2cd27aefb81e652b6532cbacf46e92bf7056d1dc8fc28010b",
+    "gzip_bytes": 1589,
+    "gzip_sha256": "97b92365511a51df212bb4a52a1cfe5b25efcff9e99e7258c992f5a23417a6fa"
+  },
+  {
+    "file": "ms02/two-slots/matrix.json.gz",
+    "raw_bytes": 1714,
+    "raw_sha256": "112c8c988eaf330895a70e71454e34b2380a6dbf83f3bf3d698713c179ffffd7",
+    "gzip_bytes": 909,
+    "gzip_sha256": "7781975e6cb48b754907683a0ba7e30431cc539681eb25d37e5e7643522f8360"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/campaign.json.gz",
+    "raw_bytes": 9686,
+    "raw_sha256": "a32d24da26840c87296e4b9467668bfc70dbdd1ce12bedf82eee2e2c2df2aa4c",
+    "gzip_bytes": 2424,
+    "gzip_sha256": "9b5abde7a2dcd06e5dd291c1966b1d2244148c771c8d3de2f091c0cae7f3941e"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json.gz",
+    "raw_bytes": 65683759,
+    "raw_sha256": "5da81d11d30f77ec38f88ab29140ed73603707484265ba8a97e2ed5573645441",
+    "gzip_bytes": 9714743,
+    "gzip_sha256": "0366deb7b042b31ea425f6ed64820bfc1955a94ae9d50161c65bc0b1d3119ce2"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/identity.json.gz",
+    "raw_bytes": 1811,
+    "raw_sha256": "207e37f58cea16fb8c48601892b4a0703f5f13771b9ee56aaed7f26a4d4dd206",
+    "gzip_bytes": 1062,
+    "gzip_sha256": "2d36e47dd24956fce2eb47397f4dc09d0da35e3d5bbbece8ee47774ce300e280"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/milestone-inputs/brinstar.json.gz",
+    "raw_bytes": 46,
+    "raw_sha256": "1418557c26a520197e190a4b4cb63f23ba570c1898ba73b59783a43af69e11ce",
+    "gzip_bytes": 61,
+    "gzip_sha256": "efde4a3337eacd1cd6abe4cfebfc95004a7c42892f1e69645cbdba79f3865eb2"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/milestone-inputs/morph_ball.json.gz",
+    "raw_bytes": 864,
+    "raw_sha256": "2dba1e729b6a4b46073db0dec3ca70705e560154302530806f6494fc85040348",
+    "gzip_bytes": 182,
+    "gzip_sha256": "fb07fd10e3154d1a9ad11bd7bb8fbbb6939afdce1b96bd530e163d9142f94fa3"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/phase.json.gz",
+    "raw_bytes": 47,
+    "raw_sha256": "181586c966a30658b5ce6f4d8c29e0c4092bfe8af8e6b60440d42906facd00a1",
+    "gzip_bytes": 67,
+    "gzip_sha256": "092245a71a6146e22fbbfd3a37ab5bd1a89d6c970cd9897aaeefab7a161a33c8"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/progress.jsonl.gz",
+    "raw_bytes": 71119,
+    "raw_sha256": "db8ce5861caf8751744a6a626ed0f7556309e4af5fb3c280813d9f3e0b24ac64",
+    "gzip_bytes": 6303,
+    "gzip_sha256": "c5acc8efcc80a7cea88fcf45791dbbffd33195c40262186d1740651ca847f62e"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/result.json.gz",
+    "raw_bytes": 4532,
+    "raw_sha256": "68c91b3229e647f6d464c21eb8873cf60aa31b7ead1010a798d63578f8bec199",
+    "gzip_bytes": 1175,
+    "gzip_sha256": "c7733166a487d0d88ca0ce7dafbb97d29e70c3a20adf23ee6ca1fd2158a89c8a"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/retention-audit.json.gz",
+    "raw_bytes": 87635,
+    "raw_sha256": "faf3c4917ea41f714f2ff2effd117f53708d4accd8db1ab5fb5ee4a361d70184",
+    "gzip_bytes": 3549,
+    "gzip_sha256": "450bcc7787f02bf605e40567e1e5d800bfbe5f14bb94e37694e6afc5a6d54304"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/stream.jsonl.gz",
+    "raw_bytes": 908483,
+    "raw_sha256": "9e89be4399486921f5b734fcd7723ec58e818325e668c82881aeb1a4b1a71d03",
+    "gzip_bytes": 142022,
+    "gzip_sha256": "8d04fa9ca57ade191e06984108ebac9acc0532f264a659d8e0f21f6dbaca4ed4"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/witness-input.json.gz",
+    "raw_bytes": 1796,
+    "raw_sha256": "9091b6e1cbd8246d11f70ed3ade3776c0bf6e306d2514e95dd6b11469e60bfc6",
+    "gzip_bytes": 288,
+    "gzip_sha256": "2cee150ba983f6416ab140ebcb7f6be11fb236db8e654f2ef07327c1b2826b11"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/request.private.json.gz",
+    "raw_bytes": 677,
+    "raw_sha256": "47fcbc9d60d04c8d690b92786aaecd62e53b4a2a3e4af9a3bc4ac7f7e97b2df1",
+    "gzip_bytes": 444,
+    "gzip_sha256": "e47c72d7ed116ba733926cd46b2e9de6bfa4b001db2eb8e40ac0974e646e7009"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/resources.jsonl.gz",
+    "raw_bytes": 33452,
+    "raw_sha256": "e2b80938933a8e77cfae990c748bf4778398d92719dbcfd65f28174191a7f3f1",
+    "gzip_bytes": 2782,
+    "gzip_sha256": "2e0df19b8dfac9e5021e59a3493195721c23dda70e8f42025a02237a04d9b7c1"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/stderr.log.gz",
+    "raw_bytes": 17793,
+    "raw_sha256": "170662a7dc0264626c59d3d98b930ac457623b1c159740420e7b826c9c47e466",
+    "gzip_bytes": 2990,
+    "gzip_sha256": "070bda7719abb3eb9a8911f5b7a1f9eebcb3f30fbdf16ab31b882fdb0b3b3806"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/stdout.log.gz",
+    "raw_bytes": 0,
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gzip_bytes": 20,
+    "gzip_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/summary.json.gz",
+    "raw_bytes": 13323,
+    "raw_sha256": "9f1d9f8f5127787e07bfdd305858b3bc1043de69b0979a97017d2221cc592a0f",
+    "gzip_bytes": 4392,
+    "gzip_sha256": "cb8eef9a8042dc64a6afc52ccce3ee219037f298f99a8acf575a1c067d68d6c9"
+  },
+  {
+    "file": "ms02/two-slots/results.json.gz",
+    "raw_bytes": 13325,
+    "raw_sha256": "86782970eed542def5c708b5b386ee876035444268172f60b112ce8bee1f8a0c",
+    "gzip_bytes": 4395,
+    "gzip_sha256": "c46d1f74f29a27bbf0c154865c9901f03b583949ae414a0697aee42f45a5fb36"
+  },
+  {
+    "file": "ms02/two-slots/suite.json.gz",
+    "raw_bytes": 653,
+    "raw_sha256": "b1b8d143c4c37522357e22f045c51ef6130f1cea61e8d34ca7106f724c56ffd2",
+    "gzip_bytes": 440,
+    "gzip_sha256": "12d93cb320a13699ce0e5bce28b72d4b6213d7be3b5ea9b24e3697a9edb8b094"
+  },
+  {
+    "file": "ms02/two-slots.json.gz",
+    "raw_bytes": 834,
+    "raw_sha256": "b054cfe6f4d9f080c4cc968851bac519e57a611fe9a8d8f1f4f0e77687fb1113",
+    "gzip_bytes": 472,
+    "gzip_sha256": "65cd17bb40b0edf2cf5c38dcf5883b2e66e8bb175d414388016c494bc8765ef4"
+  },
+  {
+    "file": "ms02/two-slots.log.gz",
+    "raw_bytes": 102,
+    "raw_sha256": "dd9b6a4c01e4d8aed3e898b489e03790408f6c75f4a7de471388e380120ce117",
+    "gzip_bytes": 107,
+    "gzip_sha256": "9ffc1b1c5dd0ce1682136fd7e4c161b077d87423f18f5d688968eae7b1b3b6d2"
+  },
+  {
+    "file": "msr1/one-slot/matrix.json.gz",
+    "raw_bytes": 1262,
+    "raw_sha256": "f2987b047682213cf60db357a376baa07884913f8774b40e0374fbe45d198c31",
+    "gzip_bytes": 725,
+    "gzip_sha256": "e4dd97f6156142a6b8976e1695c562af82ea81e18c858fb3d360cea31704c1e6"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/campaign.json.gz",
+    "raw_bytes": 9686,
+    "raw_sha256": "d1af9a68899a50ecdcf31d836cbaa8809bfadfa932f0fc20202bbe8d4c6a2ad9",
+    "gzip_bytes": 2426,
+    "gzip_sha256": "e9d9e7fc8e9c31c44ba6c9b0502d877f1d65d08eb47c8abfcb605e212f9c0bc1"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json.gz",
+    "raw_bytes": 65679483,
+    "raw_sha256": "bf6efab9f9eb8b31aa2b675ed5b3182a21406244845bad198e4933d9d27bd7c9",
+    "gzip_bytes": 9719628,
+    "gzip_sha256": "3becba0a5bc0799ea28f653ce0e8f7a57c7366aafc05ac08a1cb5bfe04488cae"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/identity.json.gz",
+    "raw_bytes": 1811,
+    "raw_sha256": "2da8ab2498c5a489ac0686e5de1d5de2a93db39b7807b1ccc0b3dc4a12c3939b",
+    "gzip_bytes": 1061,
+    "gzip_sha256": "ca4659de4c44c6e5d24a29b0decac07027715ea91a41e423c1fea4311a615a26"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/milestone-inputs/brinstar.json.gz",
+    "raw_bytes": 46,
+    "raw_sha256": "1418557c26a520197e190a4b4cb63f23ba570c1898ba73b59783a43af69e11ce",
+    "gzip_bytes": 61,
+    "gzip_sha256": "efde4a3337eacd1cd6abe4cfebfc95004a7c42892f1e69645cbdba79f3865eb2"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/milestone-inputs/morph_ball.json.gz",
+    "raw_bytes": 864,
+    "raw_sha256": "2dba1e729b6a4b46073db0dec3ca70705e560154302530806f6494fc85040348",
+    "gzip_bytes": 182,
+    "gzip_sha256": "fb07fd10e3154d1a9ad11bd7bb8fbbb6939afdce1b96bd530e163d9142f94fa3"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/phase.json.gz",
+    "raw_bytes": 47,
+    "raw_sha256": "5ac7f2acedd9e388fd2994fdeac76da7a1b4f095780fac86ee0ec705ae73c4d1",
+    "gzip_bytes": 67,
+    "gzip_sha256": "45afcf4267da99c21845d4d9a9abd3eaae51709032a04ddd3739f570c74edd60"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/progress.jsonl.gz",
+    "raw_bytes": 71159,
+    "raw_sha256": "15534980ee58e162073a85d9f2d55a39c537b57ae76474d8f1c0dc4dba9c26f4",
+    "gzip_bytes": 6307,
+    "gzip_sha256": "52b77256d8a852aa9a5b9f625edd3eb2b864647ef2969575555ae871395b4c71"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/result.json.gz",
+    "raw_bytes": 4526,
+    "raw_sha256": "c027a2bad131d274e899d67c9600e9b7544ee28db9cd89c9c5390cf0470efc59",
+    "gzip_bytes": 1176,
+    "gzip_sha256": "93f87fd6a2136de1484c0972667be1d71061b0629d8a7b0e949472202cc222e9"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/retention-audit.json.gz",
+    "raw_bytes": 87635,
+    "raw_sha256": "faf3c4917ea41f714f2ff2effd117f53708d4accd8db1ab5fb5ee4a361d70184",
+    "gzip_bytes": 3549,
+    "gzip_sha256": "450bcc7787f02bf605e40567e1e5d800bfbe5f14bb94e37694e6afc5a6d54304"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/stream.jsonl.gz",
+    "raw_bytes": 908483,
+    "raw_sha256": "ceb981817755a37654beb5af3623993a1e21c6b916fe7d69de3981a8fb897130",
+    "gzip_bytes": 142020,
+    "gzip_sha256": "8c8756593ebec2ce209c039644a3dc247981180dc8aa26157be0d98958563fce"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/witness-input.json.gz",
+    "raw_bytes": 1796,
+    "raw_sha256": "9091b6e1cbd8246d11f70ed3ade3776c0bf6e306d2514e95dd6b11469e60bfc6",
+    "gzip_bytes": 288,
+    "gzip_sha256": "2cee150ba983f6416ab140ebcb7f6be11fb236db8e654f2ef07327c1b2826b11"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/request.private.json.gz",
+    "raw_bytes": 705,
+    "raw_sha256": "acf32fba92c4f0db0e17e796a878316b81570d75f48d1b37f8e2493d4161f0af",
+    "gzip_bytes": 450,
+    "gzip_sha256": "50344ed7069731ab38ef905c9c3058269f0c7f643653025070fe6873bd48919d"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/resources.jsonl.gz",
+    "raw_bytes": 73011,
+    "raw_sha256": "81fc289ebc6c6b96602744642f785f9936ecfa24d516916d19557e7c3618749f",
+    "gzip_bytes": 4586,
+    "gzip_sha256": "fe8fe5534e8a65c041506b20dc1022aefb85d262d60d0ac49721cde885ca4b6a"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/stderr.log.gz",
+    "raw_bytes": 17825,
+    "raw_sha256": "ce3a2a3ddb9ef54aa7c166b8484a134191a15a9f8646291f9ca63739c4e61ac6",
+    "gzip_bytes": 2977,
+    "gzip_sha256": "5f5e362c4681bcff09673407046691d550f58545818f14424fad42ef829b5cd3"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/stdout.log.gz",
+    "raw_bytes": 0,
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gzip_bytes": 20,
+    "gzip_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/summary.json.gz",
+    "raw_bytes": 12871,
+    "raw_sha256": "dcd23aefaaa2a43e44db0353fc04d3e15448080e968b3ad11ca9893bed6940b0",
+    "gzip_bytes": 4203,
+    "gzip_sha256": "a291897d93087f1f4929a61236775b00c380994c4244eff2747b874cb966e8de"
+  },
+  {
+    "file": "msr1/one-slot/results.json.gz",
+    "raw_bytes": 12873,
+    "raw_sha256": "7600d0bc75c229b0151fe50cfb551db14ad946c3171b7f167b58fae872b31820",
+    "gzip_bytes": 4207,
+    "gzip_sha256": "5bd726aff0e6f3734920bfee734e9dc2adb119be8facee76729b2ff73960371a"
+  },
+  {
+    "file": "msr1/one-slot/suite.json.gz",
+    "raw_bytes": 652,
+    "raw_sha256": "5fdc9087a2e1afa34148bd950ac4bf534b4733d8e3dd6262bde794a8fe823f21",
+    "gzip_bytes": 439,
+    "gzip_sha256": "4222b6dc3b5644b4083dca14d7b33c5a5cf0040bba299660356e074bba7cb4d8"
+  },
+  {
+    "file": "msr1/one-slot.json.gz",
+    "raw_bytes": 833,
+    "raw_sha256": "3f2c78470b0757f6d674b647b1b923b04203eedb1cef58dbb25230629cf46f3e",
+    "gzip_bytes": 473,
+    "gzip_sha256": "6c03e81c4bdd870c9cd898722def066a1f3c120913ca22dd12a19b0305d79fa2"
+  },
+  {
+    "file": "msr1/one-slot.log.gz",
+    "raw_bytes": 103,
+    "raw_sha256": "a6de3abeef841e250bb80499d36ca565e4d5ebebafb47b618289a128bdc25de7",
+    "gzip_bytes": 108,
+    "gzip_sha256": "414fcd386683fbfaca2903d04f994788c2e32192c8a06bbb7ec8ca0f28e9e9c6"
+  },
+  {
+    "file": "msr1/results.json.gz",
+    "raw_bytes": 45081,
+    "raw_sha256": "358bd55d3f9db4484ce9bd7a4e5f1e6a243483e2424ca5f4e9fbd1b99ad320fe",
+    "gzip_bytes": 6149,
+    "gzip_sha256": "7fc35109d2b298efb16ef8c58a72fdcdf56063dfad672de94fc168bc4ee90391"
+  },
+  {
+    "file": "msr1/service-journal.jsonl.gz",
+    "raw_bytes": 9276,
+    "raw_sha256": "50d830070c64a0f3ffc6ea544ae3b7a8b90f02ec26048ffc7bf78d3364422d71",
+    "gzip_bytes": 1834,
+    "gzip_sha256": "74d4f56e62c68b03c9752a85804c53a77eb10559ef9368b83d00f274afa2e5f6"
+  },
+  {
+    "file": "msr1/two-slots/matrix.json.gz",
+    "raw_bytes": 1262,
+    "raw_sha256": "f2987b047682213cf60db357a376baa07884913f8774b40e0374fbe45d198c31",
+    "gzip_bytes": 725,
+    "gzip_sha256": "e4dd97f6156142a6b8976e1695c562af82ea81e18c858fb3d360cea31704c1e6"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/campaign.json.gz",
+    "raw_bytes": 9686,
+    "raw_sha256": "d1af9a68899a50ecdcf31d836cbaa8809bfadfa932f0fc20202bbe8d4c6a2ad9",
+    "gzip_bytes": 2426,
+    "gzip_sha256": "e9d9e7fc8e9c31c44ba6c9b0502d877f1d65d08eb47c8abfcb605e212f9c0bc1"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json.gz",
+    "raw_bytes": 65679483,
+    "raw_sha256": "bf6efab9f9eb8b31aa2b675ed5b3182a21406244845bad198e4933d9d27bd7c9",
+    "gzip_bytes": 9719628,
+    "gzip_sha256": "3becba0a5bc0799ea28f653ce0e8f7a57c7366aafc05ac08a1cb5bfe04488cae"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/identity.json.gz",
+    "raw_bytes": 1811,
+    "raw_sha256": "29fe4da2bd3be02610fc68451dd5a3f9983e8d03b7e5d3fcc44ba36e701efded",
+    "gzip_bytes": 1060,
+    "gzip_sha256": "cb1b7f794035042a3788537d76d79c98eafe4772f4ebfa1af6f96216f2f9e129"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/milestone-inputs/brinstar.json.gz",
+    "raw_bytes": 46,
+    "raw_sha256": "1418557c26a520197e190a4b4cb63f23ba570c1898ba73b59783a43af69e11ce",
+    "gzip_bytes": 61,
+    "gzip_sha256": "efde4a3337eacd1cd6abe4cfebfc95004a7c42892f1e69645cbdba79f3865eb2"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/milestone-inputs/morph_ball.json.gz",
+    "raw_bytes": 864,
+    "raw_sha256": "2dba1e729b6a4b46073db0dec3ca70705e560154302530806f6494fc85040348",
+    "gzip_bytes": 182,
+    "gzip_sha256": "fb07fd10e3154d1a9ad11bd7bb8fbbb6939afdce1b96bd530e163d9142f94fa3"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/phase.json.gz",
+    "raw_bytes": 48,
+    "raw_sha256": "e7262ea1173284a866257511174041d0922805eb4b366f9178eec442c8285a42",
+    "gzip_bytes": 68,
+    "gzip_sha256": "2c3bcb8ca13d09e8c8b8ba9506550d7093c6d044d655b6d7fa01ae6ff3cf4198"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/progress.jsonl.gz",
+    "raw_bytes": 71157,
+    "raw_sha256": "7247adcd3b2f2f832c7f95c7bc07cddd6c0179bddb1545cac280e0c3ca2ecbc3",
+    "gzip_bytes": 6324,
+    "gzip_sha256": "b7b320a46757618c8d007658b6f6d807f20079003c7890a1c22c9010819ef500"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/result.json.gz",
+    "raw_bytes": 4535,
+    "raw_sha256": "22cb3edf690e836d9bf68714816bb5bece51d0eca6644d913f7714eb824b72ed",
+    "gzip_bytes": 1179,
+    "gzip_sha256": "3b5fbf4f56314a6fec94994a6b0c7a6935a01a7975930b4d971399a6e9901429"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/retention-audit.json.gz",
+    "raw_bytes": 87635,
+    "raw_sha256": "faf3c4917ea41f714f2ff2effd117f53708d4accd8db1ab5fb5ee4a361d70184",
+    "gzip_bytes": 3549,
+    "gzip_sha256": "450bcc7787f02bf605e40567e1e5d800bfbe5f14bb94e37694e6afc5a6d54304"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/stream.jsonl.gz",
+    "raw_bytes": 908483,
+    "raw_sha256": "ceb981817755a37654beb5af3623993a1e21c6b916fe7d69de3981a8fb897130",
+    "gzip_bytes": 142020,
+    "gzip_sha256": "8c8756593ebec2ce209c039644a3dc247981180dc8aa26157be0d98958563fce"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/witness-input.json.gz",
+    "raw_bytes": 1796,
+    "raw_sha256": "9091b6e1cbd8246d11f70ed3ade3776c0bf6e306d2514e95dd6b11469e60bfc6",
+    "gzip_bytes": 288,
+    "gzip_sha256": "2cee150ba983f6416ab140ebcb7f6be11fb236db8e654f2ef07327c1b2826b11"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/request.private.json.gz",
+    "raw_bytes": 705,
+    "raw_sha256": "8458c48034567ffe6227a25f103d89a4257f819747d2464874d25107fbde2de9",
+    "gzip_bytes": 448,
+    "gzip_sha256": "8ee272cbbb7003cea2adf5b7243710fb498b1ba59c6f96e73532c7cd7e64552a"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/resources.jsonl.gz",
+    "raw_bytes": 69483,
+    "raw_sha256": "16ac42fa130c61dabbb8e7b5b06c89a7981ae014b4bbde443c9d8403b4c42e68",
+    "gzip_bytes": 4269,
+    "gzip_sha256": "76c5769e9e13a4a94a4e07e848efdc170383477d31b0f40c4123460a1fae4dec"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/stderr.log.gz",
+    "raw_bytes": 17823,
+    "raw_sha256": "3f803720cf05ca5d449cd7ef925d4c1b4e2a7e66f1856641a6e447995ff6e5a4",
+    "gzip_bytes": 2999,
+    "gzip_sha256": "0595999f218fa6480496452c527660300d585eb76423f5270213f1256fdee898"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/stdout.log.gz",
+    "raw_bytes": 0,
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gzip_bytes": 20,
+    "gzip_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/summary.json.gz",
+    "raw_bytes": 12879,
+    "raw_sha256": "0f93a4c7dbe8b36be9781e5a546eae1423eac1a4a81dced2ab7f144786f5def0",
+    "gzip_bytes": 4207,
+    "gzip_sha256": "9eb1895957ee1c6d67cbcfa9c1fb262704ee85d1e49e598e812f76afa6e823a9"
+  },
+  {
+    "file": "msr1/two-slots/results.json.gz",
+    "raw_bytes": 12881,
+    "raw_sha256": "c0b3d946a9965377e54043c7d30ae14fa4c65d4ec1eea0c7120a7f2d8a02ba89",
+    "gzip_bytes": 4210,
+    "gzip_sha256": "4d37a167614d54026ab1c33c6147351c8453957fa6900a9fb8d90af3882fd014"
+  },
+  {
+    "file": "msr1/two-slots/suite.json.gz",
+    "raw_bytes": 653,
+    "raw_sha256": "d4269a4845577a4bfd86560860be7b3ac6235a45553604e0368dd1dadd774547",
+    "gzip_bytes": 440,
+    "gzip_sha256": "587ded2fe16854f1cb8d47c513d475a6fdee801afe8e40a37e1ca8fc4dc9e253"
+  },
+  {
+    "file": "msr1/two-slots.json.gz",
+    "raw_bytes": 834,
+    "raw_sha256": "7b17c174aef6783230c8191aedd24bc3a487f3de191f3bdcbdc9ece80abd25ee",
+    "gzip_bytes": 472,
+    "gzip_sha256": "f4fb5412c3b63ff6451a584501ac7198a7c3d01d37521d232b06828c53d0e5b8"
+  },
+  {
+    "file": "msr1/two-slots.log.gz",
+    "raw_bytes": 103,
+    "raw_sha256": "0036732ed74d7ba555ac88217ca5be789095d42c47d000d759e501c60f1fd1c8",
+    "gzip_bytes": 108,
+    "gzip_sha256": "26261f9d655cb27e70bf7e33958552c6d30f4150445328200d3269334ef136e4"
+  }
+]
