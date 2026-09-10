@@ -254,14 +254,24 @@ pub(crate) enum IrqEntry {
 /// the guest can take it; otherwise ask KVM to exit (`KVM_EXIT_IRQ_WINDOW_OPEN`)
 /// the moment it can, so the caller retries the same vector on that exit.
 ///
+/// `readiness_current` says KVM wrote the page's `ready_for_interrupt_injection`
+/// after the last change to the vCPU's state. A restore rewrites the RFLAGS
+/// and interrupt shadow the byte is derived from without refreshing it, and a
+/// vector queued on that stale byte fails the VM entry, so until the next exit
+/// the only safe move is to ask for the window.
+///
 /// Pure: reads `ready_for_interrupt_injection`, writes `request_interrupt_window`,
 /// and issues **no syscall** — the orchestration layer performs the
 /// `KVM_INTERRUPT` ioctl for [`IrqEntry::Queue`]. (Box-only syscalls cannot live
 /// here; this is the part the synthetic-`kvm_run` unit tests + Miri exercise.)
-pub(crate) fn plan_irq_entry(page: RunPage, pending_irq: Option<u8>) -> IrqEntry {
+pub(crate) fn plan_irq_entry(
+    page: RunPage,
+    pending_irq: Option<u8>,
+    readiness_current: bool,
+) -> IrqEntry {
     match pending_irq {
         // Injectable now: clear any window request and queue the vector.
-        Some(vector) if page.ready_for_interrupt_injection() != 0 => {
+        Some(vector) if readiness_current && page.ready_for_interrupt_injection() != 0 => {
             page.set_request_interrupt_window(false);
             IrqEntry::Queue(vector)
         }

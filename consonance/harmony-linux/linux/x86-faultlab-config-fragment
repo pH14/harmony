@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Fault-library guest kernel: keep the pvclock and emulate ring-3 timestamp
+# counter reads from its canonical virtual counter. Go's runtime reads RDTSC
+# constantly; the cooperative CR4.TSD/#GP path makes those reads deterministic
+# on stock KVM, where the host cannot surface the instruction as an exit.
+#
+# Distinct from x86-n6-traps-off-config-fragment, which remains the negative
+# control that proves a counter-reading probe can detect a live counter.
+CONFIG_HARMONY_USER_COUNTER_TRAPS=y
+#
+# Multiprocessor, like the other kernels, even though the guest has one vCPU.
+# The host delivers the timer interrupt only at VM exits it services, so on
+# an SMP kernel a writer that finds an rwsem reserved for a queued waiter
+# spins until a scheduler tick that never comes; three processes writing one
+# tmpfs file reach that state. A single-processor build has no optimistic
+# spinning, but on stock KVM it stops in early boot, right after the memory
+# initialization report, before the first console registers, and never
+# exits again. The database cases run under a host wall-clock bound that
+# reports a spinning guest as a hung run, so SMP stays until the
+# single-processor boot is understood.
+#
+# The task park (patches/x86/0006): a workload thread held at a user
+# instruction by a hardware execution breakpoint the kernel owns, for the
+# races no signal-delivered pause can reach. Needs the perf breakpoint
+# framework the Kata base provides.
+CONFIG_HARMONY_PARK=y

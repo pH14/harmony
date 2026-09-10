@@ -7,7 +7,7 @@
 //! the request bytes the guest staged, and writes the response **frame** into the response page.
 //! There is no return value: the response length is folded into the frame header, which is the
 //! single-`OUT`, atomic doorbell the crate ships. The round-trip tests drive the unmodified task-01
-//! `Client` through all five service calls; the hostile-length and decode-boundary tests prove the
+//! `Client` through all five service calls; the bad-length and decode-boundary tests prove the
 //! load-bearing bound check holds for *any* host-written response page.
 
 use core::ptr;
@@ -27,7 +27,7 @@ use proptest::prelude::*;
 const FRAME_MAGIC: u32 = 0x3150_4348;
 
 /// Per-test proptest config. Native runs keep the spec's full case counts (round-trip ≥256, the
-/// adversarial bound-check probes 512). **Under Miri** two things change:
+/// bound-check probes 512). **Under Miri** two things change:
 ///
 /// * **Cases are cut to 16.** The interpreter is ~10–100× slower, so the full counts would push
 ///   the suite into the tens of minutes while re-treading the same handful of `exchange` branches;
@@ -152,7 +152,7 @@ impl IoDoorbell for LoopbackHost {
     }
 }
 
-/// `IoDoorbell` that ignores the request and writes a scripted **raw response page** — the hostile
+/// `IoDoorbell` that ignores the request and writes a scripted **raw response page** — the scripted
 /// host used to probe the magic gate and the length bound. Whatever bytes the test crafts (a forged
 /// header that lies about its length, a zeroed page, garbage) land in the fixed response page.
 struct ScriptedHost {
@@ -443,7 +443,7 @@ fn loopback_dispatches_only_exposed_request_bytes() {
 }
 
 // ---------------------------------------------------------------------------
-// Hostile-response rejection: the load-bearing magic gate + length bound, fixed cases.
+// Malformed-response rejection: the magic check and length bound, fixed cases.
 // ---------------------------------------------------------------------------
 
 /// Drive one `exchange` against a `ScriptedHost` that writes `page` into the response page.
@@ -462,7 +462,7 @@ fn run_scripted(page: Vec<u8>, resp_buf_len: usize) -> Result<(usize, Vec<u8>), 
 }
 
 #[test]
-fn hostile_response_is_rejected_without_panic_or_overcopy() {
+fn malformed_response_is_rejected_without_panic_or_overcopy() {
     // No frame magic (zeroed page = what a rejecting host leaves behind): HostRejected.
     assert_eq!(
         run_scripted(vec![0_u8; PAGE_SIZE], 64).unwrap_err(),
@@ -526,7 +526,7 @@ fn request_larger_than_page_is_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// Property tests — the spec's required ≥256-case round-trip, plus adversarial
+// Property tests — the spec's required ≥256-case round-trip, plus boundary
 // coverage of the magic-gate / length-bound boundary (green gate is the floor).
 // ---------------------------------------------------------------------------
 
@@ -623,7 +623,7 @@ proptest! {
 proptest! {
     #![proptest_config(config(512))]
 
-    /// Decode-boundary fuzz: a hostile host writes an arbitrary response page (optionally with a
+    /// Decode-boundary fuzz: a misbehaving host writes an arbitrary response page (optionally with a
     /// valid magic + forged length); every task-01 `Client` call must yield `Ok` or a clean
     /// `ClientError` — never a panic/UB.
     #[test]

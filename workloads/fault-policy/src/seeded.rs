@@ -85,7 +85,7 @@ impl SeededEnv {
 
     /// Fill `bytes` (clamped to [`MAX_SUPPLY_LEN`]) from the supply stream. The
     /// clamp is defensive — the seam guarantees `bytes ≤ MAX_SUPPLY_LEN` — so a
-    /// hostile point can never force an unbounded allocation.
+    /// malformed point can never force an unbounded allocation.
     fn supply_bytes(&mut self, bytes: u32) -> Vec<u8> {
         let n = bytes.min(MAX_SUPPLY_LEN) as usize;
         let mut out = Vec::with_capacity(n);

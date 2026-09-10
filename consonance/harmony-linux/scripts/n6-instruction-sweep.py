@@ -43,10 +43,24 @@ TRAP_ROWS = {
     "arm64-physical-counter",
     "arm64-live-timer-programming",
     "arm64-pmu",
-    "x86-tsc",
+    "x86-unrelated-gp",
     "x86-pmu",
     "x86-monitor-mwait",
     "x86-waitpkg",
+}
+
+# CR4.TSD turns these user instructions into a kernel #GP. The Harmony guest
+# kernel recognizes only their encodings and completes them from the canonical
+# virtual clock. Keep this separate from TRAP_ROWS: the same signal path is
+# still required for unrelated privileged instructions.
+EMULATED_ROWS = {"x86-tsc"}
+EMULATED_VALUE_PATTERN = re.compile(r"value:([0-9a-f]{16}):mem:[0-9a-f]{16}$")
+EMULATED_REGISTER_VALUES = {
+    "RDTSC preserves RCX": "0123456713579bdf",
+    "RDTSCP returns TSC_AUX": "0000000000000000",
+    "RDTSC/RDTSCP pair progresses": "0000000000000001",
+    "RDTSC upper halves zero": "0000000000000001",
+    "RDTSCP upper halves zero": "0000000000000001",
 }
 
 TRAPS_OFF_WITNESS_ROWS = {
@@ -276,7 +290,89 @@ def x86_body(operation: str) -> list[str]:
     bodies = {
         "RDTSC": ["rdtsc", "shlq $32, %rdx", "orq %rdx, %rax", "ret"],
         "RDTSCP": ["rdtscp", "shlq $32, %rdx", "orq %rdx, %rax", "ret"],
+        "RDTSC (66 prefix)": [
+            ".byte 0x66, 0x0f, 0x31",
+            "shlq $32, %rdx",
+            "orq %rdx, %rax",
+            "ret",
+        ],
+        "RDTSCP (66 prefix)": [
+            ".byte 0x66, 0x0f, 0x01, 0xf9",
+            "shlq $32, %rdx",
+            "orq %rdx, %rax",
+            "ret",
+        ],
+        # RDTSC writes only EDX:EAX. A sentinel in RCX catches an emulator
+        # that restores or clobbers the wrong register while completing #GP.
+        "RDTSC preserves RCX": [
+            "movabsq $0x0123456713579bdf, %rcx",
+            "rdtsc",
+            "movq %rcx, %rax",
+            "xorl %edx, %edx",
+            "ret",
+        ],
+        # The one-vCPU guest's architectural TSC_AUX is pinned to CPU 0.
+        # Returning ECX makes RDTSCP's third output directly verifiable.
+        "RDTSCP returns TSC_AUX": [
+            "rdtscp",
+            "movl %ecx, %eax",
+            "xorl %edx, %edx",
+            "ret",
+        ],
+        # Two counter traps in one JIT call must observe forward virtual time;
+        # a constant emulation would return zero here.
+        "RDTSC/RDTSCP pair progresses": [
+            "rdtsc",
+            "shlq $32, %rdx",
+            "orq %rdx, %rax",
+            "movq %rax, %r8",
+            "rdtscp",
+            "shlq $32, %rdx",
+            "orq %rdx, %rax",
+            "cmpq %r8, %rax",
+            "seta %al",
+            "movzbl %al, %eax",
+            "ret",
+        ],
+        # The kernel writes 32-bit architectural subregisters. Seed all
+        # upper halves so an emulation that only updates the low halves fails.
+        "RDTSC upper halves zero": [
+            "movq $-1, %rax",
+            "movq $-1, %rdx",
+            "rdtsc",
+            "movq %rax, %r8",
+            "shrq $32, %r8",
+            "movq %rdx, %r9",
+            "shrq $32, %r9",
+            "orq %r9, %r8",
+            "sete %al",
+            "movzbl %al, %eax",
+            "ret",
+        ],
+        "RDTSCP upper halves zero": [
+            "movq $-1, %rax",
+            "movq $-1, %rdx",
+            "movq $-1, %rcx",
+            "rdtscp",
+            "movq %rax, %r8",
+            "shrq $32, %r8",
+            "movq %rdx, %r9",
+            "shrq $32, %r9",
+            "orq %r9, %r8",
+            "movq %rcx, %r9",
+            "shrq $32, %r9",
+            "orq %r9, %r8",
+            "sete %al",
+            "movzbl %al, %eax",
+            "ret",
+        ],
         "RDPMC": ["xorl %ecx, %ecx", "rdpmc", "shlq $32, %rdx", "orq %rdx, %rax", "ret"],
+        "RDMSR from ring 3": [
+            "xorl %ecx, %ecx",
+            ".byte 0x0f, 0x32",
+            "xorl %eax, %eax",
+            "ret",
+        ],
         "MONITOR": ["xorl %eax, %eax", ".byte 0x0f, 0x01, 0xc8", "ret"],
         "MWAIT": ["xorl %eax, %eax", "xorl %ecx, %ecx", ".byte 0x0f, 0x01, 0xc9", "ret"],
         "UMONITOR": ["movq %rdi, %rax", ".byte 0xf3, 0x0f, 0xae, 0xf0", "xorl %eax, %eax", "ret"],
@@ -390,6 +486,7 @@ def parse_operation(
     arch: str,
     expected: dict[str, Row],
     operation_results: dict[str, list[str]],
+    enforce_semantics: bool = True,
 ) -> None:
     """Validate and append one ordered, table-generated operation record."""
     prefix_at = line.find(OPERATION_PREFIX)
@@ -424,6 +521,24 @@ def parse_operation(
         )
     if not result:
         raise SweepError(f"{path}:{line_number}: empty execute result")
+    if enforce_semantics and identifier in EMULATED_ROWS:
+        value_match = EMULATED_VALUE_PATTERN.fullmatch(result)
+        if value_match is None:
+            raise SweepError(
+                f"{path}:{line_number}: {identifier} {name} did not return "
+                "a canonical value result"
+            )
+        expected_value = EMULATED_REGISTER_VALUES.get(name)
+        if expected_value is not None and value_match.group(1) != expected_value:
+            raise SweepError(
+                f"{path}:{line_number}: {identifier} {name} returned "
+                f"{value_match.group(1)!r}, want {expected_value!r}"
+            )
+    elif enforce_semantics and identifier == "x86-unrelated-gp" and result != "signal:11":
+        raise SweepError(
+            f"{path}:{line_number}: unrelated ring-3 #GP returned {result!r}, "
+            "want signal:11"
+        )
     results.append(result)
 
 
@@ -625,7 +740,13 @@ def traps_off_witness(path: Path, arch: str, row: Row) -> tuple[str, ...]:
             candidate = line[prefix_at + len(OPERATION_PREFIX) :]
             if f"row={row.identifier} " in candidate:
                 parse_operation(
-                    path, line_number, line, arch, expected, operation_results
+                    path,
+                    line_number,
+                    line,
+                    arch,
+                    expected,
+                    operation_results,
+                    enforce_semantics=False,
                 )
             continue
         prefix_at = line.find(PREFIX)
@@ -695,12 +816,20 @@ def synthetic_report(rows: list[Row], arch: str) -> str:
         }
         if row.claim == "execute":
             trapped = row.identifier in TRAP_ROWS
-            results = [
-                f"signal:{11 if arch == 'x86_64' else 4}"
-                if trapped
-                else f"synthetic-{index}"
-                for index in range(len(row.operations))
-            ]
+            if row.identifier in EMULATED_ROWS:
+                results = [
+                    f"value:{EMULATED_REGISTER_VALUES.get(operation, '0123456789abcdef')}:"
+                    "mem:0123456789abcdef"
+                    for operation in row.operations
+                ]
+            else:
+                results = [
+                    "signal:11" if row.identifier == "x86-unrelated-gp"
+                    else f"signal:{11 if arch == 'x86_64' else 4}"
+                    if trapped
+                    else f"synthetic-{index}"
+                    for index in range(len(row.operations))
+                ]
             item["traps_on"] = True
             for ordinal, (operation, result) in enumerate(
                 zip(row.operations, results), start=1
@@ -733,17 +862,42 @@ def synthetic_arm_summary(rows: list[Row]) -> str:
 
 
 def expect_failure(label: str, action) -> None:
-    """Require a planted negative to be rejected."""
+    """Require a negative control to be rejected."""
     try:
         action()
     except SweepError:
         print(f"N6_NEGATIVE_OK {label}")
         return
-    raise SweepError(f"planted negative unexpectedly passed: {label}")
+    raise SweepError(f"negative control unexpectedly passed: {label}")
+
+
+def replace_operation_result(
+    report: str, row: Row, operation: str, replacement: str
+) -> str:
+    """Replace one operation result while preserving the rest of a report."""
+    lines = report.splitlines()
+    replaced = 0
+    for index, line in enumerate(lines):
+        prefix_at = line.find(OPERATION_PREFIX)
+        if prefix_at < 0:
+            continue
+        match = OPERATION_PATTERN.fullmatch(line[prefix_at + len(OPERATION_PREFIX) :])
+        if match is None:
+            continue
+        if match.group(2) != row.identifier or match.group(5) != operation:
+            continue
+        lines[index] = re.sub(r"result=\S+$", f"result={replacement}", line)
+        replaced += 1
+    if replaced != 1:
+        raise SweepError(
+            f"semantic fixture could not find exactly one {row.identifier} {operation} "
+            f"record (found {replaced})"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def self_test(rows: list[Row]) -> None:
-    """Exercise the verifier's positive path and meaningful planted negatives."""
+    """Exercise the verifier's positive path and meaningful negative controls."""
     longest_result = "value:ffffffffffffffff:mem:ffffffffffffffff"
     for row in rows:
         for ordinal, operation in enumerate(row.operations, start=1):
@@ -880,6 +1034,72 @@ def self_test(rows: list[Row]) -> None:
                 f"{arch}-traps-off",
                 lambda a=arch, p=traps_off, q=second: verify(rows, a, p, q),
             )
+
+            if arch == "x86_64":
+                emulated_row = next(
+                    row for row in rows if row.identifier in EMULATED_ROWS
+                )
+                unrelated_row = next(
+                    row for row in rows if row.identifier == "x86-unrelated-gp"
+                )
+                semantic_fixtures = [
+                    (
+                        "counter-signal",
+                        emulated_row,
+                        "RDTSC",
+                        "signal:11",
+                    ),
+                    (
+                        "unrelated-gp-escaped",
+                        unrelated_row,
+                        "RDMSR from ring 3",
+                        "value:0000000000000001:mem:0123456789abcdef",
+                    ),
+                    (
+                        "counter-rcx",
+                        emulated_row,
+                        "RDTSC preserves RCX",
+                        "value:0000000000000000:mem:0123456789abcdef",
+                    ),
+                    (
+                        "counter-aux",
+                        emulated_row,
+                        "RDTSCP returns TSC_AUX",
+                        "value:0000000000000001:mem:0123456789abcdef",
+                    ),
+                    (
+                        "counter-progress",
+                        emulated_row,
+                        "RDTSC/RDTSCP pair progresses",
+                        "value:0000000000000000:mem:0123456789abcdef",
+                    ),
+                    (
+                        "counter-rdtsc-upper",
+                        emulated_row,
+                        "RDTSC upper halves zero",
+                        "value:0000000000000000:mem:0123456789abcdef",
+                    ),
+                    (
+                        "counter-rdtscp-upper",
+                        emulated_row,
+                        "RDTSCP upper halves zero",
+                        "value:0000000000000000:mem:0123456789abcdef",
+                    ),
+                ]
+                for label, fixture_row, operation, replacement in semantic_fixtures:
+                    mutated = replace_operation_result(
+                        good, fixture_row, operation, replacement
+                    )
+                    first_fixture = root / f"{arch}-{label}-first.log"
+                    second_fixture = root / f"{arch}-{label}-second.log"
+                    first_fixture.write_text(mutated)
+                    second_fixture.write_text(mutated)
+                    expect_failure(
+                        f"{arch}-{label}",
+                        lambda a=arch, p=first_fixture, q=second_fixture: verify(
+                            rows, a, p, q
+                        ),
+                    )
 
             witness_identifier = TRAPS_OFF_WITNESS_ROWS[arch]
             witness_item = {

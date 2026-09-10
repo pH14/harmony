@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Build Harmony's native guest images from a locked Nix closure. Linux/aarch64
 # produces the minimal, NES, and PostgreSQL guests; Linux/x86_64 produces the
-# minimal guest used by the x86 virtual-time reference. Nix supplies every
+# minimal guest used by the x86 virtual-time reference and the fault-library
+# kernel profile that runs stock userspace binaries. Nix supplies every
 # tool, source tarball, and Cargo registry crate. The application performs
 # assembly in a fresh external workspace with Cargo networking disabled.
 set -euo pipefail
@@ -266,7 +267,7 @@ if [ "$host_arch" = aarch64 ]; then
     fi
 else
     echo "== N5: build minimal x86 kernel and initramfs"
-    (cd "$linux_dir" && ./build-kernel.sh && ./build-initramfs.sh)
+    (cd "$linux_dir" && ./build-kernel.sh && ./build-initramfs.sh && ./build-go-runtime-image.sh)
     if [ "$n6" -eq 1 ]; then
         echo "== N6: build generated sweep and traps-off x86 kernel"
         (cd "$linux_dir" && \
@@ -274,11 +275,21 @@ else
             N6_TRAPS_OFF=1 ./build-kernel.sh)
     fi
     if [ "$serialization_gate" -eq 1 ]; then
-        echo "== N5: run /dev/harmony serialization positive and planted negative"
+        echo "== N5: run /dev/harmony serialization positive and negative control"
         (cd "$linux_dir" && ./test-harmony-serialization.sh)
     fi
+    # The fault-library profile: the same series and pinned source, built
+    # with the task park enabled. Both production profiles emulate ring-3
+    # counter reads from the same virtual clock. It carries its own reviewed
+    # counter-opcode baseline because its call sites sit at different offsets. Built after
+    # everything above: the other profiles keep the object-directory sequence
+    # they were reproduced under, and the serialization test seeds its KUnit
+    # kernels from that shared object directory's configuration, which a
+    # concurrency test needs left multiprocessor.
+    echo "== N5: build the fault-library x86 kernel profile"
+    (cd "$linux_dir" && FAULTLAB=1 ./build-kernel.sh)
     mkdir -p "$stage/x86_64"
-    for name in bzImage initramfs.cpio.gz; do
+    for name in bzImage bzImage-faultlab initramfs.cpio.gz initramfs-go-runtime.cpio.gz; do
         [ -f "$artifacts/$name" ] || {
             echo "FAIL: lock build did not produce x86_64/$name" >&2
             exit 1

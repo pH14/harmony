@@ -243,7 +243,7 @@ python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" \
 # LL/SC permits implementation-dependent spurious STXR failures that can change
 # guest-visible control flow across hosts. The config removes the known fallback
 # bodies; this raw executable-word scan is the fail-closed
-# artifact proof. Its planted negative control prevents a vacuous green gate.
+# artifact proof. Its negative control prevents a vacuous green gate.
 echo "== arm64 kernel: zero-LL/SC executable-image gate"
 exclusive_scan=$GUEST_DIR/scripts/aa4-exclusive-scan.py
 exclusive_probe=$BUILD_ROOT/aa4-exclusive-scan-probe.S

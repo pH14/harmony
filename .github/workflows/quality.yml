@@ -54,6 +54,8 @@ jobs:
           fetch-depth: 2
       - name: Benchmark report checks
         run: node --test .github/scripts/benchmark-report.test.cjs
+      - name: Historical-bug oracle checks
+        run: .github/scripts/historical-oracle.test.sh
       - name: Kernel patch-series checks
         run: bash consonance/harmony-linux/linux/test-patch-series.sh
       - name: Install stable toolchain
@@ -84,7 +86,7 @@ jobs:
           cargo deny --manifest-path consonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses
       - name: cargo nextest
         run: cargo nextest run --all-features
-      - name: N6 instruction-defense generators and planted negatives
+      - name: N6 instruction sweep generators and negative controls
         run: |
           python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
           python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py listing > /tmp/n6-listing.tsv
@@ -130,14 +132,6 @@ jobs:
           # std leak). Fails the gate if anything pulls in std.
           rustup target add x86_64-unknown-none
           cargo build --manifest-path consonance/harmony-linux/sdk/Cargo.toml --lib --target x86_64-unknown-none
-      - name: workloads/fault-sdk gates (out-of-workspace manifest)
-        run: |
-          cargo fmt --manifest-path workloads/fault-sdk/Cargo.toml -- --check
-          cargo clippy --locked --manifest-path workloads/fault-sdk/Cargo.toml --all-features --all-targets -- -D warnings
-          cargo test --locked --manifest-path workloads/fault-sdk/Cargo.toml --all-features
-          cargo deny --manifest-path workloads/fault-sdk/Cargo.toml check --config deny.toml licenses
-          rustup target add x86_64-unknown-none
-          cargo build --locked --manifest-path workloads/fault-sdk/Cargo.toml --lib --target x86_64-unknown-none
       # workloads/nes-guest (task 86) is out-of-workspace (its own manifest).
       # Gate it explicitly or it rots green. The portable brain
       # (chord decode, RAM map, billboard, mock-core agent loop) tests everywhere;
@@ -190,7 +184,7 @@ jobs:
 
       - name: Workload support and fault toolkit gates
         run: |
-          for package in oci guest-image fault-guest nes-protocol fault-policy fault-runtime faults tools; do
+          for package in oci guest-image nes-protocol fault-policy faults tools; do
             manifest="workloads/$package/Cargo.toml"
             cargo fmt --manifest-path "$manifest" --all -- --check
             cargo clippy --locked --manifest-path "$manifest" --all-features --all-targets -- -D warnings
@@ -198,14 +192,18 @@ jobs:
             cargo deny --manifest-path "$manifest" check --config deny.toml
           done
 
-      - name: Replicated workload fixture gates
+      # workloads/fault-agent is out-of-workspace (its own manifest). Its
+      # portable bundle, reconcile, and directive logic tests on any host; the
+      # guest transport is cfg-gated to x86-64 Linux, so the cross-target check
+      # compiles the musl guest build without executing it.
+      - name: workloads/fault-agent gates (out-of-workspace manifest)
         run: |
-          manifest=workloads/faults/fixtures/replicated-service/Cargo.toml
-          cargo fmt --manifest-path "$manifest" --all -- --check
-          cargo clippy --locked --manifest-path "$manifest" --all-targets -- -D warnings
-          cargo test --locked --manifest-path "$manifest"
-          cargo build --locked --manifest-path "$manifest" --bins
-          sudo unshare --net workloads/faults/fixtures/replicated-service/smoke.sh
+          cargo fmt --manifest-path workloads/fault-agent/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path workloads/fault-agent/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --locked --manifest-path workloads/fault-agent/Cargo.toml --all-features
+          cargo deny --manifest-path workloads/fault-agent/Cargo.toml check --config deny.toml licenses
+          rustup target add x86_64-unknown-linux-musl
+          cargo clippy --locked --manifest-path workloads/fault-agent/Cargo.toml --target x86_64-unknown-linux-musl --all-targets -- -D warnings
 
       - name: NES workload package gates
         run: |

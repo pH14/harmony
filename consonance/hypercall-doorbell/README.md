@@ -46,5 +46,5 @@ The Linux UAPI adapter validates both caller lengths before issuing ioctl and
 validates the driver-reported response length afterward. Its pure validation
 and UAPI framing helper accepts the ioctl as a closure, so malformed lengths,
 driver errors, and boundary cases are covered without requiring a device.
-The crate is validated by protocol loopback, hostile-response, boundary, and
+The crate is validated by protocol loopback, malformed-response, boundary, and
 Miri tests.

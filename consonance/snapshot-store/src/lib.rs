@@ -221,7 +221,7 @@ pub struct Store {
     ///
     /// Hash-keyed rather than tree-keyed (task 95 M1.2c): the keys are uniformly-random
     /// BLAKE3 digests, so a `BTreeMap` made every seal/intern/release lookup a
-    /// cache-hostile pointer-chasing descent.
+    /// cache-unfriendly pointer-chasing descent.
     // not order-observable: lookup-only, never iterated (see doc above).
     #[allow(clippy::disallowed_types)]
     pages: HashMap<PageHash, PageEntry, BuildPageHashHasher>,
@@ -1023,7 +1023,7 @@ mod tests {
         // XOR-folding is not a mixer: two keys whose four 8-byte words cancel to the
         // same value fold identically — [0xFF; 32] and [0; 32] both cancel to 0. That
         // is sound *here* only because these keys are BLAKE3 digests of page content,
-        // never attacker-shaped inputs — the same premise `intern_page` documents.
+        // never untrusted inputs — the same premise `intern_page` documents.
         // Pinned, so that keying this map on anything else trips a failing test.
         assert_eq!(fold(&[0xFFu8; 32]), fold(&zero));
 

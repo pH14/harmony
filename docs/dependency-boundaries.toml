@@ -39,17 +39,14 @@ workload_support = [
     "workloads/nes-machine",
 ]
 workload_packages = [
-    "workloads/fault-guest",
-    "workloads/fault-sdk",
+    "workloads/fault-agent",
     "workloads/nes-guest",
     "workloads/fault-policy",
-    "workloads/fault-runtime",
     "workloads/faults",
     "workloads/tetanes-guest",
     "workloads/nes",
 ]
 composition_apps_tests = [
-    "workloads/faults/fixtures/replicated-service",
     "workloads/tools",
     "cli",
     "consonance/control-proto/fuzz",

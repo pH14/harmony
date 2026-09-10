@@ -2,9 +2,10 @@ x86: make Harmony ring-3 TSC confinement independently testable
 
 Stock KVM cannot surface RDTSC/RDTSCP to userspace. N6 therefore confines raw
 ring-3 reads with CR4.TSD and must first prove a traps-off kernel fails its JIT
-probe. Add a default-on Harmony config that applies PR_TSC_SIGSEGV at exec and
-prevents the process from undoing it. The dedicated N6 negative disables only
-this option; the pvclock and every other determinism pin remain enabled.
+probe. Add a default-on Harmony config that arms TSD on an active pvclock boot
+and prevents a process from undoing it. The later counter-emulation patch
+answers those faults from the virtual clock. The dedicated N6 negative disables
+only this option; the pvclock and every other determinism pin remain enabled.
 
 This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
 repository's designated guest-kernel patch exception.
@@ -12,20 +13,22 @@ repository's designated guest-kernel patch exception.
 ---
 --- a/arch/x86/Kconfig
 +++ b/arch/x86/Kconfig
-@@ -845,7 +845,16 @@ config HARMONY_PVCLOCK
+@@ -845,7 +845,18 @@ config HARMONY_PVCLOCK
  	  harmony_pvclock kernel parameter is present AND the host accepts
  	  the page registration over the hypercall doorbell; when active the
  	  TSC is marked unstable so kernel timekeeping can never fall back
  	  to raw RDTSC. Say N unless building the harmony determinism guest.
 +
 +config HARMONY_USER_COUNTER_TRAPS
-+	bool "Harmony deny ring-3 TSC reads"
++	bool "Harmony virtualize ring-3 TSC reads"
 +	depends on HARMONY_PVCLOCK
 +	default y
 +	help
-+	  Set CR4.TSD for every newly executed userspace image and refuse a
-+	  subsequent PR_TSC_ENABLE. Disable only for the N6 planted negative
-+	  kernel that proves the hostile JIT probe detects a live TSC.
++	  On an active harmony_pvclock boot, set CR4.TSD for every newly
++	  executed userspace image and refuse a subsequent PR_TSC_ENABLE.
++	  Harmony's #GP handler serves those reads from the virtual clock.
++	  Disable only for the N6 negative control kernel that proves the
++	  counter-reading probe detects a live TSC.
  
  config KVM_GUEST
  	bool "KVM Guest support (including kvmclock)"

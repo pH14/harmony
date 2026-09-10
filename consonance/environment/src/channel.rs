@@ -266,8 +266,14 @@ pub trait ServiceHandler: Send {
     /// Stable handler configuration or workload identity bytes.
     fn configuration(&self) -> &[u8];
 
-    /// Answer a question locally or request an external response.
-    fn respond(&mut self, question: &Question) -> Result<ServiceResponse, ChannelError>;
+    /// Answer a question locally or request an external response. The moment is
+    /// the timeline position the question surfaced at, so a handler whose answer
+    /// depends on the guest's position in virtual time does not have to track it.
+    fn respond(
+        &mut self,
+        moment: Moment,
+        question: &Question,
+    ) -> Result<ServiceResponse, ChannelError>;
 
     /// Capture dynamic extension state for a machine snapshot.
     fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError>;
@@ -292,8 +298,12 @@ impl ServiceHandler for Box<dyn ServiceHandler> {
         (**self).configuration()
     }
 
-    fn respond(&mut self, question: &Question) -> Result<ServiceResponse, ChannelError> {
-        (**self).respond(question)
+    fn respond(
+        &mut self,
+        moment: Moment,
+        question: &Question,
+    ) -> Result<ServiceResponse, ChannelError> {
+        (**self).respond(moment, question)
     }
 
     fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
@@ -571,7 +581,11 @@ impl ServiceHandler for NominalHandler {
         &[]
     }
 
-    fn respond(&mut self, _question: &Question) -> Result<ServiceResponse, ChannelError> {
+    fn respond(
+        &mut self,
+        _moment: Moment,
+        _question: &Question,
+    ) -> Result<ServiceResponse, ChannelError> {
         Ok(ServiceResponse::Answered(Answer::Nominal))
     }
 
@@ -747,7 +761,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
             return Ok(ServiceResponse::Answered(answer));
         }
         let mut candidate = self.handler.clone();
-        let response = candidate.respond(question)?;
+        let response = candidate.respond(self.moment, question)?;
         if let ServiceResponse::Answered(answer) = &response {
             if let Answer::Data(bytes) = answer {
                 check_len(bytes.len())?;
@@ -988,7 +1002,11 @@ mod tests {
             b"test-config"
         }
 
-        fn respond(&mut self, question: &Question) -> Result<ServiceResponse, ChannelError> {
+        fn respond(
+            &mut self,
+            _moment: Moment,
+            question: &Question,
+        ) -> Result<ServiceResponse, ChannelError> {
             self.counter += 1;
             if question.service() == u16::MAX {
                 return Ok(ServiceResponse::Answered(Answer::Data(vec![
@@ -1036,7 +1054,11 @@ mod tests {
             b"forwarding-config"
         }
 
-        fn respond(&mut self, _question: &Question) -> Result<ServiceResponse, ChannelError> {
+        fn respond(
+            &mut self,
+            _moment: Moment,
+            _question: &Question,
+        ) -> Result<ServiceResponse, ChannelError> {
             self.state = self.state.wrapping_add(1);
             Ok(ServiceResponse::Answered(Answer::Nominal))
         }
@@ -1098,6 +1120,56 @@ mod tests {
         );
         let handler = restore_handler(&decoded.handler, &Factory).unwrap();
         assert_eq!(handler.counter, 1);
+    }
+
+    #[test]
+    fn a_handler_sees_the_moment_the_question_surfaced_at() {
+        #[derive(Clone, Default)]
+        struct MomentEcho(Vec<Moment>);
+
+        impl ServiceHandler for MomentEcho {
+            fn identity(&self) -> &[u8] {
+                b"moment-echo-v1"
+            }
+
+            fn configuration(&self) -> &[u8] {
+                &[]
+            }
+
+            fn respond(
+                &mut self,
+                moment: Moment,
+                _question: &Question,
+            ) -> Result<ServiceResponse, ChannelError> {
+                self.0.push(moment);
+                Ok(ServiceResponse::Answered(Answer::data(
+                    moment.to_le_bytes().to_vec(),
+                )?))
+            }
+
+            fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+                Ok(Vec::new())
+            }
+
+            fn restore_state(&mut self, _state: &[u8]) -> Result<(), ChannelError> {
+                Ok(())
+            }
+
+            fn clone_box(&self) -> Box<dyn ServiceHandler> {
+                Box::new(self.clone())
+            }
+        }
+
+        let question = Question::new(7, vec![]).unwrap();
+        let mut env = RecordedEnv::new(1, MomentEcho::default());
+        for moment in [11, 11, 25] {
+            env.set_moment(moment);
+            assert_eq!(
+                env.decide(&question).unwrap(),
+                ServiceResponse::Answered(Answer::Data(moment.to_le_bytes().to_vec()))
+            );
+        }
+        assert_eq!(env.handler().0, vec![11, 11, 25]);
     }
 
     #[test]

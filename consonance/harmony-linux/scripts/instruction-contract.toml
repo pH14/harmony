@@ -103,10 +103,19 @@ disposition = "Every leaf is answered from the frozen CPUID model with hardware 
 id = "x86-tsc"
 arch = "x86_64"
 channel = "time"
-operations = ["RDTSC", "RDTSCP"]
+operations = ["RDTSC", "RDTSCP", "RDTSC (66 prefix)", "RDTSCP (66 prefix)", "RDTSC preserves RCX", "RDTSCP returns TSC_AUX", "RDTSC/RDTSCP pair progresses", "RDTSC upper halves zero", "RDTSCP upper halves zero"]
 claim = "execute"
 layers = ["protocol", "image-audit", "guest-kernel-trap"]
-disposition = "Owned code uses the pvclock page and the executable-image scan accounts for raw reads; unaudited ring-3 code requires CR4.TSD handling."
+disposition = "CR4.TSD #GP handling emulates both counter reads from the canonical virtual clock, preserving RDTSC's non-counter registers and returning the single-vCPU TSC_AUX value 0 for RDTSCP; prefixed forms must advance over their complete instruction."
+
+[[instruction]]
+id = "x86-unrelated-gp"
+arch = "x86_64"
+channel = "guest-kernel-trap"
+operations = ["RDMSR from ring 3"]
+claim = "execute"
+layers = ["protocol", "guest-kernel-trap"]
+disposition = "A ring-3 RDMSR remains an unrelated #GP and is rejected through the normal signal path; only RDTSC and RDTSCP receive virtual-clock emulation."
 
 [[instruction]]
 id = "x86-pmu"

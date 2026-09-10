@@ -12,6 +12,11 @@ valid answer; an external request preserves the handler state. Capturing and
 restoring handler state is fallible, so failed capture cannot produce a usable
 snapshot or state hash.
 
+`ServiceHandler::respond` receives the virtual moment the question surfaced at
+alongside the question, so a handler whose answer depends on the guest's
+position in virtual time reads it from the environment rather than keeping a
+count of its own.
+
 `input_spec::InputSpec` combines the seed, service configuration, ordered
 payloads, recorded answers, reseed points, and mechanical effects. Its versioned
 codec bounds lengths and validates ordering. Mechanical effects describe memory

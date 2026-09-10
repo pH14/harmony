@@ -1,15 +1,36 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Deterministic replicated-service fault-search package.
+//! Deterministic fault-search package for distributed workloads.
+//!
+//! A workload image declares its nodes, hooks, readiness and setup commands in
+//! `/etc/harmony/bundle`. The package boots that image under the in-guest
+//! fault agent, and the search draws an action list the agent enforces: kill a
+//! node, pause it, restart it, run a hook, park a thread at an execution
+//! place, inject an interrupt, or wait. Each action runs for a fixed horizon
+//! of guest time, so an input names an exact schedule the whole-VM snapshots
+//! reproduce.
 
-pub mod action;
-pub mod oracle;
+pub mod archive;
+pub mod bundle;
 pub mod package;
 pub mod prepare;
-pub mod spec;
+pub mod report;
+pub mod target;
 
-#[cfg(feature = "consonance")]
-pub mod game;
+#[cfg(all(
+    feature = "consonance",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+pub mod campaign;
+#[cfg(all(
+    feature = "consonance",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+pub mod consonance;
 
-pub use action::{ACTION_SCHEMA_VERSION, CatalogAction, DELAY_FORWARD_LATENCY_MS, FaultAction};
-pub use package::{SearchIdentity, SearchOptions, search_consonance};
-pub use spec::{CommandSpec, NetworkSpec, NodeSpec, WorkloadSpec};
+pub use bundle::FaultVocabulary;
+pub use package::{Artifacts, Options, RecordedActions, Report, parse_recorded_input};
+pub use target::{DEFAULT_HORIZON_NANOS, FaultAction, MAX_FAULT_ACTIONS};

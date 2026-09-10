@@ -197,6 +197,7 @@ version = "0.1.0"
 dependencies = [
  "control-proto",
  "environment",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
@@ -293,10 +294,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
-name = "fault-runtime"
+name = "fault-policy"
 version = "0.1.0"
 dependencies = [
- "serde",
+ "environment",
  "thiserror",
 ]
 
@@ -305,16 +306,16 @@ name = "faults-workload"
 version = "0.1.0"
 dependencies = [
  "consonance-client",
- "fault-runtime",
+ "control-proto",
+ "environment",
+ "fault-policy",
  "guest-image",
  "oci-support",
- "postcard",
  "searcher",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
- "thiserror",
 ]
 
 [[package]]
@@ -382,8 +383,8 @@ name = "harmony-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "consonance-client",
  "faults-workload",
- "libc",
  "nes-workload",
  "oci-support",
  "serde",

@@ -9,6 +9,8 @@ on:
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
+      - flake.nix
+      - flake.lock
       - .github/workflows/x86-virtual-time.yml
   push:
     branches: [main]
@@ -17,6 +19,8 @@ on:
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
+      - flake.nix
+      - flake.lock
       - .github/workflows/x86-virtual-time.yml
   schedule:
     - cron: "13 3 * * *"
@@ -58,7 +62,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build probe
         run: cargo build -p vmm-backend --bin x86_kvm_probe
-      # Planted negative: with /dev/kvm unreadable the probe must fail closed
+      # Negative control: with /dev/kvm unreadable the probe must fail closed
       # with the kvm_open reason, never report PASS.
       - name: Probe fails closed without /dev/kvm access
         run: |
@@ -159,8 +163,9 @@ jobs:
           path: nix-guest-output
           if-no-files-found: error
 
-  # N6: the table-generated hostile JIT sweep. The traps-off kernel must be
-  # rejected first; only then may two same-seed traps-on boots receive credit.
+  # N6: the table-generated instruction sweep. The traps-off kernel must be
+  # rejected first; only then may both production profiles' two same-seed
+  # traps-on boots receive credit.
   n6-instruction-sweep:
     needs: guest-image
     runs-on: ubuntu-24.04
@@ -185,15 +190,15 @@ jobs:
       - name: Stage N6 guest images
         run: |
           mkdir -p consonance/harmony-linux/build
-          for name in bzImage bzImage-n6-traps-off initramfs-n6.cpio.gz initramfs-n6-traps-off.cpio.gz; do
+          for name in bzImage bzImage-faultlab bzImage-n6-traps-off initramfs-n6.cpio.gz initramfs-n6-traps-off.cpio.gz; do
             cp "nix-guest-output/x86_64/$name" consonance/harmony-linux/build/
           done
           (cd nix-guest-output && sha256sum -c guest-image-report.txt)
-      - name: Run static N6 positives and planted negatives
+      - name: Run static N6 positives and negative controls
         run: |
           python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
           python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
-      - name: Run traps-off negative, then two traps-on JIT sweeps
+      - name: Run traps-off negative, then both production JIT sweeps
         run: |
           mkdir -p n6-report
           N6_REPORT_DIR="$PWD/n6-report" timeout -k 10 1800 \
@@ -204,6 +209,52 @@ jobs:
         with:
           name: x86-n6-instruction-sweep
           path: n6-report
+          if-no-files-found: error
+
+  # #276: ordinary Go must run with no runtime tuning, and its complete
+  # execution trace must repeat on both production kernel profiles while the
+  # corresponding traps-off boot demonstrably diverges.
+  go-runtime:
+    needs: guest-image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+      - name: Grant /dev/kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: actions/download-artifact@v4
+        with:
+          name: x86-guest-image
+          path: nix-guest-output
+      - name: Stage Go guest images
+        run: |
+          mkdir -p consonance/harmony-linux/build
+          for name in bzImage bzImage-faultlab bzImage-n6-traps-off initramfs-go-runtime.cpio.gz; do
+            cp "nix-guest-output/x86_64/$name" consonance/harmony-linux/build/
+          done
+          (cd nix-guest-output && sha256sum -c guest-image-report.txt)
+      - name: Run uninstrumented Go and compare same-seed execution traces
+        run: |
+          grep -m1 "model name" /proc/cpuinfo | tee go-runtime-report.txt
+          timeout -k 10 2100 cargo test --release -p vmm-core --test go_runtime_x86 \
+            -- --ignored --test-threads=1 --nocapture 2>&1 | tee -a go-runtime-report.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-go-runtime-${{ matrix.replica }}
+          path: go-runtime-report.txt
           if-no-files-found: error
 
   # X2: Linux boots to /init under assigned-at-exit V-time on the stock

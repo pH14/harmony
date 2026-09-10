@@ -166,7 +166,7 @@ proptest! {
     }
 
     #[test]
-    fn adversarial_decode_and_dispatch_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..=5000), resp_size in 0_usize..=MAX_FRAME) {
+    fn malformed_decode_and_dispatch_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..=5000), resp_size in 0_usize..=MAX_FRAME) {
         let _ = decode(&bytes);
         let mut dispatcher = test_dispatcher(1);
         let mut resp = vec![0_u8; resp_size];
@@ -183,7 +183,7 @@ proptest! {
     }
 
     #[test]
-    fn adversarial_single_byte_mutations(mut payload in proptest::collection::vec(any::<u8>(), 0..=64), index in 0_usize..128, value in any::<u8>(), resp_size in 0_usize..=MAX_FRAME) {
+    fn single_byte_mutations_never_panic(mut payload in proptest::collection::vec(any::<u8>(), 0..=64), index in 0_usize..128, value in any::<u8>(), resp_size in 0_usize..=MAX_FRAME) {
         let mut frame = enc_req(ServiceId::Console, 1, 123, &payload);
         if index < frame.len() {
             frame[index] = value;
@@ -812,7 +812,7 @@ fn pvclock_registrar_state_round_trips() {
     assert_eq!(restored.registered(), Some(0x7000));
 }
 
-/// A hostile/corrupt state blob cannot restore a registration `handle` would
+/// A corrupt state blob cannot restore a registration `handle` would
 /// have rejected: `restore_state` re-runs the SAME 4 KiB-alignment +
 /// RAM-containment check on the decoded GPA (cross-model r12 P2). Without the
 /// check a crafted blob could pin an unaligned or out-of-RAM GPA that the live

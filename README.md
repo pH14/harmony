@@ -1,26 +1,37 @@
 # Harmony
 
-Harmony is a test environment for exploring controlled executions and replaying
-an interesting execution exactly.
+Harmony is a runtime environment that runs your code deterministically while sussing out
+interesting bugs along the way. This makes it particularly useful for finding and resolving [Heisenbugs](https://en.wikipedia.org/wiki/Heisenbug). It’s
+built with testing databases and distributed systems in mind (i.e. what I’m most familiar with),
+though will likely be valuable for many systems that can express their invariants or
+correctness properties as assertions.
 
-Its components have distinct roles:
+Harmony is composed of two halves that work together to reach resolution on your trickiest bugs:
 
-- consonance is the deterministic machine. It runs a controlled workload, owns
-  its time and environmental inputs, captures complete machine state, and can
-  branch or replay from that state.
-- dissonance is the explorer. It schedules campaigns, executes rollouts, and
-  retains useful paths for further search.
-- workload packages supply programs, actions, observations, evaluation, and
-  runtime preparation. The NES package supports direct emulator execution and
-  Consonance. The faults package supplies guest fault injection for systems
-  running together in one VM on one virtual CPU.
+* `consonance`: a deterministic Linux environment that runs your code reproducibly every time. It is built with
+hardware portability in mind, allowing Harmony to run on Intel, AMD, and ARM chips across Linux (KVM) and macOS (HVF),
+including within nested virtualization.
 
-Harmony is under active development. The repository contains x86-64 and arm64
-virtualization paths, a controlled Linux guest environment, deterministic
-machine and protocol models, acceptance workloads, and search targets backed by
-both an emulator and consonance. The supported determinism claim is narrower
-than arbitrary software on arbitrary hardware; [Determinism](docs/DETERMINISM.md)
-defines its scope.
+* `dissonance`: a chaotic exploration tool that takes your code through adversarial conditions trying to find bugs.
+
+The components are designed to be independent. For instance, if you wanted to use `consonance` as an off-the-shelf deterministic
+hypervisor — there aren’t many of them! — you are welcome to.
+
+Harmony is inspired by [Antithesis](https://antithesis.com/), whose engineering team I greatly admire. Their pioneering work has
+made me want such testing capability for my own side projects, and since I cannot personally afford an enterprise SaaS contract, I started
+to build Harmony instead as an experiment. It’s been a fascinating way to explore the problem space and future of software testing &
+quality more deeply.
+
+> [!IMPORTANT]
+> As you will likely be able to tell, outside of this intro, Harmony is heavily AI-authored. This is rather fundamental, as Harmony both takes on massive
+technical scope and is built as a passion project that fits within the quiet gaps of my life outside of family, friends, and work. While I cannot yet vouch
+> for the state of the repo at any given moment in time, what I can say of the project, is that a lot of thinking, design, effort, hardware, and tokens have
+> gone into, and will continue to go into, making Harmony something of value, both for myself, and perhaps, for you too.
+
+---
+
+> [!WARNING]
+> Everything you read after this point, including any linked docs, has been written by an LLM. Apologies in advance.
 
 ## Try the CLI
 

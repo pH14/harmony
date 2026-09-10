@@ -160,7 +160,7 @@ all_sites() {
 # clean, 1 = a hit or a structural problem (missing/no-sections).
 raw_byte_scan_one() {
     local path=$1 tag=$2 names s hex n31 n01f9 nrng m reg rc=0
-    local dis counter_found rng_found
+    local dis counter_found rng_found bin
     if [ ! -f "$path" ]; then
         echo "FAIL: boot artifact '$tag' not found at $path — every executable component of" >&2
         echo "  bzImage must be scanned (setup + decompressor + kernel); build first." >&2
@@ -185,12 +185,17 @@ raw_byte_scan_one() {
         # runs under `if ! raw_byte_scan`, where errexit is off) would leave an
         # empty `hex`, match nothing, and silently green the gate (cross-model
         # r9 P1).
-        if ! hex=$(objcopy -O binary --only-section="$s" "$path" /dev/stdout 2>/dev/null \
-            | od -An -v -tx1 | tr -d ' \n'); then
+        # objcopy must write to a regular file: with `/dev/stdout` it emits zero
+        # bytes on binutils 2.44, which would read no section at all.
+        bin=$(mktemp)
+        if ! objcopy -O binary --only-section="$s" "$path" "$bin" 2>/dev/null \
+            || ! hex=$(od -An -v -tx1 "$bin" | tr -d ' \n'); then
+            rm -f "$bin"
             echo "FAIL: could not extract bytes for $tag section $s (objcopy/od/tr failed) —" >&2
             echo "  refusing to green a scan that did not read the section (fail-closed)." >&2
             return 1
         fi
+        rm -f "$bin"
         if [ "$tag" = decompressor ] && [ "$s" = .text ]; then
             dis=$(mktemp)
             if ! objdump -d -j "$s" "$path" >"$dis" 2>/dev/null; then
@@ -616,10 +621,12 @@ if unarmed "$RNG_ALLOWLIST"; then
     exit 1
 fi
 
-if ! scan_sites "$FOUND" "$ALLOWLIST"; then
-    exit 1
-fi
-if ! scan_sites "$RNG_FOUND" "$RNG_ALLOWLIST" hwrng; then
+# Both classes are compared before the build fails, so one kernel build shows
+# every drifted baseline instead of one class per build.
+site_scan_failed=0
+scan_sites "$FOUND" "$ALLOWLIST" || site_scan_failed=1
+scan_sites "$RNG_FOUND" "$RNG_ALLOWLIST" hwrng || site_scan_failed=1
+if [ "$site_scan_failed" -ne 0 ]; then
     exit 1
 fi
 

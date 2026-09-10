@@ -7,9 +7,13 @@
 //! mechanics.  Keeping this seam here prevents a package adapter from
 //! depending on another workload's machine crate.
 
-use std::{error::Error, fmt, sync::Arc};
+use std::{error::Error, fmt, sync::Arc, time::Duration};
 
-use control_proto::{Reply, StopReason};
+use control_proto::{Reply, SnapId, StopReason};
+use environment::{
+    channel::Effect,
+    input_spec::{InputSpec, ServiceConfig},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -39,8 +43,9 @@ pub const RAM_GPA_BASE: u64 = 0x4000_0000;
 /// Package-owned launch and resource settings for one neutral session.
 ///
 /// A workload selects these values once while preparing its execution
-/// identity. They affect boot and restore compatibility, so the complete
-/// configuration is included in [`Session::identity_with_config`].
+/// identity. The settings that affect boot and restore compatibility are
+/// included in [`Session::identity_with_config`]; the host resource bounds and
+/// evidence settings documented as such below are not.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SessionConfig {
     /// Guest RAM in bytes. The VMM requires a page-aligned, non-zero value.
@@ -54,6 +59,29 @@ pub struct SessionConfig {
     /// Optional domain tag included in portable image identity hashing.
     /// Empty selects the generic session identity domain.
     pub identity_tag: String,
+    /// Host wall-clock bound on one lifecycle run, or `None` for no bound.
+    ///
+    /// A guest spinning on a frozen virtual clock takes no exit, so it never
+    /// reaches its virtual-time deadline; only host time notices it. Past this
+    /// bound the run is abandoned and reported as [`SessionError::Hung`]. This
+    /// is a host resource bound rather than an input, so it is deliberately
+    /// absent from [`identity_with_config`] and from the image identity.
+    #[serde(default)]
+    pub wall_limit: Option<Duration>,
+    /// Record sparse virtual-time checkpoint hashes after a run rather than
+    /// during it.
+    ///
+    /// Each due checkpoint otherwise hashes the whole guest RAM inside the run
+    /// that reached it, which a large guest cannot afford during boot. A
+    /// composition root that opts in installs the byte-identical hashes
+    /// afterwards with
+    /// [`Vmm::checkpoint_virtual_time_trace_at`](vmm_core::vmm::Vmm::checkpoint_virtual_time_trace_at).
+    /// This is host-side evidence plumbing: it changes neither guest state nor
+    /// the normalized event sequence, so like [`Self::wall_limit`] it is
+    /// deliberately absent from [`identity_with_config`] and from the image
+    /// identity.
+    #[serde(default)]
+    pub defer_virtual_time_checkpoint_hashes: bool,
 }
 
 impl Default for SessionConfig {
@@ -64,6 +92,8 @@ impl Default for SessionConfig {
             run_budget: DEFAULT_RUN_BUDGET,
             cmdline: default_cmdline().to_owned(),
             identity_tag: String::new(),
+            wall_limit: None,
+            defer_virtual_time_checkpoint_hashes: false,
         }
     }
 }
@@ -78,6 +108,8 @@ impl SessionConfig {
             run_budget,
             cmdline: cmdline.into(),
             identity_tag: String::new(),
+            wall_limit: None,
+            defer_virtual_time_checkpoint_hashes: false,
         }
     }
 
@@ -85,6 +117,25 @@ impl SessionConfig {
     #[must_use]
     pub fn with_identity_tag(mut self, identity_tag: impl Into<String>) -> Self {
         self.identity_tag = identity_tag.into();
+        self
+    }
+
+    /// Abandon a run that spends more than `wall_limit` of host time inside
+    /// the guest. Available where the backend can be interrupted mid-run.
+    #[must_use]
+    pub fn with_wall_limit(mut self, wall_limit: Duration) -> Self {
+        self.wall_limit = Some(wall_limit);
+        self
+    }
+
+    /// Defer sparse virtual-time checkpoint hashing on every VM this session
+    /// boots, including the ones a restore boots from the session's factory.
+    ///
+    /// The setting is applied before the guest runs, so the boot itself is
+    /// covered.
+    #[must_use]
+    pub fn with_deferred_virtual_time_checkpoint_hashes(mut self) -> Self {
+        self.defer_virtual_time_checkpoint_hashes = true;
         self
     }
 
@@ -489,6 +540,181 @@ pub enum SessionError {
     Portable(String),
     #[error("guest stopped before the expected snapshot point: {0:?}")]
     Stop(StopReason),
+    /// The guest spent more than the configured wall-clock limit inside one
+    /// run without taking an exit. The VM is abandoned; the session cannot be
+    /// resumed and the caller reports the run rather than retrying it.
+    #[error("guest ran for more than {0:?} of host time without exiting")]
+    Hung(Duration),
+    /// A previous run exceeded the wall-clock limit, so the VM was canceled
+    /// and cannot be entered again. Reported by every later request instead of
+    /// a fresh [`SessionError::Hung`] for a run that never happened.
+    #[error("session was abandoned after a guest hang and cannot run again")]
+    Abandoned,
+    /// The configuration carries a wall-clock limit, but the backend cannot be
+    /// interrupted mid-run, so no run on it can be bounded.
+    #[error("backend cannot be interrupted mid-run, so its runs cannot be wall-clock bounded")]
+    Unboundable,
+    /// The guest never reached a snapshot-eligible point within the caller's
+    /// settle allowance.
+    #[error("guest reached no snapshot-eligible point within a settle allowance of {allowance} ns")]
+    Settle {
+        /// Settle allowance spent before the attempt was abandoned. Settling
+        /// asks for one step at a time and a step can stop early, so this
+        /// bounds the virtual time the guest consumed rather than reporting it.
+        allowance: u64,
+    },
+}
+
+/// The backend's host-only latch: set to take a run away from a guest that has
+/// stopped returning to the host.
+type CancelLatch = Arc<std::sync::atomic::AtomicBool>;
+
+/// One armed host wall-clock bound: how much host time the run may spend, and
+/// the latch that ends it.
+type GuardedRun = (Duration, CancelLatch);
+
+/// Decide how one control request runs under the session's host wall-clock
+/// bound. `None` runs the request unguarded; `Some` carries the bound to arm
+/// and the backend latch to arm it against. This pure policy stays here so it
+/// is testable without a VM or Linux linker.
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )),
+    allow(dead_code)
+)]
+fn guarded_run_plan(
+    abandoned: bool,
+    wall_limit: Option<Duration>,
+    cancel: Option<CancelLatch>,
+) -> Result<Option<GuardedRun>, Box<dyn Error>> {
+    if abandoned {
+        return Err(SessionError::Abandoned.into());
+    }
+    let Some(limit) = wall_limit else {
+        return Ok(None);
+    };
+    // Reported rather than ignored: a caller that asked for the bound would
+    // otherwise wait forever on the first guest that stops taking exits.
+    let cancel = cancel.ok_or(SessionError::Unboundable)?;
+    Ok(Some((limit, cancel)))
+}
+
+/// Build the input specification one service branch records: the branch seed,
+/// the package's service configuration, its ordered payload records, and the
+/// host-plane effects the branch stages for the run that follows it. This pure
+/// wire-shape policy stays here so it is testable without a VM or Linux linker.
+///
+/// The recorded form holds one effect per moment, so two effects sharing a
+/// moment are reported rather than silently collapsed into the later one.
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )),
+    allow(dead_code)
+)]
+fn service_branch_spec(
+    seed: u64,
+    config: ServiceConfig,
+    payloads: Vec<Vec<u8>>,
+    effects: Vec<(u64, Effect)>,
+) -> Result<InputSpec, Box<dyn Error>> {
+    let mut spec = InputSpec::seeded(seed);
+    spec.set_config(config);
+    spec.set_payloads(Some(payloads));
+    for (at, effect) in effects {
+        if spec.effects().contains_key(&at) {
+            return Err(
+                SessionError::Control(format!("two branch effects share moment {at}")).into(),
+            );
+        }
+        spec.record_effect(at, effect);
+    }
+    Ok(spec)
+}
+
+/// Whether running the guest further can move it off a point the control
+/// server refuses to seal. A crashed or quiescent guest advances no further,
+/// so a retried seal would only repeat the refusal.
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )),
+    allow(dead_code)
+)]
+fn settling_can_advance(stop: &StopReason) -> bool {
+    match stop {
+        StopReason::Deadline { .. }
+        | StopReason::Decision { .. }
+        | StopReason::SnapshotPoint { .. }
+        | StopReason::Assertion { .. } => true,
+        StopReason::Crash { .. } | StopReason::Quiescent { .. } => false,
+    }
+}
+
+/// Seal the current point, running the guest a little further whenever the
+/// control server refuses it.
+///
+/// `seal` answers `None` for a point that is not snapshot-eligible yet, and
+/// `advance` runs one settle step and reports where the guest stopped. Both
+/// take `context` so one caller can lend the same session to each. This pure
+/// retry policy stays here so it is testable without a VM or Linux linker; the
+/// third result field is the last settle run's stop reason, absent when the
+/// point sealed with no settling at all.
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )),
+    allow(dead_code)
+)]
+fn seal_after_settling<C, Seal, Advance>(
+    context: &mut C,
+    settle_step: u64,
+    max_settle: u64,
+    mut seal: Seal,
+    mut advance: Advance,
+) -> Result<(SnapId, u64, Option<StopReason>), Box<dyn Error>>
+where
+    Seal: FnMut(&mut C) -> Result<Option<(SnapId, u64)>, Box<dyn Error>>,
+    Advance: FnMut(&mut C, u64) -> Result<StopReason, Box<dyn Error>>,
+{
+    if settle_step == 0 {
+        return Err(SessionError::Control("settle step is zero".into()).into());
+    }
+    let mut settled = 0_u64;
+    let mut last: Option<StopReason> = None;
+    loop {
+        if let Some((snapshot, at)) = seal(context)? {
+            return Ok((snapshot, at, last));
+        }
+        // Every stop is offered a seal before it is judged, so a guest that ran
+        // to quiescence or crashed during the last step still gets its endpoint
+        // sealed; only a second step is refused.
+        if let Some(stop) = &last
+            && !settling_can_advance(stop)
+        {
+            return Err(SessionError::Stop(stop.clone()).into());
+        }
+        if settled >= max_settle {
+            return Err(SessionError::Settle { allowance: settled }.into());
+        }
+        // A zero step would loop without moving the guest, so it ends the
+        // settling as an exhausted allowance instead.
+        let step = settle_step.min(max_settle - settled);
+        if step == 0 {
+            return Err(SessionError::Settle { allowance: settled }.into());
+        }
+        last = Some(advance(context, step)?);
+        settled += step;
+    }
 }
 
 #[cfg_attr(
@@ -639,6 +865,64 @@ fn bytes_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deferred_checkpoint_hashing_is_opt_in_and_off_by_default() {
+        let plain = SessionConfig::new(PAGE_SIZE, 1, 2, "cmdline");
+        assert!(!plain.defer_virtual_time_checkpoint_hashes);
+        assert!(!SessionConfig::default().defer_virtual_time_checkpoint_hashes);
+        let deferred = plain.clone().with_deferred_virtual_time_checkpoint_hashes();
+        assert!(deferred.defer_virtual_time_checkpoint_hashes);
+        assert_eq!(
+            SessionConfig {
+                defer_virtual_time_checkpoint_hashes: false,
+                ..deferred.clone()
+            },
+            plain,
+            "the option changes nothing else about the launch settings"
+        );
+    }
+
+    #[test]
+    fn deferred_checkpoint_hashing_stays_out_of_execution_identity() {
+        let plain = SessionConfig::new(PAGE_SIZE, 1, 2, "cmdline");
+        let deferred = plain.clone().with_deferred_virtual_time_checkpoint_hashes();
+        // Host-side evidence plumbing, so two runs that differ only in when
+        // the checkpoint hashes are taken share one execution identity.
+        assert_eq!(
+            identity_with_config(b"kernel", b"initramfs", &deferred),
+            identity_with_config(b"kernel", b"initramfs", &plain)
+        );
+        assert_eq!(
+            image_identity_with_config(b"kernel", b"initramfs", &deferred),
+            image_identity_with_config(b"kernel", b"initramfs", &plain)
+        );
+        let tagged = plain.clone().with_identity_tag("workload");
+        assert_ne!(
+            identity_with_config(b"kernel", b"initramfs", &tagged),
+            identity_with_config(b"kernel", b"initramfs", &plain),
+            "a setting that does reach identity still moves it"
+        );
+    }
+
+    #[test]
+    fn a_config_without_the_option_decodes_with_it_off() {
+        let json = serde_json::json!({
+            "ram_bytes": PAGE_SIZE,
+            "seed": 1,
+            "run_budget": 2,
+            "cmdline": "cmdline",
+            "identity_tag": "",
+        })
+        .to_string();
+        let decoded: SessionConfig = serde_json::from_str(&json).expect("decode");
+        assert_eq!(decoded, SessionConfig::new(PAGE_SIZE, 1, 2, "cmdline"));
+        let deferred = decoded.with_deferred_virtual_time_checkpoint_hashes();
+        let round_tripped: SessionConfig =
+            serde_json::from_str(&serde_json::to_string(&deferred).expect("encode"))
+                .expect("decode");
+        assert_eq!(round_tripped, deferred);
+    }
 
     #[test]
     fn console_pages_are_drained_for_diagnostics() {
@@ -937,6 +1221,257 @@ mod tests {
         let decoded: SparseSnapshot =
             serde_json::from_value(encoded).expect("deserialize sparse snapshot");
         assert_eq!(equal, decoded);
+    }
+
+    /// A caller-scripted stand-in for the control server's seal/run pair.
+    struct SettleFixture {
+        /// Virtual time at which the guest becomes snapshot-eligible.
+        eligible_at: u64,
+        now: u64,
+        stop: StopReason,
+        seals: usize,
+        runs: Vec<u64>,
+    }
+
+    impl SettleFixture {
+        fn new(eligible_at: u64) -> Self {
+            Self {
+                eligible_at,
+                now: 0,
+                stop: StopReason::Deadline {
+                    vtime: control_proto::Moment(0),
+                },
+                seals: 0,
+                runs: Vec::new(),
+            }
+        }
+
+        fn seal(&mut self) -> Result<Option<(SnapId, u64)>, Box<dyn Error>> {
+            self.seals += 1;
+            Ok((self.now >= self.eligible_at).then_some((SnapId(7), self.now)))
+        }
+
+        fn advance(&mut self, step: u64) -> Result<StopReason, Box<dyn Error>> {
+            self.runs.push(step);
+            self.now += step;
+            Ok(self.stop.clone())
+        }
+    }
+
+    fn settle(fixture: &mut SettleFixture, step: u64, max: u64) -> Result<u64, Box<dyn Error>> {
+        seal_after_settling(
+            fixture,
+            step,
+            max,
+            SettleFixture::seal,
+            SettleFixture::advance,
+        )
+        .map(|(_, at, _)| at)
+    }
+
+    #[test]
+    fn an_eligible_point_seals_without_running_the_guest() {
+        let mut fixture = SettleFixture::new(0);
+        let (snapshot, at, stop) = seal_after_settling(
+            &mut fixture,
+            10,
+            100,
+            SettleFixture::seal,
+            SettleFixture::advance,
+        )
+        .expect("an eligible point seals");
+        assert_eq!((snapshot, at), (SnapId(7), 0));
+        assert_eq!(stop, None, "no settle run happened, so there is no stop");
+        assert!(fixture.runs.is_empty());
+    }
+
+    #[test]
+    fn settling_advances_in_steps_and_stops_at_the_allowance() {
+        let mut fixture = SettleFixture::new(25);
+        assert_eq!(settle(&mut fixture, 10, 100).unwrap(), 30);
+        assert_eq!(fixture.runs, [10, 10, 10]);
+        // The final step is clipped so settling never runs past the allowance,
+        // and the point is still offered one last seal at the boundary.
+        let mut clipped = SettleFixture::new(25);
+        assert_eq!(settle(&mut clipped, 10, 25).unwrap(), 25);
+        assert_eq!(clipped.runs, [10, 10, 5]);
+        let mut exhausted = SettleFixture::new(31);
+        let error = settle(&mut exhausted, 10, 30).unwrap_err().to_string();
+        assert!(error.contains("settle allowance of 30 ns"), "{error}");
+        assert_eq!(exhausted.runs, [10, 10, 10]);
+        assert_eq!(exhausted.seals, 4, "the allowance boundary is sealed too");
+    }
+
+    #[test]
+    fn a_guest_that_cannot_advance_is_sealed_once_more_then_reported() {
+        for stop in [
+            StopReason::Quiescent {
+                vtime: control_proto::Moment(1),
+            },
+            StopReason::Crash {
+                vtime: control_proto::Moment(1),
+                info: control_proto::CrashInfo {
+                    kind: control_proto::CrashKind::Panic,
+                    detail: Vec::new(),
+                },
+            },
+        ] {
+            let mut fixture = SettleFixture::new(u64::MAX);
+            fixture.stop = stop.clone();
+            assert!(!settling_can_advance(&stop));
+            let error = settle(&mut fixture, 10, 100).unwrap_err().to_string();
+            assert!(
+                error.contains("stopped before the expected snapshot point"),
+                "{error}"
+            );
+            assert_eq!(fixture.runs, [10], "settling stopped after the first run");
+            assert_eq!(fixture.seals, 2, "the endpoint was offered a final seal");
+        }
+    }
+
+    #[test]
+    fn a_zero_settle_step_is_rejected_before_any_control_request() {
+        let mut fixture = SettleFixture::new(u64::MAX);
+        assert!(settle(&mut fixture, 0, 100).is_err());
+        assert_eq!(fixture.seals, 0);
+    }
+
+    fn service_config(identity: &[u8]) -> ServiceConfig {
+        ServiceConfig {
+            identity: identity.to_vec(),
+            configuration: b"configuration".to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_service_branch_records_its_configuration_payloads_and_effects() {
+        let spec = service_branch_spec(
+            7,
+            service_config(b"package"),
+            vec![b"first".to_vec(), b"second".to_vec()],
+            vec![
+                (900, Effect::InjectInterrupt { vector: 33 }),
+                (100, Effect::InjectInterrupt { vector: 32 }),
+            ],
+        )
+        .expect("distinct moments");
+        assert_eq!(spec.seed(), 7);
+        assert_eq!(spec.config(), &service_config(b"package"));
+        assert_eq!(
+            spec.payloads(),
+            Some([b"first".to_vec(), b"second".to_vec()].as_slice()),
+        );
+        assert_eq!(
+            spec.effects().iter().collect::<Vec<_>>(),
+            [
+                (&100, &Effect::InjectInterrupt { vector: 32 }),
+                (&900, &Effect::InjectInterrupt { vector: 33 }),
+            ],
+            "effects reach the branch in moment order whatever order they were given in",
+        );
+    }
+
+    #[test]
+    fn two_branch_effects_at_one_moment_are_reported_rather_than_dropped() {
+        let error = service_branch_spec(
+            0,
+            service_config(b"package"),
+            Vec::new(),
+            vec![
+                (100, Effect::InjectInterrupt { vector: 32 }),
+                (100, Effect::InjectInterrupt { vector: 33 }),
+            ],
+        )
+        .expect_err("one moment carries one effect");
+        assert!(
+            error.to_string().contains("share moment 100"),
+            "unexpected error: {error}",
+        );
+    }
+
+    #[test]
+    fn a_service_branch_without_effects_records_an_empty_schedule() {
+        let spec = service_branch_spec(0, service_config(b"package"), Vec::new(), Vec::new())
+            .expect("no effects");
+        assert!(spec.effects().is_empty());
+        assert_eq!(spec.payloads(), Some([].as_slice()));
+    }
+
+    #[test]
+    fn the_host_wall_limit_is_outside_the_session_identity() {
+        let bounded = SessionConfig::default().with_wall_limit(Duration::from_secs(30));
+        assert_ne!(bounded, SessionConfig::default());
+        assert_eq!(
+            identity_with_config(b"kernel", b"initramfs", &bounded),
+            identity_with_config(b"kernel", b"initramfs", &SessionConfig::default()),
+        );
+    }
+
+    #[test]
+    fn a_config_serialized_without_a_wall_limit_still_loads() {
+        let mut value = serde_json::to_value(SessionConfig::default()).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("configuration is a JSON object")
+            .remove("wall_limit")
+            .expect("the field is serialized");
+        let decoded: SessionConfig = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(decoded, SessionConfig::default());
+    }
+
+    #[test]
+    fn an_unbounded_session_runs_every_request_unguarded() {
+        let latch = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        assert!(
+            guarded_run_plan(false, None, Some(latch))
+                .unwrap()
+                .is_none()
+        );
+        assert!(guarded_run_plan(false, None, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_bounded_session_arms_the_backend_latch() {
+        let latch = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let limit = Duration::from_secs(30);
+        let (armed, armed_latch) = guarded_run_plan(false, Some(limit), Some(Arc::clone(&latch)))
+            .expect("a latched backend can be bounded")
+            .expect("the bound is armed");
+        assert_eq!(armed, limit);
+        assert!(Arc::ptr_eq(&armed_latch, &latch));
+    }
+
+    #[test]
+    fn a_backend_without_a_latch_reports_the_bound_it_cannot_honor() {
+        let error = guarded_run_plan(false, Some(Duration::from_secs(30)), None)
+            .expect_err("an unbounded backend cannot take a bound");
+        assert!(
+            matches!(
+                error.downcast_ref::<SessionError>(),
+                Some(SessionError::Unboundable)
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_abandoned_session_reports_the_hang_it_already_had() {
+        let latch = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        for (wall_limit, cancel) in [
+            (Some(Duration::from_secs(30)), Some(Arc::clone(&latch))),
+            (None, None),
+        ] {
+            let error = guarded_run_plan(true, wall_limit, cancel)
+                .expect_err("an abandoned session runs nothing");
+            assert!(
+                matches!(
+                    error.downcast_ref::<SessionError>(),
+                    Some(SessionError::Abandoned)
+                ),
+                "{error}"
+            );
+            assert!(error.to_string().contains("abandoned"), "{error}");
+        }
     }
 
     #[test]

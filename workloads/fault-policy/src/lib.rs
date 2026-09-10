@@ -40,7 +40,9 @@
 //! `recorded` ([`EnvSpec`], [`RecordedEnv`], [`StandingFault`], the reproducer) ·
 //! `envcodec` ([`EnvCodec`], the proposal seam) · `codec` (byte-exact,
 //! panic-free serialization shared by the public `encode`/`decode` methods) ·
-//! [`mod@error`] (the single [`EnvError`] enum).
+//! `process` ([`process_target`], the process-class target encoding) ·
+//! `standing` ([`StandingWindow`] and the standing-poll wire forms a package
+//! and an in-guest agent share) · [`mod@error`] (the single [`EnvError`] enum).
 
 mod catalog;
 mod codec;
@@ -49,16 +51,23 @@ mod error;
 mod host;
 mod policy;
 mod prng;
+mod process;
 mod recorded;
 mod seeded;
+mod standing;
 
 pub use catalog::{Answer, BlockOp, DecisionClass, DecisionPoint, Fault, FlowEvent};
 pub use envcodec::EnvCodec;
 pub use error::EnvError;
 pub use host::{Action, BitMask, HostFault, Moment, Ratio};
 pub use policy::FaultPolicy;
+pub use process::{decode_process_target, process_target};
 pub use recorded::{EnvSpec, RecordedEnv, StandingFault};
 pub use seeded::SeededEnv;
+pub use standing::{
+    STANDING_NAMESPACE, StandingEntry, StandingIter, StandingWindow, decode_windows,
+    encode_standing, encode_windows, parse_standing,
+};
 
 /// The catalog version. Bumps whenever a [`DecisionClass`], [`Fault`], or
 /// [`HostFault`] is added *or reshaped*; it pins the shared vocabulary that the
@@ -75,8 +84,12 @@ pub use seeded::SeededEnv;
 /// (discriminant `7`) and the [`Fault::BuggifyFire`] fault (byte tag `16`) — both
 /// additive with stable discriminants, so a recorded blob whose bytes predate
 /// them still replays, while a blob that names them fails loudly on an older
-/// reader (unknown class / undefined tag).
-pub const CATALOG_VERSION: u16 = 4;
+/// reader (unknown class / undefined tag). Bumped to `5` by the process faults
+/// the in-guest fault agent enforces — [`Fault::RunHook`] (byte tag `17`) and
+/// [`Fault::ProcPark`] (byte tag `19`) — both additive under the existing
+/// [`DecisionClass::Process`] discriminant. Byte tag `18` is permanently
+/// unassigned; see `codec.rs`.
+pub const CATALOG_VERSION: u16 = 5;
 
 /// The maximum number of bytes one [`Entropy`](DecisionPoint::Entropy) or
 /// [`Payload`](DecisionPoint::Payload) decision may supply. A faultable service
@@ -115,7 +128,7 @@ pub enum Outcome {
 pub trait Environment {
     /// Answer one **guest** [`DecisionPoint`] with an [`Answer`]. Deterministic
     /// given the backing's own state and the point; never panics, even on a
-    /// hostile point. A [`HostFault`] is never surfaced here — it has no decision
+    /// malformed point. A [`HostFault`] is never surfaced here — it has no decision
     /// point.
     fn decide(&mut self, point: &DecisionPoint) -> Outcome;
 }

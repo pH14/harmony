@@ -14,6 +14,8 @@
 //! **Designed, NOT frozen.** This trait's shape is the ruled §A design. Do not
 //! treat compiles-for-x86 as frozen-for-every-vendor.
 
+use std::sync::{Arc, atomic::AtomicBool};
+
 use crate::arch::Arch;
 use crate::error::Result;
 use crate::exit::{Capabilities, Exit, ExitCounts};
@@ -236,6 +238,16 @@ pub trait Backend {
     /// unison report reads this to refuse to *claim* determinism for a
     /// payload that needs a capability the backend lacks.
     fn capabilities(&self) -> Capabilities<<Self::A as Arch>::Caps>;
+
+    /// Host-only latch for abandoning a run whose vCPU thread stops returning
+    /// to the host. A watchdog sets it and then interrupts the vCPU thread with
+    /// a signal; every guest entry checks it, so cancellation never becomes a
+    /// guest event and never advances virtual time. A canceled VM must be
+    /// discarded rather than resumed. `None` when the backend cannot be
+    /// interrupted mid-run.
+    fn cancellation_flag(&self) -> Option<Arc<AtomicBool>> {
+        None
+    }
 }
 
 /// Blanket forward so the composition root can inject a concrete backend as a
@@ -321,6 +333,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
     fn capabilities(&self) -> Capabilities<<Self::A as Arch>::Caps> {
         (**self).capabilities()
     }
+
+    fn cancellation_flag(&self) -> Option<Arc<AtomicBool>> {
+        (**self).cancellation_flag()
+    }
 }
 
 #[cfg(test)]
@@ -330,6 +346,8 @@ mod tests {
     use crate::error::{BackendError, Result};
     use crate::exit::{Capabilities, Exit, ExitCounts};
     use crate::types::Gpa;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     /// A deliberately minimal implementor that relies on the trait's default
     /// retirement behavior. Keeping this separate from the mocks makes the
@@ -428,5 +446,22 @@ mod tests {
                 what: "retire_pending_completion"
             })
         ));
+    }
+
+    #[test]
+    fn a_backend_without_a_latch_reports_none_through_a_box_too() {
+        assert!(DefaultRetireBackend.cancellation_flag().is_none());
+        let without: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend);
+        assert!(without.cancellation_flag().is_none());
+    }
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn box_forwards_the_backend_latch_unchanged() {
+        let latch = Arc::new(AtomicBool::new(false));
+        let boxed: Box<dyn Backend<A = X86>> =
+            Box::new(crate::MockBackend::new().with_cancellation_flag(Arc::clone(&latch)));
+        let forwarded = boxed.cancellation_flag().expect("latch forwarded");
+        assert!(Arc::ptr_eq(&forwarded, &latch));
     }
 }

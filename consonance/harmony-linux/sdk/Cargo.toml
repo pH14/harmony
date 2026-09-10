@@ -1,7 +1,7 @@
 # The harmony guest SDK: a `no_std`, `alloc`-free, hooks-and-transport crate the
 # in-guest workload calls to emit assertions, IJON state registers, and lifecycle
-# points over the existing hypercall Event/SDK services. Fault request codecs live
-# in the optional workloads/fault-sdk adapter. It composes with
+# points over the existing hypercall Event/SDK services. Package-defined request
+# codecs live in the packages themselves. It composes with
 # `Client<VmcallTransport>` with zero new transport code.
 #
 # Standalone workspace: the root Cargo.toml excludes

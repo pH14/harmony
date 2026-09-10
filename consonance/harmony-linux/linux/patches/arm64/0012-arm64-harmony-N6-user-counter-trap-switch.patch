@@ -24,8 +24,8 @@ repository's designated guest-kernel patch exception.
 +	help
 +	  Clear CNTKCTL_EL1's EL0 physical/virtual counter access bits on every
 +	  context switch. This is a cooperative-guest confinement layer for raw
-+	  CNTPCT/CNTVCT JIT code. Disable only for the N6 planted negative that
-+	  proves the hostile probe detects a live counter.
++	  CNTPCT/CNTVCT JIT code. Disable only for the N6 negative control that
++	  proves the counter-reading probe detects a live counter.
 +
  config ARM_ARCH_TIMER_EVTSTREAM
  	bool "Enable ARM architected timer event stream generation by default"
