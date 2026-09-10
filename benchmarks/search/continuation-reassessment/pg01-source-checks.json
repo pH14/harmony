@@ -1,0 +1,112 @@
+{
+  "format": "retention-pg01-source-checks-v1",
+  "recorded_utc": "2026-09-10T20:41:31.994255+00:00",
+  "status": "passed",
+  "native_rom_frames": 0,
+  "admitted_experiment_frames": 0,
+  "native_qualification": "unallocated and unrun",
+  "note": "The full generic suite passed; its six progress tests were rerun after adding the final opposed-resource assertion. Source tests include loopback/finite fixtures; no real-ROM experiment ran.",
+  "checks": [
+    {
+      "name": "searcher-suite",
+      "command": "cargo test --locked --manifest-path dissonance/searcher/Cargo.toml --all-features",
+      "results": [
+        "test result: ok. 162 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.48s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ],
+      "gzip": "pg01-source-output/searcher-suite.log.gz",
+      "raw_bytes": 16532,
+      "raw_sha256": "3160c697cbcb0764ed758a6f477d5e9323ce697d2db40dbd4ef6ab1382fbb538",
+      "gzip_bytes": 4568,
+      "gzip_sha256": "065bacf4e9e08fc8a40fa442e41f8546d9a2cdcb50fa24a0ac0acde54e9edb4e"
+    },
+    {
+      "name": "searcher-progress-final",
+      "command": "cargo test --locked --manifest-path dissonance/searcher/Cargo.toml --all-features progress_tests",
+      "results": [
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 156 filtered out; finished in 0.01s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s"
+      ],
+      "gzip": "pg01-source-output/searcher-progress-final.log.gz",
+      "raw_bytes": 1239,
+      "raw_sha256": "277ff5dcb801d466a04123773f7c8087ddfd6ef67c90ac909ee91984aa103f10",
+      "gzip_bytes": 575,
+      "gzip_sha256": "926aa1f01653e98811e099a328fc227b00e0131fe4288dd3c0dfd1d938a7b4d2"
+    },
+    {
+      "name": "searcher-clippy",
+      "command": "cargo clippy --locked --manifest-path dissonance/searcher/Cargo.toml --all-targets --all-features -- -D warnings",
+      "results": [],
+      "gzip": "pg01-source-output/searcher-clippy.log.gz",
+      "raw_bytes": 175,
+      "raw_sha256": "88b64673e9eae004b9cf8f2a684fa7a184e8b37a4d59e0d6b2d7ca3252054059",
+      "gzip_bytes": 163,
+      "gzip_sha256": "d9d1e51d7f5256210d493fd0360a99880a08c2360937ca9f706c7ae4b026ede8"
+    },
+    {
+      "name": "nes-default",
+      "command": "cargo test --locked --manifest-path workloads/nes/Cargo.toml --lib --bin metroid-archive-challenge --bin metroid-retention-replay --bin metroid-retention-pair",
+      "results": [
+        "test result: ok. 146 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 26.21s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s"
+      ],
+      "gzip": "pg01-source-output/nes-default.log.gz",
+      "raw_bytes": 15623,
+      "raw_sha256": "ee0aa92d2576e4b6b99d767e08a89630c2f554a92c2409794eacb734eed5613b",
+      "gzip_bytes": 4339,
+      "gzip_sha256": "5555f135c2b4d34906bc6764141ee4771a741d8bc6922a0ac3adf79cdb737a69"
+    },
+    {
+      "name": "nes-progress",
+      "command": "cargo test --locked --manifest-path workloads/nes/Cargo.toml --lib --bin metroid-archive-challenge --bin metroid-retention-replay --bin metroid-retention-pair --features metroid-retention-progress",
+      "results": [
+        "test result: ok. 154 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.57s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+      ],
+      "gzip": "pg01-source-output/nes-progress.log.gz",
+      "raw_bytes": 16604,
+      "raw_sha256": "cf38719b676c26c0f13352f5d4c2056fdb9c2b73f1db9ab591940ce33bfd85ed",
+      "gzip_bytes": 4584,
+      "gzip_sha256": "7d33ca445fd2db009c19009013e07414ba362becf6da5857c7a36d5d560678f1"
+    },
+    {
+      "name": "nes-clippy",
+      "command": "cargo clippy --locked --manifest-path workloads/nes/Cargo.toml --all-targets --features metroid-retention-progress -- -D warnings",
+      "results": [],
+      "gzip": "pg01-source-output/nes-clippy.log.gz",
+      "raw_bytes": 173,
+      "raw_sha256": "89c503d4664f8f707d457e0a04d7d9e0dc9caa4729433b2471021ad59b85d3e9",
+      "gzip_bytes": 163,
+      "gzip_sha256": "fb142c8d4f330159f02d104e501e0ee59d5bdf7a68f1666c55b3cdad358d5e51"
+    },
+    {
+      "name": "feature-interaction",
+      "command": "cargo test --locked --manifest-path workloads/nes/Cargo.toml --lib --features metroid-retention-progress,metroid-refined-archive,metroid-complete-retention-audit metroid::",
+      "results": [
+        "test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 109 filtered out; finished in 0.02s"
+      ],
+      "gzip": "pg01-source-output/feature-interaction.log.gz",
+      "raw_bytes": 5007,
+      "raw_sha256": "1c83eeca8df30ab9e05e84c79a81d55e912cb85c0346d86ff62ef36e7a453eb2",
+      "gzip_bytes": 1733,
+      "gzip_sha256": "5daf2cf6f0a0961c5c4484829999a5584983c209e6535b2b5574fbff090bdafc"
+    },
+    {
+      "name": "feature-interaction-replay",
+      "command": "cargo test --locked --manifest-path workloads/nes/Cargo.toml --bin metroid-retention-replay --features metroid-retention-progress,metroid-refined-archive,metroid-complete-retention-audit",
+      "results": [
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s"
+      ],
+      "gzip": "pg01-source-output/feature-interaction-replay.log.gz",
+      "raw_bytes": 1396,
+      "raw_sha256": "dd9f98c7ada120c2b2859ea1b828d6223930272f5022d6b2c9c9665c01ed36a3",
+      "gzip_bytes": 687,
+      "gzip_sha256": "a56da834951fa52787e9d51a1f4e924b4355ff92ec0ebb76ff5a9e89307fe2e5"
+    }
+  ]
+}

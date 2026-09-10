@@ -484,3 +484,14 @@ The0.602-second diagnostic spends15,583 measured auxiliary frames and closes
 with its complete ten-file evidence bundle. This earns a retention-design
 assessment, not a scalar-HP claim or automatic policy panel. The full goal is
 still unachieved.
+
+[PG01](pg01-design.md) implements a generic ordinary-anchor plus qualified-progress
+alternate, and a capacity control with the same eligibility but ordinary ranking.
+The opt-in Metroid scope includes exact equipment/capacity/boss identities as well
+as qualified boss identity, preventing equal item/tank counts from hiding a
+resource tradeoff. PC01's actual exported inputs exercise the changed production
+rule without emulation. Source checks pass in default, new-feature and relevant
+combined-feature builds; the eight logs and commands are in `pg01-source-checks.json`.
+The archive-challenge caller can pin the projected root and explicit policy.
+No native qualification, conditional policy panel or fresh-search improvement
+has yet been measured for PG01.

@@ -25,6 +25,37 @@ unchanged for replay inspection. Historical v2 is still the default; stream
 headers distinguish the policies and reject a mismatched replay context.
 This correction is independent of the optional archive-key refinement.
 
+## Experimental scoped progress retention
+
+The explicit `metroid-retention-progress` feature adds
+`retention_progress: Option<ScopedProgress>` to archive keys. The living target
+uses cached WRAM and same-boundary cartridge RAM to identify exactly one
+qualified, undefeated Kraid/Ridley slot with known HP. Scope packs area, slot,
+data index, qualified attributes, equipment bits, energy-tank count, missile
+capacity and boss flags. This prevents equal aggregate item/tank counts from
+hiding different capabilities. Value is 254 minus current HP. Saved hit
+attributes preserve identity through the hit state. Unknown HP255, missing or
+ambiguous classification and defeat flags produce None. HP0 alone is no defeat.
+Mode3 is a classification gate and does not redefine aliveness.
+
+This is an explicit policy projection, separate from interval histories and
+reporting totals. It consumes no future actions or damage accumulators. Groups,
+ordinary preference and snapshots are unchanged; the key, campaign and result
+digest have distinct identities. Full-key ordering and equality include the new
+field; splice-donor and resume comparisons can therefore differ across feature
+builds even though selection groups stay fixed. Both candidate and control must use the same
+build, metadata overhead, terminal policy and total memory/work limits. Existing
+size-based archive charges include the larger key and alternate snapshots.
+
+The generic `resource_guarded_progress_2_v1` rule keeps the ordinary anchor plus
+at most one better-progress same-scope state with no worse health/missiles. Its
+`resource_guarded_progress_quality_control_2_v1` control ranks the same eligible
+alternates by ordinary quality instead of progress. This preserves a proxy
+distinction, not proven lifetime damage or future dominance; state resets and
+phase differences still matter. No route or controller sequence enters either
+rule. [PG01](../../../../benchmarks/search/continuation-reassessment/pg01-design.md)
+records the source counterexamples and the unrun native qualification gate.
+
 `archive.rs` records the experimental adapter policy explicitly. It pools
 16-pixel positions through 32-pixel cells, 128-pixel regions, map cells, and
 inventory counts. Posture and door-transition state distinguish possible
@@ -361,7 +392,10 @@ validation. See the [contract](../../../../benchmarks/search/endpoint-encounter/
 `metroid-archive-challenge prepare REQUEST OUT` checks one bounded searched input
 and its qualified mechanical/raw/emulator identity, replays it twice, and writes
 the complete root snapshot and its digest. `run REQUEST OUT` requires that frozen
-snapshot digest. It uses the existing generic `CampaignOrigin::SnapshotRoot`,
+snapshot digest. The optional `slot_retention` selects a recorded rule, and
+`expected_retention_progress` requires an exact qualified root descriptor.
+Progress policies require the feature build before any I/O; descriptor reads
+must preserve the complete snapshot and physical frame clock. It uses the existing generic `CampaignOrigin::SnapshotRoot`,
 ordinary Metroid selector and action law, corrected terminal predicate, and a
 registered Kraid/Ridley-defeat milestone. Archive actions and costs start at the
 supplied root; the original prefix never enters search as a donor or solution.

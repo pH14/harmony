@@ -25,7 +25,13 @@ pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 /// Largest bounded input horizon accepted by a Metroid campaign.
 pub const MAX_METROID_ACTIONS: usize = 8_192;
 /// Recorded archive-key and per-location preference policy.
-pub const KEY_POLICY_IDENTIFIER: &str = if cfg!(feature = "metroid-motion-context") {
+pub const KEY_POLICY_IDENTIFIER: &str = if cfg!(feature = "metroid-retention-progress") {
+    if cfg!(feature = "metroid-refined-archive") {
+        "metroid_items_tanks_spatial_8_raw_pose_motion_context_scoped_progress_selection_32_v13"
+    } else {
+        "metroid_items_tanks_spatial_16_posture_motion_context_scoped_progress_selection_32_v12"
+    }
+} else if cfg!(feature = "metroid-motion-context") {
     if cfg!(feature = "metroid-refined-archive") {
         "metroid_items_tanks_spatial_8_raw_pose_motion_context_selection_32_legacy_progress_v11"
     } else {
@@ -98,6 +104,11 @@ pub struct MetroidArchiveKey {
     /// Numeric-only construction leaves it absent.
     #[cfg(feature = "metroid-motion-context")]
     pub motion_context: Option<u16>,
+    /// Explicit experimental policy metadata; never a selection coordinate or
+    /// an ordinary preference. Old JSON has no qualified progress evidence.
+    #[cfg(feature = "metroid-retention-progress")]
+    #[serde(default)]
+    pub retention_progress: Option<crate::search::archive::ScopedProgress>,
 }
 
 impl ArchiveKey for MetroidArchiveKey {
@@ -186,6 +197,11 @@ impl ArchiveKey for MetroidArchiveKey {
         self.preference().cmp(&other.preference())
     }
 
+    #[cfg(feature = "metroid-retention-progress")]
+    fn retention_progress(self) -> Option<crate::search::archive::ScopedProgress> {
+        self.retention_progress
+    }
+
     type Lineage = ();
 
     fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
@@ -230,6 +246,8 @@ pub fn archive_key(state: MetroidMechanicalState) -> MetroidArchiveKey {
         missiles,
         #[cfg(feature = "metroid-motion-context")]
         motion_context: None,
+        #[cfg(feature = "metroid-retention-progress")]
+        retention_progress: None,
     }
 }
 

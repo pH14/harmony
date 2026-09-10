@@ -11,7 +11,10 @@ use nes_workload::{
         },
     },
     search::{
-        archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy, selector_policy_from_identifier},
+        archive::{
+            MAX_ARCHIVE_ENTRIES, RetentionPolicy, ScopedProgress, SlotRetentionPolicy,
+            selector_policy_from_identifier,
+        },
         campaign::{
             CampaignCheckpoint, CampaignConfig, CampaignExecutionOptions, CampaignOrigin,
             Evaluation, Reporting, ResultBuffering, SnapshotCheckpoint, SnapshotCheckpointEntry,
@@ -59,8 +62,26 @@ struct Request {
     milestone: String,
     #[serde(default)]
     local_terminal_retry: bool,
+    #[serde(default)]
+    slot_retention: Option<String>,
+    #[serde(default)]
+    expected_retention_progress: Option<ScopedProgress>,
 }
 
+fn slot_policy(q: &Request) -> Result<SlotRetentionPolicy> {
+    let policy = SlotRetentionPolicy::from_identifier(q.slot_retention.as_deref())?;
+    if !cfg!(feature = "metroid-retention-progress")
+        && (q.expected_retention_progress.is_some()
+            || matches!(
+                policy,
+                SlotRetentionPolicy::ResourceGuardedProgress2
+                    | SlotRetentionPolicy::ResourceGuardedProgressQuality2
+            ))
+    {
+        return Err("scoped progress requires the explicit Metroid feature build".into());
+    }
+    Ok(policy)
+}
 fn valid_limits(q: &Request, execute: bool) -> bool {
     (1..=4).contains(&q.workers)
         && (1..=5000).contains(&q.executions)
@@ -72,6 +93,7 @@ fn valid_limits(q: &Request, execute: bool) -> bool {
         && (1..=8_000_000).contains(&q.direct_frame_limit)
         && matches!(q.milestone.as_str(), "kraid_defeated" | "ridley_defeated")
         && (!execute || q.expected_snapshot_sha256.is_some())
+        && slot_policy(q).is_ok()
 }
 fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -124,6 +146,7 @@ struct Replay {
     snapshot: MetroidSnapshot,
     context: BossContext,
     dead: bool,
+    retention_progress: Option<ScopedProgress>,
 }
 fn replay(
     q: &Request,
@@ -162,14 +185,30 @@ fn replay(
             return Err("replay emulator failure".into());
         }
     }
+    let snapshot = target.snapshot().ok_or("replay snapshot failed")?;
+    #[cfg(feature = "metroid-retention-progress")]
+    let retention_progress = {
+        let before = target.frames_clocked();
+        let value = target.qualified_retention_progress()?;
+        if target.frames_clocked() != before || target.snapshot().as_ref() != Some(&snapshot) {
+            return Err("progress projection changed the complete state or physical clock".into());
+        }
+        value
+    };
+    #[cfg(not(feature = "metroid-retention-progress"))]
+    let retention_progress = None;
     Ok(Replay {
-        snapshot: target.snapshot().ok_or("replay snapshot failed")?,
+        snapshot,
         context: target.diagnostic_boss_context()?,
         dead: target.is_dead(),
+        retention_progress,
     })
 }
 fn same_replay(a: &Replay, b: &Replay) -> bool {
-    a.snapshot == b.snapshot && a.context == b.context && a.dead == b.dead
+    a.snapshot == b.snapshot
+        && a.context == b.context
+        && a.dead == b.dead
+        && a.retention_progress == b.retention_progress
 }
 
 fn evaluate(q: &Request, output: &Path, execute: bool, cost: &mut Cost) -> Result<Value> {
@@ -205,6 +244,8 @@ fn evaluate(q: &Request, output: &Path, execute: bool, cost: &mut Cost) -> Resul
         || serde_json::to_value(&first.context)? != q.expected_context
         || emulator_hash(root)? != q.expected_emulator_sha256
         || defeated(&first.context, &q.milestone)
+        || q.expected_retention_progress
+            .is_some_and(|p| first.retention_progress != Some(p))
     {
         return Err("root differs from the qualified, live, undefeated input".into());
     }
@@ -218,11 +259,16 @@ fn evaluate(q: &Request, output: &Path, execute: bool, cost: &mut Cost) -> Resul
     if !same_replay(&first, &replay(q, &rom, &prefix, None, cost)?) {
         return Err("prefix replays disagree".into());
     }
-    let root_report = json!({"format":"metroid-archive-challenge-root-v1",
+    let mut root_report = json!({"format":"metroid-archive-challenge-root-v1",
         "scope":"supplied searched prefix; diagnostic only", "input_sha256":q.input_sha256,
         "snapshot_sha256":root_sha,"emulator_sha256":q.expected_emulator_sha256,
         "endpoint":root.state(),"context":first.context,"verified_prefix_replays":2,
         "cost":cost});
+    if q.expected_retention_progress.is_some() {
+        root_report["format"] = json!("metroid-archive-challenge-progress-root-v2");
+        root_report["qualified_retention_progress"] =
+            serde_json::to_value(first.retention_progress)?;
+    }
     write(&output.join("root.json"), &root_report)?;
     write(&output.join("root-snapshot.json"), root)?;
     if !execute {
@@ -291,7 +337,7 @@ fn evaluate(q: &Request, output: &Path, execute: bool, cost: &mut Cost) -> Resul
             } else {
                 ResultBuffering::TwoPerWorker
             },
-            slot_retention: Default::default(),
+            slot_retention: slot_policy(q)?,
         },
     )?;
     stream.flush()?;
@@ -410,6 +456,39 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
     use nes_workload::metroid::target::ButtonChord;
+    #[test]
+    fn legacy_request_and_explicit_policy_feature_gates_are_checked_before_io() {
+        let mut q: Request = serde_json::from_str(include_str!(
+            "../../../../benchmarks/search/endpoint-encounter/ap01-request.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            slot_policy(&q).unwrap(),
+            SlotRetentionPolicy::Representative
+        );
+        assert!(valid_limits(&q, true));
+        q.slot_retention = Some("resource_guarded_progress_2_v0".into());
+        assert!(!valid_limits(&q, true));
+        for policy in [
+            SlotRetentionPolicy::ResourceGuardedProgress2,
+            SlotRetentionPolicy::ResourceGuardedProgressQuality2,
+        ] {
+            q.slot_retention = policy.identifier().map(str::to_owned);
+            assert_eq!(
+                slot_policy(&q).is_ok(),
+                cfg!(feature = "metroid-retention-progress")
+            );
+        }
+        q.slot_retention = None;
+        q.expected_retention_progress = Some(ScopedProgress {
+            scope: 0x14000940,
+            value: 117,
+        });
+        assert_eq!(
+            valid_limits(&q, true),
+            cfg!(feature = "metroid-retention-progress")
+        );
+    }
     #[test]
     fn inherited_and_post_budget_events_do_not_pass() {
         assert!(!completed_goal(0, 0, 100));

@@ -114,6 +114,17 @@ neither retention-slot geometry nor selector groups. Both comparison arms must
 use the same feature build, resource limits and recorded terminal semantics.
 No experimental policy or feature is a production default.
 
+`--features metroid-retention-progress` adds an explicit, qualified snapshot-local
+boss-progress projection for the generic `resource_guarded_progress_2_v1` policy
+and its `resource_guarded_progress_quality_control_2_v1` capacity control. Both
+keep the ordinary anchor; an alternate needs matching known scope, strictly
+higher progress and no worse resource axes. The feature includes motion/context
+observation support and records a separate Metroid key/stream/digest identity.
+All comparison arms need the same feature build. It changes no selection groups,
+ordinary preference or controller law. MM2 has no such projection yet. See the
+[Metroid projection](src/metroid/README.md#experimental-scoped-progress-retention)
+and [research gate](../../benchmarks/search/continuation-reassessment/pg01-design.md).
+
 `--features metroid-boss-context-audit` adds a reporting-only Metroid encounter
 sample at each completed live action endpoint and saves the first producing
 input for two replays. It uses separate artifact identities and adds metadata

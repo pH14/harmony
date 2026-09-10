@@ -796,7 +796,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
 }
 
 #[test]
-fn optional_slot_policies_replay_alternatives_eviction_and_continuations() {
+fn optional_slot_policies_replay_active_and_unsupported_paths() {
     use crate::search::archive::SlotRetentionPolicy;
     for policy in [
         SlotRetentionPolicy::ResourceExtremes2,
@@ -804,6 +804,8 @@ fn optional_slot_policies_replay_alternatives_eviction_and_continuations() {
         SlotRetentionPolicy::RepresentativeJobSample2,
         SlotRetentionPolicy::QualityRepresentatives2,
         SlotRetentionPolicy::ContextRepresentatives2,
+        SlotRetentionPolicy::ResourceGuardedProgress2,
+        SlotRetentionPolicy::ResourceGuardedProgressQuality2,
     ] {
         let config = CampaignConfig {
             campaign_seed: 947,
@@ -859,10 +861,21 @@ fn optional_slot_policies_replay_alternatives_eviction_and_continuations() {
                 .unwrap(),
         )
         .unwrap();
-        assert!(
-            last.retention_diagnostics.alternative_admissions > 0,
-            "must keep actual alternatives"
-        );
+        if matches!(
+            policy,
+            SlotRetentionPolicy::ResourceGuardedProgress2
+                | SlotRetentionPolicy::ResourceGuardedProgressQuality2
+        ) {
+            assert_eq!(
+                last.retention_diagnostics.alternative_admissions, 0,
+                "this fixture supplies no scoped progress; do not invent an alternate"
+            );
+        } else {
+            assert!(
+                last.retention_diagnostics.alternative_admissions > 0,
+                "must keep actual alternatives"
+            );
+        }
         assert!(
             last.retention_diagnostics.removed > 0,
             "must replace or evict entries"

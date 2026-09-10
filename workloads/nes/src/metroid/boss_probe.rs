@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Raw read-only encounter diagnostics; never archive or terminal policy.
+//! Raw read-only encounter decoding. Interval diagnostics and the explicit
+//! opt-in retention projection consume it separately; decoding changes no policy.
 
 use machine::MachineError;
 use serde::Serialize;
 
 /// Raw enemy-slot bytes. The special byte is not a permanent enemy identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub struct EnemyBytes {
     pub slot: u8,
     pub status: u8,
@@ -19,6 +21,7 @@ pub struct EnemyBytes {
 
 /// Raw fields at one frame boundary, with no inferred encounter or damage total.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub struct BossMemory {
     pub area: u8,
     pub mode: u8,
@@ -33,6 +36,7 @@ pub struct BossMemory {
 /// Same-boundary raw fields for the opt-in interval observer. Kept separate to
 /// preserve the legacy raw report's serialized bytes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub struct BossContext {
     pub memory: BossMemory,
     pub saved_status: [u8; 6],

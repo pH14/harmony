@@ -1162,3 +1162,35 @@ priority, HP bins or an extra member automatically. No fresh-policy panel is yet
 allocated. All previous failed gates remain closed; msr1 is unavailable. The
 original matched boss/Wily, transfer and untouched-validation goal stays active
 and unachieved.
+
+## PG01 source decision
+
+Implement `resource_guarded_progress_2_v1`: preserve the ordinary representative
+and one same-scope higher-progress alternative with no worse supplied resource
+axes. Its `resource_guarded_progress_quality_control_2_v1` control shares the
+eligibility filter and chooses by ordinary quality. The source-level offered-set
+oracle, resource/missing-context counterexamples and actual PC01 exported inputs
+exercise production admission. Neither rule certifies useful future behavior.
+
+Metroid's explicit feature packs qualified boss identity and exact equipment,
+energy-tank count, missile capacity and boss flags into the comparison scope;
+health and missile stock remain separate guarded axes. This corrects a design
+gap found before native work: the inherited aggregate counts can hide different
+capabilities. Key/stream/digest identities are distinct, snapshots unchanged,
+and both arms must use the same feature build with alphabet-only actions.
+The ordinary preference and selection groups are unchanged. Full-key ordering
+can still affect cross-feature donor/resume behavior; do not mix those builds.
+
+Generic checks pass (162 tests plus one interface test, with six progress tests
+rechecked after the final opposed-resource assertion). NES checks pass (146 library
+tests by default and154 with the new feature, plus targeted callers and relevant
+feature combinations); strict Clippy passes. The existing challenge caller now
+accepts explicit policy and expected root projection and verifies state/clock
+preservation when that projection is read. No native PG01 call has occurred.
+
+Next publish and build the exact source on ms02, then separately register a short
+qualification of actual root projection, real alternate retention and full small
+campaign replay. Only then decide on a matched ordinary/candidate/capacity-control
+conditional boss-defeat panel. No fresh-policy development is allocated, MM2 has
+no projection yet, and the full boss/Wily goal remains active and unachieved.
+All ledgers and earlier failed gates are unchanged; msr1 remains unavailable.

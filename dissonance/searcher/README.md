@@ -282,6 +282,19 @@ the latter preserves the two highest-quality context maxima between external
 evictions/imports; neither rule guarantees useful future behavior. Replay
 records the explicit policy identifier and rejects unknown identifiers.
 
+`resource_guarded_progress_2_v1` preserves the ordinary representative and at
+most one alternate with higher `ArchiveKey::retention_progress()` value in the
+same known scope, with neither `retention_resources()` axis worse. The alternate
+maximizes progress, then ordinary quality/cost/arrival. Its capacity control,
+`resource_guarded_progress_quality_control_2_v1`, uses the same eligibility test
+and ranks eligible alternates by ordinary quality. Missing primary evidence
+supplies no alternate; an incomparable competitor cannot add progress evidence.
+These opt-in rules apply only when ordinary slot capacity is one and otherwise
+fall back to ordinary retention. All members share the existing byte budget;
+selection groups and policy defaults stay unchanged. They preserve an offered-set
+proxy invariant, not future behavior or a historical/global Pareto front. See
+[the rule and counterexamples](../../benchmarks/search/continuation-reassessment/pg01-design.md).
+
 Retention lifecycle diagnostics reuse existing selector exposure vectors and add
 only fixed counters, reported by `retention_diagnostic_memory_bytes`. Existing
 vectors remain covered by archive metadata charging. Measured process RSS also

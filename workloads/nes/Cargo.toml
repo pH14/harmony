@@ -27,6 +27,8 @@ metroid-complete-retention-audit = []
 selector-cost-audit = ["searcher/selector-cost-audit"]
 # Reporting-only boss classification at completed live action endpoints.
 metroid-boss-context-audit = []
+# Explicit policy metadata; ordinary builds and observation histories stay unchanged.
+metroid-retention-progress = ["metroid-motion-context", "metroid-boss-context-audit"]
 
 [[bin]]
 name = "nova-consonance-campaign"

@@ -14,3 +14,6 @@ pub mod target;
 pub mod retention_audit;
 /// Exhaustive bounded snapshots for separately qualified replay diagnostics.
 pub mod retention_capture;
+/// Opt-in policy projection of qualified snapshot-local boss state.
+#[cfg(feature = "metroid-retention-progress")]
+pub mod retention_progress;

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Bounded reporting-only comparisons, never search state or a reward.
+//! Bounded reporting-only interval comparisons. The snapshot-local classifier
+//! is also shared with the explicit opt-in retention projection; interval
+//! histories and observed-damage totals never enter search policy state.
 //!
 //! Matching visible identity is not proof against an invisible same-key reload.
 //! Report observed HP loss, not exact lifetime damage. See the observation

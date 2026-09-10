@@ -905,7 +905,7 @@ mod tests {
         feature = "metroid-boss-context-audit"
     ))]
     #[test]
-    fn actual_saved_ap01_header_and_four_job_records_accept_explicit_reconstruction() {
+    fn actual_saved_ap01_header_requires_its_exact_policy_before_reconstruction() {
         let mut q: Request = serde_json::from_str(include_str!(
             "../../../../benchmarks/search/continuation-reassessment/rr01-qualify-request.json"
         ))
@@ -938,6 +938,10 @@ mod tests {
         });
         let game = MetroidGame::new(&[], Path::new("unused"), &q.core.sha256)
             .with_terminal_policy(MetroidTerminalPolicy::BcdUnderflow);
+        if cfg!(feature = "metroid-retention-progress") {
+            assert!(prepare(&q, &original, &game).is_err());
+            return;
+        }
         let prepared = prepare(&q, &original, &game).unwrap();
         assert_eq!((prepared.jobs, prepared.frames), (4, 865));
     }

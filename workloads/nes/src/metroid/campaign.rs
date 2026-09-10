@@ -42,7 +42,9 @@ use crate::{
 };
 
 /// Stream format written by Metroid campaigns.
-pub const CAMPAIGN_STREAM_FORMAT: &str = if cfg!(feature = "metroid-boss-context-audit") {
+pub const CAMPAIGN_STREAM_FORMAT: &str = if cfg!(feature = "metroid-retention-progress") {
+    "metroid-quicknes-campaign-stream-scoped-progress-v6"
+} else if cfg!(feature = "metroid-boss-context-audit") {
     "metroid-quicknes-campaign-stream-endpoint-context-v5"
 } else {
     "metroid-quicknes-campaign-stream-v4"
@@ -66,7 +68,9 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_select_taps_no_start_v1";
-const RESULT_DIGEST_IDENTIFIER: &str = if cfg!(feature = "metroid-boss-context-audit") {
+const RESULT_DIGEST_IDENTIFIER: &str = if cfg!(feature = "metroid-retention-progress") {
+    "metroid-semantic-postcard-1.1.3-sha256-hex-motion-endpoint-scoped-progress-v7"
+} else if cfg!(feature = "metroid-boss-context-audit") {
     if cfg!(feature = "metroid-motion-context") {
         "metroid-semantic-postcard-1.1.3-sha256-hex-motion-endpoint-context-v6"
     } else {
@@ -539,19 +543,19 @@ fn merge_action_milestones(
     }
 }
 
-fn target_archive_key(target: &MetroidTarget) -> MetroidArchiveKey {
+fn target_archive_key(target: &MetroidTarget) -> Result<MetroidArchiveKey, Box<dyn Error>> {
     let key = archive_key(target.mechanical_state());
     #[cfg(feature = "metroid-motion-context")]
-    {
-        MetroidArchiveKey {
-            motion_context: Some(target.cached_motion_context()),
-            ..key
-        }
-    }
-    #[cfg(not(feature = "metroid-motion-context"))]
-    {
-        key
-    }
+    let key = MetroidArchiveKey {
+        motion_context: Some(target.cached_motion_context()),
+        ..key
+    };
+    #[cfg(feature = "metroid-retention-progress")]
+    let key = MetroidArchiveKey {
+        retention_progress: target.qualified_retention_progress()?,
+        ..key
+    };
+    Ok(key)
 }
 
 #[allow(clippy::too_many_arguments)] // Mirrors the existing bounded worker request plus its opt-in retry policy.
@@ -610,7 +614,7 @@ fn execute_suffix(
                 .snapshot()
                 .ok_or("failed to snapshot Metroid suffix")?;
             Some(CampaignCandidate {
-                key: target_archive_key(target),
+                key: target_archive_key(target)?,
                 viable: true,
                 snapshot,
             })
@@ -1125,7 +1129,7 @@ impl Evaluation for MetroidGame {
     }
 
     fn current_key(&self, target: &MetroidTarget) -> Result<MetroidArchiveKey, Box<dyn Error>> {
-        Ok(target_archive_key(target))
+        target_archive_key(target)
     }
 
     fn complete_candidate_key(

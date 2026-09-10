@@ -86,6 +86,12 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn retention_context(self) -> Option<u64> {
         None
     }
+    /// Optional locally comparable progress. Values may be ordered only within
+    /// one scope; absence supplies no progress evidence. This is a workload
+    /// proxy, not a future-behavior or dominance certificate.
+    fn retention_progress(self) -> Option<ScopedProgress> {
+        None
+    }
     /// Ancestry state a key needs to complete itself.
     type Lineage: Clone + Default;
     /// Complete a freshly decoded key against its parent's key and lineage.
@@ -101,6 +107,15 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
 /// campaign's retention. Campaign runs register their own per-run bound at
 /// or below this.
 pub const MAX_ARCHIVE_ENTRIES: usize = 4_194_304;
+
+/// A workload-owned local progress proxy; larger values are preferred only
+/// when scope identities match. Neither field changes selection groups.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct ScopedProgress {
+    pub scope: u64,
+    pub value: u64,
+}
+
 /// Versioned same-slot representative mechanism, independent of parent selection.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SlotRetentionPolicy {
@@ -118,6 +133,12 @@ pub enum SlotRetentionPolicy {
     QualityRepresentatives2,
     /// Best two context maxima under ordinary quality; contexts are unordered.
     ContextRepresentatives2,
+    /// Ordinary representative plus maximum same-scope progress with no worse
+    /// resource axes. Only single-representative workloads participate.
+    ResourceGuardedProgress2,
+    /// Same eligible alternatives as ResourceGuardedProgress2, ranked by
+    /// ordinary quality instead of progress. A scoped capacity control.
+    ResourceGuardedProgressQuality2,
 }
 
 impl SlotRetentionPolicy {
@@ -131,6 +152,10 @@ impl SlotRetentionPolicy {
             Self::RepresentativeJobSample2 => Some("representative_job_sample_2_v1"),
             Self::QualityRepresentatives2 => Some("quality_representatives_2_v1"),
             Self::ContextRepresentatives2 => Some("context_representatives_2_v1"),
+            Self::ResourceGuardedProgress2 => Some("resource_guarded_progress_2_v1"),
+            Self::ResourceGuardedProgressQuality2 => {
+                Some("resource_guarded_progress_quality_control_2_v1")
+            }
         }
     }
 
@@ -146,6 +171,10 @@ impl SlotRetentionPolicy {
             Some("representative_job_sample_2_v1") => Ok(Self::RepresentativeJobSample2),
             Some("quality_representatives_2_v1") => Ok(Self::QualityRepresentatives2),
             Some("context_representatives_2_v1") => Ok(Self::ContextRepresentatives2),
+            Some("resource_guarded_progress_2_v1") => Ok(Self::ResourceGuardedProgress2),
+            Some("resource_guarded_progress_quality_control_2_v1") => {
+                Ok(Self::ResourceGuardedProgressQuality2)
+            }
             Some(value) => Err(format!("unknown slot retention policy {value}").into()),
         }
     }
@@ -2966,12 +2995,17 @@ where
             self.slot_retention,
             SlotRetentionPolicy::RepresentativeJobSample2
                 | SlotRetentionPolicy::QualityRepresentatives2
-        ) || (self.slot_retention
-            == SlotRetentionPolicy::ContextRepresentatives2
-            && key.retention_context().is_some()
-            && slot
-                .iter()
-                .all(|id| self.entries[*id].key.retention_context().is_some()));
+        ) || (K::slot_capacity() == 1
+            && matches!(
+                self.slot_retention,
+                SlotRetentionPolicy::ResourceGuardedProgress2
+                    | SlotRetentionPolicy::ResourceGuardedProgressQuality2
+            ))
+            || (self.slot_retention == SlotRetentionPolicy::ContextRepresentatives2
+                && key.retention_context().is_some()
+                && slot
+                    .iter()
+                    .all(|id| self.entries[*id].key.retention_context().is_some()));
         let replacements = if quality_pair {
             let new_id = self.entries.len();
             let attributes = |id: usize| {
@@ -3016,6 +3050,42 @@ where
                             != attributes(representative).0.retention_context()
                     })
                     .max_by(|a, b| quality(*a, *b))
+                    .unwrap_or(representative),
+                SlotRetentionPolicy::ResourceGuardedProgress2
+                | SlotRetentionPolicy::ResourceGuardedProgressQuality2 => candidates()
+                    .filter(|id| {
+                        let (peer, anchor) = (attributes(*id).0, attributes(representative).0);
+                        let evidence = peer
+                            .retention_progress()
+                            .zip(anchor.retention_progress())
+                            .zip(peer.retention_resources().zip(anchor.retention_resources()));
+                        evidence.is_some_and(|((p, a), (r, ar))| {
+                            p.scope == a.scope
+                                && p.value > a.value
+                                && r.iter().zip(ar).all(|(v, av)| *v >= av)
+                        })
+                    })
+                    .max_by(|a, b| {
+                        let progress = if self.slot_retention
+                            == SlotRetentionPolicy::ResourceGuardedProgress2
+                        {
+                            attributes(*a)
+                                .0
+                                .retention_progress()
+                                .expect("eligible progress")
+                                .value
+                                .cmp(
+                                    &attributes(*b)
+                                        .0
+                                        .retention_progress()
+                                        .expect("eligible progress")
+                                        .value,
+                                )
+                        } else {
+                            Ordering::Equal
+                        };
+                        progress.then_with(|| quality(*a, *b))
+                    })
                     .unwrap_or(representative),
                 _ => unreachable!("quality-pair policies checked before competition"),
             };
@@ -4626,6 +4696,10 @@ where
 #[cfg(test)]
 #[path = "archive_abstraction_tests.rs"]
 mod abstraction_tests;
+
+#[cfg(test)]
+#[path = "archive_progress_tests.rs"]
+mod progress_tests;
 
 #[cfg(test)]
 mod tests {

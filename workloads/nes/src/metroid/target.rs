@@ -657,6 +657,30 @@ impl MetroidTarget {
         super::kinematics_probe::decode(&self.current_wram).coarse_context()
     }
 
+    /// Opt-in snapshot-local policy evidence. Read already captured WRAM and
+    /// same-boundary cartridge RAM; never use interval totals or observer output.
+    /// The cartridge read adds host work, but advances no emulator frames.
+    #[cfg(feature = "metroid-retention-progress")]
+    pub fn qualified_retention_progress(
+        &self,
+    ) -> Result<Option<crate::search::archive::ScopedProgress>, MachineError> {
+        if self.failed {
+            return Err(MachineError::Backend(
+                "progress key on failed emulator".into(),
+            ));
+        }
+        let state = self.mechanical_state();
+        if self.is_dead()
+            || self.is_victory()
+            || !matches!(state.area, 0x12 | 0x14)
+            || state.mode != 3
+        {
+            return Ok(None);
+        }
+        let context = super::boss_probe::decode_context(&self.current_wram, &self.cartridge()?)?;
+        Ok(super::retention_progress::from_context(&context, state))
+    }
+
     /// Read the cartridge work RAM window the decoder needs.
     fn cartridge(&self) -> Result<Vec<u8>, MachineError> {
         self.machine.read_save_ram()
