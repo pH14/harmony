@@ -44,7 +44,7 @@ struct harmony_coverage_state {
 };
 
 static _Thread_local struct harmony_coverage_state harmony_coverage = {
-    0, 1, 0, 0, 1
+    0, 1, 0, 0, UINT64_MAX
 };
 static uint32_t harmony_next_guard = 1;
 static _Atomic uint64_t harmony_next_edge_offset;

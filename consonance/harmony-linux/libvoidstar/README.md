@@ -8,7 +8,10 @@ seeded entropy through the driver's fixed transaction, and exposes the legacy
 coverage and sanitizer callback symbols expected by instrumented programs.
 
 Device exchanges are serialized per process. The library keeps explicit thread
-identities and counters for callback thresholding. Device errors fail closed:
+identities and counters for callback thresholding. Scheduler yields start only
+after the workload calls `harmony_coverage_configure`; ordinary instrumented
+callbacks remain local so instrumentation does not turn every basic block into
+a device transaction. Device errors fail closed:
 an event is dropped and entropy returns zero rather than using host randomness.
 `init_coverage_module` follows the SDK ABI and assigns non-overlapping edge
 ranges to modules injected by the Go instrumentor.

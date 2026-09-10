@@ -100,6 +100,9 @@ int main(void)
     fuzz_flush();
     assert(init_coverage_module(3, "first.sym.tsv") == 0);
     assert(init_coverage_module(5, "second.sym.tsv") == 3);
+    /* Instrumentation alone exposes events without enabling scheduler yields. */
+    assert(!notify_coverage(0));
+    assert(coverage_requests == 0);
     assert(harmony_coverage_configure(7, 3) == 0);
     assert(!notify_coverage(1));
     assert(coverage_requests == 1);
