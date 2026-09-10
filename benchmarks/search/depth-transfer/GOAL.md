@@ -781,3 +781,13 @@ measurement. No longer horizon, early-milestone substitution, bank/order change
 or replacement seed rescues a failed panel. Fresh development is not yet
 registered or run. Independent confirmation, MM2 and untouched validation still
 stand between a precursor gain and the original active, unachieved goal.
+
+## Resource update from the user
+
+On2026-09-10 the user reassigned msr1 to another task. All owned FW01/FW02/CQ01
+jobs there had already finished, and their complete evidence is preserved
+locally. Treat msr1 as unavailable for subsequent research, including any
+confirmation or validation. Continue experiments on ms02 only, with its qualified
+existing builds and bounded CPU/memory allocations. Local offline analysis and
+the single PR287 publication continue normally. Do not start, restart or clear
+anything on msr1 for this goal.

@@ -211,6 +211,10 @@ memory and output bounds before dispatch. Run only the first two pairs initially
 and stop if the fixed three-win gate becomes impossible. CQ01 does not itself
 register or launch that performance panel.
 
+After CQ01 closed, the user reassigned msr1 to another task. Its research jobs
+were already terminal and all evidence had been copied locally. Subsequent
+experimentation, including confirmation, must use ms02; msr1 is unavailable.
+
 ## Ordering findings stay separate from this candidate
 
 Two new source fixtures expose existing limitations without changing policies:
