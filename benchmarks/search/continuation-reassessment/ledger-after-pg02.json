@@ -1,0 +1,17 @@
+{
+  "format": "retention-ledger-after-pg02-v1",
+  "before": {
+    "admitted_search": 2983485644,
+    "known_auxiliary": 71300232
+  },
+  "pg02": {
+    "admitted_search": 2000891,
+    "known_auxiliary": 2966731
+  },
+  "pg02_total_measured_physical": 4967622,
+  "scope": "Both launched native cells, including ordinary rejected by the broken wrapper scorer. Each completed full replay with closed physical receipts. No missing native frame component in these successful binary calls. Controller host CPU/final cgroup peak unavailable after collection, not zero. PG02 invalid; ten unrun cells and unused allocation released.",
+  "after": {
+    "admitted_search": 2985486535,
+    "known_auxiliary": 74266963
+  }
+}

@@ -544,3 +544,14 @@ Four new conditional seeds compare the fixed progress rule against ordinary and
 scoped capacity retention at 1M admitted frames. Its frozen scorer stops for
 futility after complete triples and rejects premature cutoffs or incomplete
 accounting. Native work is restricted to ms02; no PG02 cell has run at publication.
+
+PG02 is now **invalid and closed** after its first two native cells. Both finish
+1M admitted frames and full replay in about 41 seconds, with no living defeat.
+The scorer incorrectly indexes ordinary retention's omitted optional field;
+failure collection then obscures that error at the controller level. Ten cells
+never launch, and the unused allocation is released. Both native costs are fully
+charged: 4,967,622 physical frames. The offline verifier checks all 42 artifacts,
+failure diagnosis and closure without emulation; audit_pg02.py checks the documented
+schema correction without changing the frozen scorer or validating the incomplete
+panel. See pg02-results.md. No retry or new native allocation is earned by this
+correction. Totals: 2,985,486,535 admitted / 74,266,963 known auxiliary.

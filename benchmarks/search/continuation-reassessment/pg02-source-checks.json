@@ -1,0 +1,18 @@
+{
+  "format": "retention-pg02-source-checks-v1",
+  "native_source_commit": "5522b6a5e22d963ccb38446361b8142e2485fd77",
+  "caller_tests": {
+    "default": 6,
+    "metroid_retention_progress": 6
+  },
+  "strict_clippy": "Passed for the feature caller; no unsafe code changed.",
+  "frozen_scorer_tests": 7,
+  "post_failure_schema_tests": 4,
+  "python_total": 11,
+  "normal_registration_pre_push": {
+    "passed": 1184,
+    "skipped": 23,
+    "seconds": 33.916
+  },
+  "limitation": "Original scorer tests used only a progress report then injected an explicit null for ordinary. They did not exercise actual ordinary omission. Post-failure tests use actual ordinary/progress native PG02 files and all three PG01 serialized policy representations. Frozen PG02 sources remain unchanged."
+}

@@ -1302,3 +1302,29 @@ stops without retry. A pass earns a separate fresh-development decision, not
 goal completion. All prior allocations stay closed; msr1 is unavailable. No PG02
 native execution has occurred at publication time. The tested caller changes only
 the permitted execution ceiling, preserving its 1M admitted-frame cap.
+
+## PG02 invalid closure
+
+The controller stops after its first concurrent batch in 42.448 seconds. Both
+native binary calls complete 1M admitted frames and full replay with no living
+boss defeat. The frozen scorer incorrectly requires ordinary retention's omitted
+optional field; the failed wrapper is then collected before its terminal query.
+No complete seed triple is scored. Ten cells remain unrun, all owned units are
+inactive, and unused allocation is released. msr1 is never accessed.
+
+All 42 artifacts verify offline. Charge both cells, including the scorer-rejected
+ordinary arm: 2,000,891 admitted / 2,966,731 auxiliary = 4,967,622 physical frames.
+Resumed totals are 2,985,486,535 admitted / 74,266,963 known auxiliary. Historical
+physical gaps are unchanged; controller host CPU/peak unavailable after collection
+remain unknown. The offline schema correction passes actual serialized control
+fixtures, but does not repair the registered scientific panel. See
+../continuation-reassessment/pg02-results.md.
+
+PG02 is invalid and closed, not a candidate efficacy rejection or success. Do not
+retry it, finish its remaining cells or promote a control. Before any further
+native allocation, use existing evidence to choose an independently justified
+mechanism-level prediction, and exercise future evaluator preflight across all
+actual arm schemas. Capture failure resources before collection and charge all
+launched cells. No new native allocation exists. Independent confirmation, MM2
+transfer and untouched fresh validation remain required; the full goal stays
+active and unachieved.

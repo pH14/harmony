@@ -1,0 +1,89 @@
+{
+  "format": "retention-pg02-invalid-closure-verification-v1",
+  "verified": true,
+  "files": 42,
+  "panel_status": "invalid; no complete seed triple, no gate decision",
+  "cells": [
+    {
+      "cell": "p0-ordinary",
+      "seed": 1421509093,
+      "arm": "ordinary",
+      "native_completed": true,
+      "frozen_wrapper_valid": false,
+      "schema_compatible_native_checks": true,
+      "reached": false,
+      "descriptive_restricted_cost": 1004645,
+      "physical_frames": {
+        "direct_helpers": 477346,
+        "replay_engine": 1001530,
+        "replay_outside_admission": 929,
+        "scope": "Complete successfully constructed target lifetimes through final clock reads. Target destructors do not emulate frames in this pinned Metroid adapter. Not a live stopping counter.",
+        "search_engine": 1005246,
+        "search_outside_admission": 4645,
+        "total": 2484122
+      },
+      "admitted_frames": 1000601,
+      "auxiliary_frames": 1483521,
+      "jobs": 10720,
+      "alternate_admissions": 0,
+      "wall_seconds": 41.543546240078285,
+      "process_cpu_seconds": 55.306858000000005,
+      "process_peak_rss_kib": 136196,
+      "service_cpu_ns": 55355779000,
+      "service_peak_bytes": 188362752,
+      "started_utc": "2026-09-10T22:14:59.331544+00:00",
+      "ended_utc": "2026-09-10T22:15:40.876272+00:00"
+    },
+    {
+      "cell": "p0-progress",
+      "seed": 1421509093,
+      "arm": "progress",
+      "native_completed": true,
+      "frozen_wrapper_valid": true,
+      "schema_compatible_native_checks": true,
+      "reached": false,
+      "descriptive_restricted_cost": 1004645,
+      "physical_frames": {
+        "direct_helpers": 477346,
+        "replay_engine": 1001219,
+        "replay_outside_admission": 929,
+        "scope": "Complete successfully constructed target lifetimes through final clock reads. Target destructors do not emulate frames in this pinned Metroid adapter. Not a live stopping counter.",
+        "search_engine": 1004935,
+        "search_outside_admission": 4645,
+        "total": 2483500
+      },
+      "admitted_frames": 1000290,
+      "auxiliary_frames": 1483210,
+      "jobs": 10769,
+      "alternate_admissions": 445,
+      "wall_seconds": 40.795285879052244,
+      "process_cpu_seconds": 54.326859999999996,
+      "process_peak_rss_kib": 136636,
+      "service_cpu_ns": 54376637000,
+      "service_peak_bytes": 188379136,
+      "started_utc": "2026-09-10T22:14:59.339497+00:00",
+      "ended_utc": "2026-09-10T22:15:40.135817+00:00"
+    }
+  ],
+  "measured_physical_frames": 4967622,
+  "ledger": {
+    "admitted_search": 2985486535,
+    "known_auxiliary": 74266963
+  },
+  "started_utc": "2026-09-10T22:14:59.303879+00:00",
+  "ended_utc": "2026-09-10T22:15:41.751680+00:00",
+  "unrun_cells": [
+    "p0-capacity",
+    "p1-capacity",
+    "p1-ordinary",
+    "p1-progress",
+    "p2-progress",
+    "p2-capacity",
+    "p2-ordinary",
+    "p3-ordinary",
+    "p3-capacity",
+    "p3-progress"
+  ],
+  "controller_resource_unknown": "Controller CPU/final cgroup peak were lost on failure collection. They are not zero. Native physical receipts for both binary calls are complete.",
+  "scope": "Post-failure schema diagnosis and full cost closure only; frozen scorer remains unchanged, no emulator rerun, efficacy pass or fresh-search claim."
+}
