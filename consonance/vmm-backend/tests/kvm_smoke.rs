@@ -343,6 +343,8 @@ fn setup_mmio_guest(backend: &mut KvmBackend, mem: &mut GuestMem, operation: Mmi
     // so the access reaches the MMIO page rather than faulting on DS.limit.
     initial.sregs.ds.base = 0;
     initial.sregs.ds.limit = u32::MAX;
+    // A 4 GiB effective limit requires page granularity in the hidden descriptor.
+    initial.sregs.ds.g = 1;
     initial.sregs.cr4 |= 1 << 9; // OSFXSR
     backend.restore(&initial).expect("restore MMIO setup state");
     mmio_end
