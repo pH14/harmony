@@ -72,7 +72,12 @@ case "${mode}" in
             add_rule "no confirmed bug carries assertion ${ORACLE_ASSERTION} and the oracle's verdict evidence" \
                 "any(.bugs[]; .confirmed
                      and (.violations | index(${ORACLE_ASSERTION}) != null)
-                     and (.sometimes | index(${ORACLE_EVIDENCE}) != null))"
+                     and (.sometimes | index(${ORACLE_EVIDENCE}) != null)
+                     and (.replay != null)
+                     and (.replay.violations | index(${ORACLE_ASSERTION}) != null)
+                     and (.replay.sometimes | index(${ORACLE_EVIDENCE}) != null)
+                     and (.replay.actions_applied == (.actions | length))
+                     and (.replay.guest_horizons == .replay.actions_applied))"
             add_rule 'the report records no bug' '.bug_found == true'
         else
             add_rule "the control campaign never reached the oracle's verdict (point ${ORACLE_EVIDENCE})" \

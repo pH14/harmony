@@ -159,8 +159,9 @@ the corruption at execution 476 with 8 workers at 500 ms horizons — was found
 on a differently built guest kernel under the counter-exiting KVM, and a
 schedule found on one build does not replay on another, so that action list is
 not carried here as a witness. `witness.json` is the input the search job
-found on a hosted runner (run 34223876479: seed 1, 4 workers, execution 221 of
-224, 38 s of wall time), replayed from a fresh session before it was recorded.
+found on a hosted runner after the recovery-readiness change (run 34491957243:
+seed 1, 4 workers, execution 80 of 83, 27 s of wall time), replayed from a fresh
+session before it was recorded.
 
 Hosted runners use stock KVM. The `faultlab` kernel emulates userspace counter
 reads from Harmony's virtual clock there, so a host timestamp cannot enter

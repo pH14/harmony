@@ -84,10 +84,11 @@ expect fail 'a control run that stopped short of its actions' \
     "$(replay_report "$(run false '"Deadline"' '[]' '[22,24]' 4 4)")" replay control 1 7
 
 bug() {
-    jq -cn --argjson confirmed "$1" --argjson violations "$2" --argjson sometimes "$3" '
+    jq -cn --argjson confirmed "$1" --argjson violations "$2" --argjson sometimes "$3" \
+        --argjson replay "${4:-null}" '
         { execution: 12, actions: [], stop: "Crash", violations: $violations,
           sometimes: $sometimes, state_hash: "abc", confirmed: $confirmed,
-          replay: null }'
+          replay: $replay }'
 }
 
 search_report() {
@@ -97,14 +98,18 @@ search_report() {
            campaign_milestones: { sometimes: $sometimes, hooks_finished: 0, bug: $found } }'
 }
 
-confirmed=$(bug true '[2]' '[22,24]')
+fresh_replay=$(run true '{"Assertion":{"point":2}}' '[2]' '[22,24]' 0 0)
+confirmed=$(bug true '[2]' '[22,24]' "${fresh_replay}")
 unconfirmed=$(bug false '[2]' '[22,24]')
+unreplayed=$(bug true '[2]' '[22,24]')
 crash_bug=$(bug true '[]' '[22]')
 
 expect pass 'a confirmed corruption found by the campaign' \
     "$(search_report true "${confirmed}")" search vulnerable
 expect fail 'a corruption no replay confirmed' \
     "$(search_report true "${unconfirmed}")" search vulnerable
+expect fail 'a confirmed corruption without a fresh replay' \
+    "$(search_report true "${unreplayed}")" search vulnerable
 expect fail 'a crash standing in for the corruption' \
     "$(search_report true "${crash_bug}")" search vulnerable
 expect pass 'a control campaign that found nothing' \
@@ -117,6 +122,60 @@ expect fail 'a control campaign with an unconfirmed bug' \
     "$(search_report false "${unconfirmed}" 16777216)" search control
 expect fail 'a control campaign with another bug' \
     "$(search_report false "${crash_bug}" 16777216)" search control
+
+# Exercise the real search wrapper's report rendering too. A malformed jq
+# filter used to turn a successful, confirmed discovery into a failed CI step
+# after the report had already been written.
+search_root=${work}/search-root
+mkdir -p "${search_root}/tools" "${search_root}/guest" "${search_root}/oci-images"
+cat >"${search_root}/tools/harmony" <<'FAKE_HARMONY'
+#!/usr/bin/env bash
+set -euo pipefail
+out=
+while (($#)); do
+    if [[ "$1" == --out ]]; then
+        out=$2
+        shift 2
+    else
+        shift
+    fi
+done
+: "${out:?}" "${FAKE_SEARCH_REPORT:?}"
+mkdir -p "${out}"
+cp "${FAKE_SEARCH_REPORT}" "${out}/report.json"
+echo "bug_found   true  executions 12  horizons 24"
+FAKE_HARMONY
+: >"${search_root}/tools/fault-agent"
+: >"${search_root}/guest/bzImage-faultlab"
+: >"${search_root}/guest/initramfs.cpio.gz"
+: >"${search_root}/oci-images/fake-1.0.oci"
+search_fixture=${work}/search-fixture.json
+jq -cn --argjson bug "${confirmed}" '
+    {
+        mode: "search", seed: 1, workers: 1, executions: 12,
+        horizons_clocked: 24, wall_seconds: 1, bug_found: true,
+        first_bug_execution: 12, bugs: [$bug],
+        campaign_milestones: { sometimes: 16777216, hooks_finished: 1, bug: true }
+    }' >"${search_fixture}"
+search_summary=${work}/search-summary.md
+if ! (
+    cd "${search_root}"
+    export CASE_ID=fake ARM=vulnerable SOFTWARE_NAME=fake WORKLOAD_VERSION=1.0
+    export IMAGE_PREFIX=fake HORIZON_MS=500 RAM_MIB=128 SEED=1 WORKERS=1
+    export ACTIONS=1 EXECUTIONS=12 WALL_MINUTES=1 KNOBS=
+    export FAKE_SEARCH_REPORT="${search_fixture}" GITHUB_STEP_SUMMARY="${search_summary}"
+    "${here}/historical-search.sh"
+); then
+    printf 'FAIL search wrapper rejected a confirmed discovery\n'
+    failures=$((failures + 1))
+elif ! grep -qF '| oracle verdict reached | true |' "${search_summary}" \
+    || ! grep -qF '| confirmed bugs carrying the oracle assertion | 1 |' "${search_summary}" \
+    || ! grep -qF '| verdict | pass |' "${search_summary}"; then
+    printf 'FAIL search wrapper omitted the passing verdict\n'
+    failures=$((failures + 1))
+else
+    printf 'ok   search wrapper renders a confirmed discovery\n'
+fi
 
 if ((failures > 0)); then
     printf '%s check(s) failed\n' "${failures}"

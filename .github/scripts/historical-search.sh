@@ -89,7 +89,8 @@ outcome=$("${oracle}" search "${report}" "${ARM}") || verdict=1
         ["confirmed bugs carrying the oracle assertion",
          ([.bugs[] | select(.confirmed and (.violations | index($assertion | tonumber)))] | length | tostring)],
         ["oracle verdict reached",
-         (((((.campaign_milestones.sometimes // 0) / pow(2; ($evidence | tonumber))) | floor) % 2) == 1) | tostring)],
+         ((.campaign_milestones.sometimes // 0) / pow(2; ($evidence | tonumber))
+          | floor | . % 2 == 1 | tostring)],
         ["executions to first hit", (.first_bug_execution | tostring)],
         ["verdict", $outcome]
         | "| \(.[0]) | \(.[1]) |"
