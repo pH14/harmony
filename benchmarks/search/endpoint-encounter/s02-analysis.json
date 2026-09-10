@@ -1,0 +1,45 @@
+{
+  "format": "metroid-conditional-control-analysis-v1",
+  "decision": "complete",
+  "registration_sha256": "2e618fefad6ffbd3da619060434a70831c77c717e2ce403dc847eb2e42e6ccd5",
+  "summary_sha256": "17626af9f808f9546c327c02133f028c138e80e8cfff206f18be22e21a78919a",
+  "known_auxiliary_frames": 539906,
+  "arms": {
+    "ordinary": {
+      "trials": 32,
+      "trials_with_observed_hp_drop": 5,
+      "trials_with_surviving_damage_endpoint": 5,
+      "surviving_defeat_endpoints": 0,
+      "observed_defeat_flags": 0,
+      "stops": {
+        "death": 32
+      },
+      "physical_frames": 4813
+    },
+    "passive": {
+      "trials": 32,
+      "trials_with_observed_hp_drop": 0,
+      "trials_with_surviving_damage_endpoint": 0,
+      "surviving_defeat_endpoints": 0,
+      "observed_defeat_flags": 0,
+      "stops": {
+        "action_limit": 32
+      },
+      "physical_frames": 177583
+    }
+  },
+  "paired_surviving_damage": {
+    "ordinary_only": 5,
+    "neither": 27
+  },
+  "witnesses": [
+    {
+      "continuation_frames": 147,
+      "file": "ordinary-surviving-damage.json",
+      "physical_verification_frames": 238438,
+      "sha256": "7543e35226d3a97d8cd3214e164e705153c1111fdfd4ea50ace468b2ab65b714",
+      "verified_held_replays": 2
+    }
+  ],
+  "interpretation": "Conditional observations at one unchanged searched root. Only saved first-per-arm/kind witnesses receive two held replays. No fresh-search improvement, fight-impossibility or global allocation cause is established."
+}

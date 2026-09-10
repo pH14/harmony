@@ -383,3 +383,43 @@ A maximum 2M auxiliary / ten-minute follow-on envelope is a planning ceiling,
 not an allocation until its registration is committed. Keep the original
 matched-control, repeated boss/Wily and untouched-validation goal active and
 unachieved. Publish all evidence in the existing PR #287.
+
+## S02 closure: choose a controlled search comparison, not another selected root
+
+S02 supplies a second extendable partial result: five ordinary trials have
+further surviving damage observations; the first saved input reaches boss HP
+135 from 139 with unchanged health 79 tenths and passes two full held replays.
+All ordinary trials eventually die. All passive trials remain alive at their
+128-command limits without further HP loss. S01/S02 are dependent diagnostics,
+not a replicated improvement or a boss victory. The original fresh repeated
+boss/Wily goal remains unmet. This two-stage diagnosis is closed: no automatic
+third selected root, new seed bank or tuned action law. Both services are terminal.
+
+The completed S02 block uses 539,906 auxiliary frames and 92.05 seconds, below
+its separate 2M / ten-minute limits. Cumulative resumed auxiliary work is now
+50,017,208; admitted search remains 1,083,261,532. These separate user-authorized
+blocks and their registrations do not reopen the expired original tranche.
+See ../endpoint-encounter/ledger-after-s02.json for costs and remaining unknowns.
+
+The new evidence supports a sharper next comparison: can the **unchanged
+archive engine**, returning to its own retained endpoints, make useful combat
+progress from the original E01 encounter? Do not use the later selected HP135
+state or a manually selected sequence of damage states as the starting challenge.
+A controlled comparison against repeated fixed-root ordinary suffixes must hold
+physical-work and memory ceilings, input law and terminal semantics fixed.
+Report actual memory and frame costs when terminal stopping differs. Register one useful endpoint and the
+minimum bounded pilot before deciding any larger panel. Supplied-root success
+is diagnostic capability, never fresh discovery or evidence of a generic gain.
+
+The library already has `CampaignOrigin::SnapshotRoot` and Metroid's root-evidence
+merge, but the `nes-eval` CLI rejects Metroid prefix origins. Prefer that existing
+engine machinery; do not build a parallel search algorithm or edit the frozen
+S01/S02 native binary. Any small challenge adapter first needs default-byte
+compatibility, exact source/build/root identities, correct root-local versus
+complete-prefix replay and actual setup accounting. No benchmark, seed, frame
+or wall allocation exists for it yet. Source work must stay limited to what
+this comparison needs. Do not add new boss-HP rewards or retention fields merely
+because they describe the diagnostic. If the unchanged engine already solves
+the supplied encounter cheaply, move the hypothesis toward global reach and
+allocation; otherwise use its measured failure to choose one generic change.
+Keep all code, evidence and reviews in PR #287.

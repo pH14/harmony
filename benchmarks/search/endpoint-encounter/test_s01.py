@@ -46,3 +46,11 @@ class ConditionalEvidence(unittest.TestCase):
         path.write_text(json.dumps(value))
         with self.assertRaises(AssertionError):
             score_s01.score(ROOT, self.output)
+
+    def test_second_stage_uses_its_longer_prefix_and_keeps_passive_survival(self):
+        result = score_s01.score(ROOT, ROOT / 's02-output', 's02')
+        self.assertEqual(result['known_auxiliary_frames'], 539906)
+        self.assertEqual(result['arms']['ordinary']['trials_with_surviving_damage_endpoint'], 5)
+        self.assertEqual(result['arms']['ordinary']['stops'], {'death': 32})
+        self.assertEqual(result['arms']['passive']['stops'], {'action_limit': 32})
+        self.assertEqual(result['arms']['passive']['trials_with_observed_hp_drop'], 0)

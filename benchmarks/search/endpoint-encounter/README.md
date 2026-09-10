@@ -151,3 +151,50 @@ different map/position cells; S01 therefore does not demonstrate an actual
 same-cell replacement. The useful next discriminator is whether the saved
 partial progress can itself be extended, under a separately registered bounded
 diagnostic. Do not launch another discovery campaign from this observation.
+
+## S02 result: partial damage can be extended; survival is separate
+
+The [conditional-transition argument](return-extend-argument.md) states the
+assumptions under which returning to partial results could save repeated work.
+It does not treat observed 1/32 damage as a memoryless probability at every HP
+level. [S02](s02-registration.json), frozen at `9e146804`, tests only the next
+step from the first S01 damage endpoint, with unchanged resources, executable
+and suffix list. This selected state and reused list are dependent diagnostics.
+
+S02 completes all 64 exact root restores in 92.05 seconds, with 12,548 KiB peak
+child RSS. Five ordinary trials produce further surviving damage observations.
+The first saved endpoint follows five commands / 147 continuation frames and
+has boss HP **135**, down from 139, with health still 79 tenths. Two complete
+held-command replays agree on its live mechanical state, raw context and emulator
+bytes. This witness includes the original encounter prefix and both searched
+damage extensions. Only that first stored example receives two held replays;
+the other four successes are observed trial endpoints.
+
+All ordinary trials eventually die (minimum/median/maximum 8 / 34 / 1,512
+continuation frames), with no defeat. All passive trials reach the 128-command
+limit alive, at 4,187–6,762 frames, with health 79 and boss HP 139 unchanged.
+Their different endpoints are horizons on one released-button trajectory.
+The passive result rules out inevitable immediate death at this exact state,
+without establishing that its resources are adequate for a fight. Damage and
+survival are distinct outcomes; neither alone supplies a useful control policy.
+Do not compare S01's 1/32 and S02's 5/32 as an independently confirmed gain.
+
+The [analysis](s02-analysis.json) and losslessly compressed `s02-output/` preserve
+all trials, identities, costs and the saved witness. The shared scorer now
+accepts `--panel s02` and uses the registered 119,072-frame prefix/setup cost;
+S01 still recomputes identically. Eleven offline evidence tests pass. The
+service is terminal and successful. The block charges **539,906 auxiliary
+frames** (119,072 prefix/setup + 182,396 continuation + 238,438 verification),
+below its separate 2M ceiling. [The closed ledger](ledger-after-s02.json) totals
+1,083,261,532 resumed admitted search and 50,017,208 known auxiliary frames;
+prior physical-cost gaps and historical tranche ceilings remain separate.
+
+This closes the registered two-stage diagnosis. It earns no third manually
+selected root, boss-HP reward or policy promotion. A useful next discriminator
+is the unchanged archive search's behavior from the **original** E01 encounter.
+The shared engine already supports `CampaignOrigin::SnapshotRoot`, but the
+current `nes-eval` command admits prefix origins only for MM2; it cannot be
+assumed to run a Metroid snapshot challenge unchanged. A bounded adapter must
+qualify root identity and complete-prefix replay, label supplied-state outcomes
+explicitly, and account for setup before any such allocation. No new native
+work follows merely from this implementation audit.
