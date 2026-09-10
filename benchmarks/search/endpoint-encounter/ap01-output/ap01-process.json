@@ -1,0 +1,9 @@
+{
+  "cell": "ap01",
+  "returncode": 0,
+  "stop_reason": null,
+  "wall_seconds": 38.01592176698614,
+  "maxrss_kib": 52760,
+  "user_seconds": 45.675433,
+  "system_seconds": 0.289339
+}

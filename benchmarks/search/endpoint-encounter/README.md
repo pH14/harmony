@@ -221,8 +221,7 @@ fixture, not a capability result. Neither observes a defeat.
 [The verifier](verify_archive_challenge.py) confirms identical streams, origin
 and final checkpoints, reports, root snapshots and witness inputs between
 buffer configurations. The root-local/full-prefix distinction is explicit; an
-inherited root milestone or post-budget event cannot pass. Four planted
-corruption checks cover changed emulator bytes, a duplicated prefix and a
+inherited root milestone or post-budget event cannot pass. Four evidence tests include changed emulator bytes, a duplicated prefix and a
 missing campaign replay. All 15 endpoint evidence tests pass, as do the new
 Rust command's three focused tests and strict all-feature Clippy. Repository
 fast gates pass 1,159 tests with 23 skipped in 33.135 seconds.
@@ -235,3 +234,41 @@ All services are terminal. [The closed ledger](ledger-after-aq01.json) records
 1,083,261,532 resumed admitted search and 51,217,468 known auxiliary frames.
 Engine setup, unadmitted work and reconstruction remain additional unknown
 costs; this qualification makes no total-physical-work or throughput claim.
+
+## AP01: no defeat at the fixed supplied-root horizon
+
+The [single preregistered capability pilot](ap01-decision.md), frozen at
+`a8fbbf6c`, uses the unchanged ordinary archive from the original E01 state.
+It completes **2,548 jobs and 250,267 admitted frames**, including a 267-frame
+bounded drain, in **38.02 seconds**. The 250k horizon is complete; there is no
+Ridley-defeat observation. Full campaign replay and both root-local / full-prefix
+witness pairs agree. The one-action champion is still near the origin and has
+boss HP140; this selected witness cannot describe all generated or retained
+branches. Reported peak child RSS is 52,760 KiB.
+
+The final sidecar reports 1,882 classified encounter endpoints among 4,327
+eligible live endpoints, 1,598 deaths and 1,032 cumulative admissions. It reports
+557 active entries, **588 resident snapshots**, no snapshot eviction or entry
+drop, and complete cached-active resource coverage with maximum health79. The
+13-MiB checkpoint exports every cached snapshot, including inactive history:
+`Archive::take_entry_reports_and_snapshots` does not filter for active selection.
+Do not conflate those 588 resident snapshots with the 557 active entries, or
+infer absence of damage from the champion's HP140.
+
+[The scorer](score_archive_pilot.py) independently classifies the fixed horizon
+from native process completion, checks report/campaign counters, origin and
+witness composition, and preserves budget drain and replay costs. Its planted
+checks reject origin-zero/post-budget success and execution/wall censoring as
+completed negatives. All 18 endpoint evidence tests pass. The losslessly
+compressed `ap01-output/` includes the full stream and final checkpoint for
+inspection without repeating the campaign.
+
+[The analysis](ap01-analysis.json) charges **977,952 known auxiliary frames**:
+250,267 admitted challenge frames, 250,267 replay-admitted frames and 477,418
+direct helper frames including 5,574 setup frames. This is below the separate
+3M ceiling. The service is terminal and successful. [The ledger](ledger-after-ap01.json)
+closes at 1,083,261,532 resumed admitted-search and 52,195,420 known auxiliary
+frames. Engine setup, unadmitted work and reconstruction gaps remain explicit.
+No performance-search allocation, matched-control gain or fresh victory is
+claimed. This result earns inspection of the existing retained evidence before
+a policy choice; no retry, larger sweep or another selected root follows.

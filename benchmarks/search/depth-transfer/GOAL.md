@@ -423,3 +423,50 @@ because they describe the diagnostic. If the unchanged engine already solves
 the supplied encounter cheaply, move the hypothesis toward global reach and
 allocation; otherwise use its measured failure to choose one generic change.
 Keep all code, evidence and reviews in PR #287.
+
+## AQ01/AP01 closure: inspect the checkpoint before choosing a generic change
+
+The new standalone challenge calls the existing `CampaignOrigin::SnapshotRoot`;
+it changes no engine, archive, target, selector or legacy evaluator. AQ01
+qualifies the exact original E01 root and two 16-job / 1,954-frame campaigns.
+Full campaign replay, two root-local/two complete-prefix witness replays and
+one/two-slot artifact identity all pass. This costs 1,200,260 known auxiliary
+frames within its separate 4M block.
+
+The separately registered AP01 pilot uses the original HP140 encounter and
+unchanged ordinary policy, with qualification seed 2026090902 reused explicitly.
+It reaches the fixed 250k horizon in 38.02 seconds: 2,548 jobs, 250,267 admitted
+frames including 267 drain, no Ridley defeat, and all replay checks pass. Its
+known auxiliary cost is 977,952 within a separate 3M ceiling. All services are
+terminal. Cumulative resumed totals are 1,083,261,532 admitted-search and
+52,195,420 known auxiliary frames. Source/registrations, compressed raw evidence
+and closed ledgers are in ../endpoint-encounter/. The older tranche stays frozen.
+The original generic-gain, repeated boss/Wily and untouched-validation objective
+is still active and unachieved.
+
+Do not repeat or enlarge this supplied-root run, select a third damage root,
+add boss-HP rewards or promote a policy from the conditional diagnostics.
+First inspect the **existing** AP01 final checkpoint and stream. The final
+sidecar has 557 active entries, 588 resident snapshots, zero snapshot evictions
+or entry drops, and no missing cached-active snapshots. There were 1,882 live
+classified endpoint observations. The champion's HP140 says nothing about all
+other branches. Source inspection confirms that checkpoint export includes all
+cached snapshots, including inactive history; an inspector must distinguish
+resident/cached presence from active selection.
+
+Start with a no-emulation inventory through the existing typed checkpoint
+decoder and recorded stream. Read the exact default retention and active-set
+semantics before inferring current winners from keys/costs/IDs. Counts agreeing
+alone are not proof of an active-ID mapping. If raw boss HP/context is needed,
+reuse the qualified same-boundary getter after restoring each supplied snapshot;
+verify snapshot equality and no frame advance, and first check the known E01
+origin as a positive control. Freeze checkpoint/build/assets and a tiny setup-only
+frame/process/output envelope before native initialization. No new campaign or
+full long-run reconstruction is needed: the actual checkpoint is already saved.
+Preserve unknown active membership where it cannot be proved.
+
+Use that evidence to decide one generic hypothesis about retention, allocation
+or continuation. Current HP differences are state observations, not exact
+lifetime damage or proof that a discarded state was better. Reopen a policy
+only with a concrete causal distinction and cheap falsifier, then the original
+matched-work development/independent/transfer gates. Keep all work in PR #287.
