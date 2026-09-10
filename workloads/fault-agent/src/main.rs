@@ -356,11 +356,11 @@ mod real {
                     tick,
                 )?;
             }
-            watch_parks(nodes, &mut supervisor, tick);
+            watch_parks(nodes, supervisor, tick);
             drain_hooks(
                 &mut runtime.hooks,
                 &runtime.recovery,
-                &mut supervisor,
+                supervisor,
                 sdk,
                 tick,
             )?;
