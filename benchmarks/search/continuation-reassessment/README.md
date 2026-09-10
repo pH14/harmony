@@ -241,46 +241,64 @@ grants no score beyond200M. The fixed experiment deadline is2026-09-10T14:32:28Z
 the following hour is reserved for synthesis. No earlier tranche is extended.
 This registration precedes CD01 native execution.
 
-The first wave is complete. The unchanged [frozen scorer](score_cd01.py)
-records two strict wins and permits the remaining registered pairs; it does
-not declare a four-pair pass from these interim results.
+CD01 is complete. The unchanged [frozen scorer](score_cd01.py) records four
+strict wins and a [development pass](cd01-analysis.json), earning independent
+confirmation of the unchanged candidate and endpoint.
 
 | Fresh seed | Control first Bombs | Continuation first Bombs | Result |
 | --- | ---: | ---: | --- |
 | 1040692292 | Not attained by 200M | 106,972,762 | Strict win |
 | 2883914186 | 140,516,627 | 98,489,894 | Strict win |
+| 4193773728 | Not attained by 200M | 69,721,067 | Strict win |
+| 2971383614 | Not attained by 200M | 91,627,528 | Strict win |
 
-The first-wave restricted-cost ratio is 0.6034, with event-stopped CPU and wall
-ratios 0.5946 and 0.6267. These are descriptive interim measurements, not a
-population effect or an independent confirmation. All three Bombs witnesses
-replay alive. All four runs match the registered identities and CPU placement,
-stay within the resource bounds, and finish their registered endpoint or frame
-horizon. Complete native archives, member hashes and service journals are in
+Continuation attains Bombs on 4/4 seeds versus 1/4 for control. Mean restricted
+cost is 91,702,812.75 versus 185,129,156.75 frames: ratio 0.495345, or 50.5%
+less admitted search work. Event-stopped CPU and wall ratios are 0.491853 and
+0.519710. The censored controls count at the fixed 200M horizon; their eventual
+arrival times are unknown. These four development pairs are an allocation
+result, not a population effect, independent confirmation or a boss/Wily result.
+All five Bombs witnesses replay alive. All eight runs match their registered
+identities and CPU placement, stay within the resource bounds, and finish their
+registered endpoint or frame horizon. Complete native archives, member hashes
+and service journals are in
 [cd01-output](cd01-output); [the offline verifier](verify_cd01_native.py) checks
 their integrity and actual resource measurements without running an emulator.
 
-The [first-wave ledger](cd01-first-wave-ledger.json) charges 545,983,390 admitted
-frames, including 4,107 stop-drain frames, and 1,307,176 known auxiliary frames.
-Through that closed wave, resumed totals are 1,819,409,525 admitted search and
-65,068,019 known auxiliary frames. These totals exclude the still-running
-second wave and retain the earlier unknown costs.
+The [closed ledger](ledger-after-cd01.json) charges 1,107,336,590 admitted frames,
+including 8,712 stop-drain frames, and 2,534,350 known auxiliary frames. Resumed
+totals through CD01 are 2,380,762,725 admitted search and 66,295,193 known auxiliary
+frames. Setup, unadmitted work and any out-of-job reconstruction remain unknown.
+The earlier [first-wave ledger](cd01-first-wave-ledger.json) is an included
+historical subtotal; it must not be charged again. All four services terminated
+successfully, with peaks below 3.2GB against their separate 12GiB caps.
 
 The [recorded gate](cd01-second-wave-gate.json) and zero-emulation
-[preflight](cd01-second-wave-preflight.json) permit only the frozen remaining
-pairs. Both started on ms02 at 11:23:33 UTC on September 10, with opposite arm
+[preflight](cd01-second-wave-preflight.json) permitted only the frozen remaining
+pairs after two strict first-wave wins. Both started on ms02 at 11:23:33 UTC on
+September 10, with opposite arm
 orders from the first wave on their respective CPU groups. The
-[dispatch record](cd01-second-wave-dispatch.jsonl) binds live service identities
+[dispatch record](cd01-second-wave-dispatch.jsonl) binds their service identities
 and actual limits. Their full 5,900-second service bounds fit before the same
-deadline. Live status must be checked using those handles; this document is a
-historical dispatch record. No independent confirmation, MM2 transfer or
-untouched validation is yet earned.
+deadline, and both finished by 12:00:14 UTC. No registration, candidate, horizon,
+seed or arm order changed. The source ordering limitations remain separate.
 
-Recompute the completed wave without emulation:
+The next allocation is independent confirmation on fresh seeds at the unchanged
+200M first-Bombs endpoint, source, selector and continuation policy. The current
+effect size cannot select its seeds, shorten its horizon or substitute earlier
+milestones. Keep the same four-pair, three-win/15% and resource rules, with
+bounded waves and futility. A pass then earns a bounded same-mechanism MM2
+transfer decision. Untouched boss/Wily validation remains unearned, and the
+original goal remains active and unachieved.
+
+Recompute the completed panel without emulation:
 
 ```sh
 python3 benchmarks/search/continuation-reassessment/verify_cd01_native.py --protocol benchmarks/search/continuation-reassessment --evidence benchmarks/search/continuation-reassessment/cd01-output --pair 0 --out /tmp/cd01-pair-0-verification.json
 python3 benchmarks/search/continuation-reassessment/verify_cd01_native.py --protocol benchmarks/search/continuation-reassessment --evidence benchmarks/search/continuation-reassessment/cd01-output --pair 1 --out /tmp/cd01-pair-1-verification.json
-python3 benchmarks/search/continuation-reassessment/score_cd01.py --registration benchmarks/search/continuation-reassessment/cd01-registration.json --evidence benchmarks/search/continuation-reassessment/cd01-output --out /tmp/cd01-first-wave-analysis.json
+python3 benchmarks/search/continuation-reassessment/verify_cd01_native.py --protocol benchmarks/search/continuation-reassessment --evidence benchmarks/search/continuation-reassessment/cd01-output --pair 2 --out /tmp/cd01-pair-2-verification.json
+python3 benchmarks/search/continuation-reassessment/verify_cd01_native.py --protocol benchmarks/search/continuation-reassessment --evidence benchmarks/search/continuation-reassessment/cd01-output --pair 3 --out /tmp/cd01-pair-3-verification.json
+python3 benchmarks/search/continuation-reassessment/score_cd01.py --registration benchmarks/search/continuation-reassessment/cd01-registration.json --evidence benchmarks/search/continuation-reassessment/cd01-output --out /tmp/cd01-analysis.json
 ```
 
 ## Ordering findings stay separate from this candidate

@@ -1,0 +1,312 @@
+{
+  "format": "continuation-cd01-analysis-v1",
+  "recorded_utc": "2026-09-10T12:02:53.435242+00:00",
+  "registration_sha256": "68999f9437b2d43acab13d9411a80f8bd6b9361b85a0076ec92cc4551a30274d",
+  "scorer_sha256": "a68eac1b6677a37a2326bcffe38b7e198238f862308ae14006d707b6a57d0d63",
+  "decision": "earns_independent_confirmation",
+  "screen": {
+    "decision": "pass",
+    "completed_pairs": 4,
+    "strict_wins": 4,
+    "remaining_pairs": 0,
+    "candidate_to_control_cost_ratio_interval": [
+      0.4953450572555476,
+      0.4953450572555476
+    ],
+    "candidate_to_control_resource_ratios": {
+      "cpu_seconds": 0.49185275748753476,
+      "elapsed_seconds": 0.5197101056459916
+    },
+    "pairs": [
+      {
+        "seed": 1040692292,
+        "control": [
+          200000000,
+          200000000
+        ],
+        "candidate": [
+          106972762,
+          106972762
+        ],
+        "strict_win": true,
+        "difference_interval": [
+          -93027238,
+          -93027238
+        ]
+      },
+      {
+        "seed": 2883914186,
+        "control": [
+          140516627,
+          140516627
+        ],
+        "candidate": [
+          98489894,
+          98489894
+        ],
+        "strict_win": true,
+        "difference_interval": [
+          -42026733,
+          -42026733
+        ]
+      },
+      {
+        "seed": 4193773728,
+        "control": [
+          200000000,
+          200000000
+        ],
+        "candidate": [
+          69721067,
+          69721067
+        ],
+        "strict_win": true,
+        "difference_interval": [
+          -130278933,
+          -130278933
+        ]
+      },
+      {
+        "seed": 2971383614,
+        "control": [
+          200000000,
+          200000000
+        ],
+        "candidate": [
+          91627528,
+          91627528
+        ],
+        "strict_win": true,
+        "difference_interval": [
+          -108372472,
+          -108372472
+        ]
+      }
+    ],
+    "interpretation": "Exploratory compute-allocation gate, not statistical significance or independent confirmation."
+  },
+  "panels": [
+    {
+      "id": "cd01-pair-0",
+      "sha256": "c7cd706cfc4757933093c6c85466390f89568604267762480f5c20e5d0fb9b13",
+      "execution_complete": true,
+      "allocation_stop": null
+    },
+    {
+      "id": "cd01-pair-1",
+      "sha256": "2da51fc89cf98e1f8f06f9e6b1acc8ccf6f9eda43aa95ae868b032ef57a6999f",
+      "execution_complete": true,
+      "allocation_stop": null
+    },
+    {
+      "id": "cd01-pair-2",
+      "sha256": "f702dbed08c42ec402c65864558d69adf740244655300118e1510c3a3bbd4f15",
+      "execution_complete": true,
+      "allocation_stop": null
+    },
+    {
+      "id": "cd01-pair-3",
+      "sha256": "abc58850598553a2b7fd073aa9a70441fbdbf5321d251e1e9215e50b81e32794",
+      "execution_complete": true,
+      "allocation_stop": null
+    }
+  ],
+  "cells": [
+    {
+      "id": "cd01-pair-0-control",
+      "admitted_search_frames": 200001408,
+      "known_auxiliary_frames": 346242,
+      "endpoint": {
+        "endpoint": "bombs",
+        "milestone_stop": {
+          "name": "bombs",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 200000000,
+        "arrival_exact": null,
+        "observed_through_frames": 200001408,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          200000000,
+          200000000
+        ]
+      },
+      "cpu_seconds": 4709.31663,
+      "elapsed_seconds": 1493.7668967890786
+    },
+    {
+      "id": "cd01-pair-0-candidate",
+      "admitted_search_frames": 106973810,
+      "known_auxiliary_frames": 332936,
+      "endpoint": {
+        "endpoint": "bombs",
+        "milestone_stop": {
+          "name": "bombs",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 200000000,
+        "arrival_exact": 106972762,
+        "observed_through_frames": 106973810,
+        "observed_full_budget": false,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          106972762,
+          106972762
+        ]
+      },
+      "cpu_seconds": 2463.465344,
+      "elapsed_seconds": 818.2653721210081
+    },
+    {
+      "id": "cd01-pair-1-candidate",
+      "admitted_search_frames": 98490754,
+      "known_auxiliary_frames": 344530,
+      "endpoint": {
+        "endpoint": "bombs",
+        "milestone_stop": {
+          "name": "bombs",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 200000000,
+        "arrival_exact": 98489894,
+        "observed_through_frames": 98490754,
+        "observed_full_budget": false,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          98489894,
+          98489894
+        ]
+      },
+      "cpu_seconds": 2294.435147,
+      "elapsed_seconds": 773.6446385680465
+    },
+    {
+      "id": "cd01-pair-1-control",
+      "admitted_search_frames": 140517418,
+      "known_auxiliary_frames": 283468,
+      "endpoint": {
+        "endpoint": "bombs",
+        "milestone_stop": {
+          "name": "bombs",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 200000000,
+        "arrival_exact": 140516627,
+        "observed_through_frames": 140517418,
+        "observed_full_budget": false,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          140516627,
+          140516627
+        ]
+      },
+      "cpu_seconds": 3292.760552,
+      "elapsed_seconds": 1046.4615500550717
+    },
+    {
+      "id": "cd01-pair-2-candidate",
+      "admitted_search_frames": 69722166,
+      "known_auxiliary_frames": 350306,
+      "endpoint": {
+        "endpoint": "bombs",
+        "milestone_stop": {
+          "name": "bombs",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 200000000,
+        "arrival_exact": 69721067,
+        "observed_through_frames": 69722166,
+        "observed_full_budget": false,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          69721067,
+          69721067
+        ]
+      },
+      "cpu_seconds": 1630.8688789999999,
+      "elapsed_seconds": 554.3834956829669
+    },
+    {
+      "id": "cd01-pair-2-control",
+      "admitted_search_frames": 200001089,
+      "known_auxiliary_frames": 205046,
+      "endpoint": {
+        "endpoint": "bombs",
+        "milestone_stop": {
+          "name": "bombs",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 200000000,
+        "arrival_exact": null,
+        "observed_through_frames": 200001089,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          200000000,
+          200000000
+        ]
+      },
+      "cpu_seconds": 4660.658037,
+      "elapsed_seconds": 1476.0437099690316
+    },
+    {
+      "id": "cd01-pair-3-control",
+      "admitted_search_frames": 200000822,
+      "known_auxiliary_frames": 325150,
+      "endpoint": {
+        "endpoint": "bombs",
+        "milestone_stop": {
+          "name": "bombs",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 200000000,
+        "arrival_exact": null,
+        "observed_through_frames": 200000822,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          200000000,
+          200000000
+        ]
+      },
+      "cpu_seconds": 4681.717801,
+      "elapsed_seconds": 1486.1393075831002
+    },
+    {
+      "id": "cd01-pair-3-candidate",
+      "admitted_search_frames": 91629123,
+      "known_auxiliary_frames": 346672,
+      "endpoint": {
+        "endpoint": "bombs",
+        "milestone_stop": {
+          "name": "bombs",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 200000000,
+        "arrival_exact": 91627528,
+        "observed_through_frames": 91629123,
+        "observed_full_budget": false,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          91627528,
+          91627528
+        ]
+      },
+      "cpu_seconds": 2142.1476749999997,
+      "elapsed_seconds": 713.365337097086
+    }
+  ],
+  "actual_admitted_search_frames": 1107336590,
+  "known_auxiliary_frames": 2534350,
+  "incomplete_work": [],
+  "limits": "Prospective unchanged-continuation first-Bombs development, scored without historical or earlier panels. An allocation gate, not population significance or a boss/Wily result. Setup and unadmitted work remain additional unknowns."
+}

@@ -847,3 +847,36 @@ it, preserve its native outputs and recompute the complete four-pair gate.
 No new seed, policy, endpoint, horizon or allocation follows from the interim
 two-win result. Independent confirmation, MM2 and untouched boss/Wily validation
 remain unearned; the full goal remains active and unachieved.
+
+## CD01 completed: independent confirmation earned
+
+All eight cells completed by 2026-09-10T12:00:14Z. The frozen scorer records
+four strict wins. Continuation reaches Bombs on 4/4 fresh seeds versus 1/4 for
+control, with mean restricted costs of 91,702,812.75 and 185,129,156.75 frames.
+The cost ratio is 0.495345; event-stopped CPU and wall ratios are 0.491853 and
+0.519710. All five Bombs witnesses replay alive. The independent native archive
+verifier checks complete evidence, source/asset identities, CPU placement,
+progress and witness hashes, service termination, and the registered resource
+bounds for every pair. No outcome, seed, policy, horizon or gate changed.
+
+CD01 spends 1,107,336,590 admitted frames, including 8,712 stop-drain frames,
+and 2,534,350 known auxiliary frames. The closed resumed ledger is now
+2,380,762,725 admitted search and 66,295,193 known auxiliary frames. The earlier
+first-wave ledger is an included subtotal, not an additional charge. Setup,
+unadmitted work and any out-of-job reconstruction remain unknown. All four
+services are terminal; no CD01 emulator process remains live.
+
+The result earns independent confirmation of unchanged alphabet_continuation_v1
+at the same first-Bombs endpoint and 200M horizon. Keep the same source, ordinary
+cutoff3 selector, suffix, workers, memory, CPU placement, paired arm-order balance,
+three-win/15% rule and 1.25 resource-ratio limits. Freeze four fresh seeds before
+execution; do not mix development and confirmation outcomes to rescue a failed
+gate. Initially dispatch two bounded pairs, then only the registered remaining
+wave if the fixed gate remains attainable and its full bounds fit. Failure
+closes this nominee without a longer horizon, replacement seed, endpoint switch
+or bank/order pivot. A pass earns a bounded same-mechanism MM2 transfer decision.
+
+Finish CD01 synthesis and publication before opening that separately bounded
+allocation. CD01's unused frame/time allowance is not an entitlement to more
+development runs. Independent confirmation, MM2 and untouched boss/Wily
+validation remain outstanding; the original goal is active and unachieved.

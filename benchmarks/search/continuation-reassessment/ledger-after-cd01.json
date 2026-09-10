@@ -1,0 +1,47 @@
+{
+  "format": "continuation-cd01-closed-ledger-v1",
+  "recorded_utc": "2026-09-10T12:04:43.754932+00:00",
+  "decision": "earns_independent_confirmation",
+  "prior_ledger_sha256": "8587b689b769bf2b391c5a3f6ddf95c65cd57a62a2dffc3e16c3db48a40f4673",
+  "registration_sha256": "68999f9437b2d43acab13d9411a80f8bd6b9361b85a0076ec92cc4551a30274d",
+  "analysis_sha256": "4409ab88c6a807abba4f9cd5b85e5991360dbc5a0e1662621e40ec73f0f043fe",
+  "admitted_search_frames": 1107336590,
+  "bounded_stop_drain_frames": 8712,
+  "known_auxiliary_frames": 2534350,
+  "services": {
+    "0": {
+      "service_invocation": "2801f85790e34952bb7b7f3c611923b9",
+      "service_elapsed_seconds": 2312.217974,
+      "service_cpu_nanoseconds": 7183756842000,
+      "service_memory_peak_bytes": 3172323328
+    },
+    "1": {
+      "service_invocation": "f3eaf5baedcf432886ff99ef28c20aa3",
+      "service_elapsed_seconds": 1820.314102,
+      "service_cpu_nanoseconds": 5595838020000,
+      "service_memory_peak_bytes": 2365063168
+    },
+    "2": {
+      "service_invocation": "8a3f73a5f1b14eb593359aeb1c7dfec3",
+      "service_elapsed_seconds": 2030.688208,
+      "service_cpu_nanoseconds": 6300679609000,
+      "service_memory_peak_bytes": 2524135424
+    },
+    "3": {
+      "service_invocation": "162c1d284b5d4cedb10a1535d2da7e71",
+      "service_elapsed_seconds": 2199.66253,
+      "service_cpu_nanoseconds": 6833901137000,
+      "service_memory_peak_bytes": 3000197120
+    }
+  },
+  "cumulative_since_user_resumption_admitted_search_frames": 2380762725,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 66295193,
+  "accounting_note": "Full CD01 counted once from the pre-CD CQ01 ledger. The published first-wave ledger is an included historical subtotal, not an additional charge. All four services terminated successfully.",
+  "limits": [
+    "Development allocation pass, not independent confirmation or a boss/Wily result.",
+    "Admitted work includes in-job origin reconstruction and actual bounded drain. Setup, unadmitted work and any out-of-job reconstruction remain explicit unknowns.",
+    "Known auxiliary work uses the existing twice-replayed held-witness convention. Service and cell CPU totals are distinct recorded scopes.",
+    "Earlier expired tranches and failed gates remain separate and closed."
+  ],
+  "next_decision": "Synthesize and publish the complete result, then separately freeze independent confirmation with fresh seeds and the unchanged200M first-Bombs endpoint, policy and source on ms02 only. MM2 and untouched validation remain unearned."
+}
