@@ -561,49 +561,49 @@ fn branch_moment(workspace: &Workspace, name: &str, at: u64) -> Result<String, B
 }
 
 /// Boot the guest this workspace's verbs advance.
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
-))]
 fn guest(
     workspace: &Workspace,
     common: &Common,
 ) -> Result<Box<dyn faults_workload::investigate::Continuation>, Box<dyn Error>> {
-    let facts = workspace.facts();
-    let artifacts = crate::search::prepared_artifacts(
-        &facts.image,
-        facts.image_sha256.as_str(),
-        facts.kernel_sha256.as_str(),
-        facts.fault_agent_sha256.as_str(),
-        common.kernel.clone(),
-        common.base_initramfs.clone(),
-        common.fault_agent.clone(),
-    )?;
-    let config = faults_workload::consonance::FaultConfig {
-        knobs: facts.knobs.clone(),
-        horizon_nanos: facts.horizon_nanos,
-        ram_mib: facts.ram_mib,
-    };
-    Ok(Box::new(
-        faults_workload::investigate::live::ConsonanceGuest::new(
-            artifacts.kernel,
-            artifacts.initramfs,
-            config,
-        ),
-    ))
-}
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    {
+        let facts = workspace.facts();
+        let artifacts = crate::search::prepared_artifacts(
+            &facts.image,
+            facts.image_sha256.as_str(),
+            facts.kernel_sha256.as_str(),
+            facts.fault_agent_sha256.as_str(),
+            common.kernel.clone(),
+            common.base_initramfs.clone(),
+            common.fault_agent.clone(),
+        )?;
+        let config = faults_workload::consonance::FaultConfig {
+            knobs: facts.knobs.clone(),
+            horizon_nanos: facts.horizon_nanos,
+            ram_mib: facts.ram_mib,
+        };
+        Ok(Box::new(
+            faults_workload::investigate::live::ConsonanceGuest::new(
+                artifacts.kernel,
+                artifacts.initramfs,
+                config,
+            ),
+        ))
+    }
 
-#[cfg(not(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
-)))]
-fn guest(
-    _workspace: &Workspace,
-    _common: &Common,
-) -> Result<Box<dyn faults_workload::investigate::Continuation>, Box<dyn Error>> {
-    Err("advancing a workspace needs a Linux KVM host; \
-         findings, branches, inspect, and export read the retained history anywhere"
-        .into())
+    #[cfg(not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )))]
+    {
+        let _ = (workspace, common);
+        Err("advancing a workspace needs a Linux KVM host; \
+             findings, branches, inspect, and export read the retained history anywhere"
+            .into())
+    }
 }
 
 /// Add a human-readable duration beside every numeric virtual time. The
