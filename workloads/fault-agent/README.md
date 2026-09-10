@@ -15,6 +15,7 @@ nothing else.
 | fault | window opens | window closes |
 |---|---|---|
 | `ProcKill` | `SIGKILL` the node's group | nothing: a kill is permanent |
+| `ProcEventKill` | arm the instrumented runtime to synchronously kill at an event ordinal | disarm the runtime arm |
 | `ProcPause` | `SIGSTOP` | `SIGCONT` |
 | `ProcRestart` | `SIGKILL` | start the node again |
 | `RunHook` | launch the hook once | nothing: hooks are not awaited |

@@ -20,12 +20,7 @@ in the fault agent's bundle format:
 
 [`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
 alphabet, and assembles a guest initramfs: the base image, the OCI rootfs, and
-a control member holding the static fault agent and this package's init. It
-also derives Park places from syscall instructions in executable ELF payloads;
-this works for stripped binaries and means a workload gets useful execution
-boundaries without a symbol file or a workload-specific address list. An
-explicit `--places` file remains an optional override for a deliberate
-experiment. The
+a control member holding the static fault agent and this package's init. The
 init mounts the pseudo-filesystems, binds and chroots into the workload rootfs,
 and execs the agent. The control member is appended after the compressed
 members and padded to four bytes, which Linux initramfs requires before a raw
@@ -40,20 +35,12 @@ time ([`target`](src/target.rs)):
 |---|---|
 | `Wait` | nothing; the workload runs undisturbed for a horizon |
 | `Kill(node)` | the node stays down for the whole horizon |
-| `KillAt { node, offset_nanos }` | the node is killed at a searchable virtual-time coordinate inside the horizon |
+| `EventKill(node, ordinal)` | the instrumented runtime kills the node synchronously at a deterministic event ordinal |
 | `Pause(node, ticks)` | the node is stopped, then continued inside the horizon |
 | `Restart(node)` | the node is killed and comes back inside the horizon |
 | `Hook(id)` | the agent runs that hook once |
 | `Park(node, addr, hits, hold)` | guest threads are held at an execution place |
-| `ParkKill(node, addr, hits, hold)` | the node is killed when a thread reaches the execution place |
 | `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's seal when settling carried it past that start |
-
-`KillAt` is the generic crash-coordinate primitive. Its coordinate is part of
-the action and is sampled over the complete deterministic window, so the same
-fault policy can search a narrow crash interval without adding workload timing
-knobs. Automatically resolved Park places add deterministic event boundaries
-for stripped binaries, and `ParkKill` turns one into a generic breakpoint
-crash coordinate without a workload-specific address or timing.
 
 Every action but `Interrupt` becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the agent's

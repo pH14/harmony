@@ -11,6 +11,12 @@ Device exchanges are serialized per process. The library keeps explicit thread
 identities and counters for callback thresholding. Device errors fail closed:
 an event is dropped and entropy returns zero rather than using host randomness.
 
+Instrumented workloads may also inherit `HARMONY_EVENT_KILL_FD`. The library
+reads positive `u64` arm values from that socket and kills its own process group
+after that many future instrumented callbacks. This is a synchronous
+instrumented-event coordinate: it does not inspect instructions, read hardware
+counters, poll a supervisor, or use a timer. Zero disarms the coordinate.
+
 Build and test it with:
 
 ```sh

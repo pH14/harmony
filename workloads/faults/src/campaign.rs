@@ -113,13 +113,13 @@ pub struct FaultCampaignEvidence {
     bugs: Vec<FaultBugRecord>,
 }
 
-/// Coordinator-side state for the generic crash-coordinate search.
+/// Coordinator-side state for generic event-coordinate refinement.
 ///
-/// Retained inputs are evidence that a prefix made useful progress. Their
-/// `KillAt` coordinates become anchors for later suffix draws; subsequent
-/// draws take deterministic bisection points around an anchor instead of
-/// repeatedly sampling the whole action window. The state is deliberately
-/// workload-neutral and is rebuilt from retained inputs during stream replay.
+/// A retained input is evidence that its prefix made useful progress. Its
+/// `EventKill` coordinate becomes an anchor for later suffix draws. Refinement
+/// probes dyadic distances around that anchor across the complete positive
+/// `u64` coordinate space; it never imports an action horizon or workload
+/// timing bound. The state is rebuilt from retained inputs during replay.
 #[derive(Clone, Default)]
 pub struct FaultDrawState {
     anchors: Vec<(u16, u64)>,
@@ -449,31 +449,20 @@ impl InputPolicy for FaultGame {
             mixture.weight,
             mutation_seed,
             |_| Ok(None),
-            |rand| sample_action(rand, &run.vocabulary, self.config.horizon_nanos),
+            |rand| sample_action(rand, &run.vocabulary),
         )?;
         if !state.anchors.is_empty() {
             let bound = NonZeroUsize::new(state.anchors.len())
-                .ok_or("coordinate anchor state unexpectedly empty")?;
+                .ok_or("event-coordinate anchor state unexpectedly empty")?;
             for action in &mut suffix {
-                let FaultAction::KillAt { .. } = *action else {
+                let FaultAction::EventKill { .. } = *action else {
                     continue;
                 };
                 let anchor = state.anchors[rand_index(mutation_seed, bound)];
-                let span = self.config.horizon_nanos.max(1);
-                // Each retained coordinate supplies a center. The level is
-                // derived from the mutation seed, and the resulting point is
-                // a deterministic bisection point in a shrinking interval
-                // around that center.
-                let level = ((mutation_seed >> 8) & 31) as u32;
-                let radius = (span >> level).max(1);
-                let refined = if ((mutation_seed >> 40) & 1) == 0 {
-                    anchor.1.saturating_sub(radius)
-                } else {
-                    anchor.1.saturating_add(radius).min(span.saturating_sub(1))
-                };
-                *action = FaultAction::KillAt {
+                let refined = refine_event_coordinate(anchor.1, mutation_seed);
+                *action = FaultAction::EventKill {
                     node: anchor.0,
-                    offset_nanos: refined,
+                    ordinal: refined,
                 };
             }
         }
@@ -488,8 +477,8 @@ impl InputPolicy for FaultGame {
     ) -> Result<Option<()>, Box<dyn Error>> {
         for (_, actions) in retained {
             for action in *actions {
-                if let FaultAction::KillAt { node, offset_nanos } = *action {
-                    state.anchors.push((node, offset_nanos));
+                if let FaultAction::EventKill { node, ordinal } = *action {
+                    state.anchors.push((node, ordinal));
                     if state.anchors.len() > MAX_COORDINATE_ANCHORS {
                         let drop = state.anchors.len() - MAX_COORDINATE_ANCHORS;
                         state.anchors.drain(..drop);
@@ -502,11 +491,22 @@ impl InputPolicy for FaultGame {
 }
 
 fn rand_index(seed: u64, bound: NonZeroUsize) -> usize {
-    // The suffix generator is already seeded by `mutation_seed`; deriving an
-    // index directly keeps coordinate refinement draw-for-draw stable without
-    // adding another mutable random stream to the campaign state.
     let mixed = seed ^ seed.rotate_left(29);
     ((u128::from(mixed) * u128::from(bound.get() as u64)) >> 64) as usize
+}
+
+fn refine_event_coordinate(anchor: u64, seed: u64) -> u64 {
+    let level = ((seed >> 8) & 63) as u32;
+    let radius = if level == 63 {
+        0
+    } else {
+        u64::MAX >> (level + 1)
+    };
+    if ((seed >> 40) & 1) == 0 {
+        anchor.saturating_sub(radius).max(1)
+    } else {
+        anchor.saturating_add(radius).max(1)
+    }
 }
 
 impl TargetExecution for FaultGame {
@@ -820,5 +820,15 @@ mod tests {
             policies.get(HORIZON_FIELD).map(String::as_str),
             Some("2000000000")
         );
+    }
+
+    #[test]
+    fn event_coordinate_refinement_is_dyadic_and_unbounded() {
+        let anchor = 100_u64;
+        let exact = (63_u64 << 8) | (1_u64 << 40);
+        let neighbor = 62_u64 << 8 | (1_u64 << 40);
+        assert_eq!(refine_event_coordinate(anchor, exact), anchor);
+        assert_eq!(refine_event_coordinate(anchor, neighbor), anchor + 1);
+        assert_eq!(refine_event_coordinate(1, 0), 1);
     }
 }

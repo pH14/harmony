@@ -9,11 +9,11 @@
 //! | fault | window opens | window closes |
 //! |---|---|---|
 //! | `ProcKill` | `SIGKILL` the node's group | nothing: a kill is permanent |
+//! | `ProcEventKill` | arm the instrumented runtime at an event ordinal | disarm the arm |
 //! | `ProcPause` | `SIGSTOP` | `SIGCONT` |
 //! | `ProcRestart` | `SIGKILL` | start the node again |
 //! | `RunHook` | launch the hook once | nothing: hooks are not awaited |
 //! | `ProcPark` | arm the park on the node's process group | disarm it; a hold in progress finishes |
-//! | `ProcParkKill` | arm the park and kill on its k-th hit | nothing: a crash is permanent |
 //!
 //! A node that exits while no fault names it is an unexpected death: it is
 //! counted and started again at the next tick, so a workload that crashes on
@@ -34,12 +34,15 @@ pub enum Action {
     Cont(u16),
     /// Spawn the node's command in a fresh process group.
     Start(u16),
+    /// Arm a running instrumented node to synchronously kill its process group
+    /// at an ordinal in the deterministic event stream.
+    ArmEventKill(u16, u64),
+    /// Remove an event-kill arm from a running instrumented node.
+    DisarmEventKill(u16),
     /// Launch the hook once, without waiting for it.
     RunHook(u32),
     /// Arm a park on the node's process group through the guest kernel.
     Park(u16, Park),
-    /// Arm a park that kills the node when its hit is observed.
-    ParkKill(u16, Park),
     /// Disarm the node's park; a hold already taken runs to its end.
     Unpark(u16),
 }
@@ -54,13 +57,13 @@ impl Action {
             Action::Stop(node) => format!("pause node {node}"),
             Action::Cont(node) => format!("resume node {node}"),
             Action::Start(node) => format!("start node {node}"),
+            Action::ArmEventKill(node, ordinal) => {
+                format!("arm event kill node {node} ordinal {ordinal}")
+            }
+            Action::DisarmEventKill(node) => format!("disarm event kill node {node}"),
             Action::RunHook(id) => format!("run hook {id}"),
             Action::Park(node, park) => format!(
                 "park node {node} at {:#x} hit {} hold {}",
-                park.addr, park.hits, park.hold_nanos
-            ),
-            Action::ParkKill(node, park) => format!(
-                "crash node {node} at {:#x} hit {} hold {}",
                 park.addr, park.hits, park.hold_nanos
             ),
             Action::Unpark(node) => format!("unpark node {node}"),
@@ -167,15 +170,22 @@ impl Supervisor {
                 actions.push(Action::Cont(node));
                 state.paused = false;
             }
+            if now.event_kill != was.event_kill {
+                match now.event_kill {
+                    Some(ordinal) if state.alive => {
+                        actions.push(Action::ArmEventKill(node, ordinal));
+                    }
+                    None if was.event_kill.is_some() && state.alive => {
+                        actions.push(Action::DisarmEventKill(node));
+                    }
+                    _ => {}
+                }
+            }
             if let Some(park) = now.park {
-                if was.park != Some(park) || was.park_kill.is_some() {
+                if was.park != Some(park) {
                     actions.push(Action::Park(node, park));
                 }
-            } else if let Some(park) = now.park_kill {
-                if was.park_kill != Some(park) || was.park.is_some() {
-                    actions.push(Action::ParkKill(node, park));
-                }
-            } else if was.park.is_some() || was.park_kill.is_some() {
+            } else if was.park.is_some() {
                 actions.push(Action::Unpark(node));
             }
             // A restart window closing brings the node back unless a kill still
@@ -220,15 +230,6 @@ impl Supervisor {
     /// Record that a park took its hit and held a thread.
     pub fn note_parked(&mut self) {
         self.counters.parked += 1;
-    }
-
-    /// Mark a breakpoint-triggered crash as an expected permanent death.
-    pub fn note_killed(&mut self, node: u16) {
-        if let Some(state) = self.nodes.get_mut(usize::from(node)) {
-            state.alive = false;
-            state.paused = false;
-            state.expected_down = true;
-        }
     }
 
     /// Record an `assert_sometimes` hit reported by a hook. Ids at or beyond
@@ -305,6 +306,19 @@ mod tests {
         assert_eq!(sup.counters().unexpected_deaths, 0);
         assert_eq!(sup.counters().restarts, 0);
         assert_eq!(sup.counters().ticks, 5);
+    }
+
+    #[test]
+    fn an_event_kill_window_arms_and_disarms_without_signalling_at_the_boundary() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, Fault::ProcEventKill { ordinal: 19 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 19)]);
+        assert_eq!(sup.tick(&event, &[]), []);
+        assert_eq!(
+            sup.tick(&ActiveFaults::new(), &[]),
+            [Action::DisarmEventKill(0)]
+        );
+        assert_eq!(sup.alive_bitmap(), 1);
     }
 
     #[test]
@@ -406,29 +420,6 @@ mod tests {
         sup.note_parked();
         assert_eq!(sup.snapshot().parked, 1);
         assert_eq!(sup.alive_bitmap(), 1);
-    }
-
-    #[test]
-    fn a_park_kill_window_arms_and_marks_the_hit_as_a_crash() {
-        let mut sup = Supervisor::new(1);
-        let park = Park {
-            addr: 0x4b0e86,
-            hits: 1,
-            hold_nanos: 500_000,
-        };
-        let crashing = active(&[ (
-            0,
-            Fault::ProcParkKill {
-                addr: 0x4b0e86,
-                hits: 1,
-                hold: Span(500_000),
-            },
-        ) ]);
-        assert_eq!(sup.tick(&crashing, &[]), [Action::ParkKill(0, park)]);
-        sup.note_parked();
-        sup.note_killed(0);
-        assert_eq!(sup.alive_bitmap(), 0);
-        assert_eq!(sup.tick(&ActiveFaults::new(), &[]), [Action::Unpark(0)]);
     }
 
     #[test]

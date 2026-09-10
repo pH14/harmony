@@ -87,10 +87,10 @@ pub use standing::{
 /// reader (unknown class / undefined tag). Bumped to `5` by the process faults
 /// the in-guest fault agent enforces — [`Fault::RunHook`] (byte tag `17`) and
 /// [`Fault::ProcPark`] (byte tag `19`) — both additive under the existing
-/// [`DecisionClass::Process`] discriminant. Bumped to `6` by
-/// [`Fault::ProcParkKill`] (byte tag `20`), which adds a breakpoint-triggered
-/// process crash without reshaping the existing Park wire form. Byte tag `18`
-/// is permanently unassigned; see `codec.rs`.
+/// [`DecisionClass::Process`] discriminant. Byte tag `18` is permanently
+/// unassigned; see `codec.rs`. Bumped to `6` for
+/// [`Fault::ProcEventKill`] (byte tag `20`), whose payload is a generic
+/// ordinal in the instrumented deterministic event stream.
 pub const CATALOG_VERSION: u16 = 6;
 
 /// The maximum number of bytes one [`Entropy`](DecisionPoint::Entropy) or

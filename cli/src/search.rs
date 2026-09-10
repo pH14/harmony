@@ -278,14 +278,10 @@ fn run_faults_consonance(
                 faults_workload::package::replay(&artifacts, actions, repeat, options)?
             }
             None => {
-                let vocabulary = if options.places.is_empty() {
-                    prepared.vocabulary.clone()
-                } else {
-                    prepared
-                        .vocabulary
-                        .clone()
-                        .with_places(options.places.clone())?
-                };
+                let vocabulary = prepared
+                    .vocabulary
+                    .clone()
+                    .with_places(options.places.clone())?;
                 faults_workload::package::search(&artifacts, &vocabulary, options)?
             }
         };

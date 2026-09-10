@@ -4,8 +4,11 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdatomic.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #ifndef HARMONY_OPEN
@@ -43,8 +46,84 @@ static _Thread_local struct harmony_coverage_state harmony_coverage = {
 };
 static uint32_t harmony_next_guard = 1;
 
+/*
+ * The event-kill coordinate is a positive ordinal in the callbacks emitted by
+ * the Antithesis instrumentor. It counts future callbacks from the moment an
+ * arm is acknowledged, so an action never misses merely because startup
+ * events consumed the process-global counter. The callback performs the kill
+ * synchronously, so no supervisor timer, polling loop, address, or hardware
+ * counter is involved.
+ */
+static _Atomic uint64_t harmony_event_ordinal;
+static _Atomic uint64_t harmony_event_remaining;
+static pthread_once_t harmony_event_control_once = PTHREAD_ONCE_INIT;
+static int harmony_event_control_fd = -1;
+
 /* The R-L3 transport ruling fixes the device path; it is not configurable. */
 static const char harmony_device_path[] = "/dev/harmony";
+
+static uint64_t get_u64(const unsigned char *in);
+static void put_u64(unsigned char *out, uint64_t value);
+static int write_all(int fd, const unsigned char *data, size_t size);
+
+static int read_event_command(int fd, uint64_t *value)
+{
+    unsigned char bytes[sizeof(*value)];
+    size_t consumed = 0;
+
+    while (consumed < sizeof(bytes)) {
+        ssize_t result = read(fd, bytes + consumed, sizeof(bytes) - consumed);
+        if (result < 0 && errno == EINTR)
+            continue;
+        if (result <= 0)
+            return -1;
+        consumed += (size_t)result;
+    }
+    *value = get_u64(bytes);
+    return 0;
+}
+
+static void *event_control_main(void *unused)
+{
+    uint64_t target;
+    unsigned char acknowledgement[sizeof(target)];
+
+    (void)unused;
+    while (read_event_command(harmony_event_control_fd, &target) == 0) {
+        atomic_store_explicit(&harmony_event_remaining, target, memory_order_release);
+        put_u64(acknowledgement, target);
+        if (write_all(harmony_event_control_fd, acknowledgement, sizeof(acknowledgement)) != 0)
+            break;
+    }
+    (void)close(harmony_event_control_fd);
+    harmony_event_control_fd = -1;
+    return NULL;
+}
+
+static void event_control_start(void)
+{
+    const char *text = getenv("HARMONY_EVENT_KILL_FD");
+    char *end;
+    unsigned long value;
+    pthread_t thread;
+
+    if (text == NULL || *text == '\0')
+        return;
+    errno = 0;
+    value = strtoul(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || value > (unsigned long)INT_MAX)
+        return;
+    harmony_event_control_fd = (int)value;
+    if (pthread_create(&thread, NULL, event_control_main, NULL) == 0)
+        (void)pthread_detach(thread);
+    else
+        harmony_event_control_fd = -1;
+}
+
+__attribute__((constructor)) static void harmony_event_constructor(void)
+{
+    (void)pthread_once(&harmony_event_control_once, event_control_start);
+}
 
 static int write_all(int fd, const unsigned char *data, size_t size)
 {
@@ -225,7 +304,21 @@ void init_coverage_module(const void *module, size_t size)
 
 void notify_coverage(uint64_t edge)
 {
+    uint64_t remaining;
+
     (void)edge;
+    (void)pthread_once(&harmony_event_control_once, event_control_start);
+    (void)atomic_fetch_add_explicit(&harmony_event_ordinal, 1, memory_order_relaxed);
+    remaining = atomic_load_explicit(&harmony_event_remaining, memory_order_acquire);
+    while (remaining != 0) {
+        if (atomic_compare_exchange_weak_explicit(
+                &harmony_event_remaining, &remaining, remaining - 1,
+                memory_order_acq_rel, memory_order_acquire)) {
+            if (remaining == 1)
+                (void)kill(0, SIGKILL);
+            break;
+        }
+    }
     if (harmony_coverage.counter != UINT64_MAX)
         harmony_coverage.counter++;
     if (harmony_coverage.counter == harmony_coverage.threshold &&

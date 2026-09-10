@@ -11,10 +11,9 @@
 //! identical alphabet.
 //!
 //! A park needs a place: a user instruction address in the node's binary. The
-//! image preparer derives generic syscall instruction places automatically;
-//! `--places` can override them for a deliberate experiment. The stream
-//! records the count and digest, and a resumed campaign must use the same
-//! resolved list.
+//! list is generated from the binary's line table and given to the search with
+//! `--places`; the stream records its count and a digest, and a resumed
+//! campaign must be given a list with the same digest.
 
 use serde::{Deserialize, Serialize};
 

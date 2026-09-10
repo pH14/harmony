@@ -15,16 +15,21 @@
   "arms": {
     "vulnerable": {
       "version": "3.5.2",
-      "archive_sha256": "256cad725542d6fd463e81b8a19b86ead4cdfe113f7fb8a1eabc6c32c25d068b"
+      "source_sha256": "ecb4d2bc76e48ae504d9a00b50bcc906503c4d0324acf9dee79d97d16f7282ad"
     },
     "control": {
       "version": "3.5.3",
-      "archive_sha256": "e13e119ff9b28234561738cd261c2a031eb1c8688079dcf96d8035b3ad19ca58"
+      "source_sha256": "f381557feaa42dfe7f40a5c295f95266b7de341f49e76a3119dfaec3d0a24e5e"
     }
   },
   "image": {
-    "context": "bugs/historical/etcd-3.5-inconsistency/image",
+    "context": ".",
     "dockerfile": "bugs/historical/etcd-3.5-inconsistency/image/Dockerfile"
+  },
+  "instrumentation": {
+    "tool": "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-instrumentor",
+    "version": "0.8.0",
+    "license": "MIT"
   },
   "kernel_profile": "faultlab",
   "oracle": {
@@ -36,7 +41,7 @@
     "fires_on": "an acknowledged key is missing or has a different value after restart",
     "silent_when": ["the node is down", "the journal is empty", "the readback hook cannot reach etcd"]
   },
-  "actions": ["Wait", "Kill", "KillAt", "Pause", "Restart", "Hook", "Park", "ParkKill"],
+  "actions": ["Wait", "EventKill", "Kill", "Pause", "Restart", "Hook"],
   "run": {
     "horizon_ms": 500,
     "ram_mib": 512,

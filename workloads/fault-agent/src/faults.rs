@@ -28,6 +28,10 @@ pub struct Park {
 pub struct NodeFaults {
     /// `Fault::ProcKill` — the node is killed and stays down.
     pub kill: bool,
+    /// `Fault::ProcEventKill` — arm the instrumented runtime to kill the
+    /// node synchronously after the requested number of future deterministic
+    /// events.
+    pub event_kill: Option<u64>,
     /// `Fault::ProcPause` — the node is stopped for the window's duration.
     pub pause: bool,
     /// `Fault::ProcRestart` — the node is killed and restarted when the window
@@ -36,13 +40,14 @@ pub struct NodeFaults {
     /// `Fault::ProcPark` — a breakpoint is armed on the node for the window's
     /// duration, and the thread that takes its k-th hit is held there.
     pub park: Option<Park>,
-    /// `Fault::ProcParkKill` — a breakpoint is armed and the node is killed
-    /// when its k-th hit is observed by the supervisor.
-    pub park_kill: Option<Park>,
 }
 
 impl NodeFaults {
     /// Whether any fault is in force for this node.
+    ///
+    /// An event kill is intentionally omitted: it is a one-shot crash arm,
+    /// after which the normal unexpected-death recovery path may restart the
+    /// node while the standing window is still open.
     #[must_use]
     pub fn any(self) -> bool {
         self.kill || self.pause || self.restart
@@ -87,12 +92,10 @@ impl ActiveFaults {
                 return;
             }
             Fault::ProcKill
+            | Fault::ProcEventKill { .. }
             | Fault::ProcPause(_)
             | Fault::ProcRestart
-            | Fault::ProcPark { .. }
-            | Fault::ProcParkKill { .. } =>
-            {
-            }
+            | Fault::ProcPark { .. } => {}
             // Every other fault belongs to a class the guest does not apply;
             // the host enforces those itself.
             _ => return,
@@ -107,17 +110,11 @@ impl ActiveFaults {
         let flags = &mut self.nodes[index].1;
         match fault {
             Fault::ProcKill => flags.kill = true,
+            Fault::ProcEventKill { ordinal } => flags.event_kill = Some(*ordinal),
             Fault::ProcPause(_) => flags.pause = true,
             Fault::ProcRestart => flags.restart = true,
             Fault::ProcPark { addr, hits, hold } => {
                 flags.park = Some(Park {
-                    addr: *addr,
-                    hits: *hits,
-                    hold_nanos: hold.0,
-                });
-            }
-            Fault::ProcParkKill { addr, hits, hold } => {
-                flags.park_kill = Some(Park {
                     addr: *addr,
                     hits: *hits,
                     hold_nanos: hold.0,
@@ -208,8 +205,8 @@ mod tests {
                 pause: true,
                 restart: true,
                 kill: false,
+                event_kill: None,
                 park: None,
-                park_kill: None,
             }
         );
         assert_eq!(active.node(2), NodeFaults::default());
@@ -217,6 +214,16 @@ mod tests {
         // Hooks are ascending regardless of answer order, and hook faults do
         // not mark their node as faulted.
         assert_eq!(hook_ids(&active), [2, 9]);
+    }
+
+    #[test]
+    fn event_kill_decodes_as_an_ordinal_without_becoming_a_timer_fault() {
+        let process = DecisionClass::Process.as_u16();
+        let target = target(2, &Fault::ProcEventKill { ordinal: 77 });
+        let active = ActiveFaults::from_entries([(process, target.as_slice(), 11)].into_iter());
+        assert_eq!(active.node(2).event_kill, Some(77));
+        assert!(!active.node(2).kill);
+        assert!(!active.node(2).any());
     }
 
     #[test]
@@ -259,27 +266,6 @@ mod tests {
         );
         // A park names the node without marking it faulted: the node keeps
         // running, so a death under it is still unexpected.
-        assert!(!active.node(1).any());
-    }
-
-    #[test]
-    fn a_park_kill_decodes_into_its_parameters() {
-        let process = DecisionClass::Process.as_u16();
-        let park = Fault::ProcParkKill {
-            addr: 0x4b0e86,
-            hits: 28,
-            hold: Span(2_000_000),
-        };
-        let entries = [(process, target(1, &park))];
-        let active = ActiveFaults::from_entries(entries.iter().map(|(c, t)| (*c, t.as_slice(), 0)));
-        assert_eq!(
-            active.node(1).park_kill,
-            Some(Park {
-                addr: 0x4b0e86,
-                hits: 28,
-                hold_nanos: 2_000_000,
-            })
-        );
         assert!(!active.node(1).any());
     }
 

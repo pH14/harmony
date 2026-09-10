@@ -40,15 +40,11 @@ mod tests {
     fn round_trips_every_process_fault() {
         for f in [
             Fault::ProcKill,
+            Fault::ProcEventKill { ordinal: 123_456 },
             Fault::ProcRestart,
             Fault::ProcPause(Span(1234)),
             Fault::RunHook(7),
             Fault::ProcPark {
-                addr: 0x4b_0e86,
-                hits: 28,
-                hold: Span(2_000_000),
-            },
-            Fault::ProcParkKill {
                 addr: 0x4b_0e86,
                 hits: 28,
                 hold: Span(2_000_000),

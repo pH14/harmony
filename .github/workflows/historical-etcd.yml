@@ -13,11 +13,6 @@ on:
       - workloads/fault-policy/**
       - workloads/faults/**
   workflow_dispatch:
-    inputs:
-      executions:
-        description: Search execution ceiling
-        required: false
-        type: string
   schedule:
     - cron: "30 6 * * *"
 
@@ -54,20 +49,22 @@ jobs:
       vulnerable_sha256: ${{ steps.read.outputs.vulnerable_sha256 }}
       control_version: ${{ steps.read.outputs.control_version }}
       control_sha256: ${{ steps.read.outputs.control_sha256 }}
+      instrumentor_version: ${{ steps.read.outputs.instrumentor_version }}
     steps:
       - uses: actions/checkout@v4
       - name: Validate and read case.json
         id: read
-        env:
-          DISPATCH_EXECUTIONS: ${{ inputs.executions }}
         run: |
           set -euo pipefail
           case_json="${CASE_DIR}/case.json"
           jq -e '
             .id == "etcd-3.5-inconsistency"
             and (.run.knobs == {})
-            and (.arms.vulnerable.archive_sha256 | type == "string" and length == 64)
-            and (.arms.control.archive_sha256 | type == "string" and length == 64)
+            and (.instrumentation.tool == "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-instrumentor")
+            and (.instrumentation.version == "0.8.0")
+            and (.instrumentation.license == "MIT")
+            and (.arms.vulnerable.source_sha256 | type == "string" and length == 64)
+            and (.arms.control.source_sha256 | type == "string" and length == 64)
             and (.oracle | has("assertion") and has("evidence"))
           ' "${case_json}" >/dev/null
           emit() { printf '%s=%s\n' "$1" "$2" >>"${GITHUB_OUTPUT}"; }
@@ -79,15 +76,14 @@ jobs:
           emit actions "$(jq -r .search.actions "${case_json}")"
           emit wall_minutes "$(jq -r .search.wall_minutes "${case_json}")"
           emit vulnerable_version "$(jq -r .arms.vulnerable.version "${case_json}")"
-          emit vulnerable_sha256 "$(jq -r .arms.vulnerable.archive_sha256 "${case_json}")"
+          emit vulnerable_sha256 "$(jq -r .arms.vulnerable.source_sha256 "${case_json}")"
           emit control_version "$(jq -r .arms.control.version "${case_json}")"
-          emit control_sha256 "$(jq -r .arms.control.archive_sha256 "${case_json}")"
+          emit control_sha256 "$(jq -r .arms.control.source_sha256 "${case_json}")"
+          emit instrumentor_version "$(jq -r .instrumentation.version "${case_json}")"
           emit oracle_assertion "$(jq -r .oracle.assertion "${case_json}")"
           emit oracle_evidence "$(jq -r .oracle.evidence "${case_json}")"
           emit knobs ""
-          executions="$(jq -r .search.executions "${case_json}")"
-          if [[ -n "${DISPATCH_EXECUTIONS}" ]]; then executions="${DISPATCH_EXECUTIONS}"; fi
-          emit executions "${executions}"
+          emit executions "$(jq -r .search.executions "${case_json}")"
       - name: Summarize the manifest
         run: |
           set -euo pipefail
@@ -98,6 +94,7 @@ jobs:
               ["id", .id],
               ["vulnerable", .arms.vulnerable.version],
               ["control", .arms.control.version],
+              ["instrumentor", (.instrumentation.tool + "@v" + .instrumentation.version)],
               ["oracle", "@\(.oracle.kind) \(.oracle.assertion) — \(.oracle.detector)"],
               ["oracle verdict evidence", "@reachable \(.oracle.evidence)"],
               ["knobs", "none"],
@@ -134,7 +131,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Build both release images
+      - name: Build both instrumented images
         run: |
           set -euo pipefail
           mkdir -p oci-images
@@ -142,8 +139,14 @@ jobs:
             local version="$1" sha="$2"
             docker build --pull \
               --build-arg "ETCD_VERSION=${version}" \
-              --build-arg "ETCD_SHA256=${sha}" \
-              --tag "harmony-etcd:${version}" "${CASE_DIR}/image"
+              --build-arg "ETCD_SOURCE_SHA256=${sha}" \
+              --build-arg "ANTITHESIS_SDK_VERSION=${{ needs.manifest.outputs.instrumentor_version }}" \
+              --tag "harmony-etcd:${version}" \
+              --file "${CASE_DIR}/image/Dockerfile" .
+            docker run --rm --entrypoint /bin/sh "harmony-etcd:${version}" -c \
+              'test -x /opt/etcd/etcd && test -x /opt/etcd/etcdctl \
+               && test -s /symbols/*.sym.tsv && test -s /usr/lib/libvoidstar.so \
+               && grep -a -q antithesis.notifier /opt/etcd/etcd'
             docker save --output "oci-images/${IMAGE_PREFIX}-${version}.oci" "harmony-etcd:${version}"
           }
           build_arm "${{ needs.manifest.outputs.vulnerable_version }}" \

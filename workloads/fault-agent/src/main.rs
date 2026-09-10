@@ -98,6 +98,7 @@ mod real {
     use hypercall_proto::MAX_PAYLOAD;
     use std::fs::File;
     use std::io::{Read, Write};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::process::{CommandExt, ExitStatusExt};
     use std::path::Path;
     use std::process::{Child, Command, Stdio};
@@ -162,11 +163,13 @@ mod real {
     struct Node {
         spec: NodeSpec,
         child: Option<Child>,
+        /// The parent end of the synchronous event-kill control channel. The
+        /// child inherits the peer as `HARMONY_EVENT_KILL_FD`; the instrumented
+        /// runtime consumes commands from it without supervisor polling.
+        event_control: Option<OwnedFd>,
         /// The park armed on the node's process group, while its window is
         /// open.
         park: Option<park::Handle>,
-        /// Whether a hit on the armed park should kill the node.
-        park_kill: bool,
     }
 
     /// A launched hook and the output file it writes directives to.
@@ -196,12 +199,14 @@ mod real {
             .map(|spec| Node {
                 spec: spec.clone(),
                 child: None,
+                event_control: None,
                 park: None,
-                park_kill: false,
             })
             .collect();
         for (id, node) in nodes.iter_mut().enumerate() {
-            node.child = Some(spawn_node(&node.spec)?);
+            let (child, control) = spawn_node(&node.spec)?;
+            node.child = Some(child);
+            node.event_control = control;
             log(0, &format!("start node {id}"));
         }
 
@@ -299,18 +304,7 @@ mod real {
                     tick,
                 )?;
             }
-            for node in watch_parks(nodes, &mut supervisor, tick) {
-                supervisor.note_killed(node);
-                apply(
-                    Action::Kill(node),
-                    bundle,
-                    nodes,
-                    &mut hooks,
-                    &mut launches,
-                    &args.hook_dir,
-                    tick,
-                )?;
-            }
+            watch_parks(nodes, &mut supervisor, tick);
             drain_hooks(&mut hooks, &mut supervisor, sdk, tick)?;
             for (reg, value) in registers.updates(supervisor.snapshot()) {
                 sdk.state_set(reg, value)
@@ -360,6 +354,7 @@ mod real {
             };
             if exited {
                 node.child = None;
+                node.event_control = None;
                 deaths.push(id as u16);
             }
         }
@@ -381,7 +376,7 @@ mod real {
                 // breakpoints harmlessly until the handle drops.
                 if let Some(entry) = nodes.get_mut(usize::from(node)) {
                     entry.park = None;
-                    entry.park_kill = false;
+                    entry.event_control = None;
                 }
                 signal_node(nodes, node, libc::SIGKILL);
             }
@@ -395,8 +390,32 @@ mod real {
                 // live service must treat readiness as part of their oracle.
                 if let Some(entry) = nodes.get_mut(usize::from(node)) {
                     entry.park = None;
-                    entry.park_kill = false;
-                    entry.child = Some(spawn_node(&entry.spec)?);
+                    let (child, control) = spawn_node(&entry.spec)?;
+                    entry.child = Some(child);
+                    entry.event_control = control;
+                }
+            }
+            Action::ArmEventKill(node, ordinal) => {
+                if let Some(entry) = nodes.get(usize::from(node)) {
+                    if let Some(control) = &entry.event_control {
+                        if let Err(error) = send_event_ordinal(control, ordinal) {
+                            log(tick, &format!("event kill node {node}: {error}"));
+                        }
+                    } else {
+                        log(
+                            tick,
+                            &format!("event kill node {node}: node is not running"),
+                        );
+                    }
+                }
+            }
+            Action::DisarmEventKill(node) => {
+                if let Some(entry) = nodes.get(usize::from(node))
+                    && let Some(control) = &entry.event_control
+                {
+                    if let Err(error) = send_event_ordinal(control, 0) {
+                        log(tick, &format!("event kill node {node}: {error}"));
+                    }
                 }
             }
             Action::Park(node, park) => {
@@ -418,42 +437,11 @@ mod real {
                             &format!("park node {node} armed on {} thread(s)", handle.tasks()),
                         );
                         entry.park = Some(handle);
-                        entry.park_kill = false;
                     }
                     Err(error) => log(tick, &format!("park node {node}: {error}")),
                 }
             }
-            Action::ParkKill(node, park) => {
-                let Some(entry) = nodes.get_mut(usize::from(node)) else {
-                    return Ok(());
-                };
-                let Some(pid) = entry
-                    .child
-                    .as_ref()
-                    .and_then(|child| libc::pid_t::try_from(child.id()).ok())
-                else {
-                    log(tick, &format!("crash node {node}: node is not running"));
-                    return Ok(());
-                };
-                match park::arm(pid, &park) {
-                    Ok(handle) => {
-                        log(
-                            tick,
-                            &format!(
-                                "crash node {node} armed on {} thread(s)",
-                                handle.tasks()
-                            ),
-                        );
-                        entry.park = Some(handle);
-                        entry.park_kill = true;
-                    }
-                    Err(error) => log(tick, &format!("crash node {node}: {error}")),
-                }
-            }
             Action::Unpark(node) => {
-                if let Some(entry) = nodes.get_mut(usize::from(node)) {
-                    entry.park_kill = false;
-                }
                 if let Some(handle) = nodes
                     .get_mut(usize::from(node))
                     .and_then(|entry| entry.park.take())
@@ -483,8 +471,7 @@ mod real {
     }
 
     /// Log each park's hit and release once, and count the hits.
-    fn watch_parks(nodes: &mut [Node], supervisor: &mut Supervisor, tick: u64) -> Vec<u16> {
-        let mut kills = Vec::new();
+    fn watch_parks(nodes: &mut [Node], supervisor: &mut Supervisor, tick: u64) {
         for (id, node) in nodes.iter_mut().enumerate() {
             let Some(handle) = node.park.as_mut() else {
                 continue;
@@ -506,9 +493,6 @@ mod real {
                         status.hits, status.pc, status.pid
                     ),
                 );
-                if node.park_kill {
-                    kills.push(id as u16);
-                }
             }
             if status.state == park::RELEASED && !handle.release_logged {
                 handle.release_logged = true;
@@ -521,7 +505,6 @@ mod real {
                 );
             }
         }
-        kills
     }
 
     /// Send `signal` to a node's whole process group, so a node that forks
@@ -543,13 +526,118 @@ mod real {
         }
     }
 
-    fn spawn_node(spec: &NodeSpec) -> Result<Child, String> {
-        command(&spec.argv)
-            // Its own group, so one fault reaches the node's whole process
-            // tree and never the agent.
-            .process_group(0)
+    fn spawn_node(spec: &NodeSpec) -> Result<(Child, Option<OwnedFd>), String> {
+        let instrumented = Path::new("/usr/lib/libvoidstar.so").is_file();
+        let (agent_fd, child_fd) = if instrumented {
+            let (agent, child) = event_channel()?;
+            (Some(agent), Some(child))
+        } else {
+            (None, None)
+        };
+        let mut command = command(&spec.argv);
+        // Its own group, so one fault reaches the node's whole process tree and
+        // never the agent.
+        command.process_group(0);
+        if let Some(child_fd) = &child_fd {
+            command
+                .env("HARMONY_EVENT_KILL_FD", child_fd.as_raw_fd().to_string())
+                .env("LD_PRELOAD", "/usr/lib/libvoidstar.so");
+        }
+        let child = command
             .spawn()
-            .map_err(|error| format!("node {:?}: {error}", spec.name))
+            .map_err(|error| format!("node {:?}: {error}", spec.name))?;
+        // `child_fd` is inherited across exec and is no longer needed by the
+        // agent once spawn has succeeded.
+        drop(child_fd);
+        Ok((child, agent_fd))
+    }
+
+    fn event_channel() -> Result<(OwnedFd, OwnedFd), String> {
+        let mut fds = [0; 2];
+        // SAFETY: `fds` points to two writable i32 slots for the duration of
+        // the libc call; AF_UNIX/SOCK_STREAM creates a private pair with no
+        // externally reachable endpoint.
+        let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
+        if rc != 0 {
+            return Err(format!(
+                "event control socketpair: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        for fd in fds {
+            // SAFETY: each descriptor came from the successful socketpair and
+            // remains open while its close-on-exec flag is cleared.
+            if unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } < 0 {
+                // SAFETY: both descriptors came from this socketpair and have
+                // not been wrapped in `OwnedFd` yet; close each exactly once
+                // before returning the setup error.
+                unsafe {
+                    libc::close(fds[0]);
+                    libc::close(fds[1]);
+                }
+                return Err(format!(
+                    "event control fcntl: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+        // SAFETY: socketpair initialized both descriptors exactly once.
+        Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+    }
+
+    fn send_event_ordinal(control: &OwnedFd, ordinal: u64) -> Result<(), String> {
+        let bytes = ordinal.to_le_bytes();
+        let mut written = 0;
+        while written < bytes.len() {
+            // SAFETY: the pointer names the remaining initialized bytes and the
+            // descriptor is owned by this agent for the call.
+            let count = unsafe {
+                libc::write(
+                    control.as_raw_fd(),
+                    bytes[written..].as_ptr().cast(),
+                    bytes.len() - written,
+                )
+            };
+            if count < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(format!("event control write: {error}"));
+            }
+            if count == 0 {
+                return Err("event control write returned zero".to_owned());
+            }
+            written += usize::try_from(count).map_err(|_| "event control write overflow")?;
+        }
+        let mut acknowledgement = [0_u8; 8];
+        let mut read = 0;
+        while read < acknowledgement.len() {
+            // SAFETY: the pointer names the remaining initialized destination
+            // and the descriptor is owned by this agent for the call.
+            let count = unsafe {
+                libc::read(
+                    control.as_raw_fd(),
+                    acknowledgement[read..].as_mut_ptr().cast(),
+                    acknowledgement.len() - read,
+                )
+            };
+            if count < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(format!("event control acknowledgement: {error}"));
+            }
+            if count == 0 {
+                return Err("event control acknowledgement reached EOF".to_owned());
+            }
+            read += usize::try_from(count).map_err(|_| "event control acknowledgement overflow")?;
+        }
+        if u64::from_le_bytes(acknowledgement) != ordinal {
+            return Err("event control acknowledgement did not echo the arm".to_owned());
+        }
+        Ok(())
     }
 
     /// Launch a hook with its stdout in a file of its own. `launch` counts

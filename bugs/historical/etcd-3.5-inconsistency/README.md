@@ -1,7 +1,6 @@
 # etcd v3.5.0–3.5.2 — silent data inconsistency after untimely crash
 
-**Status: workload and pinned arms built; the dedicated CI workflow is ready for its first
-discovery run.**
+**Status: Antithesis Go instrumentation is wired; CI is the acceptance gate.**
 
 ## The bug
 
@@ -28,18 +27,20 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
 
 ## The triple
 
-- **Workload**: one supervised stock etcd member, driven by four concurrent clients. Each client
-  records every acknowledged put in a journal outside etcd and keeps applying entries while
-  Harmony explores faults. The same image, bundle, hook sequence, and search policy run against
-  v3.5.2 and v3.5.3; only the pinned release archive changes. There are no correctness,
-  portability, batch, or timing knobs. These are the upstream release binaries, not
-  Antithesis-instrumented builds; application instrumentation is a separate capability milestone.
+- **Workload**: the upstream etcd workload is one supervised member, driven by four concurrent
+  clients. Each client records every acknowledged put in a journal outside etcd and keeps applying
+  entries while Harmony explores faults. The same workload, image contract, and fault policy will
+  run against v3.5.2 and v3.5.3; only the pinned source revision changes. There are no
+  correctness, portability, batch, or timing knobs. The executable for this entry must be built
+  from that pinned source by the Antithesis Go instrumentation pipeline; a release archive or a
+  stock etcd executable does not satisfy this entry.
 - **Fault surface**: a hard process kill followed by the normal supervisor restart, while the
   clients are applying entries. This targets the small interval between consistent-index
-  persistence and the corresponding entry apply. `KillAt` makes the crash Moment a generic
-  searchable coordinate inside an action; automatically resolved syscall places provide
-  breakpoint boundaries, and `ParkKill` crashes exactly when one is hit. Neither introduces a
-  case-specific delay, address, or probe sequence.
+  persistence and the corresponding entry apply. Dissonance represents the crash coordinate as
+  the ordinal of an instrumented deterministic event. The Antithesis runtime receives that
+  ordinal over an inherited control channel and kills the node synchronously after that many
+  future callbacks; no timer, address, hardware counter, polling loop, or workload-specific
+  probe sequence is involved.
 - **Oracle**: the hook journals each acknowledged put outside etcd, then after a deterministic
   restart reads every journaled key from the recovered member. An acknowledged-but-missing or
   changed value is the case's only failing assertion. A down member, empty journal, or failed
@@ -49,10 +50,10 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
 
 ## Discovery contract
 
-The case has one locked execution profile. CI runs the same bounded search campaign on both arms
-on demand or on schedule. The vulnerable arm must find and replay assertion 1 with evidence point
-11; the v3.5.3 control must stay clean under the identical campaign. A search miss is a regression
-in the test machinery, not a request to tune the workload.
+The case has one locked execution profile. CI will run the same bounded search campaign on both
+instrumented arms on demand or on schedule. The vulnerable arm must find and replay assertion 1
+with evidence point 11; the v3.5.3 control must stay clean under the identical campaign. A search
+miss is a regression in the test machinery, not a request to tune the workload.
 
 The only expected difference between the arms is the upstream etcd fix. Performance experiments
 may add separate profiles later, but they cannot alter the correctness or portability contract

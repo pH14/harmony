@@ -69,16 +69,13 @@ pub enum FaultAction {
     Wait,
     /// SIGKILL one node for the whole horizon.
     Kill(u16),
-    /// SIGKILL one node at a searchable virtual-time coordinate inside the
-    /// action horizon. The coordinate is measured from the start of this
-    /// action, so it is portable across hosts and does not depend on a wall
-    /// clock, a CPU counter, or a workload-specific delay.
-    KillAt {
+    /// Arm an instrumented node to SIGKILL itself after an ordinal number of
+    /// deterministic runtime events during this horizon.
+    EventKill {
         /// The node.
         node: u16,
-        /// Virtual nanoseconds after the action starts. Values beyond the
-        /// horizon are clamped to the final nanosecond of the window.
-        offset_nanos: u64,
+        /// The number of future instrumented events after arming.
+        ordinal: u64,
     },
     /// SIGSTOP one node for the given number of agent ticks, then SIGCONT.
     Pause(u16, u32),
@@ -100,19 +97,6 @@ pub enum FaultAction {
         /// The hit that parks, counted from 1.
         hits: u32,
         /// Length of the hold in microseconds.
-        hold_us: u32,
-    },
-    /// Kill the node when its thread reaches an automatically resolved
-    /// execution place for the selected hit. The kernel breakpoint supplies a
-    /// short hold so the agent can observe the hit before delivering SIGKILL.
-    ParkKill {
-        /// The node.
-        node: u16,
-        /// User virtual address of the instruction in the node's process.
-        addr: u64,
-        /// The hit that crashes, counted from 1.
-        hits: u32,
-        /// Temporary hold in microseconds while the agent observes the hit.
         hold_us: u32,
     },
 }
@@ -199,16 +183,13 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
             )),
             perturb: None,
         },
-        FaultAction::KillAt { node, offset_nanos } => {
-            // Keep the kill window non-empty. A coordinate at or beyond the
-            // horizon means "as late as this action can observe" rather than
-            // silently disabling the fault.
-            let at = start.saturating_add(offset_nanos.min(horizon.saturating_sub(1)));
-            ActionDelta {
-                standing: Some(standing(process_target(node, &Fault::ProcKill), (at, end))),
-                perturb: None,
-            }
-        }
+        FaultAction::EventKill { node, ordinal } => ActionDelta {
+            standing: Some(standing(
+                process_target(node, &Fault::ProcEventKill { ordinal }),
+                (start, end),
+            )),
+            perturb: None,
+        },
         FaultAction::Pause(node, ticks) => {
             // The pause must lift inside its own horizon, so the search always
             // observes the resumed node rather than inheriting a stopped one.
@@ -248,25 +229,6 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                 process_target(
                     node,
                     &Fault::ProcPark {
-                        addr,
-                        hits,
-                        hold: Span(u64::from(hold_us).saturating_mul(1_000)),
-                    },
-                ),
-                (start, end),
-            )),
-            perturb: None,
-        },
-        FaultAction::ParkKill {
-            node,
-            addr,
-            hits,
-            hold_us,
-        } => ActionDelta {
-            standing: Some(standing(
-                process_target(
-                    node,
-                    &Fault::ProcParkKill {
                         addr,
                         hits,
                         hold: Span(u64::from(hold_us).saturating_mul(1_000)),
@@ -567,34 +529,22 @@ mod tests {
     }
 
     #[test]
-    fn kill_at_starts_at_the_searchable_coordinate() {
-        let (start, end) = WINDOWS.window(1);
-        let offset = 123_456;
-        let fault = action_delta(
-            FaultAction::KillAt {
+    fn event_kill_carries_only_the_instrumented_ordinal() {
+        let delta = action_delta(
+            FaultAction::EventKill {
                 node: 2,
-                offset_nanos: offset,
+                ordinal: 41,
             },
-            (start, end),
-        )
-        .standing
-        .expect("coordinate kill installs a standing fault");
+            WINDOWS.window(1),
+        );
+        let fault = delta
+            .standing
+            .expect("event kill installs a standing fault");
         assert_eq!(
             decode_process_target(&fault.target),
-            Some((2, Fault::ProcKill))
+            Some((2, Fault::ProcEventKill { ordinal: 41 }))
         );
-        assert_eq!((fault.start, fault.end), (start + offset, end));
-
-        let late = action_delta(
-            FaultAction::KillAt {
-                node: 2,
-                offset_nanos: u64::MAX,
-            },
-            (start, end),
-        )
-        .standing
-        .expect("late coordinate remains observable");
-        assert_eq!(late.start, end - 1);
+        assert!(delta.perturb.is_none());
     }
 
     #[test]
@@ -671,32 +621,6 @@ mod tests {
             Some((
                 1,
                 Fault::ProcPark {
-                    addr: 0x4b_0e86,
-                    hits: 28,
-                    hold: Span(2_000_000),
-                }
-            ))
-        );
-    }
-
-    #[test]
-    fn park_kill_carries_its_place_hit_and_hold() {
-        let fault = action_delta(
-            FaultAction::ParkKill {
-                node: 1,
-                addr: 0x4b_0e86,
-                hits: 28,
-                hold_us: 2_000,
-            },
-            WINDOWS.window(0),
-        )
-        .standing
-        .expect("park kill installs a standing fault");
-        assert_eq!(
-            decode_process_target(&fault.target),
-            Some((
-                1,
-                Fault::ProcParkKill {
                     addr: 0x4b_0e86,
                     hits: 28,
                     hold: Span(2_000_000),

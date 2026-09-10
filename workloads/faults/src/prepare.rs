@@ -7,14 +7,7 @@
 //! command and its one-time setup command, so the host learns the action
 //! alphabet from the same text the guest agent obeys.
 
-use std::{
-    error::Error,
-    fs,
-    path::{Path, PathBuf},
-};
-
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::{error::Error, path::Path};
 
 use guest_image::Writer;
 use oci_support::image::Ownership;
@@ -64,7 +57,7 @@ fn prepare_rootfs(
         return Err("the bundle must reside inside the staged image".into());
     }
     let bundle = String::from_utf8(std::fs::read(document)?)?;
-    let vocabulary = FaultVocabulary::parse(&bundle)?.with_places(resolve_places(&root))?;
+    let vocabulary = FaultVocabulary::parse(&bundle)?;
     let mut image = base.to_vec();
     image.extend(oci_support::bundle::build_rootfs_segment(&root, owners)?);
     let mut overlay = Writer::new();
@@ -84,181 +77,6 @@ fn prepare_rootfs(
         bundle,
         initramfs: image,
     })
-}
-
-/// Maximum number of automatically discovered execution places.
-///
-/// The place list is an acceleration surface, not a correctness condition:
-/// the ordinary action alphabet remains available when a binary is not an ELF
-/// image or when a host has no binary scanner. Keeping it bounded prevents a
-/// large image full of helper binaries from diluting the searchable alphabet.
-const MAX_AUTO_PLACES: usize = 128;
-
-/// Resolve generic syscall boundaries from the workload's executable image.
-///
-/// Stock release binaries are often stripped, so a symbol-table-only resolver
-/// would silently remove the most useful Park action. The cooperative kernel
-/// can stop a process immediately before a syscall instruction instead. Those
-/// instruction addresses are stable for the pinned binary, independent of the
-/// host CPU and of workload-specific timing. We scan the node payload first;
-/// helper binaries are considered only when it yields no places.
-fn resolve_places(root: &Path) -> Vec<u64> {
-    let mut executables = Vec::new();
-    collect_executables(root, &mut executables);
-    executables.sort_by_key(|path| (!path.starts_with(root.join("opt")), path.clone()));
-    let mut places = Vec::new();
-    for path in executables {
-        places.extend(scan_syscall_instructions(&path));
-        if places.len() >= MAX_AUTO_PLACES {
-            break;
-        }
-    }
-    places.sort_unstable();
-    places.dedup();
-    places.truncate(MAX_AUTO_PLACES);
-    places
-}
-
-fn collect_executables(root: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_dir() {
-            collect_executables(&path, out);
-        } else if file_type.is_file() && is_executable(&path) {
-            out.push(path);
-        }
-    }
-}
-
-#[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
-    fs::metadata(path)
-        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable(_path: &Path) -> bool {
-    true
-}
-
-/// Scan executable PT_LOAD segments for x86-64 `syscall` and arm64 `svc #0`.
-fn scan_syscall_instructions(path: &Path) -> Vec<u64> {
-    let Ok(bytes) = fs::read(path) else {
-        return Vec::new();
-    };
-    if bytes.len() < 64 || bytes.get(0..4) != Some(&b"\x7fELF"[..]) || bytes[5] != 1 {
-        return Vec::new();
-    }
-    let class = bytes[4];
-    let Some(phoff) = read_u64(&bytes, 32) else {
-        return Vec::new();
-    };
-    let Some(phentsize) = read_u16(&bytes, 54).map(usize::from) else {
-        return Vec::new();
-    };
-    let Some(phnum) = read_u16(&bytes, 56).map(usize::from) else {
-        return Vec::new();
-    };
-    if phentsize < 56 || phoff > bytes.len() as u64 {
-        return Vec::new();
-    }
-    let mut places = Vec::new();
-    for index in 0..phnum {
-        let Some(header) = usize::try_from(phoff)
-            .ok()
-            .and_then(|start| start.checked_add(index.checked_mul(phentsize)?))
-        else {
-            break;
-        };
-        let Some(end) = header.checked_add(phentsize) else {
-            break;
-        };
-        if end > bytes.len() {
-            break;
-        }
-        let Some(kind) = read_u32_at(&bytes, header) else {
-            continue;
-        };
-        let Some(flags) = read_u32_at(&bytes, header + 4) else {
-            continue;
-        };
-        if kind != 1 || flags & 1 == 0 {
-            continue;
-        }
-        let Some(offset) = read_u64_at(&bytes, header + 8) else {
-            continue;
-        };
-        let Some(address) = read_u64_at(&bytes, header + 16) else {
-            continue;
-        };
-        let Some(size) = read_u64_at(&bytes, header + 32) else {
-            continue;
-        };
-        let Some(start) = usize::try_from(offset).ok() else {
-            continue;
-        };
-        let Some(length) = usize::try_from(size).ok() else {
-            continue;
-        };
-        let Some(stop) = start.checked_add(length).map(|end| end.min(bytes.len())) else {
-            continue;
-        };
-        if stop <= start {
-            continue;
-        }
-        let pattern: &[u8] = if class == 2 {
-            b"\x0f\x05"
-        } else {
-            b"\x01\x00\x00\xd4"
-        };
-        for position in start..stop.saturating_sub(pattern.len()).saturating_add(1) {
-            if bytes[position..position + pattern.len()] == *pattern {
-                let Some(delta) = u64::try_from(position - start).ok() else {
-                    continue;
-                };
-                let place = address.saturating_add(delta);
-                // The x86 guest's generic execution breakpoint uses an
-                // eight-byte hardware slot.  Hardware requires its address
-                // to be naturally aligned; the slot still covers the
-                // syscall instruction inside that word.  ARM64 execution
-                // breakpoints are four-byte instructions and the `svc`
-                // pattern is already naturally aligned.
-                places.push(if class == 2 { place & !7 } else { place });
-            }
-        }
-    }
-    places
-}
-
-fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
-    bytes
-        .get(offset..offset + 2)
-        .map(|slice| u16::from_le_bytes([slice[0], slice[1]]))
-}
-
-fn read_u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
-    bytes
-        .get(offset..offset + 4)
-        .map(|slice| u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
-}
-
-fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
-    bytes.get(offset..offset + 8).map(|slice| {
-        u64::from_le_bytes([
-            slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
-        ])
-    })
-}
-
-fn read_u64_at(bytes: &[u8], offset: usize) -> Option<u64> {
-    read_u64(bytes, offset)
 }
 
 const INIT: &[u8] = br##"#!/bin/sh
@@ -342,30 +160,6 @@ ready /usr/bin/etcdctl endpoint health
     fn image(root: &Path) {
         std::fs::create_dir_all(root.join("etc/harmony")).unwrap();
         std::fs::write(root.join(BUNDLE_PATH), BUNDLE).unwrap();
-    }
-
-    #[test]
-    fn stripped_elf_syscall_places_are_resolved_from_executable_bytes() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("opt/node");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let mut elf = vec![0_u8; 0x110];
-        elf[0..4].copy_from_slice(b"\x7fELF");
-        elf[4] = 2; // ELFCLASS64
-        elf[5] = 1; // ELFDATA2LSB
-        elf[32..40].copy_from_slice(&64_u64.to_le_bytes());
-        elf[54..56].copy_from_slice(&56_u16.to_le_bytes());
-        elf[56..58].copy_from_slice(&1_u16.to_le_bytes());
-        elf[64..68].copy_from_slice(&1_u32.to_le_bytes()); // PT_LOAD
-        elf[68..72].copy_from_slice(&5_u32.to_le_bytes()); // PF_R | PF_X
-        elf[72..80].copy_from_slice(&0x100_u64.to_le_bytes());
-        elf[80..88].copy_from_slice(&0x400000_u64.to_le_bytes());
-        elf[96..104].copy_from_slice(&0x10_u64.to_le_bytes());
-        elf[0x101..0x103].copy_from_slice(b"\x0f\x05");
-        std::fs::write(&path, elf).unwrap();
-        #[cfg(unix)]
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(resolve_places(root.path()), [0x400000]);
     }
 
     #[test]
