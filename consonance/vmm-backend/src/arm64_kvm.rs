@@ -1156,6 +1156,9 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     /// while the guest remains in the handler.
     reported_active_irq: Option<GicIntId>,
     counts: ExitCounts,
+    /// Host-only latch used by the session watchdog to abandon a vCPU that
+    /// stops returning from KVM_RUN. A canceled backend is never resumed.
+    cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl<K: Arm64Kvm> Arm64KvmBackend<K> {
@@ -1179,6 +1182,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             accepted_irq: None,
             reported_active_irq: None,
             counts: ExitCounts::default(),
+            cancel_run: std::sync::Arc::default(),
         }
     }
 
@@ -1254,8 +1258,19 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
     /// Enter the guest and decode. Re-enters on control exits (`None`).
     fn enter_guest(&mut self) -> Result<Exit<Arm64>> {
         loop {
+            if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(BackendError::Internal("KVM run canceled by host"));
+            }
             self.apply_pending_irq()?;
-            let view = self.kvm.run()?;
+            let view = match self.kvm.run() {
+                Ok(view) => view,
+                Err(BackendError::Io(error)) if error.kind() == std::io::ErrorKind::Interrupted => {
+                    // A host signal is a control wakeup, not a guest exit.
+                    // Loop through the cancellation check before re-entry.
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             self.observe_irq_acceptance()?;
             if let Some((exit, pending)) = decode_exit(&view)? {
                 if view.exit_reason == KVM_EXIT_MMIO && view.mmio.is_write {
@@ -1605,6 +1620,13 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
             },
         }
     }
+
+    /// Set the latch before interrupting the vCPU thread with a signal. The
+    /// entry loop checks it before every KVM_RUN, so cancellation remains a
+    /// host-only event and the abandoned VM cannot re-enter guest code.
+    fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        Some(std::sync::Arc::clone(&self.cancel_run))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1625,6 +1647,8 @@ pub struct FakeKvm {
     regs128: std::collections::BTreeMap<u64, [u8; 16]>,
     mp_state: MpState,
     run_queue: std::collections::VecDeque<KvmRunView>,
+    #[cfg(test)]
+    run_errors: std::collections::VecDeque<std::io::ErrorKind>,
     /// The ordered ioctl log — e.g. `"vcpu_init"`, `"set_one_reg"`, `"run"`.
     pub calls: Vec<&'static str>,
     /// The last MMIO-load data the backend staged (for completion assertions).
@@ -1903,6 +1927,10 @@ impl Arm64Kvm for FakeKvm {
 
     fn run(&mut self) -> Result<KvmRunView> {
         self.calls.push("run");
+        #[cfg(test)]
+        if let Some(kind) = self.run_errors.pop_front() {
+            return Err(BackendError::Io(std::io::Error::from(kind)));
+        }
         if self.accept_irqs {
             let levels = self
                 .vgic_attrs
@@ -2773,6 +2801,88 @@ mod tests {
             b.ensure_runnable(),
             Err(BackendError::PendingCompletion)
         ));
+    }
+
+    #[test]
+    fn cancellation_latch_prevents_the_next_guest_entry() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(KvmRunView {
+            exit_reason: KVM_EXIT_SYSTEM_EVENT,
+            system_event_type: KVM_SYSTEM_EVENT_SHUTDOWN,
+            ..Default::default()
+        });
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+
+        let cancel = backend
+            .cancellation_flag()
+            .expect("arm64 KVM must support host cancellation");
+        let same_cancel = backend
+            .cancellation_flag()
+            .expect("arm64 KVM must keep exposing its cancellation latch");
+        assert!(std::sync::Arc::ptr_eq(&cancel, &same_cancel));
+        cancel.store(true, std::sync::atomic::Ordering::Release);
+
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Internal("KVM run canceled by host"))
+        ));
+        assert_eq!(
+            backend
+                .kvm()
+                .calls
+                .iter()
+                .filter(|&&call| call == "run")
+                .count(),
+            0,
+            "a canceled backend must not enter the guest"
+        );
+    }
+
+    #[test]
+    fn interrupted_run_rechecks_cancellation_before_reentry() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.run_errors.push_back(std::io::ErrorKind::Interrupted);
+        fake.push_run(KvmRunView {
+            exit_reason: KVM_EXIT_SYSTEM_EVENT,
+            system_event_type: KVM_SYSTEM_EVENT_SHUTDOWN,
+            ..Default::default()
+        });
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+
+        assert_eq!(backend.run().unwrap(), CommonExit::Shutdown.into());
+        assert_eq!(
+            backend
+                .kvm()
+                .calls
+                .iter()
+                .filter(|&&call| call == "run")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn non_interrupted_run_error_is_not_retried() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.run_errors.push_back(std::io::ErrorKind::Other);
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+
+        assert!(matches!(backend.run(), Err(BackendError::Io(_))));
+        assert_eq!(
+            backend
+                .kvm()
+                .calls
+                .iter()
+                .filter(|&&call| call == "run")
+                .count(),
+            1
+        );
     }
 
     #[test]
