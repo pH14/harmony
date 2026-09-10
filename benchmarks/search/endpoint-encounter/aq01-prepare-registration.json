@@ -1,0 +1,44 @@
+{
+  "format": "metroid-archive-challenge-qualification-registration-v1",
+  "registered_utc": "2026-09-10T04:41:59.779552+00:00",
+  "deadline_utc": "2026-09-10T05:01:59.779552+00:00",
+  "purpose": "Qualify the original E01 supplied root before any archive challenge search.",
+  "host": "msr1",
+  "source_commit": "02798b443a448e57bc41e1f11307fd50092d20f7",
+  "source_tree_sha256": "39b97e3df52c8c75304a77a732713335ac1adadacfa2ce50ad4f14a8181e201e",
+  "source_archive_sha256": "c6617a06e3668e47b4ad5498580ccea36e4057e008d7fd315e019aa31703dc6b",
+  "binary": "builds/archive-challenge-001/metroid-archive-challenge",
+  "binary_sha256": "59a82d0142b387189773e3f7bd6afd1b926eb673e832c72a4c8564d28b6520a2",
+  "build_info_sha256": "37d936b5f73e068367f6ff539d3b9b4e1c2dcf0430539734fe8344e50a13ad1c",
+  "launcher_sha256": "8160d5c75f85833c9d0aeffa1bfc7777a85a4872e03b99eb66636438c70dc519",
+  "input_sha256": "5126eee64820c99697194dec63a20c44491ec7f913d49e77e4fefb97f4f319c5",
+  "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+  "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+  "block_known_auxiliary_ceiling": 4000000,
+  "prior_cumulative_known_auxiliary_frames": 50017208,
+  "funding": "Separate qualification block after S02 closure. All qualification search is diagnostic auxiliary work, never performance-search evidence.",
+  "cells": [
+    {
+      "id": "aq01-prepare",
+      "mode": "prepare",
+      "request": "aq01-prepare.json",
+      "request_sha256": "996fa115df85219a8c07ad020573856401986ba591a4b9a62d7ec0a111e14906",
+      "output": "archive-challenge-001/prepare",
+      "cpu": "4",
+      "memory_max": "512M",
+      "max_wall_seconds": 120,
+      "service_runtime_seconds": 150,
+      "file_limit_bytes": 33554432,
+      "output_limit_bytes": 134217728,
+      "direct_frame_ceiling": 300000,
+      "expected_direct_physical_frames": 237608
+    }
+  ],
+  "pass_rule": [
+    "Two complete held prefix replays agree on the exact live, undefeated snapshot and raw context.",
+    "Root decoded state, raw context and emulator SHA agree with E01; source and assets are pinned.",
+    "Offline extraction from root-snapshot.json agrees on emulator bytes, decoded state, terminal marker and route frame count.",
+    "Commit the resulting snapshot digest and final one/two-slot requests before either 16-job campaign. No retry or root replacement follows failure."
+  ],
+  "unknown": "Engine setup/unadmitted/reconstruction are not part of this prepare-only phase. Later campaign qualification must retain those additional unknown costs."
+}
