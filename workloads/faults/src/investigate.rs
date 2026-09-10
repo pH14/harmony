@@ -1045,39 +1045,27 @@ pub fn stop_from_observations(stop: FaultStop, deadline_reached: bool) -> StopRe
     }
 }
 
-/// What a step must do about the action window it sits in.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct WindowEntry {
-    /// Install the standing-fault list for every action up to this window.
-    pub open: bool,
-    /// Stage the window's one-shot host perturbation.
-    pub stage: bool,
-}
-
-/// Whether a step at `now` enters the window starting at `start`.
+/// Whether a step at `now` enters the action window starting at `start`.
 ///
-/// A window is entered once per continuation. Settling carries a run past a
-/// boundary, so a point inside a window it has not opened is still an entry;
-/// comparing `now` against `start` alone opens only the window a run starts
-/// exactly on and leaves every later one without its standing faults.
+/// A window is entered by crossing its start, and settling carries a run past a
+/// boundary, so entry is the first step taken inside a window rather than an
+/// exact time match. Comparing `now` against `start` alone opens only the
+/// window a run begins exactly on and leaves every later one without its
+/// standing faults.
 ///
-/// A fresh process installs the standing list again for the window it restored
-/// into, which is the same bytes as before and changes nothing. A one-shot
-/// perturbation belongs to the crossing of the window's start, so a restore
-/// landing inside a window an earlier run already crossed does not stage it.
+/// A restore that lands inside a window did not cross that window's start. The
+/// checkpoint was sealed while the guest ran under that window's standing list
+/// and carries it, and its one-shot perturbation has already fired, so the
+/// first step of a restored run opens nothing and costs no settle.
 #[must_use]
-pub fn window_entry(
+pub fn enters_window(
     now: u64,
     start: u64,
     index: usize,
     opened: Option<usize>,
     first_step: bool,
-) -> WindowEntry {
-    let open = opened != Some(index);
-    WindowEntry {
-        open,
-        stage: open && (!first_step || now <= start),
-    }
+) -> bool {
+    opened != Some(index) && !(first_step && now > start)
 }
 
 #[cfg(all(
