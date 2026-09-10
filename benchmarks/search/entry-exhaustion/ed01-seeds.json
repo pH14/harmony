@@ -1,0 +1,11 @@
+{
+  "recorded_utc": "2026-09-10T08:11:15.974888+00:00",
+  "seeds": [
+    2812478749,
+    1088573441,
+    3566627946,
+    3624654623
+  ],
+  "method": "Four secrets.randbits(32) draws after EQ01 qualification and before any ED01 outcomes; audit saved records on both hosts before dispatch.",
+  "role": "Fresh entry-cutoff development, not untouched boss/Wily validation."
+}

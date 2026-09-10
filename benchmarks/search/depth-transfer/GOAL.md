@@ -661,3 +661,13 @@ at-most1.25 CPU/wall ratios. Stop at mathematical futility. A failed screen earn
 no intermediate cutoff, new bank, longer horizon or secondary-metric rescue.
 Independent confirmation and same-policy MM2 transfer must precede untouched
 boss/Wily validation. The full goal and all prior negative gates remain intact.
+
+EQ01 passes all three native fixtures, full replay, ARM buffer identity and
+cross-host event identity. All services are terminal; it charges1,775,802 known
+auxiliary frames. Resumed totals are1,083,261,532 admitted search and60,275,093
+known auxiliary frames. ED01 now separately freezes four new development pairs,
+cutoff3 versus64 at first energy tank,50M per arm,400M nominal search plus bounded
+drain and8M known auxiliary allowance. Its fixed deadline is2026-09-10T10:14:09Z.
+Run pairs0/1 first, one per host, then score the registered gate. Run pairs2/3
+only if the gate remains attainable and their complete limits fit. No retry,
+intermediate cutoff, replacement seed, horizon extension or secondary rescue.

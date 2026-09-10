@@ -1,0 +1,59 @@
+{
+  "format": "entry-exhaustion-eq01-qualification-v1",
+  "decision": "pass",
+  "records": [
+    {
+      "cell": "msr1/one-slot",
+      "admitted_frames": 293214,
+      "inferred_campaign_replay_admitted_frames": 293214,
+      "twice_replayed_witness_frames": 5506,
+      "known_auxiliary_frames": 591934,
+      "elapsed_seconds": 20.32314213202335,
+      "cpu_seconds": 28.502489,
+      "max_process_rss_bytes": 103772160,
+      "artifact_sha256": {
+        "stream.jsonl": "f1eb4f60701cab892b5273d37a4471f7b762f6a2da425d24bc8ae235a0df401c",
+        "campaign.json": "ee8be6dff5609aca68caf37a854f54698a9e9294637d9df6e80bc5d5f4e0ebb7",
+        "checkpoint.json": "65c743458a67f340b88596a8ef9c91006aabe777235233e64ad56dd0111f2980"
+      }
+    },
+    {
+      "cell": "msr1/two-slots",
+      "admitted_frames": 293214,
+      "inferred_campaign_replay_admitted_frames": 293214,
+      "twice_replayed_witness_frames": 5506,
+      "known_auxiliary_frames": 591934,
+      "elapsed_seconds": 19.17915548098972,
+      "cpu_seconds": 28.00394,
+      "max_process_rss_bytes": 103841792,
+      "artifact_sha256": {
+        "stream.jsonl": "f1eb4f60701cab892b5273d37a4471f7b762f6a2da425d24bc8ae235a0df401c",
+        "campaign.json": "ee8be6dff5609aca68caf37a854f54698a9e9294637d9df6e80bc5d5f4e0ebb7",
+        "checkpoint.json": "65c743458a67f340b88596a8ef9c91006aabe777235233e64ad56dd0111f2980"
+      }
+    },
+    {
+      "cell": "ms02/two-slots",
+      "admitted_frames": 293214,
+      "inferred_campaign_replay_admitted_frames": 293214,
+      "twice_replayed_witness_frames": 5506,
+      "known_auxiliary_frames": 591934,
+      "elapsed_seconds": 9.03950401104521,
+      "cpu_seconds": 12.899171,
+      "max_process_rss_bytes": 104706048,
+      "artifact_sha256": {
+        "stream.jsonl": "9b765ab374ef74f58c099ebb7571aedea0b9c99695378ff16e145983689bab6f",
+        "campaign.json": "8dc54ddeb440789c881dc6a0b5a9a6cf6289a2c400234f5c9ed356a9dc9b97d7",
+        "checkpoint.json": "d2ef9f59a0103c8f0ec70b25e386b9ec2480c46721cf3415c0df17d1735b8973"
+      }
+    }
+  ],
+  "same_host_buffer_identity": true,
+  "cross_host_post_header_stream_identity": true,
+  "known_auxiliary_frames": 1775802,
+  "limits": [
+    "Reused fixture; no performance or fresh-validation claim.",
+    "Campaign replay cost inferred from admitted work; setup, unadmitted work and reconstruction remain additional unknowns.",
+    "Cross-host machine snapshots and costs are not claimed identical."
+  ]
+}

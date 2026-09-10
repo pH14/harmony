@@ -1,0 +1,75 @@
+{
+  "format": "entry-exhaustion-eq01-ledger-v1",
+  "closed_utc": "2026-09-10T08:11:15.974517+00:00",
+  "prior_ledger_sha256": "91f307c80a8e3cb162fc3bf494de58936d5d76b8d70e928ec7ab99c6e86e5cf8",
+  "registration_sha256": "31bbffe7fa603e632b00118f5a3dd3b8dafcb076321d374423c11cd39743049a",
+  "known_auxiliary_frame_ceiling": 8000000,
+  "known_auxiliary_frames": 1775802,
+  "cells": [
+    {
+      "cell": "msr1/one-slot",
+      "admitted_frames": 293214,
+      "inferred_campaign_replay_admitted_frames": 293214,
+      "twice_replayed_witness_frames": 5506,
+      "known_auxiliary_frames": 591934,
+      "elapsed_seconds": 20.32314213202335,
+      "cpu_seconds": 28.502489,
+      "max_process_rss_bytes": 103772160,
+      "artifact_sha256": {
+        "stream.jsonl": "f1eb4f60701cab892b5273d37a4471f7b762f6a2da425d24bc8ae235a0df401c",
+        "campaign.json": "ee8be6dff5609aca68caf37a854f54698a9e9294637d9df6e80bc5d5f4e0ebb7",
+        "checkpoint.json": "65c743458a67f340b88596a8ef9c91006aabe777235233e64ad56dd0111f2980"
+      }
+    },
+    {
+      "cell": "msr1/two-slots",
+      "admitted_frames": 293214,
+      "inferred_campaign_replay_admitted_frames": 293214,
+      "twice_replayed_witness_frames": 5506,
+      "known_auxiliary_frames": 591934,
+      "elapsed_seconds": 19.17915548098972,
+      "cpu_seconds": 28.00394,
+      "max_process_rss_bytes": 103841792,
+      "artifact_sha256": {
+        "stream.jsonl": "f1eb4f60701cab892b5273d37a4471f7b762f6a2da425d24bc8ae235a0df401c",
+        "campaign.json": "ee8be6dff5609aca68caf37a854f54698a9e9294637d9df6e80bc5d5f4e0ebb7",
+        "checkpoint.json": "65c743458a67f340b88596a8ef9c91006aabe777235233e64ad56dd0111f2980"
+      }
+    },
+    {
+      "cell": "ms02/two-slots",
+      "admitted_frames": 293214,
+      "inferred_campaign_replay_admitted_frames": 293214,
+      "twice_replayed_witness_frames": 5506,
+      "known_auxiliary_frames": 591934,
+      "elapsed_seconds": 9.03950401104521,
+      "cpu_seconds": 12.899171,
+      "max_process_rss_bytes": 104706048,
+      "artifact_sha256": {
+        "stream.jsonl": "9b765ab374ef74f58c099ebb7571aedea0b9c99695378ff16e145983689bab6f",
+        "campaign.json": "8dc54ddeb440789c881dc6a0b5a9a6cf6289a2c400234f5c9ed356a9dc9b97d7",
+        "checkpoint.json": "d2ef9f59a0103c8f0ec70b25e386b9ec2480c46721cf3415c0df17d1735b8973"
+      }
+    }
+  ],
+  "cumulative_since_user_resumption_admitted_search_frames": 1083261532,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 60275093,
+  "services": {
+    "msr1": {
+      "unit": "harmony-entry-eq01-20260910",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "MainPID": 0,
+      "ExecMainStatus": 0
+    },
+    "ms02": {
+      "unit": "harmony-entry-eq01-20260910",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "MainPID": 0,
+      "ExecMainStatus": 0
+    }
+  },
+  "unknown": "Campaign replay cost inferred from admitted work; setup, unadmitted work and reconstruction remain unknown. No performance/validation result.",
+  "old_expired_tranche": "489,962,470 admitted search and 30,112,297 known auxiliary frames remain frozen and excluded from these renewed totals."
+}

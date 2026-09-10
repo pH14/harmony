@@ -1,0 +1,15 @@
+{
+  "seeds": [
+    2812478749,
+    1088573441,
+    3566627946,
+    3624654623
+  ],
+  "scope": "Uncompressed JSON/JSONL under benchmarks/search; current ED01 seed files excluded from prior-use matches. Host records were separately audited.",
+  "matched_paths": [
+    "benchmarks/search/entry-exhaustion/ed01-seed-audit-msr1.json",
+    "benchmarks/search/entry-exhaustion/ed01-seeds.json",
+    "benchmarks/search/entry-exhaustion/ed01-seed-audit-ms02.json"
+  ],
+  "prior_use_matches": []
+}

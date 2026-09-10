@@ -86,3 +86,32 @@ boss/Wily validation. No native allocation exists until separately registered.
 
 The original repeated fresh boss/Wily goal remains active and unachieved. All
 work stays in PR #287. The expired tranche and all completed ledgers stay frozen.
+
+## EQ01 passed; ED01 is frozen before fresh dispatch
+
+[EQ01](eq01-analysis.json) completes three2,000-job native fixtures at293,214
+admitted frames each. Both ARM buffer variants have identical stream, campaign
+and checkpoint bytes; ARM/x86 post-header event streams match exactly. Full
+campaign/checkpoint replay and held witnesses pass. The processes take20.32,
+19.18 and9.04 seconds and all services are terminal. Lossless evidence is in
+`eq01-output/`; the verifier recomputes the same analysis from compressed files.
+[Known auxiliary cost](ledger-after-eq01.json) is1,775,802 frames, with cumulative
+resumed totals1,083,261,532 admitted search and60,275,093 known auxiliary frames.
+Setup, unadmitted work and reconstruction remain separately unknown.
+
+[ED01](ed01-registration.json) freezes four fresh paired seeds checked against
+saved records on both hosts. Only cutoff3→64 differs within each pair. The
+first wave runs pairs0/1 on msr1/ms02; pairs2/3 remain undispatched unless the
+three-win gate is still attainable. Each arm has the calibrated50M energy-tank
+horizon,1M-job/20-minute search ceiling,4 workers,8GiB logical archive,12GiB service
+memory and4GiB output limit. Arms are sequential on the same CPUs with balanced
+order. The complete block has400M nominal admitted frames plus bounded drain,
+8M known auxiliary frames and an unchanged two-hour deadline, including all
+completion time. Failed/incomplete cells are preserved and stop dispatch.
+
+The scorer reuses the already tested four-pair resource/endpoint logic from the
+persistence panel and maps only its historical decision labels. Those old
+outcomes do not enter ED01. Existing five planted scorer tests pass; empty ED01
+evidence remains incomplete and cannot pass. Registration commits precede all
+fresh execution. A precursor win would still require independent confirmation
+and MM2 transfer before untouched boss/Wily validation.

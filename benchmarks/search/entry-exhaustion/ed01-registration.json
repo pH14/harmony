@@ -1,0 +1,107 @@
+{
+  "format": "entry-exhaustion-ed01-registration-v1",
+  "registered_utc": "2026-09-10T08:14:09.201071+00:00",
+  "deadline_utc": "2026-09-10T10:14:09.201071+00:00",
+  "purpose": "One prospective existing-cutoff ablation after EQ01; earlier outcome panels are excluded.",
+  "horizon_frames": 50000000,
+  "nominal_search_limit": 400000000,
+  "bounded_inflight_drain_per_cell": 6144,
+  "known_auxiliary_limit": 8000000,
+  "prior_block_ledger_sha256": "d513e6d61266d3dac1ad7cdb6e81017946932134aca42e90313042c918cd2ca1",
+  "decision_sha256": "cb78cb7391b8abcc778126352d6fbc5e0c41c6433251b5b87f8d7df04c050b34",
+  "scorer_sha256": "a68eac1b6677a37a2326bcffe38b7e198238f862308ae14006d707b6a57d0d63",
+  "panel_adapter_sha256": "2b756aa35bd3c207d08f1e7ceac96783e1d57eeea34d0fcf24e3a7d32e6d3217",
+  "helper_sha256": {
+    "score_screen.py": "507e727de3bccb1f6b791433def8f258b762f34809432a6176263e82b3b86036",
+    "named_milestone_endpoint.py": "f2badcaa078f4c80c858e78416221b51dbcd8cc624eee53c2f6b2784e0cc678e"
+  },
+  "milestone_stop": {
+    "name": "energy_tank",
+    "observation_policy": "metroid-named-progress-v2"
+  },
+  "seed_registration_sha256": "b3953b4979b979f747cb5b6d69b3a5d967c7027da2c0711c0a064103574dba8b",
+  "seed_audits_sha256": {
+    "msr1": "8120d3b383aa41c66b0ff760aa4cae33d4479e01b930e3d82b6415b1dd7b8838",
+    "ms02": "8dba586cde156d477467a1f05295295548b89970d61396c691c85b17345eee5a",
+    "local": "712be9afc3adbf0ba98e94d0e6ea0117485adbca47a609b559e03c6d9fcaa9b6"
+  },
+  "qualification_sha256": "8ef1742d1a3edbc8cb6d647a0954cdb8aa0692d1db1abf9a32c57c948bd2090e",
+  "schedule": "Wave1 pairs0/1, one pair per host, sequential arms. Complete both pairs, score once; stop on measurement/resource failure or unattainable three-win gate. Only otherwise dispatch pairs2/3 within the same frozen deadline and budgets. No retries or replacements.",
+  "identity_difference": "Only selector entry cutoff3 versus64 differs within each pair; source, assets, CPU set and all other identities match. No artificial or selected origins.",
+  "screen": {
+    "budget_frames": 50000000,
+    "milestone_stop": {
+      "name": "energy_tank",
+      "observation_policy": "metroid-named-progress-v2"
+    },
+    "required_strict_wins": 3,
+    "pairs": [
+      {
+        "seed": 2812478749,
+        "control": "ed01-pair-0-control",
+        "candidate": "ed01-pair-0-candidate"
+      },
+      {
+        "seed": 1088573441,
+        "control": "ed01-pair-1-control",
+        "candidate": "ed01-pair-1-candidate"
+      },
+      {
+        "seed": 3566627946,
+        "control": "ed01-pair-2-control",
+        "candidate": "ed01-pair-2-candidate"
+      },
+      {
+        "seed": 3624654623,
+        "control": "ed01-pair-3-control",
+        "candidate": "ed01-pair-3-candidate"
+      }
+    ],
+    "resources": {
+      "max_candidate_to_control_ratio": 1.25,
+      "measurement": "event_stopped_cell_totals_v1"
+    },
+    "criterion": "Three strict wins and15% lower mean restricted energy-tank cost, with event-stopped CPU and elapsed totals at most1.25 times control. Allocation rule, not population significance.",
+    "early_stop": "Complete each dispatched pair; stop when three wins become impossible or measurement/resource limits fail."
+  },
+  "panels": [
+    {
+      "id": "ed01-pair-0",
+      "seed": 2812478749,
+      "host": "msr1",
+      "cpus": "8-11",
+      "registration": "ed01-pair-0-registration.json",
+      "registration_sha256": "f9f4d602ce8e15a7822996b9559f870fde91a3f67a2b496ea0914dd6ea911f13",
+      "service_runtime_seconds": 2900
+    },
+    {
+      "id": "ed01-pair-1",
+      "seed": 1088573441,
+      "host": "ms02",
+      "cpus": "0-3",
+      "registration": "ed01-pair-1-registration.json",
+      "registration_sha256": "ca8f2f7f6d6525cc3ce447e32c2787285b42bba0c2618aa815eb146789e1a490",
+      "service_runtime_seconds": 2900
+    },
+    {
+      "id": "ed01-pair-2",
+      "seed": 3566627946,
+      "host": "msr1",
+      "cpus": "8-11",
+      "registration": "ed01-pair-2-registration.json",
+      "registration_sha256": "5064efa5120eb4c0a6c6f7cf8ebbd392bed9ad815272d950094b098affe2c722",
+      "service_runtime_seconds": 2900
+    },
+    {
+      "id": "ed01-pair-3",
+      "seed": 3624654623,
+      "host": "ms02",
+      "cpus": "0-3",
+      "registration": "ed01-pair-3-registration.json",
+      "registration_sha256": "23bc1be9de3751180357d8b33e1f1046d7032434c4884fb7c6449616c17ae56a",
+      "service_runtime_seconds": 2900
+    }
+  ],
+  "pass": "Earns independent confirmation and subsequent same-policy MM2 transfer, not untouched validation or goal completion.",
+  "failure": "Close this cutoff ablation; no intermediate cutoff, new bank, longer horizon, secondary-metric rescue or automatic pivot."
+}
