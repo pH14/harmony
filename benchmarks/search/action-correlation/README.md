@@ -91,6 +91,18 @@ seed separation is not a proof of statistical independence. Actual emulator
 work can also differ after death/terminal boundaries despite identical proposed
 frame totals. Performance panels must compare actual work and resources.
 
+The [independent spectrum check](verify_spectrum.py) applies each frozen matrix
+to a complete tensor-contrast basis. For functions involving one, two, or three
+control components, the candidate's eigenvalues are respectively `1/3`, `1/6`,
+and `0`; the matched whole-command control has `37/210` for every nonconstant
+function. Their multiplicities are 10, 17, and 8. Thus the candidate retains
+individual-component correlations more strongly, pair interactions slightly
+less, and triple interactions not at all across one ordinary transition. This
+is a precise difference despite identical complete-command run lengths. Special
+taps multiply these eigenvalues by `11/12`; independent suffix starts truncate
+the dependence. [All basis checks pass](kernel-spectrum.json) without emulation.
+This explanation was added after registration and changes no policy or gate.
+
 ## Decision gate
 
 The exact finite checks pass without emulation. This earns only an explicit,

@@ -1,0 +1,27 @@
+{
+  "format": "action-correlation-dispatch-checkpoint-v1",
+  "recorded_utc": "2026-09-10T00:00:58.188380+00:00",
+  "registration_commit": "70da940b",
+  "registration_sha256": "ce8d0a4b38cde026149aee74c92fd97d54e21324529184b5df9495de8e18bafa",
+  "published_pr": 287,
+  "published_head": "78d03b18aa7f6293f191c79fdfe8bbabb7f705c0",
+  "first_wave": [
+    {
+      "triplet": 0,
+      "host": "msr1",
+      "root": "/root/harmony-retention-theory-20260908",
+      "unit": "harmony-action-d01-triplet0-20260909.service",
+      "started_utc": "2026-09-09T23:51:02+00:00"
+    },
+    {
+      "triplet": 1,
+      "host": "ms02",
+      "root": "/root/harmony-depth-transfer-20260909",
+      "unit": "harmony-action-d01-triplet1-20260909.service",
+      "started_utc": "2026-09-09T23:51:09+00:00"
+    }
+  ],
+  "second_wave_dispatched": false,
+  "next_action": "Retrieve completed results.json for triplets 0 and 1 as triplet-0-results.json and triplet-1-results.json. Run score_development.py against d01-registration.json. Require both triplets complete and both comparison gates attainable, sufficient deadline reservation, and remaining frame/auxiliary balance before dispatching the already registered triplets 2 and 3. Preserve all failures and do not retry implicitly.",
+  "goal": "Active; original repeated fresh boss/Wily objective remains unmet. No performance conclusion from partial triplets."
+}

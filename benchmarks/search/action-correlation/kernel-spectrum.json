@@ -1,0 +1,84 @@
+{
+  "format": "action-correlation-spectrum-v1",
+  "ordinary_basis_multiplicities": {
+    "0": 1,
+    "1": 10,
+    "2": 17,
+    "3": 8
+  },
+  "kernels": {
+    "iid": {
+      "ordinary_eigenvalue_by_interaction_degree": {
+        "0": {
+          "exact": "1",
+          "decimal": 1.0
+        },
+        "1": {
+          "exact": "0",
+          "decimal": 0.0
+        },
+        "2": {
+          "exact": "0",
+          "decimal": 0.0
+        },
+        "3": {
+          "exact": "0",
+          "decimal": 0.0
+        }
+      },
+      "basis_vectors_checked": 36,
+      "augmented_special_tap_dimension": 37
+    },
+    "component_half": {
+      "ordinary_eigenvalue_by_interaction_degree": {
+        "0": {
+          "exact": "1",
+          "decimal": 1.0
+        },
+        "1": {
+          "exact": "1/3",
+          "decimal": 0.3333333333333333
+        },
+        "2": {
+          "exact": "1/6",
+          "decimal": 0.16666666666666666
+        },
+        "3": {
+          "exact": "0",
+          "decimal": 0.0
+        }
+      },
+      "basis_vectors_checked": 36,
+      "augmented_special_tap_dimension": 37
+    },
+    "matched_whole_repeat": {
+      "ordinary_eigenvalue_by_interaction_degree": {
+        "0": {
+          "exact": "1",
+          "decimal": 1.0
+        },
+        "1": {
+          "exact": "37/210",
+          "decimal": 0.1761904761904762
+        },
+        "2": {
+          "exact": "37/210",
+          "decimal": 0.1761904761904762
+        },
+        "3": {
+          "exact": "37/210",
+          "decimal": 0.1761904761904762
+        }
+      },
+      "basis_vectors_checked": 36,
+      "augmented_special_tap_dimension": 37
+    }
+  },
+  "interpretation": "The candidate preserves individual-component contrasts more strongly than the matched whole-command control, but preserves two-component contrasts slightly less and erases three-component contrasts after one ordinary transition.",
+  "limits": [
+    "Ideal finite kernels only; no game outcome, PRNG independence or useful-discovery claim.",
+    "Special taps multiply the nonconstant eigenvalues by 11/12; suffix boundaries start independently.",
+    "Analytical explanation added after panel registration; no policy, parameter or decision gate changes."
+  ],
+  "emulator_frames": 0
+}
