@@ -1,7 +1,12 @@
 # Diagnostic branch only: replay the pinned reference with observation logging.
 name: Snapshot KVM reproduction
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      reference:
+        description: Run the pinned historical investigation
+        type: boolean
+        default: true
 permissions:
   contents: read
   actions: read
@@ -10,6 +15,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   reference:
+    if: ${{ inputs.reference }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     defaults:
@@ -81,3 +87,27 @@ jobs:
           path: reference/reports
           retention-days: 14
           if-no-files-found: error
+
+  completion:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Test completion retirement and cold restore on real KVM
+        shell: bash
+        run: |
+          mkdir -p reports
+          git rev-parse HEAD > reports/head.txt
+          cp .github/scripts/snapshot-completion-test.rs consonance/vmm-backend/tests/kvm_smoke.rs
+          git diff > reports/test.patch
+          test -c /dev/kvm
+          sudo chmod 666 /dev/kvm
+          uname -a > reports/host.txt
+          cargo test --locked -p vmm-backend --test kvm_smoke completion_retirement -- --ignored --test-threads=1 2>&1 | tee reports/completion.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: completion-kvm-${{ github.run_id }}
+          path: reports
+          retention-days: 14
