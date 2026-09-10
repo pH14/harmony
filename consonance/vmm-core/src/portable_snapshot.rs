@@ -18,11 +18,11 @@ use environment::{channel, input_spec::ServiceConfig};
 use sha2::{Digest, Sha256};
 
 use crate::snapshot::SnapshotError;
-use crate::vmm::SdkSnapshot;
+use crate::vmm::{SdkSnapshot, SdkStop};
 use snapshot_store::PAGE_SIZE;
 
 const MAGIC: [u8; 8] = *b"HMSNAP01";
-const VERSION: u16 = 3;
+const VERSION: u16 = 4;
 const FLAG_SDK: u16 = 1;
 const FLAG_TAINTED: u16 = 1 << 1;
 const KNOWN_FLAGS: u16 = FLAG_SDK | FLAG_TAINTED;
@@ -31,7 +31,7 @@ const MAX_VM_STATE_LEN: usize = 16 * 1024 * 1024;
 const MAX_SDK_LEN: usize = 64 * 1024 * 1024;
 const MAX_POLICY_LEN: usize = 1024 * 1024;
 const SPARSE_MAGIC: [u8; 8] = *b"HMSSNAP1";
-const SPARSE_VERSION: u16 = 3;
+const SPARSE_VERSION: u16 = 4;
 const SPARSE_FLAG_SDK: u16 = 1;
 const SPARSE_FLAG_TAINTED: u16 = 1 << 1;
 const SPARSE_KNOWN_FLAGS: u16 = SPARSE_FLAG_SDK | SPARSE_FLAG_TAINTED;
@@ -231,7 +231,7 @@ impl PortableSnapshot {
             return Err(PortableSnapshotError::BadMagic);
         }
         let version = get_u16(&mut input)?;
-        if version != VERSION {
+        if version != 3 && version != VERSION {
             return Err(PortableSnapshotError::BadVersion(version));
         }
         let flags = get_u16(&mut input)?;
@@ -273,7 +273,9 @@ impl PortableSnapshot {
         if reader.read(&mut trailing)? != 0 {
             return Err(PortableSnapshotError::Malformed("trailing bytes"));
         }
-        let sdk = has_sdk.then(|| decode_sdk(&sdk_bytes)).transpose()?;
+        let sdk = has_sdk
+            .then(|| decode_sdk(&sdk_bytes, version))
+            .transpose()?;
         let policy = ServiceConfig::decode(&policy_bytes)?;
         Ok(Self {
             memory,
@@ -355,7 +357,7 @@ pub(crate) fn decode_sparse_sidecar(
         return Err(PortableSnapshotError::BadMagic);
     }
     let version = input.u16()?;
-    if version != SPARSE_VERSION {
+    if version != 3 && version != SPARSE_VERSION {
         return Err(PortableSnapshotError::BadVersion(version));
     }
     let flags = input.u16()?;
@@ -379,7 +381,9 @@ pub(crate) fn decode_sparse_sidecar(
     let policy_bytes = input.section(policy_len)?;
     let state_blob_suffix = input.section(suffix_len)?;
     input.finish("sparse sidecar")?;
-    let sdk = has_sdk.then(|| decode_sdk(&sdk_bytes)).transpose()?;
+    let sdk = has_sdk
+        .then(|| decode_sdk(&sdk_bytes, version))
+        .transpose()?;
     let policy = ServiceConfig::decode(&policy_bytes)?;
     Ok(SparsePortableSidecar {
         vm_state,
@@ -400,6 +404,7 @@ fn encode_sdk(sdk: &SdkSnapshot) -> Result<Vec<u8>, PortableSnapshotError> {
     put_vec_len(&mut out, recorded.len());
     out.extend_from_slice(&recorded);
     out.push(u8::from(sdk.pending_snapshot));
+    encode_pending_stop(&mut out, sdk.pending_stop.as_ref());
     put_vec_len(&mut out, sdk.events.len());
     for (moment, local, payload) in &sdk.events {
         out.extend_from_slice(&moment.to_le_bytes());
@@ -419,11 +424,17 @@ fn encode_sdk(sdk: &SdkSnapshot) -> Result<Vec<u8>, PortableSnapshotError> {
     Ok(out)
 }
 
-fn decode_sdk(bytes: &[u8]) -> Result<SdkSnapshot, PortableSnapshotError> {
+fn decode_sdk(bytes: &[u8], version: u16) -> Result<SdkSnapshot, PortableSnapshotError> {
     let mut input = SliceReader::new(bytes);
     let recorded = channel::RecordedState::decode(&input.bytes()?)
         .map_err(|_| PortableSnapshotError::Malformed("SDK recorded state"))?;
     let pending_snapshot = input.boolean()?;
+    // Version 3 only admitted SDK snapshots with no pending stop.
+    let pending_stop = if version >= 4 {
+        decode_pending_stop(&mut input)?
+    } else {
+        None
+    };
     let event_count = input.count("SDK event count", 20)?;
     let mut events = Vec::new();
     events
@@ -462,7 +473,64 @@ fn decode_sdk(bytes: &[u8]) -> Result<SdkSnapshot, PortableSnapshotError> {
         recorded,
         events,
         pending_snapshot,
+        pending_stop,
         coverage_thresholds,
+    })
+}
+
+// The SDK layer owns the stop vocabulary; the portable container carries the
+// outstanding response sequence and request verbatim, without resolving it.
+fn encode_pending_stop(out: &mut Vec<u8>, stop: Option<&SdkStop>) {
+    match stop {
+        None => out.push(0),
+        Some(SdkStop::Quiescent) => out.push(1),
+        Some(SdkStop::Assertion { id, data }) => {
+            out.push(2);
+            out.extend_from_slice(&id.to_le_bytes());
+            put_vec_len(out, data.len());
+            out.extend_from_slice(data);
+        }
+        Some(SdkStop::Decision {
+            moment,
+            seq,
+            question,
+        }) => {
+            out.push(3);
+            out.extend_from_slice(&moment.to_le_bytes());
+            out.extend_from_slice(&seq.to_le_bytes());
+            out.extend_from_slice(&question.service().to_le_bytes());
+            out.extend_from_slice(&question.request_id().to_le_bytes());
+            put_vec_len(out, question.payload().len());
+            out.extend_from_slice(question.payload());
+        }
+    }
+}
+
+fn decode_pending_stop(
+    input: &mut SliceReader<'_>,
+) -> Result<Option<SdkStop>, PortableSnapshotError> {
+    Ok(match input.u8()? {
+        0 => None,
+        1 => Some(SdkStop::Quiescent),
+        2 => Some(SdkStop::Assertion {
+            id: input.u32()?,
+            data: input.bytes()?,
+        }),
+        3 => {
+            let moment = input.u64()?;
+            let seq = input.u32()?;
+            let service = input.u16()?;
+            let request = input.u64()?;
+            let payload = input.bytes()?;
+            let question = channel::Question::with_request_id(request, service, payload)
+                .map_err(|_| PortableSnapshotError::Malformed("SDK pending question"))?;
+            Some(SdkStop::Decision {
+                moment,
+                seq,
+                question,
+            })
+        }
+        _ => return Err(PortableSnapshotError::Malformed("SDK pending stop")),
     })
 }
 
@@ -717,6 +785,7 @@ mod tests {
             recorded: recorded_env.snapshot_state().unwrap(),
             events: vec![(7, 3, vec![1, 2, 3]), (11, 9, Vec::new())],
             pending_snapshot: true,
+            pending_stop: None,
             coverage_thresholds: BTreeMap::from([(2, 9), (7, 14)]),
         };
         (memory, vm_state, sdk, ServiceConfig::default())
@@ -729,13 +798,13 @@ mod tests {
     #[test]
     fn wire_constants_are_exact_contract_values() {
         assert_eq!(MAGIC, *b"HMSNAP01");
-        assert_eq!(VERSION, 3);
+        assert_eq!(VERSION, 4);
         assert_eq!((FLAG_SDK, FLAG_TAINTED, KNOWN_FLAGS), (1, 2, 3));
         assert_eq!(MAX_VM_STATE_LEN, 16 * 1024 * 1024);
         assert_eq!(MAX_SDK_LEN, 64 * 1024 * 1024);
         assert_eq!(MAX_POLICY_LEN, 1024 * 1024);
         assert_eq!(SPARSE_MAGIC, *b"HMSSNAP1");
-        assert_eq!(SPARSE_VERSION, 3);
+        assert_eq!(SPARSE_VERSION, 4);
         assert_eq!(
             (SPARSE_FLAG_SDK, SPARSE_FLAG_TAINTED, SPARSE_KNOWN_FLAGS),
             (1, 2, 3)
@@ -1036,7 +1105,10 @@ mod tests {
         recorded_env.set_payloads(None).unwrap();
         sdk.recorded = recorded_env.snapshot_state().unwrap();
         let bytes = encode_sdk(&sdk).unwrap();
-        assert_eq!(decode_sdk(&bytes).unwrap().remaining_payloads(), None);
+        assert_eq!(
+            decode_sdk(&bytes, VERSION).unwrap().remaining_payloads(),
+            None
+        );
     }
 
     #[test]
@@ -1044,17 +1116,17 @@ mod tests {
         let (_, _, sdk, _) = fixture();
         let mut impossible = encode_sdk(&sdk).unwrap();
         let recorded_len = u64::from_le_bytes(impossible[..8].try_into().unwrap()) as usize;
-        let event_count = 8 + recorded_len + 1;
+        let event_count = 8 + recorded_len + 2;
         impossible[event_count..event_count + 8].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(matches!(
-            decode_sdk(&impossible),
+            decode_sdk(&impossible, VERSION),
             Err(PortableSnapshotError::Malformed("SDK event count"))
         ));
 
         let mut trailing = encode_sdk(&sdk).unwrap();
         trailing.push(0);
         assert!(matches!(
-            decode_sdk(&trailing),
+            decode_sdk(&trailing, VERSION),
             Err(PortableSnapshotError::Malformed("SDK"))
         ));
     }
@@ -1067,7 +1139,7 @@ mod tests {
         empty.extend_from_slice(b"COVR");
         empty.extend_from_slice(&0_u64.to_le_bytes());
         assert!(matches!(
-            decode_sdk(&empty),
+            decode_sdk(&empty, VERSION),
             Err(PortableSnapshotError::Malformed(
                 "SDK coverage threshold count"
             ))
@@ -1084,7 +1156,7 @@ mod tests {
         descending[first_thread..first_thread + 4].copy_from_slice(&7_u32.to_le_bytes());
         descending[second_thread..second_thread + 4].copy_from_slice(&2_u32.to_le_bytes());
         assert!(matches!(
-            decode_sdk(&descending),
+            decode_sdk(&descending, VERSION),
             Err(PortableSnapshotError::Malformed("SDK coverage threshold"))
         ));
     }
@@ -1264,7 +1336,7 @@ mod tests {
         let mut zero = bytes.clone();
         zero[covr + 16..covr + 24].copy_from_slice(&0_u64.to_le_bytes());
         assert!(matches!(
-            decode_sdk(&zero),
+            decode_sdk(&zero, VERSION),
             Err(PortableSnapshotError::Malformed("SDK coverage threshold"))
         ));
 
@@ -1272,8 +1344,100 @@ mod tests {
         let first_thread = duplicate[covr + 12..covr + 16].to_vec();
         duplicate[covr + 24..covr + 28].copy_from_slice(&first_thread);
         assert!(matches!(
-            decode_sdk(&duplicate),
+            decode_sdk(&duplicate, VERSION),
             Err(PortableSnapshotError::Malformed("SDK coverage threshold"))
         ));
+    }
+    #[test]
+    fn pending_stops_round_trip_and_reject_truncated_or_unknown_variants() {
+        let stops = [
+            None,
+            Some(SdkStop::Quiescent),
+            Some(SdkStop::Assertion {
+                id: 5,
+                data: vec![8, 9],
+            }),
+            Some(SdkStop::Decision {
+                moment: 31,
+                seq: 42,
+                question: channel::Question::with_request_id(77, 19, b"choose".to_vec()).unwrap(),
+            }),
+        ];
+        for stop in stops {
+            let (memory, vm_state, mut sdk, policy) = fixture();
+            sdk.pending_stop = stop.clone();
+            let encoded = encode_sdk(&sdk).unwrap();
+            let restored = decode_sdk(&encoded, VERSION).unwrap();
+            assert_eq!(restored.pending_stop, stop);
+            assert_eq!(restored.recorded.encode(), sdk.recorded.encode());
+            assert_eq!(restored.events, sdk.events);
+            assert_eq!(restored.coverage_thresholds, sdk.coverage_thresholds);
+            let mut full = Vec::new();
+            PortableSnapshotRef {
+                memory: &memory,
+                vm_state: &vm_state,
+                sdk: Some(&sdk),
+                policy: &policy,
+                at: 31,
+                sdk_events: 2,
+                trace_events: 0,
+                trace_schedules: 0,
+                tainted: false,
+                state_hash: [0; 32],
+            }
+            .write_to(&mut full)
+            .unwrap();
+            let restored = PortableSnapshot::read_from(full.as_slice(), memory.len()).unwrap();
+            assert_eq!(restored.sdk.unwrap().pending_stop, stop);
+            let sparse = encode_sparse_sidecar(&SparsePortableSidecarRef {
+                vm_state: &vm_state,
+                sdk: Some(&sdk),
+                policy: &policy,
+                at: 31,
+                sdk_events: 2,
+                trace_events: 0,
+                trace_schedules: 0,
+                tainted: false,
+                state_blob_suffix: b"suffix",
+            })
+            .unwrap();
+            assert_eq!(
+                decode_sparse_sidecar(&sparse)
+                    .unwrap()
+                    .sdk
+                    .unwrap()
+                    .pending_stop,
+                stop
+            );
+            let mut bytes = Vec::new();
+            encode_pending_stop(&mut bytes, stop.as_ref());
+            for end in 0..bytes.len() {
+                assert!(decode_pending_stop(&mut SliceReader::new(&bytes[..end])).is_err());
+            }
+        }
+        assert!(decode_pending_stop(&mut SliceReader::new(&[4])).is_err());
+        // An excessive request length must fail before a Question can be built.
+        let mut bytes = vec![3];
+        bytes.extend_from_slice(&[0; 22]);
+        bytes.extend_from_slice(&u64::MAX.to_le_bytes());
+        assert!(decode_pending_stop(&mut SliceReader::new(&bytes)).is_err());
+    }
+
+    #[test]
+    fn version_three_complete_and_sparse_artifacts_remain_readable() {
+        // Emitted by the version-3 writer at 7c1f9e89, not reconstructed by
+        // this implementation. See tests/fixtures/README.md for provenance.
+        let (memory, _, sdk, _) = fixture();
+        let full = include_bytes!("../tests/fixtures/sdk-v3-full.bin");
+        let decoded = PortableSnapshot::read_from(full.as_slice(), memory.len()).unwrap();
+        let decoded_sdk = decoded.sdk.unwrap();
+        assert_eq!(decoded.memory, memory);
+        assert_eq!(decoded_sdk.pending_stop, None);
+        assert_eq!(decoded_sdk.recorded.encode(), sdk.recorded.encode());
+        assert_eq!(decoded_sdk.events, sdk.events);
+        let sparse = include_bytes!("../tests/fixtures/sdk-v3-sparse.bin");
+        let decoded = decode_sparse_sidecar(sparse).unwrap();
+        assert_eq!(decoded.sdk.unwrap().pending_stop, None);
+        assert_eq!(decoded.state_blob_suffix, b"canonical-suffix");
     }
 }

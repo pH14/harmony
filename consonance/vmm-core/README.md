@@ -20,8 +20,12 @@ clock is consulted.
 Guest RAM is owned by `Vmm` for the lifetime of the backend. The state hash and
 snapshot machinery include all observable guest memory, vCPU state, device
 state, timer state, virtual time, entropy, control state, and protocol state.
-Snapshots are taken at quiescent boundaries and can be restored into a
-copy-on-write memory mapping.
+Snapshots can be restored into a copy-on-write memory mapping. SDK state
+capture retains pending stops and unanswered service requests without consuming
+them, including the response sequence and request identity. Portable format 4
+carries this state; version 3 remains readable with no pending stop. Whole-VM
+capture still has backend and pending-state guards; SDK capture alone does not
+establish that an arbitrary stopped VM can yet be saved exactly.
 
 ## Architecture boundary
 

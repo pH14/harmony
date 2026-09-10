@@ -552,6 +552,9 @@ pub struct SdkSnapshot {
     /// differently (the deferred point silently lost), breaking replay's
     /// round-trip hash equality.
     pub(crate) pending_snapshot: bool,
+    /// Undelivered stop or unanswered service request, including the response
+    /// sequence. Capturing it does not consume or resolve it.
+    pub(crate) pending_stop: Option<SdkStop>,
     /// Per-logical-thread next coverage thresholds. The guest's counters live
     /// in RAM; these host-side expectations govern whether its next callback is
     /// accepted, so both sides are replay-relevant.
@@ -2647,20 +2650,12 @@ where
 
     /// Capture the SDK channel's **replay-relevant** state for a snapshot (task
     /// 73): the seeded generic service stream position and the
-    /// emitted event log. A fork from a mid-run snapshot restores this so its
+    /// emitted event log, undelivered stop, and outstanding service request.
+    /// Capturing a request neither resolves it nor consumes its response sequence.
+    /// A fork from a mid-run snapshot restores this so its
     /// seeded streams continue from the right position and it keeps the catalog
     /// the never-fired report needs. `None` when no SDK channel is wired.
     pub fn sdk_snapshot(&self) -> Result<Option<SdkSnapshot>, channel::ChannelError> {
-        if self
-            .sdk
-            .as_ref()
-            .is_some_and(|sdk| sdk.pending_stop.is_some())
-        {
-            return Err(channel::ChannelError::Handler(
-                "consume the pending SDK stop before snapshotting".into(),
-            ));
-        }
-
         self.sdk
             .as_ref()
             .map(|s| {
@@ -2668,6 +2663,7 @@ where
                     recorded: s.env.snapshot_state()?,
                     events: s.events.clone(),
                     pending_snapshot: s.pending_snapshot,
+                    pending_stop: s.pending_stop.clone(),
                     coverage_thresholds: s.coverage_thresholds.clone(),
                 })
             })
@@ -2688,6 +2684,7 @@ where
             // restored image (where `setup_complete` is already past) and must not
             // re-surface an already-sealed deferred point.
             s.pending_snapshot = snap.pending_snapshot;
+            s.pending_stop = snap.pending_stop.clone();
             s.coverage_thresholds = snap.coverage_thresholds.clone();
         }
         Ok(())
@@ -5254,7 +5251,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_require_consuming_all_sdk_stops() {
+    fn sdk_snapshot_preserves_unconsumed_stops() {
         for stop in [
             SdkStop::Quiescent,
             SdkStop::Assertion {
@@ -5266,11 +5263,65 @@ mod tests {
             enable_nominal(&mut vmm, 7);
             vmm.sdk.as_mut().unwrap().pending_stop = Some(stop);
             assert!(!vmm.can_snapshot());
-            assert!(vmm.sdk_snapshot().is_err());
-            assert!(vmm.take_sdk_stop().is_some());
+            let snapshot = vmm.sdk_snapshot().unwrap().unwrap();
+            let pending = vmm.take_sdk_stop().unwrap();
+            vmm.sdk_restore(&snapshot).unwrap();
+            assert_eq!(vmm.take_sdk_stop(), Some(pending));
             assert!(vmm.can_snapshot());
             assert!(vmm.sdk_snapshot().is_ok());
         }
+    }
+
+    #[test]
+    fn sdk_restore_keeps_the_pending_response_sequence_and_future() {
+        let build = || {
+            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+            enable_nominal(&mut vmm, 7);
+            vmm
+        };
+        let mut source = build();
+        let question = channel::Question::with_request_id(77, 19, b"choose".to_vec()).unwrap();
+        let stop = SdkStop::Decision {
+            moment: 31,
+            seq: 42,
+            question: question.clone(),
+        };
+        source.sdk.as_mut().unwrap().pending_stop = Some(stop.clone());
+        let before = source.state_hash().unwrap();
+        let snapshot = source.sdk_snapshot().unwrap().unwrap();
+        assert_eq!(source.state_hash().unwrap(), before);
+        assert_eq!(source.take_sdk_stop(), Some(stop.clone()));
+        assert_eq!(source.take_sdk_stop(), Some(stop.clone()));
+        let mut restored = build();
+        assert_ne!(restored.state_hash().unwrap(), before);
+        restored.sdk_restore(&snapshot).unwrap();
+        assert_eq!(restored.state_hash().unwrap(), before);
+        assert_eq!(restored.take_sdk_stop(), Some(stop));
+        let answer = channel::Answer::Data(vec![4, 5, 6]);
+        assert_eq!(
+            source.resolve_service_answer(answer.clone()).unwrap(),
+            (31, question.clone())
+        );
+        assert_eq!(
+            restored.resolve_service_answer(answer).unwrap(),
+            (31, question)
+        );
+        let source_response = source.guest_slice(RESP_GPA as u64, HC_PAGE).unwrap();
+        let restored_response = restored.guest_slice(RESP_GPA as u64, HC_PAGE).unwrap();
+        assert_eq!(restored_response, source_response);
+        assert_eq!(restored.state_hash().unwrap(), source.state_hash().unwrap());
+        assert_eq!(restored.sdk_events(), source.sdk_events());
+        assert!(
+            restored
+                .resolve_service_answer(channel::Answer::Nominal)
+                .is_err()
+        );
+        // A later restore must also clear a stale unanswered request.
+        let completed = source.sdk_snapshot().unwrap().unwrap();
+        restored.sdk_restore(&snapshot).unwrap();
+        restored.sdk_restore(&completed).unwrap();
+        assert!(restored.pending_service_question().is_none());
+        assert_eq!(restored.state_hash().unwrap(), source.state_hash().unwrap());
     }
 
     /// `pending_snapshot` (the deferred `setup_complete` point) is folded into the

@@ -73,10 +73,12 @@ sharing metadata is host-local and is never written to the wire. An export
 base must have the same setup and identity, and unchanged pages/chunks are
 retained by reference until a snapshot is serialized.
 
-The embedded complete and sparse portable snapshots use format version 3,
-which captures service state through the generic SDK channel. Import rejects
-versions 1 and 2 explicitly. Execution identities record sidecar version 3;
-the outer sparse archive field layout remains version 2.
+The embedded complete and sparse portable snapshots use format version 4,
+which also carries undelivered SDK stops and unanswered service requests.
+Readers still accept version 3 (no pending stop); versions 1 and 2 remain
+explicitly unsupported. The execution identity retains its version-3
+compatibility token so existing artifacts remain importable; the artifact's
+own header selects the codec. The outer sparse archive layout remains version 2.
 
 ```sh
 cargo test -p consonance-client
