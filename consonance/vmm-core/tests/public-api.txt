@@ -232,6 +232,7 @@ pub vmm_core::snapshot::SnapshotError::DeviceRestore(&'static str)
 pub vmm_core::snapshot::SnapshotError::DirtyGfnOutOfRange
 pub vmm_core::snapshot::SnapshotError::DirtyGfnOutOfRange::gfn: u64
 pub vmm_core::snapshot::SnapshotError::DirtyGfnOutOfRange::pages: u64
+pub vmm_core::snapshot::SnapshotError::EngineState(&'static str)
 pub vmm_core::snapshot::SnapshotError::MemorySize
 pub vmm_core::snapshot::SnapshotError::MemorySize::expected: usize
 pub vmm_core::snapshot::SnapshotError::MemorySize::got: usize

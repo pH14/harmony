@@ -32,6 +32,11 @@ registration capability, and pending-versus-armed handshake state. Pending
 registrations use x86 v5 and arm64 v9–12; already-representable states retain
 legacy x86 v4 and arm64 v5–8 bytes, where a GPA implies an armed registration.
 
+The architecture-neutral engine record preserves terminal reasons and deferred
+SDK reentry state. Nonempty records use VM-state container v4; ordinary runnable
+states retain v3 bytes. Legacy v3 records remain readable with the historical
+runnable lifecycle default. A terminal restore does not enter the guest again.
+
 ## Architecture boundary
 
 The engine uses only common exits, guest-physical addresses, bytes, and typed

@@ -20,6 +20,7 @@ use vm_state::SnapshotRecords;
 use vmm_backend::{Arch, Backend, CommonExit, Exit};
 use vtime::{IdlePlanner, VClock, VClockConfig};
 
+use crate::snapshot::SnapshotError;
 use crate::vendor::Vendor;
 use crate::virtual_time::LiveVirtualTimeTrace;
 
@@ -1413,7 +1414,23 @@ where
         // value-keyed stamping already makes the epoch reproducible. A seal
         // mutates nothing, so the `NotQuiescent` retry loops and sealability
         // probes stay side-effect-free for free rather than by careful ordering.
-        Ok(<B::A as Vendor>::build_vm_state(self, &vcpu))
+        self.build_snapshot_state(&vcpu)
+    }
+
+    fn engine_state(&self) -> crate::engine_state::EngineState {
+        crate::engine_state::EngineState {
+            terminal: self.terminal,
+            sdk_snapshot_reentry_required: self.sdk_snapshot_reentry_required,
+        }
+    }
+
+    fn build_snapshot_state(
+        &self,
+        vcpu: &VcpuOf<B>,
+    ) -> Result<<B::A as Vendor>::Snapshot, VmmError> {
+        let mut state = <B::A as Vendor>::build_vm_state(self, vcpu);
+        state.set_engine_state(self.engine_state().encode()?);
+        Ok(state)
     }
 
     /// Restore the **non-memory** machine state from a [`vm_state::VmState`] (pair
@@ -1452,6 +1469,7 @@ where
                     .to_string(),
             ));
         }
+        let engine_state = crate::engine_state::EngineState::decode(s.engine_state())?;
         // 1. Validate, committing nothing. The engine reads only the arch-neutral
         //    blocks of the snapshot — the V-time clock, the timer queue, and the
         //    entropy bytes — through the `SnapshotRecords` accessors; the vendor
@@ -1549,19 +1567,12 @@ where
                     VmmError::Backend(vmm_backend::BackendError::Internal(message))
                 })?;
         }
-        // A restored VM is runnable again from the snapshot point: clear the latched
-        // terminal + cached vCPU so `step`/`run` resume and `state_blob` re-reads the
-        // restored backend state.
-        self.terminal = None;
+        // A terminal snapshot remains terminal. The restored backend carries
+        // its exact registers, so discard only the displaced timeline's cache.
+        self.terminal = engine_state.terminal;
         self.saved_state = None;
-        // The restored backend is fresh (the next run re-executes from the restored
-        // RIP) — no completion is pending.
         self.completion_staged = false;
-        // A deferred SDK snapshot re-entry belongs to the displaced timeline.
-        // The restored SDK channel's own `pending_snapshot` bit is applied by
-        // the control server after this call; no old doorbell completion may
-        // suppress or synthesize that restored point.
-        self.sdk_snapshot_reentry_required = false;
+        self.sdk_snapshot_reentry_required = engine_state.sdk_snapshot_reentry_required;
         // (Task 110: the pvclock channel needs no reset here — the blob's own
         // v4/v5 record was validated in the vendor's `validate_restore` and
         // committed in `commit_restore` above, replacing any stale-timeline
@@ -1811,7 +1822,10 @@ where
     /// the suffix contains only fixed-size machine/channel state.
     pub(crate) fn state_blob_suffix(&self) -> Result<Vec<u8>, VmmError> {
         let mut out = Vec::new();
-        let vcpu = self.current_vcpu();
+        let vcpu = match &self.saved_state {
+            Some(state) => state.clone(),
+            None => self.backend.save()?,
+        };
         // The dedicated hypercall-transport ABI pages are guest-visible memory
         // (arm64: a separate low-GPA memslot; x86 keeps them inside `MEM`). Fold
         // them into the hash so two states differing only in the request/response
@@ -1896,16 +1910,18 @@ where
         // M1/M2/corpus/Linux-boot blobs byte-for-byte unchanged (their goldens do
         // not move — task 39 "gate the swap"); when on, two states whose canonical
         // blob differs hash differently, so a snapshot's integrity is in the hash.
-        // The only `encode` failure is `FractionalRatio`, which `build_vm_state`
-        // can never produce (`ratio_den` is the invariant `1`), so the fallback is
-        // unreachable; it is deterministic regardless.
+        // Capture errors propagate: omitting a failed register or codec read
+        // would weaken the whole-state identity being compared.
+        if self.sdk_snapshot_reentry_required {
+            // The deferred point's delivery differs until a guest entry has
+            // occurred; include that lifecycle distinction even without VMST.
+            put_chunk(&mut out, b"SDRE", &[1]);
+        }
         if self.snapshot_hashing {
-            // Best-effort like the other hash chunks: `current_vcpu` uses the
-            // terminal-captured state or a swallowing live `save` (the snapshot path,
-            // `save_vm_state`, reads the vCPU fallibly instead).
-            let bytes = <B::A as Vendor>::build_vm_state(self, &self.current_vcpu())
+            let bytes = self
+                .build_snapshot_state(&vcpu)?
                 .encode()
-                .unwrap_or_default();
+                .map_err(SnapshotError::from)?;
             put_chunk(&mut out, b"VMST", &bytes);
         }
         Ok(out)
@@ -7485,6 +7501,122 @@ mod tests {
             matches!(v.save_vm_state(), Err(VmmError::Backend(_))),
             "a failing Backend::save must make save_vm_state fail closed"
         );
+        assert!(
+            matches!(v.state_hash(), Err(VmmError::Backend(_))),
+            "a failing register read must not produce a hash of default CPU state"
+        );
+    }
+
+    #[test]
+    fn terminal_snapshots_preserve_the_stop_without_guest_reentry() {
+        for (exit, reason) in [
+            (
+                Exit::Arch(X86Exit::Io {
+                    port: 0xf4,
+                    size: 1,
+                    write: Some(7),
+                }),
+                TerminalReason::DebugExit { code: 7 },
+            ),
+            (Exit::Common(CommonExit::Idle), TerminalReason::Idle),
+            (Exit::Common(CommonExit::Shutdown), TerminalReason::Shutdown),
+        ] {
+            let mut cpu = nonzero_state();
+            cpu.regs.rflags = 2; // CLI/HLT is terminal, with no interrupt wakeup.
+            let mut source = full_vmm(cpu.clone(), vec![exit], 0, 7);
+            source.wire_snapshot_hashing();
+            assert_eq!(source.step().unwrap(), Step::Terminal(reason));
+            let hash = source.state_hash().unwrap();
+            let at = source.effective_vns();
+            let counts = source.exit_counts();
+            let memory = source.guest_memory().to_vec();
+            let encoded = source.save_vm_state().unwrap().encode().unwrap();
+            assert_eq!(source.state_hash().unwrap(), hash);
+            assert_eq!(source.effective_vns(), at);
+            assert_eq!(source.exit_counts(), counts);
+            assert_eq!(source.save_vm_state().unwrap().encode().unwrap(), encoded);
+            let snapshot = vm_state::VmState::decode(&encoded).unwrap();
+
+            let next_exit = Exit::Arch(X86Exit::Io {
+                port: 0x3f8,
+                size: 1,
+                write: Some(b'X'.into()),
+            });
+            let mut cold = full_vmm(cpu, vec![next_exit], 0, 7);
+            cold.wire_snapshot_hashing();
+            let runnable = cold.save_vm_state().unwrap();
+            cold.restore_snapshot(&memory, &snapshot).unwrap();
+            assert_eq!(cold.state_hash().unwrap(), hash);
+            let cold_counts = cold.exit_counts();
+            for _ in 0..3 {
+                assert_eq!(source.step().unwrap(), Step::Terminal(reason));
+                assert_eq!(cold.step().unwrap(), Step::Terminal(reason));
+                assert_eq!(cold.exit_counts(), cold_counts);
+                assert_eq!(cold.effective_vns(), at);
+                assert_eq!(cold.state_hash().unwrap(), hash);
+                assert_eq!(source.state_hash().unwrap(), hash);
+            }
+            // Replacing the stopped timeline with a runnable snapshot clears
+            // the latch, and the previously untouched next exit can execute.
+            cold.restore_vm_state(&runnable).unwrap();
+            assert_eq!(cold.step().unwrap(), Step::Continued);
+            assert_eq!(cold.serial_output(), b"X");
+        }
+    }
+
+    #[test]
+    fn lifecycle_restore_rejects_malformed_state_before_mutation() {
+        let source = full_vmm(nonzero_state(), vec![], 0, 7);
+        let mut snapshot = source.save_vm_state().unwrap();
+        snapshot.set_engine_state(vec![b'V', b'M', b'E', 1, 4, 0, 0]);
+        let mut destination = full_vmm(VcpuState::default(), vec![], 0, 9);
+        let before = destination.state_hash().unwrap();
+        assert!(matches!(
+            destination.restore_vm_state(&snapshot),
+            Err(VmmError::Snapshot(
+                crate::snapshot::SnapshotError::EngineState(_)
+            ))
+        ));
+        assert_eq!(destination.state_hash().unwrap(), before);
+    }
+
+    #[test]
+    fn deferred_sdk_reentry_is_part_of_snapshot_and_hash_identity() {
+        let build = || {
+            let mut vmm = Vmm::new(
+                configured_mock(vec![Exit::Arch(X86Exit::Io {
+                    port: 0x3f8,
+                    size: 1,
+                    write: Some(b'X'.into()),
+                })]),
+                GuestRam::new(TEST_RAM).unwrap(),
+            );
+            enable_nominal(&mut vmm, 7);
+            vmm
+        };
+        let mut source = build();
+        source.sdk.as_mut().unwrap().pending_snapshot = true;
+        let ready_hash = source.state_hash().unwrap();
+        source.sdk_snapshot_reentry_required = true;
+        let deferred_hash = source.state_hash().unwrap();
+        assert_ne!(ready_hash, deferred_hash);
+        let sdk = source.sdk_snapshot().unwrap().unwrap();
+        let snapshot = source.save_vm_state().unwrap();
+        let snapshot = vm_state::VmState::decode(&snapshot.encode().unwrap()).unwrap();
+        let mut cold = build();
+        cold.restore_snapshot(source.guest_memory(), &snapshot)
+            .unwrap();
+        cold.sdk_restore(&sdk).unwrap();
+        assert_eq!(cold.state_hash().unwrap(), deferred_hash);
+        assert!(!source.take_snapshot_point());
+        assert!(!cold.take_snapshot_point());
+        assert_eq!(source.step().unwrap(), Step::Continued);
+        assert_eq!(cold.step().unwrap(), Step::Continued);
+        assert_eq!(cold.state_hash().unwrap(), source.state_hash().unwrap());
+        assert!(source.take_snapshot_point());
+        assert!(cold.take_snapshot_point());
+        assert!(!cold.take_snapshot_point());
+        assert_eq!(cold.state_hash().unwrap(), source.state_hash().unwrap());
     }
 
     #[test]
