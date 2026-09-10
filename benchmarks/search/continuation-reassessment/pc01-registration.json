@@ -1,0 +1,49 @@
+{
+  "format": "retention-pc01-registration-v1",
+  "registered_utc": "2026-09-10T19:42:22.181400+00:00",
+  "deadline_utc": "2026-09-10T20:02:22.181400+00:00",
+  "synthesis_deadline_utc": "2026-09-10T20:22:22.181400+00:00",
+  "host": "ms02",
+  "msr1": "reassigned; never accessed",
+  "source_commit": "613fdc2a886a1814cf717e83d84a512a30d4726d",
+  "binary": "/root/harmony-depth-transfer-20260909/builds/retention-pair-x86-001/metroid-retention-pair",
+  "binary_sha256": "3a546773abc4b35f8264d5fb9f0af5b4f68e72c5a4315bc573fe347fcb626284",
+  "build_info": "/root/harmony-depth-transfer-20260909/builds/retention-pair-x86-001/build-info.json",
+  "build_info_sha256": "554ce4b505571cf94a11e81399b5405ba8b60269929ae836fa52249517f86c97",
+  "protocol": "/root/harmony-depth-transfer-20260909/protocol/pc01-20260910",
+  "protocol_sha256": {
+    "pc01-request.json": "c0a192d25803276729852a96ca23ec535ae229d013f96c0ad0f1bbc2bbcf7c58",
+    "pc01-bank.json": "3d7e89ded2b1ad5c215eef2c30bd33b4c76d44d7d9adf6930dc91c747638a641",
+    "pc01-seeds.json": "0aaea57566b737e533ec7bfcef9e44232781a387048792fc235f9b9593af0c73",
+    "pc01-design.md": "4e7be8d4273b463565d381fa96b8bea349357b77b12f7b2d281331612fe576d5",
+    "score_pc01.py": "38f7d81cd206623bcf17aece66fe7045f3d01a32aaaaa6e737fc65c21401e3d4",
+    "test_pc01.py": "04ad04e76cb68d9c3f9f3c0e4a42889ecfa9eb23424c7460c3ff004cc80340cf",
+    "run_pc01.py": "18d90b084728f9b79ddb399d0cab5d3215d333fc5a06a92c65051048a75df752",
+    "pc01-extract-request.json": "9f411b9348b40301314e1ff0e36c9df77c986264837bba51252468ab037fe2ec",
+    "pc01-pair/manifest.json": "7c8c22854f9059ac42b1cc3399c93554b9c04bf94c20671799b64e993ab96203",
+    "pc01-pair/candidate.snapshot.bin": "8ef0de76e3b3a8184ef6b65cc6b74d816f854af4a3f8529576172293bf13261b",
+    "pc01-pair/incumbent.snapshot.bin": "b4adca7d17c7f1fe62abba9ec5e7f309c535eae9458a290ffcb7ff0f6e0e7b0f"
+  },
+  "output": "/root/harmony-depth-transfer-20260909/runs/retention-pair-pc01",
+  "service": "harmony-retention-pair-pc01-20260910.service",
+  "service_runtime_seconds": 180,
+  "process_runtime_seconds": 150,
+  "cpus": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "cgroup_limits": {
+    "memory.max": "4294967296",
+    "memory.swap.max": "0",
+    "pids.max": "64"
+  },
+  "output_limit_bytes": 268435456,
+  "physical_frame_ceiling": 1100000,
+  "expected_max_physical_frames": 1049505,
+  "admitted_search_frame_ceiling": 0,
+  "selected_competition": 692,
+  "decision_gate": "Prespecified candidate-only surviving defeat or strict new-progress counterexample earns only a subsequent retention-design decision. Otherwise close this pair/bank. All 32 tails run unless infrastructure/resource failure. No retries, pair selection, HP edit, bank or horizon changes.",
+  "cost_receipts": "One constructor counter plus measured diagnostics and held verification; interrupted work after last complete receipt remains unknown. No new generic replayer is used."
+}

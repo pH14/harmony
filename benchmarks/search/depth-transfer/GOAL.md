@@ -1122,3 +1122,15 @@ verification of every measured boundary. See ../continuation-reassessment/pc01-d
 Next build the exact published source on ms02, then separately register this
 short diagnostic if the build succeeds. No native PC01 work is yet allocated,
 all ledgers are unchanged and no retention policy panel is earned.
+
+PC01 is separately registered at 2026-09-10T19:42:22.181400+00:00, with native work
+ending by 2026-09-10T20:02:22.181400+00:00 and synthesis by 2026-09-10T20:22:22.181400+00:00.
+The published source613fdc2a built successfully on ms02 without emulation.
+The exact frozen pair and32-tail bank have a1.1M prospective physical ceiling,
+120-second internal watchdog,150-second external process limit and180-second
+service, CPUs0–3,4GiB memory,64tasks and256MiB output. Every measured boundary
+receives a held verification replay; maximum planned work is1,049,505 frames
+including setup. No fresh search is allocated. A positive permits only a further
+retention-design decision; a negative or failure closes this allocation without
+a changed pair, bank or horizon. All earlier failed gates remain closed. No
+native PC01 call has occurred at registration publication time.
