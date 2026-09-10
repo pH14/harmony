@@ -81,6 +81,8 @@ class CensusEvidence(unittest.TestCase):
         self.assertIsNone(out['endpoint_counts'])
         self.assertEqual(out['admitted_frames_known'],100)
         self.assertEqual(out['known_auxiliary_frames'],10)
+        self.assertEqual(out['last_reported_observations']['endpoint_counts']['live_endpoints'],8)
+        self.assertEqual(out['last_reported_observations']['frames'],100)
 
 
 if __name__ == '__main__':

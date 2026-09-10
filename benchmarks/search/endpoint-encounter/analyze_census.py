@@ -40,6 +40,13 @@ def analyze(reg, panel, registration_sha256, artifact=None):
         assert summary['search_request'].get(k) == v, 'request mismatch: ' + k
     progress = summary.get('last_progress') or {}
     result = summary.get('result') or {}
+    out['reported_stop_reason'] = result.get('stop_reason')
+    out['record_failure'] = record.get('failure')
+    out['last_reported_observations'] = {
+        'frames':progress.get('frames_emulated'), 'executions':progress.get('executions'),
+        'endpoint_counts':progress.get('workload_diagnostics',{}).get('endpoint_encounters',{}).get('counts'),
+        'named_progress':progress.get('workload_diagnostics',{}).get('named_progress'),
+        'scope':'Last complete progress record; may omit later interrupted work and does not establish completion of the registered horizon.'}
     out['admitted_frames_known'] = result.get('frames_emulated', progress.get('frames_emulated', 0))
     out['search_frame_overshoot'] = max(0, out['admitted_frames_known'] - reg['nominal_admitted_search_limit'])
     normal = [result.get('witness')] + [v.get('replay') for v in result.get('milestone_witnesses',{}).values()]
