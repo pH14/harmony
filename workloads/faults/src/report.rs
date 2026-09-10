@@ -73,6 +73,10 @@ impl BugReport {
     ///
     /// Returns an error when the report cannot be serialized or written.
     pub fn write(&self, directory: &Path) -> Result<(), Box<dyn Error>> {
+        // A replay writes its first reproducing run's report before anything
+        // else has written to the output directory, so the directory is made
+        // here rather than assumed.
+        std::fs::create_dir_all(directory)?;
         std::fs::write(
             directory.join(self.file_name()),
             serde_json::to_vec_pretty(self)?,
@@ -143,6 +147,29 @@ mod tests {
         root_seal: 1_000,
         horizon_nanos: DEFAULT_HORIZON_NANOS,
     };
+
+    /// A replay reproduces its bug before anything has created its `--out`
+    /// directory, and the report has to land rather than fail on the path.
+    #[test]
+    fn a_bug_report_makes_the_directory_it_is_written_into() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let directory = parent.path().join("out").join("nested");
+        let report = BugReport::new(
+            1,
+            7,
+            WINDOWS,
+            &[FaultAction::Wait],
+            &FaultObservations {
+                stop: FaultStop::Crash,
+                ..FaultObservations::default()
+            },
+        )
+        .expect("a bug report");
+        report
+            .write(&directory)
+            .expect("write into a missing directory");
+        assert!(directory.join(report.file_name()).is_file());
+    }
 
     fn sample() -> BugReport {
         let observations = FaultObservations {
