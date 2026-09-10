@@ -1,0 +1,87 @@
+[
+  {
+    "path": "cell/campaign.json",
+    "raw_bytes": 14095,
+    "raw_sha256": "8788faef4c85fa937b10d5866e5a33a7c205e9c35d01a5ece4858dc5404dfc14"
+  },
+  {
+    "path": "cell/checkpoint.bin",
+    "raw_bytes": 13739757,
+    "raw_sha256": "b27503d72a6f98e9eabf54aa94e9fc2a679f3dfe6c01904ed2c88efd61034d72"
+  },
+  {
+    "path": "cell/origin.bin",
+    "raw_bytes": 23392,
+    "raw_sha256": "9a1577f32b63de9299a2313cd7cc550d076fd79ac8a227972c4ca85a5dc2ca9b"
+  },
+  {
+    "path": "cell/progress.jsonl",
+    "raw_bytes": 72967,
+    "raw_sha256": "222018cfa6c6428e500c96f822a8a05b68d1d22f47e6088f60399c8d04614a48"
+  },
+  {
+    "path": "cell/result.json",
+    "raw_bytes": 7169,
+    "raw_sha256": "99a0adfc65f89ea4d61261867fe13d89c2015870cc5f72f2100c61a338e883e1"
+  },
+  {
+    "path": "cell/root-snapshot.json",
+    "raw_bytes": 172773,
+    "raw_sha256": "e7b124686162681fcdda6fa0feb457c12ee7f399667b3f69fc05195937378cf7"
+  },
+  {
+    "path": "cell/root.json",
+    "raw_bytes": 2533,
+    "raw_sha256": "4077063d96aa3915ea4800740854c60f3a2fe2e7b4edbb880a24dcef32f61d84"
+  },
+  {
+    "path": "cell/stream.jsonl",
+    "raw_bytes": 1073384,
+    "raw_sha256": "8f87c262262fd539b553870162f2e5eab49eb62aa8d362f0afb31dd2ce107fc9"
+  },
+  {
+    "path": "cell/usage.json",
+    "raw_bytes": 899,
+    "raw_sha256": "48743319542ec8cb8ff0d74b8bd9898fec704f1800123fcd0791efe9ba8e149b"
+  },
+  {
+    "path": "cell/witness-full.json",
+    "raw_bytes": 191485,
+    "raw_sha256": "aa5ece3a6834fe83a7e8a54fe4f28a274921743840cbdc81fb2830b96f570feb"
+  },
+  {
+    "path": "cell/witness-local.json",
+    "raw_bytes": 80,
+    "raw_sha256": "7ecd3995587991732cc4e9ff8fdf33a932a10dc07dfb3ab5f8c68a76e8343316"
+  },
+  {
+    "path": "cell.log",
+    "raw_bytes": 0,
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "process.json",
+    "raw_bytes": 2466,
+    "raw_sha256": "67fe3bcd81e85141748a3246a277c02bcec3de05f8da296b5dc5dc95331ab4df"
+  },
+  {
+    "path": "service-stopped.json",
+    "raw_bytes": 390,
+    "raw_sha256": "d2fa058538a3b655275e6b1c8b3505773f4198171e9eb364ace068d52a800488"
+  },
+  {
+    "path": "service-terminal.json",
+    "raw_bytes": 409,
+    "raw_sha256": "e03313a52801c39c9bf99ae6b41d4ead3b83826514e1edef5678ca896336bb99"
+  },
+  {
+    "path": "service.log",
+    "raw_bytes": 2948,
+    "raw_sha256": "88b6d8e2d4256c26ce186d40a3ea2b9dd6ae23fcd22823b412d0fda7ed0aa196"
+  },
+  {
+    "path": "start.json",
+    "raw_bytes": 784,
+    "raw_sha256": "e9702227e8e16a24784604cce7290739b10cbc5fd7e4c9a690e33c588f51e892"
+  }
+]

@@ -530,3 +530,11 @@ artifacts and the983,632-frame lifetime prediction; the original root,seed,polic
 and limits stay fixed. The native process has120seconds,4GiB and CPUs0–3; the
 service has180seconds and the distinct physical allocation is3M frames. See
 `pm01-registration.json`. No PM01 emulator call has occurred at publication time.
+
+PM01 is closed and passes: the single run measures exactly 983,632 physical frames
+in 18.271 seconds, with all eight prior behavior artifacts byte-identical. The
+missing engine component is 5,574 constructor frames; completed reconstruction work
+is already admitted. All 17 native artifacts verify offline. The service is stopped
+and unused allocation released. See `pm01-results.md`, `verify_pm01.py`, and the
+unallocated next efficacy-screen design in `pg02-design.md`. New totals are
+2,983,485,644 admitted / 71,300,232 known auxiliary; historical gaps are preserved.

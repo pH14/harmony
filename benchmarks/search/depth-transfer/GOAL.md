@@ -1259,3 +1259,27 @@ eight unchanged artifact hashes and exactly983,632measured total frames,includin
 all constructors. No retry; no native PM01 call has happened at registration
 publication time. This earns an efficacy-panel decision only,not fresh-policy
 or validation budget. All previous allocations remain closed.
+
+## PM01 closure and next scientific test
+
+PM01 passes in 18.271 seconds with exactly 983,632 measured physical frames. All eight
+PG01 behavior artifacts are byte-identical, and all 17 native files verify offline.
+The omitted engine component is 5,574 constructor frames. Closed target-lifetime
+sums confirm that completed reconstruction work is already admitted. The service
+is explicitly stopped and unused allocation released. No native retry occurred.
+
+This run charges 250,320 admitted / 733,312 known auxiliary frames, fully summing to
+its physical work. Resumed totals are 2,983,485,644 admitted / 71,300,232 known auxiliary;
+historical incomplete components stay as recorded. The full goal remains active
+and unachieved; msr1 remains unavailable and earlier failed gates stay closed.
+
+Next implement the minimal caller execution-ceiling preflight needed by the
+unallocated PG02 design, then publish/build and freeze a four-seed, three-arm
+conditional living-boss-defeat screen. Use 1M admitted plus 4,645 constructor frames
+per arm, complete physical receipts and full replay. The candidate must earn three
+strict wins and 15% lower restricted physical cost against both ordinary and scoped
+capacity controls. Stop after complete triples when either three-win criterion
+becomes unattainable. No seed list or native PG02 allocation exists yet. See
+../continuation-reassessment/pg02-design.md. A pass earns fresh-development
+assessment, not goal completion; independent confirmation, MM2 and untouched
+validation remain required.
