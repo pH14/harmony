@@ -128,6 +128,7 @@ pub const environment::input_spec::InputSpec::BLOB_VERSION: u16
 pub fn environment::input_spec::InputSpec::answers(&self) -> &alloc::collections::btree::map::BTreeMap<(u64, u16, u64), environment::channel::Answer>
 pub fn environment::input_spec::InputSpec::config(&self) -> &environment::input_spec::ServiceConfig
 pub fn environment::input_spec::InputSpec::decode(&[u8]) -> core::result::Result<Self, environment::channel::ChannelError>
+pub fn environment::input_spec::InputSpec::decode_snapshot(&[u8]) -> core::result::Result<Self, environment::channel::ChannelError>
 pub fn environment::input_spec::InputSpec::effects(&self) -> &alloc::collections::btree::map::BTreeMap<u64, environment::channel::Effect>
 pub fn environment::input_spec::InputSpec::encode(&self) -> alloc::vec::Vec<u8>
 pub fn environment::input_spec::InputSpec::materialize(&self, &environment::input_spec::ServiceFactory) -> core::result::Result<environment::channel::RecordedEnv<alloc::boxed::Box<dyn environment::channel::ServiceHandler>>, environment::channel::ChannelError>
