@@ -50,6 +50,10 @@ const GIC_PPI: u32 = 1;
 const IRQ_LEVEL_HIGH: u32 = 4;
 /// The GIC's own phandle (referenced by every device's `interrupt-parent`).
 const GIC_PHANDLE: u32 = 1;
+/// Fixed board clock referenced by both PL011 clock inputs.
+const PL011_CLOCK_PHANDLE: u32 = 2;
+const PL011_CLOCK_HZ: u32 = 24_000_000;
+const PL011_PERIPHID: u32 = 0x0004_1011;
 
 /// A phandle-less GIC PPI number → its DT interrupt-cell `number` (PPIs are
 /// numbered from 16 on the GIC but `GIC_PPI n` in the DT means INTID `16 + n`).
@@ -308,9 +312,20 @@ fn build_inner(
     f.prop_u32("clock-frequency", CNTFRQ_HZ as u32);
     f.end_node();
 
+    // /clk24mhz — the fixed UART and APB clock for the PrimeCell PL011.
+    f.begin_node("clk24mhz");
+    f.prop_str("compatible", "fixed-clock");
+    f.prop_u32("#clock-cells", 0);
+    f.prop_u32("clock-frequency", PL011_CLOCK_HZ);
+    f.prop_u32("phandle", PL011_CLOCK_PHANDLE);
+    f.end_node();
+
     // /pl011 — the serial console (an SPI line on the GIC).
     f.begin_node("pl011@9000000");
-    f.prop_str("compatible", "arm,pl011");
+    f.prop_bytes("compatible", b"arm,pl011\0arm,primecell\0");
+    f.prop_u32("arm,primecell-periphid", PL011_PERIPHID);
+    f.prop_cells("clocks", &[PL011_CLOCK_PHANDLE, PL011_CLOCK_PHANDLE]);
+    f.prop_bytes("clock-names", b"uartclk\0apb_pclk\0");
     f.prop_u32("interrupt-parent", GIC_PHANDLE);
     f.prop_cells("interrupts", &[GIC_SPI, PL011_SPI, IRQ_LEVEL_HIGH]);
     {
@@ -551,6 +566,7 @@ mod tests {
             pvclock_node.as_str(),
             "intc@8000000",
             "timer",
+            "clk24mhz",
             "pl011@9000000",
         ] {
             assert!(p.nodes.iter().any(|x| x == n), "missing node {n}");
@@ -572,7 +588,23 @@ mod tests {
         );
         assert_eq!(
             p.prop("pl011@9000000", "compatible").unwrap(),
-            b"arm,pl011\0"
+            b"arm,pl011\0arm,primecell\0"
+        );
+        assert_eq!(
+            p.prop("pl011@9000000", "arm,primecell-periphid").unwrap(),
+            PL011_PERIPHID.to_be_bytes()
+        );
+        assert_eq!(
+            p.prop("pl011@9000000", "clocks").unwrap(),
+            [
+                PL011_CLOCK_PHANDLE.to_be_bytes(),
+                PL011_CLOCK_PHANDLE.to_be_bytes()
+            ]
+            .concat()
+        );
+        assert_eq!(
+            p.prop("pl011@9000000", "clock-names").unwrap(),
+            b"uartclk\0apb_pclk\0"
         );
         // The GIC reg carries both frames (dist + redist), 4 cells each × 2.
         assert_eq!(p.prop("intc@8000000", "reg").unwrap().len(), 2 * 4 * 4);
