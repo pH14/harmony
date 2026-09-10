@@ -415,6 +415,30 @@ fn compose_maps_guest_ram_and_keeps_it_alive_for_mock_backend() {
 mod live_kvm {
     use super::*;
     use vmm_backend::KvmBackend;
+    use vmm_core::virtual_time::{DeviceClass, NormalizedEventClass};
+
+    const MMIO_RAM_LEN: usize = 64 * 1024;
+    const MMIO_CODE_GPA: usize = 0x1000;
+    const MMIO_TPR_GPA: u64 = 0xFEE0_0080;
+    const MMIO_TPR_VALUE: u32 = 5;
+    /// `ADD dword ptr [0xFEE0_0080], 5; INC BX; HLT`.
+    ///
+    /// The address-size and operand-size prefixes make the first instruction
+    /// nine bytes long while the final `INC BX` remains the one-byte real-mode
+    /// witness. KVM exposes the xAPIC read and write as two userspace exits.
+    const MMIO_PROGRAM: [u8; 11] = [
+        0x67,
+        0x66,
+        0x83,
+        0x05,
+        MMIO_TPR_GPA as u8,
+        (MMIO_TPR_GPA >> 8) as u8,
+        (MMIO_TPR_GPA >> 16) as u8,
+        (MMIO_TPR_GPA >> 24) as u8,
+        MMIO_TPR_VALUE as u8,
+        0x43,
+        0xF4,
+    ];
 
     fn require_kvm() {
         assert!(
@@ -431,6 +455,284 @@ mod live_kvm {
             |_| {}
         };
         compose(guest_ram_image(), backend, configure)
+    }
+
+    fn mmio_guest_ram() -> GuestRam {
+        let mut ram = GuestRam::new(MMIO_RAM_LEN).expect("allocate MMIO guest RAM");
+        ram.as_mut_bytes()[MMIO_CODE_GPA..MMIO_CODE_GPA + MMIO_PROGRAM.len()]
+            .copy_from_slice(&MMIO_PROGRAM);
+        ram
+    }
+
+    /// Overlay a flat real/unreal-mode entry state onto KVM's valid save
+    /// template. The 32-bit address-size prefix still uses the data segment's
+    /// hidden limit, so the maximal DS limit is what lets the instruction reach
+    /// the xAPIC page above the 64 KiB RAM image.
+    fn install_mmio_entry<B: Backend<A = X86>>(backend: &mut B) {
+        let mut state = backend.save().expect("save MMIO entry template");
+        state.sregs.cs.base = 0;
+        state.sregs.cs.selector = 0;
+        state.sregs.ds.base = 0;
+        state.sregs.ds.selector = 0;
+        state.sregs.ds.limit = u32::MAX;
+        state.regs.rip = MMIO_CODE_GPA as u64;
+        state.regs.rflags = 0x2;
+        state.regs.rbx = 0;
+        state.mp_state = vmm_backend::MpState::Runnable;
+        backend.restore(&state).expect("restore MMIO entry state");
+    }
+
+    fn fresh_mmio_vmm() -> Vmm<KvmBackend> {
+        let backend = KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed: {e}"));
+        let mut vmm = compose(mmio_guest_ram(), backend, install_mmio_entry::<KvmBackend>);
+        wire_snapshot_path(&mut vmm);
+        vmm.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .expect("wire 24 MHz LAPIC"),
+        );
+        vmm
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct MmioCapture {
+        memory: Vec<u8>,
+        state: vm_state::VmState,
+        encoded_state: Vec<u8>,
+        state_blob: Vec<u8>,
+        state_hash: [u8; 32],
+        moment: Option<u64>,
+    }
+
+    fn capture_full_vmm(vmm: &Vmm<KvmBackend>) -> MmioCapture {
+        let state = vmm.save_vm_state().expect("save full MMIO VM state");
+        let encoded_state = state.encode().expect("encode full MMIO VM state");
+        let decoded = vm_state::VmState::decode(&encoded_state).expect("decode full MMIO VM state");
+        assert_eq!(decoded, state, "full MMIO VM state codec must round-trip");
+        MmioCapture {
+            memory: vmm.guest_memory().to_vec(),
+            state: decoded,
+            encoded_state,
+            state_blob: vmm.state_blob().expect("encode full MMIO state blob"),
+            state_hash: vmm.state_hash().expect("hash full MMIO VM state"),
+            moment: vmm.effective_vns(),
+        }
+    }
+
+    /// Read the LAPIC TPR from the opaque x86 device record after the public
+    /// `VmState` codec has decoded it. This keeps the test independent of a
+    /// product-only inspection accessor while proving the RMW's device result
+    /// itself was saved and restored.
+    fn lapic_tpr(state: &vm_state::VmState) -> u32 {
+        let bytes = &state.devices.0;
+        let read_u32 = |offset: usize| {
+            let end = offset.checked_add(4).expect("device offset overflow");
+            let field = bytes
+                .get(offset..end)
+                .expect("truncated LAPIC device record");
+            u32::from_le_bytes(field.try_into().expect("LAPIC field width"))
+        };
+        let report_len = usize::try_from(read_u32(14)).expect("report length fits usize");
+        let capture_len_offset = 18usize
+            .checked_add(report_len.checked_mul(4).expect("report length overflow"))
+            .expect("capture length offset overflow");
+        let capture_len =
+            usize::try_from(read_u32(capture_len_offset)).expect("capture length fits usize");
+        let lapic_flag = capture_len_offset
+            .checked_add(4)
+            .and_then(|offset| offset.checked_add(capture_len))
+            .and_then(|offset| offset.checked_add(10))
+            .expect("LAPIC flag offset overflow");
+        assert_eq!(
+            *bytes.get(lapic_flag).expect("truncated LAPIC flag"),
+            1,
+            "the saved MMIO fixture must carry a LAPIC"
+        );
+        read_u32(lapic_flag.checked_add(1 + 16).expect("TPR offset overflow"))
+    }
+
+    fn capture_mmio_boundary(vmm: &Vmm<KvmBackend>, before_vns: u64) -> MmioCapture {
+        let live = vmm.vcpu_record().expect("read MMIO boundary vCPU");
+        assert_eq!(live.regs.rip, (MMIO_CODE_GPA + 9) as u64);
+        assert_eq!(
+            live.regs.rbx, 0,
+            "INC BX must remain unretired at the boundary"
+        );
+
+        let counts = vmm.exit_counts();
+        assert_eq!(
+            counts.mmio, 2,
+            "one VMM step must service the LAPIC read and write"
+        );
+        assert_eq!(
+            counts.total(),
+            2,
+            "the MMIO instruction has exactly two exits"
+        );
+
+        let trace = vmm
+            .virtual_time_trace()
+            .expect("MMIO fixture wires the production virtual-time trace");
+        assert_eq!(
+            trace.raw_log().len(),
+            2,
+            "the trace has two raw MMIO exits before HLT"
+        );
+        assert_eq!(
+            trace.normalized_log().events.len(),
+            2,
+            "the trace has two MMIO events before HLT"
+        );
+        for event in &trace.normalized_log().events {
+            assert_eq!(
+                event.class,
+                NormalizedEventClass::DeviceMmio(DeviceClass::InterruptController)
+            );
+        }
+        let cost = contract::virtual_time_timing().interrupt_controller_mmio_vns;
+        assert_eq!(
+            trace.normalized_log().events[0].vns_after,
+            before_vns + cost
+        );
+        assert_eq!(
+            trace.normalized_log().events[1].vns_after,
+            before_vns + 2 * cost
+        );
+
+        let capture = capture_full_vmm(vmm);
+        assert_eq!(
+            lapic_tpr(&capture.state),
+            MMIO_TPR_VALUE,
+            "the ADD read/modify/write must save LAPIC TPR = 5"
+        );
+        assert_eq!(capture.moment, Some(before_vns + 2 * cost));
+        capture
+    }
+
+    fn continue_to_hlt(vmm: &mut Vmm<KvmBackend>) -> MmioCapture {
+        assert_eq!(
+            vmm.step().expect("run INC BX and HLT"),
+            Step::Terminal(TerminalReason::Idle),
+            "the successor step must stop at HLT"
+        );
+        let endpoint = capture_full_vmm(vmm);
+        let live = vmm.vcpu_record().expect("read MMIO endpoint vCPU");
+        assert_eq!(live.regs.rbx, 1, "INC BX must retire exactly once");
+        endpoint
+    }
+
+    #[test]
+    #[ignore = "live KVM; run with --ignored on a Linux x86-64 /dev/kvm host"]
+    fn mmio_rmw_finishes_before_full_vmm_snapshot() {
+        require_kvm();
+
+        // The uninterrupted run establishes the reference stop and endpoint.
+        // The single first step must drain the ADD's LAPIC read and write before
+        // exposing the boundary; the INC witness must still be pending there.
+        let mut uninterrupted = fresh_mmio_vmm();
+        let before_vns = uninterrupted
+            .effective_vns()
+            .expect("MMIO fixture wires virtual time");
+        assert_eq!(
+            uninterrupted.step().expect("service ADD MMIO"),
+            Step::Continued
+        );
+        let uninterrupted_stop = capture_mmio_boundary(&uninterrupted, before_vns);
+        let uninterrupted_endpoint = continue_to_hlt(&mut uninterrupted);
+
+        // A save-and-continue source must have the same complete state at the
+        // same serviced-instruction boundary. Repeated snapshot/capture calls
+        // are a fixpoint: they do not execute the successor or add exits.
+        let mut save_and_continue = fresh_mmio_vmm();
+        let save_before_vns = save_and_continue
+            .effective_vns()
+            .expect("save/continue fixture wires virtual time");
+        assert_eq!(save_before_vns, before_vns);
+        assert_eq!(
+            save_and_continue.step().expect("service saved ADD MMIO"),
+            Step::Continued
+        );
+        let save_stop = capture_mmio_boundary(&save_and_continue, save_before_vns);
+        let counts = save_and_continue.exit_counts();
+        let time = save_and_continue.effective_vns();
+        let bx = save_and_continue
+            .vcpu_record()
+            .expect("read saved boundary vCPU")
+            .regs
+            .rbx;
+        let repeated = capture_full_vmm(&save_and_continue);
+        assert_eq!(repeated, save_stop, "repeated full snapshot is unchanged");
+        assert_eq!(save_and_continue.exit_counts(), counts);
+        assert_eq!(save_and_continue.effective_vns(), time);
+        assert_eq!(
+            save_and_continue
+                .vcpu_record()
+                .expect("read repeated boundary vCPU")
+                .regs
+                .rbx,
+            bx
+        );
+        assert_eq!(bx, 0, "repeated capture must not retire INC BX");
+        let save_and_continue_endpoint = continue_to_hlt(&mut save_and_continue);
+
+        // Restore the complete saved state into a fresh production-composed
+        // VMM. The fresh target has no prior exits, but its restored state and
+        // continuation must match the two source paths byte for byte.
+        let mut cold = fresh_mmio_vmm();
+        cold.restore_snapshot(&save_stop.memory, &save_stop.state)
+            .expect("restore full MMIO VM snapshot");
+        let cold_stop = capture_full_vmm(&cold);
+        let cold_live = cold.vcpu_record().expect("read cold MMIO boundary vCPU");
+        assert_eq!(cold_live.regs.rip, (MMIO_CODE_GPA + 9) as u64);
+        assert_eq!(cold_live.regs.rbx, 0);
+        assert_eq!(
+            lapic_tpr(&cold_stop.state),
+            MMIO_TPR_VALUE,
+            "cold restore must retain LAPIC TPR = 5"
+        );
+        assert_eq!(
+            cold_stop, save_stop,
+            "cold restore reproduces the MMIO stop"
+        );
+        let cold_endpoint = continue_to_hlt(&mut cold);
+
+        assert_eq!(uninterrupted_stop, save_stop);
+        assert_eq!(uninterrupted_stop, cold_stop);
+        assert_eq!(
+            uninterrupted_endpoint, save_and_continue_endpoint,
+            "uninterrupted and save-and-continue endpoints must match"
+        );
+        assert_eq!(
+            save_and_continue_endpoint, cold_endpoint,
+            "cold restore continuation must match the source endpoint"
+        );
+
+        // The final instruction retired only after the stop was captured.
+        assert_eq!(
+            uninterrupted
+                .vcpu_record()
+                .expect("read uninterrupted endpoint vCPU")
+                .regs
+                .rbx,
+            1
+        );
+        assert_eq!(
+            save_and_continue
+                .vcpu_record()
+                .expect("read save/continue endpoint vCPU")
+                .regs
+                .rbx,
+            1
+        );
+        assert_eq!(
+            cold.vcpu_record()
+                .expect("read cold endpoint vCPU")
+                .regs
+                .rbx,
+            1
+        );
     }
 
     #[test]

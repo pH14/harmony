@@ -211,6 +211,369 @@ fn serviced_pio_is_exactly_snapshottable_without_guest_execution() {
     }
 }
 
+const MMIO_GPA: u64 = 0xFEE0_0000;
+const MMIO_SOURCE_GPA: u64 = 0x3000;
+const SCALAR_READ_VALUE: u32 = 0xA1B2_C3D4;
+const SCALAR_STORE_VALUE: u32 = 0xD4C3_B2A1;
+const ADD_READ_VALUE: u32 = 0x1020_3040;
+const ADD_IMMEDIATE: u8 = 5;
+const MOVDQU_READ_WORDS: [u64; 2] = [0x8877_6655_4433_2211, 0x1100_FFEE_DDCC_BBAA];
+const MOVDQU_STORE_WORDS: [u64; 2] = [0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210];
+
+#[derive(Clone, Copy, Debug)]
+enum MmioOperation {
+    ScalarLoad,
+    ScalarStore,
+    AddDword,
+    MovdquLoad,
+    MovdquStore,
+}
+
+impl MmioOperation {
+    fn name(self) -> &'static str {
+        match self {
+            Self::ScalarLoad => "scalar-load",
+            Self::ScalarStore => "scalar-store",
+            Self::AddDword => "add-dword",
+            Self::MovdquLoad => "movdqu-load",
+            Self::MovdquStore => "movdqu-store",
+        }
+    }
+}
+
+/// Build a flat-real-mode instruction stream using 32-bit absolute addressing.
+/// The returned offset is the RIP immediately after the MMIO instruction; the
+/// two-byte `INC BX; HLT` witness follows it.
+fn mmio_guest_code(operation: MmioOperation) -> (Vec<u8>, u64) {
+    let mmio_addr = (MMIO_GPA as u32).to_le_bytes();
+    let source_addr = (MMIO_SOURCE_GPA as u32).to_le_bytes();
+    let mut code = Vec::new();
+    match operation {
+        // 67 66 A1 moffs32: MOV EAX, [0xFEE00000].
+        MmioOperation::ScalarLoad => {
+            code.extend_from_slice(&[0x67, 0x66, 0xA1]);
+            code.extend_from_slice(&mmio_addr);
+        }
+        // MOV EAX, imm32; 67 66 A3 moffs32: MOV [0xFEE00000], EAX.
+        MmioOperation::ScalarStore => {
+            code.extend_from_slice(&[0x66, 0xB8]);
+            code.extend_from_slice(&SCALAR_STORE_VALUE.to_le_bytes());
+            code.extend_from_slice(&[0x67, 0x66, 0xA3]);
+            code.extend_from_slice(&mmio_addr);
+        }
+        // 67 66 83 /0: ADD dword ptr [0xFEE00000], imm8. KVM must expose the
+        // instruction as a load followed by a store of the updated dword.
+        MmioOperation::AddDword => {
+            code.extend_from_slice(&[0x67, 0x66, 0x83, 0x05]);
+            code.extend_from_slice(&mmio_addr);
+            code.push(ADD_IMMEDIATE);
+        }
+        // 67 F3 0F 6F /r: MOVDQU XMM0, [0xFEE00000]. KVM's eight-byte MMIO
+        // payload is expected to expose this as two fragments.
+        MmioOperation::MovdquLoad => {
+            code.extend_from_slice(&[0x67, 0xF3, 0x0F, 0x6F, 0x05]);
+            code.extend_from_slice(&mmio_addr);
+        }
+        // Load XMM0 from RAM first, then 67 F3 0F 7F /r: MOVDQU
+        // [0xFEE00000], XMM0. The source at 0x3000 is also a RAM endpoint
+        // witness for cold restore.
+        MmioOperation::MovdquStore => {
+            code.extend_from_slice(&[0x67, 0xF3, 0x0F, 0x6F, 0x05]);
+            code.extend_from_slice(&source_addr);
+            code.extend_from_slice(&[0x67, 0xF3, 0x0F, 0x7F, 0x05]);
+            code.extend_from_slice(&mmio_addr);
+        }
+    }
+    let mmio_end = code.len() as u64;
+    code.extend_from_slice(&[0x43, 0xF4]); // INC BX; HLT
+    (code, mmio_end)
+}
+
+fn expected_mmio_accesses(operation: MmioOperation) -> Vec<CommonExit> {
+    let read = |gpa, size| CommonExit::Mmio {
+        gpa: Gpa(gpa),
+        size,
+        write: None,
+    };
+    let write = |gpa, size, value| CommonExit::Mmio {
+        gpa: Gpa(gpa),
+        size,
+        write: Some(value),
+    };
+    match operation {
+        MmioOperation::ScalarLoad => vec![read(MMIO_GPA, 4)],
+        MmioOperation::ScalarStore => vec![write(MMIO_GPA, 4, SCALAR_STORE_VALUE as u64)],
+        MmioOperation::AddDword => vec![
+            read(MMIO_GPA, 4),
+            write(
+                MMIO_GPA,
+                4,
+                u64::from(ADD_READ_VALUE.wrapping_add(u32::from(ADD_IMMEDIATE))),
+            ),
+        ],
+        MmioOperation::MovdquLoad => vec![read(MMIO_GPA, 8), read(MMIO_GPA + 8, 8)],
+        MmioOperation::MovdquStore => vec![
+            write(MMIO_GPA, 8, MOVDQU_STORE_WORDS[0]),
+            write(MMIO_GPA + 8, 8, MOVDQU_STORE_WORDS[1]),
+        ],
+    }
+}
+
+fn setup_mmio_guest(backend: &mut KvmBackend, mem: &mut GuestMem, operation: MmioOperation) -> u64 {
+    let (code, mmio_end) = mmio_guest_code(operation);
+    setup_real_mode(backend, mem, &code);
+
+    // Keep an ordinary RAM source/witness mapped beside the code. The MOVDQU
+    // store reads this source, and every mode compares the complete RAM image.
+    let source: Vec<u8> = MOVDQU_STORE_WORDS
+        .into_iter()
+        .flat_map(u64::to_le_bytes)
+        .collect();
+    backend
+        .write_guest(Gpa(MMIO_SOURCE_GPA), &source)
+        .expect("load MMIO RAM source");
+
+    // CR4.OSFXSR is required for MOVDQU in this real-mode guest. It is harmless
+    // for the scalar and integer operations and keeps all five cases on the
+    // same setup path.
+    let mut initial = backend.save().expect("save MMIO setup state");
+    initial.regs.rbx = 0;
+    // The address-size prefix selects a 32-bit offset but does not enlarge
+    // real mode's hidden segment limit. Model a flat unreal-mode data segment
+    // so the access reaches the MMIO page rather than faulting on DS.limit.
+    initial.sregs.ds.base = 0;
+    initial.sregs.ds.limit = u32::MAX;
+    initial.sregs.cr4 |= 1 << 9; // OSFXSR
+    backend.restore(&initial).expect("restore MMIO setup state");
+    mmio_end
+}
+
+fn service_mmio(backend: &mut KvmBackend, operation: MmioOperation) -> Vec<CommonExit> {
+    let expected = expected_mmio_accesses(operation);
+    let mut observed = Vec::with_capacity(expected.len());
+    let mut next =
+        Some(backend.run().unwrap_or_else(|e| {
+            panic!("{}: run to first MMIO exit failed: {e}", operation.name())
+        }));
+
+    while let Some(exit) = next {
+        let access = match exit {
+            Exit::Common(access @ CommonExit::Mmio { .. }) => access,
+            other => panic!(
+                "{}: expected MMIO continuation, got {other:?}",
+                operation.name()
+            ),
+        };
+        let index = observed.len();
+        assert_eq!(access, expected[index], "{}: MMIO access", operation.name());
+        observed.push(access);
+
+        // A surfaced MMIO callback is still a transaction: `run` must not
+        // resume the guest before the load is completed or the write is
+        // retired. This also covers writes returned as queued continuations by
+        // `finish_exit`, not only the first exit from KVM.
+        let counts_before = backend.exit_counts();
+        assert!(matches!(
+            backend.run(),
+            Err(vmm_backend::BackendError::PendingCompletion)
+        ));
+        assert_eq!(
+            backend.exit_counts(),
+            counts_before,
+            "a rejected resume cannot add an MMIO exit"
+        );
+
+        if let CommonExit::Mmio { write: None, .. } = access {
+            let value = match operation {
+                MmioOperation::ScalarLoad => u64::from(SCALAR_READ_VALUE),
+                MmioOperation::AddDword => u64::from(ADD_READ_VALUE),
+                MmioOperation::MovdquLoad => MOVDQU_READ_WORDS[index],
+                MmioOperation::ScalarStore | MmioOperation::MovdquStore => {
+                    panic!("{}: unexpected read fragment", operation.name())
+                }
+            };
+            backend
+                .complete_read(value)
+                .unwrap_or_else(|e| panic!("{}: complete MMIO read failed: {e}", operation.name()));
+        }
+
+        // This is the only operation between device accesses. It retires the
+        // current callback with immediate-exit and may return the next fragment
+        // of this same guest instruction. It never runs the successor.
+        next = backend
+            .finish_exit()
+            .unwrap_or_else(|e| panic!("{}: finish MMIO exit failed: {e}", operation.name()));
+    }
+
+    assert_eq!(
+        observed,
+        expected,
+        "{}: each MMIO access exactly once",
+        operation.name()
+    );
+    observed
+}
+
+fn assert_mmio_completion_boundary(
+    backend: &mut KvmBackend,
+    operation: MmioOperation,
+    mmio_end: u64,
+    access_count: usize,
+) -> VcpuState {
+    let state = backend
+        .save()
+        .unwrap_or_else(|e| panic!("{}: save completion boundary failed: {e}", operation.name()));
+    assert_eq!(
+        state.regs.rip,
+        0x1000 + mmio_end,
+        "{}: RIP",
+        operation.name()
+    );
+    assert_eq!(
+        state.regs.rbx,
+        0,
+        "{}: INC BX ran too early",
+        operation.name()
+    );
+    assert_eq!(
+        backend.exit_counts().mmio,
+        access_count as u64,
+        "{}: MMIO exit count",
+        operation.name()
+    );
+    match operation {
+        MmioOperation::ScalarLoad => {
+            assert_eq!(state.regs.rax, u64::from(SCALAR_READ_VALUE));
+        }
+        MmioOperation::ScalarStore => {
+            assert_eq!(state.regs.rax, u64::from(SCALAR_STORE_VALUE));
+        }
+        MmioOperation::AddDword | MmioOperation::MovdquStore => {}
+        MmioOperation::MovdquLoad => {
+            let mut expected = [0u8; 16];
+            expected[..8].copy_from_slice(&MOVDQU_READ_WORDS[0].to_le_bytes());
+            expected[8..].copy_from_slice(&MOVDQU_READ_WORDS[1].to_le_bytes());
+            assert!(
+                state.xsave.len() >= 176,
+                "{}: XSAVE too short",
+                operation.name()
+            );
+            assert_eq!(
+                &state.xsave[160..176],
+                expected,
+                "{}: XMM0",
+                operation.name()
+            );
+        }
+    }
+    state
+}
+
+fn endpoint(
+    backend: &KvmBackend,
+    mem: &mut GuestMem,
+    operation: MmioOperation,
+) -> (VcpuState, Vec<u8>) {
+    let state = backend
+        .save()
+        .unwrap_or_else(|e| panic!("{}: save endpoint failed: {e}", operation.name()));
+    assert_eq!(
+        state.regs.rbx,
+        1,
+        "{}: INC BX did not run once",
+        operation.name()
+    );
+    (state, mem.as_mut_slice().to_vec())
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
+fn serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu() {
+    for operation in [
+        MmioOperation::ScalarLoad,
+        MmioOperation::ScalarStore,
+        MmioOperation::AddDword,
+        MmioOperation::MovdquLoad,
+        MmioOperation::MovdquStore,
+    ] {
+        let expected = expected_mmio_accesses(operation);
+        let mut snapshot = None;
+        let mut snapshot_ram: Option<Vec<u8>> = None;
+        let mut endpoints = Vec::new();
+
+        for mode in 0..3 {
+            let mut mem = GuestMem::new(0x10000);
+            let mut backend = new_backend_or_explain();
+            let mmio_end = setup_mmio_guest(&mut backend, &mut mem, operation);
+
+            if mode == 2 {
+                let state = snapshot.as_ref().expect("MMIO boundary snapshot");
+                let ram = snapshot_ram.as_ref().expect("MMIO boundary RAM snapshot");
+                backend
+                    .write_guest(Gpa(0), ram)
+                    .expect("restore MMIO RAM snapshot");
+                backend.restore(state).expect("cold restore MMIO boundary");
+                assert_eq!(
+                    backend.save().expect("save cold MMIO boundary"),
+                    *state,
+                    "{}: cold restore changes the completion boundary",
+                    operation.name()
+                );
+            } else {
+                let observed = service_mmio(&mut backend, operation);
+                assert_eq!(
+                    observed,
+                    expected,
+                    "{}: observed sequence",
+                    operation.name()
+                );
+                let boundary = assert_mmio_completion_boundary(
+                    &mut backend,
+                    operation,
+                    mmio_end,
+                    expected.len(),
+                );
+                let counts = backend.exit_counts();
+
+                // Repeated finish/capture at the stopped boundary is a fixpoint:
+                // it cannot enter the guest or add an exit count.
+                assert_eq!(backend.finish_exit().expect("repeat MMIO finish"), None);
+                assert_eq!(backend.exit_counts(), counts);
+                assert_eq!(backend.save().expect("repeat MMIO capture"), boundary);
+                assert_eq!(backend.exit_counts(), counts);
+
+                if mode == 1 {
+                    snapshot = Some(boundary);
+                    snapshot_ram = Some(mem.as_mut_slice().to_vec());
+                }
+            }
+
+            // The only ordinary run is the successor instruction after the full
+            // MMIO instruction has been completed and captured.
+            assert_eq!(
+                backend.run().expect("continue MMIO guest to HLT"),
+                Exit::Common(CommonExit::Idle),
+                "{}: successor run",
+                operation.name()
+            );
+            endpoints.push(endpoint(&backend, &mut mem, operation));
+        }
+
+        assert_eq!(
+            endpoints[0],
+            endpoints[1],
+            "{}: uninterrupted vs save/continue",
+            operation.name()
+        );
+        assert_eq!(
+            endpoints[0],
+            endpoints[2],
+            "{}: uninterrupted vs cold restore",
+            operation.name()
+        );
+    }
+}
+
 const MSR_INDEX: u32 = 0x10;
 const MSR_ENTRY: u64 = 0x1000;
 const GP_VECTOR: u64 = 13;

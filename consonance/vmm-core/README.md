@@ -74,3 +74,11 @@ by platform and require the corresponding KVM or Hypervisor.framework host.
 cargo test -p vmm-core
 cargo clippy -p vmm-core --all-targets -- -D warnings
 ```
+
+The x86 exit dispatcher finishes the current instruction's device-access chain
+before returning a stopped endpoint. Continuation accesses retain their device,
+virtual-time, and trace accounting, but do not enter the next guest instruction
+or deliver new scheduled inputs between fragments. Snapshot capture performs no
+completion work. A periodic trace checkpoint crossed inside an instruction
+lands on its final access; deferred hash consumers use
+`virtual_time_checkpoint_due` to identify that exact capture position.

@@ -119,6 +119,16 @@ pub trait Vendor: Arch + Sized {
         write: Option<u64>,
     ) -> Result<Step, VmmError>;
 
+    /// Complete a serviced exit at this architecture's instruction boundary.
+    /// Some backends finish an instruction through additional device accesses;
+    /// those are serviced before exposing a stopped execution. Architectures
+    /// whose completion methods already finish synchronously need no work here.
+    fn finish_exit<B: Backend<A = Self>>(
+        _vmm: &mut Vmm<B>,
+    ) -> Result<Option<Exit<Self>>, VmmError> {
+        Ok(None)
+    }
+
     /// Whether this complete backend exit is the vendor's hypercall-doorbell
     /// ring. This is an observability seam for the opt-in Consonance profile;
     /// it is deliberately separate from the backend's broad I/O/MMIO counters
