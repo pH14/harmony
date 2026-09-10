@@ -7,8 +7,7 @@
 use std::{collections::BTreeMap, error::Error, fmt, path::Path, time::Duration};
 
 use control_proto::{
-    ControlError, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
-    class_bit,
+    Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason, class_bit,
 };
 use environment::{
     channel::Effect,
@@ -313,72 +312,6 @@ impl Session {
         }
     }
 
-    /// Snapshot the current stopped state, running the guest a further
-    /// `settle_step` of virtual time whenever the control server cannot seal
-    /// that point yet, up to `max_settle` in total.
-    ///
-    /// Reports the snapshot, its V-time, and the stop reason of the last settle
-    /// run — absent when the point sealed with no settling.
-    pub fn seal(
-        &mut self,
-        settle_step: u64,
-        max_settle: u64,
-    ) -> Result<(SnapId, u64, Option<StopReason>), Box<dyn Error>> {
-        seal_after_settling(
-            self,
-            settle_step,
-            max_settle,
-            Self::try_seal,
-            Self::settle_step,
-        )
-    }
-
-    /// Seal the current point, or `None` when the server cannot seal it yet.
-    fn try_seal(&mut self) -> Result<Option<(SnapId, u64)>, Box<dyn Error>> {
-        let outcome = self.client.transport_mut().handle(&Request::Snapshot);
-        match outcome {
-            Ok(Ok(Reply::Snapshot {
-                id,
-                at,
-                tainted: false,
-                ..
-            })) => {
-                self.snapshot_times.insert(id, at.0);
-                Ok(Some((id, at.0)))
-            }
-            Ok(Ok(Reply::Snapshot {
-                id, tainted: true, ..
-            })) => {
-                // A tainted seal is still minted; release it before reporting.
-                let _ = drop_control_handle(&mut self.client, id);
-                Err(SessionError::Control("seal was tainted".into()).into())
-            }
-            Ok(Ok(reply)) => Err(SessionError::Reply {
-                operation: "seal",
-                reply,
-            }
-            .into()),
-            Ok(Err(ControlError::NotQuiescent)) => Ok(None),
-            Ok(Err(error)) => Err(SessionError::Control(error.to_string()).into()),
-            Err(error) => Err(SessionError::Control(error.to_string()).into()),
-        }
-    }
-
-    /// Run `step` further nanoseconds of virtual time from wherever the guest
-    /// currently stands.
-    fn settle_step(&mut self, step: u64) -> Result<StopReason, Box<dyn Error>> {
-        let now = self
-            .client
-            .transport()
-            .vmm()
-            .and_then(Vmm::effective_vns)
-            .ok_or_else(|| SessionError::Control("live VM has no virtual time".to_owned()))?;
-        let deadline = now
-            .checked_add(step)
-            .ok_or("Consonance settle deadline overflow")?;
-        self.run_until(deadline)
-    }
-
     /// Issue one control request with the session's host wall-clock bound armed.
     fn drive(&mut self, request: &Request) -> Result<Reply, Box<dyn Error>> {
         drive_guarded(
@@ -680,40 +613,6 @@ where
     }
 }
 
-struct SnapshotReceipt {
-    id: SnapId,
-    at: u64,
-}
-
-fn snapshot_handle(
-    client: &mut Server,
-    operation: &'static str,
-) -> Result<SnapshotReceipt, Box<dyn Error>> {
-    let reply = client
-        .request(&Request::Snapshot)
-        .map_err(|error| SessionError::Control(error.to_string()))?;
-    match reply {
-        Reply::Snapshot {
-            id,
-            at,
-            tainted: false,
-            ..
-        } => Ok(SnapshotReceipt { id, at: at.0 }),
-        Reply::Snapshot {
-            id, tainted: true, ..
-        } => {
-            let error: Box<dyn Error> =
-                SessionError::Control(format!("{operation} was tainted")).into();
-            // A tainted snapshot is still minted by the control server. The
-            // session rejects it, so release the handle before returning the
-            // caller-facing error.
-            let _ = drop_control_handle(client, id);
-            Err(error)
-        }
-        reply => Err(SessionError::Reply { operation, reply }.into()),
-    }
-}
-
 fn branch_payload(
     client: &mut Server,
     snap: SnapId,
@@ -860,20 +759,6 @@ impl Error for ConsoleDiagnostic {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(self.source.as_ref())
     }
-}
-
-fn expect_unit(reply: Reply, operation: &'static str) -> Result<(), Box<dyn Error>> {
-    match reply {
-        Reply::Unit => Ok(()),
-        reply => Err(SessionError::Reply { operation, reply }.into()),
-    }
-}
-
-fn drop_control_handle(client: &mut Server, handle: SnapId) -> Result<(), Box<dyn Error>> {
-    let reply = client
-        .request(&Request::Drop(handle))
-        .map_err(|error| SessionError::Control(error.to_string()))?;
-    expect_unit(reply, "drop snapshot")
 }
 
 /// Return this process's minor-fault count when the host exposes it.

@@ -19,9 +19,7 @@ use std::{
     cell::RefCell, collections::BTreeMap, error::Error, path::Path, sync::Arc, time::Duration,
 };
 
-use consonance_client::session::{
-    PortableSnapshot, Session, SessionConfig, SessionError, identity_with_config,
-};
+use consonance_client::session::{PortableSnapshot, Session, SessionConfig, identity_with_config};
 use control_proto::{SnapId, StopReason};
 use environment::{
     Moment,
@@ -55,13 +53,6 @@ const WALL_LIMIT: Duration = Duration::from_secs(60);
 /// action, so an unbounded cache grows without limit across a long run; an
 /// evicted prefix is rebuilt from its longest cached ancestor instead.
 const SNAPSHOT_CACHE_LIMIT: usize = 96;
-/// Guest time run past a horizon deadline when the session refuses to seal the
-/// endpoint. The refusal is a point the virtual clock cannot seal, such as an
-/// exit still in flight, so a short step forward finds a sealable one.
-const SETTLE_STEP_NANOS: u64 = 100_000;
-/// Guest time one endpoint may spend settling in total. Past it the endpoint
-/// counts as having no successor and the search never branches from it.
-const SETTLE_ALLOWANCE_NANOS: u64 = 16 * SETTLE_STEP_NANOS;
 /// Serial console bytes kept when a guest is abandoned: the workload's own
 /// account of what it was doing when it stopped exiting.
 const CONSOLE_TAIL: usize = 1_500;
@@ -232,9 +223,8 @@ struct Config {
 #[derive(Clone, Copy, Debug)]
 struct Cached {
     snap: SnapId,
-    /// The moment the endpoint sealed at. Settling can carry it past the
-    /// window boundary, so it is the floor of anything staged on a branch
-    /// from this endpoint.
+    /// The moment the endpoint snapshot was taken. It is the floor of anything
+    /// staged on a branch from this endpoint.
     moment: u64,
     /// The use stamp that orders eviction.
     stamp: u64,
@@ -744,11 +734,9 @@ impl Live {
         Ok(vec![(perturb.at.max(floor), effect)])
     }
 
-    /// Run the action at `index` to its horizon and seal the endpoint,
-    /// reporting the snapshot and the moment it sealed at. An endpoint the
-    /// session cannot seal is run a little further and retried; one that
-    /// never seals is observed with no snapshot, so the search never branches
-    /// from it.
+    /// Run the action at `index` to its horizon and snapshot the exact stopped
+    /// endpoint, reporting the snapshot and its synchronized moment. A
+    /// snapshot failure abandons the live session with the control diagnostic.
     fn run_action(
         &mut self,
         index: usize,
@@ -769,38 +757,16 @@ impl Live {
                 String::from_utf8_lossy(&tail[start..])
             );
         }
-        let mut stop = FaultStop::from_stop_reason(&stop);
-        let mut snap = None;
-        if stop.is_continuable() {
-            match self.session.seal(SETTLE_STEP_NANOS, SETTLE_ALLOWANCE_NANOS) {
-                // A point that sealed without settling keeps the stop the run
-                // reported; settling ran the guest further, so where it left
-                // the guest is what the endpoint is judged on.
-                Ok((sealed, at, settled)) => {
-                    if let Some(settled) = &settled {
-                        stop = FaultStop::from_stop_reason(settled);
-                    }
-                    if stop.is_continuable() {
-                        snap = Some((sealed, at));
-                    }
-                }
-                Err(error) => match error.downcast_ref::<SessionError>() {
-                    // The guest stopped for good while settling and the point
-                    // it stopped at is unsealable. That stop is the endpoint's
-                    // evidence, and the session is still usable.
-                    Some(SessionError::Stop(reason)) => stop = FaultStop::from_stop_reason(reason),
-                    // The allowance ran out with the guest still off any
-                    // sealable point, so the endpoint has no successor.
-                    Some(SessionError::Settle { allowance }) => {
-                        eprintln!("fault endpoint never sealed within {allowance} ns of settling");
-                    }
-                    _ => return Err(self.abandon("seal", &error)),
-                },
-            }
-        }
-        if snap.is_none() && stop.is_continuable() {
-            stop = FaultStop::Unexpected;
-        }
+        let stop = FaultStop::from_stop_reason(&stop);
+        let snap = if stop.is_continuable() {
+            let (snapshot, at) = self
+                .session
+                .snapshot()
+                .map_err(|error| self.abandon("snapshot", &error))?;
+            Some((snapshot, at))
+        } else {
+            None
+        };
         Ok((self.observe(stop)?, snap))
     }
 

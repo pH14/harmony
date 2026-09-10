@@ -39,7 +39,7 @@ time ([`target`](src/target.rs)):
 | `Restart(node)` | the node is killed and comes back inside the horizon |
 | `Hook(id)` | the agent runs that hook once |
 | `Park(node, addr, hits, hold)` | guest threads are held at an execution place |
-| `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's seal when settling carried it past that start |
+| `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's snapshot moment when that moment is past the window start |
 
 Every action but `Interrupt` becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the agent's
@@ -53,11 +53,11 @@ branch installs it.
 per evaluator thread. Each portable action prefix maps to a real whole-VM
 snapshot: the session branches its parent under the prefix's window list and
 the host-plane effect its last action stages, runs to the action's horizon
-deadline, and seals the endpoint. An endpoint the session cannot seal within
-its settle allowance has no successor and the search records it as dead; one
-whose guest stopped for good while settling is recorded with that stop. A
-bounded LRU keeps recent prefixes resident and rebuilds evicted ones from their
-longest cached ancestor.
+deadline, and snapshots the exact stopped endpoint. A terminal stop is recorded
+with its original stop and has no successor. If a continuable endpoint cannot
+be snapshotted, the session is abandoned and the control diagnostic is
+reported. A bounded LRU keeps recent prefixes resident and rebuilds evicted
+ones from their longest cached ancestor.
 
 A campaign never encodes the virtual-time trace, so the session is configured
 to defer sparse checkpoint hashing. Each due checkpoint would otherwise hash
