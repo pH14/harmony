@@ -181,10 +181,21 @@ jobs:
           set -euo pipefail
           mkdir -p reports
           git rev-parse HEAD > reports/candidate-head.txt
-          test -c /dev/kvm
-          sudo chmod 666 /dev/kvm
           uname -a > reports/host.txt
           lscpu >> reports/host.txt
+          # AMD NPT loads guest PDPTRs from RAM; this witness specifically
+          # exercises the cached SREGS2 state supplied by userspace. Shadow
+          # paging retains that state on AMD (svm_cache_reg in upstream KVM).
+          # This changes only the disposable job VM, before any vCPU exists.
+          if [ -e /sys/module/kvm_amd/parameters/npt ]; then
+            cat /sys/module/kvm_amd/parameters/npt > reports/amd-npt-before.txt
+            sudo modprobe -r kvm_amd
+            sudo modprobe kvm_amd npt=0
+            cat /sys/module/kvm_amd/parameters/npt > reports/amd-npt-test.txt
+            grep -Eq '^(N|0)$' reports/amd-npt-test.txt
+          fi
+          test -c /dev/kvm
+          sudo chmod 666 /dev/kvm
           cargo test --locked -p vm-state -p vmm-core --lib 2>&1 | tee reports/portable.log
           cargo test --locked -p vmm-core --test x86_cpu_snapshots -- --ignored --test-threads=1 --nocapture 2>&1 | tee reports/pae-kvm.log
       - uses: actions/upload-artifact@v4
