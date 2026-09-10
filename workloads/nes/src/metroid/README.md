@@ -448,6 +448,32 @@ addition to the capture limit. Failed replay work and the generic replayer's
 unexposed constructor counter remain explicit accounting gaps, not zero work.
 No native qualification or inspection is implied by successful source tests.
 
+An explicitly registered `reconstruction` object may supply a pinned `input`
+with `expected_actions` and `expected_frames`. Its hash must match the original
+stream's diagnostic-prefix identity; at most 4,096 actions with holds in 1–120
+frames are accepted. The caller executes those actions normally on its inspector,
+then requires the generated root's complete metadata and emulator bytes to equal
+the saved root except for the separately checked core-hash field. It never edits
+or imports the foreign snapshot. The derived stream changes only the backend
+and generated origin hashes and preserves all original job bytes. Inspection
+also requires every final checkpoint ID, its order and its complete snapshot
+under that same relation. An independently reconstructed root must match the
+preceding qualification's runtime root and origin hashes.
+
+Version 2 reports distinguish raw checkpoint equality from this named comparison
+relation. All known original job results and admission decisions remain required,
+but those checks cannot establish equality of previously unrecorded discarded
+states across builds. Captured local-loss evidence belongs to the reconstructed
+runtime campaign. The comparison supplies no general cross-build determinism or
+fresh-search efficacy guarantee.
+
+Reconstruction frames are included in the preflight physical ceiling. Direct
+setup and prefix counters are included in failures and periodically flushed to
+`cost-progress.jsonl`; a watchdog kill leaves a subsequent-work gap. The generic
+replayer's constructor and partial work on an error remain unexposed. Generated
+root and final-checkpoint artifacts are saved before comparing them, so an
+equality failure can be diagnosed without rerunning the emulator.
+
 ### Experimental local terminal retry
 
 `MetroidGame::with_local_terminal_retry(true)` records

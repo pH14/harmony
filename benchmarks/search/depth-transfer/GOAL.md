@@ -1056,3 +1056,14 @@ First establish that contract and its counterexamples without emulation; then
 freeze any new reconstruction allocation separately. See rr01-closure.md in
 the continuation-reassessment directory. No policy change, fresh search, longer
 horizon or new seed is allocated, and the original goal remains unachieved.
+
+The next source contract is now implemented and checked in
+../continuation-reassessment/rr02-source-contract.md. Ten source tests and strict
+Clippy pass. Optional, explicitly bound action reconstruction checks the whole
+root and final checkpoint relation without modifying imported identities; direct
+setup/prefix failures retain counters and generated artifacts. Known job checks
+cannot prove equality of previously unrecorded discarded states across builds,
+so future local-loss evidence refers to the reconstructed ms02 campaign. Next
+build this exact source, then freeze a distinct bounded native registration if
+the build succeeds. No RR02 native execution is allocated by source tests, and
+RR01 remains closed.
