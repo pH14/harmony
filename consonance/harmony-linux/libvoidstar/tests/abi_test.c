@@ -128,8 +128,7 @@ int main(void)
     assert(process_id_from_environment() == 0);
     assert(setenv("HARMONY_INSTRUMENTED_PROCESS_ID", "2147483648", 1) == 0);
     assert(process_id_from_environment() == 0);
-    assert(unsetenv("HARMONY_INSTRUMENTED_PROCESS_ID") == 0);
-    harmony_automatic_process_id = 23;
+    assert(setenv("HARMONY_INSTRUMENTED_PROCESS_ID", "23", 1) == 0);
 
     fuzz_json_data(event, sizeof(event) - 1);
     assert(captured_len == sizeof(event) - 1);

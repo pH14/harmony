@@ -191,11 +191,6 @@ static void event_control_start(void)
     }
 }
 
-__attribute__((constructor)) static void harmony_event_constructor(void)
-{
-    (void)pthread_once(&harmony_event_control_once, event_control_start);
-}
-
 static void event_control_activate(void)
 {
     (void)pthread_once(&harmony_event_control_once, event_control_start);
