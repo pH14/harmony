@@ -26,3 +26,31 @@ Cross-host comparisons account for different core binary hashes. This reused
 short fixture cannot qualify a positive boss episode or establish performance
 neutrality at resource limits. A first prospective positive still requires
 standalone observer verification before any local combat allocation.
+
+## Q01 result
+
+The [registered block](q01-registration.json), frozen at `198d32dd`, passes all
+four cells using source `d2293b9c`. Each performs exactly 2,000 jobs and 284,283
+admitted frames, followed by full replay and two witness replays. Default stream,
+campaign and checkpoint bytes exactly match the saved historical fixture. All
+five declared semantic projections agree across feature builds and hosts,
+including all 1,139 retained emulator snapshots. Audited one/two-slot artifacts
+are byte identical. Logical resident and snapshot memory are identical in this
+fixture; the new field fits existing layout padding on these builds. This does
+not establish zero resource overhead generally.
+
+All audited runs count 6,784 admitted actions, 6,628 eligible live endpoints and
+zero classified encounters. This is expected for the reused short fixture and
+qualifies the negative/reporting path only. First-positive native input export
+and its observer confirmation remain unqualified. The local planted positive
+cases and reference classifier evidence remain separate.
+
+Both services completed successfully within one minute of launch, with no
+owned child remaining. [The score](q01-analysis.json) recomputes from the compact
+raw records using `python3 score.py --out /tmp/endpoint-q01-recomputed.json`.
+The standalone native verifier additionally checks the full retained artifacts
+on each host. This block charges 2,281,896 known auxiliary frames against its
+4M ceiling; full-campaign replay cost is inferred from admitted work. Setup,
+reconstruction and unadmitted work remain unknown. Cumulative resumed totals
+are 842,318,922 admitted performance-search and 47,622,115 known auxiliary frames
+in [the ledger](ledger-after-q01.json). No new performance allocation was used.

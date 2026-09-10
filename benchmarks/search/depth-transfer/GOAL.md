@@ -274,3 +274,27 @@ reward, archive key, selection bonus or controller update may use the diagnostic
 Do not build a general telemetry framework. A first positive native episode must
 replay before it can earn a separate bounded local-combat experiment. Keep the
 original matched-control boss/Wily and untouched-validation objective intact.
+
+## Endpoint report qualification completed
+
+The opt-in implementation and four-cell native Q01 pass on both hosts; see
+../endpoint-encounter/README.md. Default artifacts match historical bytes,
+audited buffering is exact, and the narrowly defined physical-state and decision
+projections agree across builds/hosts. The short fixture contains no classified
+encounter. This is qualification, not a performance result or positive fight.
+The separate block closes at 2,281,896 known auxiliary frames, bringing resumed
+totals to 842,318,922 admitted performance-search and 47,622,115 known auxiliary.
+Both services are stopped successfully; keep the original breakthrough active.
+
+The next allocation must answer an encounter question at a relevant depth. Do
+not launch another 25–50M fresh prefix pilot just because the report exists:
+existing long-run evidence reaches the first boss area far later than those
+horizons. First use already-recorded event timing and measured throughput to
+choose whether a bounded prospective census can reach that depth affordably.
+Keep reused trajectories and selected local diagnoses separate from fresh-search
+performance. If a short diagnostic continuation is the better discriminator,
+state precisely which conditional claim it tests and freeze its origin-selection
+rule, comparator, work and stop conditions before any new emulator work. No
+imported/reference solution may supply fresh-search success evidence. Do not
+repeat the already negative survivor-tape sweep or reconstruct a full long run
+merely for a final archive. No further observer framework is earned by Q01.

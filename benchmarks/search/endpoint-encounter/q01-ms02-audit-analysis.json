@@ -1,0 +1,76 @@
+{
+  "format": "metroid-endpoint-native-qualification-v1",
+  "decision": "pass",
+  "registration_sha256": "c5a596986c9bc05808171db5e4ecfd30c52833f228fc90b0e0666481e69a800d",
+  "panel_sha256": "ddf373d0e706a75f6f4417a6ae45f9f1cb083e2a3bbd39069fb12607c01db82a",
+  "source_commit": "d2293b9cdcd2272fa7de9e887c67608ab51d05ad",
+  "binary_sha256": "1cf0f2484bd56367cace13cc49ce6409d4b299774a952be8e0af5509ac2d9c74",
+  "cells": [
+    {
+      "id": "metroid-slots-1",
+      "artifact_sha256": {
+        "stream.jsonl": "ac61d2aa2f99d336f3d43eb7b2ce977a2a58741528af14435529979a59c2a1bd",
+        "campaign.json": "09b97c420acb99286dbb83c7da61e55eaceed761cc38fc43b94f555c3980a1bd",
+        "checkpoint.json": "54226425777894e496afa4abc285d31865fd82931ae1a941472855b2b0ebd79d"
+      },
+      "normalized_stream_sha256": "dbe12f1b560021937ea6e6e87133b888ec4fc52a632ceca92184598732650521",
+      "normalized_events_sha256": "410369f42a8e0bbf2144287de355e696edda11898f33a3a31e5072cc85f87e3c",
+      "normalized_checkpoint_sha256": "687cf139a237b20028869003a466a11a1380c8cd88b89799e85fbef5129260ff",
+      "normalized_campaign_sha256": "c1e2077866d374baafe79bb61a16a523ab318521d372ceb3547ffc20e2dc387f",
+      "normalized_witnesses_sha256": "126a0dd64a84492a1ee3f47ebf34db42981ecb37e1189f4549f5ef2e186892d3",
+      "snapshot_count": 1139,
+      "memory": {
+        "resident_memory_bytes": 24889013,
+        "resident_snapshot_bytes": 24180970
+      },
+      "endpoint_counts": {
+        "actions_observed": 6784,
+        "classified_endpoints": 0,
+        "first": null,
+        "live_endpoints": 6628
+      },
+      "summary_sha256": "b8fffc572bf77e1a022861833ecb6e3db8a88e4ec339b1a7c0cf725a0b97b928",
+      "admitted_qualification_frames": 284283,
+      "inferred_full_replay_frames": 284283,
+      "twice_replayed_witness_frames": 1908,
+      "cpu_seconds": 12.442381000000001,
+      "elapsed_seconds": 9.037554951035418
+    },
+    {
+      "id": "metroid-slots-2",
+      "artifact_sha256": {
+        "stream.jsonl": "ac61d2aa2f99d336f3d43eb7b2ce977a2a58741528af14435529979a59c2a1bd",
+        "campaign.json": "09b97c420acb99286dbb83c7da61e55eaceed761cc38fc43b94f555c3980a1bd",
+        "checkpoint.json": "54226425777894e496afa4abc285d31865fd82931ae1a941472855b2b0ebd79d"
+      },
+      "normalized_stream_sha256": "dbe12f1b560021937ea6e6e87133b888ec4fc52a632ceca92184598732650521",
+      "normalized_events_sha256": "410369f42a8e0bbf2144287de355e696edda11898f33a3a31e5072cc85f87e3c",
+      "normalized_checkpoint_sha256": "687cf139a237b20028869003a466a11a1380c8cd88b89799e85fbef5129260ff",
+      "normalized_campaign_sha256": "c1e2077866d374baafe79bb61a16a523ab318521d372ceb3547ffc20e2dc387f",
+      "normalized_witnesses_sha256": "126a0dd64a84492a1ee3f47ebf34db42981ecb37e1189f4549f5ef2e186892d3",
+      "snapshot_count": 1139,
+      "memory": {
+        "resident_memory_bytes": 24889013,
+        "resident_snapshot_bytes": 24180970
+      },
+      "endpoint_counts": {
+        "actions_observed": 6784,
+        "classified_endpoints": 0,
+        "first": null,
+        "live_endpoints": 6628
+      },
+      "summary_sha256": "ce2b07d44be082df7f2dcf61cb32db63fe98049c1eb89cad16959632f76c1201",
+      "admitted_qualification_frames": 284283,
+      "inferred_full_replay_frames": 284283,
+      "twice_replayed_witness_frames": 1908,
+      "cpu_seconds": 12.348270999999999,
+      "elapsed_seconds": 9.04108873999212
+    }
+  ],
+  "known_auxiliary_frames": 1140948,
+  "limits": [
+    "Reused short fixture, no positive native episode or fresh-search sample.",
+    "Full replay cost inferred from admitted work; setup, reconstruction and unadmitted work are additional unknowns.",
+    "Semantic job hashes are excluded only from cross-feature projection; full replay checks them within each build."
+  ]
+}

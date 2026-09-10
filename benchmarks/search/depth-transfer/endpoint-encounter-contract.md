@@ -113,3 +113,10 @@ zero samples, origin exclusion, rejected-candidate reporting, one reconstruction
 publication independence and rejection of a replay ending after its encounter.
 Native qualification still needs a prospectively bounded registration. No new
 performance allocation or positive native fight is claimed by this implementation.
+
+The separately frozen [native Q01](../endpoint-encounter/README.md#q01-result)
+now passes on msr1 and ms02. It checks exact default bytes, complete replay,
+audited buffering equality and the declared physical/decision projections at
+a reused 2,000-job fixture. It counts 6,628 eligible live endpoints and no
+classified encounter. This qualifies the ordinary negative path only; it does
+not supply a positive native episode or authorize unchanged performance sweeps.

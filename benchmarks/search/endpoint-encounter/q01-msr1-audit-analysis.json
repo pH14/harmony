@@ -1,0 +1,46 @@
+{
+  "format": "metroid-endpoint-native-qualification-v1",
+  "decision": "pass",
+  "registration_sha256": "a7db8a62f7d3c73842a273703764bee56f8ecd004eb26d10bb38550a9fa99a33",
+  "panel_sha256": "2a3a56b7e3e16f5fdebce0626128c79b32d90c4315fb7fef3be2e81fe8b09ee8",
+  "source_commit": "d2293b9cdcd2272fa7de9e887c67608ab51d05ad",
+  "binary_sha256": "0ebd97e0c424409c736c9d6d505fbfe4bd6375d7fc63015580e09c7bfeb1c910",
+  "cells": [
+    {
+      "id": "metroid-slots-2",
+      "artifact_sha256": {
+        "stream.jsonl": "3ea94ea77edfe9707e7937dfbe5404253f6f82cbeb1d492c801ee6d8fc80be90",
+        "campaign.json": "feeedf446e07c40d5f4bfd05f27e9e9ef5d0c98b3046292fe3db52551b83812b",
+        "checkpoint.json": "e336d7f3f17505e1a2d7d5b21d392cc2c5d3bfdcd731a6a5985b9327de375d33"
+      },
+      "normalized_stream_sha256": "dbe12f1b560021937ea6e6e87133b888ec4fc52a632ceca92184598732650521",
+      "normalized_events_sha256": "410369f42a8e0bbf2144287de355e696edda11898f33a3a31e5072cc85f87e3c",
+      "normalized_checkpoint_sha256": "687cf139a237b20028869003a466a11a1380c8cd88b89799e85fbef5129260ff",
+      "normalized_campaign_sha256": "c1e2077866d374baafe79bb61a16a523ab318521d372ceb3547ffc20e2dc387f",
+      "normalized_witnesses_sha256": "126a0dd64a84492a1ee3f47ebf34db42981ecb37e1189f4549f5ef2e186892d3",
+      "snapshot_count": 1139,
+      "memory": {
+        "resident_memory_bytes": 24889013,
+        "resident_snapshot_bytes": 24180970
+      },
+      "endpoint_counts": {
+        "actions_observed": 6784,
+        "classified_endpoints": 0,
+        "first": null,
+        "live_endpoints": 6628
+      },
+      "summary_sha256": "96177775b8ff65ff319a55ba45bc6b5d07d6c67cdddbbe37285ca66d0dd6b9be",
+      "admitted_qualification_frames": 284283,
+      "inferred_full_replay_frames": 284283,
+      "twice_replayed_witness_frames": 1908,
+      "cpu_seconds": 26.96981,
+      "elapsed_seconds": 18.274136238964275
+    }
+  ],
+  "known_auxiliary_frames": 570474,
+  "limits": [
+    "Reused short fixture, no positive native episode or fresh-search sample.",
+    "Full replay cost inferred from admitted work; setup, reconstruction and unadmitted work are additional unknowns.",
+    "Semantic job hashes are excluded only from cross-feature projection; full replay checks them within each build."
+  ]
+}
