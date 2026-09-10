@@ -735,3 +735,19 @@ same qualified probe with unchanged resource bounds. Stop at the first failure.
 The resumed cumulative ledger before FW02 is1,273,426,135 admitted search and
 61,139,911 known auxiliary frames. No fresh performance allocation follows
 automatically, and the original boss/Wily goal remains active and unachieved.
+
+FW02 passes all remaining five inputs in209.707 service seconds. All six
+historical witnesses are compatible under the corrected source contract;
+FW01's original gate remains failed. Combined replay cost is1,185,240 known
+frames, with no repeated first input. Resumed totals are1,273,426,135 admitted
+search and62,090,185 known auxiliary frames. All owned FW services are terminal.
+
+The existing corrected C01 control reaches Bombs at113,325,933–113,337,939
+admitted frames on reused seed5; the old control took263,199,528–263,211,554.
+Both terminal semantics and key version differ, so this is not a causal
+comparison or fresh calibration. Preserve C01's original incomplete wall-capped
+horizon. The next step is a short native qualification of unchanged
+alphabet_continuation_v1 on the current milestone-stop binaries, requiring
+actual continuation jobs, replay and same-host/cross-host identity. A separately
+frozen fresh Bombs panel may follow a pass; no historical improvement or earlier
+milestone can replace that panel, confirmation, MM2 or untouched validation.

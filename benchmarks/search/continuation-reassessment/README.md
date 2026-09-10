@@ -121,6 +121,60 @@ The new block expects 950,274 additional frames including setup, capped at1M,
 with the same one-CPU,4GiB,180-second case and20-minute block limits. Stop at its
 first failure. No fresh-search panel is allocated by this correction.
 
+FW02 completes all five inputs: each held-command replay agrees with two
+independent one-frame replays. Together with the already completed FW01 input,
+all six original witnesses retain Bombs under corrected terminal semantics.
+All six end in mode9. FW02 takes209.707 service seconds,208.687 CPU seconds and
+16,384,000 peak service bytes; its final journal supplies exact resource fields
+after the successful transient unit unloads. Its950,274 new frames plus FW01's
+234,966 total1,185,240, without replaying or double-charging the first input.
+See [the closed ledger](ledger-after-fw02.json) and
+[offline verifier](verify_fw02.py). Resumed cumulative work is1,273,426,135
+admitted search frames and62,090,185 known auxiliary frames. Prior unknown work
+and expired-tranche totals remain separate. This is compatibility, not efficacy.
+
+## Current control evidence changes the scale of a fresh test
+
+The already completed corrected-terminal C01 control supplies a second caution.
+[audit_c01.py](audit_c01.py) verifies all19,961 saved progress records against
+the exact published summary and preserves its original incomplete horizon.
+Its reused seed5 reaches Bombs at113,325,933–113,337,939 admitted frames, versus
+263,199,528–263,211,554 in the historical control. First energy-tank cost is
+unchanged at19,073,266–19,084,754. C01 later stops at its original35-minute wall
+cap with240,942,610 frames; no extension or replacement was run. All named
+attainments and censoring remain in [c01-arrivals.json](c01-arrivals.json).
+
+C01 uses terminal v3 and key v10; historical012 uses terminal v2 and key v8.
+These records do not isolate the effect of either change. One reused,
+outcome-selected control is not a fresh calibration pass. The large late
+baseline difference makes it especially unsafe to carry the old43% candidate
+gain forward. The six compatible tapes establish a basis to test the unchanged
+continuation policy, not the size or sign of its current effect. No gain or
+failure at an earlier endpoint substitutes for a frozen deeper comparison.
+
+The current work counter already includes origin reconstruction performed by
+each admitted job: the worker samples `frames_clocked` before `execute_job`,
+and the Metroid job restores its snapshot, applies the replay prefix, then
+executes its suffix. QuickNES's lifetime `now()` does not rewind on restore.
+Thus per-job replayed prefixes cannot be treated as free in a new comparison.
+Worker setup and final witness verification remain additional costs; preserve
+any unmeasured work at failed/incomplete boundaries. This source finding does
+not retroactively fill historical accounting gaps or equate CPU costs.
+
+The next bounded qualification should use the existing corrected-terminal
+milestone-stop binaries, requiring actual continuation dispatch, full campaign
+replay, same-host result-buffer identity and cross-host event identity. Failure
+stops allocation. A pass may earn a separately frozen fresh Bombs panel with
+matched admitted work/memory, same-host paired CPU placement, resource limits,
+and the existing three-win/15% restricted-cost gate. Early milestones remain
+secondary; no new queue order, bank, suffix or retention setting is bundled in.
+Independent confirmation, MM2 transfer and untouched boss/Wily validation remain
+required. Recompute the completed evidence without emulation with:
+
+```sh
+python3 -m unittest discover -s benchmarks/search/continuation-reassessment -p 'test_*.py' -v
+```
+
 ## Ordering findings stay separate from this candidate
 
 Two new source fixtures expose existing limitations without changing policies:
