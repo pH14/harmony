@@ -34,7 +34,8 @@ musl_cc=$musl_prefix/bin/musl-gcc
 
 echo "== arm64 faultlab initramfs: building static BusyBox ($BUSYBOX_VERSION)"
 rm -rf "$busybox_obj" "$faultlab_root"
-mkdir -p "$faultlab_root"/bin "$faultlab_root"/dev "$faultlab_root"/proc \
+mkdir -p "$busybox_obj" \
+    "$faultlab_root"/bin "$faultlab_root"/dev "$faultlab_root"/proc \
     "$faultlab_root"/sys "$faultlab_root"/run "$faultlab_root"/tmp
 make -C "$BBSRC" O="$busybox_obj" allnoconfig >/dev/null
 
