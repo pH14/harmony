@@ -385,15 +385,15 @@ fn acquire_lock(root: &Path) -> Result<File, Box<dyn Error>> {
     Ok(lock)
 }
 
-fn directory_has_entries(path: &Path) -> Result<bool, Box<dyn Error>> {
-    let mut entries = fs::read_dir(path)?;
-    match entries.next() {
-        Some(entry) => {
-            entry?;
-            Ok(true)
+fn directory_has_committed_or_foreign_entries(path: &Path) -> Result<bool, Box<dyn Error>> {
+    for entry in fs::read_dir(path)? {
+        // Creating the initial facts can leave only this private staging
+        // name. It is not history and commit will safely replace it.
+        if entry?.file_name() != ".000001.json.partial" {
+            return Ok(true);
         }
-        None => Ok(false),
     }
+    Ok(false)
 }
 
 fn sync_directory(path: &Path) -> Result<(), Box<dyn Error>> {
@@ -598,7 +598,7 @@ impl Workspace {
         let lock = acquire_lock(root)?;
         sync_directory_chain(root)?;
         let journal = root.join(JOURNAL_DIR);
-        if journal.is_dir() && directory_has_entries(&journal)? {
+        if journal.is_dir() && directory_has_committed_or_foreign_entries(&journal)? {
             return Err(format!(
                 "{} already holds a workspace journal; choose a new directory",
                 root.display()
@@ -678,6 +678,9 @@ impl Workspace {
                     transaction.sequence
                 )
                 .into());
+            }
+            if transaction.records.is_empty() {
+                return Err(format!("{} contains an empty transaction", path.display()).into());
             }
             validate_record_references(root, transaction.sequence, &transaction.records)?;
             sync_record_references(root, &transaction.records)?;
@@ -1176,9 +1179,9 @@ mod tests {
             seed: 7,
             executions: 42,
             declarations: Declarations::parse(
-                "node postgres /opt/harmony/node.sh\n\
+                "node service /opt/harmony/node.sh\n\
                  hook 3 /opt/harmony/hooks.sh 3\n\
-                 assert always 2 from 3 every heap tuple has an index entry\n",
+                 assert always 2 from 3 the service counter is nonnegative\n",
             )
             .expect("declarations"),
             ..WorkspaceFacts::default()
@@ -1219,7 +1222,7 @@ mod tests {
                 .assertion(2)
                 .expect("assertion 2")
                 .meaning,
-            "every heap tuple has an index entry"
+            "the service counter is nonnegative"
         );
     }
 
@@ -1235,6 +1238,23 @@ mod tests {
         let directory = tempfile::tempdir().expect("temp dir");
         let workspace = Workspace::create(directory.path(), facts()).expect("create");
         drop(workspace);
+        assert!(Workspace::create(directory.path(), facts()).is_err());
+    }
+
+    #[test]
+    fn initial_creation_can_retry_an_unpublished_facts_transaction() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let journal = directory.path().join(JOURNAL_DIR);
+        std::fs::create_dir(&journal).expect("journal");
+        std::fs::write(journal.join(".000001.json.partial"), b"{truncated")
+            .expect("interrupted initial staging file");
+        let workspace = Workspace::create(directory.path(), facts()).expect("retry create");
+        assert_eq!(workspace.sequence(), 1);
+        drop(workspace);
+        let reopened = Workspace::open(directory.path()).expect("reopen");
+        assert_eq!(reopened.facts(), &facts());
+        assert_eq!(reopened.sequence(), 1);
+        drop(reopened);
         assert!(Workspace::create(directory.path(), facts()).is_err());
     }
 
@@ -1696,6 +1716,7 @@ mod tests {
             ("000003.json", 3, "contiguous"),
             ("2.json", 2, "canonical"),
             ("000002.json", 3, "payload"),
+            ("000002.json", 2, "empty"),
         ] {
             let directory = tempfile::tempdir().expect("temp dir");
             let workspace = Workspace::create(directory.path(), facts()).expect("create");
@@ -1966,9 +1987,9 @@ mod publish_tests {
             replay: None,
         });
 
-        let bundle = "node postgres /opt/harmony/node.sh\n\
+        let bundle = "node service /opt/harmony/node.sh\n\
                       hook 3 /opt/harmony/hooks.sh 3\n\
-                      assert always 2 from 3 every heap tuple has an index entry\n";
+                      assert always 2 from 3 the service counter is nonnegative\n";
         let workspace = publish(
             directory.path(),
             "pgcic-14.3.oci",
@@ -2024,7 +2045,7 @@ mod publish_tests {
         let workspace = publish(
             directory.path(),
             "pgcic-14.4.oci",
-            "node postgres /opt/harmony/node.sh\n",
+            "node service /opt/harmony/node.sh\n",
             &report,
             &options(directory.path()),
         )
