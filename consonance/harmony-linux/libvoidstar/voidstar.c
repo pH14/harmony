@@ -35,6 +35,9 @@ enum {
     HARMONY_COVERAGE_RESPONSE_SIZE = 12
 };
 
+#define HARMONY_COVERAGE_QUANTUM UINT64_C(64)
+#define HARMONY_AUTOMATIC_COVERAGE_NAMESPACE UINT32_C(0x80000000)
+
 struct harmony_coverage_state {
     uint32_t thread;
     uint32_t ready;
@@ -46,6 +49,10 @@ struct harmony_coverage_state {
 static _Thread_local struct harmony_coverage_state harmony_coverage = {
     0, 1, 0, 0, UINT64_MAX
 };
+static _Atomic uint64_t harmony_automatic_coverage_counter;
+static _Atomic uint64_t harmony_automatic_coverage_threshold =
+    HARMONY_COVERAGE_QUANTUM;
+static _Atomic bool harmony_automatic_coverage_enabled = true;
 static uint32_t harmony_next_guard = 1;
 static _Atomic uint64_t harmony_next_edge_offset;
 
@@ -324,13 +331,16 @@ static uint64_t get_u64(const unsigned char *in)
 
 /*
  * Give an instrumented logical thread a stable identity and runnable-set
- * width. The first prescribed threshold is one basic block. Reconfiguration
- * resets only this calling thread's TLS counter.
+ * width. Reconfiguration resets only this calling thread's TLS counter and
+ * replaces the process-wide fallback yield with the configured scheduler.
  */
 int harmony_coverage_configure(uint32_t thread, uint32_t ready)
 {
-    if (ready == 0)
+    if (ready == 0 ||
+        (thread & HARMONY_AUTOMATIC_COVERAGE_NAMESPACE) != 0)
         return -1;
+    atomic_store_explicit(
+        &harmony_automatic_coverage_enabled, false, memory_order_release);
     harmony_coverage.thread = thread;
     harmony_coverage.ready = ready;
     harmony_coverage.selected = 0;
@@ -344,7 +354,9 @@ uint32_t harmony_coverage_selected(void)
     return harmony_coverage.selected;
 }
 
-static int coverage_exchange(uint64_t observed)
+static int coverage_exchange_request(
+    uint32_t thread, uint64_t observed, uint32_t ready,
+    uint64_t *next_out, uint32_t *selected_out)
 {
     unsigned char request[HARMONY_COVERAGE_REQUEST_SIZE];
     unsigned char response[HARMONY_COVERAGE_RESPONSE_SIZE];
@@ -353,9 +365,9 @@ static int coverage_exchange(uint64_t observed)
     int fd;
 
     request[0] = HARMONY_CMD_COVERAGE;
-    put_u32(request + 1, harmony_coverage.thread);
+    put_u32(request + 1, thread);
     put_u64(request + 5, observed);
-    put_u32(request + 13, harmony_coverage.ready);
+    put_u32(request + 13, ready);
     if (pthread_mutex_lock(&harmony_device_lock) != 0)
         return -1;
     fd = HARMONY_OPEN(harmony_device_path, O_RDWR | O_CLOEXEC);
@@ -370,15 +382,70 @@ static int coverage_exchange(uint64_t observed)
     (void)pthread_mutex_unlock(&harmony_device_lock);
     next = get_u64(response);
     selected = get_u32(response + 8);
-    if (next <= observed || selected >= harmony_coverage.ready)
+    if (next <= observed || selected >= ready)
         return -1;
-    harmony_coverage.threshold = next;
-    harmony_coverage.selected = selected;
+    *next_out = next;
+    *selected_out = selected;
     return 0;
 
 fail_locked:
     (void)pthread_mutex_unlock(&harmony_device_lock);
     return -1;
+}
+
+static int coverage_exchange(uint64_t observed)
+{
+    uint64_t next;
+    uint32_t selected;
+
+    if (coverage_exchange_request(
+            harmony_coverage.thread, observed, harmony_coverage.ready,
+            &next, &selected) != 0)
+        return -1;
+    harmony_coverage.threshold = next;
+    harmony_coverage.selected = selected;
+    return 0;
+}
+
+/*
+ * Instrumented programs that do not configure scheduler identities still
+ * need a deterministic escape from compute-only code. Count callbacks across
+ * the process and yield on a protocol-fixed cadence through a reserved logical
+ * thread. The counter is guest memory, so whole-VM snapshots replay it exactly.
+ */
+static void automatic_coverage_yield(void)
+{
+    uint64_t observed;
+    uint64_t threshold;
+    uint64_t next_yield;
+    uint64_t next_threshold;
+    uint32_t process;
+    uint32_t selected;
+
+    if (!atomic_load_explicit(
+            &harmony_automatic_coverage_enabled, memory_order_acquire))
+        return;
+    observed = atomic_fetch_add_explicit(
+        &harmony_automatic_coverage_counter, 1, memory_order_relaxed) + 1;
+    threshold = atomic_load_explicit(
+        &harmony_automatic_coverage_threshold, memory_order_acquire);
+    if (observed != threshold)
+        return;
+    process = (uint32_t)getpid() & ~HARMONY_AUTOMATIC_COVERAGE_NAMESPACE;
+    if (coverage_exchange_request(
+            HARMONY_AUTOMATIC_COVERAGE_NAMESPACE | process,
+            observed / HARMONY_COVERAGE_QUANTUM, 1,
+            &next_yield, &selected) != 0 ||
+        next_yield > UINT64_MAX / HARMONY_COVERAGE_QUANTUM) {
+        atomic_store_explicit(
+            &harmony_automatic_coverage_threshold, UINT64_MAX,
+            memory_order_release);
+        return;
+    }
+    next_threshold = next_yield * HARMONY_COVERAGE_QUANTUM;
+    atomic_store_explicit(
+        &harmony_automatic_coverage_threshold, next_threshold,
+        memory_order_release);
 }
 
 uint64_t init_coverage_module(size_t num_edges, const char *symbols)
@@ -423,6 +490,7 @@ bool notify_coverage(uint64_t edge)
     if (harmony_coverage.counter == harmony_coverage.threshold &&
         coverage_exchange(harmony_coverage.counter) != 0)
         harmony_coverage.threshold = UINT64_MAX;
+    automatic_coverage_yield();
     if (event_entered)
         event_gate_leave();
     return false;

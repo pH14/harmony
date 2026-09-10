@@ -7,11 +7,13 @@ ABI used by guest workloads. It sends SDK JSON to `/dev/harmony`, obtains
 seeded entropy through the driver's fixed transaction, and exposes the legacy
 coverage and sanitizer callback symbols expected by instrumented programs.
 
-Device exchanges are serialized per process. The library keeps explicit thread
-identities and counters for callback thresholding. Scheduler yields start only
-after the workload calls `harmony_coverage_configure`; ordinary instrumented
-callbacks remain local so instrumentation does not turn every basic block into
-a device transaction. Device errors fail closed:
+Device exchanges are serialized per process. Unconfigured instrumented
+workloads use one process-wide callback counter and yield at the library's
+fixed 64-event cadence. This bounds compute-only execution on every backend
+without a machine counter or an operator setting. A workload that calls
+`harmony_coverage_configure` replaces that fallback with its explicit logical
+thread identities and runnable sets. The high bit of a thread identity is
+reserved for the fallback's deterministic per-process streams. Device errors fail closed:
 an event is dropped and entropy returns zero rather than using host randomness.
 `init_coverage_module` follows the SDK ABI and assigns non-overlapping edge
 ranges to modules injected by the Go instrumentor.

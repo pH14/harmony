@@ -13,6 +13,9 @@ static int entropy_requested;
 static unsigned char coverage_request[17];
 static size_t coverage_requests;
 static int coverage_requested;
+static uint32_t last_coverage_thread;
+static uint32_t last_coverage_ready;
+static uint64_t last_coverage_observed;
 
 static int mock_open(const char *path, int flags)
 {
@@ -68,6 +71,9 @@ static ssize_t mock_read(int fd, void *data, size_t size)
             observed |= (uint64_t)coverage_request[5 + index] << (index * 8);
         assert(ready != 0);
         selected = (uint32_t)(((uint64_t)thread ^ observed) % ready);
+        last_coverage_thread = thread;
+        last_coverage_ready = ready;
+        last_coverage_observed = observed;
         observed++;
         for (index = 0; index < 8; index++)
             out[index] = (unsigned char)(observed >> (index * 8));
@@ -92,6 +98,7 @@ int main(void)
 {
     static const char event[] = "{\"antithesis_assert\":{}}";
     uint32_t guards[3] = {1, 2, 3};
+    size_t index;
 
     fuzz_json_data(event, sizeof(event) - 1);
     assert(captured_len == sizeof(event) - 1);
@@ -100,21 +107,30 @@ int main(void)
     fuzz_flush();
     assert(init_coverage_module(3, "first.sym.tsv") == 0);
     assert(init_coverage_module(5, "second.sym.tsv") == 3);
-    /* Instrumentation alone exposes events without enabling scheduler yields. */
-    assert(!notify_coverage(0));
+    /* Unconfigured instrumentation yields at the fixed process-wide cadence. */
+    for (index = 0; index < 63; index++)
+        assert(!notify_coverage(0));
     assert(coverage_requests == 0);
+    assert(!notify_coverage(0));
+    assert(coverage_requests == 1);
+    assert((last_coverage_thread & UINT32_C(0x80000000)) != 0);
+    assert((last_coverage_thread & UINT32_C(0x7fffffff)) ==
+           ((uint32_t)getpid() & UINT32_C(0x7fffffff)));
+    assert(last_coverage_ready == 1);
+    assert(last_coverage_observed == 1);
     assert(harmony_coverage_configure(7, 3) == 0);
     assert(!notify_coverage(1));
-    assert(coverage_requests == 1);
+    assert(coverage_requests == 2);
     assert(harmony_coverage_selected() == 0);
     notify_coverage(2);
-    assert(coverage_requests == 2);
+    assert(coverage_requests == 3);
     assert(harmony_coverage_selected() == 2);
     __sanitizer_cov_trace_pc_guard_init(guards, guards + 3);
     assert(guards[0] == 1 && guards[1] == 2 && guards[2] == 3);
     __sanitizer_cov_trace_pc_guard_internal(&guards[0], 4);
     __sanitizer_cov_trace_pc_guard(&guards[0]);
-    assert(coverage_requests == 4);
+    assert(coverage_requests == 5);
     assert(harmony_coverage_configure(1, 0) == -1);
+    assert(harmony_coverage_configure(UINT32_C(0x80000000), 1) == -1);
     return 0;
 }
