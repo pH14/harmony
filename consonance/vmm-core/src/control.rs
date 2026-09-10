@@ -13,7 +13,7 @@
 //!
 //! ## Verb semantics (seed-driven scope, task 58)
 //!
-//! - **`hello(caps)`** → the server's [`Caps`]: application protocol 10
+//! - **`hello(caps)`** → the server's [`Caps`]: application protocol [`control_proto::APP_PROTOCOL_VERSION`]
 //!   (framing protocol 1), `Reproducer` blob version exactly
 //!   [`EnvSpec::BLOB_VERSION`], **empty/zero-width coverage
 //!   geometry** (no coverage producer exists yet) and — task 73 —
@@ -21,11 +21,10 @@
 //!   version, or any other verb before a successful `hello`, answers
 //!   [`ControlError::Unsupported`].
 //! - **`snapshot`** → seal the current point (memory + `vm_state`) into the
-//!   engine and mint a pool-wide [`SnapId`]. Task 41's non-quiescent capture is
-//!   merged, so mid-workload points are sealable; the remaining fail-closed
-//!   boundaries (an RNG mid-exit completion, a non-V-time-synchronized point)
-//!   answer [`ControlError::NotQuiescent`] — the caller runs a little further
-//!   and retries.
+//!   engine and mint a pool-wide [`SnapId`]. State-capture representation gaps
+//!   answer [`ControlError::SnapshotRefused`] with the owning layer's diagnostic.
+//!   Pending schedules currently answer [`ControlError::SnapshotWhileArmed`].
+//!   Neither refusal advances the stopped execution.
 //! - **`drop(snap)`** → release + GC via the store (pool GC).
 //! - **`branch(snap, env)`** → restore `snap` into a **fresh, equivalently
 //!   composed VM** (from the [`VmmFactory`]) and **reseed the entropy stream
@@ -1473,11 +1472,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
         let vm_state = match vmm.save_vm_state() {
             Ok(s) => s,
-            // The remaining fail-closed boundaries (RNG mid-exit completion,
-            // non-V-time-synchronized point, unrepresentable in-flight state)
-            // all surface as ContractViolation: "not a snapshottable point" —
-            // the caller runs a little further and retries.
-            Err(VmmError::ContractViolation(_)) => return Ok(Err(ControlError::NotQuiescent)),
+            // Preserve the owning layer's diagnostic. Advancing the guest to
+            // escape a representation gap would change the requested endpoint.
+            Err(VmmError::ContractViolation(reason)) => {
+                return Ok(Err(ControlError::SnapshotRefused { reason }));
+            }
             // A backend save failure is substrate breakage, not a caller error.
             Err(e) => return Err(e.into()),
         };
@@ -3083,7 +3082,14 @@ mod tests {
         assert_eq!(s.handle(&request).unwrap(), Ok(expected.clone()));
         assert_eq!(s.handle(&request).unwrap(), Ok(expected));
         assert_eq!(s.vmm().unwrap().state_hash().unwrap(), stopped_hash);
-        assert_eq!(s.snapshot().unwrap(), Err(ControlError::NotQuiescent));
+        assert_eq!(
+            s.snapshot().unwrap(),
+            Err(ControlError::SnapshotRefused {
+                reason: "save_vm_state while an SDK stop is pending".into(),
+            })
+        );
+        assert_eq!(s.vmm().unwrap().effective_vns(), Some(at));
+        assert_eq!(s.vmm().unwrap().state_hash().unwrap(), stopped_hash);
         assert_eq!(
             s.handle(&Request::Run {
                 until,
@@ -4038,7 +4044,7 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 11,
+            caps.protocol_version, 12,
             "protocol version numbers remain monotonic after retired tags"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);

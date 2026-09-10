@@ -175,6 +175,7 @@ fn arb_control_error() -> impl Strategy<Value = ControlError> {
         Just(ControlError::RestoreFailed),
         Just(ControlError::SnapshotWhileArmed),
         Just(ControlError::NotQuiescent),
+        ".{0,128}".prop_map(|reason| ControlError::SnapshotRefused { reason }),
         any::<u16>().prop_map(ControlError::BadEnvVersion),
         Just(ControlError::MalformedEnvironment),
         Just(ControlError::ResolveWithoutDecision),
