@@ -9,10 +9,13 @@
 //! of guest time, so an input names an exact schedule the whole-VM snapshots
 //! reproduce.
 
+#[cfg(feature = "consonance")]
+pub mod action_execution;
 pub mod archive;
 pub mod bundle;
 pub mod checkpoint;
 pub mod declarations;
+pub mod execution;
 pub mod package;
 pub mod prepare;
 pub mod report;

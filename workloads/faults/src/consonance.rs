@@ -28,20 +28,22 @@ use environment::{
     },
     input_spec::{ServiceConfig, ServiceFactory, nominal_factory},
 };
-use fault_policy::{STANDING_NAMESPACE, StandingWindow, encode_standing, encode_windows};
+use fault_policy::{STANDING_NAMESPACE, StandingWindow, encode_standing};
 use searcher::target::ExitKind;
 use sha2::{Digest, Sha256};
 
+use crate::action_execution::{ActionExecution, ActionRuntime};
+use crate::execution::ActionCursor;
+
 use crate::target::{
-    ActionWindows, FaultAction, FaultObservations, FaultSnapshot, FaultStop, action_delta,
-    decode_sdk_events, standing_windows,
+    ActionWindows, FaultAction, FaultObservations, FaultSnapshot, FaultStop, decode_sdk_events,
 };
 
 /// Guest RAM when a campaign names none. The workloads are real database
 /// servers, so the image needs more than a toy guest.
 pub const DEFAULT_RAM_MIB: u32 = 1024;
 /// Handler identity the branch configuration is recorded under.
-pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-v1";
+pub use crate::action_execution::SERVICE_IDENTITY;
 const SEED: u64 = 0x4661_756c_744c_6162;
 /// Virtual-time bound on reaching the fault agent's `setup_complete`.
 const SETUP_BUDGET: u64 = 120_000_000_000;
@@ -199,15 +201,19 @@ pub fn service_factory() -> ServiceFactory {
     })
 }
 
-/// The branch configuration that installs `actions`' standing faults.
-fn branch_config(
-    windows: ActionWindows,
-    actions: &[FaultAction],
-) -> Result<ServiceConfig, Box<dyn Error>> {
-    Ok(ServiceConfig {
-        identity: SERVICE_IDENTITY.to_vec(),
-        configuration: encode_windows(&standing_windows(windows, actions))?,
-    })
+impl ActionRuntime for Session {
+    fn activate_prefix(
+        &mut self,
+        parent: SnapId,
+        config: ServiceConfig,
+        effects: Vec<(u64, Effect)>,
+    ) -> Result<(), Box<dyn Error>> {
+        self.branch_with_service(parent, config, Vec::new(), effects)
+    }
+
+    fn run_action_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
+        self.run_until(deadline)
+    }
 }
 
 #[derive(Debug)]
@@ -235,6 +241,7 @@ struct Live {
     session: Session,
     setup: SnapId,
     windows: ActionWindows,
+    execution: Option<ActionExecution>,
     /// Resident prefix endpoints.
     snapshots: BTreeMap<Vec<FaultAction>, Cached>,
     uses: u64,
@@ -279,7 +286,8 @@ impl FaultTarget {
             horizon_nanos: config.horizon_nanos,
         });
         let (observation, root_seal) = with_live(&config, |live| {
-            let observation = live.observe(FaultStop::Deadline)?;
+            live.replay(live.setup)?;
+            let observation = live.observe(FaultStop::Deadline, live.windows.root_seal)?;
             Ok((observation, live.windows.root_seal))
         })?;
         Ok(Self {
@@ -393,7 +401,7 @@ impl FaultTarget {
         let result = with_live(&self.config, |live| {
             let setup = live.setup;
             live.replay(setup)?;
-            live.observe(FaultStop::Deadline)
+            live.observe(FaultStop::Deadline, live.windows.root_seal)
         });
         match result {
             Ok(observation) => {
@@ -562,6 +570,7 @@ impl Live {
                 horizon_nanos: config.horizon_nanos,
             },
             snapshots,
+            execution: None,
             uses: 0,
             horizons_run: 0,
             abandoned: false,
@@ -677,7 +686,7 @@ impl Live {
         next.push(action);
         if let Some(cached) = self.cached(&next) {
             self.replay(cached.snap)?;
-            return self.observe(FaultStop::Deadline);
+            return self.observe(FaultStop::Deadline, cached.moment);
         }
         let parent = match self.ensure_prefix(prefix)? {
             Ok(parent) => parent,
@@ -704,35 +713,15 @@ impl Live {
     /// host-plane perturbation its last action stages. Windows already behind
     /// the parent's seal are inert, so one branch carries the entire input.
     fn branch(&mut self, parent: Cached, actions: &[FaultAction]) -> Result<(), String> {
-        let config = branch_config(self.windows, actions)
-            .map_err(|error| format!("branch configuration: {error}"))?;
-        let effects = self.staged_effects(actions, parent.moment)?;
-        self.session
-            .branch_with_service(parent.snap, config, Vec::new(), effects)
-            .map_err(|error| format!("branch: {error}"))
-    }
-
-    /// The host-plane effect the input's last action stages, if any. Every
-    /// earlier action's effect applied on the way to the parent and its moment
-    /// lies behind that seal, so only the last one is staged again. It is
-    /// staged at its window start, or at `floor` when settling sealed the
-    /// parent past that start: a branch refuses any effect behind its seal.
-    fn staged_effects(
-        &self,
-        actions: &[FaultAction],
-        floor: u64,
-    ) -> Result<Vec<(u64, Effect)>, String> {
-        let Some(index) = actions.len().checked_sub(1) else {
-            return Ok(Vec::new());
-        };
-        let Some(perturb) = action_delta(actions[index], self.windows.window(index)).perturb else {
-            return Ok(Vec::new());
-        };
-        let fault = fault_policy::HostFault::decode(&perturb.fault)
-            .map_err(|error| format!("staged host fault: {error}"))?;
-        let effect = fault_policy::consonance::effect(&fault)
-            .map_err(|error| format!("staged host fault: {error}"))?;
-        Ok(vec![(perturb.at.max(floor), effect)])
+        let index = actions.len().checked_sub(1).ok_or("empty action prefix")?;
+        let cursor =
+            ActionCursor::from_parts(u64::try_from(index).map_err(|e| e.to_string())?, false)?;
+        let mut execution = ActionExecution::new(self.windows, cursor);
+        execution
+            .activate(&mut self.session, parent.snap, parent.moment, actions)
+            .map_err(|error| self.abandon("branch", &error))?;
+        self.execution = Some(execution);
+        Ok(())
     }
 
     /// Run the action at `index` to its horizon and snapshot the exact stopped
@@ -745,7 +734,11 @@ impl Live {
     ) -> Result<(FaultObservations, Option<(SnapId, u64)>), String> {
         let deadline = self.windows.deadline(index);
         self.horizons_run = self.horizons_run.saturating_add(1);
-        let stop = match self.session.run_until(deadline) {
+        let execution = self.execution.as_mut().ok_or("missing action execution")?;
+        if execution.cursor().completed() != u64::try_from(index).map_err(|e| e.to_string())? {
+            return Err("action cursor does not match the recording prefix".to_owned());
+        }
+        let stop = match execution.run_until(&mut self.session, deadline) {
             Ok(stop) => stop,
             Err(error) => return Err(self.abandon("run", &error)),
         };
@@ -759,31 +752,55 @@ impl Live {
                 String::from_utf8_lossy(&tail[start..])
             );
         }
+        let moment = stop_moment(&stop);
         let stop = FaultStop::from_stop_reason(&stop);
         let snap = if stop.is_continuable() {
             let (snapshot, at) = self
                 .session
                 .snapshot()
                 .map_err(|error| self.abandon("snapshot", &error))?;
+            if at != moment {
+                return Err(self.abandon("snapshot", &"capture changed the stopped moment"));
+            }
             Some((snapshot, at))
         } else {
             None
         };
-        let observation = match self.observe(stop) {
+        let observation = match self.observe(stop, moment) {
             Ok(observation) => observation,
             Err(error) => return Err(self.abandon("observe", &error)),
         };
         Ok((observation, snap))
     }
 
-    fn observe(&mut self, stop: FaultStop) -> Result<FaultObservations, String> {
+    fn observe(&mut self, stop: FaultStop, moment: u64) -> Result<FaultObservations, String> {
         let events = self
             .session
             .sdk_events()
             .map_err(|error| format!("SDK events: {error}"))?;
-        let moment = events.last().map_or(0, |(moment, _, _)| *moment);
-        let capture = decode_sdk_events(&events)?;
-        Ok(FaultObservations::new(moment, &capture, stop))
+        observations_at(&events, stop, moment)
+    }
+}
+
+fn observations_at(
+    events: &[(u64, u32, Vec<u8>)],
+    stop: FaultStop,
+    moment: u64,
+) -> Result<FaultObservations, String> {
+    let capture = decode_sdk_events(events)?;
+    Ok(FaultObservations::new(moment, &capture, stop))
+}
+
+/// The control endpoint is authoritative even when no SDK report was emitted
+/// there. SDK event timestamps describe their events, not the enclosing stop.
+pub(crate) fn stop_moment(stop: &StopReason) -> u64 {
+    match stop {
+        StopReason::Deadline { vtime }
+        | StopReason::Quiescent { vtime }
+        | StopReason::Crash { vtime, .. }
+        | StopReason::Decision { vtime, .. }
+        | StopReason::SnapshotPoint { vtime }
+        | StopReason::Assertion { vtime, .. } => vtime.0,
     }
 }
 
@@ -837,13 +854,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn endpoint_time_does_not_depend_on_a_recent_sdk_report() {
+        for events in [Vec::new(), vec![(12, u32::MAX, Vec::new())]] {
+            let endpoint =
+                observations_at(&events, FaultStop::Deadline, 100).expect("observations");
+            assert_eq!(endpoint.moment, 100);
+            assert_eq!(endpoint.stop, FaultStop::Deadline);
+        }
+    }
+
+    #[test]
     fn the_factory_serves_the_nominal_service_the_setup_point_was_sealed_under() {
         let factory = service_factory();
         let handler = factory(&ServiceConfig::default()).expect("nominal service");
         assert_eq!(handler.identity(), ServiceConfig::default().identity);
         let own = factory(&ServiceConfig {
             identity: SERVICE_IDENTITY.to_vec(),
-            configuration: encode_windows(&[]).expect("an empty standing list encodes"),
+            configuration: fault_policy::encode_windows(&[])
+                .expect("an empty standing list encodes"),
         })
         .expect("an empty standing list");
         assert_eq!(own.identity(), SERVICE_IDENTITY);

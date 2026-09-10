@@ -20,13 +20,18 @@
 //! | page count | 8 |
 //! | each page: guest frame number, byte length, 4096 bytes | 8 + 4 + 4096 |
 //! | sidecar length, bytes | 8 + n |
+//! | v2 cursor (after the sidecar): completed, active | 8 + 1 |
+//!
+//! Version 1 ends after the sidecar and therefore has no transition position;
+//! virtual time cannot infer whether an action at that point was activated.
 
 use std::error::Error;
 
 /// The bytes every checkpoint blob starts with.
 pub const MAGIC: &[u8; 8] = b"HARMCKPT";
-/// The version this build writes and reads.
-pub const VERSION: u32 = 1;
+/// The latest version this build writes and reads.
+pub const VERSION: u32 = 2;
+const LEGACY_VERSION: u32 = 1;
 
 // V1's old parser accepted arbitrary page lengths, but only this restorable
 // guest-page shape is supported by the VMM. Malformed legacy shapes are
@@ -35,6 +40,7 @@ const PAGE_SIZE: usize = 4096;
 const PAGE_RECORD_SIZE: usize = 8 + 4 + PAGE_SIZE;
 const HEADER_SIZE: usize = 8 + 4 + 8 + 8 + 32 + 8;
 const SIDECAR_LENGTH_SIZE: usize = 8;
+const CURSOR_SIZE: usize = 8 + 1;
 
 /// One whole-VM checkpoint in the shape the workspace stores.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -50,6 +56,10 @@ pub struct Checkpoint {
     pub pages: Vec<(u64, Vec<u8>)>,
     /// Opaque device and CPU state.
     pub sidecar: Vec<u8>,
+    /// Explicit action transition position. Legacy v1 checkpoints have no
+    /// cursor because their virtual time cannot recover whether an action was
+    /// activated.
+    pub cursor: Option<crate::execution::ActionCursor>,
 }
 
 impl Checkpoint {
@@ -71,9 +81,15 @@ impl Checkpoint {
             .checked_add(pages_bytes)
             .and_then(|length| length.checked_add(SIDECAR_LENGTH_SIZE))
             .and_then(|length| length.checked_add(self.sidecar.len()))
+            .and_then(|length| length.checked_add(self.cursor.map_or(0, |_| CURSOR_SIZE)))
             .ok_or("checkpoint encoded length overflows")?;
         let sidecar_length = u64::try_from(self.sidecar.len())?;
         let page_length = u32::try_from(PAGE_SIZE)?;
+        let version = if self.cursor.is_some() {
+            VERSION
+        } else {
+            LEGACY_VERSION
+        };
 
         let mut previous_gfn = None;
         for (index, (gfn, page)) in self.pages.iter().enumerate() {
@@ -96,7 +112,7 @@ impl Checkpoint {
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(capacity)?;
         bytes.extend_from_slice(MAGIC);
-        bytes.extend_from_slice(&VERSION.to_le_bytes());
+        bytes.extend_from_slice(&version.to_le_bytes());
         bytes.extend_from_slice(&self.setup.to_le_bytes());
         bytes.extend_from_slice(&self.at.to_le_bytes());
         bytes.extend_from_slice(&self.image_identity);
@@ -108,6 +124,10 @@ impl Checkpoint {
         }
         bytes.extend_from_slice(&sidecar_length.to_le_bytes());
         bytes.extend_from_slice(&self.sidecar);
+        if let Some(cursor) = self.cursor {
+            bytes.extend_from_slice(&cursor.completed().to_le_bytes());
+            bytes.push(u8::from(cursor.active()));
+        }
         Ok(bytes)
     }
 
@@ -124,9 +144,9 @@ impl Checkpoint {
             return Err("this blob is not a Harmony checkpoint".into());
         }
         let version = reader.u32()?;
-        if version != VERSION {
+        if version != LEGACY_VERSION && version != VERSION {
             return Err(format!(
-                "checkpoint version {version} was written by another build; this one reads {VERSION}"
+                "checkpoint version {version} was written by another build; this one reads {LEGACY_VERSION} and {VERSION}"
             )
             .into());
         }
@@ -168,6 +188,26 @@ impl Checkpoint {
         }
         let sidecar_length = usize::try_from(reader.u64()?)?;
         let sidecar = reader.take(sidecar_length)?.to_vec();
+        let cursor = if version == LEGACY_VERSION {
+            None
+        } else {
+            let completed = reader.u64()?;
+            let active = match reader.take(1)?.first().copied() {
+                Some(0) => false,
+                Some(1) => true,
+                Some(value) => {
+                    return Err(format!(
+                        "checkpoint cursor active flag must be 0 or 1, got {value}"
+                    )
+                    .into());
+                }
+                None => return Err("checkpoint cursor active flag is missing".into()),
+            };
+            Some(
+                crate::execution::ActionCursor::from_parts(completed, active)
+                    .map_err(|error| format!("invalid checkpoint action cursor: {error}"))?,
+            )
+        };
         reader.finish()?;
         Ok(Self {
             setup,
@@ -175,6 +215,7 @@ impl Checkpoint {
             image_identity,
             pages,
             sidecar,
+            cursor,
         })
     }
 }
@@ -225,6 +266,7 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution::ActionCursor;
 
     fn sample() -> Checkpoint {
         Checkpoint {
@@ -233,6 +275,7 @@ mod tests {
             image_identity: [9_u8; 32],
             pages: vec![(0, vec![1_u8; 4096]), (4096, vec![2_u8; 4096])],
             sidecar: b"device state".to_vec(),
+            cursor: None,
         }
     }
 
@@ -319,7 +362,16 @@ mod tests {
                 (0x1_0000, populated_page(0xa9, 0x27)),
             ],
             sidecar: b"opaque\0device\xffstate".to_vec(),
+            cursor: None,
         }
+    }
+
+    fn mid_action_checkpoint() -> Checkpoint {
+        let mut checkpoint = sample();
+        let mut cursor = ActionCursor::from_parts(1, false).expect("valid cursor");
+        cursor.activate(1).expect("activate action");
+        checkpoint.cursor = Some(cursor);
+        checkpoint
     }
 
     #[test]
@@ -335,6 +387,7 @@ mod tests {
         let checkpoint = Checkpoint {
             pages: Vec::new(),
             sidecar: vec![0_u8, 0xff, 1],
+            cursor: None,
             ..sample()
         };
         let bytes = checkpoint.encode().expect("encode");
@@ -351,6 +404,7 @@ mod tests {
             image_identity: [9_u8; 32],
             pages: Vec::new(),
             sidecar: Vec::new(),
+            cursor: None,
         };
         assert_eq!(Checkpoint::decode(&bytes).expect("legacy decode"), expected);
         assert_eq!(expected.encode().expect("legacy encode"), bytes);
@@ -362,6 +416,57 @@ mod tests {
         let expected = populated_checkpoint();
         assert_eq!(Checkpoint::decode(&bytes).expect("legacy decode"), expected);
         assert_eq!(expected.encode().expect("legacy encode"), bytes);
+    }
+
+    #[test]
+    fn a_mid_action_v2_checkpoint_round_trips_and_preserves_its_cursor() {
+        let checkpoint = mid_action_checkpoint();
+        let bytes = checkpoint.encode().expect("v2 encode");
+        assert_eq!(
+            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+            VERSION
+        );
+
+        let mut legacy = checkpoint.clone();
+        legacy.cursor = None;
+        let legacy_length = legacy.encode().expect("v1 encode").len();
+        assert_eq!(bytes.len(), legacy_length + CURSOR_SIZE);
+        assert_eq!(
+            &bytes[legacy_length..legacy_length + 8],
+            &1_u64.to_le_bytes()
+        );
+        assert_eq!(bytes[legacy_length + 8], 1);
+
+        assert_eq!(Checkpoint::decode(&bytes).expect("v2 decode"), checkpoint);
+    }
+
+    #[test]
+    fn invalid_and_truncated_v2_cursor_extensions_are_rejected() {
+        let checkpoint = mid_action_checkpoint();
+        let bytes = checkpoint.encode().expect("v2 encode");
+        let cursor_start = bytes.len() - CURSOR_SIZE;
+
+        let mut bad_active = bytes.clone();
+        bad_active[cursor_start + 8] = 2;
+        let error = Checkpoint::decode(&bad_active).expect_err("invalid active flag");
+        assert!(error.to_string().contains("active flag"), "{error}");
+
+        let mut bad_maximum = bytes.clone();
+        bad_maximum[cursor_start..cursor_start + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        bad_maximum[cursor_start + 8] = 1;
+        let error = Checkpoint::decode(&bad_maximum).expect_err("invalid active maximum");
+        assert!(error.to_string().contains("successor"), "{error}");
+
+        for cut in cursor_start..bytes.len() {
+            assert!(
+                Checkpoint::decode(&bytes[..cut]).is_err(),
+                "truncated cursor extension at {cut}"
+            );
+        }
+
+        let mut trailing = bytes;
+        trailing.push(0xa5);
+        assert!(Checkpoint::decode(&trailing).is_err());
     }
 
     #[test]
@@ -379,7 +484,7 @@ mod tests {
         bytes[8] = 99;
         let error = Checkpoint::decode(&bytes).expect_err("another version");
         assert!(error.to_string().contains("99"), "{error}");
-        assert!(error.to_string().contains("reads 1"), "{error}");
+        assert!(error.to_string().contains("reads 1 and 2"), "{error}");
     }
 
     #[test]

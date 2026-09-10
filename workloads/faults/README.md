@@ -59,6 +59,13 @@ be snapshotted, the session is abandoned and the control diagnostic is
 reported. A bounded LRU keeps recent prefixes resident and rebuilds evicted
 ones from their longest cached ancestor.
 
+Action activation and bounded execution use an explicit
+[`action cursor`](src/execution.rs): the count of completed actions and whether
+the next action is already active. A partial run preserves that activation.
+Virtual time can cross several horizons in one guest step, so it cannot replace
+the cursor or skip later actions. Each action still installs its own prefix in
+order, including when consecutive transitions occur at the same moment.
+
 A campaign never encodes the virtual-time trace, so the session is configured
 to defer sparse checkpoint hashing. Each due checkpoint would otherwise hash
 all of a gigabyte-class guest's RAM inside the run that reached it, starting
@@ -80,8 +87,10 @@ commit requires reopening the journal before further mutation.
 
 Reopening verifies sequence continuity and referenced blob contents. Unpublished
 staging files and unreferenced blobs do not become history. The retained
-[`checkpoint`](src/checkpoint.rs) codec reads the original `HARMCKPT` version 1
-layout, with strict page ordering, lengths, and complete-input validation.
+[`checkpoint`](src/checkpoint.rs) codec preserves the original `HARMCKPT`
+version 1 bytes and adds a version 2 action cursor. Legacy checkpoints lack
+that transition position; it cannot be reconstructed from their timestamp.
+Both readers validate page ordering, lengths, and complete input.
 [`declarations`](src/declarations.rs) retains workload-authored descriptions and
 property meanings without inferring a verdict from a silent assertion.
 
