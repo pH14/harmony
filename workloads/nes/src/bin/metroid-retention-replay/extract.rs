@@ -164,6 +164,15 @@ mod tests {
             "../../../../../benchmarks/search/continuation-reassessment/pc01-pair/record.json"
         ))
         .unwrap();
+        // The capture's snapshot schema includes both optional observation fields.
+        // A differently featured decoder must not claim those same payload hashes.
+        if !cfg!(all(
+            feature = "metroid-motion-context",
+            feature = "metroid-boss-context-audit"
+        )) {
+            assert!(selected(&q, &record).is_err());
+            return;
+        }
         selected(&q, &record).unwrap();
         let mut wrong = record.clone();
         wrong.replaces = !wrong.replaces;

@@ -1134,3 +1134,31 @@ including setup. No fresh search is allocated. A positive permits only a further
 retention-design decision; a negative or failure closes this allocation without
 a changed pair, bank or horizon. All earlier failed gates remain closed. No
 native PC01 call has occurred at registration publication time.
+
+## Decision after PC01
+
+PC01 completes its entire 32-tail/64-episode bank on ms02 in 0.602 seconds. Six tails
+produce the registered candidate-side continuation counterexample: more new HP
+loss, lower remaining boss HP, both alive and no worse player resources at the
+same completed prefix. None meets the reverse criterion. All 64 episodes die and
+there is no named defeat. The earliest qualifying prefix has 5 versus 4 new HP loss
+at 97 frames, with both players still at 79 health. These are finite witnesses from
+one selected state pair, not independent trials or an HP-only causal result.
+
+All 242 measured boundaries pass held replay checks, all 69 common completed
+boundaries have qualified root intervals, and the complete outputs rescore without
+emulation. Actual cost is 15,583 measured frames: 929 setup, 7,327 diagnostics and 7,327
+verification. Resumed totals are 2,982,484,247 admitted search and 68,383,589 known
+auxiliary frames; historical gaps remain unchanged. The service is terminal and
+its unused allocation is released. See ../continuation-reassessment/pc01-results.md.
+
+This is the new direct paired continuation evidence required before revisiting
+retention. Next assess the smallest explicit retention representation that can
+preserve the witnessed distinction under bounded, matched memory. Compare existing
+mechanisms and establish the source-level rule and its counterexamples before
+any new native allocation. Unknown classification, resource tradeoffs and ordinary
+compatibility must be handled explicitly. The result does not choose scalar HP
+priority, HP bins or an extra member automatically. No fresh-policy panel is yet
+allocated. All previous failed gates remain closed; msr1 is unavailable. The
+original matched boss/Wily, transfer and untouched-validation goal stays active
+and unachieved.

@@ -475,3 +475,12 @@ separate fresh baselines and retaining both directions and unavailable intervals
 The source probe verifies every measured boundary by a held-action replay.
 Native work requires a separate published registration; the exported local
 inputs are not boot-replay witnesses.
+
+[PC01 completed](pc01-results.md):6/32 fixed tails have a strictly better new-damage
+continuation from the discarded complete state under equal-resource comparison;
+none meets the reverse criterion. Both arms die in all32 episodes and neither
+defeats a boss. All242 measured boundaries reproduce under held-command replay.
+The0.602-second diagnostic spends15,583 measured auxiliary frames and closes
+with its complete ten-file evidence bundle. This earns a retention-design
+assessment, not a scalar-HP claim or automatic policy panel. The full goal is
+still unachieved.
