@@ -1417,3 +1417,23 @@ Use fresh paired seeds, exact physical accounting and prespecified efficacy and
 futility rules. Optional nonactivation is valid efficacy data. No retry, pooling,
 horizon extension, control promotion or fresh/validation allocation follows from
 qualification. Full goal remains active and unachieved; ms02 only.
+
+
+## Prospective SR02 conditional efficacy screen
+
+A separate allocation is frozen in ../continuation-reassessment/sr02-registration.json:
+2026-09-10 23:50:39 through 2026-09-11 00:20:39 UTC native, synthesis by00:35:39 UTC.
+Same SR01-qualified source/binary and root; four new seed quartets with candidate
+progress/half, matched progress/control, ordinary/control and capacity/half. At
+most two four-worker cells concurrently on disjoint ms02 CPUs; each has a fixed
+1M-frame horizon,90-second child and120-second service ceiling. Controller1,080s.
+Allocation16M pre-drain search /65M complete physical frames; unused work released.
+
+Against every comparator, require >=3/4 strict nonoverlapping event-interval wins,
+>=15% lower worst-case mean restricted event cost, and <=25% CPU/peak-RSS overhead.
+Both-censored pairs tie; stop only when three wins are impossible or a validity/
+infrastructure gate fails. Seven offline scorer/cleanup tests pass on actual
+four-arm schemas and planted failures. No SR02 native execution has run at this
+publication. No retry, old-seed reuse, pooling, control promotion or horizon rescue.
+No fresh development, confirmation, MM2 or untouched panel is allocated. Full goal
+remains active and unachieved; msr1 is not accessed.

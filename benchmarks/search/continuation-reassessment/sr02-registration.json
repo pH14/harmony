@@ -1,0 +1,329 @@
+{
+  "format": "scoped-return-sr02-registration-v1",
+  "host": "ms02",
+  "registered_utc": "2026-09-10T23:50:39.323573+00:00",
+  "deadline_utc": "2026-09-11T00:20:39.323573+00:00",
+  "synthesis_deadline_utc": "2026-09-11T00:35:39.323573+00:00",
+  "source_commit": "d8f795c218ad66c4535e457f44009eab71449261",
+  "binary": "/root/harmony-depth-transfer-20260909/builds/scoped-return-x86-001/metroid-archive-challenge", "binary_path_note": "# pragma: allowlist secret -- public local build path",
+  "binary_sha256": "2b27dc675a398b9843348c1e2eb906c1815984ec3dbe45993885bdc8500b6800",
+  "build_info": "/root/harmony-depth-transfer-20260909/builds/scoped-return-x86-001/build-info.json",
+  "build_info_sha256": "56d2d00d140f49e9dc50f103b145232585f74cf1e998c68296e1271010447287",
+  "protocol": "/root/harmony-depth-transfer-20260909/protocol/sr02-20260910",
+  "protocol_sha256": {
+    "run_sr02.py": "5e744044ad6e264def6bb4001d778c283cb1d51f869df736ec5b3bcf51b92b39",
+    "score_sr02.py": "686c6bf022d699cf22aa17f1b9c5df7f74d67af0352d8e4c3f63d8dd36c2fa9c",
+    "score_sr01.py": "13050af73eb3886f4152107d14ce4ccf51eb199fe6a5fc30a8b51c672879cba9",
+    "run_pg01.py": "5eb502b82c9d253011d67274c09ead99201691d449b6d9e51993382c94a63500",
+    "run_pm01.py": "37514a2655082e77b2f23e50ed33abb890a60e88103c784e277c0989eca5d436",
+    "run_pc01.py": "18d90b084728f9b79ddb399d0cab5d3215d333fc5a06a92c65051048a75df752",
+    "pg01-prefix.json": "5126eee64820c99697194dec63a20c44491ec7f913d49e77e4fefb97f4f319c5",
+    "test_sr02.py": "90e763de0bee968fe284f4926016b0fbd754d534ea3b66c3f469d47c3c28d089",
+    "p0-progress-control-sr02-request.json": "e0f208940bc9f41b0298bbb64a056c52cee0a4909fc655e39b9241c4111a6e17",
+    "p0-progress-half-sr02-request.json": "d4fe6f080d6df878120ce933090d15fd399ffdc3ef235cdd4e6d5bae58b5bc9e",
+    "p0-ordinary-control-sr02-request.json": "3c005326a0c2f88968c813c385a3f4ce1bad1d90d46168631c417654bb9b52ac",
+    "p0-capacity-half-sr02-request.json": "766ee2276fa163bd04cde48c9cc47a7bfe5ac291ec41423d4f9353af5e9950b5",
+    "p1-progress-half-sr02-request.json": "12d9e06486a84d039d0eae6e20d775c62aa00d03b07fc7d8304409958fbde702",
+    "p1-ordinary-control-sr02-request.json": "e38deb9306cd9e3ab1a4a1478a9856d8842f2f229601d9081468d23fb9f7689b",
+    "p1-capacity-half-sr02-request.json": "5b88be741bd37fce355db2c211c9e88cc43e7f674861ff87247316c0eb2d6fb1",
+    "p1-progress-control-sr02-request.json": "fbc29fbe10e86e4d8f0c755315c0dedf5afb3a8252e8d0c72444834c49530f36",
+    "p2-ordinary-control-sr02-request.json": "9ab7e51c2102bc91992099e130cef8a1ffbbca75578a4685ee38d482895a00e8",
+    "p2-capacity-half-sr02-request.json": "bfc3a051fa7407c0b5600db8db30c57d2dab96103632e3e33dc7d73e19b16556",
+    "p2-progress-control-sr02-request.json": "ebf012cf6f7a1b60287bca65ce13ca1af63a2424579642a1cbab9b4436ec38cb",
+    "p2-progress-half-sr02-request.json": "a01d521f6a7124139726927b43336b379738d3064ee4f05e789a9a8eaf4e4f06",
+    "p3-capacity-half-sr02-request.json": "3c97089fc589827b3107c25343e1e8393d94dc303b95ee613dfcea13b2919c7d",
+    "p3-progress-control-sr02-request.json": "e062c5aeb6f519d8997e697e714774d06b288ff8e0fa8c743a68fbdc5bcd3488",
+    "p3-progress-half-sr02-request.json": "21ee5d1ca216f6351b2a8b92bfca52958edbc27d316aeece157d407db2e5e5ae",
+    "p3-ordinary-control-sr02-request.json": "ba8fb867df1fc4d94c7902f2d4396b6062a84505fc13da96dc5d25f63a1609b8"
+  },
+  "output": "/root/harmony-depth-transfer-20260909/runs/scoped-screen-sr02",
+  "controller_service": "harmony-scoped-screen-sr02-controller-20260910.service",
+  "controller_cpus": [
+    8
+  ],
+  "controller_cgroup_limits": {
+    "memory.max": "1073741824",
+    "memory.swap.max": "0",
+    "pids.max": "64"
+  },
+  "cell_cgroup_limits": {
+    "memory.max": "4294967296",
+    "memory.swap.max": "0",
+    "pids.max": "64"
+  },
+  "controller_service_runtime_seconds": 1080,
+  "cell_service_runtime_seconds": 120,
+  "process_runtime_seconds": 90,
+  "output_limit_bytes": 4294967296,
+  "cell_output_limit_bytes": 268435456,
+  "file_limit_bytes": 134217728,
+  "physical_frame_allocation": 65000000,
+  "admitted_frame_ceiling_before_drain": 16000000,
+  "accepted_drain_frames": 2880,
+  "seeds": [
+    1915219943,
+    3063424847,
+    2048624237,
+    1697075223
+  ],
+  "cells": [
+    {
+      "id": "p0-progress-control",
+      "pair": 0,
+      "arm": "progress-control",
+      "request": "p0-progress-control-sr02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-scoped-screen-sr02-p0-progress-control-20260910.service"
+    },
+    {
+      "id": "p0-progress-half",
+      "pair": 0,
+      "arm": "progress-half",
+      "request": "p0-progress-half-sr02-request.json",
+      "cpus": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "service": "harmony-scoped-screen-sr02-p0-progress-half-20260910.service"
+    },
+    {
+      "id": "p0-ordinary-control",
+      "pair": 0,
+      "arm": "ordinary-control",
+      "request": "p0-ordinary-control-sr02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-scoped-screen-sr02-p0-ordinary-control-20260910.service"
+    },
+    {
+      "id": "p0-capacity-half",
+      "pair": 0,
+      "arm": "capacity-half",
+      "request": "p0-capacity-half-sr02-request.json",
+      "cpus": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "service": "harmony-scoped-screen-sr02-p0-capacity-half-20260910.service"
+    },
+    {
+      "id": "p1-progress-half",
+      "pair": 1,
+      "arm": "progress-half",
+      "request": "p1-progress-half-sr02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-scoped-screen-sr02-p1-progress-half-20260910.service"
+    },
+    {
+      "id": "p1-ordinary-control",
+      "pair": 1,
+      "arm": "ordinary-control",
+      "request": "p1-ordinary-control-sr02-request.json",
+      "cpus": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "service": "harmony-scoped-screen-sr02-p1-ordinary-control-20260910.service"
+    },
+    {
+      "id": "p1-capacity-half",
+      "pair": 1,
+      "arm": "capacity-half",
+      "request": "p1-capacity-half-sr02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-scoped-screen-sr02-p1-capacity-half-20260910.service"
+    },
+    {
+      "id": "p1-progress-control",
+      "pair": 1,
+      "arm": "progress-control",
+      "request": "p1-progress-control-sr02-request.json",
+      "cpus": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "service": "harmony-scoped-screen-sr02-p1-progress-control-20260910.service"
+    },
+    {
+      "id": "p2-ordinary-control",
+      "pair": 2,
+      "arm": "ordinary-control",
+      "request": "p2-ordinary-control-sr02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-scoped-screen-sr02-p2-ordinary-control-20260910.service"
+    },
+    {
+      "id": "p2-capacity-half",
+      "pair": 2,
+      "arm": "capacity-half",
+      "request": "p2-capacity-half-sr02-request.json",
+      "cpus": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "service": "harmony-scoped-screen-sr02-p2-capacity-half-20260910.service"
+    },
+    {
+      "id": "p2-progress-control",
+      "pair": 2,
+      "arm": "progress-control",
+      "request": "p2-progress-control-sr02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-scoped-screen-sr02-p2-progress-control-20260910.service"
+    },
+    {
+      "id": "p2-progress-half",
+      "pair": 2,
+      "arm": "progress-half",
+      "request": "p2-progress-half-sr02-request.json",
+      "cpus": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "service": "harmony-scoped-screen-sr02-p2-progress-half-20260910.service"
+    },
+    {
+      "id": "p3-capacity-half",
+      "pair": 3,
+      "arm": "capacity-half",
+      "request": "p3-capacity-half-sr02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-scoped-screen-sr02-p3-capacity-half-20260910.service"
+    },
+    {
+      "id": "p3-progress-control",
+      "pair": 3,
+      "arm": "progress-control",
+      "request": "p3-progress-control-sr02-request.json",
+      "cpus": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "service": "harmony-scoped-screen-sr02-p3-progress-control-20260910.service"
+    },
+    {
+      "id": "p3-progress-half",
+      "pair": 3,
+      "arm": "progress-half",
+      "request": "p3-progress-half-sr02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-scoped-screen-sr02-p3-progress-half-20260910.service"
+    },
+    {
+      "id": "p3-ordinary-control",
+      "pair": 3,
+      "arm": "ordinary-control",
+      "request": "p3-ordinary-control-sr02-request.json",
+      "cpus": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "service": "harmony-scoped-screen-sr02-p3-ordinary-control-20260910.service"
+    }
+  ],
+  "batches": [
+    [
+      "p0-progress-control",
+      "p0-progress-half"
+    ],
+    [
+      "p0-ordinary-control",
+      "p0-capacity-half"
+    ],
+    [
+      "p1-progress-half",
+      "p1-ordinary-control"
+    ],
+    [
+      "p1-capacity-half",
+      "p1-progress-control"
+    ],
+    [
+      "p2-ordinary-control",
+      "p2-capacity-half"
+    ],
+    [
+      "p2-progress-control",
+      "p2-progress-half"
+    ],
+    [
+      "p3-capacity-half",
+      "p3-progress-control"
+    ],
+    [
+      "p3-progress-half",
+      "p3-ordinary-control"
+    ]
+  ],
+  "primary_endpoint": "First living Ridley defeat newly attained within the fixed1M admitted-frame horizon from the unchanged qualified supplied root.",
+  "candidate": "progress-half",
+  "comparators": [
+    "progress-control",
+    "ordinary-control",
+    "capacity-half"
+  ],
+  "success_rule": "All four fresh seed quartets complete. Against each comparator: at least3 strict interval wins, sum(candidate upper restricted cost)<=0.85*sum(comparator lower), and candidate total child CPU microseconds and summed peakRSS<=1.25*comparator totals. Both-censored endpoints are ties. These are allocation rules, not power/confidence guarantees.",
+  "futility_rule": "After each complete quartet, stop if any comparator has strict_interval_wins+remaining_pairs<3. Do not stop for suggestive ratios or favorable early outcomes. Infrastructure/validity failure stops launches as invalid, preserving every launched cost.",
+  "cost_interval": "On a hit, [admitted frames before the first-success job, frames through that job]+4,645 search constructor frames, clipped by fixed horizon. Censored cells use[1,004,645,1,004,645]. Extra reserved drain, full replay and direct helpers remain fully charged physical work outside this first-observation interval.",
+  "frame_bound": "16*(2,000,000 direct + 2*(1,000,000+2,880) +6*929 constructors)=64,181,344 complete physical frames, below65M. Missing/interrupted components are unknown, never zero.",
+  "scope": "Conditional mechanism efficacy screen only. SR01 qualification and PG02 invalid results are excluded. No retry, seed replacement, horizon extension, control promotion or pooling. No fresh development, confirmation, MM2 or untouched validation is allocated. Any pass needs a separate fresh-development decision.",
+  "ledger_before": {
+    "admitted_search": 2986488253,
+    "known_auxiliary": 77201243
+  }
+}
