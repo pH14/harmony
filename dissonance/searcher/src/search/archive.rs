@@ -7221,6 +7221,72 @@ mod tests {
     }
 
     #[test]
+    fn entry_cutoff_ablation_changes_only_post_cutoff_walk_eligibility() {
+        let make = |cutoff| {
+            let mut archive = selector_archive(&[(1, 0, 144), (0, 0, 100)]);
+            let identifier =
+                format!("room_cell_uniform_128_energy_progress_cheapest_v1:{cutoff},6,12,2");
+            archive.selector_policy = selector_policy_from_identifier(&identifier, 3).unwrap();
+            assert_eq!(
+                super::selector_policy_identifier(&archive.selector_policy),
+                identifier
+            );
+            archive
+        };
+        let mut control = make(3);
+        let mut candidate = make(SELECTION_EXHAUSTION_THRESHOLD);
+        let mut left = RomuDuoJrRand::with_seed(0x0364);
+        let mut right = left;
+        for _ in 0..64 {
+            assert_eq!(
+                control
+                    .select_parent(&mut left, MAX_COMPLETION_ACTIONS)
+                    .unwrap(),
+                candidate
+                    .select_parent(&mut right, MAX_COMPLETION_ACTIONS)
+                    .unwrap()
+            );
+        }
+        assert_eq!(left.next_u64(), right.next_u64());
+        let failed = SelectorDraw {
+            path: SelectorPath::GroupWalk,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+        };
+        for _ in 0..3 {
+            control.record_selection(0, &failed);
+            candidate.record_selection(0, &failed);
+        }
+        assert!(!control.entry_unexhausted(0));
+        assert!(candidate.entry_unexhausted(0));
+        for (archive, expected) in [(&mut control, 1), (&mut candidate, 0)] {
+            let mut walk = 0;
+            let mut uniform_preferred = 0;
+            let mut rand = RomuDuoJrRand::with_seed(0x0364);
+            for _ in 0..256 {
+                let (id, draw) = archive
+                    .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
+                    .unwrap();
+                assert!(!draw.counter_reset);
+                if draw.path == SelectorPath::GroupWalk {
+                    walk += 1;
+                    assert_eq!(id, expected);
+                } else if id == 0 {
+                    uniform_preferred += 1;
+                }
+            }
+            assert!(walk > 0 && uniform_preferred > 0);
+        }
+        for _ in 3..SELECTION_EXHAUSTION_THRESHOLD {
+            candidate.record_selection(0, &failed);
+        }
+        assert!(!candidate.entry_unexhausted(0));
+        candidate.record_selection_outcome(0, true, false, false);
+        assert!(candidate.entry_unexhausted(0));
+    }
+
+    #[test]
     fn the_selector_resets_deterministically_when_all_are_exhausted() {
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (0, 0, 100)];
         let mut archive = selector_archive(&keys);

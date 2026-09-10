@@ -636,3 +636,28 @@ executable falsifier, its adverse case and the fresh useful endpoint it could
 improve. Do not build another observer or reopen a failed screen from a secondary
 metric. Any earned native block must be separately frozen and bounded on msr1
 or ms02. Keep publication and later work in the single draft PR #287.
+
+## Next distinct configuration ablation: early entry exhaustion
+
+The source-backed audit and exact adverse/favorable models in
+../entry-exhaustion/README.md select one existing configuration ablation: change
+only the semantic-cost selector's entry cutoff3→64, its compiled hard cap. No
+production code, action law, retention policy or observer changes. The actual
+archive fixture and153 searcher tests plus the interface test and strict Clippy
+pass. AP01's late retained outcomes are motivation, not useful-milestone evidence.
+The uniform fallback and global reset remain; no permanent-starvation claim.
+
+EQ01 separately registers three reused qualification cells on the existing
+milestone-stop binaries, two ARM buffer variants and one x86 semantic comparison.
+The block has an8M known-auxiliary ceiling,500k admitted frames/2,000 jobs per cell,
+three-minute search and bounded finishing/process limits, with a30-minute dispatch
+deadline. Require exact identities, full replay and same-host buffering plus
+cross-host event agreement. Any failure stops allocation, without retries.
+
+A pass earns a separately registered fresh first-energy-tank comparison at the
+already calibrated50M horizon, cutoff3 versus64 and balanced paired resources.
+Use four new pairs with the existing three-win/15%-restricted-cost gate and
+at-most1.25 CPU/wall ratios. Stop at mathematical futility. A failed screen earns
+no intermediate cutoff, new bank, longer horizon or secondary-metric rescue.
+Independent confirmation and same-policy MM2 transfer must precede untouched
+boss/Wily validation. The full goal and all prior negative gates remain intact.

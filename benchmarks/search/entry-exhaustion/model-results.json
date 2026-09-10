@@ -1,0 +1,57 @@
+{
+  "format": "entry-exhaustion-finite-model-v1",
+  "horizon_unit_work": 16,
+  "examples": {
+    "rare_useful_preferred": {
+      "control": {
+        "hit_probability": {
+          "exact": "1315629869296763047823991633268425/5192296858534827628530496329220096",
+          "decimal": 0.2533810961008901
+        },
+        "restricted_unit_work": {
+          "exact": "532221798361028183588402728718025/40564819207303340847894502572032",
+          "decimal": 13.12028030104486
+        }
+      },
+      "candidate": {
+        "hit_probability": {
+          "exact": "3080919183999572342984881075010175/5192296858534827628530496329220096",
+          "decimal": 0.5933634512701864
+        },
+        "restricted_unit_work": {
+          "exact": "440131311999938906140697296430025/40564819207303340847894502572032",
+          "decimal": 10.850074537511981
+        }
+      }
+    },
+    "irrelevant_preferred_trap": {
+      "control": {
+        "hit_probability": {
+          "exact": "2701705956711179215755039053154303/5192296858534827628530496329220096",
+          "decimal": 0.5203296402959425
+        },
+        "restricted_unit_work": {
+          "exact": "503071384102108039348027707222015/40564819207303340847894502572032",
+          "decimal": 12.401667107924258
+        }
+      },
+      "candidate": {
+        "hit_probability": {
+          "exact": "612359528958053230254087330727935/5192296858534827628530496329220096",
+          "decimal": 0.11793615535511774
+        },
+        "restricted_unit_work": {
+          "exact": "612359528958053230254087330727935/40564819207303340847894502572032",
+          "decimal": 15.095827885455071
+        }
+      }
+    }
+  },
+  "assumptions": [
+    "Exactly two persistent parents; main walk selects the preferred eligible class.",
+    "A non-goal attempt has no retained descendant; B always renews an irrelevant same-class representative.",
+    "Independent idealized draws and stationary stated useful-outcome probabilities; each attempt costs one unit.",
+    "No novelty, group-energy, growth, replacement geometry or in-flight scheduling is modeled."
+  ],
+  "conclusion": "Neither cutoff dominates. The model proves a possible allocation tradeoff, not its sign in an emulator. The candidate64 is the existing hard cap, not a tuned optimum."
+}
