@@ -27,7 +27,7 @@ use crate::vendor::arm64::records::{
     self, Arm64ClockeventState, Arm64DeviceState, Arm64PvclockState,
 };
 use crate::virtual_time::{DeviceClass, NormalizedEventClass};
-use crate::vmm::{Step, Vmm, VmmError};
+use crate::vmm::{PvclockSnapshot, Step, Vmm, VmmError};
 
 /// `PSTATE.I` (IRQ mask, bit 7): set ⇒ maskable interrupts are masked — the
 /// arm64 mirror of x86's `RFLAGS_IF` (inverted sense: masked vs enabled).
@@ -1008,6 +1008,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             pvclock: self.pvclock_snapshot().map(|pv| Arm64PvclockState {
                 gpa: pv.gpa,
                 registrable: pv.registrable,
+                armed: pv.armed,
                 virtual_time: self.virtual_time_vtime_enabled(),
                 clockevent: self.devices.clockevent,
             }),
@@ -1140,7 +1141,11 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 ));
             }
         }
-        let pvclock_record = dev.pvclock.map(|pv| (pv.gpa, pv.registrable));
+        let pvclock_record = dev.pvclock.map(|pv| PvclockSnapshot {
+            gpa: pv.gpa,
+            registrable: pv.registrable,
+            armed: pv.armed,
+        });
         self.pvclock_validate_restore(pvclock_record.as_ref())?;
         if let Some(pv) = dev.pvclock {
             if pv.virtual_time != self.virtual_time_vtime_enabled() {
@@ -1201,7 +1206,11 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         {
             db.as_mut_bytes().copy_from_slice(&dev.doorbell);
         }
-        let pvclock_record = dev.pvclock.map(|pv| (pv.gpa, pv.registrable));
+        let pvclock_record = dev.pvclock.map(|pv| PvclockSnapshot {
+            gpa: pv.gpa,
+            registrable: pv.registrable,
+            armed: pv.armed,
+        });
         self.devices.clockevent = dev
             .pvclock
             .map_or_else(Arm64ClockeventState::default, |pv| pv.clockevent);

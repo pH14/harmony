@@ -521,8 +521,9 @@ pub(crate) struct PvclockChannel {
     /// host-noisy — clock. A guest that never performs
     /// the handshake is **out of contract**: its page stays at the pre-
     /// registration bytes (stale but deterministic).
-    /// Restore sets this `true` directly — a restored VM's anchor is exactly 0,
-    /// a synchronized boundary by construction, so it needs no handshake.
+    /// Restore sets this from the captured snapshot verbatim. An armed
+    /// registration needs no handshake after restore; a pending registration
+    /// remains pending until the source-equivalent handshake occurs.
     armed: bool,
     /// Diagnostic refresh log (**not** hashed): `(vns, guest_clock)` for
     /// every *value-publishing* stamp, **read back from the page bytes** after
@@ -570,7 +571,7 @@ impl SdkSnapshot {
 
 /// The task-110 pvclock channel's **replay-relevant** state, captured with a
 /// snapshot ([`Vmm::pvclock_snapshot`], `Some` iff the page is offered): the
-/// guest's registration and availability. A restore carries and
+/// guest's registration, pending-vs-armed state, and availability. A restore carries and
 /// cross-validates them; the page bytes themselves ride the RAM
 /// image. Held by the control server keyed by snapshot handle, like
 /// [`SdkSnapshot`].
@@ -588,6 +589,9 @@ pub struct PvclockSnapshot {
     /// reverse (a child that can register where its parent could not) fails
     /// loud too.
     pub(crate) registrable: bool,
+    /// Whether the registered page has completed the post-registration
+    /// handshake. A pending registration has a GPA but is not yet armed.
+    pub(crate) armed: bool,
 }
 
 pub struct Vmm<B: Backend>
@@ -1411,17 +1415,15 @@ where
         // Task 110 (r13 P1). A PENDING pvclock registration is UNSEALABLE. Between
         // the doorbell `OUT` (which records the GPA) and the handshake intercept
         // (the guest's post-doorbell RDTSC, which arms the page and lays the first,
-        // canonical stamp), `armed` is false — but the v4 device record carries the
-        // GPA and NOT the pending-vs-armed bit, so `pvclock_commit_restore` would
-        // bring a restored child up ARMED. That child would then perform a normal
-        // ordinary refresh where the source still owes the canonical handshake
-        // stamp — different page bytes, different future. This
-        // is a property of the captured *state* the representable subset cannot
-        // hold, so it fails closed here alongside `check_sealable_vcpu` rather than
-        // in the boundary predicate. In normal operation a pending registration is
-        // never at a synchronized boundary (the `OUT` is a PIO; the first
-        // synchronized point after it is the arming handshake); the one path that
-        // can pair pending with a synchronized seal is `restore_vtime`.
+        // canonical stamp), `armed` is false. The v5 device record can represent
+        // that state, but the whole-VM save path still refuses it until the exact
+        // snapshot path is enabled: the sealed RAM image and pending handshake
+        // must be proven to resume together. This guard remains beside
+        // `check_sealable_vcpu` rather than in the boundary predicate. In normal
+        // operation a pending registration is never at a synchronized boundary
+        // (the `OUT` is a PIO; the first synchronized point after it is the arming
+        // handshake); the one path that can pair pending with a synchronized seal
+        // is `restore_vtime`.
         if self
             .pvclock
             .as_ref()
@@ -1430,9 +1432,10 @@ where
             return Err(VmmError::ContractViolation(
                 "save_vm_state with a PENDING pvclock registration: the page GPA is \
                  recorded but the registration handshake (the guest's post-doorbell \
-                 RDTSC) has not completed, so `armed` is false — a state the v4 device \
-                 record cannot represent (a restore would come up armed and skip the \
-                 canonical handshake stamp the source still owes). Snapshot after the \
+                 RDTSC) has not completed, so `armed` is false — the v5 device record \
+                 preserves this bit, but whole-VM snapshotting currently refuses the \
+                 state until its pending handshake and RAM image are proven to resume \
+                 together. Snapshot after the \
                  handshake intercept (step once more first)."
                     .to_string(),
             ));
@@ -1593,7 +1596,7 @@ where
         // suppress or synthesize that restored point.
         self.sdk_snapshot_reentry_required = false;
         // (Task 110: the pvclock channel needs no reset here — the blob's own
-        // v4 record was validated in the vendor's `validate_restore` and
+        // v4/v5 record was validated in the vendor's `validate_restore` and
         // committed in `commit_restore` above, replacing any stale-timeline
         // registration with the sealed one — including clearing it when the
         // sealed VM had none. The same-state ⇒ same-future contract holds for
@@ -1915,10 +1918,9 @@ where
             // intercept) and an *armed* one have DIFFERENT futures — the pending
             // one's next synchronized step lays the canonical page stamp,
             // the armed one refreshes normally — so pending-vs-armed belongs in
-            // state identity. (This bit is only ever observed mid-run: a snapshot
-            // is taken only at a synchronized point, and a pending registration
-            // exists only at non-synchronized points, so a sealed state is always
-            // armed — restore derives it. It is folded here for the mid-run hash.)
+            // state identity. The current whole-VM save guard still rejects a
+            // pending registration, but `restore_vtime` can leave one at a
+            // synchronized boundary and the representation must retain it.
             bytes.push(u8::from(pv.armed));
             put_chunk(&mut out, b"PVCK", &bytes);
         }
@@ -2260,8 +2262,9 @@ where
 
     /// Capture the pvclock channel's **complete replay-relevant configuration**
     /// for a snapshot: `Some` iff the page is offered, carrying the registration
-    /// (if any). The page *bytes* ride the RAM image; the offer shapes a future registration,
-    /// so the control server carries it across snapshot/branch like the SDK
+    /// (if any), capability, and pending-vs-armed handshake state. The page
+    /// *bytes* ride the RAM image; the offer shapes a future registration, so
+    /// the control server carries it across snapshot/branch like the SDK
     /// channel's, restoring (and cross-validating) via
     /// [`pvclock_restore`](Self::pvclock_restore).
     pub fn pvclock_snapshot(&self) -> Option<PvclockSnapshot> {
@@ -2269,6 +2272,7 @@ where
         self.pvclock.as_ref().map(|pv| PvclockSnapshot {
             gpa: pv.gpa,
             registrable,
+            armed: pv.armed,
         })
     }
 
@@ -2284,11 +2288,12 @@ where
     ///
     /// # Errors
     /// [`VmmError::ContractViolation`] on any offer mismatch, a GPA that no
-    /// longer validates, or a registration restored onto a backend with no
-    /// deterministic virtual-time clock.
+    /// longer validates, a malformed pending/registration combination, or a
+    /// registration restored onto a backend with no deterministic virtual-time
+    /// clock.
     pub(crate) fn pvclock_validate_restore(
         &self,
-        rec: Option<&(Option<u64>, bool)>,
+        rec: Option<&PvclockSnapshot>,
     ) -> Result<(), VmmError> {
         match (rec, self.pvclock.as_ref()) {
             (None, None) => Ok(()),
@@ -2298,12 +2303,25 @@ where
                  restore into a VM composed like the snapshot source."
                     .to_string(),
             )),
-            (Some((gpa, _)), None) => Err(VmmError::ContractViolation(format!(
+            (Some(snapshot), None) => Err(VmmError::ContractViolation(format!(
                 "restore_vm_state: snapshot carries a pvclock channel (registration \
-                 {gpa:#x?}) but this VM was composed without enable_pvclock — \
-                 restore into a VM composed like the snapshot source."
+                 {:#x?}) but this VM was composed without enable_pvclock — \
+                 restore into a VM composed like the snapshot source.",
+                snapshot.gpa
             ))),
-            (Some((gpa, registrable)), Some(_pv)) => {
+            (Some(snapshot), Some(_pv)) => {
+                if snapshot.armed && snapshot.gpa.is_none() {
+                    return Err(VmmError::ContractViolation(
+                        "restore_vm_state: pvclock record is armed without a registered page"
+                            .to_string(),
+                    ));
+                }
+                if snapshot.gpa.is_some() && !snapshot.registrable {
+                    return Err(VmmError::ContractViolation(
+                        "restore_vm_state: pvclock record has a registration but is marked non-registrable"
+                            .to_string(),
+                    ));
+                }
                 // REGISTRATION CAPABILITY, independent of whether a GPA is
                 // present (cross-model r5 P1). A snapshot taken BEFORE the guest
                 // registered carries no GPA — so the GPA check below never runs —
@@ -2314,14 +2332,18 @@ where
                 // "this VM can too") because the converse — a child that CAN
                 // register where its parent never could — forks the timeline just
                 // as hard.
-                if *registrable != self.pvclock_available() {
+                if snapshot.registrable != self.pvclock_available() {
                     return Err(VmmError::ContractViolation(format!(
                         "restore_vm_state: pvclock registration capability mismatch (the \
                          snapshot's VM {} register a clock page; this VM {}) — the restored \
                          guest's next registration would take a different branch than the \
                          sealed timeline's. Restore into a VM composed like the snapshot \
                          source (V-time wired, deterministic virtual-time clock).",
-                        if *registrable { "could" } else { "could NOT" },
+                        if snapshot.registrable {
+                            "could"
+                        } else {
+                            "could NOT"
+                        },
                         if self.pvclock_available() {
                             "can"
                         } else {
@@ -2329,8 +2351,8 @@ where
                         }
                     )));
                 }
-                if let Some(gpa) = gpa {
-                    self.pvclock_validate_gpa(*gpa).map_err(|reason| {
+                if let Some(gpa) = snapshot.gpa {
+                    self.pvclock_validate_gpa(gpa).map_err(|reason| {
                         VmmError::ContractViolation(format!(
                             "restore_vm_state: snapshot pvclock page GPA {gpa:#x} does not \
                              validate on this VM ({reason}) — restore into a VM composed like \
@@ -2350,19 +2372,15 @@ where
     /// and an unregistered record clears any stale-timeline registration
     /// this VM held. Infallible, per
     /// the restore commit phase's contract.
-    pub(crate) fn pvclock_commit_restore(&mut self, rec: Option<&(Option<u64>, bool)>) {
+    pub(crate) fn pvclock_commit_restore(&mut self, rec: Option<&PvclockSnapshot>) {
         if let Some(pv) = self.pvclock.as_mut() {
-            // A restored VM's anchor is exactly 0 (the virtual-time clock restarts and
-            // `restore_vm_state` anchors there — a synchronized boundary by
-            // construction), so a restored registration is **already armed**: it
-            // needs no live handshake. Only a *registered* record is armed; an
-            // unregistered one clears any stale-timeline registration.
-            // Arming every carried GPA is faithful because `save_vm_state` refuses
-            // to seal a PENDING (un-armed) registration (r13 P1): a sealed
-            // `Some(gpa)` was therefore armed on the source, so the source owed no
-            // handshake stamp and the restored child owes none either.
-            let gpa = rec.and_then(|(g, _)| *g);
-            pv.armed = gpa.is_some();
+            // Restore the channel record verbatim. In particular, a GPA with
+            // `armed = false` remains pending until the same guest handshake
+            // that the source still owed. `save_vm_state` currently refuses to
+            // seal that state; the representation nevertheless has to preserve
+            // it for restore and future exact-snapshot support.
+            let (gpa, armed) = rec.map_or((None, false), |snapshot| (snapshot.gpa, snapshot.armed));
+            pv.armed = armed;
             pv.gpa = gpa;
             pv.refreshes.clear();
         }
@@ -8335,7 +8353,39 @@ mod tests {
         );
     }
 
-    /// A crafted v4 device blob with the impossible tuple `(Some(gpa),
+    /// Pending registration state crosses the same capture/serialization and
+    /// restore boundary used by production x86 snapshots. The full save path
+    /// still refuses this state until exact snapshot support is enabled, so use
+    /// the vendor construction and engine restore helpers directly here.
+    #[test]
+    fn pvclock_snapshot_and_restore_preserve_pending_registration_state() {
+        let mut source = pvclock_vmm(vec![], 7);
+        assert_eq!(
+            ring_pvclock_register(&mut source, PV_GPA).0,
+            Status::Ok as u16
+        );
+        let expected = PvclockSnapshot {
+            gpa: Some(PV_GPA),
+            registrable: true,
+            armed: false,
+        };
+        assert_eq!(source.pvclock_snapshot(), Some(expected));
+
+        // This is the production vendor construction/codec boundary that
+        // save_vm_state would call after its pending-state guard.
+        let state = <X86 as crate::vendor::Vendor>::build_vm_state(&source, &VcpuState::default());
+        let decoded = snapshot::decode_device_blob(&state.devices.0).unwrap();
+        assert_eq!(decoded.pvclock, Some(expected));
+
+        let mut target = pvclock_vmm(vec![], 7);
+        target
+            .pvclock_validate_restore(decoded.pvclock.as_ref())
+            .unwrap();
+        target.pvclock_commit_restore(decoded.pvclock.as_ref());
+        assert_eq!(target.pvclock_snapshot(), Some(expected));
+    }
+
+    /// A crafted v5 device blob with the impossible tuple `(Some(gpa),
     /// registrable=false)` is rejected at decode (cross-model r6 P1) — a
     /// registered page can only exist on a VM that could register, so this cannot
     /// come from a valid seal. Accepting it would commit an active registration
@@ -8346,17 +8396,27 @@ mod tests {
         use crate::vendor::x86::records::{DeviceState, encode_device_blob};
         // A well-formed source: registered AND registrable.
         let good = DeviceState {
-            pvclock: Some((Some(PV_GPA), true)),
+            pvclock: Some(crate::vmm::PvclockSnapshot {
+                gpa: Some(PV_GPA),
+                registrable: true,
+                armed: false,
+            }),
             ..DeviceState::default()
         };
         let mut blob = encode_device_blob(&good).0;
-        // The registrable flag is the LAST byte of the blob (trailing pvclock
-        // record). Flip it to the impossible `false` and re-decode.
-        assert_eq!(*blob.last().unwrap(), 1, "the registrable byte is the tail");
-        *blob.last_mut().unwrap() = 0;
+        // The registrable flag is immediately before the v5 armed byte in the
+        // trailing pvclock record. Flip it to the impossible `false` and
+        // re-decode.
+        assert_eq!(
+            blob[blob.len() - 2],
+            1,
+            "the registrable byte precedes armed"
+        );
+        let registrable_index = blob.len() - 2;
+        blob[registrable_index] = 0;
         assert!(
             crate::vendor::x86::records::decode_device_blob(&blob).is_err(),
-            "a registered-but-non-registrable v4 record must be rejected at the wire"
+            "a registered-but-non-registrable v5 record must be rejected at the wire"
         );
     }
 
@@ -8573,7 +8633,7 @@ mod tests {
     /// page keeps tracking the oracle, and the first-arm state is undisturbed.
     /// The r2 P1 fix (restore side) + the r3 direct-carry P1 in one: a plain
     /// `restore_snapshot` — no control server, no side channel — reinstates
-    /// the sealed registration from the vm_state device blob (v4), and the
+    /// the sealed registration from the vm_state device blob (v4/v5), and the
     /// restored registration arms the Δ refresh immediately (the restored
     /// anchor is exactly 0 against a re-baselined counter, so `0 + Δ` is
     /// strictly ahead; no stale-anchor window to wait out).
@@ -8664,10 +8724,10 @@ mod tests {
 
     /// r13 P1: a PENDING pvclock registration is UNSEALABLE. `restore_vtime` can
     /// leave a registration pending yet mark V-time synchronized (a would-be
-    /// sealable boundary), but the v4 device record carries only the GPA, not the
-    /// pending-vs-armed bit — so `save_vm_state` fails closed rather than seal a
-    /// state that would restore as ARMED and skip the canonical handshake stamp
-    /// the source still owes. Once the handshake arms the page, the same VM seals.
+    /// sealable boundary). The v5 device record carries the pending-vs-armed bit,
+    /// but `save_vm_state` still fails closed until the exact snapshot path proves
+    /// the pending handshake and RAM image resume together. Once the handshake
+    /// arms the page, the same VM seals.
     #[test]
     fn save_vm_state_rejects_a_pending_pvclock_registration() {
         let mut v = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], 7);
@@ -8700,7 +8760,7 @@ mod tests {
     /// `seal_derives_from_tracked_parent_and_reproduces_the_image`) and a
     /// restored sibling inherits the parent's epoch — the two stay in lockstep
     /// instead of diverging by a canonicalized-away `seq`. The sealed
-    /// registration riding the vm_state device blob (v4) authoritatively
+    /// registration riding the vm_state device blob (v4/v5) authoritatively
     /// replaces whatever registration the target VM held (r3: the direct restore
     /// path carries the channel with the state).
     #[test]
@@ -8767,7 +8827,7 @@ mod tests {
     }
 
     /// Composition mismatches fail loud, **symmetrically**, through the real
-    /// restore path (`restore_vm_state` validates the blob's v4 pvclock
+    /// restore path (`restore_vm_state` validates the blob's v4/v5 pvclock
     /// record before mutating anything): an offered snapshot into an
     /// unoffered target (registered or not), an unoffered snapshot into an
     /// offered target, a Δ mismatch, a GPA that no longer validates, and a

@@ -848,10 +848,11 @@ impl<B: Backend<A = X86>> Vmm<B> {
             // `KVM_SET_VCPU_EVENTS` corrupts the resumed guest. All-zero at a quiescent
             // point, so M1/M2/corpus blobs are unchanged.
             events: records::canonical_events(&vcpu.events),
-            // The task-110 pvclock channel (v4): offer + one-shot registration,
-            // so the direct restore path carries the stamping
-            // obligation with the state it governs (same-state ⇒ same-future).
-            pvclock: self.pvclock_snapshot().map(|s| (s.gpa, s.registrable)),
+            // The task-110 pvclock channel (v4/v5): retain the legacy shape for
+            // already-representable states and use v5 for a pending registration,
+            // so the direct restore path carries the stamping obligation with
+            // the state it governs (same-state ⇒ same-future).
+            pvclock: self.pvclock_snapshot(),
         };
         s.devices = records::encode_device_blob(&dev);
         s.contract_hash = contract::contract_hash();

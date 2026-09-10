@@ -18,6 +18,8 @@ use vm_state::{
     VcpuSregs, VmState, Xcrs, XsaveImage,
 };
 
+use crate::vmm::PvclockSnapshot;
+
 use crate::snapshot::SnapshotError;
 
 // ===========================================================================
@@ -647,18 +649,24 @@ const DEVICE_BLOB_MAGIC: u32 = 0x3156_4544;
 const DEVICE_BLOB_VERSION_BASE: u16 = 3;
 
 /// Device-blob layout version for a VM that **offers the task-110 pvclock
-/// channel**: v3 plus a trailing channel record (Δ + the one-shot registration),
-/// so the direct `save_vm_state`/`restore_snapshot` path carries the stamping
-/// obligation with the state it governs — a restored guest whose RAM contains an
-/// active clock page gets a VMM that keeps refreshing it (same-state ⇒
-/// same-future), with no control-server side channel required.
+/// channel** and carries the legacy channel record (GPA + registrability).
+/// Version 4 remains the writer shape for already-representable states; a
+/// legacy GPA implies `armed = true` because the old writer refused to seal
+/// pending registrations.
 ///
 /// **The version IS the offer flag** (cross-model r4 P1): an unoffered VM
 /// encodes [`DEVICE_BLOB_VERSION_BASE`] with no trailing record at all, so
 /// page-off blobs — and the `VMST` hashes over them — are byte-identical to
 /// main's, and a v3 blob written by main still decodes here. The decoder accepts
-/// exactly these two versions; v4 with no channel is not a representable state.
-const DEVICE_BLOB_VERSION_PVCLOCK: u16 = 4;
+/// the base v3 shape plus the legacy v4 and current v5 channel shapes; a
+/// pvclock-bearing version with no channel is not a representable state.
+const DEVICE_BLOB_VERSION_PVCLOCK_LEGACY: u16 = 4;
+/// Current pvclock-bearing device-blob version for a registered, pending page.
+/// It extends the legacy trailing record with an explicit pending-vs-armed flag,
+/// preserving that engine state through capture and restore. Armed and
+/// unregistered states retain the v4 bytes so their existing snapshot hashes
+/// remain stable.
+const DEVICE_BLOB_VERSION_PVCLOCK: u16 = 5;
 
 /// The 8250 UART residual state a snapshot carries: the serial capture buffer (so a
 /// restored continuation reproduces byte-identical console output), the eight
@@ -706,10 +714,14 @@ pub(crate) struct DeviceState {
     /// authoritative events on restore — it supersedes the reduced typed record, which
     /// `vm-state` still carries unchanged for task-39 codec compatibility.
     pub events: vmm_backend::VcpuEvents,
-    /// The pvclock channel configuration (v4): `None` = the page was
-    /// not offered on the sealing VM; `Some((gpa, registrable))` = offered
+    /// The pvclock channel configuration (v4/v5): `None` = the page was
+    /// not offered on the sealing VM; `Some(PvclockSnapshot)` = offered
     /// with the guest's one-shot registration when
-    /// `gpa` is `Some`, and whether the sealing VM could register a page at all
+    /// `gpa` is `Some`, whether the sealing VM could register a page at all,
+    /// and whether the registration has completed its handshake. Version 4
+    /// remains the writer shape for unregistered and armed states; its readers
+    /// derive `armed` from the legacy GPA because the old writer refused to
+    /// seal pending registrations.
     /// (`Vmm::pvclock_available` — V-time wired and a deterministic work
     /// counter). `registrable` is carried because a snapshot sealed BEFORE
     /// registration has no GPA to re-validate yet still promises a future
@@ -717,7 +729,7 @@ pub(crate) struct DeviceState {
     /// restore target's own composition (offer / capability / GPA) before any
     /// mutation and committed with the rest of the restore — the engine's
     /// `pvclock_validate_restore`/`pvclock_commit_restore` pair.
-    pub pvclock: Option<(Option<u64>, bool)>,
+    pub pvclock: Option<PvclockSnapshot>,
 }
 
 fn put_u16(out: &mut Vec<u8>, v: u16) {
@@ -796,11 +808,15 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
     let mut out = Vec::new();
     put_u32(&mut out, DEVICE_BLOB_MAGIC);
     // The version records whether a pvclock channel follows — an unoffered VM
-    // encodes the v3 shape exactly as before task 110.
+    // encodes the v3 shape exactly as before task 110. Keep the legacy v4
+    // bytes for states it already represented; only a registered pending page
+    // needs the v5 armed flag.
+    let pending_pvclock = d.pvclock.is_some_and(|pv| pv.gpa.is_some() && !pv.armed);
     put_u16(
         &mut out,
         match d.pvclock {
-            Some(_) => DEVICE_BLOB_VERSION_PVCLOCK,
+            Some(_) if pending_pvclock => DEVICE_BLOB_VERSION_PVCLOCK,
+            Some(_) => DEVICE_BLOB_VERSION_PVCLOCK_LEGACY,
             None => DEVICE_BLOB_VERSION_BASE,
         },
     );
@@ -833,18 +849,22 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
     // The full kvm_vcpu_events (task 41) — a fixed-width record so the
     // earlier field offsets are unchanged from v2.
     put_events(&mut out, &d.events);
-    // The pvclock channel record (task 110, v4 only) — trailing, so every
-    // earlier offset is unchanged from v3, and ABSENT entirely at v3, so an
-    // unoffered VM's bytes are identical to main's.
-    if let Some((gpa, registrable)) = &d.pvclock {
-        match gpa {
+    // The pvclock channel record — trailing, so every earlier offset is
+    // unchanged from v3, and ABSENT entirely at v3, so an unoffered VM's bytes
+    // are identical to main's. The v5 pending shape appends its armed flag;
+    // v4 retains its historical two-field tail.
+    if let Some(pv) = &d.pvclock {
+        match pv.gpa {
             Some(g) => {
                 out.push(1);
-                put_u64(&mut out, *g);
+                put_u64(&mut out, g);
             }
             None => out.push(0),
         }
-        out.push(u8::from(*registrable));
+        out.push(u8::from(pv.registrable));
+        if pending_pvclock {
+            out.push(u8::from(pv.armed));
+        }
     }
     DeviceBlob(out)
 }
@@ -964,11 +984,15 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
     if r.u32().ok_or(bad("truncated header"))? != DEVICE_BLOB_MAGIC {
         return Err(bad("bad magic"));
     }
-    // v3 (no pvclock channel) and v4 (channel record trailing) are both current
-    // shapes — the version is the offer flag, so a page-off blob from main
-    // decodes unchanged and a page-on one carries its channel.
+    // v3 (no pvclock channel), v4 (legacy channel record), and v5 (current
+    // channel record) are readable shapes. The version is the offer flag, so a
+    // page-off blob from main decodes unchanged and a page-on one carries its
+    // channel.
     let version = r.u16().ok_or(bad("truncated version"))?;
-    if version != DEVICE_BLOB_VERSION_BASE && version != DEVICE_BLOB_VERSION_PVCLOCK {
+    if !matches!(
+        version,
+        DEVICE_BLOB_VERSION_BASE | DEVICE_BLOB_VERSION_PVCLOCK_LEGACY | DEVICE_BLOB_VERSION_PVCLOCK
+    ) {
         return Err(bad("unsupported version"));
     }
     let tsc_adjust = r.u64().ok_or(bad("truncated tsc_adjust"))?;
@@ -1001,7 +1025,10 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
         _ => return Err(bad("bad legacy flag")),
     };
     let events = r.events().ok_or(bad("truncated vcpu events"))?;
-    let pvclock = if version == DEVICE_BLOB_VERSION_PVCLOCK {
+    let pvclock = if matches!(
+        version,
+        DEVICE_BLOB_VERSION_PVCLOCK_LEGACY | DEVICE_BLOB_VERSION_PVCLOCK
+    ) {
         let gpa = match r.u8().ok_or(bad("truncated pvclock gpa flag"))? {
             0 => None,
             1 => Some(r.u64().ok_or(bad("truncated pvclock gpa"))?),
@@ -1021,7 +1048,31 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
                 "pvclock record marks a registered page non-registrable (impossible tuple)",
             ));
         }
-        Some((gpa, registrable))
+        let armed = if version == DEVICE_BLOB_VERSION_PVCLOCK {
+            if gpa.is_none() {
+                return Err(bad("current pvclock record is missing its registered GPA"));
+            }
+            let armed = r.bool().ok_or(bad("bad pvclock armed flag"))?;
+            if armed {
+                return Err(bad(
+                    "current pvclock record must represent a pending registration",
+                ));
+            }
+            armed
+        } else {
+            // Version 4 could only contain a sealed GPA after save_vm_state's
+            // pending-registration refusal, so a legacy GPA is armed. An absent
+            // GPA denotes the unregistered state and therefore remains unarmed.
+            gpa.is_some()
+        };
+        if armed && gpa.is_none() {
+            return Err(bad("pvclock record is armed without a registered page"));
+        }
+        Some(PvclockSnapshot {
+            gpa,
+            registrable,
+            armed,
+        })
     } else {
         None
     };
@@ -1332,8 +1383,13 @@ mod tests {
                 slave_imr: 0xFF,
             }),
             events: full_events(),
-            // A registered pvclock channel (task 110, v4).
-            pvclock: Some((Some(0x4000), true)),
+            // A registered and armed pvclock channel retains the legacy v4
+            // shape because it was already representable there.
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: true,
+            }),
         };
         let blob = encode_device_blob(&d);
         let decoded = decode_device_blob(&blob.0).unwrap();
@@ -1984,7 +2040,11 @@ mod tests {
         // Offering the channel is the ONLY thing that appends bytes, and it
         // bumps the version — so the v3 prefix is untouched.
         let on = encode_device_blob(&DeviceState {
-            pvclock: Some((Some(0x4000), true)),
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: false,
+            }),
             ..d.clone()
         })
         .0;
@@ -1995,32 +2055,202 @@ mod tests {
         assert_eq!(
             &on[6..off.len()],
             &off[6..],
-            "the v4 encoding must extend the v3 body, not reshuffle it"
+            "the v5 encoding must extend the v3 body, not reshuffle it"
         );
         assert_eq!(
             on.len(),
-            off.len() + 1 + 8 + 1,
-            "v4 appends exactly the GPA-present flag + the GPA (u64) + the registrable flag"
+            off.len() + 1 + 8 + 1 + 1,
+            "v5 appends the GPA-present flag + GPA + registrable + armed flags"
         );
         // Both decode back to what they encoded, and the v3 blob (what main
         // writes) decodes here as "no channel" rather than being rejected.
         assert_eq!(decode_device_blob(&off).unwrap(), d);
         assert_eq!(
             decode_device_blob(&on).unwrap().pvclock,
-            Some((Some(0x4000), true))
+            Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: false,
+            })
         );
         // The registrable bit round-trips independently of the GPA — it is the
         // whole point of carrying it (a snapshot with NO registration still
         // records whether the source COULD register). r5 P1.
         let unreg = encode_device_blob(&DeviceState {
-            pvclock: Some((None, false)),
+            pvclock: Some(PvclockSnapshot {
+                gpa: None,
+                registrable: false,
+                armed: false,
+            }),
             ..d.clone()
         })
         .0;
         assert_eq!(
             decode_device_blob(&unreg).unwrap().pvclock,
-            Some((None, false))
+            Some(PvclockSnapshot {
+                gpa: None,
+                registrable: false,
+                armed: false,
+            })
         );
+
+        // The old writer's bytes remain unchanged for an armed registration.
+        let armed = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: true,
+            }),
+            ..d.clone()
+        })
+        .0;
+        assert_eq!(
+            u16::from_le_bytes([armed[4], armed[5]]),
+            DEVICE_BLOB_VERSION_PVCLOCK_LEGACY
+        );
+        assert_eq!(armed.len(), off.len() + 1 + 8 + 1);
+        let mut expected_legacy = on.clone();
+        expected_legacy.pop();
+        expected_legacy[4..6].copy_from_slice(&DEVICE_BLOB_VERSION_PVCLOCK_LEGACY.to_le_bytes());
+        assert_eq!(armed, expected_legacy);
+        assert_eq!(
+            u16::from_le_bytes([unreg[4], unreg[5]]),
+            DEVICE_BLOB_VERSION_PVCLOCK_LEGACY
+        );
+        assert_eq!(unreg.len(), off.len() + 1 + 1);
+    }
+
+    #[test]
+    fn legacy_pvclock_blob_derives_armed_from_the_gpa() {
+        let current = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: false,
+            }),
+            ..DeviceState::default()
+        })
+        .0;
+        // Remove the v5-only armed byte and relabel the otherwise identical
+        // trailing record as v4. Legacy writers could not seal a pending GPA,
+        // so the reader must recover `armed = true` from the legacy shape.
+        let mut legacy = current[..current.len() - 1].to_vec();
+        legacy[4..6].copy_from_slice(&DEVICE_BLOB_VERSION_PVCLOCK_LEGACY.to_le_bytes());
+        assert_eq!(
+            decode_device_blob(&legacy).unwrap().pvclock,
+            Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: true,
+            })
+        );
+
+        let legacy_unregistered = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: None,
+                registrable: false,
+                armed: false,
+            }),
+            ..DeviceState::default()
+        })
+        .0;
+        assert_eq!(
+            decode_device_blob(&legacy_unregistered).unwrap().pvclock,
+            Some(PvclockSnapshot {
+                gpa: None,
+                registrable: false,
+                armed: false,
+            })
+        );
+    }
+
+    #[test]
+    fn archived_legacy_pvclock_fixtures_round_trip_byte_exactly() {
+        for (blob, expected) in [
+            (
+                include_bytes!("../../../tests/fixtures/harmony-x86-v4-armed.bin").as_slice(),
+                PvclockSnapshot {
+                    gpa: Some(0x4000),
+                    registrable: true,
+                    armed: true,
+                },
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/harmony-x86-v4-unregistered.bin")
+                    .as_slice(),
+                PvclockSnapshot {
+                    gpa: None,
+                    registrable: true,
+                    armed: false,
+                },
+            ),
+        ] {
+            assert_eq!(
+                u16::from_le_bytes([blob[4], blob[5]]),
+                DEVICE_BLOB_VERSION_PVCLOCK_LEGACY
+            );
+            let decoded = decode_device_blob(blob).unwrap();
+            assert_eq!(decoded.pvclock, Some(expected));
+            assert_eq!(encode_device_blob(&decoded).0, blob);
+        }
+    }
+
+    #[test]
+    fn new_pvclock_blob_rejects_impossible_registration_flags() {
+        // Start with the canonical pending v5 shape, then make its armed byte
+        // non-canonical. The new version is reserved for pending registrations.
+        let mut bad_armed = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: false,
+            }),
+            ..DeviceState::default()
+        })
+        .0;
+        *bad_armed.last_mut().unwrap() = 1;
+        assert!(matches!(
+            decode_device_blob(&bad_armed),
+            Err(SnapshotError::DeviceBlob(
+                "current pvclock record must represent a pending registration"
+            ))
+        ));
+
+        // A current version without a GPA is also non-canonical. Remove the
+        // pending record's GPA bytes while retaining its version and flags.
+        let mut missing_gpa = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: false,
+            }),
+            ..DeviceState::default()
+        })
+        .0;
+        let gpa_flag = missing_gpa.len() - 11;
+        missing_gpa.drain(gpa_flag + 1..gpa_flag + 9);
+        missing_gpa[gpa_flag] = 0;
+        assert!(matches!(
+            decode_device_blob(&missing_gpa),
+            Err(SnapshotError::DeviceBlob(
+                "current pvclock record is missing its registered GPA"
+            ))
+        ));
+
+        // A registration requires a composition that can accept it. This is
+        // still rejected in the legacy shape before armed-state derivation.
+        let blob = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: false,
+                armed: true,
+            }),
+            ..DeviceState::default()
+        });
+        assert!(matches!(
+            decode_device_blob(&blob.0),
+            Err(SnapshotError::DeviceBlob(_))
+        ));
     }
 
     #[test]

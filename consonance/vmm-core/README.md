@@ -26,6 +26,10 @@ them, including the response sequence and request identity. Portable format 4
 carries this state; version 3 remains readable with no pending stop. Whole-VM
 capture still has backend and pending-state guards; SDK capture alone does not
 establish that an arbitrary stopped VM can yet be saved exactly.
+Pvclock-bearing device records explicitly preserve the registered page GPA,
+registration capability, and pending-versus-armed handshake state. Pending
+registrations use x86 v5 and arm64 v9–12; already-representable states retain
+legacy x86 v4 and arm64 v5–8 bytes, where a GPA implies an armed registration.
 
 ## Architecture boundary
 
