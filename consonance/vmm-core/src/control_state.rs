@@ -26,13 +26,20 @@ pub(crate) struct ControlState {
     pub pending: InputSpec,
     pub poisoned: Option<ScheduleFailure>,
     pub exec_nonce: u64,
+    /// Canonical retained command parser; guest serial input remains VM-owned.
+    pub exec: Option<Vec<u8>>,
 }
 
 impl ControlState {
     pub fn encode(&self) -> Vec<u8> {
         let recorded = self.recorded.encode();
         let pending = self.pending.encode();
-        let mut out = b"HCSTATE1".to_vec();
+        let mut out = if self.exec.is_some() {
+            b"HCSTATE2"
+        } else {
+            b"HCSTATE1"
+        }
+        .to_vec();
         out.extend_from_slice(&(recorded.len() as u64).to_le_bytes());
         out.extend_from_slice(&(pending.len() as u64).to_le_bytes());
         out.extend_from_slice(&self.exec_nonce.to_le_bytes());
@@ -43,6 +50,10 @@ impl ControlState {
         }
         out.extend_from_slice(&recorded);
         out.extend_from_slice(&pending);
+        if let Some(exec) = &self.exec {
+            out.extend_from_slice(&(exec.len() as u64).to_le_bytes());
+            out.extend_from_slice(exec);
+        }
         out
     }
 
@@ -51,9 +62,11 @@ impl ControlState {
             return Ok(None); // legacy portable artifacts did not carry control state
         }
         let mut input = bytes;
-        if take(&mut input, 8)? != b"HCSTATE1" {
-            return Err("control state magic");
-        }
+        let has_exec = match take(&mut input, 8)? {
+            b"HCSTATE1" => false,
+            b"HCSTATE2" => true,
+            _ => return Err("control state magic"),
+        };
         let recorded_len = usize::try_from(number(&mut input)?).map_err(|_| "control length")?;
         let pending_len = usize::try_from(number(&mut input)?).map_err(|_| "control length")?;
         let exec_nonce = number(&mut input)?;
@@ -69,6 +82,17 @@ impl ControlState {
             .map_err(|_| "recorded control inputs")?;
         let pending = InputSpec::decode_snapshot(take(&mut input, pending_len)?)
             .map_err(|_| "pending control inputs")?;
+        let exec = if has_exec {
+            let len = usize::try_from(number(&mut input)?).map_err(|_| "exec length")?;
+            let bytes = take(&mut input, len)?;
+            let command = crate::exec::retained::RetainedExec::decode(bytes)?;
+            if command.view(control_proto::Moment(0)).id.checked_add(1) != Some(exec_nonce) {
+                return Err("command nonce disagrees with retained command");
+            }
+            Some(bytes.to_vec())
+        } else {
+            None
+        };
         if !input.is_empty() {
             return Err("trailing control state");
         }
@@ -101,6 +125,7 @@ impl ControlState {
             pending,
             poisoned,
             exec_nonce,
+            exec,
         }))
     }
 
@@ -114,6 +139,18 @@ impl ControlState {
             .is_some_and(|state| state.recorded.config() != policy)
         {
             return Err("recorded control policy differs from the snapshot policy");
+        }
+        Ok(state)
+    }
+
+    pub fn decode_for_snapshot(
+        bytes: &[u8],
+        policy: &ServiceConfig,
+        tainted: bool,
+    ) -> Result<Option<Self>, &'static str> {
+        let state = Self::decode_for_policy(bytes, policy)?;
+        if !tainted && state.as_ref().is_some_and(|state| state.exec.is_some()) {
+            return Err("retained command requires a tainted snapshot");
         }
         Ok(state)
     }
@@ -174,6 +211,7 @@ mod tests {
                 vtime: 25,
             }),
             exec_nonce: 17,
+            exec: None,
         }
     }
 
@@ -206,6 +244,45 @@ mod tests {
     }
 
     #[test]
+    fn retained_command_uses_versioned_record_and_hash_coverage() {
+        let legacy = state();
+        assert!(legacy.encode().starts_with(b"HCSTATE1"));
+        let command = crate::exec::retained::RetainedExec::new("echo once", 16, 0);
+        let mut retained = legacy.clone();
+        retained.exec = Some(command.encode());
+        let encoded = retained.encode();
+        assert_eq!(
+            ControlState::decode_for_snapshot(&encoded, retained.recorded.config(), false),
+            Err("retained command requires a tainted snapshot")
+        );
+        assert_eq!(
+            ControlState::decode_for_snapshot(&encoded, retained.recorded.config(), true).unwrap(),
+            Some(retained.clone())
+        );
+        assert!(encoded.starts_with(b"HCSTATE2"));
+        assert_eq!(
+            ControlState::decode(&encoded).unwrap(),
+            Some(retained.clone())
+        );
+        let mut before = Vec::new();
+        let mut after = Vec::new();
+        legacy.append_hash(&mut before);
+        retained.append_hash(&mut after);
+        assert_ne!(before, after);
+        retained.exec_nonce += 1;
+        assert_eq!(
+            ControlState::decode(&retained.encode()),
+            Err("command nonce disagrees with retained command")
+        );
+        for len in 1..encoded.len() {
+            assert!(ControlState::decode(&encoded[..len]).is_err());
+        }
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert!(ControlState::decode(&trailing).is_err());
+    }
+
+    #[test]
     fn control_round_trip_accepts_large_recorded_and_pending_inputs() {
         for (recorded, pending, large_recorded) in [
             (large_input_spec(9), InputSpec::seeded(0), true),
@@ -216,6 +293,7 @@ mod tests {
                 pending,
                 poisoned: None,
                 exec_nonce: 17,
+                exec: None,
             };
             assert_eq!(
                 (state.recorded.encode().len() > MAX_CHANNEL_BYTES),
@@ -324,6 +402,7 @@ mod tests {
             pending: InputSpec::seeded(0),
             poisoned: None,
             exec_nonce: 0,
+            exec: None,
         };
         let mut unchanged = b"existing-state".to_vec();
         empty.append_hash(&mut unchanged);

@@ -151,6 +151,10 @@ impl StubServer {
                     }))
                 }
             }
+            // Durable command control is exercised by the dedicated codec
+            // tests; this loopback keeps the new request vocabulary total while
+            // its stub server has no retained command state.
+            Request::ExecStart { .. } | Request::ExecStatus => Ok(Reply::ExecState(None)),
         }
     }
 }

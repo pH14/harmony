@@ -213,8 +213,12 @@ pub(crate) fn fill_vcpu_state(out: &mut Arm64VmState, s: &Arm64VcpuState) {
 
 /// Device-blob magic: `"ADV1"` read little-endian (distinct from x86's
 /// `"DEV1"`, so a cross-wired blob fails on magic even before the container's
-/// arch tag would have caught it).
+/// arch tag would have caught it). Empty UART RX queues use this historical
+/// magic and retain the existing bytes exactly.
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4441;
+/// Device-blob magic: `"ADV2"` read little-endian. It retains the existing
+/// version and wiring layouts, then appends the nonempty UART RX FIFO.
+const DEVICE_BLOB_MAGIC_RX: u32 = 0x3256_4441;
 /// Device-blob layout version for a VM with **no GICv3 wired**: the guest
 /// clock-offset register, the ordered conformance report stream, and the
 /// PL011 residual state.
@@ -301,6 +305,8 @@ pub(crate) struct Arm64DeviceState {
     /// The PL011 configuration-register shadows (`IBRD`, `FBRD`, `LCR_H`,
     /// `CR`, `IMSC`).
     pub uart_regs: [u32; 5],
+    /// The unread PL011 RX FIFO in guest consumption order.
+    pub uart_rx: Vec<u8>,
     /// The GICv3 fabric state (register files + PMR + the virtual timer),
     /// present exactly when the sealing VM had the fabric wired.
     pub gic: Option<gicv3::GicState>,
@@ -317,6 +323,23 @@ pub(crate) struct Arm64DeviceState {
 
 fn put_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_le_bytes());
+}
+
+/// Append the length and bytes of an optional unread UART RX record.
+fn append_uart_rx_record(out: &mut Vec<u8>, rx: &[u8]) {
+    if !rx.is_empty() {
+        put_u32(out, rx.len() as u32);
+        out.extend_from_slice(rx);
+    }
+}
+
+/// Append the optional unread UART RX record to the compact state-hash device
+/// chunk. Its marker identifies the extension because this chunk has no header.
+pub(crate) fn append_uart_rx_hash(out: &mut Vec<u8>, rx: &[u8]) {
+    if !rx.is_empty() {
+        out.extend_from_slice(&DEVICE_BLOB_MAGIC_RX.to_le_bytes());
+        append_uart_rx_record(out, rx);
+    }
 }
 
 /// Append clockevent state in the canonical hash/snapshot order.
@@ -407,7 +430,14 @@ fn decode_gic_state(c: &mut Cursor<'_>) -> Result<gicv3::GicState, SnapshotError
 /// Encode the device blob (deterministic; fixed field order).
 pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
     let mut v = Vec::new();
-    put_u32(&mut v, DEVICE_BLOB_MAGIC);
+    put_u32(
+        &mut v,
+        if d.uart_rx.is_empty() {
+            DEVICE_BLOB_MAGIC
+        } else {
+            DEVICE_BLOB_MAGIC_RX
+        },
+    );
     // The version IS the wiring flag (the x86 pvclock-blob pattern), now over two
     // independent optional records: the GIC and the doorbell pages. Keep the
     // legacy pvclock versions and bytes for states they already represented;
@@ -482,6 +512,9 @@ pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
         v.push(u8::from(pv.virtual_time));
         encode_clockevent_state(&mut v, pv.clockevent);
     }
+    // The RX extension trails every existing device shape. Empty queues use
+    // ADV1 above and therefore retain the historical bytes exactly.
+    append_uart_rx_record(&mut v, &d.uart_rx);
     vm_state::DeviceBlob(v)
 }
 
@@ -527,9 +560,12 @@ impl<'a> Cursor<'a> {
 /// and trailing bytes are all loud errors, never a best-effort restore.
 pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, SnapshotError> {
     let mut c = Cursor { buf: bytes, pos: 0 };
-    if c.u32()? != DEVICE_BLOB_MAGIC {
-        return Err(SnapshotError::DeviceBlob("bad arm64 device-blob magic"));
-    }
+    let magic = c.u32()?;
+    let has_rx = match magic {
+        DEVICE_BLOB_MAGIC => false,
+        DEVICE_BLOB_MAGIC_RX => true,
+        _ => return Err(SnapshotError::DeviceBlob("bad arm64 device-blob magic")),
+    };
     let version = c.u16()?;
     let (has_gic, has_doorbell, has_pvclock, has_pvclock_armed) = match version {
         DEVICE_BLOB_VERSION_BASE => (false, false, false, false),
@@ -660,6 +696,17 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
     } else {
         None
     };
+    let uart_rx = if has_rx {
+        let len = c.u32()? as usize;
+        if len == 0 {
+            return Err(SnapshotError::DeviceBlob(
+                "ADV2 UART RX record must be nonempty",
+            ));
+        }
+        c.take(len)?.to_vec()
+    } else {
+        Vec::new()
+    };
     if c.pos != bytes.len() {
         return Err(SnapshotError::DeviceBlob("trailing bytes"));
     }
@@ -668,6 +715,7 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
         report_stream,
         uart_capture,
         uart_regs,
+        uart_rx,
         gic,
         doorbell,
         pvclock,
@@ -684,6 +732,7 @@ mod tests {
             report_stream: vec![1, 2, 3],
             uart_capture: b"hello".to_vec(),
             uart_regs: [13, 1, 0x70, 0x301, 0x10],
+            uart_rx: Vec::new(),
             gic: None,
             doorbell: Vec::new(),
             pvclock: None,
@@ -772,6 +821,8 @@ mod tests {
         doorbell_and_pvclock.pvclock = sample_with_pvclock().pvclock;
         let mut all = gic_and_doorbell.clone();
         all.pvclock = sample_with_pvclock().pvclock;
+        let mut all_with_rx = all.clone();
+        all_with_rx.uart_rx = b"input".to_vec();
         for d in [
             sample(),
             sample_with_gic(),
@@ -782,10 +833,69 @@ mod tests {
             gic_and_pvclock,
             doorbell_and_pvclock,
             all,
+            all_with_rx,
         ] {
             let blob = encode_device_blob(&d);
             assert_eq!(decode_device_blob(&blob.0).unwrap(), d);
         }
+    }
+
+    #[test]
+    fn empty_uart_rx_keeps_legacy_blob_shape() {
+        let state = sample();
+        let blob = encode_device_blob(&state).0;
+        assert_eq!(
+            u32::from_le_bytes(blob[..4].try_into().unwrap()),
+            DEVICE_BLOB_MAGIC
+        );
+        assert_eq!(decode_device_blob(&blob).unwrap(), state);
+        assert_eq!(
+            encode_device_blob(&decode_device_blob(&blob).unwrap()).0,
+            blob
+        );
+    }
+
+    #[test]
+    fn uart_rx_extension_preserves_fifo_and_rejects_bad_lengths() {
+        let mut state = sample();
+        state.uart_rx = b"remaining".to_vec();
+        let blob = encode_device_blob(&state).0;
+        assert_eq!(
+            u32::from_le_bytes(blob[..4].try_into().unwrap()),
+            DEVICE_BLOB_MAGIC_RX
+        );
+        let decoded = decode_device_blob(&blob).unwrap();
+        assert_eq!(decoded.uart_rx, b"remaining");
+        assert_eq!(encode_device_blob(&decoded).0, blob);
+
+        let mut changed = state.clone();
+        changed.uart_rx = b"different".to_vec();
+        assert_ne!(
+            encode_device_blob(&changed).0,
+            blob,
+            "the unread FIFO must change the device blob used by state hashing"
+        );
+
+        let mut truncated = blob.clone();
+        truncated.pop();
+        assert!(decode_device_blob(&truncated).is_err());
+
+        let mut trailing = blob.clone();
+        trailing.push(0xA5);
+        assert!(matches!(
+            decode_device_blob(&trailing),
+            Err(SnapshotError::DeviceBlob("trailing bytes"))
+        ));
+
+        let rx_len = blob.len() - state.uart_rx.len() - 4;
+        let mut empty = blob.clone();
+        empty[rx_len..rx_len + 4].copy_from_slice(&0u32.to_le_bytes());
+        assert!(matches!(
+            decode_device_blob(&empty),
+            Err(SnapshotError::DeviceBlob(
+                "ADV2 UART RX record must be nonempty"
+            ))
+        ));
     }
 
     #[test]
@@ -904,6 +1014,7 @@ mod tests {
             assert_eq!(pvclock.gpa, Some(0x4031_1000));
             assert!(pvclock.registrable);
             assert!(pvclock.armed, "a legacy GPA implies an armed registration");
+            assert!(decoded.uart_rx.is_empty());
             assert_eq!(encode_device_blob(&decoded).0, blob);
         }
     }

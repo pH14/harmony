@@ -10,7 +10,9 @@
 use std::{error::Error, fmt, sync::Arc, time::Duration};
 
 use crate::{Client, Transport};
-use control_proto::{Reply, SnapId, StopReason};
+use control_proto::{
+    Moment, Reply, Request, SnapId, StopConditions, StopMask, StopReason, class_bit,
+};
 use environment::{
     channel::Effect,
     input_spec::{InputSpec, ServiceConfig},
@@ -40,6 +42,31 @@ pub const PAGE_SIZE: usize = 4096;
 pub const RAM_GPA_BASE: u64 = 0;
 #[cfg(target_arch = "aarch64")]
 pub const RAM_GPA_BASE: u64 = 0x4000_0000;
+
+/// Build the ordinary absolute-deadline run used by [`Session`]. A durable
+/// command completion is opt-in so an already-completed retained command does
+/// not become a repeated stop in callers that only want assertion stops.
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )),
+    allow(dead_code)
+)]
+pub(crate) fn run_until_request(deadline: u64, include_exec_complete: bool) -> Request {
+    let mut on = StopMask::NONE.arm(class_bit::ASSERTION);
+    if include_exec_complete {
+        on = on.arm(class_bit::EXEC_COMPLETE);
+    }
+    Request::Run {
+        until: StopConditions {
+            deadline: Some(Moment(deadline)),
+            on,
+        },
+        resolve: None,
+    }
+}
 
 /// Package-owned launch and resource settings for one neutral session.
 ///
@@ -923,6 +950,43 @@ mod tests {
                 .all(|request| !matches!(request, control_proto::Request::Run { .. })),
             "exact snapshot must not retry through Run: {requests:?}"
         );
+    }
+
+    #[test]
+    fn run_until_request_keeps_exec_completion_opt_in() {
+        let ordinary = run_until_request(41, false);
+        assert_eq!(
+            ordinary,
+            Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(41)),
+                    on: StopMask::NONE.arm(class_bit::ASSERTION),
+                },
+                resolve: None,
+            }
+        );
+
+        let with_exec = run_until_request(41, true);
+        assert_eq!(
+            with_exec,
+            Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(41)),
+                    on: StopMask::NONE
+                        .arm(class_bit::ASSERTION)
+                        .arm(class_bit::EXEC_COMPLETE),
+                },
+                resolve: None,
+            }
+        );
+        let Request::Run {
+            until: ordinary_until,
+            ..
+        } = ordinary
+        else {
+            panic!("run_until_request must produce a Run request");
+        };
+        assert!(!ordinary_until.on.armed(class_bit::EXEC_COMPLETE));
     }
 
     #[test]

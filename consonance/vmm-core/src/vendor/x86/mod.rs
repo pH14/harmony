@@ -214,6 +214,8 @@ impl Vendor for X86 {
         let mut v = Vec::new();
         v.extend_from_slice(devices.uart.shadow_regs());
         v.push(u8::from(devices.uart.dlab()));
+        let rx = devices.uart.rx_remaining();
+        records::append_uart_rx_hash(&mut v, &rx);
         v
     }
 

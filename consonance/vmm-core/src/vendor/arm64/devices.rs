@@ -4,9 +4,9 @@
 //! The PL011 carries the 8250's *pattern* (`docs/ARCHITECTURE.md`: "the
 //! 8250 UART pattern itself carries"), not its registers: a serial-output
 //! capture the engine's `SERL` hash chunk and the scrape stream read, an
-//! injected-input queue for the task-81 `exec` verb (off-record, live-only —
-//! never hashed, never snapshotted), and a small register-shadow file. The
-//! GICv3 + generic-timer fabric is the `gicv3` crate's, not this module's.
+//! injected-input queue for the task-81 `exec` verb, and a small register-shadow
+//! file. The unread input queue is durable device state. The GICv3 + generic-
+//! timer fabric is the `gicv3` crate's, not this module's.
 
 use std::collections::VecDeque;
 
@@ -48,9 +48,8 @@ pub(crate) struct Pl011 {
     /// Every byte the guest transmitted (`UARTDR` writes), in order — the
     /// guest-observable serial stream (`SERL` chunk, run result, scrape).
     capture: Vec<u8>,
-    /// Injected serial input (task-81 `exec`): popped by guest `UARTDR` reads.
-    /// **Off-record by ruling**: live-only, never hashed, never snapshotted,
-    /// cleared on restore.
+    /// Injected serial input (task-81 `exec`): popped by guest `UARTDR` reads and
+    /// retained in the durable device state while bytes remain queued.
     rx: VecDeque<u8>,
     /// Shadows of the guest-programmed configuration registers, in
     /// [`Pl011::shadow_regs`] order: `IBRD`, `FBRD`, `LCR_H`, `CR`, `IMSC`.
@@ -115,9 +114,15 @@ impl Pl011 {
         &self.capture
     }
 
-    /// Queue bytes on the guest's serial input (task-81 `exec`; off-record).
+    /// Queue bytes on the guest's serial input (task-81 `exec`); unread bytes
+    /// remain part of the durable device state.
     pub(crate) fn inject_input(&mut self, bytes: &[u8]) {
         self.rx.extend(bytes.iter().copied());
+    }
+
+    /// The unread serial-input bytes in guest consumption order.
+    pub(crate) fn rx_remaining(&self) -> Vec<u8> {
+        self.rx.iter().copied().collect()
     }
 
     /// The configuration-register shadows (`IBRD`, `FBRD`, `LCR_H`, `CR`,
@@ -126,12 +131,12 @@ impl Pl011 {
         &self.regs
     }
 
-    /// Overwrite the residual state from a snapshot. Clears the injected-input
-    /// queue (input never survives a restore — off-record by ruling).
-    pub(crate) fn restore(&mut self, capture: Vec<u8>, regs: [u32; 5]) {
+    /// Overwrite the residual state from a snapshot, including the unread input
+    /// FIFO so the next guest `UARTDR` read is reproduced exactly.
+    pub(crate) fn restore(&mut self, capture: Vec<u8>, regs: [u32; 5], rx: Vec<u8>) {
         self.capture = capture;
         self.regs = regs;
-        self.rx.clear();
+        self.rx = rx.into();
     }
 }
 
@@ -185,13 +190,15 @@ mod tests {
     }
 
     #[test]
-    fn restore_overwrites_residuals_and_clears_input() {
+    fn restore_overwrites_residuals_and_input() {
         let mut u = Pl011::new();
         u.inject_input(b"stale");
-        u.restore(b"prior".to_vec(), [1, 2, 3, 4, 5]);
+        u.restore(b"prior".to_vec(), [1, 2, 3, 4, 5], b"remaining".to_vec());
         assert_eq!(u.capture(), b"prior");
         assert_eq!(u.shadow_regs(), &[1, 2, 3, 4, 5]);
-        // Input never survives a restore.
-        assert_eq!(u.read(reg::DR), 0);
+        assert_eq!(u.rx_remaining(), b"remaining");
+        assert_eq!(u.read(reg::DR), u32::from(b'r'));
+        assert_eq!(u.read(reg::DR), u32::from(b'e'));
+        assert_eq!(u.rx_remaining(), b"maining");
     }
 }

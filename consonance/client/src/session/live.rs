@@ -295,13 +295,60 @@ impl Session {
     /// until the guest stops earlier on an SDK assertion, a crash, or
     /// quiescence.
     pub fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
-        let request = Request::Run {
-            until: StopConditions {
-                deadline: Some(control_proto::Moment(deadline)),
-                on: StopMask::NONE.arm(class_bit::ASSERTION),
-            },
-            resolve: None,
-        };
+        let request = run_until_request(deadline, false);
+        match self.drive(&request)? {
+            Reply::Stop(stop) => Ok(stop),
+            reply => Err(SessionError::Reply {
+                operation: "run until",
+                reply,
+            }
+            .into()),
+        }
+    }
+
+    /// Inject a durable command at the current stopped point without running
+    /// the guest and return its retained state. A second pending command is
+    /// reported by the control server as `ControlError::ExecPending`.
+    pub fn exec_start(
+        &mut self,
+        command: impl Into<String>,
+    ) -> Result<Option<control_proto::ExecStatus>, Box<dyn Error>> {
+        let reply = self.drive(&Request::ExecStart {
+            cmd: command.into(),
+        })?;
+        match reply {
+            Reply::ExecState(status) => Ok(status),
+            reply => Err(SessionError::Reply {
+                operation: "exec start",
+                reply,
+            }
+            .into()),
+        }
+    }
+
+    /// Read the retained durable command at the current endpoint without
+    /// advancing or mutating the guest. `None` means no command is retained.
+    pub fn exec_status(&mut self) -> Result<Option<control_proto::ExecStatus>, Box<dyn Error>> {
+        let reply = self.drive(&Request::ExecStatus)?;
+        match reply {
+            Reply::ExecState(status) => Ok(status),
+            reply => Err(SessionError::Reply {
+                operation: "exec status",
+                reply,
+            }
+            .into()),
+        }
+    }
+
+    /// Run until the absolute deadline while also surfacing a retained
+    /// command's completion. The ordinary [`Self::run_until`] mask remains
+    /// assertion-only, so completed commands do not repeatedly stop unrelated
+    /// runs.
+    pub fn run_until_with_exec_complete(
+        &mut self,
+        deadline: u64,
+    ) -> Result<StopReason, Box<dyn Error>> {
+        let request = run_until_request(deadline, true);
         match self.drive(&request)? {
             Reply::Stop(stop) => Ok(stop),
             reply => Err(SessionError::Reply {

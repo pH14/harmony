@@ -29,8 +29,8 @@
 //! the wire with `$?` **literal** (the two ASCII bytes `$` `?`, unexpanded). Then
 //! the command runs, and finally the *executed* `echo` emits `<M>:<digits>:<M>`
 //! with the real exit status. The detector therefore scans for
-//! `<M>` `:` `<one-or-more ASCII digits>` `:` `<M>` — a pattern the literal echo
-//! (`<M>:$?:<M>`) **cannot** match, because `$?` are not digits. **This
+//! `<M>` `:` `<one-or-more ASCII digits, at most 20>` `:` `<M>` — a pattern the
+//! literal echo (`<M>:$?:<M>`) **cannot** match, because `$?` are not digits. **This
 //! digits-vs-literal-`$?` rule is the load-bearing disambiguation** — not the
 //! marker's exact bytes.
 //!
@@ -45,15 +45,15 @@
 //! timed out). A printable marker survives the line editor untouched; the nonce
 //! salt already carries the collision-avoidance the (removed) SOH brackets were
 //! meant to add. The `nonce` is a caller-supplied counter, **not** wall-clock or
-//! `rand` (conventions rule 4); because `exec` is off the record, its exact value
-//! never needs to be reproducible — only unique-enough within a session.
+//! `rand` (conventions rule 4). The control snapshot retains the nonce and parser
+//! so continuation uses the same marker without injecting the command again.
 //!
 //! ## Failure modes (documented, by ruling out of scope to *fix*)
 //!
-//! - **Deadline before the sentinel.** If V-time reaches the run deadline first,
-//!   [`ExecSession::finish_timeout`] closes the session `ok = false`; `output` is
-//!   whatever was captured. A long-running or hung command, or a guest with no
-//!   cooperating shell, ends here.
+//! - **Deadline before the sentinel.** The durable control owner retains the
+//!   pending parser and output so a later run can continue. A terminal guest
+//!   without a sentinel is aborted with unknown status. The standalone parser's
+//!   [`ExecSession::finish_timeout`] remains available for an explicit abort.
 //! - **Marker collision.** If the command's *own* output contains the exact
 //!   `<M>:<digits>:<M>` pattern, the detector stops early on it. The distinctive
 //!   `HXEC-` tag plus the per-call `nonce` salt makes this astronomically unlikely
@@ -81,6 +81,17 @@ const MARKER_TAG: &[u8] = b"HXEC-";
 /// (conventions rule 4: no OOM on untrusted input).
 pub const MAX_CAPTURE: usize = 1 << 20;
 
+/// The largest decimal exit status accepted by the sentinel parser. This is
+/// also part of the scanner's bounded-overlap proof: a malformed longer field
+/// is rejected instead of being saturated into a valid status.
+const MAX_STATUS_DIGITS: usize = 20;
+
+/// Feed input to the scanner in bounded pieces, so a single serial read cannot
+/// temporarily grow the overlap buffer without limit.
+const SCAN_CHUNK: usize = 4096;
+
+pub(crate) mod retained;
+
 /// The terminal state of an [`ExecSession`]: either the completion sentinel was
 /// seen (with the parsed shell exit status) or the run deadline was reached first.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -89,8 +100,8 @@ enum Done {
     Sentinel {
         /// The parsed `$?` value (the shell exit status).
         status: u64,
-        /// Byte offset in the capture where the sentinel line began — output is
-        /// reported up to here (the sentinel itself is stripped).
+        /// Byte offset in the retained capture where the sentinel line began —
+        /// output is reported up to here (the sentinel itself is stripped).
         cut: usize,
     },
     /// The deadline was reached before any sentinel; the command did not complete.
@@ -124,20 +135,21 @@ pub struct ExecSession {
     marker: Vec<u8>,
     /// The bytes to type on the serial input (the command + the sentinel `echo`).
     input: Vec<u8>,
-    /// Accumulated serial output, scanned for the sentinel.
+    /// Retained prefix of serial output, bounded by [`MAX_CAPTURE`].
     capture: Vec<u8>,
     /// Set once the sentinel matches or the deadline is reached.
     done: Option<Done>,
-    /// `true` once [`MAX_CAPTURE`] was hit and bytes were dropped.
+    /// Whether the retained output was truncated before the terminal sentinel.
+    /// While pending this becomes true once bytes beyond [`MAX_CAPTURE`] arrive;
+    /// on completion it is normalized to whether the sentinel began after the
+    /// capture cap.
     truncated: bool,
-    /// The offset [`scan`](Self::scan) resumes marker-search from, so a chatty
-    /// guest emitting output across many V-time steps stays linear instead of
-    /// re-walking the whole capture (and every historical non-matching marker) on
-    /// each [`feed`](Self::feed). Any sentinel starting before this offset would
-    /// already have been fully present — and matched-or-rejected — on a prior feed,
-    /// so resuming here never misses one. Held back by [`sentinel_max_len`](Self::sentinel_max_len)
-    /// so a sentinel straddling the previous buffer boundary is still caught.
-    scan_from: usize,
+    /// Small streaming overlap passed to the sentinel scanner. It contains the
+    /// newest bytes that have not yet been proven unable to start a complete
+    /// sentinel; it is independent of the retained output prefix.
+    scan_buffer: Vec<u8>,
+    /// Absolute serial-stream offset corresponding to `scan_buffer[0]`.
+    scan_base: usize,
 }
 
 impl ExecSession {
@@ -174,7 +186,8 @@ impl ExecSession {
             capture: Vec::new(),
             done: None,
             truncated: false,
-            scan_from: 0,
+            scan_buffer: Vec::new(),
+            scan_base: 0,
         }
     }
 
@@ -184,36 +197,65 @@ impl ExecSession {
         &self.input
     }
 
-    /// Feed newly-captured serial output. Appends (bounded by [`MAX_CAPTURE`]) and
-    /// rescans for the completion sentinel; a match closes the session `ok`. A
-    /// no-op once [`is_done`](Self::is_done) (the first terminal state wins).
+    /// Feed newly-captured serial output. The retained output is bounded by
+    /// [`MAX_CAPTURE`], while every byte is passed through the separate bounded
+    /// sentinel scanner; a match closes the session `ok`. A no-op once
+    /// [`is_done`](Self::is_done) (the first terminal state wins).
     pub fn feed(&mut self, bytes: &[u8]) {
         if self.done.is_some() {
             return;
         }
-        let room = MAX_CAPTURE.saturating_sub(self.capture.len());
-        if bytes.len() > room {
-            self.capture.extend_from_slice(&bytes[..room]);
-            self.truncated = true;
-        } else {
-            self.capture.extend_from_slice(bytes);
+        for chunk in bytes.chunks(SCAN_CHUNK) {
+            let room = MAX_CAPTURE.saturating_sub(self.capture.len());
+            if chunk.len() > room {
+                self.capture.extend_from_slice(&chunk[..room]);
+                self.truncated = true;
+            } else {
+                self.capture.extend_from_slice(chunk);
+            }
+
+            // The scanner sees the complete stream, including bytes beyond the
+            // retained output cap. Its buffer is trimmed only after this scan so
+            // a sentinel beginning at the cap boundary remains discoverable.
+            self.scan_buffer.extend_from_slice(chunk);
+            if let Some((status, relative_cut)) = self.scan() {
+                let absolute_cut = self.scan_base.saturating_add(relative_cut);
+                let cut = absolute_cut.min(self.capture.len());
+                self.capture.truncate(cut);
+                self.truncated = absolute_cut > MAX_CAPTURE;
+                self.done = Some(Done::Sentinel { status, cut });
+                // A completed session must not retain parser state that depends
+                // on how its input was partitioned. The absolute base is clipped
+                // below, so cap+1 is enough to preserve the truncation distinction.
+                self.scan_buffer.clear();
+                self.scan_base = 0;
+                return;
+            }
+            self.trim_scan_buffer();
         }
-        if let Some((status, cut)) = self.scan(self.scan_from) {
-            self.done = Some(Done::Sentinel { status, cut });
-            return;
-        }
-        // No match this round: next scan may skip everything that is now more than a
-        // full sentinel-width behind the buffer end (it was wholly present and
-        // rejected here). Keep the overlap so a sentinel split across feeds is found.
-        self.scan_from = self.capture.len().saturating_sub(self.sentinel_max_len());
     }
 
     /// The maximum byte length of a complete sentinel `<M>:<digits>:<M>`: two
-    /// markers, the two `:` separators, and up to 20 digits (a `u64`'s widest
-    /// decimal). A sentinel is never longer than this, so resuming a scan this far
-    /// back from the buffer end can never miss one.
+    /// markers, the two `:` separators, and up to [`MAX_STATUS_DIGITS`] digits.
+    /// A sentinel is never longer than this, so retaining this many bytes of
+    /// overlap can never miss one split across feeds.
     fn sentinel_max_len(&self) -> usize {
-        2 * self.marker.len() + 2 + 20
+        2 * self.marker.len() + 2 + MAX_STATUS_DIGITS
+    }
+
+    /// Drop bytes that cannot begin a future sentinel while retaining enough
+    /// suffix for a marker/status/marker sequence split across feed chunks.
+    fn trim_scan_buffer(&mut self) {
+        let keep = self.sentinel_max_len().saturating_sub(1);
+        if self.scan_buffer.len() > keep {
+            let discard = self.scan_buffer.len() - keep;
+            self.scan_buffer.copy_within(discard.., 0);
+            self.scan_buffer.truncate(keep);
+            self.scan_base = self
+                .scan_base
+                .saturating_add(discard)
+                .min(MAX_CAPTURE.saturating_add(1));
+        }
     }
 
     /// Close the session because the run reached its V-time deadline before any
@@ -254,20 +296,19 @@ impl ExecSession {
         }
     }
 
-    /// Scan the capture from byte offset `start` for the completion sentinel
-    /// `<M>:<digits>:<M>` and return `(status, cut)` — the parsed exit status and
-    /// the byte offset where the sentinel line begins (so output is reported up to
-    /// there). Returns `None` until the *executed* `echo` output appears; the
-    /// shell's literal echo of the typed line (`<M>:$?:<M>`) never matches, because
-    /// `$?` are not digits. `start` only skips a prefix already scanned on a prior
-    /// feed (see [`scan_from`](Self::scan_from)); it never affects `cut`, which is
-    /// the absolute sentinel offset.
-    fn scan(&self, start: usize) -> Option<(u64, usize)> {
+    /// Scan the overlap buffer for the completion sentinel `<M>:<digits>:<M>`
+    /// and return `(status, cut)` — the parsed exit status and the byte offset
+    /// where the sentinel line begins. Returns `None` until the *executed*
+    /// `echo` output appears; the shell's literal echo of the typed line
+    /// (`<M>:$?:<M>`) never matches, because `$?` are not digits. The returned
+    /// offset is relative to `scan_buffer`; [`feed`](Self::feed) converts it to
+    /// the absolute stream offset before clipping it to the retained capture.
+    fn scan(&self) -> Option<(u64, usize)> {
         let m = &self.marker;
-        let buf = &self.capture;
+        let buf = &self.scan_buffer;
         // Every candidate start is an occurrence of the marker. Walk them in order
-        // (from `start`) and return the first that is followed by `:<digits>:<M>`.
-        let mut from = start.min(buf.len());
+        // and return the first that is followed by `:<digits>:<M>`.
+        let mut from = 0;
         while let Some(rel) = find(&buf[from..], m) {
             let start = from + rel;
             let mut i = start + m.len();
@@ -280,17 +321,31 @@ impl ExecSession {
             // Expect one or more ASCII digits, parsed as the status.
             let digit_start = i;
             let mut status: u64 = 0;
+            let mut digits = 0;
+            let mut invalid = false;
             while let Some(&c) = buf.get(i) {
                 if c.is_ascii_digit() {
-                    status = status
-                        .saturating_mul(10)
-                        .saturating_add(u64::from(c - b'0'));
+                    if digits == MAX_STATUS_DIGITS {
+                        // A 21st digit is malformed. In particular, do not
+                        // saturate it into a completion with status u64::MAX.
+                        invalid = true;
+                        break;
+                    }
+                    let Some(next) = status
+                        .checked_mul(10)
+                        .and_then(|value| value.checked_add(u64::from(c - b'0')))
+                    else {
+                        invalid = true;
+                        break;
+                    };
+                    status = next;
+                    digits += 1;
                     i += 1;
                 } else {
                     break;
                 }
             }
-            if i == digit_start {
+            if invalid || i == digit_start {
                 // No digits (this is the literal `$?` echo, or a partial) — skip.
                 from = start + 1;
                 continue;
@@ -391,10 +446,10 @@ mod tests {
         assert_eq!(out.status, Some(137));
     }
 
-    /// The resume-offset optimization (linear scan) does not miss a sentinel after
-    /// many chatty feeds — including an early **literal-`$?` echo** (a historical
-    /// non-matching marker occurrence) that the resume must scan *past* without
-    /// forgetting, then a real sentinel byte-by-byte much later.
+    /// The bounded-overlap scanner does not miss a sentinel after many chatty
+    /// feeds — including an early **literal-`$?` echo** (a historical
+    /// non-matching marker occurrence) followed by a real sentinel byte-by-byte
+    /// much later.
     #[test]
     fn resume_scan_finds_the_sentinel_after_lots_of_chatty_output() {
         let mut s = ExecSession::new("busy", 5);
@@ -469,7 +524,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "feeds >MAX_CAPTURE (1 MiB): the sentinel rescan over the capped buffer is a byte-wise interpreted scan (~9 min); pure safe code — the cap arithmetic is covered natively and the scan path stays Miri-run via the small-buffer exec tests (task 98 / hm-d8o)"
+        ignore = "feeds >MAX_CAPTURE (1 MiB); the bounded scanner is safe but this large allocation is covered natively, while its overlap path stays Miri-run via the small-buffer exec tests"
     )]
     fn capture_is_bounded() {
         let mut s = ExecSession::new("yes", 8);
@@ -478,8 +533,103 @@ mod tests {
         s.feed(&big);
         assert!(s.truncated());
         assert!(!s.is_done());
-        // The buffer never exceeds the cap.
+        // Neither the retained output nor the streaming overlap grows with the
+        // input. The latter is allowed one bounded chunk while it is being fed.
         assert!(s.capture.len() <= MAX_CAPTURE);
+        assert!(s.scan_buffer.len() <= s.sentinel_max_len().saturating_sub(1) + SCAN_CHUNK);
+    }
+
+    #[test]
+    fn nonzero_status_is_found_after_the_capture_cap() {
+        let mut s = ExecSession::new("false", 23);
+        let marker = String::from_utf8(s.marker.clone()).unwrap();
+        let sentinel = format!("{marker}:137:{marker}\n");
+        let mut stream = vec![b'x'; MAX_CAPTURE + 128];
+        stream.extend_from_slice(sentinel.as_bytes());
+
+        s.feed(&stream);
+        assert!(s.is_done());
+        assert!(s.truncated());
+        assert!(s.scan_buffer.is_empty());
+        assert_eq!(s.scan_base, 0);
+        let out = s.into_outcome();
+        assert!(out.ok);
+        assert_eq!(out.status, Some(137));
+        assert_eq!(out.output.len(), MAX_CAPTURE);
+    }
+
+    #[test]
+    fn sentinel_start_before_at_and_after_capture_cap_is_detected() {
+        let starts = [
+            MAX_CAPTURE - 1, // the sentinel crosses the retained-output boundary
+            MAX_CAPTURE,     // the marker starts exactly after retained output
+            MAX_CAPTURE + 1, // the marker starts after the retained-output boundary
+        ];
+
+        for (nonce, start) in starts.into_iter().enumerate() {
+            let mut s = ExecSession::new("x", nonce as u64 + 30);
+            let marker = String::from_utf8(s.marker.clone()).unwrap();
+            let sentinel = format!("{marker}:9:{marker}\n");
+            s.feed(&vec![b'x'; start]);
+            for byte in sentinel.as_bytes() {
+                s.feed(std::slice::from_ref(byte));
+            }
+
+            assert!(s.is_done(), "sentinel starting at {start} was missed");
+            assert_eq!(s.truncated(), start > MAX_CAPTURE);
+            assert!(s.scan_buffer.is_empty());
+            assert_eq!(s.scan_base, 0);
+            let out = s.into_outcome();
+            assert!(out.ok);
+            assert_eq!(out.status, Some(9));
+            assert_eq!(out.output.len(), start.min(MAX_CAPTURE));
+        }
+    }
+
+    fn run_with_chunks(stream: &[u8], chunk_size: usize) -> (ExecOutcome, bool) {
+        let mut s = ExecSession::new("chunked", 31);
+        for chunk in stream.chunks(chunk_size) {
+            s.feed(chunk);
+        }
+        let truncated = s.truncated();
+        (s.into_outcome(), truncated)
+    }
+
+    #[test]
+    fn feed_chunkings_produce_the_same_output_and_status() {
+        let marker = String::from_utf8(ExecSession::new("x", 31).marker).unwrap();
+        let mut stream = vec![b'o'; MAX_CAPTURE - 2];
+        stream.extend_from_slice(format!("{marker}:201:{marker}\n").as_bytes());
+        stream.extend_from_slice(&[b't'; 128]);
+
+        let (whole, whole_truncated) = run_with_chunks(&stream, stream.len());
+        let (split, split_truncated) = run_with_chunks(&stream, 17);
+        assert_eq!(whole, split);
+        assert_eq!(whole_truncated, split_truncated);
+        assert!(
+            !whole_truncated,
+            "output before the sentinel still fits the cap"
+        );
+    }
+
+    #[test]
+    fn overlong_status_and_incomplete_or_wrong_nonce_stay_pending() {
+        let mut s = ExecSession::new("x", 44);
+        let marker = String::from_utf8(s.marker.clone()).unwrap();
+        s.feed(format!("{marker}:123456789012345678901:{marker}").as_bytes());
+        assert!(!s.is_done(), "more than 20 digits must not complete");
+
+        let wrong = "HXEC-45-:7:HXEC-45-";
+        s.feed(wrong.as_bytes());
+        assert!(!s.is_done(), "a different nonce must not complete");
+
+        let incomplete = format!("{marker}:7:{}", &marker[..marker.len() - 1]);
+        s.feed(incomplete.as_bytes());
+        assert!(
+            !s.is_done(),
+            "an incomplete closing marker must remain pending"
+        );
+        assert!(s.scan_buffer.len() <= s.sentinel_max_len().saturating_sub(1));
     }
 
     /// A marker with no digits between the colons (e.g. a corrupted/partial line)

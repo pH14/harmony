@@ -225,6 +225,14 @@ pub enum ControlError {
     /// stays tainted; only an untainted ancestor is untainted.
     #[error("timeline is tainted by an exec improvisation; refusing to mint a reproducer")]
     Tainted,
+    /// A durable command is already retained and still pending. A second
+    /// `ExecStart` is rejected before injection so the existing command and its
+    /// identity remain unchanged.
+    #[error("durable exec command {id} is already pending")]
+    ExecPending {
+        /// The retained command's stable identity.
+        id: u64,
+    },
     /// A wire-framing failure surfaced as a reply.
     #[error("protocol error: {0}")]
     Protocol(#[from] ProtocolError),

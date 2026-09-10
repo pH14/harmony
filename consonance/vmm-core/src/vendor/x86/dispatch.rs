@@ -831,6 +831,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 regs: *self.devices.uart.shadow_regs(),
                 dlab: self.devices.uart.dlab(),
                 dlm: self.devices.uart.dlm(),
+                rx: self.devices.uart.rx_remaining(),
             },
             lapic: self.devices.lapic.as_ref().map(|l| l.snapshot()),
             legacy: self.devices.legacy.as_ref().map(|l| {
@@ -967,9 +968,13 @@ impl<B: Backend<A = X86>> Vmm<B> {
         if let (Some(legacy), Some(ls)) = (self.devices.legacy.as_mut(), dev.legacy) {
             legacy.restore(ls.config_address, ls.master_imr, ls.slave_imr);
         }
-        self.devices
-            .uart
-            .restore(dev.uart.capture, dev.uart.regs, dev.uart.dlab, dev.uart.dlm);
+        self.devices.uart.restore(
+            dev.uart.capture,
+            dev.uart.regs,
+            dev.uart.dlab,
+            dev.uart.dlm,
+            dev.uart.rx,
+        );
         self.pvclock_commit_restore(dev.pvclock.as_ref());
         self.report_stream = dev.report_stream;
     }

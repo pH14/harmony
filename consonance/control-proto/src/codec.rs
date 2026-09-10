@@ -20,8 +20,8 @@
 use crate::error::ProtocolError;
 use crate::types::{
     Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, EventRef,
-    HashScope, HostFault, Moment, RegsView, Reply, Reproducer, Request, Resolution, SnapId,
-    StopConditions, StopMask, StopReason,
+    ExecCompletion, ExecStatus, HashScope, HostFault, Moment, RegsView, Reply, Reproducer, Request,
+    Resolution, SnapId, StopConditions, StopMask, StopReason,
 };
 use crate::{MAX_FRAME_LEN, PROTO_VERSION};
 
@@ -47,6 +47,10 @@ const REQ_RECORDED_ENV: u8 = 13;
 // task 69 M2 Console scrape verb — assigned 14 (10–13 taken by tasks 80/81 read/
 // regs/exec/recorded_env on the merge) so the wire tags stay collision-free.
 const REQ_CONSOLE: u8 = 14;
+// Durable command control (application protocol 13), assigned after the
+// existing peer verbs so every archived request keeps its discriminant.
+const REQ_EXEC_START: u8 = 15;
+const REQ_EXEC_STATUS: u8 = 16;
 
 // ---- Reply-body top-level result discriminants. ----
 const RESULT_OK: u8 = 0;
@@ -68,6 +72,7 @@ const REPLY_RECORDED: u8 = 11;
 // task 69 M2 Console scrape reply — assigned 12 (7–11 taken by tasks 80/81) so the
 // wire tags stay collision-free.
 const REPLY_CONSOLE: u8 = 12;
+const REPLY_EXEC_STATE: u8 = 13;
 
 // ---- StopReason variant discriminants. ----
 const SR_DEADLINE: u8 = 1;
@@ -76,6 +81,12 @@ const SR_CRASH: u8 = 3;
 const SR_DECISION: u8 = 4;
 const SR_SNAPSHOT_POINT: u8 = 5;
 const SR_ASSERTION: u8 = 6;
+const SR_EXEC_COMPLETE: u8 = 7;
+
+// ---- Durable command completion discriminants. ----
+const EC_PENDING: u8 = 0;
+const EC_EXITED: u8 = 1;
+const EC_ABORTED: u8 = 2;
 
 // ---- CrashKind discriminants. ----
 const CK_PANIC: u8 = 0;
@@ -108,7 +119,9 @@ const CE_READ_OUT_OF_RANGE: u8 = 17;
 const CE_READ_TOO_LARGE: u8 = 18;
 const CE_TAINTED: u8 = 19;
 const CE_SNAPSHOT_REFUSED: u8 = 20;
-// Discriminant 20 retired with exact-stop branch-clock scheduling. Never reuse it.
+// Discriminant 20 carries SnapshotRefused; the retired exact-stop branch-clock
+// tag remains reserved at 15. Never reuse either tag.
+const CE_EXEC_PENDING: u8 = 21;
 
 // ---- ProtocolError discriminants (carried inside CE_PROTOCOL). ----
 const PE_SHORT_FRAME: u8 = 0;
@@ -286,6 +299,11 @@ fn write_request(w: &mut Vec<u8>, req: &Request) {
             put_u64(w, deadline.0);
         }
         Request::RecordedEnv => w.push(REQ_RECORDED_ENV),
+        Request::ExecStart { cmd } => {
+            w.push(REQ_EXEC_START);
+            put_bytes(w, cmd.as_bytes());
+        }
+        Request::ExecStatus => w.push(REQ_EXEC_STATUS),
     }
 }
 
@@ -324,6 +342,11 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
             deadline: Moment(r.u64()?),
         },
         REQ_RECORDED_ENV => Request::RecordedEnv,
+        REQ_EXEC_START => Request::ExecStart {
+            // A non-UTF-8 command is malformed, just as for legacy Exec.
+            cmd: String::from_utf8(r.bytes()?.to_vec()).map_err(|_| ProtocolError::ShortFrame)?,
+        },
+        REQ_EXEC_STATUS => Request::ExecStatus,
         _ => return Err(ProtocolError::ShortFrame),
     })
 }
@@ -414,6 +437,10 @@ fn write_reply(w: &mut Vec<u8>, reply: &Reply) {
             w.push(REPLY_RECORDED);
             write_env(w, env);
         }
+        Reply::ExecState(status) => {
+            w.push(REPLY_EXEC_STATE);
+            write_opt_exec_status(w, status);
+        }
     }
 }
 
@@ -454,6 +481,7 @@ fn read_reply(r: &mut Reader) -> Result<Reply, ProtocolError> {
             tainted: r.bool()?,
         },
         REPLY_RECORDED => Reply::Recorded(read_env(r)?),
+        REPLY_EXEC_STATE => Reply::ExecState(read_opt_exec_status(r)?),
         _ => return Err(ProtocolError::ShortFrame),
     })
 }
@@ -611,6 +639,11 @@ fn write_stop_reason(w: &mut Vec<u8>, reason: &StopReason) {
             put_u64(w, vtime.0);
             write_event_ref(w, ev);
         }
+        StopReason::ExecComplete { vtime, id } => {
+            w.push(SR_EXEC_COMPLETE);
+            put_u64(w, vtime.0);
+            put_u64(w, *id);
+        }
     }
 }
 
@@ -637,6 +670,10 @@ fn read_stop_reason(r: &mut Reader) -> Result<StopReason, ProtocolError> {
         SR_ASSERTION => StopReason::Assertion {
             vtime: Moment(r.u64()?),
             ev: read_event_ref(r)?,
+        },
+        SR_EXEC_COMPLETE => StopReason::ExecComplete {
+            vtime: Moment(r.u64()?),
+            id: r.u64()?,
         },
         _ => return Err(ProtocolError::ShortFrame),
     })
@@ -733,6 +770,10 @@ fn write_control_error(w: &mut Vec<u8>, err: &crate::error::ControlError) {
             put_u32(w, *cap);
         }
         Ce::Tainted => w.push(CE_TAINTED),
+        Ce::ExecPending { id } => {
+            w.push(CE_EXEC_PENDING);
+            put_u64(w, *id);
+        }
         Ce::Protocol(pe) => {
             w.push(CE_PROTOCOL);
             w.push(match pe {
@@ -786,6 +827,7 @@ fn read_control_error(r: &mut Reader) -> Result<crate::error::ControlError, Prot
             cap: r.u32()?,
         },
         CE_TAINTED => Ce::Tainted,
+        CE_EXEC_PENDING => Ce::ExecPending { id: r.u64()? },
         CE_PROTOCOL => Ce::Protocol(match r.u8()? {
             PE_SHORT_FRAME => ProtocolError::ShortFrame,
             PE_BAD_MAGIC => ProtocolError::BadMagic,
@@ -798,6 +840,62 @@ fn read_control_error(r: &mut Reader) -> Result<crate::error::ControlError, Prot
 }
 
 // =============================== option helpers =============================
+
+fn write_opt_exec_status(w: &mut Vec<u8>, status: &Option<ExecStatus>) {
+    let Some(status) = status else {
+        w.push(ABSENT);
+        return;
+    };
+    w.push(PRESENT);
+    put_u64(w, status.id);
+    put_u64(w, status.at.0);
+    write_exec_completion(w, &status.completion);
+    put_bytes(w, &status.output);
+    w.push(u8::from(status.truncated));
+}
+
+fn read_opt_exec_status(r: &mut Reader) -> Result<Option<ExecStatus>, ProtocolError> {
+    Ok(match r.u8()? {
+        ABSENT => None,
+        PRESENT => Some(ExecStatus {
+            id: r.u64()?,
+            at: Moment(r.u64()?),
+            completion: read_exec_completion(r)?,
+            output: r.bytes()?.to_vec(),
+            truncated: r.bool()?,
+        }),
+        _ => return Err(ProtocolError::ShortFrame),
+    })
+}
+
+fn write_exec_completion(w: &mut Vec<u8>, completion: &ExecCompletion) {
+    match completion {
+        ExecCompletion::Pending => w.push(EC_PENDING),
+        ExecCompletion::Exited { status, at } => {
+            w.push(EC_EXITED);
+            put_u64(w, *status);
+            put_u64(w, at.0);
+        }
+        ExecCompletion::Aborted { at } => {
+            w.push(EC_ABORTED);
+            put_u64(w, at.0);
+        }
+    }
+}
+
+fn read_exec_completion(r: &mut Reader) -> Result<ExecCompletion, ProtocolError> {
+    Ok(match r.u8()? {
+        EC_PENDING => ExecCompletion::Pending,
+        EC_EXITED => ExecCompletion::Exited {
+            status: r.u64()?,
+            at: Moment(r.u64()?),
+        },
+        EC_ABORTED => ExecCompletion::Aborted {
+            at: Moment(r.u64()?),
+        },
+        _ => return Err(ProtocolError::ShortFrame),
+    })
+}
 
 fn write_opt_vtime(w: &mut Vec<u8>, v: &Option<Moment>) {
     match v {

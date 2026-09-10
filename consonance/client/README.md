@@ -36,7 +36,11 @@ exact-count arrival all fail the branch with the session untouched. One moment
 carries one effect, so a duplicate is reported rather than overwritten.
 
 `Session::run_until` runs to an absolute virtual-time deadline or an earlier
-stop. `Session::snapshot` captures that exact stopped state in one control
+stop. `Session::exec_start` injects one durable command at the current stopped
+point without running the guest, and `Session::exec_status` reads its retained
+state. `Session::run_until_with_exec_complete` opts into stopping when that
+command completes while retaining the ordinary assertion stop.
+`Session::snapshot` captures that exact stopped state in one control
 exchange and returns the server's synchronized V-time. It never advances the
 guest or retries a refusal, so a capture failure is returned to the caller with
 the control diagnostic.

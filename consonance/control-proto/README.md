@@ -11,7 +11,13 @@ protocol and capability geometry. The remaining requests cover snapshot
 management (`Snapshot`, `Drop`, `Branch`, `Replay`), execution (`Run`), state
 observation (`Hash`, `Read`, `Regs`), host perturbations (`Perturb`), capture
 (`SdkEvents`, `Console`), and explicitly tainted improvisation
-(`Exec`, `RecordedEnv`). `Run` returns either a guest-observable `StopReason`
+(`Exec`, `RecordedEnv`). Application protocol 13 adds durable command control:
+`ExecStart` injects a command at the current stopped point without running the
+guest, and `ExecStatus` reads its retained `ExecStatus`; both return
+`ExecState`. A second `ExecStart` while the command is pending returns
+`ControlError::ExecPending` before changing the guest. A common `Run` can arm
+`class_bit::EXEC_COMPLETE` to stop at the command's exact completion moment.
+`Run` returns either a guest-observable `StopReason`
 or a `ControlError`; backend and transport failures are not masqueraded as
 guest outcomes. `Exec` is deliberately outside the reproducer; a timeline that
 uses it is tainted, and `RecordedEnv` reports an error instead of minting a
@@ -42,7 +48,8 @@ codec validates only framing; application and blob versions are checked by the
 negotiation and backend layers. Application version 12 adds `SnapshotRefused`,
 which retains the state-capture diagnostic instead of reducing it to
 `NotQuiescent`. Earlier error tags still decode with their original bytes;
-version 11 peers are rejected at negotiation. Snapshot artifact formats are
+version 13 adds the durable command request/reply and completion stop tags;
+version 12 and earlier peers are rejected at negotiation. Snapshot artifact formats are
 unchanged. A refusal identifies a representation gap, not permission to advance
 the execution and save a different endpoint.
 

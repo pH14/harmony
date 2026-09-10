@@ -122,7 +122,7 @@ fn arm64_snapshot_round_trip_is_restore_transparent() {
     b.set_policy(&Arm64Policy::default()).unwrap();
     b.set_state(vcpu);
     let mut v = Vmm::new(b, GuestRam::new(RAM).unwrap());
-    v.inject_serial_input(b"never-snapshotted"); // off-record: must not leak
+    v.inject_serial_input(b"never-snapshotted"); // unread FIFO belongs to the snapshot
 
     // The engine's generic save path: `Vmm::save_vm_state` returns the
     // vendor's associated snapshot type.

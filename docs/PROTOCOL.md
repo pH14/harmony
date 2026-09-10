@@ -105,7 +105,15 @@ A perturbation is a recorded input. When applied, it joins the active recorded
 environment at the requested point. Invalid, past, or unschedulable
 perturbations fail without changing the recorded timeline.
 
-`Exec` is off the record. Its first use taints the current timeline. Later
+Protocol v13 retains the command parser and remaining serial input in snapshots.
+`ExecStart` injects once without running, and `ExecStatus` observes the retained
+command. `Run` can stop on command completion; a deadline leaves it pending.
+The legacy combined `Exec` uses this same scheduler, so previously accepted
+inputs remain active and SDK stops are preserved while the command advances.
+Its wire reply remains unchanged; the durable status exposes the actual exit
+code or an aborted command with unknown status.
+
+The command itself is off the record. Its first use taints the current timeline. Later
 snapshots preserve the taint, and the server refuses to mint a reproducer from
 that timeline. The serial command has no replay guarantee. The taint ensures it
 cannot be mistaken for reproducible evidence.

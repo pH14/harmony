@@ -102,6 +102,10 @@ pub mod class_bit {
     /// `assert_always` violation surfaces only when this bit is armed. `StopMask::
     /// NONE` runs a cooperating-SDK guest straight through to the terminal.
     pub const ASSERTION: u16 = 9;
+    /// A durable command completed at a stopped point. This is a standalone
+    /// stop class, so a common `Run` can opt into observing command completion
+    /// without changing the legacy `ExecResult` reply.
+    pub const EXEC_COMPLETE: u16 = 10;
 }
 
 /// A bitset over decision/exit **classes** that selects which non-terminal
@@ -125,7 +129,8 @@ impl StopMask {
 
     /// Arm the given class so its decisions surface. Sets bit `1 << class_bit`.
     /// A `class_bit ≥ 32` cannot be represented and is a no-op (panic-free); the
-    /// real discriminants are `1..=6`.
+    /// Real decision discriminants are `1..=6`; standalone SDK and command
+    /// stop classes use `8..=10` (bit 7 remains reserved).
     #[must_use]
     pub fn arm(self, class_bit: u16) -> Self {
         match 1u32.checked_shl(u32::from(class_bit)) {
@@ -151,6 +156,40 @@ pub struct StopConditions {
     pub deadline: Option<Moment>,
     /// Which decision classes surface (vs. auto-service).
     pub on: StopMask,
+}
+
+/// The completion state retained by the durable command surface.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ExecCompletion {
+    /// The command has been injected but has not completed yet.
+    Pending,
+    /// The command exited with `status` at its actual completion moment.
+    Exited {
+        /// The command's exit status.
+        status: u64,
+        /// The exact moment at which the command completed.
+        at: Moment,
+    },
+    /// The command was abandoned at its terminal moment.
+    Aborted {
+        /// The exact moment at which the command was abandoned.
+        at: Moment,
+    },
+}
+
+/// The command retained by a stopped control-plane session.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ExecStatus {
+    /// Stable id assigned when the command is injected.
+    pub id: u64,
+    /// The current observed endpoint of the session.
+    pub at: Moment,
+    /// Whether the command is pending, exited, or was aborted.
+    pub completion: ExecCompletion,
+    /// Bytes captured from the command so far.
+    pub output: Vec<u8>,
+    /// Whether output was bounded before all bytes could be retained.
+    pub truncated: bool,
 }
 
 /// The scope of a [`Hash`](Request::Hash) digest — the determinism primitive.
@@ -271,7 +310,11 @@ pub enum Request {
     /// typed at the serial shell), run until a completion sentinel or the V-time
     /// `deadline`, and capture the serial output → [`ExecResult`](Reply::ExecResult).
     ///
-    /// **Off the record, by ruling** (`docs/PROTOCOL.md`). `exec`
+    /// In protocol v13, advancement uses the same scheduler as `Run`: existing
+    /// inputs remain active, SDK stops are preserved, and a deadline leaves the
+    /// command pending. `ExecStatus` exposes its actual completion state.
+    ///
+    /// **Off the record, by ruling** (`docs/PROTOCOL.md`). The command itself
     /// is a one-off *improvisation*: it is **never recorded into any [`Reproducer`]**
     /// and carries **no determinism guarantee** — the serial byte channel is
     /// deliberately crude. What is airtight is the **taint guard** the server
@@ -279,8 +322,9 @@ pub enum Request {
     /// **taint bit**, every snapshot taken from it reports [`tainted`](Reply::Snapshot)
     /// `= true`, and minting a reproducer from it
     /// ([`RecordedEnv`](Request::RecordedEnv)) is a loud
-    /// [`Tainted`](crate::ControlError::Tainted). The server **refuses nothing** — a
-    /// caller may deliberately sacrifice a timeline; the taint bit makes the
+    /// [`Tainted`](crate::ControlError::Tainted). A pending command rejects another
+    /// injection with `ExecPending`; otherwise a caller may deliberately sacrifice
+    /// a timeline. The taint bit makes the
     /// consequence structural rather than conventional (fork-first is a usage
     /// discipline, not a server rule).
     Exec {
@@ -300,6 +344,15 @@ pub enum Request {
     /// honest reproducer, so the server refuses to mint one rather than hand back an
     /// [`Reproducer`] that does not reproduce (mirrors resolution's `recorded_env`).
     RecordedEnv,
+    /// Inject one durable command at the current stopped point and return its
+    /// retained state. This request does not run the guest; the command is
+    /// serviced by the subsequent common [`Run`](Self::Run) request.
+    ExecStart {
+        /// The UTF-8 command to retain and inject once.
+        cmd: String,
+    },
+    /// Read the retained durable command without advancing the guest.
+    ExecStatus,
 }
 
 /// A successful reply to a [`Request`]. Pairs with [`ControlError`](crate::ControlError)
@@ -397,6 +450,9 @@ pub enum Reply {
     /// sent for an **untainted** timeline — a tainted one is a loud
     /// [`Tainted`](crate::ControlError::Tainted) instead, never a lying reproducer.
     Recorded(Reproducer),
+    /// The retained durable command state. `None` means no command is retained
+    /// by the current stopped session.
+    ExecState(Option<ExecStatus>),
 }
 
 /// A **versioned** register view (task 80) — the observation surface for
@@ -496,6 +552,14 @@ pub enum StopReason {
         vtime: Moment,
         /// The event reference identifying the assertion.
         ev: EventRef,
+    },
+    /// A retained durable command completed at this endpoint. This stop is
+    /// surfaced by `Run` only when [`class_bit::EXEC_COMPLETE`] is armed.
+    ExecComplete {
+        /// The endpoint at which the command completed.
+        vtime: Moment,
+        /// The retained command's stable id.
+        id: u64,
     },
 }
 

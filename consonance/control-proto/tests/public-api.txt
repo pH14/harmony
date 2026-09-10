@@ -4,6 +4,7 @@ pub const control_proto::class_bit::ASSERTION: u16
 pub const control_proto::class_bit::BLOCK_IO: u16
 pub const control_proto::class_bit::BUGGIFY: u16
 pub const control_proto::class_bit::ENTROPY: u16
+pub const control_proto::class_bit::EXEC_COMPLETE: u16
 pub const control_proto::class_bit::NET_SEND: u16
 pub const control_proto::class_bit::PAYLOAD: u16
 pub const control_proto::class_bit::PROCESS: u16
@@ -11,6 +12,8 @@ pub const control_proto::class_bit::SCHEDULER: u16
 pub const control_proto::class_bit::SNAPSHOT_POINT: u16
 pub enum control_proto::ControlError
 pub control_proto::ControlError::BadEnvVersion(u16)
+pub control_proto::ControlError::ExecPending
+pub control_proto::ControlError::ExecPending::id: u64
 pub control_proto::ControlError::MalformedAnswer
 pub control_proto::ControlError::MalformedEnvironment
 pub control_proto::ControlError::NotQuiescent
@@ -47,6 +50,13 @@ pub enum control_proto::CrashKind
 pub control_proto::CrashKind::Panic
 pub control_proto::CrashKind::Shutdown
 pub control_proto::CrashKind::UnrecoverableFault
+pub enum control_proto::ExecCompletion
+pub control_proto::ExecCompletion::Aborted
+pub control_proto::ExecCompletion::Aborted::at: control_proto::Moment
+pub control_proto::ExecCompletion::Exited
+pub control_proto::ExecCompletion::Exited::at: control_proto::Moment
+pub control_proto::ExecCompletion::Exited::status: u64
+pub control_proto::ExecCompletion::Pending
 pub enum control_proto::HashScope
 pub control_proto::HashScope::Disk
 pub control_proto::HashScope::Region
@@ -66,6 +76,7 @@ pub control_proto::Reply::Console::total: u32
 pub control_proto::Reply::ExecResult
 pub control_proto::Reply::ExecResult::ok: bool
 pub control_proto::Reply::ExecResult::output: alloc::vec::Vec<u8>
+pub control_proto::Reply::ExecState(core::option::Option<control_proto::ExecStatus>)
 pub control_proto::Reply::Hash([u8; 32])
 pub control_proto::Reply::Hello(control_proto::Caps)
 pub control_proto::Reply::Recorded(control_proto::Reproducer)
@@ -88,6 +99,9 @@ pub control_proto::Request::Drop(control_proto::SnapId)
 pub control_proto::Request::Exec
 pub control_proto::Request::Exec::cmd: alloc::string::String
 pub control_proto::Request::Exec::deadline: control_proto::Moment
+pub control_proto::Request::ExecStart
+pub control_proto::Request::ExecStart::cmd: alloc::string::String
+pub control_proto::Request::ExecStatus
 pub control_proto::Request::Hash
 pub control_proto::Request::Hash::scope: control_proto::HashScope
 pub control_proto::Request::Hello(control_proto::Caps)
@@ -119,6 +133,9 @@ pub control_proto::StopReason::Decision
 pub control_proto::StopReason::Decision::ctx: alloc::vec::Vec<u8>
 pub control_proto::StopReason::Decision::id: control_proto::DecisionId
 pub control_proto::StopReason::Decision::vtime: control_proto::Moment
+pub control_proto::StopReason::ExecComplete
+pub control_proto::StopReason::ExecComplete::id: u64
+pub control_proto::StopReason::ExecComplete::vtime: control_proto::Moment
 pub control_proto::StopReason::Quiescent
 pub control_proto::StopReason::Quiescent::vtime: control_proto::Moment
 pub control_proto::StopReason::SnapshotPoint
@@ -146,6 +163,12 @@ pub struct control_proto::DecisionId(pub u64)
 pub struct control_proto::EventRef
 pub control_proto::EventRef::data: alloc::vec::Vec<u8>
 pub control_proto::EventRef::id: u32
+pub struct control_proto::ExecStatus
+pub control_proto::ExecStatus::at: control_proto::Moment
+pub control_proto::ExecStatus::completion: control_proto::ExecCompletion
+pub control_proto::ExecStatus::id: u64
+pub control_proto::ExecStatus::output: alloc::vec::Vec<u8>
+pub control_proto::ExecStatus::truncated: bool
 pub struct control_proto::HostFault(pub alloc::vec::Vec<u8>)
 pub struct control_proto::Moment(pub u64)
 pub struct control_proto::RegsView

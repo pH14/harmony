@@ -29,9 +29,9 @@ pub const REPORT_PORT: u16 = 0x0CA2;
 /// `LCR.DLAB` (bit 7). When set, `UART_PORT_BASE` (+1) address the divisor latch
 /// (DLL/DLM), **not** THR/RBR/IER. The model must track it.
 pub const UART_LCR_DLAB: u8 = 0x80;
-/// LSR value reported on read: THR-empty + transmitter-empty (bits 5 and 6) so
-/// the guest's polled-write loop always makes progress. No data-ready bit (we
-/// never feed input).
+/// Base LSR value reported on read: THR-empty + transmitter-empty (bits 5 and 6)
+/// so the guest's polled-write loop always makes progress. A queued RX byte adds
+/// the data-ready bit at read time.
 pub const UART_LSR_THR_EMPTY: u8 = 0x60;
 
 /// Highest port the COM1 register block occupies (`UART_PORT_BASE + 7`).
@@ -117,14 +117,10 @@ pub struct Uart8250 {
     dlm: u8,
     /// **Injected serial-input queue** (task 81's `exec` channel): bytes the host
     /// has typed at the guest's serial console, consumed FIFO by guest RBR reads.
-    /// **Empty on every non-`exec` run** — the whole input path is inert until
-    /// [`Self::inject_input`] is called, so an existing capture/hash is byte-
-    /// identical (gate 4). Deliberately **not** part of the state hash or the
-    /// snapshot device blob: `exec` is a live-only, off-record improvisation that
-    /// taints its timeline, so this ephemeral input is never carried across a
-    /// snapshot/restore (a fresh restore target starts with an empty queue). A
-    /// `VecDeque` — pop-front consume order is a deterministic function of guest
-    /// reads, never observed via iteration.
+    /// The remaining queue is part of the durable device state, so a continuation
+    /// taken between input reads resumes with the same next byte. A `VecDeque` —
+    /// pop-front consume order is a deterministic function of guest reads, never
+    /// observed via iteration.
     rx: std::collections::VecDeque<u8>,
 }
 
@@ -180,7 +176,7 @@ impl Uart8250 {
     /// `None`. LSR → [`UART_LSR_THR_EMPTY`]; IIR → the computed interrupt status
     /// ([`UART_IIR_THRI`] when the THRE interrupt is asserted, else
     /// [`UART_IIR_NONE`]); [`UART_PORT_BASE`] with DLAB set → the divisor-latch
-    /// shadow, with DLAB clear → `0` (RBR; we never feed input).
+    /// shadow, with DLAB clear → the next queued byte or `0` when the RBR is empty.
     pub fn read(&self, port: u16) -> Option<u8> {
         if !(UART_PORT_BASE..=UART_PORT_TOP).contains(&port) {
             return None;
@@ -197,7 +193,7 @@ impl Uart8250 {
             OFF_IIR => self.iir_value(),
             // RBR: **peek** the next queued input byte (non-consuming — a consuming
             // read for the guest I/O path is [`Self::read_in`]); `0` when the input
-            // queue is empty (the pre-task-81 behavior — "we never feed input").
+            // queue is empty (the pre-task-81 behavior).
             OFF_BASE if !self.dlab => self.rx.front().copied().unwrap_or(0),
             // DLAB set ⇒ offset 1 reads back the divisor-latch high byte (DLM), the
             // companion of the offset-1 write split above — never the IER shadow.
@@ -227,8 +223,8 @@ impl Uart8250 {
     }
 
     /// Queue host-typed bytes on the guest's serial input (task 81's `exec`
-    /// channel), consumed FIFO by guest RBR reads. Off-record and live-only: the
-    /// queue is never snapshotted or hashed.
+    /// channel), consumed FIFO by guest RBR reads. The remaining bytes are
+    /// retained by the snapshot adapter.
     pub(crate) fn inject_input(&mut self, bytes: &[u8]) {
         self.rx.extend(bytes.iter().copied());
     }
@@ -236,6 +232,11 @@ impl Uart8250 {
     /// Whether an injected input byte is waiting to be read (task 81).
     pub(crate) fn rx_has_input(&self) -> bool {
         !self.rx.is_empty()
+    }
+
+    /// The unread serial-input bytes in guest consumption order.
+    pub(crate) fn rx_remaining(&self) -> Vec<u8> {
+        self.rx.iter().copied().collect()
     }
 
     /// The `LSR` status bits contributed by the input queue: [`UART_LSR_DATA_READY`]
@@ -324,18 +325,21 @@ impl Uart8250 {
     }
 
     /// Overwrite the UART residual state on snapshot restore: the serial capture
-    /// buffer (so a restored continuation reproduces byte-identical console
-    /// output), the register shadows, the latched DLAB window, and the divisor-
-    /// latch-high byte. Mirrors what [`Self::capture`]/[`Self::shadow_regs`]/
-    /// [`Self::dlab`]/[`Self::dlm`] read back.
-    pub(crate) fn restore(&mut self, capture: Vec<u8>, regs: [u8; 8], dlab: bool, dlm: u8) {
+    /// buffer, register shadows, latched DLAB window, divisor-latch-high byte,
+    /// and unread input. Mirrors what the corresponding read methods expose.
+    pub(crate) fn restore(
+        &mut self,
+        capture: Vec<u8>,
+        regs: [u8; 8],
+        dlab: bool,
+        dlm: u8,
+        rx: Vec<u8>,
+    ) {
         self.capture = capture;
         self.regs = regs;
         self.dlab = dlab;
         self.dlm = dlm;
-        // The injected-input queue is off-record, live-only state (task 81): a
-        // restored timeline never inherits mid-`exec` input — it starts empty.
-        self.rx.clear();
+        self.rx = rx.into();
     }
 }
 
@@ -638,8 +642,8 @@ mod tests {
         u.write(UART_PORT_BASE + 1, UART_IER_THRI);
         assert_eq!(u.read(UART_PORT_BASE + 2), Some(0x02));
         assert!(u.thre_irq_asserted());
-        // A non-THRI IER bit (e.g. RDI 0x01, receive-data) does not assert TX: we
-        // never feed input, so only THRE can be pending.
+        // A non-THRI IER bit (e.g. RDI 0x01, receive-data) does not assert TX:
+        // this test has no queued input, so only THRE can be pending.
         u.write(UART_PORT_BASE + 1, 0x01);
         assert_eq!(u.read(UART_PORT_BASE + 2), Some(0x01));
         assert!(!u.thre_irq_asserted());
@@ -719,15 +723,17 @@ mod tests {
         );
     }
 
-    /// A restore drops any queued input — `exec` input is live-only, off-record
-    /// state and is never carried across a snapshot/restore.
+    /// A restore overwrites stale input with the captured unread FIFO, preserving
+    /// the exact next RBR byte and order.
     #[test]
-    fn restore_clears_injected_input() {
+    fn restore_overwrites_injected_input() {
         let mut u = Uart8250::new();
-        u.inject_input(b"leftover");
-        u.restore(vec![], [0; 8], false, 0);
-        assert!(!u.rx_has_input());
-        assert_eq!(u.read(UART_PORT_BASE), Some(0));
+        u.inject_input(b"stale");
+        u.restore(vec![], [0; 8], false, 0, b"remaining".to_vec());
+        assert_eq!(u.rx_remaining(), b"remaining");
+        assert_eq!(u.read_in(UART_PORT_BASE), Some(b'r'));
+        assert_eq!(u.read_in(UART_PORT_BASE), Some(b'e'));
+        assert_eq!(u.rx_remaining(), b"maining");
     }
 
     /// With `DLAB` set, port +1 is the divisor-latch high byte (DLM), **not** the

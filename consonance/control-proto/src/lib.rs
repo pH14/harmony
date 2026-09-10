@@ -45,8 +45,8 @@ pub use codec::{decode_reply, decode_request, encode_reply, encode_request};
 pub use error::{ControlError, ProtocolError};
 pub use types::{
     Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, EventRef,
-    HashScope, HostFault, Moment, RegsView, Reply, Reproducer, Request, Resolution, SnapId,
-    StopConditions, StopMask, StopReason, class_bit,
+    ExecCompletion, ExecStatus, HashScope, HostFault, Moment, RegsView, Reply, Reproducer, Request,
+    Resolution, SnapId, StopConditions, StopMask, StopReason, class_bit,
 };
 
 /// The wire-format version carried in every frame header. Bumps only when the
@@ -101,7 +101,9 @@ pub const PROTO_VERSION: u16 = 1;
 /// version 5, and the explicit decision identity carried by `Run.resolve`.
 /// Historical fault catalogs are translated by workload tooling.
 /// Version 12 preserves snapshot refusal diagnostics in `SnapshotRefused`.
-pub const APP_PROTOCOL_VERSION: u16 = 12;
+/// Version 13 adds the durable `ExecStart` / `ExecStatus` verbs, the
+/// `ExecState` reply, and the opt-in `ExecComplete` stop class.
+pub const APP_PROTOCOL_VERSION: u16 = 13;
 
 /// The maximum bytes one [`Read`](Request::Read) may request. A larger `len` is a
 /// loud [`ReadTooLarge`](ControlError::ReadTooLarge), rejected **before any
@@ -132,7 +134,7 @@ mod tests {
     fn wire_constants_are_pinned() {
         assert_eq!(MAX_FRAME_LEN, 16_777_216); // == 16 * 1024 * 1024 (16 MiB)
         assert_eq!(PROTO_VERSION, 1);
-        assert_eq!(APP_PROTOCOL_VERSION, 12); // version numbers are never reused
+        assert_eq!(APP_PROTOCOL_VERSION, 13); // version numbers are never reused
         assert_eq!(READ_CAP, 262_144); // == 1 << 18 (256 KiB)
     }
 }

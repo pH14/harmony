@@ -233,8 +233,8 @@ pub trait Vendor: Arch + Sized {
     /// result, and the scrape stream all read this).
     fn serial_capture(devices: &Self::Devices) -> &[u8];
 
-    /// Queue bytes on the guest's serial input (task 81 `exec`; off-record by
-    /// ruling).
+    /// Queue guest serial input. Unread bytes belong to the device snapshot
+    /// and hash; restoring replaces the FIFO without reinjection.
     fn inject_serial_input(devices: &mut Self::Devices, bytes: &[u8]);
 
     // --- state records (hash + snapshot) --------------------------------------

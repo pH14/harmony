@@ -570,6 +570,8 @@ impl Vendor for Arm64 {
         for r in devices.uart.shadow_regs() {
             v.extend_from_slice(&r.to_le_bytes());
         }
+        let rx = devices.uart.rx_remaining();
+        records::append_uart_rx_hash(&mut v, &rx);
         v
     }
 

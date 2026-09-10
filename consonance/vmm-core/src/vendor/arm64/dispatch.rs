@@ -996,6 +996,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             report_stream: self.report_stream.clone(),
             uart_capture: self.devices.uart.capture().to_vec(),
             uart_regs: *self.devices.uart.shadow_regs(),
+            uart_rx: self.devices.uart.rx_remaining(),
             gic: backend_gic.or_else(|| self.devices.gic.as_ref().map(gicv3::Gicv3::snapshot)),
             // The dedicated hypercall-transport ABI pages ride the blob so
             // save/restore/branch preserve them (they are a separate memslot, not
@@ -1196,7 +1197,9 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         if let Some(g) = gic {
             self.devices.gic = Some(g);
         }
-        self.devices.uart.restore(dev.uart_capture, dev.uart_regs);
+        self.devices
+            .uart
+            .restore(dev.uart_capture, dev.uart_regs, dev.uart_rx);
         // Restore the dedicated transport ABI pages (validate_restore already
         // checked the wiring + length, so this is infallible).
         if let Some(db) = self

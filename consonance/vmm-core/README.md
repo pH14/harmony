@@ -27,7 +27,19 @@ carries this state; version 3 remains readable without pending stops. Portable
 format 5 adds pending host effects and reseeds, the recorded input prefix,
 schedule failure, and command nonce. Replay restores these without reseeding or
 reapplying consumed inputs; an explicit branch selects a new plan and retains
-the command nonce. Whole-state hashes include this control state, including the
+the command nonce. A retained command uses control-state record `HCSTATE2` to
+carry its serial output cursor, bounded completion parser, output, and actual
+completion status/moment. Both replay and branch retain this physical command;
+restoring never reinjects its input. Records without a command retain `HCSTATE1`
+bytes. `ExecStart` injects at the current stop without running; `ExecStatus` is
+pure observation. A deadline leaves a command pending, while a terminal guest
+without a completion sentinel records an aborted command with unknown status.
+Unread serial input belongs to the UART snapshot. Nonempty receive queues use
+`DEV2` (x86) or `ADV2` (ARM) device records; empty queues retain their existing
+record bytes. Restore replaces the queue with its remaining bytes. Pending
+command parser bytes are checked against the restored serial output before
+execution can resume; inconsistent state abandons the restored VM.
+Whole-state hashes include the UART queue and control state, including the
 recorded prefix used for duplicate-input rejection. Legacy v3/v4 artifacts remain
 readable with their historical empty control-state default; their recorded hash
 uses the old coverage. The codec retains v4 bytes when control state is absent.

@@ -8,8 +8,8 @@
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, DecisionId,
-    EventRef, HashScope, HostFault, Moment, ProtocolError, RegsView, Reply, Reproducer, Request,
-    Resolution, SnapId, StopConditions, StopMask, StopReason,
+    EventRef, ExecCompletion, ExecStatus, HashScope, HostFault, Moment, ProtocolError, RegsView,
+    Reply, Reproducer, Request, Resolution, SnapId, StopConditions, StopMask, StopReason,
 };
 use proptest::prelude::*;
 
@@ -100,6 +100,8 @@ pub fn arb_request() -> impl Strategy<Value = Request> {
             deadline: Moment(deadline),
         }),
         Just(Request::RecordedEnv),
+        "[ -~]{0,64}".prop_map(|cmd| Request::ExecStart { cmd }),
+        Just(Request::ExecStatus),
     ]
 }
 
@@ -157,7 +159,39 @@ fn arb_stop_reason() -> impl Strategy<Value = StopReason> {
             vtime: Moment(v),
             ev: EventRef { id, data },
         }),
+        (any::<u64>(), any::<u64>()).prop_map(|(vtime, id)| StopReason::ExecComplete {
+            vtime: Moment(vtime),
+            id,
+        }),
     ]
+}
+
+fn arb_exec_completion() -> impl Strategy<Value = ExecCompletion> {
+    prop_oneof![
+        Just(ExecCompletion::Pending),
+        (any::<u64>(), any::<u64>()).prop_map(|(status, at)| ExecCompletion::Exited {
+            status,
+            at: Moment(at),
+        }),
+        any::<u64>().prop_map(|at| ExecCompletion::Aborted { at: Moment(at) }),
+    ]
+}
+
+fn arb_exec_status() -> impl Strategy<Value = ExecStatus> {
+    (
+        any::<u64>(),
+        any::<u64>(),
+        arb_exec_completion(),
+        arb_bytes(),
+        any::<bool>(),
+    )
+        .prop_map(|(id, at, completion, output, truncated)| ExecStatus {
+            id,
+            at: Moment(at),
+            completion,
+            output,
+            truncated,
+        })
 }
 
 fn arb_protocol_error() -> impl Strategy<Value = ProtocolError> {
@@ -193,6 +227,7 @@ fn arb_control_error() -> impl Strategy<Value = ControlError> {
             .prop_map(|(gpa, len, ram_len)| ControlError::ReadOutOfRange { gpa, len, ram_len }),
         (any::<u32>(), any::<u32>()).prop_map(|(len, cap)| ControlError::ReadTooLarge { len, cap }),
         Just(ControlError::Tainted),
+        any::<u64>().prop_map(|id| ControlError::ExecPending { id }),
         arb_protocol_error().prop_map(ControlError::Protocol),
     ]
 }
@@ -218,6 +253,7 @@ fn arb_reply() -> impl Strategy<Value = Reply> {
             }
         ),
         arb_environment().prop_map(Reply::Recorded),
+        proptest::option::of(arb_exec_status()).prop_map(Reply::ExecState),
     ]
 }
 

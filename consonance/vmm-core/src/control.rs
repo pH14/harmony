@@ -120,7 +120,7 @@ use vmm_backend::Backend;
 use crate::vendor::{InterruptReject, Vendor};
 
 use crate::control_state::{ControlState, ScheduleFailure};
-use crate::exec::ExecSession;
+use crate::exec::retained::RetainedExec;
 use crate::portable_snapshot::{
     PortableSnapshot, PortableSnapshotError, PortableSnapshotRef, SparsePortableSidecarRef,
     SparsePortableSnapshot, SparsePortableSnapshotReceipt, decode_sparse_sidecar,
@@ -268,6 +268,9 @@ pub enum ServeError {
     /// (the server is poisoned; a prior [`ServeError`] was returned).
     #[error("server poisoned by a prior fatal error")]
     Poisoned,
+    /// Retained command state disagrees with the VM serial stream.
+    #[error("retained command state: {0}")]
+    CommandState(&'static str),
 }
 
 /// Stable evidence returned by portable snapshot export/import.
@@ -435,11 +438,13 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     /// required to export the complete replay state later in the session.
     snapshot_meta: BTreeMap<u64, SnapshotMeta>,
     /// A monotonically-increasing counter salting each [`Request::Exec`]'s
-    /// completion-sentinel marker ([`ExecSession`]), so two `exec`s on one session
+    /// completion-sentinel marker ([`crate::exec::ExecSession`]), so two `exec`s on one session
     /// cannot alias their sentinels. Not wall-clock / RNG (conventions rule 4);
     /// `exec` is off the record, so this never needs to be reproducible — only
     /// unique-enough within a session.
     exec_nonce: u64,
+    /// Physical command continuation, preserved independently of host input plans.
+    retained_exec: Option<RetainedExec>,
     /// Completed restore-delimited production-trace segments. The current
     /// live VMM's segment is appended only in the read-only
     /// [`session_virtual_time_trace`](Self::session_virtual_time_trace) view.
@@ -578,6 +583,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             tainted_snaps: BTreeSet::new(),
             snapshot_meta: BTreeMap::new(),
             exec_nonce: 0,
+            retained_exec: None,
             session_trace: Vec::new(),
             session_trace_start: SessionTraceStart::InitialBoot,
             last_seal_dirty_gfns: None,
@@ -873,8 +879,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 "sparse sidecar SDK event count",
             ));
         }
-        ControlState::decode_for_policy(&portable.control_state, &portable.policy)
-            .map_err(PortableSnapshotError::Malformed)?;
+        ControlState::decode_for_snapshot(
+            &portable.control_state,
+            &portable.policy,
+            portable.tainted,
+        )
+        .map_err(PortableSnapshotError::Malformed)?;
         validate_control_hash_suffix(&portable.state_blob_suffix, &portable.control_state)?;
         let id = self.next_snap;
         let next_snap = self
@@ -1021,8 +1031,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if portable.sdk.as_ref().map_or(0, |sdk| sdk.events.len()) as u64 != portable.sdk_events {
             return Err(PortableSnapshotError::Malformed("portable SDK event count"));
         }
-        ControlState::decode_for_policy(&portable.control_state, &portable.policy)
-            .map_err(PortableSnapshotError::Malformed)?;
+        ControlState::decode_for_snapshot(
+            &portable.control_state,
+            &portable.policy,
+            portable.tainted,
+        )
+        .map_err(PortableSnapshotError::Malformed)?;
         let id = self.next_snap;
         let next_snap = self
             .next_snap
@@ -1253,6 +1267,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             // fallible work — so no failure mode can leave an improvised timeline
             // looking clean (the taint guard's authoritative half).
             Request::Exec { cmd, deadline } => self.exec(cmd, *deadline),
+            Request::ExecStart { cmd } => self.exec_start(cmd),
+            Request::ExecStatus => self.exec_status(),
             // Reproducer mint (task 81) — the taint guard's fail-loud site: a
             // tainted timeline is a loud `Tainted`, never a lying reproducer.
             Request::RecordedEnv => Ok(self.recorded_env_reply()),
@@ -1814,6 +1830,19 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // (`vtime()` is the arch-neutral `SnapshotRecords` accessor — the one
         // engine read of the decoded snapshot; the record set stays opaque.)
         let restored_floor = vm_state.vtime().snapshot_vns;
+        if let Some(bytes) = source_control
+            .as_ref()
+            .and_then(|control| control.exec.as_deref())
+        {
+            let command = RetainedExec::decode(bytes).map_err(ServeError::CommandState)?;
+            if !self.tainted_snaps.contains(&snap.0)
+                || command
+                    .validate_at(Moment(restored_floor), usize::MAX)
+                    .is_err()
+            {
+                return Ok(Err(ControlError::RestoreFailed));
+            }
+        }
         let mut seen: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
         for (m, fault) in &host {
             if let Err(e) = self.check_fault_admissible(fault, *m, restored_floor) {
@@ -2077,6 +2106,22 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
         if let Some(control) = source_control {
             self.exec_nonce = control.exec_nonce;
+            self.retained_exec = control
+                .exec
+                .as_deref()
+                .map(RetainedExec::decode)
+                .transpose()
+                .map_err(ServeError::CommandState)?;
+            if let Some(exec) = &self.retained_exec {
+                let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+                if let Err(error) = exec.validate_serial(
+                    Moment(vmm.effective_vns().unwrap_or(0)),
+                    vmm.serial_output(),
+                ) {
+                    self.vmm = None;
+                    return Err(ServeError::CommandState(error));
+                }
+            }
             if seed.is_none() {
                 self.schedule = control.pending.effects().clone();
                 self.reseed_schedule = control.pending.reseeds().clone();
@@ -2119,6 +2164,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             pending,
             poisoned: self.schedule_poisoned,
             exec_nonce: self.exec_nonce,
+            exec: self.retained_exec.as_ref().map(RetainedExec::encode),
         }
     }
 
@@ -2134,6 +2180,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// actually reproduces.
     fn reset_schedule_to_fresh_vm(&mut self) {
         self.exec_nonce = 0;
+        self.retained_exec = None;
         self.schedule.clear();
         self.reseed_schedule.clear();
         // A rewind is the recovery from a poisoned schedule (round-3): clear the
@@ -2246,6 +2293,17 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 }
             }
 
+            if until.on.armed(control_proto::class_bit::EXEC_COMPLETE)
+                && let Some(exec) = &self.retained_exec
+                && !exec.is_pending()
+            {
+                let status = exec.view(Moment(vns));
+                return Ok(Ok(Reply::Stop(StopReason::ExecComplete {
+                    vtime: Moment(vns),
+                    id: status.id,
+                })));
+            }
+
             // Surface a requested setup-complete point after applying inputs
             // due at this boundary. Future inputs remain queued in the snapshot;
             // waiting for them to drain would move the requested cut.
@@ -2285,7 +2343,16 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
 
             // 4. Step. A terminal stop ends the run; a cooperating-SDK stop
             //    (task 73) surfaces the assertion / snapshot point.
-            match vmm.step()? {
+            let step = vmm.step()?;
+            if let Some(exec) = &mut self.retained_exec {
+                exec.feed(
+                    vmm.serial_output(),
+                    Moment(vmm.effective_vns().unwrap_or(0)),
+                    matches!(&step, Step::Terminal(_)),
+                )
+                .map_err(ServeError::CommandState)?;
+            }
+            match step {
                 // A deferred `setup_complete` snapshot point is surfaced at the top
                 // of the NEXT iteration, after the drain (round-5 P1) — not here.
                 Step::Continued => {}
@@ -2380,85 +2447,68 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
     }
 
-    /// `exec(cmd, deadline)`: the **improvisation** (task 81). Inject `cmd` on the
-    /// guest's serial input (as if typed at the serial shell), step the VM until the
-    /// completion sentinel or the V-time `deadline`, and capture the serial output.
-    ///
-    /// **Taints the timeline first — before any fallible work** (the conservative
-    /// taint invariant). Even if injection, a step, or a terminal aborts the run
-    /// below, the timeline is already (correctly) tainted, so the reproducer guard
-    /// ([`recorded_env_reply`](Self::recorded_env_reply)) can never mint a clean
-    /// reproducer after an attempted `exec`. The server **refuses nothing** — a
-    /// caller may deliberately sacrifice a timeline; fork-first is a usage
-    /// discipline, not a server rule.
-    ///
-    /// **Off the record by ruling** (`docs/PROTOCOL.md`): the
-    /// serial channel is deliberately crude, there is **no determinism guarantee**
-    /// on this path, and nothing here is recorded into the reproducer
-    /// ([`recorded`](Self::recorded) is untouched) or the fault schedule. See the
-    /// sentinel scheme + failure modes in [`crate::exec`] and `README.md`.
+    /// Inject once at this stopped point. The VM owns the queued input bytes;
+    /// the control plane owns only the output cursor and completion parser.
+    fn exec_start(&mut self, cmd: &str) -> Result<Result<Reply, ControlError>, ServeError> {
+        if let Some(exec) = &self.retained_exec
+            && exec.is_pending()
+        {
+            let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+            return Ok(Err(ControlError::ExecPending {
+                id: exec.view(Moment(vmm.effective_vns().unwrap_or(0))).id,
+            }));
+        }
+        let Some(next_nonce) = self.exec_nonce.checked_add(1) else {
+            return Ok(Err(ControlError::Unsupported));
+        };
+        self.timeline_tainted = true;
+        let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
+        let exec = RetainedExec::new(cmd, self.exec_nonce, vmm.serial_output().len());
+        self.exec_nonce = next_nonce;
+        vmm.inject_serial_input(exec.input());
+        self.retained_exec = Some(exec);
+        self.exec_status()
+    }
+
+    /// Observation must neither feed the parser nor touch guest execution.
+    fn exec_status(&self) -> Result<Result<Reply, ControlError>, ServeError> {
+        let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+        let at = Moment(vmm.effective_vns().unwrap_or(0));
+        Ok(Ok(Reply::ExecState(
+            self.retained_exec.as_ref().map(|exec| exec.view(at)),
+        )))
+    }
+
+    /// Legacy combined call uses the same retained command and Run machinery.
+    /// An incomplete result stays pending and can subsequently be resumed by Run.
     fn exec(
         &mut self,
         cmd: &str,
         deadline: Moment,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
-        // 1. Conservative taint: set BEFORE touching the guest, covering every
-        //    failure point below.
-        self.timeline_tainted = true;
-        let nonce = self.exec_nonce;
-        self.exec_nonce = self.exec_nonce.wrapping_add(1);
-
-        let mut session = ExecSession::new(cmd, nonce);
-        let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-        // 2. Inject the command line on the serial RX and note the current capture
-        //    length, so only NEW output is fed to the completion scanner.
-        vmm.inject_serial_input(session.input());
-        let mut cursor = vmm.serial_output().len();
-
-        // 3. Step toward the sentinel / deadline / terminal. The deadline is
-        //    observed opportunistically at each V-time boundary (like `run`): a hung
-        //    or shell-less guest ends here `ok = false`. No fault-schedule
-        //    interaction — `exec` is off the record.
-        loop {
-            let out = vmm.serial_output();
-            if out.len() > cursor {
-                session.feed(&out[cursor..]);
-                cursor = out.len();
-            }
-            if session.is_done() {
-                break;
-            }
-            let vns = vmm.effective_vns().unwrap_or(0);
-            if vns >= deadline.0 {
-                session.finish_timeout();
-                break;
-            }
-            match vmm.step()? {
-                Step::Continued => {}
-                // A cooperating-SDK doorbell during an improvisation is consumed and
-                // ignored (exec is not an SDK-driven run); keep stepping.
-                Step::SdkStop => {
-                    if vmm.pending_service_question().is_some() {
-                        return Ok(Err(ControlError::Unsupported));
-                    }
-                    let _ = vmm.take_sdk_stop();
-                }
-                // The guest halted / crashed / rebooted before the sentinel: drain
-                // any final output and close as an (unsuccessful) timeout.
-                Step::Terminal(_) => {
-                    let out = vmm.serial_output();
-                    if out.len() > cursor {
-                        session.feed(&out[cursor..]);
-                    }
-                    session.finish_timeout();
-                    break;
-                }
-            }
+        if let Err(error) = self.exec_start(cmd)? {
+            return Ok(Err(error));
         }
-        let outcome = session.into_outcome();
+        let until = control_proto::StopConditions {
+            deadline: Some(deadline),
+            on: control_proto::StopMask::NONE
+                .arm(control_proto::class_bit::ASSERTION)
+                .arm(control_proto::class_bit::EXEC_COMPLETE),
+        };
+        if let Err(error) = self.run(&until)? {
+            return Ok(Err(error));
+        }
+        let Reply::ExecState(Some(status)) =
+            self.exec_status()?.map_err(|_| ServeError::Poisoned)?
+        else {
+            return Err(ServeError::CommandState("started command is absent"));
+        };
         Ok(Ok(Reply::ExecResult {
-            output: outcome.output,
-            ok: outcome.ok,
+            output: status.output,
+            ok: matches!(
+                status.completion,
+                control_proto::ExecCompletion::Exited { .. }
+            ),
         }))
     }
 
@@ -4130,7 +4180,7 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 12,
+            caps.protocol_version, 13,
             "protocol version numbers remain monotonic after retired tags"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
@@ -8511,6 +8561,137 @@ mod tests {
         assert_eq!(recorded_env_res(&mut s), Err(ControlError::Tainted));
     }
 
+    #[test]
+    fn legacy_exec_preserves_accepted_inputs_through_the_common_scheduler() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let effect = environment::channel::Effect::WriteMemory {
+            gpa: 64,
+            bytes: vec![0x7a],
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Perturb {
+                    fault: HostFault(effect.encode()),
+                    at: Moment(500)
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(matches!(
+            server
+                .handle(&Request::Exec {
+                    cmd: "true".into(),
+                    deadline: Moment(500)
+                })
+                .unwrap(),
+            Ok(Reply::ExecResult { ok: false, .. })
+        ));
+        assert_eq!(server.vmm.as_ref().unwrap().guest_memory()[64], 0x7a);
+        assert!(server.schedule.is_empty());
+        assert_eq!(server.recorded.effects().get(&500), Some(&effect));
+        assert!(server.retained_exec.as_ref().unwrap().is_pending());
+        assert_eq!(server.vmm.as_ref().unwrap().effective_vns(), Some(500));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "portable restore uses snapshot-store mmap; pure command codec is tested separately"
+    )]
+    fn pending_exec_cold_restore_is_exact_and_never_reinjects() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let at = source.vmm.as_ref().unwrap().effective_vns();
+        let start = source
+            .handle(&Request::ExecStart {
+                cmd: "printf once".into(),
+            })
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            start,
+            Reply::ExecState(Some(control_proto::ExecStatus {
+                completion: control_proto::ExecCompletion::Pending,
+                ..
+            }))
+        ));
+        assert_eq!(source.vmm.as_ref().unwrap().effective_vns(), at);
+        let injected = crate::exec::ExecSession::new("printf once", 0)
+            .input()
+            .to_vec();
+        // Model a partially delivered command: only remaining RX bytes belong
+        // in the snapshot, and none may be lost or injected a second time.
+        for byte in &injected[..4] {
+            assert_eq!(
+                source.vmm.as_mut().unwrap().devices.uart.read_in(0x3f8),
+                Some(*byte)
+            );
+        }
+        let before = hash(&mut source);
+        assert_eq!(source.handle(&Request::ExecStatus).unwrap().unwrap(), start);
+        assert_eq!(hash(&mut source), before, "status is a pure observation");
+        assert_eq!(
+            source
+                .handle(&Request::ExecStart {
+                    cmd: "second".into()
+                })
+                .unwrap(),
+            Err(ControlError::ExecPending { id: 0 })
+        );
+        assert_eq!(
+            hash(&mut source),
+            before,
+            "rejected command cannot change input or nonce"
+        );
+        let (cut, _) = snap_tainted(&mut source);
+        assert_eq!(
+            hash(&mut source),
+            before,
+            "saving cannot run or alter parser state"
+        );
+        let mut artifact = Vec::new();
+        source.export_portable_snapshot(cut, &mut artifact).unwrap();
+        let mut cold = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut cold);
+        let mut false_clean = artifact.clone();
+        // HMSNAP01: eight-byte magic, u16 version, then the u16 flags.
+        false_clean[10] &= !2;
+        // Re-authenticate the edited container so this exercises semantic
+        // validation rather than merely the transport checksum.
+        let body_end = false_clean.len() - 32;
+        let digest = <sha2::Sha256 as sha2::Digest>::digest(&false_clean[..body_end]);
+        false_clean[body_end..].copy_from_slice(&digest);
+        let before_store = cold.snapshot_store_stats();
+        let before_handle = cold.next_snap;
+        assert!(matches!(
+            cold.import_portable_snapshot(false_clean.as_slice()),
+            Err(PortableSnapshotError::Malformed(
+                "retained command requires a tainted snapshot"
+            ))
+        ));
+        assert_eq!(cold.snapshot_store_stats(), before_store);
+        assert_eq!(cold.next_snap, before_handle);
+        let imported = cold.import_portable_snapshot(artifact.as_slice()).unwrap();
+        assert_eq!(replay(&mut cold, imported.id), Ok(Reply::Unit));
+        assert_eq!(cold.handle(&Request::ExecStatus).unwrap().unwrap(), start);
+        assert_eq!(
+            hash(&mut cold),
+            before,
+            "restore preserves queued bytes without reinjection"
+        );
+        assert_eq!(cold.exec_nonce, 1);
+        assert_eq!(hash(&mut source), before, "source remains unchanged");
+        for byte in &injected[4..] {
+            assert_eq!(
+                cold.vmm.as_mut().unwrap().devices.uart.read_in(0x3f8),
+                Some(*byte),
+                "restore must preserve the remaining RX FIFO"
+            );
+        }
+        assert!(!cold.vmm.as_ref().unwrap().devices.uart.rx_has_input());
+    }
+
     /// A snapshot taken from a tainted timeline reports `tainted: true`; one taken
     /// before any `exec` reports untainted. Both ride the one seal-bound reply
     /// (task 127), so the tainted seal binds the same evidence cut fields the
@@ -8640,8 +8821,16 @@ mod tests {
                         snap_taint.push(current);
                     }
                     TaintOp::Exec => {
-                        exec(&mut s, "echo hi");
-                        current = true; // conservative taint: set unconditionally
+                        // Every accepted command in this fixture stops at deadline 0,
+                        // so a tainted ancestor also has a still-pending command.
+                        if current {
+                            let before = hash(&mut s);
+                            prop_assert_eq!(s.handle(&Request::ExecStart { cmd: "echo hi".into() }).unwrap(), Err(ControlError::ExecPending { id: 0 }));
+                            prop_assert_eq!(hash(&mut s), before);
+                        } else {
+                            exec(&mut s, "echo hi");
+                            current = true;
+                        }
                     }
                     TaintOp::Branch(i) => {
                         if snap_ids.is_empty() {

@@ -11,9 +11,9 @@
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, DecisionId,
-    EventRef, HashScope, HostFault, Moment, PROTO_VERSION, ProtocolError, Reply, Reproducer,
-    Request, Resolution, SnapId, StopConditions, StopMask, StopReason, class_bit, decode_reply,
-    decode_request, encode_reply, encode_request,
+    EventRef, ExecCompletion, ExecStatus, HashScope, HostFault, Moment, PROTO_VERSION,
+    ProtocolError, Reply, Reproducer, Request, Resolution, SnapId, StopConditions, StopMask,
+    StopReason, class_bit, decode_reply, decode_request, encode_reply, encode_request,
 };
 
 const MAGIC: [u8; 4] = *b"CTL1";
@@ -297,6 +297,26 @@ fn req_console() {
     );
 }
 
+#[test]
+fn req_exec_start() {
+    check_req(
+        17,
+        Request::ExecStart {
+            cmd: "uname -a".to_owned(),
+        },
+        &[
+            0x0F, // REQ_EXEC_START
+            0x08, 0x00, 0x00, 0x00, // command length = 8
+            b'u', b'n', b'a', b'm', b'e', b' ', b'-', b'a',
+        ],
+    );
+}
+
+#[test]
+fn req_exec_status() {
+    check_req(18, Request::ExecStatus, &[0x10]);
+}
+
 // -------------------------------- replies ----------------------------------
 
 #[test]
@@ -571,6 +591,23 @@ fn reply_stop_assertion() {
     );
 }
 
+#[test]
+fn reply_stop_exec_complete() {
+    check_reply(
+        26,
+        Ok(Reply::Stop(StopReason::ExecComplete {
+            vtime: Moment(0x10),
+            id: 0x1122_3344_5566_7788,
+        })),
+        &[
+            0x00, 0x04, // RESULT_OK, REPLY_STOP
+            0x07, // SR_EXEC_COMPLETE
+            0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // vtime
+            0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // id
+        ],
+    );
+}
+
 // -------------------------- ControlError variants --------------------------
 
 #[test]
@@ -817,9 +854,107 @@ fn reply_recorded() {
 }
 
 #[test]
+fn reply_exec_state_absent() {
+    // RESULT_OK (0x00), REPLY_EXEC_STATE (0x0D), status absent (0x00).
+    check_reply(67, Ok(Reply::ExecState(None)), &[0x00, 0x0D, 0x00]);
+}
+
+#[test]
+fn reply_exec_state_pending() {
+    // RESULT_OK · REPLY_EXEC_STATE · present · id · current endpoint ·
+    // pending completion · output · truncation flag.
+    check_reply(
+        68,
+        Ok(Reply::ExecState(Some(ExecStatus {
+            id: 0x1122_3344_5566_7788,
+            at: Moment(0x99),
+            completion: ExecCompletion::Pending,
+            output: vec![0xDE, 0xAD],
+            truncated: false,
+        }))),
+        &[
+            0x00, 0x0D, // RESULT_OK, REPLY_EXEC_STATE
+            0x01, // status present
+            0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // id
+            0x99, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // current at
+            0x00, // EC_PENDING
+            0x02, 0x00, 0x00, 0x00, // output length
+            0xDE, 0xAD, 0x00, // truncated = false
+        ],
+    );
+}
+
+#[test]
+fn reply_exec_state_exited() {
+    check_reply(
+        69,
+        Ok(Reply::ExecState(Some(ExecStatus {
+            id: 7,
+            at: Moment(0x100),
+            completion: ExecCompletion::Exited {
+                status: 0x1234,
+                at: Moment(0x120),
+            },
+            output: vec![],
+            truncated: true,
+        }))),
+        &[
+            0x00, 0x0D, // RESULT_OK, REPLY_EXEC_STATE
+            0x01, // status present
+            0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // id
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // current at
+            0x01, // EC_EXITED
+            0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // status
+            0x20, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // completion at
+            0x00, 0x00, 0x00, 0x00, // output length = 0
+            0x01, // truncated = true
+        ],
+    );
+}
+
+#[test]
+fn reply_exec_state_aborted() {
+    check_reply(
+        70,
+        Ok(Reply::ExecState(Some(ExecStatus {
+            id: u64::MAX,
+            at: Moment(4),
+            completion: ExecCompletion::Aborted { at: Moment(3) },
+            output: vec![0xAA],
+            truncated: true,
+        }))),
+        &[
+            0x00, 0x0D, // RESULT_OK, REPLY_EXEC_STATE
+            0x01, // status present
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // id
+            0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // current at
+            0x02, // EC_ABORTED
+            0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // completion at
+            0x01, 0x00, 0x00, 0x00, // output length
+            0xAA, 0x01, // truncated = true
+        ],
+    );
+}
+
+#[test]
 fn err_tainted() {
     // RESULT_ERR (0x01), CE_TAINTED (0x13), no payload.
     check_reply(63, Err(ControlError::Tainted), &[0x01, 0x13]);
+}
+
+#[test]
+fn err_exec_pending() {
+    // RESULT_ERR (0x01), CE_EXEC_PENDING (0x15), retained command id (u64 LE).
+    check_reply(
+        64,
+        Err(ControlError::ExecPending {
+            id: 0x1122_3344_5566_7788,
+        }),
+        &[
+            0x01, 0x15, // RESULT_ERR, CE_EXEC_PENDING
+            0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
+        ],
+    );
 }
 
 /// The `class_bit` values are a persisted protocol contract. The environment
@@ -838,6 +973,7 @@ fn class_bit_values_are_pinned() {
     assert_eq!(class_bit::BUGGIFY, 7);
     assert_eq!(class_bit::SNAPSHOT_POINT, 8);
     assert_eq!(class_bit::ASSERTION, 9);
+    assert_eq!(class_bit::EXEC_COMPLETE, 10);
 }
 
 // ---------------------------------------------------------------------------
@@ -900,6 +1036,10 @@ fn every_request_variant_has_a_pinned_tag() {
         },
         Request::RecordedEnv,
         Request::Console { offset: 0 },
+        Request::ExecStart {
+            cmd: "true".to_owned(),
+        },
+        Request::ExecStatus,
     ];
 
     let mut tags = Vec::new();
@@ -921,6 +1061,8 @@ fn every_request_variant_has_a_pinned_tag() {
             Request::Exec { .. } => 0x0C,
             Request::RecordedEnv => 0x0D,
             Request::Console { .. } => 0x0E,
+            Request::ExecStart { .. } => 0x0F,
+            Request::ExecStatus => 0x10,
         };
         let mut buf = Vec::new();
         encode_request(1, req, &mut buf).expect("encode");
@@ -932,8 +1074,8 @@ fn every_request_variant_has_a_pinned_tag() {
     tags.dedup();
     assert_eq!(
         tags,
-        (0x01u8..=0x0E).collect::<Vec<u8>>(),
-        "the 14 peer verbs must occupy tags 1..=14, each exactly once"
+        (0x01u8..=0x10).collect::<Vec<u8>>(),
+        "the 16 peer verbs must occupy tags 1..=16, each exactly once"
     );
 }
 
@@ -978,6 +1120,7 @@ fn every_reply_variant_has_a_pinned_tag() {
             blob_version: 1,
             bytes: vec![],
         }),
+        Reply::ExecState(None),
     ];
 
     let mut tags = Vec::new();
@@ -998,6 +1141,7 @@ fn every_reply_variant_has_a_pinned_tag() {
             Reply::Snapshot { .. } => 0x0A,
             Reply::Recorded(_) => 0x0B,
             Reply::Console { .. } => 0x0C,
+            Reply::ExecState(_) => 0x0D,
         };
         let mut buf = Vec::new();
         encode_reply(1, &Ok(reply.clone()), &mut buf).expect("encode");
@@ -1009,7 +1153,7 @@ fn every_reply_variant_has_a_pinned_tag() {
 
     tags.sort_unstable();
     tags.dedup();
-    let mut expected_tags: Vec<u8> = (0x01u8..=0x0C).collect();
+    let mut expected_tags: Vec<u8> = (0x01u8..=0x0D).collect();
     expected_tags.retain(|t| *t != 0x02); // retired, never reused
     assert_eq!(
         tags, expected_tags,

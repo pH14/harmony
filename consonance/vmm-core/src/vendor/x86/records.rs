@@ -607,8 +607,12 @@ pub(crate) fn has_active_event_injection(e: &vmm_backend::VcpuEvents) -> bool {
 // end (the codec never interprets it). Total decode, no panic (rule #4).
 // ---------------------------------------------------------------------------
 
-/// Device-blob magic: `"DEV1"` read little-endian.
+/// Device-blob magic: `"DEV1"` read little-endian, used when the UART RX FIFO
+/// is empty so existing device blobs remain byte-identical.
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4544;
+/// Device-blob magic: `"DEV2"` read little-endian. This retains the existing
+/// layout and appends a length-prefixed unread UART RX FIFO.
+const DEVICE_BLOB_MAGIC_RX: u32 = 0x3256_4544;
 /// Device-blob layout version for a VM with **no pvclock channel** — the shape
 /// every composition that never called `enable_pvclock` encodes, byte-for-byte
 /// as before task 110. v2 added the ordered conformance `report_stream`; v3
@@ -639,13 +643,15 @@ const DEVICE_BLOB_VERSION_PVCLOCK: u16 = 5;
 
 /// The 8250 UART residual state a snapshot carries: the serial capture buffer (so a
 /// restored continuation reproduces byte-identical console output), the eight
-/// register shadows, the latched `LCR.DLAB` window, and the divisor-latch-high byte.
+/// register shadows, the latched `LCR.DLAB` window, the divisor-latch-high byte,
+/// and the unread RX FIFO in guest consumption order.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub(crate) struct UartState {
     pub capture: Vec<u8>,
     pub regs: [u8; 8],
     pub dlab: bool,
     pub dlm: u8,
+    pub rx: Vec<u8>,
 }
 
 /// The legacy-platform residual state: the PCI CONFIG_ADDRESS latch and the two
@@ -709,6 +715,23 @@ fn put_u32(out: &mut Vec<u8>, v: u32) {
 }
 fn put_u64(out: &mut Vec<u8>, v: u64) {
     out.extend_from_slice(&v.to_le_bytes());
+}
+
+/// Append the length and bytes of an optional unread UART RX record.
+fn append_uart_rx_record(out: &mut Vec<u8>, rx: &[u8]) {
+    if !rx.is_empty() {
+        put_u32(out, rx.len() as u32);
+        out.extend_from_slice(rx);
+    }
+}
+
+/// Append the optional unread UART RX record to the compact state-hash device
+/// chunk. Its marker identifies the extension because this chunk has no header.
+pub(crate) fn append_uart_rx_hash(out: &mut Vec<u8>, rx: &[u8]) {
+    if !rx.is_empty() {
+        out.extend_from_slice(&DEVICE_BLOB_MAGIC_RX.to_le_bytes());
+        append_uart_rx_record(out, rx);
+    }
 }
 
 /// Append the full [`vmm_backend::VcpuEvents`] in fixed declaration order (all POD;
@@ -775,7 +798,14 @@ fn put_lapic(out: &mut Vec<u8>, s: &LapicState) {
 /// Encode a [`DeviceState`] into the vmm-core device blob (the `DeviceBlob` bytes).
 pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
     let mut out = Vec::new();
-    put_u32(&mut out, DEVICE_BLOB_MAGIC);
+    put_u32(
+        &mut out,
+        if d.uart.rx.is_empty() {
+            DEVICE_BLOB_MAGIC
+        } else {
+            DEVICE_BLOB_MAGIC_RX
+        },
+    );
     // The version records whether a pvclock channel follows — an unoffered VM
     // encodes the v3 shape exactly as before task 110. Keep the legacy v4
     // bytes for states it already represented; only a registered pending page
@@ -835,6 +865,9 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
             out.push(u8::from(pv.armed));
         }
     }
+    // The RX extension trails every existing device shape. Empty queues use
+    // DEV1 above and therefore retain the historical bytes exactly.
+    append_uart_rx_record(&mut out, &d.uart.rx);
     DeviceBlob(out)
 }
 
@@ -950,9 +983,12 @@ impl<'a> Reader<'a> {
 pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotError> {
     let mut r = Reader::new(blob);
     let bad = |m: &'static str| SnapshotError::DeviceBlob(m);
-    if r.u32().ok_or(bad("truncated header"))? != DEVICE_BLOB_MAGIC {
-        return Err(bad("bad magic"));
-    }
+    let magic = r.u32().ok_or(bad("truncated header"))?;
+    let has_rx = match magic {
+        DEVICE_BLOB_MAGIC => false,
+        DEVICE_BLOB_MAGIC_RX => true,
+        _ => return Err(bad("bad magic")),
+    };
     // v3 (no pvclock channel), v4 (legacy channel record), and v5 (current
     // channel record) are readable shapes. The version is the offer flag, so a
     // page-off blob from main decodes unchanged and a page-on one carries its
@@ -1045,6 +1081,15 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
     } else {
         None
     };
+    let rx = if has_rx {
+        let len = r.u32().ok_or(bad("truncated uart rx len"))? as usize;
+        if len == 0 {
+            return Err(bad("DEV2 UART RX record must be nonempty"));
+        }
+        r.take(len).ok_or(bad("truncated uart rx"))?.to_vec()
+    } else {
+        Vec::new()
+    };
     if r.pos != blob.len() {
         return Err(bad("trailing bytes"));
     }
@@ -1056,6 +1101,7 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
             regs,
             dlab,
             dlm,
+            rx,
         },
         lapic,
         legacy,
@@ -1344,6 +1390,7 @@ mod tests {
                 regs: [0x01, 0x02, 0xC7, 0x03, 0x03, 0x00, 0x00, 0x00],
                 dlab: true,
                 dlm: 0x09,
+                rx: b"input".to_vec(),
             },
             lapic: Some(lapic_state(0x20)),
             legacy: Some(LegacyState {
@@ -1365,6 +1412,52 @@ mod tests {
         assert_eq!(decoded, d);
         // The report stream survives in execution order (not reordered/dropped).
         assert_eq!(decoded.report_stream, vec![0x1111_1111, 0, 0xDEAD_BEEF]);
+    }
+
+    #[test]
+    fn uart_rx_extension_preserves_fifo_and_rejects_bad_lengths() {
+        let mut state = DeviceState::default();
+        state.uart.rx = b"remaining".to_vec();
+        let blob = encode_device_blob(&state).0;
+        assert_eq!(
+            u32::from_le_bytes(blob[..4].try_into().unwrap()),
+            DEVICE_BLOB_MAGIC_RX
+        );
+        let decoded = decode_device_blob(&blob).unwrap();
+        assert_eq!(decoded.uart.rx, b"remaining");
+        assert_eq!(encode_device_blob(&decoded).0, blob);
+
+        let mut changed = state.clone();
+        changed.uart.rx = b"different".to_vec();
+        assert_ne!(
+            encode_device_blob(&changed).0,
+            blob,
+            "the unread FIFO must change the device blob used by state hashing"
+        );
+
+        let mut truncated = blob.clone();
+        truncated.pop();
+        assert!(matches!(
+            decode_device_blob(&truncated),
+            Err(SnapshotError::DeviceBlob("truncated uart rx"))
+        ));
+
+        let mut trailing = blob.clone();
+        trailing.push(0xA5);
+        assert!(matches!(
+            decode_device_blob(&trailing),
+            Err(SnapshotError::DeviceBlob("trailing bytes"))
+        ));
+
+        let rx_len = blob.len() - state.uart.rx.len() - 4;
+        let mut empty = blob.clone();
+        empty[rx_len..rx_len + 4].copy_from_slice(&0u32.to_le_bytes());
+        assert!(matches!(
+            decode_device_blob(&empty),
+            Err(SnapshotError::DeviceBlob(
+                "DEV2 UART RX record must be nonempty"
+            ))
+        ));
     }
 
     #[test]
@@ -2061,6 +2154,7 @@ mod tests {
                 regs: [0; 8],
                 dlab: false,
                 dlm: 0,
+                rx: Vec::new(),
             },
             lapic: None,
             legacy: None,
@@ -2247,6 +2341,7 @@ mod tests {
             );
             let decoded = decode_device_blob(blob).unwrap();
             assert_eq!(decoded.pvclock, Some(expected));
+            assert!(decoded.uart.rx.is_empty());
             assert_eq!(encode_device_blob(&decoded).0, blob);
         }
     }
