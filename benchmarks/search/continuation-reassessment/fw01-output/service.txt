@@ -1,0 +1,8 @@
+MainPID=0
+ExecMainStartTimestamp=Thu 2026-09-10 09:43:48 UTC
+ExecMainExitTimestamp=Thu 2026-09-10 09:44:39 UTC
+ExecMainStatus=1
+MemoryPeak=15765504
+CPUUsageNSec=51597185000
+ActiveState=failed
+SubState=failed

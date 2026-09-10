@@ -723,3 +723,15 @@ probe, with 1,185,240 expected auxiliary frames and a1.3M ceiling. One CPU,
 fixed 2026-09-10T10:11:58Z deadline apply. Stop at the first failure, without
 retry or replacement; preserve partial known work and its remaining unknown
 advancement within the charged case bound. No fresh search is registered.
+
+FW01 stopped after one input because its checker incorrectly required final
+mode3. All three native replays agreed on a living Bombs endpoint in mode9;
+the adapter terminal contract does not require in_play. Preserve the failed
+registration and its234,966 known auxiliary frames. This source-proved checker
+error warrants a separately frozen FW02 correction, not a performance-gate
+change. Reuse the completed first input without replay and run only the remaining
+five exact inputs,950,274 expected additional frames within a1M ceiling, on the
+same qualified probe with unchanged resource bounds. Stop at the first failure.
+The resumed cumulative ledger before FW02 is1,273,426,135 admitted search and
+61,139,911 known auxiliary frames. No fresh performance allocation follows
+automatically, and the original boss/Wily goal remains active and unachieved.

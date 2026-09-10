@@ -97,6 +97,30 @@ deadline is 2026-09-10T10:11:58Z. Four offline tests use a prior qualified nativ
 result and reject missing replay, terminal underflow and missing Bombs evidence.
 This registration precedes all FW01 execution.
 
+FW01 stopped after its first input: all three native passes completed and agreed
+on Bombs, health85 and endingfalse, but the checker required final mode3 and
+rejected mode9. That guard was stronger than the adapter contract. In
+`metroid/target.rs`, `MetroidTerminalPolicy::is_dead` checks zero/underflow health;
+`in_play` is a separate predicate. `Evaluation::is_terminal` in `campaign.rs`
+checks death, victory and emulator errors, without a gameplay-mode requirement.
+Milestones can be observed inside a held command whose complete input ends in
+another mode. No interpretation of mode9's animation is needed for this finding.
+
+The original [FW01 result](fw01-output/results.json), runner and registration
+remain failed and unchanged. Its [closed ledger](ledger-after-fw01.json) charges
+234,966 known frames; all three passes completed, with no unknown partial work.
+The remaining five inputs were not run. This is a measurement-contract error,
+not a failed policy comparison or a reason to rewrite a performance gate.
+
+[FW02](fw02-registration.json) separately freezes the corrected predicate and
+the remaining five inputs on the same binary. It rechecks the existing first
+input's artifacts without rerunning or recharging them. Six new offline tests
+use that actual mode9 result, preserve the original failure, and still reject
+terminal states, missing Bombs, incomplete replay and a wrong input identity.
+The new block expects 950,274 additional frames including setup, capped at1M,
+with the same one-CPU,4GiB,180-second case and20-minute block limits. Stop at its
+first failure. No fresh-search panel is allocated by this correction.
+
 ## Ordering findings stay separate from this candidate
 
 Two new source fixtures expose existing limitations without changing policies:
