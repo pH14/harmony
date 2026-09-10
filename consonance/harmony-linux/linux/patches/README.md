@@ -84,6 +84,9 @@ reads.
   `/dev/harmony` protocol and changes only its doorbell to the reserved ARM64
   MMIO GPA `0x0a000000`. It is applied after the explicit x86 base patch by
   `build-arm64-kernel.sh`; the ARM series never applies the x86 task-park patch.
+- `0014-arm64-harmony-cpu-relax-tick.patch` makes kernel `cpu_relax()` loops
+  ring the deterministic execution tick, so virtual-time deadlines and
+  rescheduling cannot freeze while the cooperative kernel is spinning.
 
 The arm64 build rejects surviving generic-counter reads, LL/SC instructions,
 and direct counter-compare programming in published artifacts.

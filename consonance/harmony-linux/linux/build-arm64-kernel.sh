@@ -130,6 +130,9 @@ apply_kernel_patch \
 apply_kernel_patch \
     "$LINUX_DIR/patches/arm64/0013-arm64-harmony-character-device.patch" \
     "arm64 Harmony MMIO character-device transport"
+apply_kernel_patch \
+    "$LINUX_DIR/patches/arm64/0014-arm64-harmony-cpu-relax-tick.patch" \
+    "harmony cooperative busy-wait tick"
 
 # The ARM patch is a small fix-up over the unchanged x86 protocol patch. Keep
 # this source-level contract fail-closed so a future rebase cannot silently
