@@ -14,7 +14,10 @@ from datetime import datetime, timezone
 
 def sha(path):
     with Path(path).open('rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').hexdigest()
+        digest = hashlib.sha256()
+        for block in iter(lambda:stream.read(1024*1024), b''):
+            digest.update(block)
+        return digest.hexdigest()
 
 
 def now():

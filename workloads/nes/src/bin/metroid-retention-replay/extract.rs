@@ -130,7 +130,14 @@ pub(super) fn run(request: &Path, output: &Path) -> Result<()> {
         })?;
         files.push(json!({"file":name,"sha256":sha(&payload),"bytes":payload.len()}));
     }
-    write(&output.join("record.json"), &record)?;
+    {
+        use std::io::Write;
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output.join("record.json"))?
+            .write_all(&serde_json::to_vec(&record)?)?;
+    }
     write(
         &output.join("manifest.json"),
         &json!({
