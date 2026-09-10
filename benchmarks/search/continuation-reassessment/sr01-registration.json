@@ -1,0 +1,79 @@
+{
+  "format": "scoped-return-sr01-registration-v1",
+  "host": "ms02",
+  "registered_utc": "2026-09-10T23:30:04.320894+00:00",
+  "deadline_utc": "2026-09-10T23:50:04.320894+00:00",
+  "synthesis_deadline_utc": "2026-09-11T00:05:04.320894+00:00",
+  "source_commit": "d8f795c218ad66c4535e457f44009eab71449261",
+  "binary": "/root/harmony-depth-transfer-20260909/builds/scoped-return-x86-001/metroid-archive-challenge", "binary_path_note": "# pragma: allowlist secret -- public local build path",
+  "binary_sha256": "2b27dc675a398b9843348c1e2eb906c1815984ec3dbe45993885bdc8500b6800",
+  "build_info": "/root/harmony-depth-transfer-20260909/builds/scoped-return-x86-001/build-info.json",
+  "build_info_sha256": "56d2d00d140f49e9dc50f103b145232585f74cf1e998c68296e1271010447287",
+  "protocol": "/root/harmony-depth-transfer-20260909/protocol/sr01-20260910",
+  "protocol_sha256": {
+    "run_sr01.py": "83a6cb14b8d41f01690af71136ce08d485221fda629a018e12bd5d5b5a489c67",
+    "score_sr01.py": "13050af73eb3886f4152107d14ce4ccf51eb199fe6a5fc30a8b51c672879cba9",
+    "run_pg01.py": "5eb502b82c9d253011d67274c09ead99201691d449b6d9e51993382c94a63500",
+    "run_pm01.py": "37514a2655082e77b2f23e50ed33abb890a60e88103c784e277c0989eca5d436",
+    "run_pc01.py": "18d90b084728f9b79ddb399d0cab5d3215d333fc5a06a92c65051048a75df752",
+    "pg01-prefix.json": "5126eee64820c99697194dec63a20c44491ec7f913d49e77e4fefb97f4f319c5",
+    "test_sr01.py": "ac94ce07a98ae3fdc70d224371d1d31e04576c21edf2134cd03cc177d9114518",
+    "ordinary-control-sr01-request.json": "0dc2f6ba7582888cef938725d66bdb885a5803c3af0c21e66dcd6468ab317b36",
+    "progress-control-sr01-request.json": "40e2ed0f46ac4e518777932e883a7297c9549276e529c2d7a3b6885829973a1a",
+    "progress-half-sr01-request.json": "36dfcde1c246667d1567d72f1da72f3da8ae177e41dcb816c23c4124565aa9f7",
+    "capacity-half-sr01-request.json": "16de2e89eb478147495be1fb3e4502bba09a6de3c616af5e4a007b3f91e03088"
+  },
+  "output": "/root/harmony-depth-transfer-20260909/runs/scoped-return-sr01",
+  "service": "harmony-scoped-return-sr01-20260910.service",
+  "cpus": [
+    4,
+    5,
+    6,
+    7
+  ],
+  "cgroup_limits": {
+    "memory.max": "4294967296",
+    "memory.swap.max": "0",
+    "pids.max": "64"
+  },
+  "service_runtime_seconds": 420,
+  "process_runtime_seconds": 90,
+  "output_limit_bytes": 1073741824,
+  "file_limit_bytes": 134217728,
+  "physical_frame_ceiling": 10100000,
+  "admitted_frame_ceiling_before_drain": 1000000,
+  "accepted_drain_frames": 2880,
+  "cells": [
+    {
+      "id": "ordinary-control",
+      "arm": "ordinary-control",
+      "pair": 0,
+      "request": "ordinary-control-sr01-request.json"
+    },
+    {
+      "id": "progress-control",
+      "arm": "progress-control",
+      "pair": 0,
+      "request": "progress-control-sr01-request.json"
+    },
+    {
+      "id": "progress-half",
+      "arm": "progress-half",
+      "pair": 0,
+      "request": "progress-half-sr01-request.json"
+    },
+    {
+      "id": "capacity-half",
+      "arm": "capacity-half",
+      "pair": 0,
+      "request": "capacity-half-sr01-request.json"
+    }
+  ],
+  "seed": 1540483488,
+  "scope": "Four-cell native implementation qualification only. Fixed supplied root, fresh common qualification seed, no efficacy estimate. Require all cell gates, positive alternative admissions in all optional arms, and first control/half difference to be a changed group-walk parent with shared mutation seed and identical prior records. No retries, replacement, horizon extension or use as development/validation data.",
+  "frame_bound": "Four times (2,000,000 direct ceiling + twice (250,000 admitted + 2,880 maximum in-flight drain) + 6*929 constructors) = 10,045,336 complete physical frames, below the allocated10,100,000. Failed/interrupted components remain unknown unless receipts close them.",
+  "ledger_before": {
+    "admitted_search": 2985486535,
+    "known_auxiliary": 74268821
+  }
+}

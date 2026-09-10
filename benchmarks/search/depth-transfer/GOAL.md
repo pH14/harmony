@@ -1384,3 +1384,18 @@ an efficacy panel. Source checks: 172 generic tests plus interface, seven caller
 tests with/without progress feature, strict searcher/caller Clippy. No native
 frames allocated or spent by this source change. Use ms02 only. All prior closed
 allocations and the ledger remain unchanged; the full goal remains active.
+
+
+## Prospective SR01 native implementation qualification
+
+A separate allocation is frozen in ../continuation-reassessment/sr01-registration.json:
+2026-09-10 23:30:04 through23:50:04UTC for native execution, synthesis by00:05:04UTC.
+ms02 only, four sequential250k-frame cells, one fresh qualification seed1540483488,
+unchanged root/actions, matched RNG control, half return, ordinary and capacity
+retention. Physical allowance10.1M includes all complete caller components;
+registered pre-drain search allowance1M. Per-process90s, service420s,4GiB, zero swap.
+Require all replay/identity/accounting gates and a first coupled parent divergence
+before the rule can earn a separately registered conditional screen. No efficacy
+estimate, retries, pooling, horizon rescue or validation allocation. Three offline
+scorer tests cover real serialized arm schemas and planted failures. No SR01 native
+execution has run at publication. Full goal remains active and unachieved.
