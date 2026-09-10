@@ -1,0 +1,30 @@
+{
+  "format": "continuation-cd01-second-wave-gate-v1",
+  "decision": "eligible_for_frozen_pairs_2_and_3_after_remote_preflight",
+  "registration_sha256": "68999f9437b2d43acab13d9411a80f8bd6b9361b85a0076ec92cc4551a30274d",
+  "first_wave_analysis_sha256": "8a946d1c5ecf9fbae76f46839cead57052956c4f239043bde30cffa1367a3663",
+  "completed_pairs": 2,
+  "strict_wins": 2,
+  "first_wave_admitted_frames": 545983390,
+  "first_wave_known_auxiliary_frames": 1307176,
+  "panels": {
+    "cd01-pair-0": {
+      "results_sha256": "c7cd706cfc4757933093c6c85466390f89568604267762480f5c20e5d0fb9b13",
+      "verification_sha256": "55063e6e635e536fe502e12a6af09c38fb39655becc60b5ef6be4be1f744f9a0",
+      "native_archive_sha256": "edbf3a8b2cf2827d58c0c55af78295a38f551bd653cb90b4736f70f29fcfd9ec"
+    },
+    "cd01-pair-1": {
+      "results_sha256": "2da51fc89cf98e1f8f06f9e6b1acc8ccf6f9eda43aa95ae868b032ef57a6999f",
+      "verification_sha256": "e527a2039a0dc7f575a3c9a84e96e3908b56b81353a21905a77cc34dd89b9af4",
+      "native_archive_sha256": "d8ab97396094b7533c3aaea6013d491287f6ab6d7388e7a561f473ff45c7bf1e"
+    }
+  },
+  "remaining_pairs": [
+    2,
+    3
+  ],
+  "remaining_nominal_admitted_frames": 800000000,
+  "remaining_service_bound_seconds": 5900,
+  "conditions": "Both initial services must remain terminal and their evidence hashes unchanged; both frozen remaining output directories and seeds must be unused; all registered assets/helpers/builds must match; full5900-second service bounds must fit before14:32:28 UTC. No changed policy, seed, order, horizon or restart.",
+  "scope": "Permission under the existing frozen allocation rule to finish development; not an efficacy pass or independent confirmation."
+}

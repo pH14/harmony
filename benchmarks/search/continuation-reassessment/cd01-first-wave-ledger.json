@@ -1,0 +1,23 @@
+{
+  "format": "continuation-cd01-first-wave-ledger-v1",
+  "scope": "Closed first wave only. Pairs2/3 are separately running within the same registered CD01 panel, so this is not the current total live ledger.",
+  "prior_ledger_sha256": "8587b689b769bf2b391c5a3f6ddf95c65cd57a62a2dffc3e16c3db48a40f4673",
+  "registration_sha256": "68999f9437b2d43acab13d9411a80f8bd6b9361b85a0076ec92cc4551a30274d",
+  "analysis_sha256": "8a946d1c5ecf9fbae76f46839cead57052956c4f239043bde30cffa1367a3663",
+  "completed_pairs": [
+    0,
+    1
+  ],
+  "admitted_search_frames": 545983390,
+  "bounded_stop_drain_frames": 4107,
+  "known_auxiliary_frames": 1307176,
+  "cumulative_through_first_wave_admitted_search_frames": 1819409525,
+  "cumulative_through_first_wave_known_auxiliary_frames": 65068019,
+  "first_wave_restricted_cost_ratio": 0.6033850910898398,
+  "first_wave_event_stopped_resource_ratios": {
+    "cpu_seconds": 0.5945831791903353,
+    "elapsed_seconds": 0.6266798612804931
+  },
+  "next_decision": "Finish the already-frozen pairs2/3 on ms02; both started sequential-arm services retain their own limits. Score all four pairs before any efficacy or confirmation decision.",
+  "unknown_costs": "Setup, unadmitted/failure-boundary work and any out-of-job reconstruction remain unknown. In-job origin reconstruction is included in admitted search. Earlier expired tranches stay separate."
+}

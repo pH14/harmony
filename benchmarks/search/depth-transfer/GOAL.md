@@ -819,3 +819,31 @@ candidate/control CPU/wall ratios at most1.25. No replayed old tape enters fresh
 search. A pass earns independent confirmation and then MM2; a failure earns no
 longer horizon, earlier milestone rescue, replacement seed or bank/order change.
 The original boss/Wily objective remains active and unachieved.
+
+## CD01 first wave completed; frozen second wave dispatched
+
+The first two fresh pairs both favor unchanged continuation. On seed1040692292,
+continuation reaches Bombs at106,972,762 admitted frames while its control is
+censored at200M. On seed2883914186, candidate and control reach Bombs at98,489,894
+and140,516,627. All three attainment witnesses replay alive. Native integrity,
+registered identity, CPU placement and resource checks pass for all four cells;
+both first-wave services terminate successfully. The frozen scorer returns
+continue_registered_panel with two strict wins, not an efficacy pass.
+
+That wave spends545,983,390 admitted search frames including4,107 stop-drain
+frames, plus1,307,176 known auxiliary frames. Cumulative through the closed wave
+is1,819,409,525 admitted search and65,068,019 known auxiliary; later live work
+must be added, and setup/unadmitted gaps remain unknown. All older failed gates
+remain closed.
+
+The unchanged second-wave seeds, identities, arm orders and full resource bounds
+pass the zero-emulation preflight. Pairs2/3 start at2026-09-10T11:23:33Z on ms02
+only, using cores0–3 and4–7 respectively. Their specific service handles are
+harmony-continuation-cd01-pair-2-20260910.service and
+harmony-continuation-cd01-pair-3-20260910.service. Both5,900-second service bounds
+fit before14:32:28Z. Verify these handles; a polling timeout is not a reason to
+restart. Complete each started bounded pair unless its own failure interrupts
+it, preserve its native outputs and recompute the complete four-pair gate.
+No new seed, policy, endpoint, horizon or allocation follows from the interim
+two-win result. Independent confirmation, MM2 and untouched boss/Wily validation
+remain unearned; the full goal remains active and unachieved.

@@ -1,0 +1,299 @@
+{
+  "format": "continuation-cd01-native-verification-v1",
+  "pair": 0,
+  "verified": true,
+  "registration_sha256": "68999f9437b2d43acab13d9411a80f8bd6b9361b85a0076ec92cc4551a30274d",
+  "panel_sha256": "c7cd706cfc4757933093c6c85466390f89568604267762480f5c20e5d0fb9b13",
+  "native_archive_sha256": "edbf3a8b2cf2827d58c0c55af78295a38f551bd653cb90b4736f70f29fcfd9ec",
+  "journal_sha256": "f987eae9d2215cb7c9086169a0ae835d0234fcd449718be03fa1c649677bebbf",
+  "service_invocation": "2801f85790e34952bb7b7f3c611923b9",
+  "service_elapsed_seconds": 2312.217974,
+  "service_cpu_nanoseconds": 7183756842000,
+  "service_memory_peak_bytes": 3172323328,
+  "records": [
+    {
+      "id": "cd01-pair-0-control",
+      "cpu_set": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "progress_records": 15817,
+      "record_elapsed_seconds": 1493.870398,
+      "elapsed_seconds": 1493.7668967890786,
+      "cpu_seconds": 4709.31663,
+      "max_process_rss_bytes": 3068481536,
+      "peak_disk_allocated_bytes_sampled": 80003072,
+      "witness_sha256": {
+        "brinstar": "ef108df38b1b9ccca34e6992e1d826de40c440cd33b5cfe65bb5e42c722a9acf",
+        "energy_tank": "0ffa0a35d46c25b86f311706e033851a63f8480ff6f7c66c2b0cde41c6e67064",
+        "long_beam": "25a613bc0ef064cd030b2292f02858377a9382278bb37367091632c99f788183",
+        "missile_capacity": "73d15b49e7886c6478f4c6a325f07bc9daff9954fcb4f4cb3315b77931595505",
+        "morph_ball": "75fdb700bb3f4485bb798c4d044f38c12b336f49ad27194c15b4d2dfa5ed1613",
+        "norfair": "f8195c9d855c545e7669e13f3bb793f45ff3782ca9318dedd887d04cc06d5464"
+      }
+    },
+    {
+      "id": "cd01-pair-0-candidate",
+      "cpu_set": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "progress_records": 9038,
+      "record_elapsed_seconds": 818.319242,
+      "elapsed_seconds": 818.2653721210081,
+      "cpu_seconds": 2463.465344,
+      "max_process_rss_bytes": 2021900288,
+      "peak_disk_allocated_bytes_sampled": 45608960,
+      "witness_sha256": {
+        "bombs": "d29218d4326ef7444ff2ddbaf715844b64927ec70c243e8b8021b574cd43ef85",
+        "brinstar": "ef108df38b1b9ccca34e6992e1d826de40c440cd33b5cfe65bb5e42c722a9acf",
+        "energy_tank": "13949e3181159d9a480a3a59c4adab9029aea76cc03408f5342183e7b2dc5591",
+        "missile_capacity": "197d1848ed2edbbe6cc8123cdda8e079bae9c17613378ff33e415181deac3939",
+        "morph_ball": "833a47898dfb8d1b639dd526673496220618014c1e1ccd0c2539949ef3b42d1c",
+        "norfair": "6079c0946c862cda0b826c06f0b2990bc7e138afa5985f42797be16e067c7ac4"
+      }
+    }
+  ],
+  "members": [
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control.json",
+      "bytes": 853,
+      "sha256": "6764cb340ec1a88f632af18e3a8adc42ba9e5493e7d7893dac668873e04a2d5c"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/resources.jsonl",
+      "bytes": 3071021,
+      "sha256": "66abcc56a6fc44df5cdbb8b17ecd327d70fbf80df32d61f2bd6ae7866386176b"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/campaign/milestone-inputs/missile_capacity.json",
+      "bytes": 13292,
+      "sha256": "197d1848ed2edbbe6cc8123cdda8e079bae9c17613378ff33e415181deac3939"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/campaign/milestone-inputs/morph_ball.json",
+      "bytes": 362,
+      "sha256": "833a47898dfb8d1b639dd526673496220618014c1e1ccd0c2539949ef3b42d1c"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/campaign/milestone-inputs/bombs.json",
+      "bytes": 44490,
+      "sha256": "d29218d4326ef7444ff2ddbaf715844b64927ec70c243e8b8021b574cd43ef85"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/campaign/milestone-inputs/energy_tank.json",
+      "bytes": 35855,
+      "sha256": "13949e3181159d9a480a3a59c4adab9029aea76cc03408f5342183e7b2dc5591"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/campaign/milestone-inputs/norfair.json",
+      "bytes": 15526,
+      "sha256": "6079c0946c862cda0b826c06f0b2990bc7e138afa5985f42797be16e067c7ac4"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/campaign/milestone-inputs/brinstar.json",
+      "bytes": 44,
+      "sha256": "ef108df38b1b9ccca34e6992e1d826de40c440cd33b5cfe65bb5e42c722a9acf"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/campaign/campaign.json",
+      "bytes": 169642,
+      "sha256": "bd5032ef3292f2ed7e2cbc88854dd2f7b57a97df8e61d6fb5f18859f6c3e3717"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/campaign/progress.jsonl",
+      "bytes": 30962393,
+      "sha256": "cefeb1c25a75da0356c132c6df5b4476152f69f45311af4b564b56f2c3349f4b"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/campaign/identity.json",
+      "bytes": 1900,
+      "sha256": "73e3cb7fe7ba6344a73d1466f31f606172d8e4012973148a8b2ceef788857e5c"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/campaign/witness-input.json",
+      "bytes": 44491,
+      "sha256": "6368669d68ccca35ef9c49d73f9df7e13231799d874c4cbfc124b78311b80e95"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/campaign/retention-audit.json",
+      "bytes": 2978144,
+      "sha256": "0a19b83e0ac385a5ceedbdaeb0156f65493493430d0d67c484cf89dd302f8026"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/campaign/phase.json",
+      "bytes": 49,
+      "sha256": "dee24329a6716ee634e7f1c06054638ee01fa8f7efdc0101353dbc846cb8d2fb"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/campaign/result.json",
+      "bytes": 10549,
+      "sha256": "5ea31b83033582c22607f8d821678d848cf41aba74682440a21efcec9db32006"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/request.private.json",
+      "bytes": 714,
+      "sha256": "008d929296708fb33309f3a0514f9a26aa26490cb38c4706c99da6d403a57698"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/summary.json",
+      "bytes": 19740,
+      "sha256": "0e9a09bc90853a78fb2e30ef53f0a89a0a851cd441c9284195df857c3f1153e4"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/stderr.log",
+      "bytes": 8195923,
+      "sha256": "8efc7dcbdcd01a5f391615a4c8f9cec6978477fb1b89e74ab3bbd8f019bb7515"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/matrix.json",
+      "bytes": 1714,
+      "sha256": "d95d0145af5a25f521b059f85c5e3a9741ca12d3b8a7cbd3880cda6d91b1ccdb"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/suite.json",
+      "bytes": 679,
+      "sha256": "5567bf70cc2f54ae4010cb85d824a3068700d0405982494792370160187fcff0"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate/results.json",
+      "bytes": 19742,
+      "sha256": "94ebdd0aa02860bfd225adcd2a0a9c16bb998cac7d20e3ff184b3e10cd6bae32"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate.log",
+      "bytes": 104,
+      "sha256": "7d3bb45f326c233af5a51d341f54c77d8902da4e65a5fd72e62821aaf2224e8c"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/resources.jsonl",
+      "bytes": 5693056,
+      "sha256": "026d8b0663b3c760b84027f324116069c9192eacbe77480b5f20c6ce8e58d7ba"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/campaign/milestone-inputs/missile_capacity.json",
+      "bytes": 13009,
+      "sha256": "73d15b49e7886c6478f4c6a325f07bc9daff9954fcb4f4cb3315b77931595505"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/campaign/milestone-inputs/morph_ball.json",
+      "bytes": 619,
+      "sha256": "75fdb700bb3f4485bb798c4d044f38c12b336f49ad27194c15b4d2dfa5ed1613"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/campaign/milestone-inputs/long_beam.json",
+      "bytes": 50216,
+      "sha256": "25a613bc0ef064cd030b2292f02858377a9382278bb37367091632c99f788183"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/campaign/milestone-inputs/energy_tank.json",
+      "bytes": 36244,
+      "sha256": "0ffa0a35d46c25b86f311706e033851a63f8480ff6f7c66c2b0cde41c6e67064"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/campaign/milestone-inputs/norfair.json",
+      "bytes": 14961,
+      "sha256": "f8195c9d855c545e7669e13f3bb793f45ff3782ca9318dedd887d04cc06d5464"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/campaign/milestone-inputs/brinstar.json",
+      "bytes": 44,
+      "sha256": "ef108df38b1b9ccca34e6992e1d826de40c440cd33b5cfe65bb5e42c722a9acf"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/campaign/campaign.json",
+      "bytes": 258596,
+      "sha256": "8d0fa17e0789ad30b8eff0612c9c79502c08a51351bada8bb068a5caf559e4b2"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/campaign/progress.jsonl",
+      "bytes": 55088801,
+      "sha256": "93e49f32ae2778368f99d77f75c069e658784e6f8991436c32ac1dc8109fef55"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/campaign/identity.json",
+      "bytes": 1889,
+      "sha256": "87aa97fd9f9a16c037de990973901928d896c51860b6c524d44cd1cf2316a0bf"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/campaign/witness-input.json",
+      "bytes": 53394,
+      "sha256": "39c6a46f82aee2e4da924228badff17c4abb4202bcb544897ecab5dd03165bfa"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/campaign/retention-audit.json",
+      "bytes": 4239606,
+      "sha256": "9bf16ccaee4fa99d8938007dcad5e930da7b581114413e7091fc889aefc964e0"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/campaign/phase.json",
+      "bytes": 49,
+      "sha256": "492bb12a0c1b52e3e5df0f0e9970eafbb328950786031033ae07812500243a8e"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/campaign/result.json",
+      "bytes": 10531,
+      "sha256": "c118b85e1e3594a1f6faed422708b6c0e1b9ffa11ae192600522e480b5a946e5"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/request.private.json",
+      "bytes": 703,
+      "sha256": "19a161f985c83e053645a549d61be0808822e87d62676ca3fe9f8eb553115bee"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/summary.json",
+      "bytes": 19727,
+      "sha256": "8e31ec6071bb39c946ac0e5f7ea479ab0072828d9096626a5952de4485fc7c9c"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/stderr.log",
+      "bytes": 14466903,
+      "sha256": "e0d3206ed8a7d117530f85f2276785c4a55b39222d54e25128c0817c99ea5aa2"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/matrix.json",
+      "bytes": 1714,
+      "sha256": "d95d0145af5a25f521b059f85c5e3a9741ca12d3b8a7cbd3880cda6d91b1ccdb"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/suite.json",
+      "bytes": 666,
+      "sha256": "608d996df674c1ccf6da6ff7f7596c1d84582d38c9de5e89f298540f5c6bc0ca"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control/results.json",
+      "bytes": 19729,
+      "sha256": "0a0309fb91f8c6e6688cda4f54010c3a69688b6b869bd2c075cebeb8a9a44787"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-control.log",
+      "bytes": 105,
+      "sha256": "7c35dbc3c1deff20f3d271e9f133a607527b893649bc9fc304068066997094a3"
+    },
+    {
+      "path": "cd01-pair-0/cd01-pair-0-candidate.json",
+      "bytes": 866,
+      "sha256": "c27d554301eace52770644fbb36061df21fd1726e3ba5cf69d82bb1dbcd019f1"
+    },
+    {
+      "path": "cd01-pair-0/results.json",
+      "bytes": 72657,
+      "sha256": "c7cd706cfc4757933093c6c85466390f89568604267762480f5c20e5d0fb9b13"
+    }
+  ],
+  "limits": "Offline integrity and registered resource checks only. Use the unchanged frozen scorer after each complete wave for allocation; this report does not authorize a wave."
+}

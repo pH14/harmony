@@ -241,6 +241,48 @@ grants no score beyond200M. The fixed experiment deadline is2026-09-10T14:32:28Z
 the following hour is reserved for synthesis. No earlier tranche is extended.
 This registration precedes CD01 native execution.
 
+The first wave is complete. The unchanged [frozen scorer](score_cd01.py)
+records two strict wins and permits the remaining registered pairs; it does
+not declare a four-pair pass from these interim results.
+
+| Fresh seed | Control first Bombs | Continuation first Bombs | Result |
+| --- | ---: | ---: | --- |
+| 1040692292 | Not attained by 200M | 106,972,762 | Strict win |
+| 2883914186 | 140,516,627 | 98,489,894 | Strict win |
+
+The first-wave restricted-cost ratio is 0.6034, with event-stopped CPU and wall
+ratios 0.5946 and 0.6267. These are descriptive interim measurements, not a
+population effect or an independent confirmation. All three Bombs witnesses
+replay alive. All four runs match the registered identities and CPU placement,
+stay within the resource bounds, and finish their registered endpoint or frame
+horizon. Complete native archives, member hashes and service journals are in
+[cd01-output](cd01-output); [the offline verifier](verify_cd01_native.py) checks
+their integrity and actual resource measurements without running an emulator.
+
+The [first-wave ledger](cd01-first-wave-ledger.json) charges 545,983,390 admitted
+frames, including 4,107 stop-drain frames, and 1,307,176 known auxiliary frames.
+Through that closed wave, resumed totals are 1,819,409,525 admitted search and
+65,068,019 known auxiliary frames. These totals exclude the still-running
+second wave and retain the earlier unknown costs.
+
+The [recorded gate](cd01-second-wave-gate.json) and zero-emulation
+[preflight](cd01-second-wave-preflight.json) permit only the frozen remaining
+pairs. Both started on ms02 at 11:23:33 UTC on September 10, with opposite arm
+orders from the first wave on their respective CPU groups. The
+[dispatch record](cd01-second-wave-dispatch.jsonl) binds live service identities
+and actual limits. Their full 5,900-second service bounds fit before the same
+deadline. Live status must be checked using those handles; this document is a
+historical dispatch record. No independent confirmation, MM2 transfer or
+untouched validation is yet earned.
+
+Recompute the completed wave without emulation:
+
+```sh
+python3 benchmarks/search/continuation-reassessment/verify_cd01_native.py --protocol benchmarks/search/continuation-reassessment --evidence benchmarks/search/continuation-reassessment/cd01-output --pair 0 --out /tmp/cd01-pair-0-verification.json
+python3 benchmarks/search/continuation-reassessment/verify_cd01_native.py --protocol benchmarks/search/continuation-reassessment --evidence benchmarks/search/continuation-reassessment/cd01-output --pair 1 --out /tmp/cd01-pair-1-verification.json
+python3 benchmarks/search/continuation-reassessment/score_cd01.py --registration benchmarks/search/continuation-reassessment/cd01-registration.json --evidence benchmarks/search/continuation-reassessment/cd01-output --out /tmp/cd01-first-wave-analysis.json
+```
+
 ## Ordering findings stay separate from this candidate
 
 Two new source fixtures expose existing limitations without changing policies:
