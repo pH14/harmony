@@ -136,3 +136,14 @@ guest state that a command changed. The original finding stays recorded.
 The Consonance backend needs Linux and KVM. The action model, the bundle
 parser, the archive key, the image preparation and the report shapes are
 portable and tested everywhere.
+
+## What the search does not consume
+
+Harmony ships a coverage runtime, `libvoidstar.so`, exporting
+`__sanitizer_cov_trace_pc_guard` and the `harmony_coverage_*` calls. This
+package does not install it into a workload rootfs, and the fault search
+consumes no basic-block identities: it draws over the action alphabet the
+bundle declares, guided by the assertion and reachability points the workload
+reports. Building a workload with sanitizer coverage therefore adds no
+exploration signal here, and a report must not claim coverage-guided
+exploration from the presence of the flag.

@@ -30,7 +30,21 @@ matched budgets, and every attempt keeps its own record.
 | [`eval.py`](eval.py) | Preparation, budgets, freezing, evaluation, reports |
 | [`adapters.py`](adapters.py) | The agent adapters. `claude-code` drives the installed CLI; `echo` runs no model so CI can check the runner without credentials |
 | [`panels.py`](panels.py) | Each panel's assignment, tool access, and artifact checks |
-| [`fixture.py`](fixture.py) | The investigation panel's workspace, either adopted from a real search or derived from the historical case |
+| [`fixture.py`](fixture.py) | The investigation panel's workspace, either adopted from a real search or derived from the historical case, and the preparation panels' source and contract |
+
+Three panels ship:
+
+| Panel | Starts from | Needs |
+| --- | --- | --- |
+| `investigation` | A workspace holding a recorded finding | Nothing beyond the CLI |
+| `integration` | The pinned PostgreSQL release and a contract for `CREATE INDEX CONCURRENTLY` | Docker and KVM |
+| `end-to-end` | The same, plus the workspace commands | Docker and KVM |
+
+The preparation panels stage the release from
+`bugs/historical/postgres-cic-corruption/case.json`'s pin and verify its
+checksum; pass `--source-tarball` to use a local copy. Their grader reads the
+submitted bundle through `harmony preflight --bundle`, so a submission is
+graded by the same parser the product uses.
 
 `--adapter` selects the agent, `--model` and `--effort` its settings. Nothing
 about a fixture, a skill, or a grading rule names a model, so a different
@@ -71,14 +85,8 @@ a very large codebase more than the three Harmony skills.
 
 Give each attempt this task, with concrete workspace paths supplied by the runner:
 
-> Prepare the supplied PostgreSQL 14.3 source for testing in Harmony. Focus on
-> the correctness of `CREATE INDEX CONCURRENTLY` under concurrent updates and
-> maintenance. Identify and prioritize properties from the supplied contract,
-> implement useful checks and observations, and produce a reproducible build
-> and workload. Use supported compiler or runtime instrumentation where it
-> materially improves Harmony's exploration. Preserve PostgreSQL semantics.
-> Validate the integration using the provided execution service and record
-> verified results, limitations, and supporting artifacts.
+The shipped wording is `INTEGRATION_PROMPT` in [`panels.py`](panels.py), which
+is what the runner freezes and what `qualify` digests.
 
 Supply source, ordinary application documentation, pinned build dependencies,
 Harmony SDK references, and development execution access. In the skills arm,
@@ -227,21 +235,24 @@ agent-visible development logs from evaluator-only results.
 Reproducibility means re-evaluating the frozen submission and replaying workload
 artifacts. It does not promise identical model decisions on a fresh attempt.
 
-## What the integration panels need
+## Where the runner falls short of this contract
 
-The investigation panel runs. The integration and end-to-end panels need
-material this repository does not yet contain, and their prompts and checks in
-[`panels.py`](panels.py) are written against it:
+All three panels run from one runner and are graded on artifacts. Two parts of
+the contract above are met differently, and every attempt record says so:
 
-- An agent-visible PostgreSQL CIC contract and source package that omit the
-  existing Harmony case, its explanation, its probe, its witness, and the fix.
-- An execution service the attempt calls to run bounded Harmony campaigns on a
-  KVM worker, accepting artifacts and run settings rather than host paths or
-  shell commands.
-- A container image for the attempt workspace, with pinned dependencies and
-  restricted egress. A directory on the runner host is weaker isolation and is
-  recorded as such in each attempt.
-- A decision on PostgreSQL compiler instrumentation: qualify the build,
-  runtime, symbolization and search-feedback path, or record which part is
-  absent. Until then, score capability assessment and the semantic oracle path
-  and award nothing for flags alone.
+- **Execution access is the CLI on the runner, not a separate service.** The
+  contract asks for a service that owns KVM and accepts artifacts and bounded
+  run settings. A preparation attempt instead gets `harmony` on its PATH and a
+  per-panel command allowlist, on a runner that has Docker and `/dev/kvm`. The
+  budget in `EXECUTION.md` is stated to the attempt and checked afterwards from
+  the transcript rather than enforced by a service.
+- **Isolation is a directory, not a pinned container.** The attempt's file
+  tools are confined to it and its commands are the allowlist, but it shares
+  the runner and the operator's agent configuration. Each attempt records
+  `isolation`, and the report prints it.
+
+PostgreSQL compiler instrumentation stays unqualified. The build, runtime,
+symbolization, and search-feedback path are not established, and the fault
+search consumes no basic-block identities, so the references tell an attempt
+not to claim coverage-guided exploration from a flag. Score capability
+assessment and the semantic oracle path; award nothing for flags alone.

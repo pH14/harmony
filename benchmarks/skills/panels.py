@@ -62,38 +62,58 @@ recorded finding.
 """
 
 INTEGRATION_PROMPT = """\
-Prepare the PostgreSQL source in `source/` for testing in Harmony.
+Prepare the PostgreSQL release in `source/` for testing in Harmony.
 
 Focus on the correctness of `CREATE INDEX CONCURRENTLY` under concurrent
 updates and maintenance. Read `CONTRACT.md` for the behavior that feature is
-supposed to have.
+supposed to have, `WORKLOAD-README.md` and `SDK-README.md` for how a workload
+declares and reports itself, and `EXECUTION.md` for how to build and run one.
 
-Identify and prioritize the properties worth checking, implement checks and
-observations for them, and produce a reproducible build and workload image.
-Use supported compiler or runtime instrumentation only where it materially
-improves Harmony's exploration. Preserve PostgreSQL's semantics.
+Identify and prioritize the properties worth checking. Implement checks and
+observations for them, and produce a reproducible build and a workload image.
+Preserve PostgreSQL's semantics: do not patch the source to make a check pass.
+Use compiler or runtime instrumentation only where the references say it
+changes what Harmony explores.
 
-Validate the integration using the execution service described in
-`EXECUTION.md` and record verified results, limitations, and the artifacts that
-support them.
+Leave your work in this directory:
 
-Write your answer to `REPORT.md` in this directory.
+* `bundle` — the workload bundle the image carries, declaring its nodes, hooks,
+  properties, and diagnostics.
+* `Dockerfile` and anything it needs, pinning the source by checksum.
+* `REPORT.md`.
+
+`REPORT.md` must state the properties you chose and why, which check evaluates
+each one and what its silence means, what you ran and what the results were,
+and what the integration does not cover.
+
+Check your bundle with `harmony preflight --bundle bundle` before you finish.
+Report what you verified and what you did not. Do not claim a result you did
+not run.
 """
 
 END_TO_END_PROMPT = INTEGRATION_PROMPT.rstrip() + """
 
-Then run a bounded campaign within the budget in `EXECUTION.md`, investigate
-any finding it produces with the workspace commands in `CLI-README.md`, and
-report what the evidence establishes.
+Then run one bounded campaign within the budget in `EXECUTION.md`, writing its
+workspace to `campaign/`. If it produces a finding, investigate it with the
+workspace commands in `CLI-README.md` and cite the moment and evidence ids the
+CLI returned.
+
+A campaign that finds nothing is not proof the workload is correct. Say what
+ran, what stopped it, and what it did not reach.
 """
+
+# Reading and building are the same everywhere; a preparation panel adds the
+# tools that turn source into an image and the CLI that runs it.
+READING = ["ls", "cat", "head", "tail", "grep", "wc", "jq", "find", "sed", "awk"]
+BUILDING = ["tar", "bzip2", "docker", "make", "sh", "cp", "mv", "mkdir",
+            "chmod", "sha256sum", "shasum", "printf", "echo", "test", "true"]
 
 PANELS = {
     "investigation": Panel(
         name="investigation",
         needs_kvm=False,
         tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
-        bash_allow=["harmony", "ls", "cat", "head", "tail", "grep", "wc",
-                    "jq", "find", "sed", "awk"],
+        bash_allow=["harmony", *READING],
         prompt=INVESTIGATION_PROMPT,
         materials=["workspace", "CLI-README.md"],
     ),
@@ -101,18 +121,19 @@ PANELS = {
         name="integration",
         needs_kvm=True,
         tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
-        bash_allow=[],
+        bash_allow=["harmony", *READING, *BUILDING],
         prompt=INTEGRATION_PROMPT,
-        materials=["source", "CONTRACT.md", "EXECUTION.md", "SDK-README.md"],
+        materials=["source", "CONTRACT.md", "EXECUTION.md", "SDK-README.md",
+                   "WORKLOAD-README.md"],
     ),
     "end-to-end": Panel(
         name="end-to-end",
         needs_kvm=True,
         tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
-        bash_allow=[],
+        bash_allow=["harmony", *READING, *BUILDING],
         prompt=END_TO_END_PROMPT,
         materials=["source", "CONTRACT.md", "EXECUTION.md", "SDK-README.md",
-                   "CLI-README.md"],
+                   "WORKLOAD-README.md", "CLI-README.md"],
     ),
 }
 
@@ -155,7 +176,7 @@ def _verbs(commands: list[str]) -> set[str]:
 
 
 def grade_investigation(attempt_dir: Path, transcript: list[dict],
-                        baseline: str) -> list[Check]:
+                        baseline: str, harmony: Path) -> list[Check]:
     """Check one investigation attempt against its artifacts."""
     report_path = attempt_dir / "REPORT.md"
     report = report_path.read_text() if report_path.exists() else ""
@@ -217,8 +238,152 @@ def _finding_record(workspace: Path) -> dict:
     return {}
 
 
+def source_baseline(source: Path) -> str:
+    """What a preparation attempt must leave as it found it."""
+    return _source_digest(source)
+
+
 def baseline_finding(workspace: Path) -> str:
     return json.dumps(_finding_record(workspace), sort_keys=True)
 
 
-GRADERS = {"investigation": grade_investigation}
+def _bundle_report(harmony: Path, bundle: Path) -> dict:
+    """What `harmony preflight --bundle` says about a submitted bundle.
+
+    Grading reads the bundle through the shipping parser rather than a copy of
+    the grammar, so a bundle that grades well is one the product accepts.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [str(harmony), "--json", "preflight", "--bundle", str(bundle)],
+        capture_output=True, text=True, check=False)
+    try:
+        return json.loads(result.stdout).get("bundle") or {}
+    except json.JSONDecodeError:
+        return {"error": result.stderr.strip() or "preflight produced no report"}
+
+
+def _programs(bundle: Path) -> set[str]:
+    """Every guest program a bundle names, by the path it names."""
+    found = set()
+    for line in (bundle.read_text().splitlines() if bundle.exists() else []):
+        words = line.split()
+        if not words:
+            continue
+        if words[0] in ("setup", "ready") and len(words) > 1:
+            found.add(words[1])
+        elif words[0] in ("node", "hook") and len(words) > 2:
+            found.add(words[2])
+    return found
+
+
+def _source_digest(root: Path) -> str:
+    """The digest of the supplied release, ignoring anything unpacked beside it."""
+    tarballs = sorted(root.glob("*.tar.bz2"))
+    return digest_tree(root) if not tarballs else hashlib.sha256(
+        b"".join(p.read_bytes() for p in tarballs)).hexdigest()
+
+
+def grade_integration(attempt_dir: Path, transcript: list[dict],
+                      baseline: str, harmony: Path) -> list[Check]:
+    """Check one preparation attempt against the artifacts it left behind."""
+    report_path = attempt_dir / "REPORT.md"
+    report = report_path.read_text() if report_path.exists() else ""
+    lowered = report.lower()
+    bundle_path = attempt_dir / "bundle"
+    declared = _bundle_report(harmony, bundle_path) if bundle_path.exists() else {}
+    assertions = declared.get("assertions") or []
+    recipe = "\n".join(
+        path.read_text(errors="replace")
+        for path in sorted(attempt_dir.glob("Dockerfile*")))
+    named = _programs(bundle_path)
+
+    checks = [
+        Check("submitted a report", bool(report.strip()),
+              f"{len(report)} characters"),
+        Check("produced a bundle", bundle_path.exists(),
+              f"looked for {bundle_path.name}"),
+        Check("the bundle is one the product accepts",
+              bool(declared) and declared.get("error") is None
+              and not declared.get("blockers"),
+              declared.get("error") or "; ".join(declared.get("blockers") or [])
+              or ("no bundle" if not declared else "no blockers")),
+        Check("declared a property that can fail",
+              any(a.startswith("always ") for a in assertions),
+              f"{len(assertions)} declared: "
+              + "; ".join(a.split(":")[0] for a in assertions)),
+        Check("declared a way to read evidence",
+              bool(declared.get("diagnostics")),
+              f"diagnostics: {', '.join(declared.get('diagnostics') or []) or 'none'}"),
+        Check("pinned the source by checksum",
+              re.search(r"\b[0-9a-f]{64}\b", recipe) is not None,
+              f"{len(recipe)} characters of build recipe"),
+        Check("built for the guest architecture",
+              "amd64" in recipe or "x86_64" in recipe,
+              "looked for an explicit linux/amd64 build"),
+        Check("left the supplied release unmodified",
+              _source_digest(attempt_dir / "source") == baseline,
+              "compared the release tarball before and after"),
+        Check("wrote the programs the bundle names",
+              bool(named) and all(
+                  (attempt_dir / Path(argv).name).exists()
+                  or Path(argv).name in recipe for argv in named),
+              f"bundle names {', '.join(sorted(named)) or 'nothing'}"),
+        Check("did not claim coverage-guided exploration",
+              "libvoidstar" not in lowered
+              or any(word in lowered for word in
+                     ("no exploration signal", "not consumed", "consumes no",
+                      "adds no")),
+              "the fault search consumes no basic-block identities",
+              kind="claim"),
+        Check("said what the integration does not cover",
+              any(word in lowered for word in
+                  ("does not cover", "not covered", "limitation", "did not run",
+                   "could not", "unverified", "untested")),
+              "looked for a stated limit", kind="claim"),
+    ]
+    return checks
+
+
+def grade_end_to_end(attempt_dir: Path, transcript: list[dict],
+                     baseline: str, harmony: Path) -> list[Check]:
+    """The preparation checks, plus what the campaign and its workspace show."""
+    checks = grade_integration(attempt_dir, transcript, baseline, harmony)
+    report_path = attempt_dir / "REPORT.md"
+    report = report_path.read_text() if report_path.exists() else ""
+    lowered = report.lower()
+    campaign = attempt_dir / "campaign"
+    commands = _commands(transcript)
+    searched = any("harmony" in c and "search" in c for c in commands)
+    findings = _finding_record(campaign)
+
+    checks += [
+        Check("ran one campaign", searched and (campaign / "journal").is_dir(),
+              f"{len(commands)} commands; workspace "
+              + ("present" if (campaign / "journal").is_dir() else "absent")),
+        Check("stayed inside the campaign budget",
+              sum(1 for c in commands if "harmony" in c and "search" in c) <= 1,
+              "one campaign is the budget"),
+        Check("investigated the finding it produced" if findings
+              else "did not claim a finding it does not have",
+              bool(_verbs(commands) & {"inspect", "findings"}) if findings
+              else "bug-1" not in lowered,
+              "the campaign recorded a finding" if findings
+              else "the campaign recorded no finding"),
+        Check("did not read a bounded campaign as proof of correctness",
+              bool(findings) or any(
+                  word in lowered for word in
+                  ("not proof", "does not prove", "no finding", "found nothing",
+                   "cannot conclude")),
+              "a campaign with no finding establishes nothing about correctness",
+              kind="claim"),
+    ]
+    return checks
+
+
+GRADERS = {
+    "investigation": grade_investigation,
+    "integration": grade_integration,
+    "end-to-end": grade_end_to_end,
+}

@@ -75,6 +75,15 @@ def _skills_digest() -> dict:
             for path in sorted(root.rglob("*.md"))}
 
 
+# Panel material name -> the shipped document it is a copy of.
+REFERENCES = {
+    "CLI-README.md": Path("cli") / "README.md",
+    "SDK-README.md": Path("consonance") / "harmony-linux" / "sdk" / "README.md",
+    "WORKLOAD-README.md": Path("workloads") / "fault-agent" / "README.md",
+    "PACKAGE-README.md": Path("workloads") / "faults" / "README.md",
+}
+
+
 def prepare(attempt_dir: Path, panel: panels.Panel, arm: str, harmony: Path,
             fixture_facts: dict) -> dict:
     """Lay out one attempt's isolated workspace."""
@@ -87,13 +96,20 @@ def prepare(attempt_dir: Path, panel: panels.Panel, arm: str, harmony: Path,
         source = Path(fixture_facts["workspace"])
         shutil.copytree(source, attempt_dir / "workspace")
         supplied.append("workspace/")
-    if "CLI-README.md" in panel.materials:
-        shutil.copy(REPOSITORY / "cli" / "README.md", attempt_dir / "CLI-README.md")
-        supplied.append("CLI-README.md")
-    if "SDK-README.md" in panel.materials:
-        shutil.copy(REPOSITORY / "consonance" / "harmony-linux" / "sdk" / "README.md",
-                    attempt_dir / "SDK-README.md")
-        supplied.append("SDK-README.md")
+    if "source" in panel.materials:
+        materials = Path(fixture_facts["materials"])
+        shutil.copytree(materials / "source", attempt_dir / "source")
+        supplied.append("source/")
+        for name in ("CONTRACT.md", "EXECUTION.md"):
+            if name in panel.materials:
+                shutil.copy(materials / name, attempt_dir / name)
+                supplied.append(name)
+    # The references are the shipped documents, so both arms read what a human
+    # reads and neither gets a summary written for the evaluation.
+    for name, path in REFERENCES.items():
+        if name in panel.materials:
+            shutil.copy(REPOSITORY / path, attempt_dir / name)
+            supplied.append(name)
 
     # Both arms drive the same binary through the same path.
     tools = attempt_dir / "bin"
@@ -153,8 +169,14 @@ def one_attempt(out: Path, panel: panels.Panel, arm: str, index: int,
     record_dir.mkdir(parents=True, exist_ok=True)
     attempt_dir = record_dir / "attempt"
     supplied = prepare(attempt_dir, panel, arm, harmony, fixture_facts)
-    baseline = (panels.baseline_finding(attempt_dir / "workspace")
-                if (attempt_dir / "workspace").exists() else "")
+    # What the attempt must not change: the recorded finding for an
+    # investigation, the supplied release for a preparation panel.
+    if (attempt_dir / "workspace").exists():
+        baseline = panels.baseline_finding(attempt_dir / "workspace")
+    elif (attempt_dir / "source").exists():
+        baseline = panels.source_baseline(attempt_dir / "source")
+    else:
+        baseline = ""
 
     started = time.time()
     result = launch(adapter, attempt_dir, panel, budget)
@@ -171,7 +193,7 @@ def one_attempt(out: Path, panel: panels.Panel, arm: str, index: int,
         checks = []
         verdict = "infrastructure"
     else:
-        checks = grader(Path(frozen["path"]), result.transcript, baseline)
+        checks = grader(Path(frozen["path"]), result.transcript, baseline, harmony)
         artifact = [check for check in checks if check.kind == "artifact"]
         verdict = "pass" if all(check.passed for check in artifact) else "fail"
 
@@ -210,12 +232,14 @@ def command_run(args: argparse.Namespace) -> int:
     panel = panels.PANELS[args.panel]
 
     fixture_root = out / "fixture"
-    if args.recorded_workspace:
+    if "source" in panel.materials:
+        facts = fixture.prepare_preparation(
+            fixture_root, REPOSITORY,
+            Path(args.source_tarball) if args.source_tarball else None)
+    elif args.recorded_workspace:
         facts = fixture.adopt(Path(args.recorded_workspace), fixture_root)
-    elif "workspace" in panel.materials:
-        facts = fixture.derive(fixture_root, REPOSITORY)
     else:
-        facts = {"source": "none"}
+        facts = fixture.derive(fixture_root, REPOSITORY)
     (out / "fixture.json").write_text(json.dumps(facts, indent=1))
 
     adapter = adapters.build(args.adapter, model=args.model, effort=args.effort)
@@ -237,6 +261,66 @@ def command_run(args: argparse.Namespace) -> int:
         records.append(record)
     _write_report(out, records)
     return 0
+
+
+def _preparation_checks(out: Path, harmony: Path) -> list[tuple[str, bool, str]]:
+    """Exercise the preparation grader on a known-good and an empty submission.
+
+    The known-good submission is the historical case's own image recipe, which
+    no attempt is ever given. Grading it here shows the checks pass on work
+    that meets the contract, and grading an empty directory shows they do not
+    pass on nothing.
+    """
+    results = []
+    good = out / "grader" / "good"
+    empty = out / "grader" / "empty"
+    for directory in (good, empty):
+        if directory.exists():
+            shutil.rmtree(directory)
+        (directory / "source").mkdir(parents=True)
+
+    image = REPOSITORY / "bugs" / "historical" / "postgres-cic-corruption" / "image"
+    shutil.copy(image / "bundle", good / "bundle")
+    shutil.copy(image / "Dockerfile", good / "Dockerfile")
+    for script in ("setup.sh", "ready.sh", "node.sh", "hooks.sh"):
+        shutil.copy(image / script, good / script)
+    (good / "source" / "postgresql-14.3.tar.bz2").write_bytes(b"the pinned release")
+    (good / "REPORT.md").write_text(
+        "The property is that every live heap tuple in cic has a matching index "
+        "tuple; hook 3 evaluates it with pg_amcheck --heapallindexed and its "
+        "silence is not a pass. This integration does not cover indexes other "
+        "than cic_k_idx, and I did not run a campaign.\n")
+
+    baseline = panels.source_baseline(good / "source")
+    checks = panels.grade_integration(good, [], baseline, harmony)
+    failed = [check.name for check in checks
+              if check.kind == "artifact" and not check.passed]
+    results.append(("the preparation grader passes a submission that meets the "
+                    "contract", not failed, "; ".join(failed) or
+                    f"{len(checks)} checks"))
+
+    # A release that is not the pinned one must never reach an attempt: every
+    # submission's build recipe is graded against that checksum.
+    wrong = out / "grader" / "wrong.tar.bz2"
+    wrong.write_bytes(b"not the pinned release")
+    try:
+        fixture.prepare_source(out / "grader" / "source", REPOSITORY, wrong)
+        refused = False
+    except SystemExit:
+        refused = True
+    results.append(("a release that is not the pinned one is refused",
+                    refused, "staged a file with the wrong checksum"))
+
+    # Doing nothing satisfies "left the supplied release unmodified", so the
+    # negative control is that every check about produced work fails.
+    empty_checks = panels.grade_integration(
+        empty, [], panels.source_baseline(empty / "source"), harmony)
+    passed = [check.name for check in empty_checks
+              if check.kind == "artifact" and check.passed
+              and check.name != "left the supplied release unmodified"]
+    results.append(("it fails a submission that produced nothing",
+                    not passed, "; ".join(passed) or "no check passed"))
+    return results
 
 
 def command_qualify(args: argparse.Namespace) -> int:
@@ -286,13 +370,32 @@ def command_qualify(args: argparse.Namespace) -> int:
           missing.returncode != 0 and "bug-9" in missing.stderr,
           missing.stderr.strip()[:200])
 
+    for name, ok, evidence in _preparation_checks(out, harmony):
+        check(name, ok, evidence)
+
     adapter = adapters.build(args.adapter, model=args.model, effort=args.effort)
     version = adapter.version()
     check("the agent adapter is available", "unavailable" not in version, version)
 
+    # What each panel is, so a run can prove the two arms differ in the skills
+    # directory alone and that nothing ships ungraded.
+    described = [{
+        "panel": name,
+        "graded": name in panels.GRADERS,
+        "needs_kvm": panel.needs_kvm,
+        "prompt_bytes": len(panel.prompt),
+        "prompt_sha256": hashlib.sha256(panel.prompt.encode()).hexdigest(),
+        "materials": panel.materials,
+        "bash_allow": panel.bash_allow,
+    } for name, panel in sorted(panels.PANELS.items())]
+    check("every panel has a prompt, materials, and a grader",
+          all(item["graded"] and item["prompt_bytes"] and item["materials"]
+              for item in described),
+          f"{len(described)} panels")
+
     passed = all(item["passed"] for item in results)
     report = {"format": FORMAT, "stage": "qualify", "passed": passed,
-              "fixture": facts, "checks": results,
+              "fixture": facts, "checks": results, "panels": described,
               "harmony": str(harmony), "adapter": adapter.name,
               "adapter_version": version, "model": adapter.model}
     (out / "qualify.json").write_text(json.dumps(report, indent=1))
@@ -412,6 +515,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--recorded-workspace",
                      help="a workspace a real search wrote, instead of a "
                           "derived fixture")
+    run.add_argument("--source-tarball",
+                     help="a local copy of the pinned PostgreSQL release, "
+                          "instead of fetching it")
     run.set_defaults(handler=command_run)
 
     report = sub.add_parser("report", help="rebuild the report from attempts")

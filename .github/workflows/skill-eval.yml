@@ -86,6 +86,11 @@ jobs:
           test -d runs/smoke/investigation-skills-1/submission/.claude/skills
           test ! -e "${submission}/bugs"
           test ! -e "${submission}/Cargo.toml"
+      - name: Check every panel is defined and graded
+        run: |
+          set -euo pipefail
+          jq -e '[.panels[] | select(.graded and (.prompt_bytes > 0))] | length == 3' \
+            runs/qualify/qualify.json >/dev/null
       - name: Summarize
         if: always()
         run: |
@@ -107,7 +112,7 @@ jobs:
   panel:
     name: Panel with a real model
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: skill-eval
     env:
@@ -133,9 +138,36 @@ jobs:
       - run: cargo build --locked --release -p harmony-cli
       - name: Install the agent CLI
         run: npm install --global @anthropic-ai/claude-code
+      # The preparation panels build an image and run a campaign, so they need
+      # the same hypervisor access the acceptance jobs use, and the pinned
+      # release staged from a cache rather than fetched per attempt.
+      - name: Grant nested KVM access
+        if: env.PANEL != 'investigation'
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | \
+            sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+      - name: Stage the pinned PostgreSQL release
+        if: env.PANEL != 'investigation'
+        run: |
+          set -euo pipefail
+          url=$(jq -r '.arms.vulnerable.source_url' \
+            bugs/historical/postgres-cic-corruption/case.json)
+          want=$(jq -r '.arms.vulnerable.sha256' \
+            bugs/historical/postgres-cic-corruption/case.json)
+          mkdir -p cache
+          curl -fsSL --retry 3 -o cache/source.tar.bz2 "${url}"
+          echo "${want}  cache/source.tar.bz2" | sha256sum -c -
       - name: Run the panel under explicit ceilings
         run: |
           set -euo pipefail
+          extra=()
+          if [[ -f cache/source.tar.bz2 ]]; then
+            extra+=(--source-tarball cache/source.tar.bz2)
+          fi
           ./benchmarks/skills/eval.py run \
             --panel "${PANEL}" \
             --attempts "${ATTEMPTS}" \
@@ -144,6 +176,7 @@ jobs:
             --wall-seconds 1800 \
             --total-tokens 2000000 \
             --tool-calls 400 \
+            "${extra[@]}" \
             --out runs/panel
       - name: Publish the result
         if: always()
