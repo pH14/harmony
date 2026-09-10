@@ -1207,3 +1207,26 @@ complete campaign/checkpoint and witness replay. First failure stops without
 retry. A pass earns a conditional-panel decision only; fresh search, independent
 confirmation, transfer and untouched validation remain unallocated. No native
 PG01 execution has occurred at registration publication time.
+
+## PG01 qualification closure
+
+All three frozen arms qualify on ms02 in 54.323 seconds total. Progress and scoped
+capacity retain real alternatives (70/38 admissions, 40/24 extra active members),
+and ordinary retains no alternatives. Each full campaign/checkpoint and each
+selected witness replays exactly. No living named defeat occurs; this was an
+implementation qualification, not an efficacy panel. All 47 native artifacts verify
+offline. The service is explicitly stopped, inactive/dead, and its unused allocation
+is released. No retry or replacement seed ran.
+
+Cost is751,077 admitted frames (1,077 drain) plus2,183,331 known auxiliary frames,
+including direct setup once and completed replay admission components. Resumed
+totals are 2,983,235,324 admitted / 70,566,920 known auxiliary. Engine setup, unadmitted
+and reconstruction counters remain incomplete. See ../continuation-reassessment/pg01-results.md.
+
+Next close or tightly bound that physical-work gap in the native caller, then
+separately design/register a matched ordinary/progress/scoped-capacity conditional
+living-boss-defeat panel. Keep the qualified rule, projection and action law fixed.
+A qualification pass alone earns no fresh-policy budget. Independent confirmation,
+MM2 transfer and untouched validation remain outstanding; every earlier failed
+gate stays closed. msr1 remains unavailable. The full research goal is active
+and unachieved.

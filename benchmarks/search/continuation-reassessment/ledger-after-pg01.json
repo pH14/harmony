@@ -1,0 +1,16 @@
+{
+  "format": "retention-ledger-after-pg01-v1",
+  "before": {
+    "admitted_search": 2982484247,
+    "known_auxiliary": 68383589
+  },
+  "pg01": {
+    "admitted_search": 751077,
+    "known_auxiliary": 2183331
+  },
+  "after": {
+    "admitted_search": 2983235324,
+    "known_auxiliary": 70566920
+  },
+  "scope": "Resumed ledger only; expired earlier tranche separate. Direct setup is included once in direct physical frames. Engine setup, unadmitted work and reconstruction remain incompletely measured."
+}

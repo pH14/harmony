@@ -1,0 +1,64 @@
+{
+  "format": "retention-pg01-offline-verification-v1",
+  "verified": true,
+  "qualified": true,
+  "files": 47,
+  "cells": [
+    {
+      "cell": "ordinary",
+      "qualified": true,
+      "frames": 250267,
+      "executions": 2548,
+      "alternative_admissions": 0,
+      "living_defeat": false,
+      "wall_seconds": 18.017509714933112,
+      "cpu_seconds": 21.288998,
+      "peak_rss_kib": 53672,
+      "cost": {
+        "admitted_search_frames": 250267,
+        "campaign_replay_admitted_frames": 250267,
+        "direct_physical_frames": 477418,
+        "direct_setup_frames": 5574
+      }
+    },
+    {
+      "cell": "progress",
+      "qualified": true,
+      "frames": 250320,
+      "executions": 2650,
+      "alternative_admissions": 70,
+      "living_defeat": false,
+      "wall_seconds": 18.273829329991713,
+      "cpu_seconds": 21.546372,
+      "peak_rss_kib": 55596,
+      "cost": {
+        "admitted_search_frames": 250320,
+        "campaign_replay_admitted_frames": 250320,
+        "direct_physical_frames": 477418,
+        "direct_setup_frames": 5574
+      }
+    },
+    {
+      "cell": "capacity",
+      "qualified": true,
+      "frames": 250490,
+      "executions": 2599,
+      "alternative_admissions": 38,
+      "living_defeat": false,
+      "wall_seconds": 18.023947311914526,
+      "cpu_seconds": 21.34556,
+      "peak_rss_kib": 55832,
+      "cost": {
+        "admitted_search_frames": 250490,
+        "campaign_replay_admitted_frames": 250490,
+        "direct_physical_frames": 477418,
+        "direct_setup_frames": 5574
+      }
+    }
+  ],
+  "ledger": {
+    "admitted_search": 2983235324,
+    "known_auxiliary": 70566920
+  },
+  "scope": "Implementation qualification only; complete native replay receipts are checked without rerunning the emulator. No fresh-search efficacy claim."
+}

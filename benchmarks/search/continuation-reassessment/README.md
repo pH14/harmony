@@ -503,3 +503,13 @@ and5000executions/arm,30seconds search and120seconds whole-process/arm. All arms
 share512MiB archive and4CPUs; the service is capped at450seconds/4GiB. See
 `pg01-registration.json`; actual alternatives and complete replay are mandatory.
 No native PG01 call has run at publication time, and no utility panel is allocated.
+
+PG01 is now closed: all three native qualification arms pass in 54.323 seconds.
+Progress/capacity make 70/38 alternative admissions and retain 40/24 second slot
+members; ordinary retains no alternatives. All complete campaigns/checkpoints
+and selected witnesses replay. No arm defeats the boss. The 47-file evidence
+verifies without emulation; see `pg01-results.md` and `verify_pg01.py`. Costs add
+751,077 admitted and2,183,331 known auxiliary frames. The service is inactive/dead
+and its unused allocation released. Physical engine work remains partly unknown;
+close or tightly bound that gap before registering a conditional efficacy panel.
+No fresh-policy development or utility panel is allocated by this qualification.
