@@ -52,12 +52,14 @@ cargo run --manifest-path workloads/fault-agent/Cargo.toml -- \
   --check-bundle --bundle path/to/bundle
 ```
 
-The readiness command is enforced before the setup point is sealed. A
-post-restart probe is not run synchronously by the poll loop: recovery can take
-longer than one virtual fault window under emulation, and blocking there would
-make later standing-fault edges disappear. Hooks that depend on a recovered
-service perform their own conservative readiness check before publishing an
-oracle verdict.
+The readiness command is enforced before the setup point is sealed and after
+every supervised node start. Recovery probes run as child processes and are
+sampled at poll ticks, so a slow or hung probe never stops standing-fault
+polling. Hook actions requested during recovery stay queued until the newest
+node generation passes readiness. Output from a hook launched before a later
+restart is drained but cannot publish assertions for the new generation. If
+recovery never completes, those hooks remain unfinished and the endpoint is
+inconclusive.
 
 ## Hook directives
 
@@ -78,7 +80,7 @@ read as a healthy run.
 ## Observations
 
 The agent publishes IJON state registers the host reads back as SDK events:
-completed ticks, the alive bitmap, hooks started and finished, the bitmap of
+completed ticks, the alive bitmap, hook actions accepted and finished, the bitmap of
 reported `assert_sometimes` ids, unexpected deaths, restarts, and parked
 threads. The tick register is emitted every tick so liveness is always fresh;
 the others are emitted only when they change.

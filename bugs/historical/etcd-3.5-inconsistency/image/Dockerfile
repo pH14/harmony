@@ -24,26 +24,36 @@ RUN curl --fail --silent --show-error --location --retry 3 \
     && tar -xf etcd-source.tar.gz -C etcd --strip-components=1 \
     && rm etcd-source.tar.gz
 
-# This is the actual Antithesis source transformer. It creates customer/ (the
-# rewritten source), symbols/ (the generated .sym.tsv), and notifier/ (the
-# generated coverage callback module). The pinned source tree remains intact.
-RUN go install "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-instrumentor@v${ANTITHESIS_SDK_VERSION}" \
-    && mkdir instrumented \
-    && antithesis-go-instrumentor /build/etcd /build/instrumented
+# This is Antithesis's current documented Go instrumentation pass. The wrapper
+# rewrites compiler inputs at build time and emits symbol tables automatically.
+# ANTITHESIS_SDK_MODULE_DIR supplies its runtime without modifying upstream
+# etcd's modules.
+RUN go install "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-toolexec@v${ANTITHESIS_SDK_VERSION}"
 
-# etcd is a multi-module repository. Build the two binaries used by the image
-# from the transformed modules; -mod=mod records the generated notifier and
-# SDK dependency without hand-editing the upstream source.
-RUN mkdir -p /out/etcd \
-    && (cd /build/instrumented/customer/server \
+RUN mkdir -p /out/etcd /out/symbols \
+    && sdk_dir="$(go env GOMODCACHE)/github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
+    && test -d "${sdk_dir}" \
+    && (cd /build/etcd/server \
         && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-           go build -mod=mod -trimpath -buildvcs=false -o /out/etcd/etcd .) \
-    && (cd /build/instrumented/customer/etcdctl \
+           ANTITHESIS_SDK_MODULE_DIR="${sdk_dir}" \
+           ANTITHESIS_SYMBOLS_DIR=/out/symbols \
+           ANTITHESIS_SYMBOL_PREFIX=etcd-server \
+           go build -toolexec=antithesis-go-toolexec -trimpath -buildvcs=false -o /out/etcd/etcd .) \
+    && (cd /build/etcd/etcdctl \
         && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-           go build -mod=mod -trimpath -buildvcs=false -o /out/etcd/etcdctl .) \
+           ANTITHESIS_SDK_MODULE_DIR="${sdk_dir}" \
+           ANTITHESIS_SYMBOLS_DIR=/out/symbols \
+           ANTITHESIS_SYMBOL_PREFIX=etcdctl \
+           go build -toolexec=antithesis-go-toolexec -trimpath -buildvcs=false -o /out/etcd/etcdctl .) \
     && test -x /out/etcd/etcd \
     && test -x /out/etcd/etcdctl \
-    && cp /build/instrumented/symbols/*.sym.tsv /out/
+    && set -- /out/symbols/*.sym.tsv \
+    && test -s "$1" \
+    && grep -a -q antithesishq/antithesis-sdk-go/instrumentation /out/etcd/etcd \
+    && sha256sum /out/etcd/etcd \
+       | awk '{print $1 "  /opt/etcd/etcd"}' > /out/harmony-instrumented-events \
+    && cp /build/etcd/LICENSE /out/ETCD-LICENSE \
+    && cp "${sdk_dir}/LICENSE" /out/ANTITHESIS-SDK-GO-LICENSE
 
 COPY consonance/harmony-linux/libvoidstar /build/libvoidstar
 RUN make -C /build/libvoidstar BUILD_DIR=/build/libvoidstar-build all \
@@ -62,12 +72,19 @@ RUN apt-get update \
 COPY --from=instrumented-build /out/etcd/etcd /opt/etcd/etcd
 COPY --from=instrumented-build /out/etcd/etcdctl /opt/etcd/etcdctl
 COPY --from=instrumented-build /out/libvoidstar.so /usr/lib/libvoidstar.so
-COPY --from=instrumented-build /out/*.sym.tsv /symbols/
+COPY --from=instrumented-build /out/symbols/*.sym.tsv /symbols/
+COPY --from=instrumented-build /out/harmony-instrumented-events /symbols/harmony-instrumented-events
+COPY --from=instrumented-build /out/ETCD-LICENSE /licenses/etcd.txt
+COPY --from=instrumented-build /out/ANTITHESIS-SDK-GO-LICENSE /licenses/antithesis-sdk-go.txt
 
 RUN chmod 0755 /opt/etcd/etcd /opt/etcd/etcdctl /usr/lib/libvoidstar.so \
     && test -x /opt/etcd/etcd \
     && test -x /opt/etcd/etcdctl \
-    && test -s /symbols/*.sym.tsv
+    && set -- /symbols/*.sym.tsv \
+    && test -s "$1" \
+    && test -s /symbols/harmony-instrumented-events \
+    && test -s /licenses/etcd.txt \
+    && test -s /licenses/antithesis-sdk-go.txt
 
 LABEL org.opencontainers.image.title="harmony etcd consistent-index inconsistency workload"
 LABEL org.opencontainers.image.version="${ETCD_VERSION}"

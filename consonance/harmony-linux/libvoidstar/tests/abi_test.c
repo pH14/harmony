@@ -98,9 +98,10 @@ int main(void)
     assert(memcmp(captured, event, captured_len) == 0);
     assert(fuzz_get_random() == UINT64_C(0x0102030405060708));
     fuzz_flush();
-    init_coverage_module(NULL, 0);
+    assert(init_coverage_module(3, "first.sym.tsv") == 0);
+    assert(init_coverage_module(5, "second.sym.tsv") == 3);
     assert(harmony_coverage_configure(7, 3) == 0);
-    notify_coverage(1);
+    assert(!notify_coverage(1));
     assert(coverage_requests == 1);
     assert(harmony_coverage_selected() == 0);
     notify_coverage(2);

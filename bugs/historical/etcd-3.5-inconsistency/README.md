@@ -29,11 +29,12 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
 
 - **Workload**: the upstream etcd workload is one supervised member, driven by four concurrent
   clients. Each client records every acknowledged put in a journal outside etcd and keeps applying
-  entries while Harmony explores faults. The same workload, image contract, and fault policy will
-  run against v3.5.2 and v3.5.3; only the pinned source revision changes. There are no
-  correctness, portability, batch, or timing knobs. The executable for this entry must be built
-  from that pinned source by the Antithesis Go instrumentation pipeline; a release archive or a
-  stock etcd executable does not satisfy this entry.
+  entries while Harmony explores faults. Repeated starts of the workload hook reuse the original
+  writers, so a later hook cannot overwrite a lost key. The same workload, image contract, and
+  fault policy will run against v3.5.2 and v3.5.3; only the pinned source revision changes. There
+  are no correctness, portability, batch, or timing knobs. The executable for this entry must be
+  built from that pinned source by the Antithesis Go instrumentation pipeline; a release archive
+  or a stock etcd executable does not satisfy this entry.
 - **Fault surface**: a hard process kill followed by the normal supervisor restart, while the
   clients are applying entries. This targets the small interval between consistent-index
   persistence and the corresponding entry apply. Dissonance represents the crash coordinate as
@@ -42,18 +43,18 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
   future callbacks; no timer, address, hardware counter, polling loop, or workload-specific
   probe sequence is involved.
 - **Oracle**: the hook journals each acknowledged put outside etcd, then after a deterministic
-  restart reads every journaled key from the recovered member. An acknowledged-but-missing or
-  changed value is the case's only failing assertion. A down member, empty journal, or failed
-  readback is silent, so a crash alone cannot be mistaken for corruption. This single-member
-  oracle is stronger than the original report's observability: it compares the acknowledged
-  client record with the recovered database state.
+  restart reads the recovered prefix once and compares the unique acknowledged key/value set. An
+  acknowledged-but-missing or changed value is the case's only failing assertion. A down member,
+  empty journal, or failed readback is silent, so a crash alone cannot be mistaken for corruption.
+  This single-member oracle is stronger than the original report's observability: it compares the
+  acknowledged client record with the recovered database state.
 
 ## Discovery contract
 
 The case has one locked execution profile. CI will run the same bounded search campaign on both
 instrumented arms on demand or on schedule. The vulnerable arm must find and replay assertion 1
-with evidence point 11; the v3.5.3 control must stay clean under the identical campaign. A search
-miss is a regression in the test machinery, not a request to tune the workload.
+with evidence point 11; the v3.5.3 control must reach point 11 and stay clean under the identical
+campaign. A search miss is a regression in the test machinery, not a request to tune the workload.
 
 The only expected difference between the arms is the upstream etcd fix. Performance experiments
 may add separate profiles later, but they cannot alter the correctness or portability contract
@@ -61,6 +62,6 @@ of this case.
 
 ## Why this entry is first
 
-Single binary, no kernel or version gymnastics, kill-at-Moment is a fault surface Harmony has
-today, the oracle is cheap, and it's the highest-recognition corruption bug in modern infra
-(it shook Kubernetes). It also has a natural sibling (the defrag bug) once this lands.
+Single binary, no kernel or version gymnastics, a generic instrumented event ordinal, and a cheap
+oracle make this a useful first target. It also has a natural sibling in the later defragmentation
+bug once this lands.

@@ -88,6 +88,7 @@ mod real {
     use harmony_fault_agent::bundle::{Bundle, HookSpec, NodeSpec, parse_bundle};
     use harmony_fault_agent::directive::{Directive, LineReader, parse_directive};
     use harmony_fault_agent::faults::ActiveFaults;
+    use harmony_fault_agent::recovery::{ReadyHook, RecoveryGate};
     use harmony_fault_agent::regs::{
         REG_ALIVE, REG_HOOKS_FINISHED, REG_HOOKS_STARTED, REG_PARKED, REG_RESTARTS, REG_SOMETIMES,
         REG_TICKS, REG_UNEXPECTED_DEATHS, Registers,
@@ -175,9 +176,38 @@ mod real {
     /// A launched hook and the output file it writes directives to.
     struct Hook {
         id: u32,
+        /// Node generation whose readiness authorized this hook.
+        generation: u64,
         child: Child,
         output: File,
         reader: LineReader,
+    }
+
+    /// One asynchronous invocation of the bundle readiness command.
+    struct RecoveryProbe {
+        generation: u64,
+        child: Child,
+    }
+
+    /// Mutable hook and recovery state owned by the poll loop.
+    struct HookRuntime {
+        hooks: Vec<Hook>,
+        launches: u64,
+        recovery: RecoveryGate,
+        recovery_probe: Option<RecoveryProbe>,
+        retired_probes: Vec<Child>,
+    }
+
+    impl HookRuntime {
+        fn new() -> Self {
+            Self {
+                hooks: Vec::new(),
+                launches: 0,
+                recovery: RecoveryGate::initially_ready(),
+                recovery_probe: None,
+                retired_probes: Vec::new(),
+            }
+        }
     }
 
     pub fn run(args: &Args) -> Result<(), String> {
@@ -283,9 +313,8 @@ mod real {
     ) -> Result<(), String> {
         let mut supervisor = Supervisor::new(nodes.len());
         let mut registers = Registers::new();
-        let mut hooks: Vec<Hook> = Vec::new();
+        let mut runtime = HookRuntime::new();
         let mut buf = [0_u8; MAX_PAYLOAD];
-        let mut launches = 0_u64;
 
         loop {
             clock.wait()?;
@@ -294,18 +323,32 @@ mod real {
             let tick = supervisor.counters().ticks + 1;
             for action in supervisor.tick(&active, &deaths) {
                 log(tick, &action.describe());
-                apply(
-                    action,
+                apply(action, bundle, nodes, &mut runtime, &args.hook_dir, tick)?;
+            }
+            let ready_hooks = poll_recovery(
+                bundle.ready.as_deref(),
+                &mut runtime.recovery,
+                &mut runtime.recovery_probe,
+                &mut runtime.retired_probes,
+            )?;
+            for ready in ready_hooks {
+                launch_ready_hook(
+                    ready,
                     bundle,
-                    nodes,
-                    &mut hooks,
-                    &mut launches,
+                    &mut runtime.hooks,
+                    &mut runtime.launches,
                     &args.hook_dir,
                     tick,
                 )?;
             }
             watch_parks(nodes, &mut supervisor, tick);
-            drain_hooks(&mut hooks, &mut supervisor, sdk, tick)?;
+            drain_hooks(
+                &mut runtime.hooks,
+                &runtime.recovery,
+                &mut supervisor,
+                sdk,
+                tick,
+            )?;
             for (reg, value) in registers.updates(supervisor.snapshot()) {
                 sdk.state_set(reg, value)
                     .map_err(|error| format!("state_set({reg}): {error}"))?;
@@ -365,8 +408,7 @@ mod real {
         action: Action,
         bundle: &Bundle,
         nodes: &mut [Node],
-        hooks: &mut Vec<Hook>,
-        launches: &mut u64,
+        runtime: &mut HookRuntime,
         hook_dir: &Path,
         tick: u64,
     ) -> Result<(), String> {
@@ -378,45 +420,49 @@ mod real {
                     entry.park = None;
                     entry.event_control = None;
                 }
+                if let Some(probe) = runtime.recovery_probe.take() {
+                    retire_probe(probe.child, &mut runtime.retired_probes);
+                }
+                runtime.recovery.stopped();
                 signal_node(nodes, node, libc::SIGKILL);
             }
             Action::Stop(node) => signal_node(nodes, node, libc::SIGSTOP),
             Action::Cont(node) => signal_node(nodes, node, libc::SIGCONT),
             Action::Start(node) => {
-                // Do not synchronously run the readiness command here. A
-                // recovery probe can take longer than this action's V-time
-                // window under emulation; blocking would stop standing polls
-                // and make later fault windows disappear. Hooks that need a
-                // live service must treat readiness as part of their oracle.
                 if let Some(entry) = nodes.get_mut(usize::from(node)) {
                     entry.park = None;
                     let (child, control) = spawn_node(&entry.spec)?;
                     entry.child = Some(child);
                     entry.event_control = control;
+                    if let Some(probe) = runtime.recovery_probe.take() {
+                        retire_probe(probe.child, &mut runtime.retired_probes);
+                    }
+                    runtime.recovery.restarted();
                 }
             }
             Action::ArmEventKill(node, ordinal) => {
-                if let Some(entry) = nodes.get(usize::from(node)) {
-                    if let Some(control) = &entry.event_control {
-                        if let Err(error) = send_event_ordinal(control, ordinal) {
-                            log(tick, &format!("event kill node {node}: {error}"));
-                        }
-                    } else {
-                        log(
-                            tick,
-                            &format!("event kill node {node}: node is not running"),
-                        );
-                    }
-                }
+                let entry = nodes
+                    .get(usize::from(node))
+                    .ok_or_else(|| format!("event kill names unknown node {node}"))?;
+                let control = entry.event_control.as_ref().ok_or_else(|| {
+                    format!(
+                        "event kill node {node} has no Antithesis instrumentation control channel"
+                    )
+                })?;
+                send_event_ordinal(control, ordinal)
+                    .map_err(|error| format!("event kill node {node}: {error}"))?;
             }
             Action::DisarmEventKill(node) => {
-                if let Some(entry) = nodes.get(usize::from(node))
-                    && let Some(control) = &entry.event_control
-                {
-                    if let Err(error) = send_event_ordinal(control, 0) {
-                        log(tick, &format!("event kill node {node}: {error}"));
-                    }
-                }
+                let entry = nodes
+                    .get(usize::from(node))
+                    .ok_or_else(|| format!("event kill names unknown node {node}"))?;
+                let control = entry.event_control.as_ref().ok_or_else(|| {
+                    format!(
+                        "event kill node {node} has no Antithesis instrumentation control channel"
+                    )
+                })?;
+                send_event_ordinal(control, 0)
+                    .map_err(|error| format!("event kill node {node}: {error}"))?;
             }
             Action::Park(node, park) => {
                 let Some(entry) = nodes.get_mut(usize::from(node)) else {
@@ -459,13 +505,108 @@ mod real {
                     }
                 }
             }
-            Action::RunHook(id) => match bundle.hook(id) {
-                Some(spec) => {
-                    *launches += 1;
-                    hooks.push(spawn_hook(spec, hook_dir, *launches)?);
+            Action::RunHook(id) => {
+                let ready_hooks = runtime.recovery.request_hook(id);
+                for ready in ready_hooks {
+                    launch_ready_hook(
+                        ready,
+                        bundle,
+                        &mut runtime.hooks,
+                        &mut runtime.launches,
+                        hook_dir,
+                        tick,
+                    )?;
                 }
-                None => log(tick, &format!("hook {id} is not declared")),
-            },
+            }
+        }
+        Ok(())
+    }
+
+    /// Advance post-restart readiness without ever blocking the standing-fault
+    /// poll loop. A failed probe is retried on a later tick. A probe that never
+    /// exits leaves queued hooks inconclusive rather than turning elapsed time
+    /// into a correctness result.
+    fn poll_recovery(
+        ready: Option<&[String]>,
+        recovery: &mut RecoveryGate,
+        current: &mut Option<RecoveryProbe>,
+        retired: &mut Vec<Child>,
+    ) -> Result<Vec<ReadyHook>, String> {
+        let mut index = 0;
+        while index < retired.len() {
+            match retired[index].try_wait() {
+                Ok(Some(_)) => {
+                    let mut child = retired.remove(index);
+                    let _ = child.wait();
+                }
+                Err(error) => return Err(format!("retired ready probe: {error}")),
+                Ok(None) => index += 1,
+            }
+        }
+
+        if !recovery.is_pending() {
+            return Ok(Vec::new());
+        }
+        let Some(argv) = ready else {
+            return Ok(recovery.mark_ready(recovery.generation()));
+        };
+
+        if current
+            .as_ref()
+            .is_some_and(|probe| probe.generation != recovery.generation())
+        {
+            if let Some(probe) = current.take() {
+                retire_probe(probe.child, retired);
+            }
+        } else if let Some(probe) = current.as_mut() {
+            match probe.child.try_wait() {
+                Ok(Some(status)) => {
+                    let generation = probe.generation;
+                    *current = None;
+                    if status.success() {
+                        return Ok(recovery.mark_ready(generation));
+                    }
+                }
+                Ok(None) => return Ok(Vec::new()),
+                Err(error) => return Err(format!("ready probe {:?}: {error}", argv[0])),
+            }
+        }
+
+        let child = command(argv)
+            .process_group(0)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("ready probe {:?}: {error}", argv[0]))?;
+        *current = Some(RecoveryProbe {
+            generation: recovery.generation(),
+            child,
+        });
+        Ok(Vec::new())
+    }
+
+    /// Stop an obsolete readiness probe without waiting for it. It remains in
+    /// `retired` until a later tick reaps it, so restart handling never stalls
+    /// the standing-fault poll.
+    fn retire_probe(child: Child, retired: &mut Vec<Child>) {
+        signal_child_group(&child, libc::SIGKILL);
+        retired.push(child);
+    }
+
+    fn launch_ready_hook(
+        ready: ReadyHook,
+        bundle: &Bundle,
+        hooks: &mut Vec<Hook>,
+        launches: &mut u64,
+        hook_dir: &Path,
+        tick: u64,
+    ) -> Result<(), String> {
+        match bundle.hook(ready.id) {
+            Some(spec) => {
+                *launches += 1;
+                hooks.push(spawn_hook(spec, hook_dir, *launches, ready.generation)?);
+            }
+            None => log(tick, &format!("hook {} is not declared", ready.id)),
         }
         Ok(())
     }
@@ -513,8 +654,12 @@ mod real {
         let Some(child) = nodes.get(usize::from(node)).and_then(|n| n.child.as_ref()) else {
             return;
         };
-        // Each node is spawned into a fresh process group whose id is its own
-        // pid, so the negated pid names the group.
+        signal_child_group(child, signal);
+    }
+
+    fn signal_child_group(child: &Child, signal: libc::c_int) {
+        // Each managed child is spawned into a fresh process group whose id is
+        // its own pid, so the negated pid names the group.
         let Ok(pid) = libc::pid_t::try_from(child.id()) else {
             return;
         };
@@ -527,7 +672,7 @@ mod real {
     }
 
     fn spawn_node(spec: &NodeSpec) -> Result<(Child, Option<OwnedFd>), String> {
-        let instrumented = Path::new("/usr/lib/libvoidstar.so").is_file();
+        let instrumented = instrumented_events_available();
         let (agent_fd, child_fd) = if instrumented {
             let (agent, child) = event_channel()?;
             (Some(agent), Some(child))
@@ -552,34 +697,66 @@ mod real {
         Ok((child, agent_fd))
     }
 
+    /// Match the host-side vocabulary derivation: the action exists only when
+    /// the image contains both the runtime bridge and symbol metadata emitted
+    /// by the Antithesis instrumentation build.
+    fn instrumented_events_available() -> bool {
+        if !Path::new("/usr/lib/libvoidstar.so").is_file()
+            || !Path::new("/symbols/harmony-instrumented-events")
+                .metadata()
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+        {
+            return false;
+        }
+        let Ok(entries) = std::fs::read_dir("/symbols") else {
+            return false;
+        };
+        entries.filter_map(Result::ok).any(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.ends_with(".sym.tsv"))
+                && entry
+                    .metadata()
+                    .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+        })
+    }
+
     fn event_channel() -> Result<(OwnedFd, OwnedFd), String> {
         let mut fds = [0; 2];
         // SAFETY: `fds` points to two writable i32 slots for the duration of
         // the libc call; AF_UNIX/SOCK_STREAM creates a private pair with no
         // externally reachable endpoint.
-        let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
+        let rc = unsafe {
+            libc::socketpair(
+                libc::AF_UNIX,
+                libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+                0,
+                fds.as_mut_ptr(),
+            )
+        };
         if rc != 0 {
             return Err(format!(
                 "event control socketpair: {}",
                 std::io::Error::last_os_error()
             ));
         }
-        for fd in fds {
-            // SAFETY: each descriptor came from the successful socketpair and
-            // remains open while its close-on-exec flag is cleared.
-            if unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } < 0 {
-                // SAFETY: both descriptors came from this socketpair and have
-                // not been wrapped in `OwnedFd` yet; close each exactly once
-                // before returning the setup error.
-                unsafe {
-                    libc::close(fds[0]);
-                    libc::close(fds[1]);
-                }
-                return Err(format!(
-                    "event control fcntl: {}",
-                    std::io::Error::last_os_error()
-                ));
+        // Only the child end crosses exec. The agent end keeps close-on-exec so
+        // hooks and readiness probes cannot accidentally hold the channel open.
+        // SAFETY: the descriptor came from the successful socketpair and
+        // remains open while its close-on-exec flag is cleared.
+        if unsafe { libc::fcntl(fds[1], libc::F_SETFD, 0) } < 0 {
+            // SAFETY: both descriptors came from this socketpair and have not
+            // been wrapped in `OwnedFd` yet; close each exactly once before
+            // returning the setup error.
+            unsafe {
+                libc::close(fds[0]);
+                libc::close(fds[1]);
             }
+            return Err(format!(
+                "event control fcntl: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         // SAFETY: socketpair initialized both descriptors exactly once.
         Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
@@ -643,7 +820,12 @@ mod real {
     /// Launch a hook with its stdout in a file of its own. `launch` counts
     /// launches across the run, so two launches of one hook in a single tick
     /// never share a file.
-    fn spawn_hook(spec: &HookSpec, hook_dir: &Path, launch: u64) -> Result<Hook, String> {
+    fn spawn_hook(
+        spec: &HookSpec,
+        hook_dir: &Path,
+        launch: u64,
+        generation: u64,
+    ) -> Result<Hook, String> {
         // A workload's setup command may mount a fresh filesystem over the
         // directory's parent, so it is made again at every spawn.
         std::fs::create_dir_all(hook_dir)
@@ -658,6 +840,7 @@ mod real {
             .map_err(|error| format!("hook {}: {error}", spec.id))?;
         Ok(Hook {
             id: spec.id,
+            generation,
             child,
             output,
             reader: LineReader::new(),
@@ -668,6 +851,7 @@ mod real {
     /// ones that exited.
     fn drain_hooks(
         hooks: &mut Vec<Hook>,
+        recovery: &RecoveryGate,
         supervisor: &mut Supervisor,
         sdk: &mut GuestSdk,
         tick: u64,
@@ -675,8 +859,10 @@ mod real {
         let mut finished = Vec::new();
         for (index, hook) in hooks.iter_mut().enumerate() {
             let lines = read_lines(&mut hook.output, &mut hook.reader);
-            for line in lines {
-                forward(&line, hook.id, supervisor, sdk, tick)?;
+            if recovery.accepts(hook.generation) {
+                for line in lines {
+                    forward(&line, hook.id, supervisor, sdk, tick)?;
+                }
             }
             let status = match hook.child.try_wait() {
                 Ok(Some(status)) => status,
@@ -684,13 +870,17 @@ mod real {
                 Err(error) => return Err(format!("hook {}: {error}", hook.id)),
             };
             // Anything written between the last read and the exit.
-            for line in read_lines(&mut hook.output, &mut hook.reader) {
-                forward(&line, hook.id, supervisor, sdk, tick)?;
+            let valid = recovery.accepts(hook.generation);
+            let final_lines = read_lines(&mut hook.output, &mut hook.reader);
+            if valid {
+                for line in final_lines {
+                    forward(&line, hook.id, supervisor, sdk, tick)?;
+                }
+                if let Some(line) = hook.reader.flush() {
+                    forward(&line, hook.id, supervisor, sdk, tick)?;
+                }
             }
-            if let Some(line) = hook.reader.flush() {
-                forward(&line, hook.id, supervisor, sdk, tick)?;
-            }
-            if status.code() == Some(HOOK_FAILURE_STATUS) {
+            if valid && status.code() == Some(HOOK_FAILURE_STATUS) {
                 log(tick, &format!("hook {} failed its assertion", hook.id));
                 sdk.assert_always(false, HOOK_FAILURE_POINT)
                     .map_err(|error| format!("assert_always: {error}"))?;

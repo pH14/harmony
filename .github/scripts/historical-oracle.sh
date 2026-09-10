@@ -75,12 +75,10 @@ case "${mode}" in
                      and (.sometimes | index(${ORACLE_EVIDENCE}) != null))"
             add_rule 'the report records no bug' '.bug_found == true'
         else
-            # The control campaign has no per-execution oracle record, so its
-            # verdict is that nothing fired; the probe replay is where the
-            # control's oracle is shown to run and pass.
+            add_rule "the control campaign never reached the oracle's verdict (point ${ORACLE_EVIDENCE})" \
+                "(((.campaign_milestones.sometimes // 0) / pow(2; ${ORACLE_EVIDENCE}) | floor) % 2) == 1"
             add_rule 'the control campaign reported a bug' '.bug_found == false'
-            add_rule "a control bug violated assertion ${ORACLE_ASSERTION}" \
-                "all(.bugs[]; (.violations | index(${ORACLE_ASSERTION})) == null)"
+            add_rule 'the control campaign archived a bug' '(.bugs | length) == 0'
         fi
         ;;
     *)

@@ -5,6 +5,7 @@ BUILD_DIR ?= build
 WARNINGS := -Wall -Wextra -Werror -Wconversion -Wpedantic
 LIB := $(BUILD_DIR)/libvoidstar.so
 ABI_TEST := $(BUILD_DIR)/abi-test
+EVENT_KILL_TEST := $(BUILD_DIR)/event-kill-test
 UNAME_S := $(shell uname -s)
 
 ifeq ($(UNAME_S),Darwin)
@@ -26,8 +27,12 @@ $(LIB): voidstar.c | $(BUILD_DIR)
 $(ABI_TEST): tests/abi_test.c voidstar.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(WARNINGS) -pthread -o $@ tests/abi_test.c
 
-check: $(LIB) $(ABI_TEST)
+$(EVENT_KILL_TEST): tests/event_kill_test.c voidstar.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(WARNINGS) -pthread -o $@ tests/event_kill_test.c
+
+check: $(LIB) $(ABI_TEST) $(EVENT_KILL_TEST)
 	$(ABI_TEST)
+	$(EVENT_KILL_TEST)
 	./check-symbols.sh $(LIB)
 
 clean:

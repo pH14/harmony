@@ -3,6 +3,7 @@
 set -eu
 
 journal=/tmp/etcd/journal/acked
+writers_started=/tmp/etcd/journal/writers-started
 
 ctl() {
   ETCDCTL_API=3 /opt/etcd/etcdctl --endpoints=http://127.0.0.1:2379 "$@"
@@ -11,7 +12,7 @@ ctl() {
 writer() {
   worker=$1
   i=1
-  while [ "$i" -le 2000 ]; do
+  while :; do
     key="museum/${worker}/key-${i}"
     value="value-${worker}-${i}"
     # Keep pressure on the apply path across a node kill. A failed request is
@@ -20,8 +21,6 @@ writer() {
     if ctl put "$key" "$value" >/dev/null 2>&1; then
       printf '%s\t%s\n' "$key" "$value" >>"${journal}"
       i=$((i + 1))
-    else
-      sleep 0.001
     fi
   done
 }
@@ -38,10 +37,15 @@ case "$1" in
     # 2 compares this client record with the recovered bbolt contents.
     # `setsid -f` double-forks the workers so this one-shot hook returns while
     # they keep the apply path busy for later Kill/Restart actions.
-    setsid -f "$0" worker 1 >/dev/null 2>&1
-    setsid -f "$0" worker 2 >/dev/null 2>&1
-    setsid -f "$0" worker 3 >/dev/null 2>&1
-    setsid -f "$0" worker 4 >/dev/null 2>&1
+    # Search may draw this hook more than once. Only its first invocation owns
+    # the writers: starting them again from key 1 could repair a lost key and
+    # would append duplicate expectations to the external journal.
+    if mkdir "${writers_started}" 2>/dev/null; then
+      setsid -f "$0" worker 1 >/dev/null 2>&1
+      setsid -f "$0" worker 2 >/dev/null 2>&1
+      setsid -f "$0" worker 3 >/dev/null 2>&1
+      setsid -f "$0" worker 4 >/dev/null 2>&1
+    fi
     echo '@reachable 10'
     ;;
   2)
@@ -60,7 +64,7 @@ case "$1" in
     awk -F '	' '
       $1 ~ /^museum\/[1-4]\/key-[0-9]+$/ &&
       $2 ~ /^value-[1-4]-[0-9]+$/ { print $1 "\t" $2 }
-    ' "${snapshot}" | LC_ALL=C sort >"${expected}"
+    ' "${snapshot}" | LC_ALL=C sort -u >"${expected}"
     [ -s "${expected}" ] || exit 0
 
     # One prefix read replaces one etcdctl process and RPC per journal row.

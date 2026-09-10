@@ -19,7 +19,7 @@ use crate::target::{FaultAction, FaultObservations};
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
 /// Recorded archive-key policy.
-pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_sometimes_hooks_alive_v3_event_ordinal";
+pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_sometimes_hooks_alive_v4_event_deaths";
 /// Completed hooks beyond this count stop distinguishing archive cells. A hook
 /// the workload lets re-run cheaply, such as a read-back that finds nothing to
 /// check, would otherwise turn repetition into an endless supply of new cells
@@ -37,6 +37,7 @@ pub struct FaultArchiveGroup {
     hooks_finished: u64,
     hooks_running: u64,
     alive: u64,
+    unexpected_deaths: u64,
     parked: u64,
 }
 
@@ -60,6 +61,11 @@ pub struct FaultArchiveKey {
     pub hooks_running: u64,
     /// Bitmap of live nodes.
     pub alive: u64,
+    /// Node deaths outside an ordinary kill or restart window, saturating at
+    /// [`HOOKS_FINISHED_KEY_CAP`]. An instrumented-event kill is intentionally
+    /// observed this way, so a coordinate that actually fired remains a
+    /// searchable prefix instead of pooling with an unreachable arm.
+    pub unexpected_deaths: u64,
     /// Threads parked at a place, saturating at [`HOOKS_FINISHED_KEY_CAP`].
     /// A park that fired and one that never reached its hit are different
     /// states of the workload.
@@ -82,6 +88,7 @@ impl ArchiveKey for FaultArchiveKey {
             hooks_finished: self.hooks_finished,
             hooks_running: self.hooks_running,
             alive: self.alive,
+            unexpected_deaths: self.unexpected_deaths,
             parked: self.parked,
         };
         match depth {
@@ -118,6 +125,7 @@ pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
             .saturating_sub(observations.hooks_finished)
             .min(HOOKS_FINISHED_KEY_CAP),
         alive: observations.alive,
+        unexpected_deaths: observations.unexpected_deaths.min(HOOKS_FINISHED_KEY_CAP),
         parked: observations.parked.min(HOOKS_FINISHED_KEY_CAP),
     }
 }
@@ -216,12 +224,11 @@ pub fn sample_action(
     let node = u16::try_from(pick(rand, usize::from(vocabulary.nodes()))?)?;
     match pick(rand, 8)? {
         0 => Ok(FaultAction::Wait),
-        1 => Ok(FaultAction::EventKill {
+        1 if vocabulary.instrumented_events() => Ok(FaultAction::EventKill {
             node,
-            // Zero is the protocol's disarm value; every positive u64 is a
-            // valid generic event coordinate and requires no workload bound.
-            ordinal: rand.next_u64().max(1),
+            ordinal: sample_event_ordinal(rand),
         }),
+        1 => Ok(FaultAction::Wait),
         2 => Ok(FaultAction::Kill(node)),
         3 => Ok(FaultAction::Pause(
             node,
@@ -243,6 +250,20 @@ pub fn sample_action(
             }),
         },
     }
+}
+
+/// Draw across every positive `u64` scale without importing a workload event
+/// bound. Uniform raw integers almost never land in the finite event prefix an
+/// action executes. Choosing the binary scale uniformly gives short and long
+/// actions equal access to reachable coordinates while the low bits select a
+/// point within that scale.
+fn sample_event_ordinal(rand: &mut RomuDuoJrRand) -> u64 {
+    event_ordinal_from_word(rand.next_u64())
+}
+
+fn event_ordinal_from_word(word: u64) -> u64 {
+    let exponent = (word >> 58) as u32;
+    (1_u64 << exponent) | (word & ((1_u64 << exponent).wrapping_sub(1)))
 }
 
 /// Progress-curve point.
@@ -340,9 +361,36 @@ mod tests {
                 hooks_finished: 3,
                 hooks_running: 0,
                 alive: 0b11,
+                unexpected_deaths: 0,
                 parked: 0,
             }
         );
+    }
+
+    #[test]
+    fn unexpected_deaths_keep_a_fired_event_coordinate_in_its_own_cell() {
+        let armed_but_unreached = endpoint(&[1], 0, 1);
+        let mut fired = armed_but_unreached.clone();
+        fired.unexpected_deaths = 1;
+        assert_ne!(archive_key(&armed_but_unreached), archive_key(&fired));
+        assert_eq!(archive_key(&fired).unexpected_deaths, 1);
+
+        fired.unexpected_deaths = HOOKS_FINISHED_KEY_CAP + 1;
+        assert_eq!(
+            archive_key(&fired).unexpected_deaths,
+            HOOKS_FINISHED_KEY_CAP
+        );
+    }
+
+    #[test]
+    fn event_coordinate_draw_is_uniform_over_binary_scales() {
+        assert_eq!(event_ordinal_from_word(0), 1);
+        assert_eq!(event_ordinal_from_word(10_u64 << 58), 1 << 10);
+        assert_eq!(
+            event_ordinal_from_word((10_u64 << 58) | 123),
+            (1 << 10) | 123
+        );
+        assert_eq!(event_ordinal_from_word(u64::MAX), u64::MAX);
     }
 
     #[test]
@@ -438,6 +486,7 @@ mod tests {
     fn vocabulary() -> FaultVocabulary {
         FaultVocabulary::new(1, vec![1, 2])
             .expect("vocabulary")
+            .with_instrumented_events(true)
             .with_places(vec![0x4b0e86, 0x47eca0])
             .expect("places")
     }
@@ -498,6 +547,16 @@ mod tests {
         for _ in 0..2_000 {
             let action = sample_action(&mut rand, &placeless).expect("draw");
             assert!(!matches!(action, FaultAction::Park { .. }));
+        }
+    }
+
+    #[test]
+    fn an_uninstrumented_vocabulary_never_draws_an_event_kill() {
+        let uninstrumented = FaultVocabulary::new(1, vec![1]).expect("vocabulary");
+        let mut rand = RomuDuoJrRand::with_seed(5);
+        for _ in 0..2_000 {
+            let action = sample_action(&mut rand, &uninstrumented).expect("draw");
+            assert!(!matches!(action, FaultAction::EventKill { .. }));
         }
     }
 

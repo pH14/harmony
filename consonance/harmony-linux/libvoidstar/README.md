@@ -10,6 +10,8 @@ coverage and sanitizer callback symbols expected by instrumented programs.
 Device exchanges are serialized per process. The library keeps explicit thread
 identities and counters for callback thresholding. Device errors fail closed:
 an event is dropped and entropy returns zero rather than using host randomness.
+`init_coverage_module` follows the SDK ABI and assigns non-overlapping edge
+ranges to modules injected by the Go instrumentor.
 
 Instrumented workloads may also inherit `HARMONY_EVENT_KILL_FD`. The library
 reads positive `u64` arm values from that socket and kills its own process group

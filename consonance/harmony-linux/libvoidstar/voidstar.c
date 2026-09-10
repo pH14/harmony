@@ -4,7 +4,9 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdatomic.h>
@@ -45,6 +47,7 @@ static _Thread_local struct harmony_coverage_state harmony_coverage = {
     0, 1, 0, 0, 1
 };
 static uint32_t harmony_next_guard = 1;
+static _Atomic uint64_t harmony_next_edge_offset;
 
 /*
  * The event-kill coordinate is a positive ordinal in the callbacks emitted by
@@ -54,8 +57,8 @@ static uint32_t harmony_next_guard = 1;
  * synchronously, so no supervisor timer, polling loop, address, or hardware
  * counter is involved.
  */
-static _Atomic uint64_t harmony_event_ordinal;
 static _Atomic uint64_t harmony_event_remaining;
+static _Atomic bool harmony_event_updating;
 static pthread_once_t harmony_event_control_once = PTHREAD_ONCE_INIT;
 static int harmony_event_control_fd = -1;
 
@@ -90,10 +93,17 @@ static void *event_control_main(void *unused)
 
     (void)unused;
     while (read_event_command(harmony_event_control_fd, &target) == 0) {
-        atomic_store_explicit(&harmony_event_remaining, target, memory_order_release);
+        atomic_store_explicit(&harmony_event_updating, true, memory_order_release);
         put_u64(acknowledgement, target);
-        if (write_all(harmony_event_control_fd, acknowledgement, sizeof(acknowledgement)) != 0)
+        if (target == 0)
+            atomic_store_explicit(&harmony_event_remaining, 0, memory_order_release);
+        if (write_all(harmony_event_control_fd, acknowledgement, sizeof(acknowledgement)) != 0) {
+            atomic_store_explicit(&harmony_event_updating, false, memory_order_release);
             break;
+        }
+        if (target != 0)
+            atomic_store_explicit(&harmony_event_remaining, target, memory_order_release);
+        atomic_store_explicit(&harmony_event_updating, false, memory_order_release);
     }
     (void)close(harmony_event_control_fd);
     harmony_event_control_fd = -1;
@@ -296,19 +306,27 @@ fail_locked:
     return -1;
 }
 
-void init_coverage_module(const void *module, size_t size)
+uint64_t init_coverage_module(size_t num_edges, const char *symbols)
 {
-    (void)module;
-    (void)size;
+    (void)symbols;
+    return atomic_fetch_add_explicit(
+        &harmony_next_edge_offset, (uint64_t)num_edges, memory_order_relaxed);
 }
 
-void notify_coverage(uint64_t edge)
+bool notify_coverage(uint64_t edge)
 {
     uint64_t remaining;
 
     (void)edge;
     (void)pthread_once(&harmony_event_control_once, event_control_start);
-    (void)atomic_fetch_add_explicit(&harmony_event_ordinal, 1, memory_order_relaxed);
+    /*
+     * The control thread writes its acknowledgement while this gate is set,
+     * then publishes the new count before releasing it. A callback that races
+     * with that write yields and counts itself under the acknowledged arm
+     * instead of slipping through the protocol boundary.
+     */
+    while (atomic_load_explicit(&harmony_event_updating, memory_order_acquire))
+        (void)sched_yield();
     remaining = atomic_load_explicit(&harmony_event_remaining, memory_order_acquire);
     while (remaining != 0) {
         if (atomic_compare_exchange_weak_explicit(
@@ -324,6 +342,7 @@ void notify_coverage(uint64_t edge)
     if (harmony_coverage.counter == harmony_coverage.threshold &&
         coverage_exchange(harmony_coverage.counter) != 0)
         harmony_coverage.threshold = UINT64_MAX;
+    return false;
 }
 
 void __sanitizer_cov_trace_pc_guard_init(uint32_t *start, uint32_t *stop)

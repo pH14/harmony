@@ -13,7 +13,10 @@ use std::{error::Error, fs, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::target::{FaultAction, FaultStop};
+use crate::{
+    archive::FaultMilestones,
+    target::{FaultAction, FaultStop},
+};
 
 /// Package name recorded in every report.
 pub const PACKAGE: &str = "faults";
@@ -177,6 +180,9 @@ pub struct Report {
     pub first_bug_execution: Option<u64>,
     /// Bugs the search recorded; empty in replay mode.
     pub bugs: Vec<BugSummary>,
+    /// Strongest workload milestones reached anywhere in a search campaign.
+    #[serde(default)]
+    pub campaign_milestones: FaultMilestones,
     /// Replay runs; empty in search mode.
     pub replays: Vec<ReplaySummary>,
     /// Action horizons the run clocked.
@@ -204,6 +210,7 @@ impl Report {
             bug_found: false,
             first_bug_execution: None,
             bugs: Vec::new(),
+            campaign_milestones: FaultMilestones::default(),
             replays: Vec::new(),
             horizons_clocked: 0,
             wall_seconds: 0,
@@ -413,6 +420,7 @@ mod live {
         )?;
         report.executions = campaign_report.campaign.executions_completed;
         report.horizons_clocked = campaign_report.campaign.frames_emulated;
+        report.campaign_milestones = archive.milestones;
         for bug in &written {
             // A campaign hit is a claim about an action list, so each one is
             // replayed from a fresh session: the replay both supplies the

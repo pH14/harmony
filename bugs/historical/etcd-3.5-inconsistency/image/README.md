@@ -5,12 +5,13 @@ upstream etcd source, run Antithesis's Go instrumentor, and build the resulting
 instrumented tree. The bundle and hooks are identical; a stock release binary
 is not a valid artifact for this entry.
 
-The build installs `github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-instrumentor`
-at the pinned `v0.8.0` release, runs its source-to-source pass before compiling,
-and packages the generated symbol table under `/symbols`. `libvoidstar.so`
+The build installs `github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-toolexec`
+at the pinned `v0.8.0` release, runs it through `go build -toolexec`, and packages
+the generated symbol tables under `/symbols`. `libvoidstar.so`
 provides the public runtime ABI and receives the generic event-kill arm from the
 fault agent. The upstream SDK and instrumentor are MIT licensed; Harmony does
-not vendor their source.
+not vendor their source. The runtime image retains the Antithesis SDK and etcd
+license notices under `/licenses`.
 
 | arm | `ETCD_VERSION` | pinned source |
 |---|---|---|

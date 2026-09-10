@@ -91,8 +91,10 @@ bug() {
 }
 
 search_report() {
-    jq -cn --argjson found "$1" --argjson bugs "[$2]" \
-        '{ mode: "search", bug_found: $found, bugs: $bugs }'
+    local sometimes=${3:-0}
+    jq -cn --argjson found "$1" --argjson bugs "[$2]" --argjson sometimes "${sometimes}" \
+        '{ mode: "search", bug_found: $found, bugs: $bugs,
+           campaign_milestones: { sometimes: $sometimes, hooks_finished: 0, bug: $found } }'
 }
 
 confirmed=$(bug true '[2]' '[22,24]')
@@ -106,9 +108,15 @@ expect fail 'a corruption no replay confirmed' \
 expect fail 'a crash standing in for the corruption' \
     "$(search_report true "${crash_bug}")" search vulnerable
 expect pass 'a control campaign that found nothing' \
-    "$(search_report false '')" search control
+    "$(search_report false '' 16777216)" search control
+expect fail 'a silent control campaign' \
+    "$(search_report false '' 0)" search control
 expect fail 'a control campaign that hit the assertion' \
-    "$(search_report true "${confirmed}")" search control
+    "$(search_report true "${confirmed}" 16777216)" search control
+expect fail 'a control campaign with an unconfirmed bug' \
+    "$(search_report false "${unconfirmed}" 16777216)" search control
+expect fail 'a control campaign with another bug' \
+    "$(search_report false "${crash_bug}" 16777216)" search control
 
 if ((failures > 0)); then
     printf '%s check(s) failed\n' "${failures}"

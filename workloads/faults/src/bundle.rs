@@ -18,7 +18,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Prefix of the recorded vocabulary identifier.
-pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v1";
+pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v2";
 /// Largest node count the guest fault agent accepts: its alive bitmap is one
 /// `u64`, one bit per node, so a wider vocabulary would name nodes the agent
 /// never runs.
@@ -30,6 +30,10 @@ pub const MAX_NODES: u16 = 64;
 pub struct FaultVocabulary {
     nodes: u16,
     hooks: Vec<u32>,
+    /// Whether the staged workload contains the Antithesis event metadata and
+    /// runtime bridge needed for synchronous event-ordinal crashes.
+    #[serde(default)]
+    instrumented_events: bool,
     places: Vec<u64>,
     /// The place list's `(count, digest)` when the vocabulary was resolved
     /// from a recorded identifier and the addresses themselves are not at hand.
@@ -98,9 +102,17 @@ impl FaultVocabulary {
         Ok(Self {
             nodes,
             hooks: sorted,
+            instrumented_events: false,
             places: Vec::new(),
             places_digest: None,
         })
+    }
+
+    /// Admit synchronous crashes at Antithesis instrumented event ordinals.
+    #[must_use]
+    pub fn with_instrumented_events(mut self, enabled: bool) -> Self {
+        self.instrumented_events = enabled;
+        self
     }
 
     /// The vocabulary with `places` a park may name, sorted and deduplicated.
@@ -183,6 +195,12 @@ impl FaultVocabulary {
         &self.hooks
     }
 
+    /// Whether this workload exposes Antithesis instrumented event ordinals.
+    #[must_use]
+    pub fn instrumented_events(&self) -> bool {
+        self.instrumented_events
+    }
+
     /// Places a park may name, ascending. Empty when the campaign was given
     /// no place list, and when the vocabulary was resolved from a recorded
     /// identifier and the list has not been supplied again.
@@ -203,11 +221,19 @@ impl FaultVocabulary {
         let (count, digest) = self
             .places_digest
             .unwrap_or_else(|| (self.places.len() as u64, digest_places(&self.places)));
+        let events = if self.instrumented_events {
+            "antithesis"
+        } else {
+            "none"
+        };
         if count == 0 {
-            return format!("{VOCABULARY_FORMAT};nodes={};hooks={hooks}", self.nodes);
+            return format!(
+                "{VOCABULARY_FORMAT};nodes={};hooks={hooks};events={events}",
+                self.nodes
+            );
         }
         format!(
-            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};places={count}/{digest:016x}",
+            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};events={events};places={count}/{digest:016x}",
             self.nodes
         )
     }
@@ -234,6 +260,15 @@ impl FaultVocabulary {
             .next()
             .and_then(|field| field.strip_prefix("hooks="))
             .ok_or("fault vocabulary has no hook list")?;
+        let instrumented_events = match fields
+            .next()
+            .and_then(|field| field.strip_prefix("events="))
+            .ok_or("fault vocabulary has no instrumented-event capability")?
+        {
+            "none" => false,
+            "antithesis" => true,
+            _ => return Err("fault vocabulary has an unknown event capability".to_owned()),
+        };
         let places_digest = match fields.next() {
             None => None,
             Some(field) => {
@@ -263,7 +298,7 @@ impl FaultVocabulary {
                 })
                 .collect::<Result<Vec<_>, _>>()?
         };
-        let mut vocabulary = Self::new(nodes, hooks)?;
+        let mut vocabulary = Self::new(nodes, hooks)?.with_instrumented_events(instrumented_events);
         vocabulary.places_digest = places_digest;
         Ok(vocabulary)
     }
@@ -302,7 +337,9 @@ ready /usr/local/pgsql/bin/pg_isready
             .expect("places");
         assert_eq!(vocabulary.places(), [0x47eca0, 0x4b0e86]);
         let identifier = vocabulary.identifier();
-        assert!(identifier.starts_with("faultlab_bundle_v1;nodes=1;hooks=1,2;places=2/"));
+        assert!(
+            identifier.starts_with("faultlab_bundle_v2;nodes=1;hooks=1,2;events=none;places=2/")
+        );
         let resolved = FaultVocabulary::from_identifier(&identifier).expect("resolve");
         assert_eq!(resolved.identifier(), identifier);
         assert!(resolved.places().is_empty());
@@ -404,18 +441,27 @@ ready /usr/local/pgsql/bin/pg_isready
             postgres.identifier(),
             "two workloads never record the same alphabet"
         );
-        assert_eq!(etcd.identifier(), "faultlab_bundle_v1;nodes=1;hooks=1,2");
+        assert_eq!(
+            etcd.identifier(),
+            "faultlab_bundle_v2;nodes=1;hooks=1,2;events=none"
+        );
+        assert_ne!(
+            etcd.identifier(),
+            etcd.clone().with_instrumented_events(true).identifier()
+        );
     }
 
     #[test]
     fn an_unrecognized_identifier_is_refused() {
         for identifier in [
             "faultlab_bundle_v0;nodes=1;hooks=1",
-            "faultlab_bundle_v1;nodes=1",
-            "faultlab_bundle_v1;nodes=0;hooks=1",
-            "faultlab_bundle_v1;nodes=x;hooks=1",
-            "faultlab_bundle_v1;nodes=1;hooks=1;extra=2",
-            "faultlab_bundle_v1;nodes=1;hooks=one",
+            "faultlab_bundle_v1;nodes=1;hooks=1",
+            "faultlab_bundle_v2;nodes=1",
+            "faultlab_bundle_v2;nodes=0;hooks=1;events=none",
+            "faultlab_bundle_v2;nodes=x;hooks=1;events=none",
+            "faultlab_bundle_v2;nodes=1;hooks=1;events=other",
+            "faultlab_bundle_v2;nodes=1;hooks=1;events=none;extra=2",
+            "faultlab_bundle_v2;nodes=1;hooks=one;events=none",
         ] {
             assert!(
                 FaultVocabulary::from_identifier(identifier).is_err(),
@@ -423,8 +469,10 @@ ready /usr/local/pgsql/bin/pg_isready
             );
         }
         let no_hooks =
-            FaultVocabulary::from_identifier("faultlab_bundle_v1;nodes=2;hooks=").expect("resolve");
+            FaultVocabulary::from_identifier("faultlab_bundle_v2;nodes=2;hooks=;events=antithesis")
+                .expect("resolve");
         assert_eq!(no_hooks.nodes(), 2);
         assert!(no_hooks.hooks().is_empty());
+        assert!(no_hooks.instrumented_events());
     }
 }

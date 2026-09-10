@@ -21,6 +21,10 @@ in the fault agent's bundle format:
 [`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
 alphabet, and assembles a guest initramfs: the base image, the OCI rootfs, and
 a control member holding the static fault agent and this package's init. The
+`EventKill` action is added automatically only when the image contains the
+Antithesis runtime bridge, generated symbol metadata, and the build's
+instrumented-node hash attestation; this capability is part of the recorded
+vocabulary used by replay. The
 init mounts the pseudo-filesystems, binds and chroots into the workload rootfs,
 and execs the agent. The control member is appended after the compressed
 members and padded to four bytes, which Linux initramfs requires before a raw
@@ -67,8 +71,11 @@ with the boot that reaches setup.
 
 [`campaign`](src/campaign.rs) implements the game-neutral campaign interface
 over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
-which pairs the sometimes-assertion set with the live-node bitmap and the
-hook-completion count.
+which pairs the sometimes-assertion set with node liveness, unexpected deaths,
+and hook progress. `EventKill` draws choose a binary scale before a coordinate,
+so finite event prefixes are searchable without a workload-specific upper
+bound. A coordinate that fires increments the unexpected-death state and keeps
+that prefix available for generic dyadic refinement.
 
 ## Running it
 

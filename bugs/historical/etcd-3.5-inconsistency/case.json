@@ -27,7 +27,7 @@
     "dockerfile": "bugs/historical/etcd-3.5-inconsistency/image/Dockerfile"
   },
   "instrumentation": {
-    "tool": "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-instrumentor",
+    "tool": "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-toolexec",
     "version": "0.8.0",
     "license": "MIT"
   },

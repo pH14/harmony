@@ -454,12 +454,13 @@ impl InputPolicy for FaultGame {
         if !state.anchors.is_empty() {
             let bound = NonZeroUsize::new(state.anchors.len())
                 .ok_or("event-coordinate anchor state unexpectedly empty")?;
-            for action in &mut suffix {
+            for (index, action) in suffix.iter_mut().enumerate() {
                 let FaultAction::EventKill { .. } = *action else {
                     continue;
                 };
-                let anchor = state.anchors[rand_index(mutation_seed, bound)];
-                let refined = refine_event_coordinate(anchor.1, mutation_seed);
+                let coordinate_seed = mix_coordinate_seed(mutation_seed, index);
+                let anchor = state.anchors[rand_index(coordinate_seed, bound)];
+                let refined = refine_event_coordinate(anchor.1, coordinate_seed);
                 *action = FaultAction::EventKill {
                     node: anchor.0,
                     ordinal: refined,
@@ -495,14 +496,21 @@ fn rand_index(seed: u64, bound: NonZeroUsize) -> usize {
     ((u128::from(mixed) * u128::from(bound.get() as u64)) >> 64) as usize
 }
 
+fn mix_coordinate_seed(seed: u64, index: usize) -> u64 {
+    let mut value = seed ^ (index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
 fn refine_event_coordinate(anchor: u64, seed: u64) -> u64 {
-    let level = ((seed >> 8) & 63) as u32;
-    let radius = if level == 63 {
-        0
-    } else {
-        u64::MAX >> (level + 1)
-    };
-    if ((seed >> 40) & 1) == 0 {
+    if seed & 3 == 0 {
+        return anchor.max(1);
+    }
+    let highest = 63 - anchor.max(1).leading_zeros();
+    let level = ((seed >> 2) % u64::from(highest + 1)) as u32;
+    let radius = 1_u64 << level;
+    if seed & 3 == 1 {
         anchor.saturating_sub(radius).max(1)
     } else {
         anchor.saturating_add(radius).max(1)
@@ -825,10 +833,11 @@ mod tests {
     #[test]
     fn event_coordinate_refinement_is_dyadic_and_unbounded() {
         let anchor = 100_u64;
-        let exact = (63_u64 << 8) | (1_u64 << 40);
-        let neighbor = 62_u64 << 8 | (1_u64 << 40);
-        assert_eq!(refine_event_coordinate(anchor, exact), anchor);
-        assert_eq!(refine_event_coordinate(anchor, neighbor), anchor + 1);
-        assert_eq!(refine_event_coordinate(1, 0), 1);
+        assert_eq!(refine_event_coordinate(anchor, 0), anchor);
+        assert_eq!(refine_event_coordinate(anchor, 2), anchor + 1);
+        assert_eq!(refine_event_coordinate(anchor, (5 << 2) | 1), 68);
+        assert_eq!(refine_event_coordinate(1, 1), 1);
+        assert_eq!(refine_event_coordinate(u64::MAX, 2), u64::MAX);
+        assert_ne!(mix_coordinate_seed(7, 0), mix_coordinate_seed(7, 1));
     }
 }

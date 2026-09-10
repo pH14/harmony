@@ -60,7 +60,7 @@ jobs:
           jq -e '
             .id == "etcd-3.5-inconsistency"
             and (.run.knobs == {})
-            and (.instrumentation.tool == "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-instrumentor")
+            and (.instrumentation.tool == "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-toolexec")
             and (.instrumentation.version == "0.8.0")
             and (.instrumentation.license == "MIT")
             and (.arms.vulnerable.source_sha256 | type == "string" and length == 64)
@@ -145,8 +145,11 @@ jobs:
               --file "${CASE_DIR}/image/Dockerfile" .
             docker run --rm --entrypoint /bin/sh "harmony-etcd:${version}" -c \
               'test -x /opt/etcd/etcd && test -x /opt/etcd/etcdctl \
-               && test -s /symbols/*.sym.tsv && test -s /usr/lib/libvoidstar.so \
-               && grep -a -q antithesis.notifier /opt/etcd/etcd'
+               && set -- /symbols/*.sym.tsv && test -s "$1" \
+               && test -s /symbols/harmony-instrumented-events \
+               && test -s /usr/lib/libvoidstar.so \
+               && test -s /licenses/etcd.txt && test -s /licenses/antithesis-sdk-go.txt \
+               && grep -a -q antithesishq/antithesis-sdk-go/instrumentation /opt/etcd/etcd'
             docker save --output "oci-images/${IMAGE_PREFIX}-${version}.oci" "harmony-etcd:${version}"
           }
           build_arm "${{ needs.manifest.outputs.vulnerable_version }}" \

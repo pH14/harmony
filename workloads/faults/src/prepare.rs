@@ -11,6 +11,7 @@ use std::{error::Error, path::Path};
 
 use guest_image::Writer;
 use oci_support::image::Ownership;
+use sha2::{Digest, Sha256};
 
 use crate::bundle::FaultVocabulary;
 
@@ -57,7 +58,8 @@ fn prepare_rootfs(
         return Err("the bundle must reside inside the staged image".into());
     }
     let bundle = String::from_utf8(std::fs::read(document)?)?;
-    let vocabulary = FaultVocabulary::parse(&bundle)?;
+    let vocabulary =
+        FaultVocabulary::parse(&bundle)?.with_instrumented_events(has_instrumented_events(&root));
     let mut image = base.to_vec();
     image.extend(oci_support::bundle::build_rootfs_segment(&root, owners)?);
     let mut overlay = Writer::new();
@@ -76,6 +78,52 @@ fn prepare_rootfs(
         vocabulary,
         bundle,
         initramfs: image,
+    })
+}
+
+/// Derive the event-crash capability from artifacts produced by the pinned
+/// instrumentation build. Both the runtime bridge and nonempty symbol metadata
+/// are required; a bundle never opts into this action through configuration.
+fn has_instrumented_events(root: &Path) -> bool {
+    if !root.join("usr/lib/libvoidstar.so").is_file() || !valid_instrumented_event_attestation(root)
+    {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(root.join("symbols")) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.ends_with(".sym.tsv"))
+            && entry
+                .metadata()
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+    })
+}
+
+fn valid_instrumented_event_attestation(root: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join("symbols/harmony-instrumented-events")) else {
+        return false;
+    };
+    text.lines().any(|line| {
+        let Some((expected, image_path)) = line.split_once(char::is_whitespace) else {
+            return false;
+        };
+        if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return false;
+        }
+        let image_path = image_path.trim().trim_start_matches('/');
+        let Ok(executable) = root.join(image_path).canonicalize() else {
+            return false;
+        };
+        if !executable.starts_with(root) {
+            return false;
+        }
+        std::fs::read(executable).is_ok_and(|bytes| {
+            format!("{:x}", Sha256::digest(bytes)) == expected.to_ascii_lowercase()
+        })
     })
 }
 
@@ -171,6 +219,7 @@ ready /usr/bin/etcdctl endpoint health
         let repeated = prepare_rootfs(root.path(), &owners, b"base", b"agent-v1").unwrap();
         assert_eq!(first.vocabulary.nodes(), 1);
         assert_eq!(first.vocabulary.hooks(), [1, 2]);
+        assert!(!first.vocabulary.instrumented_events());
         assert_eq!(first.bundle, BUNDLE);
         assert_eq!(first.initramfs, repeated.initramfs);
         assert_ne!(
@@ -179,6 +228,46 @@ ready /usr/bin/etcdctl endpoint health
                 .unwrap()
                 .initramfs
         );
+    }
+
+    #[test]
+    fn preparation_derives_instrumented_events_from_runtime_and_symbols() {
+        let root = tempfile::tempdir().unwrap();
+        image(root.path());
+        std::fs::create_dir_all(root.path().join("usr/lib")).unwrap();
+        std::fs::create_dir_all(root.path().join("symbols")).unwrap();
+        std::fs::create_dir_all(root.path().join("opt/etcd")).unwrap();
+        std::fs::write(root.path().join("usr/lib/libvoidstar.so"), b"runtime").unwrap();
+        std::fs::write(root.path().join("symbols/etcd.sym.tsv"), b"1\tfile.go:1\n").unwrap();
+        std::fs::write(root.path().join("opt/etcd/etcd"), b"instrumented node").unwrap();
+        std::fs::write(
+            root.path().join("symbols/harmony-instrumented-events"),
+            b"f05c4a6fcf5bba49af1a80cf4015c096f55a4869c7df89cb85fa8737e993c995  /opt/etcd/etcd\n",
+        )
+        .unwrap();
+        let prepared =
+            prepare_rootfs(root.path(), &Ownership::default(), b"base", b"agent").unwrap();
+        assert!(prepared.vocabulary.instrumented_events());
+
+        std::fs::remove_file(root.path().join("symbols/etcd.sym.tsv")).unwrap();
+        let no_symbols =
+            prepare_rootfs(root.path(), &Ownership::default(), b"base", b"agent").unwrap();
+        assert!(!no_symbols.vocabulary.instrumented_events());
+
+        std::fs::write(root.path().join("symbols/etcd.sym.tsv"), b"1\tfile.go:1\n").unwrap();
+        std::fs::remove_file(root.path().join("symbols/harmony-instrumented-events")).unwrap();
+        let no_attestation =
+            prepare_rootfs(root.path(), &Ownership::default(), b"base", b"agent").unwrap();
+        assert!(!no_attestation.vocabulary.instrumented_events());
+
+        std::fs::write(
+            root.path().join("symbols/harmony-instrumented-events"),
+            b"0000000000000000000000000000000000000000000000000000000000000000  /opt/etcd/etcd\n",
+        )
+        .unwrap();
+        let wrong_hash =
+            prepare_rootfs(root.path(), &Ownership::default(), b"base", b"agent").unwrap();
+        assert!(!wrong_hash.vocabulary.instrumented_events());
     }
 
     #[test]
