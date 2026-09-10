@@ -80,9 +80,12 @@ jobs:
           sha256sum guest/* oci-images/* > reports/input-sha256.txt
           python3 ../diagnostics/.github/scripts/candidate-continuation.py --self-test
       - name: Install static guest toolchain
+        working-directory: candidate
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends musl-tools
+          rustup show active-toolchain
           rustup target add x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
         with:
