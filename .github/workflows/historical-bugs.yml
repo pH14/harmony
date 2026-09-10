@@ -23,6 +23,10 @@ on:
         description: Qualify MSR, PIO and fragmented MMIO snapshot completion boundaries
         type: boolean
         default: false
+      cli_continuation:
+        description: Compare actual original, fork, cold and split CLI endpoint identity
+        type: boolean
+        default: false
       candidate_ref:
         description: Exact candidate commit or branch for snapshot qualification
         type: string
@@ -34,6 +38,78 @@ concurrency:
   group: snapshot-reproduction-${{ github.ref }}-${{ inputs.cpu_snapshot }}-${{ inputs.msr_snapshot }}
   cancel-in-progress: false
 jobs:
+  cli-continuation:
+    if: ${{ inputs.cli_continuation }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: diagnostics
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_ref }}
+          path: candidate
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 34441848506
+          name: guest-images-34441848506
+          path: candidate/guest
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 34441848506
+          name: oci-images-34441848506
+          path: candidate/oci-images
+      - name: Record host and candidate provenance
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          git rev-parse HEAD > reports/candidate-head.txt
+          git -C ../diagnostics rev-parse HEAD > reports/diagnostic-head.txt
+          uname -a > reports/host.txt
+          lscpu >> reports/host.txt
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          sha256sum guest/* oci-images/* > reports/input-sha256.txt
+          python3 ../diagnostics/.github/scripts/candidate-continuation.py --self-test
+      - name: Install static guest toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
+          rustup target add x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            candidate -> target
+            candidate/workloads/fault-agent -> target
+      - name: Build candidate CLI and fault agent
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p harmony-cli
+          cargo build --locked --release --manifest-path workloads/fault-agent/Cargo.toml --target x86_64-unknown-linux-musl
+          mkdir -p tools
+          cp target/release/harmony tools/harmony
+          cp workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent tools/fault-agent
+          file tools/fault-agent | grep -Eiq static
+          sha256sum tools/* > reports/tool-sha256.txt
+      - name: Original, fork, cold and split identity on real KVM
+        working-directory: candidate
+        run: python3 ../diagnostics/.github/scripts/candidate-continuation.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cli-continuation-kvm-${{ github.run_id }}
+          path: candidate/reports
+          if-no-files-found: error
+          retention-days: 7
   reference:
     if: ${{ inputs.reference }}
     runs-on: ubuntu-24.04
