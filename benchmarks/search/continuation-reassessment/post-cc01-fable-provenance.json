@@ -1,0 +1,72 @@
+{
+  "model_requested": "claude-fable-5-1",
+  "effort_requested": "xhigh",
+  "started_utc": "2026-09-10T14:49:15.857303+00:00",
+  "elapsed_seconds": 306.458616709,
+  "exit_code": 0,
+  "timeout": false,
+  "wall_bound_seconds": 600,
+  "max_budget_usd": 5,
+  "reviewer_had_tools": false,
+  "prompt_sha256": "6d9a5898738bf05f8c5a6071ecf51e6a53ce9f43c4f7b154d5b79a4942bbc8e4",
+  "response_sha256": "c2916e965ea10f34b69fe5cb7da64c1778a8bc6b6322407152c16c162500a463",
+  "input_manifest_sha256": "30278461ef085aea897b7f7d38247bf7686cf2fc419440ef8b6d2c5f4545cb81",
+  "verified_response_model": "claude-fable-5-1",
+  "auxiliary_models": [
+    "claude-haiku-4-5-20251001"
+  ],
+  "model_usage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 6818,
+      "outputTokens": 22,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.006928,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "thinkingTokens": 0,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    },
+    "claude-fable-5-1": {
+      "inputTokens": 2,
+      "outputTokens": 22430,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 9310,
+      "webSearchRequests": 0,
+      "costUSD": 1.3077199999999998,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "thinkingTokens": 19081,
+      "canonicalModel": "claude-fable-5-1",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  },
+  "total_cost_usd": 1.3146479999999998,
+  "tools_disabled_by_invocation": true,
+  "response_turns": 1,
+  "input_manifest": [
+    {
+      "label": "current_pr_summary",
+      "path": "/private/tmp/harmony-pr287-consolidated-body.md",
+      "bytes": 7868,
+      "sha256": "950c1e90d2116c5928dcc208ff79a4fd05d71bc5d549aa2627aec6d21cd44959"
+    },
+    {
+      "label": "prefix_opportunity_proof",
+      "path": "/private/tmp/harmony-retention-theory-msr1-20260908/benchmarks/search/continuation-reassessment/prefix-opportunity.md",
+      "bytes": 6180,
+      "sha256": "66209f55f4ec902b11b0460b2883c46d0a4c338d4c49404d1beee40f16d62b2a"
+    },
+    {
+      "label": "prior_fable_adjudication",
+      "path": "/private/tmp/harmony-retention-theory-msr1-20260908/benchmarks/search/action-correlation/fable-adjudication.md",
+      "bytes": 6448,
+      "sha256": "ebca40e8617acbe5705bb606a5ffa91d46f9767565a734983e1beee3c1d85033"
+    }
+  ],
+  "feedback_sha256": "c9c7ad51d75de9439dda37be2390d1061fda370828996f0517a8e5acca771a17"
+}

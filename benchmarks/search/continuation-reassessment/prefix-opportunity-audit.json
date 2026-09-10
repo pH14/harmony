@@ -1,0 +1,279 @@
+{
+  "format": "alphabet-prefix-opportunity-audit-v1",
+  "scope": "Offline descriptive opportunity assessment; no pooling of efficacy panels or new native work.",
+  "source_commit": "780415bdea636c2bd54cf3d865fc264dd33fd649",
+  "source_checks": [
+    {
+      "path": "dissonance/searcher/src/search/campaign.rs",
+      "registered_source_file_sha256": "4e4919040ba3707f07d6fa60cc1ad1b19c2dafe1f40aaeb638fb00affe63696d",
+      "unchanged_functions": [
+        {
+          "signature": "fn all_prefixes_archived(",
+          "sha256": "89a6afd9c5de95c09420ef7942c341d978d8717fcb02e79b5be8718b9c8701b9"
+        },
+        {
+          "signature": "fn note_dispatch<G:",
+          "sha256": "797d3b18dd43402f09617e05df4a3378bb5eb0444eceeb98b827364b93e49ffe"
+        }
+      ]
+    },
+    {
+      "path": "dissonance/searcher/src/search/archive.rs",
+      "registered_source_file_sha256": "f8e6fd376a760c9c6192712f866af936f7c0d38ed0294b9e8d45c65626f5cc7b",
+      "unchanged_functions": [
+        {
+          "signature": "pub(crate) fn all_extensions_retained(",
+          "sha256": "705b3efb68ebb66b0df70fab926686631cf9fbca992353f389a158fae7a497e8"
+        },
+        {
+          "signature": "pub(crate) fn job_origin(",
+          "sha256": "37785b1f5cf8bd7bf94247960d47baeb4b581cb51a37263503a04408425b3d3b"
+        }
+      ]
+    },
+    {
+      "path": "dissonance/searcher/src/search/draw.rs",
+      "registered_source_file_sha256": "ece461b78351f511b9edb3421851d4df6ac030e0de0a2c1c33878887a54a27a5",
+      "unchanged_functions": [
+        {
+          "signature": "pub fn draw_suffix<",
+          "sha256": "1848942b90e8058b3409a55a625f2b8284170e278b4966b5ad48d0fc4d7aa8ba"
+        }
+      ]
+    },
+    {
+      "path": "workloads/nes/src/metroid/archive.rs",
+      "registered_source_file_sha256": "b37a4a6d91f238b620ae50680e8933571c2794328f1fe7f2beb9114f29976cff",
+      "unchanged_functions": [
+        {
+          "signature": "pub fn sample_chord(",
+          "sha256": "3c144be54f5653b5ef59c2134dd7af16bf71acc21ffcea2a95ff262609186de5"
+        }
+      ]
+    }
+  ],
+  "cells": [
+    {
+      "id": "cd01-pair-0-control",
+      "native_archive_sha256": "edbf3a8b2cf2827d58c0c55af78295a38f551bd653cb90b4736f70f29fcfd9ec",
+      "report_path": "cd01-pair-0/cd01-pair-0-control/metroid-full-s1040692292-w4-m8192/campaign/campaign.json",
+      "report_sha256": "8d0fa17e0789ad30b8eff0612c9c79502c08a51351bada8bb068a5caf559e4b2",
+      "frames": 200001408,
+      "jobs": 1581563,
+      "duplicates_skipped": 279,
+      "origin_replay_frames": 0,
+      "complete_job_stream_retained": false
+    },
+    {
+      "id": "cd01-pair-0-candidate",
+      "native_archive_sha256": "edbf3a8b2cf2827d58c0c55af78295a38f551bd653cb90b4736f70f29fcfd9ec",
+      "report_path": "cd01-pair-0/cd01-pair-0-candidate/metroid-full-s1040692292-w4-m8192/campaign/campaign.json",
+      "report_sha256": "bd5032ef3292f2ed7e2cbc88854dd2f7b57a97df8e61d6fb5f18859f6c3e3717",
+      "frames": 106973810,
+      "jobs": 903605,
+      "duplicates_skipped": 147,
+      "origin_replay_frames": 0,
+      "complete_job_stream_retained": false
+    },
+    {
+      "id": "cd01-pair-1-candidate",
+      "native_archive_sha256": "d8ab97396094b7533c3aaea6013d491287f6ab6d7388e7a561f473ff45c7bf1e",
+      "report_path": "cd01-pair-1/cd01-pair-1-candidate/metroid-full-s2883914186-w4-m8192/campaign/campaign.json",
+      "report_sha256": "c794363615108c2331d5465c7834ba2b26b68d4d8d8994f1323c7d6572cf5034",
+      "frames": 98490754,
+      "jobs": 827954,
+      "duplicates_skipped": 100,
+      "origin_replay_frames": 0,
+      "complete_job_stream_retained": false
+    },
+    {
+      "id": "cd01-pair-1-control",
+      "native_archive_sha256": "d8ab97396094b7533c3aaea6013d491287f6ab6d7388e7a561f473ff45c7bf1e",
+      "report_path": "cd01-pair-1/cd01-pair-1-control/metroid-full-s2883914186-w4-m8192/campaign/campaign.json",
+      "report_sha256": "317e991f90d27a5a5b669661d05b4b5a2c619f4eab24479f737f132e21f86a07",
+      "frames": 140517418,
+      "jobs": 1111911,
+      "duplicates_skipped": 195,
+      "origin_replay_frames": 0,
+      "complete_job_stream_retained": false
+    },
+    {
+      "id": "cd01-pair-2-candidate",
+      "native_archive_sha256": "30e57384d0d353c86e86dcc523b03bafeac871dd4349160ef988254ee3841960",
+      "report_path": "cd01-pair-2/cd01-pair-2-candidate/metroid-full-s4193773728-w4-m8192/campaign/campaign.json",
+      "report_sha256": "4b0914bad9072dd572d443df7913b72e352b58f7309f1efb80ae08602123bc85",
+      "frames": 69722166,
+      "jobs": 583223,
+      "duplicates_skipped": 89,
+      "origin_replay_frames": 0,
+      "complete_job_stream_retained": false
+    },
+    {
+      "id": "cd01-pair-2-control",
+      "native_archive_sha256": "30e57384d0d353c86e86dcc523b03bafeac871dd4349160ef988254ee3841960",
+      "report_path": "cd01-pair-2/cd01-pair-2-control/metroid-full-s4193773728-w4-m8192/campaign/campaign.json",
+      "report_sha256": "fa4deefdbd72b165d2685835b5091e450eea0aaaec7dc78e3a9d38f64f55d74e",
+      "frames": 200001089,
+      "jobs": 1560926,
+      "duplicates_skipped": 273,
+      "origin_replay_frames": 0,
+      "complete_job_stream_retained": false
+    },
+    {
+      "id": "cd01-pair-3-control",
+      "native_archive_sha256": "b8b4c726d0d0230a159c2165d058aefc15267b909fddb76b58ab4c8d1f8b744b",
+      "report_path": "cd01-pair-3/cd01-pair-3-control/metroid-full-s2971383614-w4-m8192/campaign/campaign.json",
+      "report_sha256": "d2e92419a4a05adc56da6b62fa814f9a177425939254f49627a08734962b5799",
+      "frames": 200000822,
+      "jobs": 1624820,
+      "duplicates_skipped": 283,
+      "origin_replay_frames": 0,
+      "complete_job_stream_retained": false
+    },
+    {
+      "id": "cd01-pair-3-candidate",
+      "native_archive_sha256": "b8b4c726d0d0230a159c2165d058aefc15267b909fddb76b58ab4c8d1f8b744b",
+      "report_path": "cd01-pair-3/cd01-pair-3-candidate/metroid-full-s2971383614-w4-m8192/campaign/campaign.json",
+      "report_sha256": "bf2445c4ec3d2c65e8e385a25516243edb65a97b1c73c36a9379d6c04f1c71ce",
+      "frames": 91629123,
+      "jobs": 756292,
+      "duplicates_skipped": 108,
+      "origin_replay_frames": 0,
+      "complete_job_stream_retained": false
+    },
+    {
+      "id": "cc01-pair-0-control",
+      "native_archive_sha256": "b468c21a97b41794c954a3b0e89421322373fa54da29d250e81cd7f50a2b24d4",
+      "report_path": "cc01-pair-0/cc01-pair-0-control/metroid-full-s833917373-w4-m8192/campaign/campaign.json",
+      "report_sha256": "55c3053432b88011126e6caf6c67bed37721e911a6871cdf32a5db7b3c8b3220",
+      "frames": 139785652,
+      "jobs": 1136052,
+      "duplicates_skipped": 192,
+      "origin_replay_frames": 0,
+      "complete_job_stream_retained": false
+    },
+    {
+      "id": "cc01-pair-0-candidate",
+      "native_archive_sha256": "b468c21a97b41794c954a3b0e89421322373fa54da29d250e81cd7f50a2b24d4",
+      "report_path": "cc01-pair-0/cc01-pair-0-candidate/metroid-full-s833917373-w4-m8192/campaign/campaign.json",
+      "report_sha256": "4456e6799215d5c40df9c8245ecdcc8013828629ff87528f2ff0a19350c0c4d1",
+      "frames": 182859520,
+      "jobs": 1529746,
+      "duplicates_skipped": 234,
+      "origin_replay_frames": 0,
+      "complete_job_stream_retained": false
+    },
+    {
+      "id": "cc01-pair-1-candidate",
+      "native_archive_sha256": "ed1d7d29ca57d945882b129e531ca581ca4627d0c5bec07aeac726b3c7484f03",
+      "report_path": "cc01-pair-1/cc01-pair-1-candidate/metroid-full-s4204540845-w4-m8192/campaign/campaign.json",
+      "report_sha256": "b9ce7dc8621582a3521b921f6aeb0eeb9a123d40a6a0645aa7b730aff2c3c3c0",
+      "frames": 149918780,
+      "jobs": 1263983,
+      "duplicates_skipped": 195,
+      "origin_replay_frames": 0,
+      "complete_job_stream_retained": false
+    },
+    {
+      "id": "cc01-pair-1-control",
+      "native_archive_sha256": "ed1d7d29ca57d945882b129e531ca581ca4627d0c5bec07aeac726b3c7484f03",
+      "report_path": "cc01-pair-1/cc01-pair-1-control/metroid-full-s4204540845-w4-m8192/campaign/campaign.json",
+      "report_sha256": "bdd14b3a12cb37a7c8daae33140450060700b2e1c2dd197e909edffc19caf2a5",
+      "frames": 129157570,
+      "jobs": 1022042,
+      "duplicates_skipped": 179,
+      "origin_replay_frames": 0,
+      "complete_job_stream_retained": false
+    }
+  ],
+  "ordinary_control_totals": {
+    "cells": 6,
+    "jobs": 8037314,
+    "duplicates_skipped": 1401,
+    "draws": 8038715,
+    "frames": 1009463959,
+    "duplicate_skip_fraction_of_draws": 0.00017428158604951163
+  },
+  "model": {
+    "assumption": "At every adaptive selection, N is uniform on1..6 and independent of a fresh latent six-action tape, conditional on prior history. This ideal-random-draw premise is not a proved property of the deterministic Romu PRNG.",
+    "saving_scope": "At most the hold time of the contiguous currently retained prefix in a dispatched ordinary suffix, on the original observed selection history. No reordering, failed-state cache, nonretained intermediate shortcut, or future adaptive trajectory effect is bounded.",
+    "max_action_frames": 120,
+    "exponential_scale_frames": 1200,
+    "finite_rational_moment_bounds": [
+      {
+        "retained_prefix_actions": 0,
+        "exponential_moment_upper_bound": "1"
+      },
+      {
+        "retained_prefix_actions": 1,
+        "exponential_moment_upper_bound": "427/432"
+      },
+      {
+        "retained_prefix_actions": 2,
+        "exponential_moment_upper_bound": "23/24"
+      },
+      {
+        "retained_prefix_actions": 3,
+        "exponential_moment_upper_bound": "101/112"
+      },
+      {
+        "retained_prefix_actions": 4,
+        "exponential_moment_upper_bound": "29/36"
+      },
+      {
+        "retained_prefix_actions": 5,
+        "exponential_moment_upper_bound": "31/48"
+      },
+      {
+        "retained_prefix_actions": 6,
+        "exponential_moment_upper_bound": "3/8"
+      }
+    ],
+    "length_dependent_tape_counterexample": [
+      {
+        "length": 1,
+        "known_prefix_frames": 0,
+        "skipped": 0
+      },
+      {
+        "length": 2,
+        "known_prefix_frames": 120,
+        "skipped": 0
+      },
+      {
+        "length": 3,
+        "known_prefix_frames": 240,
+        "skipped": 0
+      },
+      {
+        "length": 4,
+        "known_prefix_frames": 360,
+        "skipped": 0
+      },
+      {
+        "length": 5,
+        "known_prefix_frames": 480,
+        "skipped": 0
+      },
+      {
+        "length": 6,
+        "known_prefix_frames": 600,
+        "skipped": 0
+      }
+    ],
+    "supermartingale": "exp(sum W /1200 - sum Y), with W the ideal eligible prefix work and Y the existing duplicate-skip indicator; stop the process immediately before its first forced duplicate execution. Every observed control is before that guard.",
+    "registered_control_trajectories": 8,
+    "per_control_time_uniform_failure_probability_under_model": 0.00625,
+    "familywise_time_uniform_failure_probability_under_model": 0.05,
+    "upper_frames_under_model": 1717741.2514696836,
+    "upper_fraction_under_model": 0.0017016370284000239,
+    "interpretation": "A conditional mathematical opportunity bound, not observed saved work, a PRNG certificate, a native confidence claim, or a causal discovery improvement."
+  },
+  "decision": "Do not fund ordinary retained-prefix fast-forward or additional duplicate/exposure telemetry from this evidence. Existing full-prefix suppression and zero origin replay defeat the simpler proposals. Direct partial-prefix work opportunity is small under the model, and there is no evidence of a compensating adaptive discovery gain.",
+  "emulated_frames": 0,
+  "unknowns": [
+    "Exact attempted-action history and partially known prefix hits are not recoverable from these saved aggregate artifacts.",
+    "Unretained/dead-action repetition is outside the skip-count bound; parent counters cannot estimate it.",
+    "Changing an adaptive search history can change downstream utility; the opportunity bound is not search dominance."
+  ]
+}

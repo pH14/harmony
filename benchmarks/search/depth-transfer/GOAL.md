@@ -944,3 +944,39 @@ Do not spend a fresh control, qualification replay or parameter sweep merely
 because ms02 is available. Any later native allocation needs its own concrete
 decision, favorable evidence and full prospective bounds. The original matched
 boss/Wily and untouched-validation goal remains active and unachieved.
+
+The post-CC01 offline prefix-opportunity audit finds ordinary full-prefix
+duplicate suppression already implemented and zero in-job origin reconstruction
+in all twelve completed native cells. A source-linked finite argument, with an
+explicit ideal-independent-draw premise and counterexample to dropping it,
+puts the six ordinary controls' partial-prefix opportunity near0.17% under a
+time-uniform model bound. It is not a native confidence certificate or a bound
+on adaptive discovery. Do not fund duplicate filtering, retained-prefix
+fast-forward or broad exposure instrumentation from these counts. No new
+emulator frames are spent; the closed ledger and all failed gates remain intact.
+
+## Decision after the post-CC01 Fable review
+
+Adopt the distinct fight-progress representation question, not the review's
+unsupported claim that retention is already proved to be the bottleneck.
+The exact AP01 stream contains 2,548 jobs and 3,295 rejected candidates but no
+endpoint HP/context; cached final snapshots cannot fill that gap. Its ordinary
+key omits boss HP, and both within-job same-key suppression and local retention
+can matter. No actual rejected lower-HP endpoint has yet been established.
+
+Next design a minimal replay-only inspection of this complete short pilot,
+using existing snapshot/classifier/retention hooks. It must preserve each
+original job's frames, result digest and admission decisions, cover the earlier
+same-key suppression path, and distinguish snapshot-local HP from lifetime
+damage or proven useful futures. Establish ms02 compatibility with the original
+ARM source/assets explicitly; do not silently rewrite identity or access msr1.
+Use source and planted counterexamples first. Any native replay requires its
+own separately frozen and fully bounded qualification/diagnostic allocation.
+No new policy panel, HP/10 parameter, longer search, replacement seed or selected
+root is earned by the review. See ../continuation-reassessment/post-cc01-adjudication.md.
+
+Keep closed nominees closed without turning their failures into a prohibition
+on every distinct mechanism at the existing diagnostic root. The observer stays
+independent of the policy it measures; a future explicit policy using qualified
+state information would require a separate identity and evidence. The original
+matched boss/Wily goal remains active and unachieved.

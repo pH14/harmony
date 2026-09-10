@@ -372,6 +372,27 @@ python3 benchmarks/search/continuation-reassessment/verify_cd01_native.py --prot
 python3 benchmarks/search/continuation-reassessment/score_cc01.py --registration benchmarks/search/continuation-reassessment/cc01-registration.json --evidence benchmarks/search/continuation-reassessment/cc01-output --out /tmp/cc01-analysis.json
 ```
 
+## Offline decision after failed confirmation
+
+An [existing-evidence opportunity audit](prefix-opportunity.md) rejects ordinary
+duplicate filtering and retained-prefix fast-forward as the next experiment.
+Full-prefix filtering already exists, and all twelve native cells record zero
+in-job origin reconstruction. Under an explicit independent-draw model, a
+time-uniform bound limits ideal partial-prefix work savings on the six controls'
+original histories to about 0.17% of admitted frames. The exact finite
+inequalities and an assumption-breaking counterexample are executable. This is
+neither measured savings nor a PRNG certificate or adaptive discovery bound.
+No new instrumentation, emulator work or policy promotion follows.
+
+A [bounded Fable 5.1 xhigh review and adjudication](post-cc01-adjudication.md)
+then identifies a distinct representation question: whether lower classified
+boss HP is lost at a same-key boundary or a retention collision. The complete
+AP01 stream has 3,295 rejected candidates but no endpoint HP records, so the
+saved evidence cannot answer that query. The next task is a minimal replay-only
+design for that exact short pilot, with explicit cross-host compatibility and
+unchanged per-job digests/decisions. No new policy panel or replay allocation is
+registered yet; the review's automatic 150M-frame proposal is not adopted.
+
 ## Ordering findings stay separate from this candidate
 
 Two new source fixtures expose existing limitations without changing policies:

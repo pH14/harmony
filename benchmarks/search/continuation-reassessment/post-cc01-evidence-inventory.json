@@ -1,0 +1,74 @@
+{
+  "format": "post-cc01-existing-combat-evidence-inventory-v1",
+  "ap01_stream_sha256": "9ad315a76c38276c673fccd2b660a250254a8a74bc92d9f4a77670702a53a32c",
+  "ap01_native_jobs": 2548,
+  "ap01_admitted_frames": 250267,
+  "job_record_fields": [
+    "decisions",
+    "event",
+    "frames",
+    "mixture_weight",
+    "mutation_seed",
+    "parent_id",
+    "result_sha256",
+    "selector",
+    "sequence",
+    "splice_weight",
+    "worker"
+  ],
+  "decision_counts": {
+    "rejected": 3295,
+    "retained": 1031,
+    "duplicate": 1
+  },
+  "decision_record_fields": [
+    "decision",
+    "id"
+  ],
+  "ap01_retention_competition_audit_present": false,
+  "ci01_context_sha256": "6aa9bb639907295faf41825ac61b26fdcbc65fd7bb272f3b448659eea266e159",
+  "cached_context_entries": 588,
+  "active_summary": {
+    "entries": 557,
+    "classified_entries": 166,
+    "available_hp_entries": 166,
+    "unavailable_hp_slots": 0,
+    "snapshot_local_hp_counts": {
+      "129": 1,
+      "130": 1,
+      "131": 1,
+      "139": 3,
+      "140": 160
+    },
+    "entries_with_classified_hp_below_root_140": [
+      530,
+      667,
+      973,
+      978,
+      979,
+      982
+    ],
+    "samus_health_range": [
+      16,
+      79
+    ]
+  },
+  "inactive_summary": {
+    "entries": 31,
+    "classified_entries": 5,
+    "available_hp_entries": 5,
+    "unavailable_hp_slots": 0,
+    "snapshot_local_hp_counts": {
+      "140": 5
+    },
+    "entries_with_classified_hp_below_root_140": [],
+    "samus_health_range": [
+      23,
+      79
+    ]
+  },
+  "requested_query": "Did an admitted live action endpoint have lower classified same-boss HP than the representative that survived its current local slot, or improve HP while being suppressed by an unchanged key within the job?",
+  "answer": "Unavailable from saved records, not zero. Job records bind result hashes and admission decisions but do not store endpoint HP/context. The final checkpoint includes cached states only. No causal retention or action-law conclusion follows.",
+  "next_decision": "Design a minimal replay-only inspection of the exact short AP01 stream using existing snapshot/retention hooks, preserving every recorded job frame count, result digest and admission decision. Establish cross-host source/asset compatibility before any such replay on ms02. No new policy comparison, new seed or expanded horizon is earned.",
+  "emulated_frames": 0
+}
