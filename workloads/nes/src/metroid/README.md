@@ -361,3 +361,20 @@ setup/replay frames and campaign admitted/replayed-admitted frames are separate;
 engine setup, unadmitted work and reconstruction remain additional unknown costs.
 External process/output/wall caps and prospective registration are required.
 See the [challenge contract](../../../../benchmarks/search/endpoint-encounter/archive-challenge-contract.md).
+
+### Inspecting an existing checkpoint
+
+`metroid-checkpoint-inspect inventory CHECKPOINT OUT` uses the current typed
+checkpoint decoder to export cached IDs, mechanical states and retention cells
+without initializing an emulator. It does not label cached history as active.
+`inspect REQUEST OUT` pins the checkpoint, single-entry origin and assets,
+checks the origin against its qualified snapshot/context, then restores and
+reads each cached snapshot at the same paused boundary. Every restore/read must
+preserve the entire snapshot and the physical frame counter. No actions or
+search run; only one ordinary 929-frame constructor setup is permitted.
+
+Inputs are limited to 32 MiB each and 1,000 unique checkpoint entries. Existing
+outputs are refused. Register external process, wall and file limits before
+native inspection. Raw HP is a state observation, not lifetime damage. Active
+membership needs the producing run's exact replacement/retirement semantics
+and evidence; it is not encoded in `SnapshotCheckpoint`.

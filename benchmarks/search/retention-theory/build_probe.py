@@ -11,7 +11,7 @@ import subprocess
 parser = argparse.ArgumentParser(description=__doc__)
 for name in ["root", "out", "target"]:
     parser.add_argument(name, type=Path)
-parser.add_argument("binary", choices=["metroid-boss-probe", "mm2-metal-export", "metroid-kinematics-probe", "metroid-control-probe", "metroid-archive-challenge", "nes-eval"])
+parser.add_argument("binary", choices=["metroid-boss-probe", "mm2-metal-export", "metroid-kinematics-probe", "metroid-control-probe", "metroid-archive-challenge", "metroid-checkpoint-inspect", "nes-eval"])
 parser.add_argument("--source-commit", required=True)
 parser.add_argument("--features", default="")
 args = parser.parse_args()
