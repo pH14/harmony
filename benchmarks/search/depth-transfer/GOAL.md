@@ -298,3 +298,14 @@ rule, comparator, work and stop conditions before any new emulator work. No
 imported/reference solution may supply fresh-search success evidence. Do not
 repeat the already negative survivor-tape sweep or reconstruct a full long run
 merely for a final archive. No further observer framework is earned by Q01.
+
+The existing timing audit now supplies that decision: the selected development
+examples first report boss areas around 147–360M frames. Register one reused
+T03 development-seed census on ms02 (250M frames, 35-minute search, 4M known
+auxiliary ceiling), with no imported origin or new search policy. See
+../endpoint-encounter/c01-decision.md and c01-registration.json. This is a
+separate bounded diagnostic block, not fresh validation or evidence that the
+historical trajectory must reproduce under changed artifact identities. A
+positive earns independent standalone observation before any local combat;
+negative, no-area or incomplete outcomes earn no automatic extension or rerun.
+msr1 remains available for that independent qualification if needed.
