@@ -586,6 +586,15 @@ pub struct Workspace {
     fail_commit_phase: Cell<Option<CommitPhase>>,
 }
 
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        // Closing only this descriptor may leave a flock alive in a child
+        // that inherited the open file description while spawning. The
+        // owning workspace explicitly releases it before closing its file.
+        let _ = self._lock.unlock();
+    }
+}
+
 impl Workspace {
     /// Create a workspace at `root` and commit its pinned facts.
     ///
@@ -1597,6 +1606,42 @@ mod tests {
                 assert!(reopened.request("request-1").is_none(), "{phase:?}");
             }
         }
+    }
+
+    #[test]
+    fn inherited_lock_descriptor_child() {
+        if std::env::var_os("HARMONY_TEST_HOLD_LOCK_DESCRIPTOR").is_some() {
+            loop {
+                std::thread::park();
+            }
+        }
+    }
+
+    #[test]
+    fn dropping_the_owner_unlocks_despite_an_inherited_descriptor() {
+        use std::process::{Command, Stdio};
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let workspace = Workspace::create(directory.path(), facts()).expect("create");
+        let inherited = workspace._lock.try_clone().expect("clone descriptor");
+        let mut child = Command::new(std::env::current_exe().expect("test executable"))
+            .arg("inherited_lock_descriptor_child")
+            .env("HARMONY_TEST_HOLD_LOCK_DESCRIPTOR", "1")
+            .stdin(Stdio::from(inherited))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn descriptor holder");
+        drop(workspace);
+        let reopened = Workspace::open(directory.path());
+        let child_was_running = child.try_wait().expect("child status").is_none();
+        child.kill().expect("stop descriptor holder");
+        child.wait().expect("reap descriptor holder");
+        assert!(
+            child_was_running,
+            "child must retain the inherited descriptor"
+        );
+        assert_eq!(reopened.expect("owner released lock").sequence(), 1);
     }
 
     #[test]
