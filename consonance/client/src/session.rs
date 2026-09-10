@@ -926,6 +926,49 @@ mod tests {
     }
 
     #[test]
+    fn expect_unit_accepts_unit_reply() {
+        expect_unit(Reply::Unit, "drop snapshot").expect("unit reply should be accepted");
+    }
+
+    #[test]
+    fn expect_unit_rejects_unexpected_reply_with_operation_context() {
+        let error = expect_unit(Reply::Hash([0; 32]), "drop snapshot")
+            .expect_err("non-unit reply should be rejected");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("drop snapshot"),
+            "operation context was lost: {message}"
+        );
+        assert!(
+            message.contains("unexpected reply"),
+            "reply mismatch was lost: {message}"
+        );
+        assert!(
+            message.contains("Hash"),
+            "reply variant was lost: {message}"
+        );
+    }
+
+    #[test]
+    fn drop_control_handle_preserves_control_error_context() {
+        let mut client = snapshot_client([Ok(Err(control_proto::ControlError::Unsupported))]);
+
+        let error = drop_control_handle(&mut client, SnapId(7))
+            .expect_err("control error should reject dropping the handle");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("control request rejected"),
+            "control error context was lost: {message}"
+        );
+        assert!(
+            message.contains("Unsupported"),
+            "control error variant was lost: {message}"
+        );
+    }
+
+    #[test]
     fn snapshot_handle_preserves_the_control_receipt() {
         let mut client = snapshot_client([Ok(Ok(Reply::Snapshot {
             id: SnapId(7),
