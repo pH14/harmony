@@ -6,9 +6,12 @@ mod common;
 
 use common::{config, fully_populated};
 use proptest::prelude::*;
-use vm_state::{ARCH_X86_64, VM_STATE_MAGIC, VM_STATE_VERSION, VmState, VmStateError};
+use vm_state::{
+    ARCH_X86_64, VM_STATE_LEGACY_VERSION, VM_STATE_MAGIC, VM_STATE_VERSION, VmState, VmStateError,
+};
 
-/// magic:u32 + version:u16 + arch:u16 + section_count:u16 (v2 — the arch tag).
+/// magic:u32 + version:u16 + arch:u16 + section_count:u16 (10 bytes; the v2
+/// arch tag did not add padding).
 const HEADER_LEN: usize = 10;
 
 /// Split a valid blob into its `(section_count_field, [(tag, payload)])`.
@@ -29,9 +32,14 @@ fn split(blob: &[u8]) -> (u16, Vec<(u16, Vec<u8>)>) {
 
 /// Re-pack a header with the given section count and section list.
 fn pack(count: u16, secs: &[(u16, Vec<u8>)]) -> Vec<u8> {
+    pack_version(VM_STATE_LEGACY_VERSION, count, secs)
+}
+
+/// Re-pack a header with an explicit version, section count, and section list.
+fn pack_version(version: u16, count: u16, secs: &[(u16, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&VM_STATE_MAGIC.to_le_bytes());
-    out.extend_from_slice(&VM_STATE_VERSION.to_le_bytes());
+    out.extend_from_slice(&version.to_le_bytes());
     out.extend_from_slice(&ARCH_X86_64.to_le_bytes());
     out.extend_from_slice(&count.to_le_bytes());
     for (tag, payload) in secs {
@@ -44,6 +52,13 @@ fn pack(count: u16, secs: &[(u16, Vec<u8>)]) -> Vec<u8> {
 
 fn valid() -> Vec<u8> {
     fully_populated().encode().unwrap()
+}
+
+fn valid_v4(engine_state: &[u8]) -> Vec<u8> {
+    assert!(!engine_state.is_empty());
+    let mut state = fully_populated();
+    state.engine_state = engine_state.to_vec();
+    state.encode().unwrap()
 }
 
 #[test]
@@ -63,6 +78,77 @@ fn wrong_version() {
         VmState::decode(&blob),
         Err(VmStateError::UnsupportedVersion(bumped))
     );
+}
+
+#[test]
+fn legacy_v3_decodes_with_empty_engine_state() {
+    let blob = valid();
+    assert_eq!(
+        u16::from_le_bytes(blob[4..6].try_into().unwrap()),
+        VM_STATE_LEGACY_VERSION
+    );
+    assert_eq!(u16::from_le_bytes(blob[8..10].try_into().unwrap()), 13);
+    assert!(VmState::decode(&blob).unwrap().engine_state.is_empty());
+}
+
+#[test]
+fn v4_engine_state_round_trips_multiple_payloads() {
+    for payload in [vec![0x01], vec![0x00, 0xFE, 0xA5], (0u8..=255).collect()] {
+        let blob = valid_v4(&payload);
+        assert_eq!(
+            u16::from_le_bytes(blob[4..6].try_into().unwrap()),
+            VM_STATE_VERSION
+        );
+        assert_eq!(
+            u16::from_le_bytes(blob[8..10].try_into().unwrap()),
+            14,
+            "v4 adds exactly one trailing section"
+        );
+        let decoded = VmState::decode(&blob).unwrap();
+        assert_eq!(decoded.engine_state, payload);
+        assert_eq!(decoded.encode().unwrap(), blob);
+    }
+}
+
+#[test]
+fn v4_engine_state_section_is_required_nonempty_and_last() {
+    let good = valid_v4(&[1, 2, 3]);
+    let (count, sections) = split(&good);
+    assert_eq!(count, 14);
+    assert_eq!(sections.last().map(|(tag, _)| *tag), Some(14));
+
+    let mut empty = sections.clone();
+    empty.last_mut().unwrap().1.clear();
+    assert_eq!(
+        VmState::decode(&pack_version(VM_STATE_VERSION, count, &empty)),
+        Err(VmStateError::InvalidField)
+    );
+
+    let mut missing = sections.clone();
+    missing.pop();
+    assert_eq!(
+        VmState::decode(&pack_version(VM_STATE_VERSION, count - 1, &missing)),
+        Err(VmStateError::MissingSection(14))
+    );
+
+    let mut duplicate = sections.clone();
+    duplicate.push(sections.last().unwrap().clone());
+    assert_eq!(
+        VmState::decode(&pack_version(VM_STATE_VERSION, count + 1, &duplicate)),
+        Err(VmStateError::DuplicateTag(14))
+    );
+
+    let mut out_of_order = sections;
+    let last = out_of_order.len() - 1;
+    out_of_order.swap(last - 1, last);
+    assert_eq!(
+        VmState::decode(&pack_version(VM_STATE_VERSION, count, &out_of_order)),
+        Err(VmStateError::SectionOrder(13))
+    );
+
+    let mut trailing = good;
+    trailing.push(0);
+    assert_eq!(VmState::decode(&trailing), Err(VmStateError::TrailingBytes));
 }
 
 /// The v2 arch tag is a **hard gate on the record set**: a blob whose sections are

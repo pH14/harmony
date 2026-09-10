@@ -244,23 +244,30 @@ pub fn arb_vm_state() -> impl Strategy<Value = VmState> {
     )
         .prop_flat_map(
             |(regs, sregs, xcrs, debugregs, events, mp_state, msrs, xsave, vtime, timers)| {
-                (arb_hypercall(), arb_devices(), arb_contract_hash()).prop_map(
-                    move |(hypercall, devices, contract_hash)| VmState {
-                        regs,
-                        sregs,
-                        xcrs,
-                        debugregs,
-                        events,
-                        mp_state,
-                        msrs: msrs.clone(),
-                        xsave: xsave.clone(),
-                        vtime,
-                        timers: timers.clone(),
-                        hypercall,
-                        devices,
-                        contract_hash,
-                    },
+                (
+                    arb_hypercall(),
+                    arb_devices(),
+                    arb_contract_hash(),
+                    proptest::collection::vec(any::<u8>(), 0..64),
                 )
+                    .prop_map(
+                        move |(hypercall, devices, contract_hash, engine_state)| VmState {
+                            regs,
+                            sregs,
+                            xcrs,
+                            debugregs,
+                            events,
+                            mp_state,
+                            msrs: msrs.clone(),
+                            xsave: xsave.clone(),
+                            vtime,
+                            timers: timers.clone(),
+                            hypercall,
+                            devices,
+                            contract_hash,
+                            engine_state,
+                        },
+                    )
             },
         )
 }
@@ -378,5 +385,6 @@ pub fn fully_populated() -> VmState {
             0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
             0x1c, 0x1d, 0x1e, 0x1f,
         ],
+        engine_state: Vec::new(),
     }
 }

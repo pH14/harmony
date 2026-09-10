@@ -13,7 +13,8 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::types::{DebugRegs, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VtimeState, Xcrs};
 
-/// The 10-byte container header: magic, version, arch tag, section count.
+/// The 10-byte container header: magic, version, arch tag, section count. The
+/// v4 engine-state extension is a trailing TLV and does not change this header.
 ///
 /// The **arch tag** (v2) names the architecture whose record set the sections
 /// carry — which registers a `REGS`/`SREGS` section holds is per-arch, so a blob

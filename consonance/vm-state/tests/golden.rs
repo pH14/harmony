@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Gate 4 — golden stability. A fixed, fully-populated `VmState` must encode to
-//! a byte-for-byte recorded vector. Any layout change fails this test and must
-//! consciously update the golden **and** bump `VM_STATE_VERSION`.
+//! a byte-for-byte recorded vector. It intentionally has an empty engine state,
+//! so this pins the legacy v3 writer shape. Any layout change fails this test
+//! and must consciously update the golden **and** bump the format.
 
 mod common;
 

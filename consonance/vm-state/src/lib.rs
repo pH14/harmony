@@ -8,9 +8,9 @@
 //! endian **TLV (tag-length-value) container** that round-trips the non-memory
 //! machine state — GPRs, segment/control registers, XCR0, debug registers,
 //! pending events, MP state, the contract's MSR set, the XSAVE image, the V-time
-//! block, the timer queue, the hypercall dispatcher's saved state, a device
-//! placeholder, and the CPU/MSR contract hash — byte-identically across machines
-//! and toolchains.
+//! block, the timer queue, the hypercall dispatcher's saved state, an opaque
+//! engine-owned state record, a device placeholder, and the CPU/MSR contract hash
+//! — byte-identically across machines and toolchains.
 //!
 //! The crate does **not** touch `/dev/kvm`: the vmm-core adapter reads the live
 //! machine via ioctls and fills the plain-data structs here; this crate only
@@ -25,11 +25,13 @@
 //! for identical state, so the layout is an explicitly specified little-endian
 //! binary container (house style — cf. `hypercall-proto`'s frames), not a text
 //! format and not a third-party crate's byte layout. The format **version is
-//! part of the determinism contract**: [`VmState::decode`] rejects a version it
-//! does not understand ([`VmStateError::UnsupportedVersion`]) rather than
-//! silently misreading. Every v1 tag is present exactly once; a missing,
-//! unknown, duplicate, or out-of-order section is a decode error, never a
-//! best-effort zero-filled restore.
+//! part of the determinism contract**: [`VmState::decode`] accepts the legacy v3
+//! record set and the v4 record set, and rejects every other version
+//! ([`VmStateError::UnsupportedVersion`]) rather than silently misreading. The
+//! v3 writer shape is retained when the engine-owned state is empty; a nonempty
+//! engine state selects v4 and appends its required TLV. Every required tag is
+//! present exactly once; a missing, unknown, duplicate, or out-of-order section
+//! is a decode error, never a best-effort zero-filled restore.
 //!
 //! ## What this crate deliberately does *not* hold
 //!
@@ -71,10 +73,14 @@ pub use types::{
 /// magic `0x31504348`).
 pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 
-/// The format version this build writes and is the only version it decodes.
+/// The newest format version this build writes and decodes.
 ///
 /// **v3** removes the retired instruction-count conversion ratio from the
 /// virtual-time section; virtual time is now accumulated directly from VM exits.
+/// **v4** adds a required trailing engine-owned opaque state section when that
+/// state is nonempty. For byte compatibility, [`VmState::encode`] and
+/// [`Arm64VmState::encode`] retain the v3 bytes when the engine state is empty;
+/// [`VmState::decode`] and [`Arm64VmState::decode`] accept both v3 and v4.
 /// **v2** (`docs/ARCHITECTURE.md`) added the container header's **arch
 /// tag**: the register/sysreg record set a blob carries is per-architecture, and
 /// the record *tags* alone cannot tell an x86 `REGS` section from an arm64 one —
@@ -82,7 +88,12 @@ pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 /// that a loud [`VmStateError::UnsupportedArch`] instead of a silent
 /// reinterpretation. A v1 blob (no tag) is rejected at the version gate, never
 /// parsed with the v2 reader.
-pub const VM_STATE_VERSION: u16 = 3;
+pub const VM_STATE_VERSION: u16 = 4;
+
+/// The legacy format version retained for byte-identical snapshots whose
+/// engine-owned state is empty. It remains readable but is never emitted for a
+/// nonempty [`VmState::engine_state`] or [`Arm64VmState::engine_state`].
+pub const VM_STATE_LEGACY_VERSION: u16 = 3;
 
 /// The **arch tag** of the x86-64 record set ([`VmState`])
 /// (`docs/ARCHITECTURE.md` — "arm64 record set; same TLV container;
@@ -134,4 +145,8 @@ pub struct VmState {
     /// (x86 CPU contract). Carried so the restorer can reject a blob whose
     /// CPUID/MSR behavior has since changed; **compared by vmm-core, not here**.
     pub contract_hash: [u8; 32],
+    /// Opaque state owned by the architecture-neutral engine. Empty preserves
+    /// the legacy v3 wire shape; nonempty state is carried by the v4 trailing
+    /// engine-state section. The codec does not interpret these bytes.
+    pub engine_state: Vec<u8>,
 }

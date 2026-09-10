@@ -8,8 +8,8 @@
 //! section: tag:u16  len:u32  payload[len]      (repeated, ascending tag order)
 //! ```
 //!
-//! Every v1 tag is present exactly once; sections are emitted in ascending tag
-//! order. Decoding is strict and total — see [`VmStateError`].
+//! Every legacy tag is present exactly once; sections are emitted in ascending
+//! tag order. Decoding is strict and total — see [`VmStateError`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,10 +24,10 @@ use crate::wire::{
     DebugRegsWire, EventsWire, HeaderWire, MsrPairWire, RegsWire, SregsWire, TimerEntryWire,
     VtimeWire, XcrsWire,
 };
-use crate::{ARCH_X86_64, VM_STATE_MAGIC, VM_STATE_VERSION, VmState};
+use crate::{ARCH_X86_64, VM_STATE_LEGACY_VERSION, VM_STATE_MAGIC, VM_STATE_VERSION, VmState};
 
-// Section tags, in their canonical ascending order. Every v1 blob carries all
-// of them exactly once; there are no optional sections.
+// Section tags, in their canonical ascending order. Every legacy tag is present
+// exactly once; the v4 engine-state tag is required when the field is nonempty.
 const TAG_REGS: u16 = 1;
 const TAG_SREGS: u16 = 2;
 const TAG_XCRS: u16 = 3;
@@ -42,11 +42,18 @@ const TAG_HYPERCALL: u16 = 11;
 const TAG_DEVICES: u16 = 12;
 const TAG_CONTRACT_HASH: u16 = 13;
 
-/// The number of sections every v1 blob carries.
-const SECTION_COUNT: u16 = 13;
+/// The number of sections in the legacy x86 blob.
+const LEGACY_SECTION_COUNT: u16 = 13;
+
+/// The number of sections in a v4 x86 blob carrying engine state.
+const ENGINE_SECTION_COUNT: u16 = LEGACY_SECTION_COUNT + 1;
+
+/// The engine-owned state section follows every existing x86 section.
+const TAG_ENGINE_STATE: u16 = 14;
 
 /// Length of the fixed container header (magic + version + arch tag + section
-/// count). 10 bytes since v2 (the arch tag).
+/// count). 10 bytes since v2 (the arch tag); v4 adds a TLV section without
+/// changing this header.
 const HEADER_LEN: usize = 10;
 
 const MP_STATE_RUNNABLE: u8 = 0;
@@ -58,7 +65,9 @@ impl VmState {
     /// Encode to the versioned TLV blob. Deterministic: equal `VmState` ⇒ equal
     /// bytes (MSRs via the `BTreeMap`'s sorted order; timer entries written in the
     /// `(deadline_vns, seq)` order the caller already holds them in — see the
-    /// errors below; all fixed records fully initialized with no padding).
+    /// errors below; all fixed records fully initialized with no padding). An
+    /// empty engine-state field retains the legacy v3 bytes; a nonempty field
+    /// selects v4 and appends one TLV.
     ///
     /// # Errors
     ///
@@ -71,15 +80,20 @@ impl VmState {
     /// - [`VmStateError::InvalidField`] if a variable-length section would exceed
     ///   `u32::MAX` bytes (not reachable for any real machine state).
     pub fn encode(&self) -> Result<Vec<u8>, VmStateError> {
+        let (version, section_count) = if self.engine_state.is_empty() {
+            (VM_STATE_LEGACY_VERSION, LEGACY_SECTION_COUNT)
+        } else {
+            (VM_STATE_VERSION, ENGINE_SECTION_COUNT)
+        };
         let mut out = Vec::new();
         out.extend_from_slice(
             HeaderWire {
                 magic: VM_STATE_MAGIC.into(),
-                version: VM_STATE_VERSION.into(),
+                version: version.into(),
                 // The record set below is x86-64's; the tag says so, so a decoder
                 // can never reinterpret it as another architecture's.
                 arch: ARCH_X86_64.into(),
-                section_count: SECTION_COUNT.into(),
+                section_count: section_count.into(),
             }
             .as_bytes(),
         );
@@ -105,13 +119,17 @@ impl VmState {
         put_section(&mut out, TAG_HYPERCALL, &self.hypercall)?;
         put_section(&mut out, TAG_DEVICES, &self.devices.0)?;
         put_section(&mut out, TAG_CONTRACT_HASH, &self.contract_hash)?;
+        if !self.engine_state.is_empty() {
+            put_section(&mut out, TAG_ENGINE_STATE, &self.engine_state)?;
+        }
 
         Ok(out)
     }
 
     /// Decode a blob produced by [`VmState::encode`]. Strict: validates magic,
-    /// version, section count, ordering, and every field; never panics on
-    /// arbitrary input.
+    /// the supported v3/v4 version, section count, ordering, and every field;
+    /// never panics on arbitrary input. A v3 blob decodes with an empty
+    /// engine-state field; a v4 blob must carry nonempty engine state.
     ///
     /// # Errors
     ///
@@ -127,7 +145,7 @@ impl VmState {
             return Err(VmStateError::BadMagic(magic));
         }
         let version = header.version.get();
-        if version != VM_STATE_VERSION {
+        if version != VM_STATE_LEGACY_VERSION && version != VM_STATE_VERSION {
             return Err(VmStateError::UnsupportedVersion(version));
         }
         // The arch tag gates the RECORDS: this build carries only the x86-64
@@ -155,6 +173,7 @@ impl VmState {
         let mut hypercall = None;
         let mut devices = None;
         let mut contract_hash = None;
+        let mut engine_state = None;
 
         for _ in 0..section_count {
             let tag = r.u16()?;
@@ -203,6 +222,10 @@ impl VmState {
                 TAG_HYPERCALL => hypercall = Some(payload.to_vec()),
                 TAG_DEVICES => devices = Some(DeviceBlob(payload.to_vec())),
                 TAG_CONTRACT_HASH => contract_hash = Some(decode_contract_hash(payload)?),
+                TAG_ENGINE_STATE if version == VM_STATE_VERSION => {
+                    engine_state = Some(payload.to_vec());
+                }
+                TAG_ENGINE_STATE => return Err(VmStateError::UnknownTag(TAG_ENGINE_STATE)),
                 other => return Err(VmStateError::UnknownTag(other)),
             }
         }
@@ -210,6 +233,18 @@ impl VmState {
         if !r.at_end() {
             return Err(VmStateError::TrailingBytes);
         }
+
+        let engine_state = match version {
+            VM_STATE_LEGACY_VERSION => Vec::new(),
+            VM_STATE_VERSION => {
+                let state = engine_state.ok_or(VmStateError::MissingSection(TAG_ENGINE_STATE))?;
+                if state.is_empty() {
+                    return Err(VmStateError::InvalidField);
+                }
+                state
+            }
+            _ => unreachable!("version was checked above"),
+        };
 
         Ok(VmState {
             regs: regs.ok_or(VmStateError::MissingSection(TAG_REGS))?,
@@ -225,6 +260,7 @@ impl VmState {
             hypercall: hypercall.ok_or(VmStateError::MissingSection(TAG_HYPERCALL))?,
             devices: devices.ok_or(VmStateError::MissingSection(TAG_DEVICES))?,
             contract_hash: contract_hash.ok_or(VmStateError::MissingSection(TAG_CONTRACT_HASH))?,
+            engine_state,
         })
     }
 
