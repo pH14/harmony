@@ -100,7 +100,8 @@ pub const PROTO_VERSION: u16 = 1;
 /// Version 11 carries generic mechanical effects in `Perturb`, input format
 /// version 5, and the explicit decision identity carried by `Run.resolve`.
 /// Historical fault catalogs are translated by workload tooling.
-pub const APP_PROTOCOL_VERSION: u16 = 11;
+/// Version 12 preserves snapshot refusal diagnostics in `SnapshotRefused`.
+pub const APP_PROTOCOL_VERSION: u16 = 12;
 
 /// The maximum bytes one [`Read`](Request::Read) may request. A larger `len` is a
 /// loud [`ReadTooLarge`](ControlError::ReadTooLarge), rejected **before any
@@ -131,7 +132,7 @@ mod tests {
     fn wire_constants_are_pinned() {
         assert_eq!(MAX_FRAME_LEN, 16_777_216); // == 16 * 1024 * 1024 (16 MiB)
         assert_eq!(PROTO_VERSION, 1);
-        assert_eq!(APP_PROTOCOL_VERSION, 11); // version numbers are never reused
+        assert_eq!(APP_PROTOCOL_VERSION, 12); // version numbers are never reused
         assert_eq!(READ_CAP, 262_144); // == 1 << 18 (256 KiB)
     }
 }
