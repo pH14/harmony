@@ -80,8 +80,10 @@ impl ArchiveKey for FaultArchiveKey {
     }
 
     /// Depth 0 is the whole key, depth 1 drops node liveness so the same
-    /// workload progress under different survivor sets pools, and depth 2 is
-    /// the reached-site set alone.
+    /// workload progress under different survivor sets pools, and depth 2
+    /// keeps reached sites plus event-triggered deaths. Fired event
+    /// coordinates must not pool with arms that never reached their ordinal;
+    /// that distinction is the evidence used by coordinate refinement.
     fn group(self, depth: usize) -> Self::Group {
         let full = FaultArchiveGroup {
             sometimes: self.sometimes,
@@ -96,6 +98,7 @@ impl ArchiveKey for FaultArchiveKey {
             1 => FaultArchiveGroup { alive: 0, ..full },
             _ => FaultArchiveGroup {
                 sometimes: self.sometimes,
+                unexpected_deaths: self.unexpected_deaths,
                 ..FaultArchiveGroup::default()
             },
         }
@@ -380,6 +383,10 @@ mod tests {
         fired.unexpected_deaths = 1;
         assert_ne!(archive_key(&armed_but_unreached), archive_key(&fired));
         assert_eq!(archive_key(&fired).unexpected_deaths, 1);
+        assert_ne!(
+            archive_key(&armed_but_unreached).group(2),
+            archive_key(&fired).group(2),
+        );
 
         fired.unexpected_deaths = HOOKS_FINISHED_KEY_CAP + 1;
         assert_eq!(

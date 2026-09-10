@@ -2,7 +2,14 @@
 
 //! Fault-package implementation of the game-neutral campaign interface.
 
-use std::{error::Error, io::Write, num::NonZeroUsize, path::PathBuf, sync::OnceLock};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    io::Write,
+    num::NonZeroUsize,
+    path::PathBuf,
+    sync::{Mutex, OnceLock},
+};
 
 use searcher::{
     search::{
@@ -28,7 +35,7 @@ use crate::{
         REPLACEMENT_IDENTIFIER, action_time, archive_key, bug_outcome, merge_milestones,
         merge_progress_watermark, milestone_key, milestones, sample_action,
     },
-    bundle::FaultVocabulary,
+    bundle::{FaultVocabulary, MAX_NODES},
     consonance::{FaultConfig, FaultTarget, identity, snapshot_memory_charge},
     target::{FaultAction, FaultObservations, FaultSnapshot, MAX_FAULT_ACTIONS},
 };
@@ -47,6 +54,9 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const IMAGE_FIELD: &str = "image";
 const HORIZON_FIELD: &str = "horizon_nanos";
+const COORDINATE_POLICY_FIELD: &str = "event_coordinate_policy";
+const COORDINATE_POLICY_IDENTIFIER: &str = "prefix_bisection_v2";
+const LEGACY_COORDINATE_POLICY_IDENTIFIER: &str = "legacy_global_anchor";
 
 /// Header placeholder for a run with no adaptive draw table.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -57,6 +67,9 @@ pub struct FaultNoTableHeader;
 pub struct FaultCampaignRun {
     /// Nodes and hooks the bundle declares.
     pub vocabulary: FaultVocabulary,
+    /// Whether suffix draws receive their exact selected parent input. Old
+    /// streams omit this policy and retain their parent-independent draws.
+    coordinate_refinement: bool,
 }
 
 /// Image identity shared by fault-package workers.
@@ -69,6 +82,13 @@ pub struct FaultGame {
     /// worker boots. It is a deterministic property of the image, so every
     /// worker learns the same one.
     root_seal: OnceLock<u64>,
+    /// Admission-ordered observations used to update the coordinator's draw
+    /// brackets. Workers never mutate this state, so completion order cannot
+    /// affect the next selection.
+    coordinate_brackets: Mutex<FaultDrawState>,
+    /// Event outcomes produced by workers and consumed at ordered admission.
+    /// The full input key avoids making completion order observable.
+    event_outcomes: Mutex<BTreeMap<[u8; 32], Vec<bool>>>,
 }
 
 impl FaultGame {
@@ -81,6 +101,8 @@ impl FaultGame {
             config: config.clone(),
             identity: identity(kernel, initramfs, config),
             root_seal: OnceLock::new(),
+            coordinate_brackets: Mutex::new(FaultDrawState::default()),
+            event_outcomes: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -101,6 +123,60 @@ impl FaultGame {
     pub fn image_identity(&self) -> &str {
         &self.identity
     }
+
+    fn reset_coordinate_brackets(&self) {
+        *self
+            .coordinate_brackets
+            .lock()
+            .expect("fault coordinate state mutex poisoned") = FaultDrawState::default();
+        self.event_outcomes
+            .lock()
+            .expect("fault event outcome mutex poisoned")
+            .clear();
+    }
+
+    fn coordinate_state(&self) -> FaultDrawState {
+        self.coordinate_brackets
+            .lock()
+            .expect("fault coordinate state mutex poisoned")
+            .clone()
+    }
+
+    fn observe_event_coordinate(
+        &self,
+        prefix: &[FaultAction],
+        node: u16,
+        ordinal: u64,
+        fired: bool,
+    ) {
+        self.coordinate_brackets
+            .lock()
+            .expect("fault coordinate state mutex poisoned")
+            .observe(prefix, node, ordinal, fired);
+    }
+
+    fn record_event_outcome(&self, input: Vec<FaultAction>, fired: bool) {
+        self.event_outcomes
+            .lock()
+            .expect("fault event outcome mutex poisoned")
+            .entry(event_context_digest(&input))
+            .or_default()
+            .push(fired);
+    }
+
+    fn take_event_outcome(&self, input: &[FaultAction]) -> Option<bool> {
+        let mut outcomes = self
+            .event_outcomes
+            .lock()
+            .expect("fault event outcome mutex poisoned");
+        let key = event_context_digest(input);
+        let values = outcomes.get_mut(&key)?;
+        let fired = values.pop();
+        if values.is_empty() {
+            outcomes.remove(&key);
+        }
+        fired
+    }
 }
 
 /// Campaign evidence owned by the adapter.
@@ -113,19 +189,329 @@ pub struct FaultCampaignEvidence {
     bugs: Vec<FaultBugRecord>,
 }
 
-/// Coordinator-side state for generic event-coordinate refinement.
-///
-/// A retained input is evidence that its prefix made useful progress. Its
-/// `EventKill` coordinate becomes an anchor for later suffix draws. Refinement
-/// probes dyadic distances around that anchor across the complete positive
-/// `u64` coordinate space; it never imports an action horizon or workload
-/// timing bound. The state is rebuilt from retained inputs during replay.
-#[derive(Clone, Default)]
-pub struct FaultDrawState {
-    anchors: Vec<(u16, u64)>,
+const EVENT_NODE_COUNT: usize = MAX_NODES as usize;
+/// Keep each context's bisection history bounded. The cap is a state-size
+/// bound, not a workload coordinate or a timing assumption.
+const MAX_COORDINATE_OBSERVATIONS: usize = 32;
+/// A campaign can retain many prefixes, but coordinate refinement only needs
+/// a bounded set of their exact contexts. Eviction is deterministic.
+const MAX_COORDINATE_CONTEXTS: usize = EVENT_NODE_COUNT * 4;
+const MAX_LEGACY_COORDINATE_ANCHORS: usize = 256;
+const MAX_TRANSIENT_EVENT_OUTCOMES: usize = MAX_COORDINATE_CONTEXTS;
+
+fn adaptive_state_memory_reserve() -> usize {
+    // One table is the policy draw state and one is the admission-ordered
+    // observation fold owned by FaultGame. Transient outcomes use fixed-size
+    // digests and are consumed as soon as their job is admitted.
+    std::mem::size_of::<EventCoordinateContext>() * MAX_COORDINATE_CONTEXTS * 2
+        + std::mem::size_of::<(u16, u64)>() * MAX_LEGACY_COORDINATE_ANCHORS * 2
+        + (std::mem::size_of::<[u8; 32]>() + std::mem::size_of::<bool>())
+            * MAX_TRANSIENT_EVENT_OUTCOMES
 }
 
-const MAX_COORDINATE_ANCHORS: usize = 256;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EventCoordinateObservation {
+    ordinal: u64,
+    fired: bool,
+}
+
+/// The observed reachability interval for one node at one action prefix.
+///
+/// A fired ordinal is a reachable point and an unfired ordinal is an
+/// unreachable point. Both outcomes remain recorded separately. The sampled
+/// points then partition the reachable interval, so refinement continues
+/// through its interior instead of converging only on its largest endpoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EventCoordinateBracket {
+    fired: Option<u64>,
+    unfired: Option<u64>,
+    observations_seen: u64,
+    observations: [Option<EventCoordinateObservation>; MAX_COORDINATE_OBSERVATIONS],
+}
+
+impl Default for EventCoordinateBracket {
+    fn default() -> Self {
+        Self {
+            fired: None,
+            unfired: None,
+            observations_seen: 0,
+            observations: [None; MAX_COORDINATE_OBSERVATIONS],
+        }
+    }
+}
+
+impl EventCoordinateBracket {
+    fn observe(&mut self, ordinal: u64, fired: bool) {
+        self.observations_seen = self.observations_seen.saturating_add(1);
+        if fired {
+            self.fired = Some(self.fired.map_or(ordinal, |current| current.max(ordinal)));
+        } else {
+            self.unfired = Some(self.unfired.map_or(ordinal, |current| current.min(ordinal)));
+        }
+        let observation = EventCoordinateObservation { ordinal, fired };
+        if self.observations.contains(&Some(observation)) {
+            return;
+        }
+        if let Some(slot) = self.observations.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(observation);
+        }
+    }
+
+    /// Return the exact midpoint of the largest still-unobserved interval.
+    /// The lower endpoint is the protocol's positive coordinate origin; the
+    /// upper endpoint is the greatest currently reachable candidate, or one
+    /// below the first known unfired point. No workload timing enters here.
+    fn next_probe(self) -> Option<u64> {
+        let upper = self.unfired.map_or_else(
+            || self.fired.unwrap_or(0),
+            |ordinal| ordinal.saturating_sub(1),
+        );
+        if upper == 0 {
+            return None;
+        }
+
+        // Once the exact observation table is full, continue through the
+        // finite reachable interval instead of repeatedly returning a
+        // midpoint that can no longer be recorded. At most the table's 32
+        // remembered points can block consecutive candidates, so 33 probes
+        // are sufficient to find an unremembered coordinate whenever one
+        // exists.
+        if self.observations.iter().all(Option::is_some) {
+            for offset in 0..=MAX_COORDINATE_OBSERVATIONS {
+                let candidate = u64::try_from(
+                    (u128::from(self.observations_seen) + offset as u128) % u128::from(upper) + 1,
+                )
+                .expect("a coordinate reduced modulo a u64 bound fits u64");
+                if !self
+                    .observations
+                    .iter()
+                    .flatten()
+                    .any(|observation| observation.ordinal == candidate)
+                {
+                    return Some(candidate);
+                }
+            }
+            return None;
+        }
+
+        let mut points = Vec::with_capacity(MAX_COORDINATE_OBSERVATIONS + 2);
+        points.push(0_u128);
+        points.push(u128::from(upper) + 1);
+        for observation in self.observations.into_iter().flatten() {
+            if observation.ordinal >= 1 && observation.ordinal <= upper {
+                points.push(u128::from(observation.ordinal));
+            }
+        }
+        points.sort_unstable();
+        points.dedup();
+
+        points
+            .windows(2)
+            .filter_map(|window| {
+                let lower = window[0];
+                let exclusive_upper = window[1];
+                let width = exclusive_upper.saturating_sub(lower).saturating_sub(1);
+                if width == 0 {
+                    None
+                } else {
+                    Some((width, lower + 1 + (width - 1) / 2))
+                }
+            })
+            .max_by_key(|(width, lower)| (*width, std::cmp::Reverse(*lower)))
+            .and_then(|(_, midpoint)| u64::try_from(midpoint).ok())
+    }
+}
+
+/// One prefix-scoped node bracket. Prefixes are identified by a stable digest
+/// of the exact action input supplied during parent-aware suffix generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EventCoordinateContext {
+    prefix: [u8; 32],
+    node: u16,
+    bracket: EventCoordinateBracket,
+}
+
+/// Coordinator-side state for deterministic event-coordinate refinement.
+///
+/// Each bracket is scoped to the action prefix that produced its observation;
+/// observations from unrelated workload states therefore cannot widen or
+/// narrow one another. The state is copied from the game-owned admission fold
+/// after each record, so live selection and serial replay see the same bounded
+/// context table.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FaultDrawState {
+    contexts: Vec<EventCoordinateContext>,
+    /// Retained global anchors used only while replaying streams recorded
+    /// before parent-scoped bisection became part of the run policy.
+    legacy_anchors: Vec<(u16, u64)>,
+}
+
+impl Default for FaultDrawState {
+    fn default() -> Self {
+        Self {
+            contexts: Vec::with_capacity(MAX_COORDINATE_CONTEXTS),
+            legacy_anchors: Vec::with_capacity(MAX_LEGACY_COORDINATE_ANCHORS),
+        }
+    }
+}
+
+impl FaultDrawState {
+    fn observe(&mut self, prefix: &[FaultAction], node: u16, ordinal: u64, fired: bool) {
+        let prefix = event_context_digest(prefix);
+        if let Some(context) = self
+            .contexts
+            .iter_mut()
+            .find(|context| context.prefix == prefix && context.node == node)
+        {
+            context.bracket.observe(ordinal, fired);
+            return;
+        }
+        if self.contexts.len() == MAX_COORDINATE_CONTEXTS {
+            self.contexts.remove(0);
+        }
+        let mut bracket = EventCoordinateBracket::default();
+        bracket.observe(ordinal, fired);
+        self.contexts.push(EventCoordinateContext {
+            prefix,
+            node,
+            bracket,
+        });
+    }
+
+    fn next_probe(&self, prefix: &[FaultAction], node: u16) -> Option<u64> {
+        let prefix = event_context_digest(prefix);
+        self.contexts
+            .iter()
+            .find(|context| context.prefix == prefix && context.node == node)
+            .and_then(|context| context.bracket.next_probe())
+    }
+}
+
+/// Stable, input-only context identity. It is deliberately independent of
+/// workload configuration, timing, and host scheduling.
+fn event_context_digest(actions: &[FaultAction]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update((actions.len() as u64).to_le_bytes());
+    for action in actions {
+        match *action {
+            FaultAction::Wait => digest.update([0]),
+            FaultAction::Kill(node) => {
+                digest.update([1]);
+                digest.update(node.to_le_bytes());
+            }
+            FaultAction::EventKill { node, ordinal } => {
+                digest.update([2]);
+                digest.update(node.to_le_bytes());
+                digest.update(ordinal.to_le_bytes());
+            }
+            FaultAction::Pause(node, ticks) => {
+                digest.update([3]);
+                digest.update(node.to_le_bytes());
+                digest.update(ticks.to_le_bytes());
+            }
+            FaultAction::Restart(node) => {
+                digest.update([4]);
+                digest.update(node.to_le_bytes());
+            }
+            FaultAction::Hook(hook) => {
+                digest.update([5]);
+                digest.update(hook.to_le_bytes());
+            }
+            FaultAction::Interrupt(vector) => {
+                digest.update([6]);
+                digest.update(vector.to_le_bytes());
+            }
+            FaultAction::Park {
+                node,
+                addr,
+                hits,
+                hold_us,
+            } => {
+                digest.update([7]);
+                digest.update(node.to_le_bytes());
+                digest.update(addr.to_le_bytes());
+                digest.update(hits.to_le_bytes());
+                digest.update(hold_us.to_le_bytes());
+            }
+        }
+    }
+    digest.finalize().into()
+}
+
+fn draw_fault_suffix(
+    run: &FaultCampaignRun,
+    state: &FaultDrawState,
+    parent: Option<&[FaultAction]>,
+    shape: SuffixShape,
+    mixture: MixtureDraw,
+    mutation_seed: u64,
+) -> Result<Vec<FaultAction>, Box<dyn Error>> {
+    let mut suffix = draw_suffix(
+        shape,
+        mixture.mixture,
+        mixture.weight,
+        mutation_seed,
+        |_| Ok(None),
+        |rand| sample_action(rand, &run.vocabulary),
+    )?;
+    if !run.coordinate_refinement {
+        if !state.legacy_anchors.is_empty() {
+            let bound = NonZeroUsize::new(state.legacy_anchors.len())
+                .ok_or("legacy event-coordinate anchor state unexpectedly empty")?;
+            for (index, action) in suffix.iter_mut().enumerate() {
+                let FaultAction::EventKill { .. } = *action else {
+                    continue;
+                };
+                let coordinate_seed = mix_legacy_coordinate_seed(mutation_seed, index);
+                let anchor = state.legacy_anchors[legacy_rand_index(coordinate_seed, bound)];
+                *action = FaultAction::EventKill {
+                    node: anchor.0,
+                    ordinal: refine_legacy_event_coordinate(anchor.1, coordinate_seed),
+                };
+            }
+        }
+        return Ok(suffix);
+    }
+    let Some(parent) = parent else {
+        return Ok(suffix);
+    };
+    let mut prefix = parent.to_vec();
+    for action in &mut suffix {
+        if let FaultAction::EventKill { node, .. } = *action
+            && let Some(ordinal) = state.next_probe(&prefix, node)
+        {
+            *action = FaultAction::EventKill { node, ordinal };
+        }
+        prefix.push(*action);
+    }
+    Ok(suffix)
+}
+
+fn legacy_rand_index(seed: u64, bound: NonZeroUsize) -> usize {
+    let mixed = seed ^ seed.rotate_left(29);
+    ((u128::from(mixed) * u128::from(bound.get() as u64)) >> 64) as usize
+}
+
+fn mix_legacy_coordinate_seed(seed: u64, index: usize) -> u64 {
+    let mut value = seed ^ (index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+fn refine_legacy_event_coordinate(anchor: u64, seed: u64) -> u64 {
+    if seed & 3 == 0 {
+        return anchor.max(1);
+    }
+    let highest = 63 - anchor.max(1).leading_zeros();
+    let level = ((seed >> 2) % u64::from(highest + 1)) as u32;
+    let radius = 1_u64 << level;
+    if seed & 3 == 1 {
+        anchor.saturating_sub(radius).max(1)
+    } else {
+        anchor.saturating_add(radius).max(1)
+    }
+}
 
 /// Fault-package campaign origin.
 pub type FaultCampaignOrigin = CampaignOrigin<FaultGame>;
@@ -219,6 +605,7 @@ impl FaultCampaignConfig {
             materialize_final_artifacts: self.materialize_final_artifacts,
             run: FaultCampaignRun {
                 vocabulary: self.vocabulary.clone(),
+                coordinate_refinement: true,
             },
             suffix: self.suffix,
             mixture: self.mixture,
@@ -390,6 +777,15 @@ impl InputPolicy for FaultGame {
                 self.config.horizon_nanos.to_string(),
             ),
             (VOCABULARY_FIELD.to_owned(), run.vocabulary.identifier()),
+            (
+                COORDINATE_POLICY_FIELD.to_owned(),
+                if run.coordinate_refinement {
+                    COORDINATE_POLICY_IDENTIFIER
+                } else {
+                    LEGACY_COORDINATE_POLICY_IDENTIFIER
+                }
+                .to_owned(),
+            ),
         ])
         .collect()
     }
@@ -398,11 +794,24 @@ impl InputPolicy for FaultGame {
         &self,
         policies: &GamePolicies,
     ) -> Result<FaultCampaignRun, Box<dyn Error>> {
+        let coordinate_refinement = policies.get(COORDINATE_POLICY_FIELD).map(String::as_str)
+            == Some(COORDINATE_POLICY_IDENTIFIER);
         let run = FaultCampaignRun {
             vocabulary: FaultVocabulary::from_identifier(recorded(policies, VOCABULARY_FIELD)?)?,
+            coordinate_refinement,
         };
         let expected = self.policies(&run);
         if policies != &expected {
+            // Streams written before parent-aware refinement did not carry a
+            // coordinate policy. They remain replayable through their legacy
+            // parent-independent draw path.
+            if !policies.contains_key(COORDINATE_POLICY_FIELD) {
+                let mut legacy_expected = expected.clone();
+                legacy_expected.remove(COORDINATE_POLICY_FIELD);
+                if policies == &legacy_expected {
+                    return Ok(run);
+                }
+            }
             for (field, value) in &expected {
                 if recorded(policies, field)? != value {
                     return Err(
@@ -420,11 +829,11 @@ impl InputPolicy for FaultGame {
         _run: &FaultCampaignRun,
         _max_actions: usize,
     ) -> usize {
-        std::mem::size_of::<(u16, u64)>() * MAX_COORDINATE_ANCHORS
+        adaptive_state_memory_reserve()
     }
 
-    fn draw_state_memory_bytes(&self, state: &FaultDrawState) -> usize {
-        std::mem::size_of::<(u16, u64)>() * state.anchors.len()
+    fn draw_state_memory_bytes(&self, _state: &FaultDrawState) -> usize {
+        adaptive_state_memory_reserve()
     }
 
     fn initial_draw_state(
@@ -432,7 +841,8 @@ impl InputPolicy for FaultGame {
         _run: &FaultCampaignRun,
         _origin: Option<(&str, &FaultArchiveReport)>,
     ) -> Result<InitialDrawState<Self>, Box<dyn Error>> {
-        Ok((FaultDrawState::default(), None))
+        self.reset_coordinate_brackets();
+        Ok((self.coordinate_state(), None))
     }
 
     fn expand_suffix(
@@ -443,77 +853,70 @@ impl InputPolicy for FaultGame {
         mixture: MixtureDraw,
         mutation_seed: u64,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
-        let mut suffix = draw_suffix(
+        draw_fault_suffix(run, state, None, shape, mixture, mutation_seed)
+    }
+
+    fn expand_suffix_needs_parent_input(&self, run: &FaultCampaignRun) -> bool {
+        run.coordinate_refinement
+    }
+
+    fn expand_suffix_with_parent(
+        &self,
+        run: &FaultCampaignRun,
+        state: &FaultDrawState,
+        parent: &FaultInput,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        mutation_seed: u64,
+    ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
+        draw_fault_suffix(
+            run,
+            state,
+            Some(&parent.actions),
             shape,
-            mixture.mixture,
-            mixture.weight,
+            mixture,
             mutation_seed,
-            |_| Ok(None),
-            |rand| sample_action(rand, &run.vocabulary),
-        )?;
-        if !state.anchors.is_empty() {
-            let bound = NonZeroUsize::new(state.anchors.len())
-                .ok_or("event-coordinate anchor state unexpectedly empty")?;
-            for (index, action) in suffix.iter_mut().enumerate() {
-                let FaultAction::EventKill { .. } = *action else {
-                    continue;
-                };
-                let coordinate_seed = mix_coordinate_seed(mutation_seed, index);
-                let anchor = state.anchors[rand_index(coordinate_seed, bound)];
-                let refined = refine_event_coordinate(anchor.1, coordinate_seed);
-                *action = FaultAction::EventKill {
-                    node: anchor.0,
-                    ordinal: refined,
-                };
-            }
+        )
+    }
+
+    fn expand_suffix_recorded_with_parent(
+        &self,
+        run: &FaultCampaignRun,
+        state: &FaultDrawState,
+        parent: &FaultInput,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        before: Option<&Self::DrawCheckpoint>,
+        mutation_seed: u64,
+    ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
+        if before.is_some() {
+            return Err("recorded stream carries an unsupported draw checkpoint".into());
         }
-        Ok(suffix)
+        self.expand_suffix_with_parent(run, state, parent, shape, mixture, mutation_seed)
     }
 
     fn finish_stream_record(
         &self,
-        _run: &FaultCampaignRun,
+        run: &FaultCampaignRun,
         state: &mut FaultDrawState,
         retained: &[(usize, &[FaultAction])],
     ) -> Result<Option<()>, Box<dyn Error>> {
-        for (_, actions) in retained {
-            for action in *actions {
-                if let FaultAction::EventKill { node, ordinal } = *action {
-                    state.anchors.push((node, ordinal));
-                    if state.anchors.len() > MAX_COORDINATE_ANCHORS {
-                        let drop = state.anchors.len() - MAX_COORDINATE_ANCHORS;
-                        state.anchors.drain(..drop);
+        if run.coordinate_refinement {
+            *state = self.coordinate_state();
+        } else {
+            for (_, actions) in retained {
+                for action in *actions {
+                    if let FaultAction::EventKill { node, ordinal } = *action {
+                        state.legacy_anchors.push((node, ordinal));
+                        if state.legacy_anchors.len() > MAX_LEGACY_COORDINATE_ANCHORS {
+                            let drop = state.legacy_anchors.len() - MAX_LEGACY_COORDINATE_ANCHORS;
+                            state.legacy_anchors.drain(..drop);
+                        }
                     }
                 }
             }
         }
         Ok(None)
-    }
-}
-
-fn rand_index(seed: u64, bound: NonZeroUsize) -> usize {
-    let mixed = seed ^ seed.rotate_left(29);
-    ((u128::from(mixed) * u128::from(bound.get() as u64)) >> 64) as usize
-}
-
-fn mix_coordinate_seed(seed: u64, index: usize) -> u64 {
-    let mut value = seed ^ (index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    value ^ (value >> 31)
-}
-
-fn refine_event_coordinate(anchor: u64, seed: u64) -> u64 {
-    if seed & 3 == 0 {
-        return anchor.max(1);
-    }
-    let highest = 63 - anchor.max(1).leading_zeros();
-    let level = ((seed >> 2) % u64::from(highest + 1)) as u32;
-    let radius = 1_u64 << level;
-    if seed & 3 == 1 {
-        anchor.saturating_sub(radius).max(1)
-    } else {
-        anchor.saturating_add(radius).max(1)
     }
 }
 
@@ -583,7 +986,7 @@ impl TargetExecution for FaultGame {
         max_actions: usize,
         _retention: RetentionPolicy,
     ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
-        execute_job(
+        let result = execute_job(
             target,
             origin_snapshot,
             replay,
@@ -591,7 +994,22 @@ impl TargetExecution for FaultGame {
             parent_milestones,
             suffix,
             max_actions,
-        )
+        )?;
+        let outcomes = target.event_kill_outcomes();
+        let suffix_outcomes = outcomes
+            .get(replay.len()..)
+            .ok_or("fault target lost replay action outcomes")?;
+        let mut input = origin_snapshot.actions.clone();
+        input.extend_from_slice(replay);
+        for (index, action) in result.actions.iter().enumerate() {
+            input.push(action.action);
+            if matches!(action.action, FaultAction::EventKill { .. })
+                && let Some(Some(fired)) = suffix_outcomes.get(index).copied()
+            {
+                self.record_event_outcome(input.clone(), fired);
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -678,6 +1096,20 @@ impl Evaluation for FaultGame {
     where
         F: FnOnce() -> Result<FaultInput, Box<dyn Error>>,
     {
+        let mut input = Some(input);
+        let event_input = if matches!(action.action, FaultAction::EventKill { .. }) {
+            let factory = input.take().expect("action input closure already consumed");
+            Some(factory()?)
+        } else {
+            None
+        };
+        if let Some(input) = event_input.as_ref()
+            && let Some(fired) = self.take_event_outcome(&input.actions)
+            && let FaultAction::EventKill { node, ordinal } = action.action
+        {
+            let prefix_len = input.actions.len().saturating_sub(1);
+            self.observe_event_coordinate(&input.actions[..prefix_len], node, ordinal, fired);
+        }
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);
         let bug = action
@@ -689,7 +1121,13 @@ impl Evaluation for FaultGame {
             > milestone_key(evidence.champion_milestones))
         .then_some(action.milestones);
         if bug.is_some() || champion.is_some() {
-            let input = input()?;
+            let input = match event_input {
+                Some(input) => input,
+                None => {
+                    let factory = input.take().expect("action input closure already consumed");
+                    factory()?
+                }
+            };
             if let Some(observations) = bug {
                 evidence.bugs.push(FaultBugRecord {
                     execution: sequence,
@@ -766,6 +1204,7 @@ mod tests {
     fn run(nodes: u16, hooks: Vec<u32>) -> FaultCampaignRun {
         FaultCampaignRun {
             vocabulary: FaultVocabulary::new(nodes, hooks).expect("vocabulary"),
+            coordinate_refinement: true,
         }
     }
 
@@ -831,13 +1270,121 @@ mod tests {
     }
 
     #[test]
-    fn event_coordinate_refinement_is_dyadic_and_unbounded() {
+    fn event_coordinate_brackets_keep_fired_and_unfired_bounds() {
+        let mut bracket = EventCoordinateBracket::default();
+        assert_eq!(bracket.next_probe(), None);
+        bracket.observe(8, true);
+        bracket.observe(40, false);
+        assert_eq!(bracket.fired, Some(8));
+        assert_eq!(bracket.unfired, Some(40));
+        assert_eq!(bracket.next_probe(), Some(24));
+
+        // Repeated observations tighten the same two sides independently and
+        // keep selecting an interior point instead of repeating the boundary.
+        bracket.observe(12, true);
+        bracket.observe(32, false);
+        assert_eq!(bracket.fired, Some(12));
+        assert_eq!(bracket.unfired, Some(32));
+        assert_eq!(bracket.next_probe(), Some(22));
+
+        let mut interior = EventCoordinateBracket::default();
+        interior.observe(8, true);
+        assert_eq!(interior.next_probe(), Some(4));
+        interior.observe(4, true);
+        assert_eq!(interior.next_probe(), Some(2));
+
+        let mut one_event = EventCoordinateBracket::default();
+        one_event.observe(2, false);
+        assert_eq!(one_event.next_probe(), Some(1));
+        one_event.observe(1, true);
+        assert_eq!(one_event.next_probe(), None);
+
+        let mut bounded = EventCoordinateBracket::default();
+        bounded.observe(128, true);
+        for ordinal in 1..MAX_COORDINATE_OBSERVATIONS as u64 {
+            bounded.observe(ordinal, true);
+        }
+        let first = bounded.next_probe().expect("unobserved coordinate");
+        bounded.observe(first, true);
+        assert_ne!(bounded.next_probe(), Some(first));
+    }
+
+    #[test]
+    fn legacy_event_coordinate_refinement_remains_replayable() {
         let anchor = 100_u64;
-        assert_eq!(refine_event_coordinate(anchor, 0), anchor);
-        assert_eq!(refine_event_coordinate(anchor, 2), anchor + 1);
-        assert_eq!(refine_event_coordinate(anchor, (5 << 2) | 1), 68);
-        assert_eq!(refine_event_coordinate(1, 1), 1);
-        assert_eq!(refine_event_coordinate(u64::MAX, 2), u64::MAX);
-        assert_ne!(mix_coordinate_seed(7, 0), mix_coordinate_seed(7, 1));
+        assert_eq!(refine_legacy_event_coordinate(anchor, 0), anchor);
+        assert_eq!(refine_legacy_event_coordinate(anchor, 2), anchor + 1);
+        assert_eq!(refine_legacy_event_coordinate(anchor, (5 << 2) | 1), 68);
+        assert_eq!(refine_legacy_event_coordinate(1, 1), 1);
+        assert_eq!(refine_legacy_event_coordinate(u64::MAX, 2), u64::MAX);
+        assert_ne!(
+            mix_legacy_coordinate_seed(7, 0),
+            mix_legacy_coordinate_seed(7, 1)
+        );
+    }
+
+    #[test]
+    fn event_coordinate_observations_are_folded_in_admission_order() {
+        let game = game();
+        let first_prefix = [FaultAction::Wait];
+        let second_prefix = [FaultAction::Kill(0)];
+        let fired = FaultAction::EventKill {
+            node: 2,
+            ordinal: 8,
+        };
+        let unfired = FaultAction::EventKill {
+            node: 2,
+            ordinal: 40,
+        };
+        let mut fired_input = first_prefix.to_vec();
+        fired_input.push(fired);
+        let mut unfired_input = first_prefix.to_vec();
+        unfired_input.push(unfired);
+        game.record_event_outcome(fired_input.clone(), true);
+        game.record_event_outcome(unfired_input.clone(), false);
+        game.observe_event_coordinate(
+            &fired_input[..fired_input.len() - 1],
+            2,
+            8,
+            game.take_event_outcome(&fired_input).unwrap(),
+        );
+        game.observe_event_coordinate(
+            &unfired_input[..unfired_input.len() - 1],
+            2,
+            40,
+            game.take_event_outcome(&unfired_input).unwrap(),
+        );
+
+        let state = game.coordinate_state();
+        let bracket = state
+            .contexts
+            .iter()
+            .find(|context| {
+                context.prefix == event_context_digest(&first_prefix) && context.node == 2
+            })
+            .expect("first prefix bracket")
+            .bracket;
+        assert_eq!(bracket.fired, Some(8));
+        assert_eq!(bracket.unfired, Some(40));
+        assert_eq!(bracket.next_probe(), Some(24));
+
+        game.observe_event_coordinate(&second_prefix, 2, 64, true);
+        let second = state.contexts.iter().find(|context| {
+            context.prefix == event_context_digest(&second_prefix) && context.node == 2
+        });
+        assert!(
+            second.is_none(),
+            "the copied state must not observe later admissions"
+        );
+        let state = game.coordinate_state();
+        let second = state
+            .contexts
+            .iter()
+            .find(|context| {
+                context.prefix == event_context_digest(&second_prefix) && context.node == 2
+            })
+            .expect("second prefix bracket");
+        assert_eq!(second.bracket.fired, Some(64));
+        assert_eq!(second.bracket.unfired, None);
     }
 }

@@ -391,6 +391,30 @@ pub trait InputPolicy: CampaignTypes {
         mixture: MixtureDraw,
         mutation_seed: u64,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>>;
+    /// Whether live and recorded suffix expansion needs the selected parent's
+    /// materialized input. The default keeps the archive input index cold for
+    /// policies whose draw depends only on the run and draw state.
+    fn expand_suffix_needs_parent_input(&self, _run: &Self::Run) -> bool {
+        false
+    }
+    /// Expand a live suffix with the selected parent's complete input when a
+    /// policy opts into [`Self::expand_suffix_needs_parent_input`]. The
+    /// default delegates to the historical parent-independent draw.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a draw bound is invalid.
+    fn expand_suffix_with_parent(
+        &self,
+        run: &Self::Run,
+        state: &Self::DrawState,
+        _parent: &Input<Self::Action>,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        mutation_seed: u64,
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        self.expand_suffix(run, state, shape, mixture, mutation_seed)
+    }
     /// Expand one recorded mutation seed against the recorded draw-state
     /// version, verifying the version exists and matches.
     ///
@@ -410,6 +434,26 @@ pub trait InputPolicy: CampaignTypes {
             return Err("recorded stream carries an unsupported draw checkpoint".into());
         }
         self.expand_suffix(run, state, shape, mixture, mutation_seed)
+    }
+    /// Expand one recorded suffix with the selected parent's complete input.
+    /// The default preserves the historical recorded expansion path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a draw bound is invalid or the checkpoint is
+    /// unsupported.
+    #[allow(clippy::too_many_arguments)] // Mirrors recorded suffix expansion plus its parent.
+    fn expand_suffix_recorded_with_parent(
+        &self,
+        run: &Self::Run,
+        state: &Self::DrawState,
+        _parent: &Input<Self::Action>,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        before: Option<&Self::DrawCheckpoint>,
+        mutation_seed: u64,
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        self.expand_suffix_recorded(run, state, shape, mixture, before, mutation_seed)
     }
     /// Fold the record's retained inputs into the draw state and close the
     /// record, returning the periodic checkpoint when one is due. Each
@@ -2640,6 +2684,62 @@ fn validate_snapshot_root_checkpoint<'a, G: Game + ?Sized>(
     Ok(&entry.snapshot)
 }
 
+/// Expand a live suffix, materializing the selected parent only for policies
+/// that explicitly request it. Parent-independent policies keep the compact
+/// archive path exactly as it was before the optional hook existed.
+#[allow(clippy::too_many_arguments)] // Keeps the draw inputs explicit at the dispatch boundary.
+fn expand_suffix_for_parent<G: Game>(
+    game: &G,
+    run: &G::Run,
+    state: &G::DrawState,
+    archive: &Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
+    parent_index: usize,
+    shape: SuffixShape,
+    mixture: MixtureDraw,
+    mutation_seed: u64,
+) -> Result<Vec<G::Action>, Box<dyn Error>> {
+    if game.expand_suffix_needs_parent_input(run) {
+        let parent = archive
+            .materialize_input(parent_index)
+            .map_err(|error| -> Box<dyn Error> { error.into() })?;
+        game.expand_suffix_with_parent(run, state, &parent, shape, mixture, mutation_seed)
+    } else {
+        game.expand_suffix(run, state, shape, mixture, mutation_seed)
+    }
+}
+
+/// Recorded counterpart of [`expand_suffix_for_parent`]. It follows the same
+/// opt-in materialization rule while preserving policy-owned checkpoints.
+#[allow(clippy::too_many_arguments)] // Keeps recorded draw inputs explicit for replay verification.
+fn expand_suffix_recorded_for_parent<G: Game>(
+    game: &G,
+    run: &G::Run,
+    state: &G::DrawState,
+    archive: &Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
+    parent_index: usize,
+    shape: SuffixShape,
+    mixture: MixtureDraw,
+    before: Option<&G::DrawCheckpoint>,
+    mutation_seed: u64,
+) -> Result<Vec<G::Action>, Box<dyn Error>> {
+    if game.expand_suffix_needs_parent_input(run) {
+        let parent = archive
+            .materialize_input(parent_index)
+            .map_err(|error| -> Box<dyn Error> { error.into() })?;
+        game.expand_suffix_recorded_with_parent(
+            run,
+            state,
+            &parent,
+            shape,
+            mixture,
+            before,
+            mutation_seed,
+        )
+    } else {
+        game.expand_suffix_recorded(run, state, shape, mixture, before, mutation_seed)
+    }
+}
+
 /// Run a campaign, also returning every retained entry's snapshot so a later
 /// whole-tree resume can restore the population instead of re-emulating it.
 ///
@@ -3004,9 +3104,12 @@ where
                         };
                     let mut suffix = match spliced {
                         Some(tail) => tail,
-                        None => game.expand_suffix(
+                        None => expand_suffix_for_parent(
+                            game,
                             &config.run,
                             draw_state,
+                            &core.archive,
+                            parent_index,
                             config.suffix,
                             MixtureDraw {
                                 mixture: config.mixture,
@@ -3837,9 +3940,12 @@ where
                     game.draw_checkpoint_from_wire(skip.draw_table_before.as_ref())?;
                 let mut suffix = match spliced {
                     Some(tail) => tail,
-                    None => game.expand_suffix_recorded(
+                    None => expand_suffix_recorded_for_parent(
+                        game,
                         &replay_run,
                         &draw_state,
+                        &core.archive,
+                        parent_index,
                         replay_suffix,
                         MixtureDraw {
                             mixture: replay_mixture,
@@ -3935,9 +4041,12 @@ where
                     game.draw_checkpoint_from_wire(job.draw_table_before.as_ref())?;
                 let mut suffix = match spliced {
                     Some(tail) => tail,
-                    None => game.expand_suffix_recorded(
+                    None => expand_suffix_recorded_for_parent(
+                        game,
                         &replay_run,
                         &draw_state,
+                        &core.archive,
+                        parent_index,
                         replay_suffix,
                         MixtureDraw {
                             mixture: replay_mixture,
@@ -4116,11 +4225,12 @@ mod tests {
         InitialDrawState, InputPolicy, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
         Reporting, SPLICE_ACTION_CAP, TargetExecution, admission_window_depth,
         archive_entry_limit_is_valid, compact_progress_curve, completed_results_within_bound,
-        draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
-        live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
-        progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
-        replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
-        schedule_policy_identifier, schedule_policy_is_legacy, schedule_policy_is_supported,
+        draw_state_memory_is_within_reserve, expand_suffix_for_parent,
+        expand_suffix_recorded_for_parent, finish_record, is_zero_usize, live_coordinator_profile,
+        postcard_value_sha256, profile_elapsed, profile_now, progress_checkpoint_due,
+        progress_policy_is_supported, record_compaction_elapsed, replay_splice,
+        resident_memory_is_within_budget, retained_archive_indexes, schedule_policy_identifier,
+        schedule_policy_is_legacy, schedule_policy_is_supported,
         schedule_policy_predates_budget_maintenance, schedule_policy_window,
         stop_reservations_after_victory, uses_bounded_progress_curve,
     };
@@ -4128,7 +4238,7 @@ mod tests {
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
         SelectorPath, entries_by_suffix,
     };
-    use crate::search::draw::{MixtureDraw, SuffixShape};
+    use crate::search::draw::{DrawMixture, MixtureDraw, SuffixShape};
     use crate::search::empirical_steps::EmpiricalStepCheckpoint;
     use crate::search::rollout::{Outcome, Rollout, execute_suffix};
     use serde::{Deserialize, Serialize};
@@ -4204,7 +4314,10 @@ mod tests {
         entries: Vec<ArchiveEntryReport<TestAction, TestKey, ()>>,
     }
 
-    struct TestGame;
+    #[derive(Clone, Copy)]
+    struct TestGame {
+        parent_input: bool,
+    }
     impl CampaignTypes for TestGame {
         type Target = TestTarget;
         type Action = TestAction;
@@ -4278,6 +4391,41 @@ mod tests {
             mutation_seed: u64,
         ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
             Ok(vec![TestAction::new(mutation_seed as u8, 1)])
+        }
+
+        fn expand_suffix_needs_parent_input(&self, _run: &Self::Run) -> bool {
+            self.parent_input
+        }
+
+        fn expand_suffix_with_parent(
+            &self,
+            _run: &Self::Run,
+            _state: &Self::DrawState,
+            parent: &Input<Self::Action>,
+            _shape: SuffixShape,
+            _mixture: MixtureDraw,
+            mutation_seed: u64,
+        ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+            Ok(vec![TestAction::new(
+                (mutation_seed as u8).wrapping_add(parent.actions.len() as u8),
+                1,
+            )])
+        }
+
+        fn expand_suffix_recorded_with_parent(
+            &self,
+            run: &Self::Run,
+            state: &Self::DrawState,
+            parent: &Input<Self::Action>,
+            shape: SuffixShape,
+            mixture: MixtureDraw,
+            before: Option<&Self::DrawCheckpoint>,
+            mutation_seed: u64,
+        ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+            if before.is_some() {
+                return Err("test fixture has no draw checkpoint".into());
+            }
+            self.expand_suffix_with_parent(run, state, parent, shape, mixture, mutation_seed)
         }
 
         fn max_action_limit(&self) -> usize {
@@ -4497,14 +4645,19 @@ mod tests {
         }
     }
 
-    fn test_core() -> (TestGame, (), CoordinatorCore<TestGame>, TestTarget) {
-        let game = TestGame;
+    fn test_core_for(game: TestGame) -> (TestGame, (), CoordinatorCore<TestGame>, TestTarget) {
         let run = ();
         let mut core = CoordinatorCore::new(&game, &run, 16, 1_024, None);
         let mut target = TestTarget::default();
         core.bootstrap(&game, &mut target)
             .expect("bootstrap generic core");
         (game, run, core, target)
+    }
+
+    fn test_core() -> (TestGame, (), CoordinatorCore<TestGame>, TestTarget) {
+        test_core_for(TestGame {
+            parent_input: false,
+        })
     }
 
     #[test]
@@ -4835,7 +4988,9 @@ mod tests {
 
     #[test]
     fn whole_tree_import_rebuilds_inputs_and_reroots_sparse_parents() {
-        let game = TestGame;
+        let game = TestGame {
+            parent_input: false,
+        };
         let run = ();
         let mut target = TestTarget::default();
         let action = |input: u8| TestAction::new(input, 1);
@@ -5039,6 +5194,87 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn parent_aware_suffix_draws_materialize_once_and_replay_identically() {
+        let (game, run, mut core, mut target) = test_core_for(TestGame { parent_input: true });
+        let action = TestAction::new(7, 1);
+        target.apply(&action);
+        let snapshot = target.snapshot().expect("snapshot candidate");
+        let result = CampaignJobResult::<TestGame> {
+            actions: vec![CampaignActionResult {
+                action,
+                observations: Vec::new(),
+                milestones: (),
+                dead: false,
+                victory: false,
+                failed: false,
+                candidate: Some(CampaignCandidate {
+                    key: TestKey(target.value),
+                    viable: true,
+                    snapshot,
+                }),
+            }],
+        };
+        core.admit_job(&game, 0, result)
+            .expect("admit parent for draw");
+        let parent_index = core.archive.index_of_id(1).expect("parent entry");
+        let mixture = MixtureDraw {
+            mixture: DrawMixture::AlphabetOnly,
+            weight: 128,
+            splice_weight: 0,
+        };
+        let before = core.archive.input_reconstructions();
+        let live = expand_suffix_for_parent(
+            &game,
+            &run,
+            &(),
+            &core.archive,
+            parent_index,
+            SuffixShape::OneOrTwo,
+            mixture,
+            0xfeed,
+        )
+        .expect("live parent-aware draw");
+        assert_eq!(core.archive.input_reconstructions(), before + 1);
+        let recorded = expand_suffix_recorded_for_parent(
+            &game,
+            &run,
+            &(),
+            &core.archive,
+            parent_index,
+            SuffixShape::OneOrTwo,
+            mixture,
+            None,
+            0xfeed,
+        )
+        .expect("recorded parent-aware draw");
+        assert_eq!(core.archive.input_reconstructions(), before + 2);
+        assert_eq!(live, recorded);
+        assert_eq!(live[0].input, (0xfeed_u64 as u8).wrapping_add(1));
+    }
+
+    #[test]
+    fn parent_independent_suffix_draws_do_not_materialize_the_parent() {
+        let (game, run, core, _target) = test_core();
+        let before = core.archive.input_reconstructions();
+        let _suffix = expand_suffix_for_parent(
+            &game,
+            &run,
+            &(),
+            &core.archive,
+            0,
+            SuffixShape::OneOrTwo,
+            MixtureDraw {
+                mixture: DrawMixture::AlphabetOnly,
+                weight: 128,
+                splice_weight: 0,
+            },
+            0xfeed,
+        )
+        .expect("parent-independent draw");
+        assert_eq!(core.archive.input_reconstructions(), before);
     }
 
     #[test]

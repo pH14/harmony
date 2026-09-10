@@ -20,13 +20,13 @@ WAL). Raft term/leader/applied-index stay in sync; only the data is wrong.
   [postmortem](https://github.com/etcd-io/etcd/blob/main/Documentation/postmortems/v3.5-data-inconsistency.md);
   earlier duplicates #13514, #13654.
 
-The workload uses the smallest upstream-shaped topology that can expose an acknowledged
-write missing from one member: three local etcd members sharing one Raft cluster. A client put
-can be acknowledged after the leader applies it while a follower is still between its WAL and
-backend apply; killing that follower leaves the other two members and the external client
-ledger as witnesses. A one-member workload cannot expose this acknowledged-before-local-apply
-window in v3.5.2 because the put response waits for the local leader apply, and retrying a
-failed request repairs the key.
+The workload uses the smallest topology faithful to the upstream report: three local etcd
+members sharing one Raft cluster. A client put can be acknowledged after the leader applies it
+while a follower is still between its WAL and backend apply; killing that follower leaves the
+other two members and the external client ledger as independent witnesses. A one-member
+durability oracle can theoretically observe the related interval after the local apply returns
+but before the buffered data is committed. It cannot directly observe the reported
+acknowledged-before-follower-apply divergence, and retrying a failed request can repair its key.
 
 ⚠️ Do not conflate with the **separate, later** consistent-index bug (crash during
 **defragmentation**, `unsafeCommit` skipping `OnPreCommitUnsafe`, entries *re-applied*, revision
@@ -56,8 +56,8 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
   member's recovered key/value set with the unique acknowledged ledger. An acknowledged-but-
   missing or changed value on any member is the case's only failing assertion. A down member,
   empty journal, or failed local read is silent, so a crash alone cannot be mistaken for
-  corruption. The multi-member oracle observes the follower-local divergence that a single
-  member cannot expose.
+  corruption. The multi-member oracle directly observes the follower-local divergence from the
+  upstream report.
 
 ## Discovery contract
 
