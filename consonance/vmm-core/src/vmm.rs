@@ -1365,6 +1365,9 @@ where
     ///
     /// Capture requires no pending SDK stop. Assigned virtual time is exact at
     /// every serviced exit; backend completions are retired before restoring.
+    /// A pending pvclock registration is captured with its GPA and
+    /// `armed = false`; saving does not run the handshake, advance V-time, or
+    /// re-stamp the page.
     ///
     /// **The pvclock page is sealed VERBATIM (task 110 §1.1, amended at r4).** A
     /// seal does not touch guest RAM at all: the clock page rides the memory
@@ -1412,34 +1415,14 @@ where
         // than refusing it. Zero at a real quiescent snapshot point (64-bit guest, no
         // armed injection); a non-zero value is a misuse / a non-quiescent snapshot.
         <B::A as Vendor>::check_sealable_vcpu(&vcpu)?;
-        // Task 110 (r13 P1). A PENDING pvclock registration is UNSEALABLE. Between
-        // the doorbell `OUT` (which records the GPA) and the handshake intercept
-        // (the guest's post-doorbell RDTSC, which arms the page and lays the first,
-        // canonical stamp), `armed` is false. The v5 device record can represent
-        // that state, but the whole-VM save path still refuses it until the exact
-        // snapshot path is enabled: the sealed RAM image and pending handshake
-        // must be proven to resume together. This guard remains beside
-        // `check_sealable_vcpu` rather than in the boundary predicate. In normal
-        // operation a pending registration is never at a synchronized boundary
-        // (the `OUT` is a PIO; the first synchronized point after it is the arming
-        // handshake); the one path that can pair pending with a synchronized seal
-        // is `restore_vtime`.
-        if self
-            .pvclock
-            .as_ref()
-            .is_some_and(|pv| pv.gpa.is_some() && !pv.armed)
-        {
-            return Err(VmmError::ContractViolation(
-                "save_vm_state with a PENDING pvclock registration: the page GPA is \
-                 recorded but the registration handshake (the guest's post-doorbell \
-                 RDTSC) has not completed, so `armed` is false — the v5 device record \
-                 preserves this bit, but whole-VM snapshotting currently refuses the \
-                 state until its pending handshake and RAM image are proven to resume \
-                 together. Snapshot after the \
-                 handshake intercept (step once more first)."
-                    .to_string(),
-            ));
-        }
+        // Task 110: a pending pvclock registration is representable in the
+        // versioned device record. Carry its GPA and `armed = false` alongside
+        // the verbatim RAM image so the restored guest owes the same handshake.
+        // Saving itself does not run that handshake, advance V-time, or stamp
+        // the page. In normal operation a pending registration is not at a
+        // synchronized boundary (the `OUT` is a PIO); `restore_vtime` remains
+        // the explicit test/control path that can pair one with a synchronized
+        // seal.
         // Task 110 (r4): NO pvclock re-stamp here. The page is sealed exactly as
         // the guest sees it — see this method's doc comment for why
         // canonicalizing a live page is an ABA on a straddling reader, and why
@@ -1918,9 +1901,9 @@ where
             // intercept) and an *armed* one have DIFFERENT futures — the pending
             // one's next synchronized step lays the canonical page stamp,
             // the armed one refreshes normally — so pending-vs-armed belongs in
-            // state identity. The current whole-VM save guard still rejects a
-            // pending registration, but `restore_vtime` can leave one at a
-            // synchronized boundary and the representation must retain it.
+            // state identity. Whole-VM save carries a pending registration's
+            // state and verbatim page image; `restore_vtime` can also leave one
+            // at a synchronized boundary, so the representation must retain it.
             bytes.push(u8::from(pv.armed));
             put_chunk(&mut out, b"PVCK", &bytes);
         }
@@ -2376,9 +2359,8 @@ where
         if let Some(pv) = self.pvclock.as_mut() {
             // Restore the channel record verbatim. In particular, a GPA with
             // `armed = false` remains pending until the same guest handshake
-            // that the source still owed. `save_vm_state` currently refuses to
-            // seal that state; the representation nevertheless has to preserve
-            // it for restore and future exact-snapshot support.
+            // that the source still owed. The full save path carries this
+            // state; restore must not synthesize its first stamp.
             let (gpa, armed) = rec.map_or((None, false), |snapshot| (snapshot.gpa, snapshot.armed));
             pv.armed = armed;
             pv.gpa = gpa;
@@ -8354,9 +8336,9 @@ mod tests {
     }
 
     /// Pending registration state crosses the same capture/serialization and
-    /// restore boundary used by production x86 snapshots. The full save path
-    /// still refuses this state until exact snapshot support is enabled, so use
-    /// the vendor construction and engine restore helpers directly here.
+    /// restore boundary used by production x86 snapshots. This direct vendor
+    /// construction test keeps the codec's pending representation visible; the
+    /// whole-VM continuation test below exercises the public save/restore path.
     #[test]
     fn pvclock_snapshot_and_restore_preserve_pending_registration_state() {
         let mut source = pvclock_vmm(vec![], 7);
@@ -8372,7 +8354,7 @@ mod tests {
         assert_eq!(source.pvclock_snapshot(), Some(expected));
 
         // This is the production vendor construction/codec boundary that
-        // save_vm_state would call after its pending-state guard.
+        // save_vm_state calls for the device record.
         let state = <X86 as crate::vendor::Vendor>::build_vm_state(&source, &VcpuState::default());
         let decoded = snapshot::decode_device_blob(&state.devices.0).unwrap();
         assert_eq!(decoded.pvclock, Some(expected));
@@ -8722,36 +8704,109 @@ mod tests {
         );
     }
 
-    /// r13 P1: a PENDING pvclock registration is UNSEALABLE. `restore_vtime` can
-    /// leave a registration pending yet mark V-time synchronized (a would-be
-    /// sealable boundary). The v5 device record carries the pending-vs-armed bit,
-    /// but `save_vm_state` still fails closed until the exact snapshot path proves
-    /// the pending handshake and RAM image resume together. Once the handshake
-    /// arms the page, the same VM seals.
+    /// A pending registration is a valid whole-VM snapshot point. The save must
+    /// preserve the pending GPA, page bytes, and synchronized V-time without
+    /// performing the handshake or otherwise changing the live VM. The source,
+    /// a save-and-continue copy, and a cold restore must therefore converge when
+    /// each services the same post-doorbell time read.
     #[test]
-    fn save_vm_state_rejects_a_pending_pvclock_registration() {
-        let mut v = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], 7);
-        ring_pvclock_register(&mut v, PV_GPA); // pending: OUT recorded, no handshake
-        // Reach a synchronized boundary while STILL pending — the restore_vtime
-        // path the reviewer identified (the doorbell OUT alone never synchronizes).
-        let snap = VtimeSnapshot {
-            vns: 42,
-            guest_clock_offset: 0,
-            entropy: SeededEntropy::new(7).save_state(),
+    fn save_vm_state_preserves_pending_pvclock_for_the_next_handshake() {
+        const SEED: u64 = 7;
+        let expected = PvclockSnapshot {
+            gpa: Some(PV_GPA),
+            registrable: true,
+            armed: false,
         };
-        v.restore_vtime(&snap).unwrap();
-        assert!(
-            v.pvclock_registration().is_some(),
-            "the registration is present but pending"
+        let pending = || {
+            let mut v = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], SEED);
+            assert_eq!(ring_pvclock_register(&mut v, PV_GPA).0, Status::Ok as u16);
+            v.restore_vtime(&VtimeSnapshot {
+                vns: 42,
+                guest_clock_offset: 0,
+                entropy: SeededEntropy::new(SEED).save_state(),
+            })
+            .unwrap();
+            assert_eq!(v.effective_vns(), Some(42));
+            assert_eq!(v.pvclock_snapshot(), Some(expected));
+            assert!(
+                vtime::pvclock::read(v.pvclock_page().unwrap()).is_none(),
+                "the pending page is still unstamped"
+            );
+            v
+        };
+
+        let mut uninterrupted = pending();
+        let mut save_continue = pending();
+        let before_counts = save_continue.exit_counts();
+        let before_time = save_continue.effective_vns();
+        let before_page = save_continue.pvclock_page().unwrap().to_vec();
+        let before_memory = save_continue.guest_memory().to_vec();
+        let before_refreshes = save_continue.pvclock_refreshes().to_vec();
+
+        let saved = save_continue
+            .save_vm_state()
+            .expect("a pending pvclock registration is representable");
+        // Exercise the outer production serialization boundary, rather than
+        // validating only the in-memory vendor record.
+        let saved = vm_state::VmState::decode(&saved.encode().unwrap()).unwrap();
+        assert_eq!(save_continue.exit_counts(), before_counts);
+        assert_eq!(save_continue.effective_vns(), before_time);
+        assert_eq!(
+            save_continue.pvclock_page().unwrap(),
+            before_page.as_slice()
         );
-        assert!(
-            matches!(v.save_vm_state(), Err(VmmError::ContractViolation(_))),
-            "a pending (un-armed) pvclock registration must fail closed at the seal"
+        assert_eq!(save_continue.guest_memory(), before_memory.as_slice());
+        assert_eq!(
+            save_continue.pvclock_refreshes(),
+            before_refreshes.as_slice()
         );
-        // The handshake (the queued RDTSC) arms the page; the seal then succeeds.
-        v.step().unwrap();
-        v.save_vm_state()
-            .expect("an armed registration seals cleanly");
+        assert_eq!(save_continue.pvclock_snapshot(), Some(expected));
+
+        let decoded = snapshot::decode_device_blob(&saved.devices.0).unwrap();
+        assert_eq!(decoded.pvclock, Some(expected));
+
+        let mut cold = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], SEED);
+        cold.restore_snapshot(&before_memory, &saved)
+            .expect("cold restore preserves the pending registration");
+        assert_eq!(cold.effective_vns(), before_time);
+        assert_eq!(cold.pvclock_snapshot(), Some(expected));
+        assert_eq!(cold.pvclock_page().unwrap(), before_page.as_slice());
+        assert!(
+            vtime::pvclock::read(cold.pvclock_page().unwrap()).is_none(),
+            "restore must not stamp a pending page"
+        );
+
+        let handshake = |v: &mut Vmm<MockBackend>| {
+            assert_eq!(v.step().unwrap(), Step::Continued);
+            assert_eq!(
+                v.pvclock_snapshot().map(|snapshot| snapshot.armed),
+                Some(true)
+            );
+            let page = v.pvclock_page().unwrap().to_vec();
+            assert!(
+                vtime::pvclock::read(&page).is_some(),
+                "the post-doorbell time read must arm and stamp the page"
+            );
+            let completions = v.backend.completions().to_vec();
+            assert!(
+                matches!(completions.as_slice(), [Completion::Read(_)]),
+                "the handshake must service one read completion"
+            );
+            (
+                v.effective_vns(),
+                v.exit_counts(),
+                completions,
+                v.pvclock_snapshot(),
+                page,
+                v.guest_memory().to_vec(),
+                v.save_vm_state().unwrap().encode().unwrap(),
+                v.state_hash().unwrap(),
+            )
+        };
+
+        let expected_after = handshake(&mut uninterrupted);
+        assert_eq!(handshake(&mut save_continue), expected_after);
+        assert_eq!(handshake(&mut cold), expected_after);
     }
 
     /// §1.1 as amended at r4: a seal captures the page **verbatim**, so the
