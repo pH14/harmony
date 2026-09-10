@@ -1,0 +1,35 @@
+{
+  "format": "rf01-exact-resource-snapshot-expectation-v1",
+  "source": "aq01-output/one-slot/root-snapshot.json.gz",
+  "source_gzip_sha256": "de2524f00076f6f9cd2e5cd6f5b53db60b4535d5893fe524dbd87aa849644c80",
+  "feature_projection": "Remove only endpoint_boss_slots; RF01 matches the historical S01 build with no optional features.",
+  "before_canonical_sha256": "cf1d39048e0ba91b69d97655d6c5532e7b9cd67c3782824f643c20c828e21005",
+  "after_canonical_sha256": "616a30e9af0e9e2cb6a38847f51ef2fd12845ec0327fde63fd9a24db58a1d70b",
+  "before_emulator_sha256": "a58ee3cc7db0b4239ba850496df0e6119888f8bc64ce1327f83f84bb8aae65cd",
+  "after_emulator_sha256": "f0fe7290709a7c6ad06d079b105302492b9b0ce52782832f1c925e3196b17165",
+  "resources": {
+    "health": 1999,
+    "missiles": 20
+  },
+  "serialized_byte_changes": [
+    {
+      "offset": 604,
+      "old": 121,
+      "new": 153
+    },
+    {
+      "offset": 605,
+      "old": 0,
+      "new": 25
+    },
+    {
+      "offset": 15087,
+      "old": 0,
+      "new": 20
+    }
+  ],
+  "expected_cached_field_changes": [
+    "observation.decoded.health",
+    "observation.decoded.missiles"
+  ]
+}
