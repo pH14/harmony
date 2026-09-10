@@ -420,7 +420,7 @@ mod live {
             // the hit is a rediscovery.
             let violations: Vec<u32> = bug.observations.violations.iter().copied().collect();
             let witness = match replay_once(artifacts, &config, &bug.actions) {
-                Ok(summary) => Some(summary),
+                Ok((summary, _)) => Some(summary),
                 Err(error) => {
                     eprintln!("bug {} did not replay: {error}", bug.bug);
                     None
@@ -480,8 +480,16 @@ mod live {
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         for run in 1..=repeat {
-            let mut summary = replay_once(artifacts, &config, actions)?;
+            let (mut summary, reproduction) = replay_once(artifacts, &config, actions)?;
             summary.run = run;
+            // The first run that reproduced the bug writes the same
+            // `bug-1.json` a search would, so a replay leaves a workspace an
+            // investigation can open without repeating the campaign.
+            if let Some(bug) = reproduction
+                && !report.bug_found
+            {
+                bug.write(&options.output)?;
+            }
             report.horizons_clocked = report
                 .horizons_clocked
                 .saturating_add(summary.guest_horizons);
@@ -504,7 +512,7 @@ mod live {
         artifacts: &Artifacts,
         config: &FaultConfig,
         actions: &[FaultAction],
-    ) -> Result<ReplaySummary, Box<dyn Error>> {
+    ) -> Result<(ReplaySummary, Option<crate::report::BugReport>), Box<dyn Error>> {
         let mut target = FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, config)?;
         for action in actions {
             target.apply(*action);
@@ -530,7 +538,22 @@ mod live {
             actions_applied: target.horizons_clocked(),
             guest_horizons: target.guest_horizons_run(),
         };
-        Ok(summary)
+        let reproduction = summary
+            .bug
+            .then(|| {
+                crate::report::BugReport::new(
+                    1,
+                    1,
+                    crate::target::ActionWindows {
+                        root_seal: target.root_seal(),
+                        horizon_nanos: config.horizon_nanos,
+                    },
+                    actions,
+                    observation,
+                )
+            })
+            .transpose()?;
+        Ok((summary, reproduction))
     }
 
     fn hostname() -> String {

@@ -272,6 +272,10 @@ pub struct Outcome {
     pub moment: String,
     /// Virtual time at that moment.
     pub virtual_time: u64,
+    /// Whole-VM state hash at that moment, lowercase hex, when it was
+    /// computed. A cold continuation is compared against a recorded execution
+    /// on this value, so it is part of every reply rather than a separate view.
+    pub state_hash: Option<String>,
     /// Whether the history is still the recorded one.
     pub history: History,
     /// Why it stopped.
@@ -347,13 +351,14 @@ pub fn fork(
         probe: request.probe,
         pending_command: None,
     };
+    let state_hash = engine.state_hash().ok();
     let record = MomentRecord {
         id: moment.clone(),
         branch: Some(request.name.clone()),
         virtual_time: endpoint.virtual_time,
         history,
         checkpoint: Some(digest),
-        state_hash: engine.state_hash().ok(),
+        state_hash: state_hash.clone(),
         stop: Some(endpoint.stop.clone()),
         observations: Some(endpoint.observations.clone()),
     };
@@ -362,6 +367,7 @@ pub fn fork(
         branch: request.name.clone(),
         moment,
         virtual_time: endpoint.virtual_time,
+        state_hash,
         history,
         stop: endpoint.stop.clone(),
         condition_met: false,
@@ -650,6 +656,7 @@ fn commit_advance(
     // export must not leave a branch head pointing at nothing.
     let checkpoint = engine.checkpoint().map_err(|error| error.to_string())?;
     let digest = workspace.store_blob(&checkpoint)?;
+    let state_hash = engine.state_hash().ok();
 
     if let Some((outcome, _)) = &command {
         let (bytes, cut) = bound_evidence(&outcome.output);
@@ -717,6 +724,7 @@ fn commit_advance(
         branch: branch.name.clone(),
         moment: moment.clone(),
         virtual_time: endpoint.virtual_time,
+        state_hash: state_hash.clone(),
         history,
         stop: endpoint.stop.clone(),
         condition_met: endpoint.condition_met,
@@ -738,7 +746,7 @@ fn commit_advance(
         virtual_time: endpoint.virtual_time,
         history,
         checkpoint: Some(digest),
-        state_hash: engine.state_hash().ok(),
+        state_hash: state_hash.clone(),
         stop: Some(endpoint.stop.clone()),
         observations: Some(endpoint.observations.clone()),
     })));

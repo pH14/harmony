@@ -364,22 +364,21 @@ fn run_faults_consonance(
                 faults_workload::package::search(artifacts, &vocabulary, options)?
             }
         };
-        // A search leaves a workspace an investigation opens; a replay confirms
-        // one recorded input and writes no new history to investigate.
-        if replay.is_none() {
-            faults_workload::workspace::publish(
-                &options.output,
-                image,
-                &prepared.bundle,
-                &report,
-                options,
-            )?;
-            println!(
-                "workspace   {}  ({} finding(s))",
-                options.output.display(),
-                report.bugs.len()
-            );
-        }
+        // Both modes leave a workspace an investigation opens: a search
+        // publishes the findings it recorded, and a replay publishes the
+        // recorded input it reproduced.
+        let workspace = faults_workload::workspace::publish(
+            &options.output,
+            image,
+            &prepared.bundle,
+            &report,
+            options,
+        )?;
+        println!(
+            "workspace   {}  ({} finding(s))",
+            options.output.display(),
+            workspace.findings().len()
+        );
         println!(
             "bug_found   {}  executions {}  horizons {}",
             report.bug_found, report.executions, report.horizons_clocked

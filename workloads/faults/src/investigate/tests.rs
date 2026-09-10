@@ -432,6 +432,10 @@ fn a_cold_continuation_reaches_the_same_point_as_one_that_never_exited() {
     assert_eq!(split.virtual_time, whole.virtual_time);
     assert_eq!(split.state_hash, whole.state_hash);
     assert_eq!(split.observations, whole.observations);
+    assert_eq!(
+        long.state_hash, whole.state_hash,
+        "a reply must carry the hash a comparison is made on, without a second command"
+    );
 }
 
 #[test]

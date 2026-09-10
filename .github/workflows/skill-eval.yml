@@ -1,0 +1,157 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Benchmarks / Developer skills
+
+# Two halves. Pull requests exercise the runner, the fixture, and the CLI
+# contracts it grades against, with no model credentials and no paid calls.
+# A manual or scheduled run calls a real model under explicit ceilings; it
+# needs the provider configuration named below and does nothing without it.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/skill-eval.yml
+      - benchmarks/skills/**
+      - cli/**
+      - skills/**
+      - workloads/faults/**
+  schedule:
+    # One matched pair a night, so results aggregate over repeated nights
+    # rather than one batch.
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+    inputs:
+      panel:
+        description: Which panel to run
+        required: false
+        default: investigation
+        type: choice
+        options: [investigation, integration, end-to-end]
+      attempts:
+        description: Attempts per arm
+        required: false
+        default: "1"
+        type: string
+      model:
+        description: Provider model identifier
+        required: false
+        default: claude-sonnet-5
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skill-eval-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  runner:
+    name: Runner and fixture, no credentials
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the CLI the runner hands to an attempt
+        run: cargo build --locked --release -p harmony-cli
+      - name: Qualify the fixture against the shipping CLI
+        run: |
+          set -euo pipefail
+          ./benchmarks/skills/eval.py qualify --adapter echo \
+            --harmony target/release/harmony --out runs/qualify
+      - name: Run one matched pair with no model
+        run: |
+          set -euo pipefail
+          ./benchmarks/skills/eval.py run --panel investigation --attempts 1 \
+            --adapter echo --harmony target/release/harmony --out runs/smoke
+      - name: Check the grader fails an empty submission
+        run: |
+          set -euo pipefail
+          # The echo adapter answers nothing, so every artifact check must
+          # fail. A grader that passes it would pass anything.
+          verdicts=$(jq -r '.attempts[].verdict' runs/smoke/report.json | sort -u)
+          test "${verdicts}" = "fail"
+          jq -e '.arms.skills.passed == 0 and .arms.documentation.passed == 0' \
+            runs/smoke/report.json >/dev/null
+      - name: Check an attempt is given only its own materials
+        run: |
+          set -euo pipefail
+          submission=runs/smoke/investigation-documentation-1/submission
+          test ! -e "${submission}/.claude/skills"
+          test -d runs/smoke/investigation-skills-1/submission/.claude/skills
+          test ! -e "${submission}/bugs"
+          test ! -e "${submission}/Cargo.toml"
+      - name: Summarize
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## Runner checks"
+            echo
+            jq -r '.checks[] | "| \(.check) | \(if .passed then "pass" else "FAIL" end) |"' \
+              runs/qualify/qualify.json | sed '1i | check | result |\n|---|---|'
+          } >>"${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: skill-eval-runner-${{ github.run_id }}
+          path: runs
+          if-no-files-found: warn
+          retention-days: 14
+
+  panel:
+    name: Panel with a real model
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: skill-eval
+    env:
+      # The provider is chosen here and nowhere else: fixtures, skills and
+      # grading do not name a model. Without this secret the job stops before
+      # spending anything.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PANEL: ${{ inputs.panel || 'investigation' }}
+      ATTEMPTS: ${{ inputs.attempts || '1' }}
+      MODEL: ${{ inputs.model || 'claude-sonnet-5' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse to start without provider configuration
+        run: |
+          set -euo pipefail
+          if [[ -z "${ANTHROPIC_API_KEY}" ]]; then
+            echo "no provider credential is configured for this repository;" \
+                 "paid attempts are not enabled" >&2
+            exit 1
+          fi
+      - uses: astral-sh/setup-uv@v5
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked --release -p harmony-cli
+      - name: Install the agent CLI
+        run: npm install --global @anthropic-ai/claude-code
+      - name: Run the panel under explicit ceilings
+        run: |
+          set -euo pipefail
+          ./benchmarks/skills/eval.py run \
+            --panel "${PANEL}" \
+            --attempts "${ATTEMPTS}" \
+            --model "${MODEL}" \
+            --harmony target/release/harmony \
+            --wall-seconds 1800 \
+            --total-tokens 2000000 \
+            --tool-calls 400 \
+            --out runs/panel
+      - name: Publish the result
+        if: always()
+        run: cat runs/panel/report.md >>"${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: skill-eval-panel-${{ github.run_id }}
+          path: runs/panel
+          if-no-files-found: warn
+          retention-days: 30
