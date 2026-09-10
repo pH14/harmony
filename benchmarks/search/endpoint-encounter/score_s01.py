@@ -84,8 +84,10 @@ def score(protocol, output):
     for i in range(32):
         a, b = (next(r['outcome'] for r in rows if r['trial'] == i and r['arm'] == arm)
                 for arm in ['ordinary', 'passive'])
-        key = ('ordinary' if a['first_surviving_damage_frame'] is not None else 'no_ordinary')
-        key += ('_and_passive' if b['first_surviving_damage_frame'] is not None else '_only')
+        key = {(False, False): 'neither', (True, False): 'ordinary_only',
+               (False, True): 'passive_only', (True, True): 'both'}[
+                   (a['first_surviving_damage_frame'] is not None,
+                    b['first_surviving_damage_frame'] is not None)]
         pairs[key] += 1
     return {'format': 'metroid-conditional-control-analysis-v1', 'decision': 'complete',
             'registration_sha256': hashlib.sha256((protocol / 's01-registration.json').read_bytes()).hexdigest(),

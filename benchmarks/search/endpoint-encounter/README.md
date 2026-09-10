@@ -103,3 +103,51 @@ reject damage followed by death in the same command, stale/missing context and
 inherited earlier-command progress. Native execution requires a separate
 registration with source, build, generated suffix and resource identities.
 No emulator work is allocated merely by this design or seed freeze.
+
+## S01 result: reproducible damage, no sustained fight
+
+[S01](s01-registration.json), frozen at `d94fb3d0`, completes all 32 ordinary /
+passive pairs on msr1 in 53.04 seconds with a 10,376 KiB reported peak child RSS.
+All 64 restores preserve the positive snapshot and raw context. The first state
+has health 79 **in tenths** (7.9 game energy), zero missiles and boss HP 140.
+The source uses `MetroidMechanicalState.health` in tenths throughout; the earlier
+raw decoded value must not be read as 79 game energy.
+
+One ordinary trial has one guarded HP decrease, at continuation frame 266. Its
+ninth command ends at frame 268 with boss HP 139 and unchanged health 79; two
+fresh held-command replays reproduce the live mechanical state, raw context
+and emulator bytes. That trial dies at frame 285. Every ordinary trial dies
+(minimum/median/maximum continuation: 207 / 311.5 / 1,506 frames), with no defeat
+flag. Every passive trial dies at frame 316 without observed damage. Passive
+trials are the same released-button physical trajectory under different command
+boundaries, not 32 independent gameplay replications. No power or global
+success-rate claim is made.
+
+The [analysis](s01-analysis.json) preserves earlier surviving damage separately
+from later death. It checks the full frozen order, draws, per-trial frame totals,
+required witness set, exact searched-prefix/suffix composition and replay
+charges. Four offline tests plant corrupted draws, changed witness bytes and a
+missing required witness; the positive fixture also prevents later death from
+erasing an earlier surviving endpoint. Recompute without emulation:
+
+```sh
+python3 benchmarks/search/endpoint-encounter/score_s01.py \
+  --output benchmarks/search/endpoint-encounter/s01-output \
+  --out /tmp/s01-recomputed.json
+```
+
+The raw records and witness are compressed losslessly in `s01-output/`. This
+block uses 118,804 prefix/setup, 21,577 continuation and 238,144 verification
+frames: **378,525 known auxiliary frames**, below its 2M ceiling. The service
+exits successfully with no owned child. [The ledger](ledger-after-s01.json)
+closes at 1,083,261,532 resumed admitted search and 49,477,302 known auxiliary
+frames. No fresh performance-search frames were used.
+
+This demonstrates one reproducible ordinary-input damage event from a weak
+searched state. It does not establish sustained control, why all trials died,
+actual loss of a useful archive state, or a better generic policy. The current
+archive key does not encode boss HP, but the initial and damage endpoints occupy
+different map/position cells; S01 therefore does not demonstrate an actual
+same-cell replacement. The useful next discriminator is whether the saved
+partial progress can itself be extended, under a separately registered bounded
+diagnostic. Do not launch another discovery campaign from this observation.

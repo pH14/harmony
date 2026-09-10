@@ -343,3 +343,43 @@ bounded probe needed for this decision, and first pass inexpensive planted
 counterexamples. No conditional input may count as fresh-search validation.
 The original repeated boss/Wily, matched-control and untouched-seed goal remains
 active and unmet; no further emulator allocation is implied by this design step.
+
+## S01 closure and the next return-and-extend question
+
+The separately frozen 32-pair conditional panel completes in 53.04 seconds. All
+64 exact positive-root restores pass. One ordinary sequence produces a live
+HP 140→139 endpoint after 268 continuation frames; it replays twice with held
+commands and unchanged health 79 **tenths** (7.9 game energy). That sequence
+dies 17 frames later. All other ordinary trials and all passive trials also
+die; no defeat is observed. Passive trials repeat one physical trajectory
+under different command boundaries. See ../endpoint-encounter/s01-analysis.json
+and ledger-after-s01.json: 378,525 additional known auxiliary frames, no admitted
+fresh search; cumulative resumed auxiliary 49,477,302. The service is terminal.
+
+This earns a more precise question, not a policy promotion: can search return
+to this first surviving partial result and extend its damage before dying?
+A staged-search advantage requires extendable states, not just occasional
+damage. The current archive lacks boss-HP identity, but the two saved endpoints
+have different position cells; actual same-cell loss has not been demonstrated.
+No game-specific reward, priority, archive field or resource injection is earned.
+
+First write the small conditional-transition argument: independent full tapes
+versus retaining partial results can have different costs only if the retained
+state admits further useful transitions. Health, position, projectiles and boss
+state must all be restored together. The successful S01 endpoint supplies one
+qualified state, not evidence that each additional HP step has the same chance.
+Do not extrapolate the observed 1/32 to a full fight or call it a power estimate.
+
+If the argument supports a discriminator, register at most one follow-on
+conditional panel from the **first** S01 saved damage endpoint with unchanged
+resources, existing binary and the unchanged S01 suffix list. Treat all seeds as
+reused diagnostics. The paired passive arm detects pending progress. Freeze the
+new complete-prefix hash, exact qualified root, work/wall/process/output limits
+and witness rule before execution. Any further surviving HP drop or defeat
+requires two held replays from genesis. Another local positive still earns no
+automatic chain of increasingly selected roots, fresh campaign or policy sweep;
+a negative ends this bounded two-stage diagnosis without a second seed list.
+A maximum 2M auxiliary / ten-minute follow-on envelope is a planning ceiling,
+not an allocation until its registration is committed. Keep the original
+matched-control, repeated boss/Wily and untouched-validation goal active and
+unachieved. Publish all evidence in the existing PR #287.

@@ -1,0 +1,18 @@
+{
+  "format": "endpoint-s01-closed-ledger-v1",
+  "prior_ledger_sha256": "cabd8936d4bd2fbfd3281b210c1b19be14b317a627b0b9c59e5a552675189266",
+  "registration_sha256": "0d46b4bc19c3493ce7b70393a9fa66a24d5a69ca5248ba780b84d982552dd73b",
+  "admitted_search_frames": 0,
+  "block_known_auxiliary_ceiling": 2000000,
+  "block_known_auxiliary_frames": 378525,
+  "prefix_physical_frames": 118804,
+  "continuation_physical_frames": 21577,
+  "witness_physical_frames": 238144,
+  "cumulative_since_user_resumption_admitted_search_frames": 1083261532,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 49477302,
+  "setup_frames_included": 2787,
+  "scope": "One unchanged searched encounter, 32 ordinary/passive suffix pairs. Diagnostic inputs never count as fresh search.",
+  "outcome": "All 64 root restores match; one ordinary surviving 1-HP drop endpoint replays twice; no passive damage, no defeat; all trials eventually die.",
+  "unknown": "No interrupted diagnostic frame gap; prior campaign setup, unadmitted work and reconstruction gaps remain unchanged. Compilation and tests are separate.",
+  "old_expired_tranche": "489,962,470 admitted search and 30,112,297 known auxiliary frames remain frozen and excluded from these renewed totals."
+}
