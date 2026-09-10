@@ -1,0 +1,62 @@
+arm64: adapt the Harmony character device to the reserved MMIO doorbell
+
+Reuse the synchronous /dev/harmony implementation from the x86 character
+device patch. The ARM guest has the same fixed request/response pages and
+UAPI, but its doorbell is the reserved 32-bit MMIO register at GPA
+0x0a000000 rather than x86 port 0x0ca1. Keep the device built in so the
+fault-agent can use the same ioctl transport without /dev/mem or raw I/O
+privileges. This patch intentionally does not add the x86-only task-park
+device.
+
+The x86 character-device patch is applied first by build-arm64-kernel.sh; the
+small fix-up below therefore keeps that protocol implementation in one place
+while leaving the x86 patch and its port-I/O path unchanged.
+
+---
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -653 +653 @@
+-	depends on X86_64
++	depends on ARM64 && MMU
+@@ -660,2 +660,3 @@
+-	  The driver owns the fixed 0xe000/0xf000 frame pages and rings I/O
+-	  port 0x0ca1, so applications need neither /dev/mem nor iopl(2).
++	  The driver owns the fixed 0xe000/0xf000 frame pages and rings the
++	  reserved ARM64 MMIO doorbell at GPA 0x0a000000, so applications need
++	  neither /dev/mem nor direct physical I/O access.
+
+--- a/drivers/misc/harmony.c
++++ b/drivers/misc/harmony.c
+@@ -30 +30,2 @@
+-#define HARMONY_DOORBELL_PORT	0x0ca1
++/* The VMM reserves this 32-bit GPA as the ARM64 Harmony doorbell. */
++#define HARMONY_DOORBELL_GPA	0x0a000000UL
+@@ -82,0 +84 @@
++static void __iomem *harmony_doorbell;
+@@ -131,3 +132,5 @@
+-	virt_wmb();
+-	outl(request_len, HARMONY_DOORBELL_PORT);
+-	virt_rmb();
++	/* Publish the frame before the MMIO store that causes the VMM exit. */
++	wmb();
++	iowrite32(request_len, harmony_doorbell);
++	/* The VMM filled the response before resuming this guest. */
++	rmb();
+@@ -191,3 +194,5 @@
+-	virt_wmb();
+-	outl(HC_HEADER_LEN + payload_len, HARMONY_DOORBELL_PORT);
+-	virt_rmb();
++	/* Publish the frame before the MMIO store that causes the VMM exit. */
++	wmb();
++	iowrite32(HC_HEADER_LEN + payload_len, harmony_doorbell);
++	/* The VMM filled the response before resuming this guest. */
++	rmb();
+@@ -636,0 +642,5 @@
++	harmony_doorbell = ioremap(HARMONY_DOORBELL_GPA, sizeof(u32));
++	if (!harmony_doorbell) {
++		ret = -ENOMEM;
++		goto out_unmap;
++	}
+@@ -641,0 +653,2 @@
++	if (harmony_doorbell)
++		iounmap(harmony_doorbell);

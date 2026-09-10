@@ -31,8 +31,11 @@ nix run .#guest-images -- --output "$PWD/guest-output"
 ```
 
 On Linux/x86_64 that produces `x86_64/bzImage`, `x86_64/bzImage-faultlab`, the
-minimal initramfs, and `x86_64/initramfs-go-runtime.cpio.gz`; the emitted
-`MANIFEST.sha256` covers every staged artifact.
+minimal initramfs, and `x86_64/initramfs-go-runtime.cpio.gz`. On native
+Linux/aarch64 it also publishes `arm64/Image-faultlab` and
+`arm64/initramfs-faultlab.cpio.gz`, the base pair consumed by
+`workloads/faults::prepare_oci`; the emitted `MANIFEST.sha256` covers every
+staged artifact.
 
 The pinned BusyBox source is also available as a standalone flake package for
 reproducible image preparation and CI reuse:

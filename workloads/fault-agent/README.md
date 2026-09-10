@@ -89,9 +89,11 @@ the others are emitted only when they change.
 
 The portable library — bundle parsing, fault decoding, reconciliation, directive
 parsing, register bookkeeping — builds and tests on any host. The binary adds
-the Linux glue: the `/dev/harmony` ioctl transport, the `/dev/harmony-park`
-ioctls, process spawning into per-node process groups, and process-group
-signalling. On non-Linux hosts only `--check-bundle` runs.
+the Linux glue: the `/dev/harmony` ioctl transport, process spawning into
+per-node process groups, and process-group signalling. The `/dev/harmony-park`
+ioctls are available only in the pre-existing x86 faultlab image; the arm64
+faultlab image intentionally has no task-park device. On non-Linux hosts only
+`--check-bundle` runs.
 
 The standing poll rides the generic SDK opaque service request under
 `fault_policy::STANDING_NAMESPACE`, with the poll tick as the request id and an

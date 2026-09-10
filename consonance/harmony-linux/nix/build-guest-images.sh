@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Build Harmony's native guest images from a locked Nix closure. Linux/aarch64
-# produces the minimal, NES, and PostgreSQL guests; Linux/x86_64 produces the
-# minimal guest used by the x86 virtual-time reference and the fault-library
-# kernel profile that runs stock userspace binaries. Nix supplies every
+# produces the minimal, faultlab, NES, and PostgreSQL guests; Linux/x86_64
+# produces the minimal guest used by the x86 virtual-time reference and the
+# fault-library kernel profile that runs stock userspace binaries. Nix supplies every
 # tool, source tarball, and Cargo registry crate. The application performs
 # assembly in a fresh external workspace with Cargo networking disabled.
 set -euo pipefail
@@ -63,11 +63,11 @@ case "$host_arch" in
             echo "FAIL: --serialization-gate is x86_64-only" >&2
             exit 1
         }
-        [ "$(id -u)" -eq 0 ] || {
-            echo "FAIL: the PostgreSQL snapshot build requires root" >&2
-            exit 1
-        }
         if [ "$minimal_only" -eq 0 ]; then
+            [ "$(id -u)" -eq 0 ] || {
+                echo "FAIL: the PostgreSQL snapshot build requires root" >&2
+                exit 1
+            }
             [ -n "$rom" ] || usage
             [ -f "$rom" ] || { echo "FAIL: ROM does not exist: $rom" >&2; exit 1; }
             rom_sha=$(sha256sum "$rom" | awk '{print $1}')
@@ -135,8 +135,10 @@ install -m 0644 "$HARMONY_NIX_BUSYBOX_SOURCE" \
 if [ "$host_arch" = aarch64 ]; then
     install -m 0644 "$HARMONY_NIX_MUSL_SOURCE" \
         "$downloads/musl-1.2.6.tar.gz"
-    install -m 0644 "$HARMONY_NIX_POSTGRES_SOURCE" \
-        "$downloads/postgresql-17.10.tar.bz2"
+    if [ "$minimal_only" -eq 0 ]; then
+        install -m 0644 "$HARMONY_NIX_POSTGRES_SOURCE" \
+            "$downloads/postgresql-17.10.tar.bz2"
+    fi
 fi
 
 if [ "$host_arch" = aarch64 ]; then
@@ -222,6 +224,10 @@ if [ "$host_arch" = aarch64 ]; then
 
     echo "== N5: build minimal ARM kernel and initramfs"
     (cd "$linux_dir" && ./build-arm64-kernel.sh && ./build-arm64-initramfs.sh)
+    echo "== N5: build ARM faultlab kernel and base initramfs"
+    (cd "$linux_dir" && \
+        ARM64_KERNEL_PROFILE=faultlab ./build-arm64-kernel.sh && \
+        bash ./build-arm64-faultlab-initramfs.sh)
     if [ "$n6" -eq 1 ]; then
         echo "== N6: build generated sweep and traps-off ARM kernel"
         (cd "$linux_dir" && \
@@ -239,11 +245,13 @@ if [ "$host_arch" = aarch64 ]; then
 
     mkdir -p "$stage/arm64"
     if [ "$minimal_only" -eq 1 ]; then
-        names=(Image initramfs.cpio.gz)
+        names=(Image initramfs.cpio.gz Image-faultlab initramfs-faultlab.cpio.gz)
     else
         names=(
             Image
             initramfs.cpio.gz
+            Image-faultlab
+            initramfs-faultlab.cpio.gz
             Image-game
             initramfs-game.cpio.gz
             harmony-tetanes-agent

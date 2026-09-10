@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# ARM64 fault-library guest additions. This profile is the base image passed
+# to workloads/faults::prepare_oci: its package-owned /init is supplied in a
+# later cpio member and chroots into an OCI image containing stock userspace.
+# Keep this workload surface separate from the freestanding AA-5 minimal image;
+# the clock, counter, LSE-only, and determinism settings still come from
+# arm64-config-fragment and the same ARM patch series.
+
+# The package init is a shell script and the OCI workload may contain scripts.
+CONFIG_BINFMT_SCRIPT=y
+CONFIG_PROC_FS=y
+CONFIG_MMU=y
+CONFIG_SHMEM=y
+CONFIG_TMPFS=y
+CONFIG_FILE_LOCKING=y
+CONFIG_MULTIUSER=y
+CONFIG_ADVISE_SYSCALLS=y
+
+# prepare_oci mounts these pseudo-filesystems and brings up the guest's
+# loopback interface before chrooting the fault agent.
+CONFIG_NET=y
+CONFIG_UNIX=y
+CONFIG_INET=y
+CONFIG_NETDEVICES=y
+CONFIG_NET_CORE=y
+CONFIG_LOOPBACK=y
+
+# Linux Go runtimes (including etcd) use futexes, epoll, eventfd, timerfd, and
+# signal handling in their ordinary process and netpoll paths. The agent also
+# creates AF_UNIX socketpairs and manages each node as a process group.
+CONFIG_FUTEX=y
+CONFIG_EPOLL=y
+CONFIG_EVENTFD=y
+CONFIG_SIGNALFD=y
+CONFIG_TIMERFD=y
+CONFIG_INOTIFY_USER=y
+CONFIG_POSIX_TIMERS=y
+
+# The package init and OCI shell need the kernel's proc mount table and the
+# standard device/filesystem plumbing. The ARM /dev/harmony transport uses the
+# reserved MMIO doorbell at GPA 0x0a000000. Park remains an x86-only faultlab
+# surface and is intentionally absent from this profile.
+CONFIG_SYSCTL=y
+CONFIG_DEVTMPFS=y
+CONFIG_SYSFS=y
+CONFIG_HARMONY_DEVICE=y

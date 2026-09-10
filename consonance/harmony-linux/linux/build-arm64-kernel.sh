@@ -12,9 +12,9 @@ cd "$(dirname "$0")"
 require_linux_aarch64
 require_tools cc make flex bison bc xz gzip patch objdump python3
 
-# The canonical M1 build remains the default. M2's std/TetaNES payload needs a
-# separate kernel profile with userspace/proc/devmem facilities; keeping its
-# object tree and output distinct preserves the sealed M1 artifact byte-for-byte.
+# The canonical M1 build remains the default. Workload payloads each use a
+# separate kernel profile with their own object tree and output, preserving the
+# sealed minimal artifact byte-for-byte.
 arm64_profile=${ARM64_KERNEL_PROFILE:-minimal}
 case "$arm64_profile" in
     minimal)
@@ -35,6 +35,12 @@ case "$arm64_profile" in
         arm64_output=Image-postgres
         arm64_extra_fragment=$LINUX_DIR/arm64-postgres-config-fragment
         ;;
+    faultlab)
+        arm64_source_root=$BUILD_ROOT/arm64-faultlab-src
+        arm64_object_root=$BUILD_ROOT/kernel-build-arm64-faultlab
+        arm64_output=Image-faultlab
+        arm64_extra_fragment=$LINUX_DIR/arm64-faultlab-config-fragment
+        ;;
     n6-traps-off)
         arm64_source_root=$BUILD_ROOT/arm64-n6-traps-off-src
         arm64_object_root=$BUILD_ROOT/kernel-build-arm64-n6-traps-off
@@ -42,17 +48,18 @@ case "$arm64_profile" in
         arm64_extra_fragment=$LINUX_DIR/arm64-n6-traps-off-config-fragment
         ;;
     *)
-        echo "FAIL: unknown ARM64_KERNEL_PROFILE=$arm64_profile (want minimal, game, or postgres)" >&2
+        echo "FAIL: unknown ARM64_KERNEL_PROFILE=$arm64_profile (want minimal, game, postgres, faultlab, or n6-traps-off)" >&2
         exit 1
         ;;
 esac
 
 # The arm64 patch stack overlaps itself (0003/0004 modify files 0002 creates), so a
 # per-patch "already applied?" probe cannot certify a previously patched tree — and the
-# x86 recipe patches the shared $KSRC extract with its own stack. Build from a dedicated
-# tree re-extracted pristine on every run, and rebuild the object dir with it. The arm64
-# series lives under patches/arm64/ (the x86 series under patches/x86/), so the two
-# arches never share a patch number or an applier glob (hm-0dst, tribunal F7).
+# ARM transport reuses the x86 character-device protocol as an explicit base. Build from
+# a dedicated tree re-extracted pristine on every run, and rebuild the object dir with it.
+# The architecture-specific series lives under patches/arm64/; the shared x86 transport
+# patch is applied explicitly below and then narrowed to ARM64 by 0013. No x86 park patch
+# is included in this build (hm-0dst, tribunal F7).
 kernel_tarball=$DL_DIR/$(basename "$KERNEL_URL")
 if [ ! -f "$kernel_tarball" ]; then
     echo "FAIL: $kernel_tarball missing — run 'make -C consonance/harmony-linux fetch' first (needs network once)" >&2
@@ -117,6 +124,29 @@ apply_kernel_patch \
 apply_kernel_patch \
     "$LINUX_DIR/patches/arm64/0012-arm64-harmony-N6-user-counter-trap-switch.patch" \
     "harmony N6 user-counter trap switch"
+apply_kernel_patch \
+    "$LINUX_DIR/patches/x86/0002-x86-harmony-character-device.patch" \
+    "shared Harmony character-device protocol"
+apply_kernel_patch \
+    "$LINUX_DIR/patches/arm64/0013-arm64-harmony-character-device.patch" \
+    "arm64 Harmony MMIO character-device transport"
+
+# The ARM patch is a small fix-up over the unchanged x86 protocol patch. Keep
+# this source-level contract fail-closed so a future rebase cannot silently
+# restore x86 port I/O or move the reserved doorbell.
+harmony_source=$KSRC/drivers/misc/harmony.c
+if ! grep -qF 'HARMONY_DOORBELL_GPA' "$harmony_source" || \
+    ! grep -qF '0x0a000000UL' "$harmony_source" || \
+    ! grep -qF 'ioremap(HARMONY_DOORBELL_GPA, sizeof(u32))' "$harmony_source" || \
+    ! grep -qF 'iowrite32(request_len, harmony_doorbell);' "$harmony_source" || \
+    ! grep -qF 'iowrite32(HC_HEADER_LEN + payload_len, harmony_doorbell);' "$harmony_source"; then
+    echo "FAIL: arm64 /dev/harmony source is missing its reserved MMIO doorbell contract" >&2
+    exit 1
+fi
+if grep -qE 'HARMONY_DOORBELL_PORT|outl\(' "$harmony_source"; then
+    echo "FAIL: arm64 /dev/harmony source still contains x86 port I/O" >&2
+    exit 1
+fi
 
 mkdir -p "$arm64_object_root" "$ARM64_ART_DIR"
 
@@ -156,6 +186,12 @@ assert_y ARM64 64BIT SMP OF PRINTK TTY SERIAL_AMBA_PL011 \
     GENERIC_IDLE_POLL_SETUP \
     ARM64_USE_LSE_ATOMICS ARM64_LSE_ATOMICS HARMONY_ARM_LSE_ONLY \
     HZ_PERIODIC HZ_100 STRICT_KERNEL_RWX
+if [ "$arm64_profile" = faultlab ]; then
+    assert_y HARMONY_DEVICE
+else
+    assert_off HARMONY_DEVICE
+fi
+assert_off HARMONY_PARK
 if [ "$arm64_profile" != n6-traps-off ]; then
     assert_y HARMONY_ARM_USER_COUNTER_TRAPS
 else
@@ -185,6 +221,16 @@ case "$arm64_profile" in
             INET CGROUPS EPOLL EVENTFD SIGNALFD TIMERFD INOTIFY_USER SECCOMP \
             DEVMEM
         assert_off STRICT_DEVMEM
+        ;;
+    faultlab)
+        # This is the complete kernel capability contract for package INIT,
+        # the static fault agent, and an ordinary etcd Go process. Keep it
+        # explicit: tinyconfig otherwise makes missing netpoll/filesystem
+        # support look like a workload failure much later in a run.
+        assert_y BINFMT_SCRIPT PROC_FS FUTEX MMU SHMEM TMPFS FILE_LOCKING \
+            MULTIUSER ADVISE_SYSCALLS NET UNIX INET NETDEVICES NET_CORE LOOPBACK \
+            EPOLL EVENTFD SIGNALFD TIMERFD INOTIFY_USER SYSCTL
+        assert_off DEVMEM HARMONY_PARK
         ;;
 esac
 if ! grep -qxF 'CONFIG_NR_CPUS=2' "$arm64_object_root/.config"; then

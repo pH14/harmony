@@ -2,7 +2,7 @@
 # linux/amd64 container (CONTRIBUTING.md). The heavy lifting lives in the
 # *.sh scripts next to this Makefile.
 
-.PHONY: kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-game-kernel arm64-game-image arm64-postgres-kernel arm64-postgres-image arm64-oci-image exec-image postgres-image campaign-image docker-image k3s-image game-image nova-game-image test test-linux clean-artifacts
+.PHONY: kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-faultlab-kernel arm64-faultlab-initramfs arm64-faultlab-image arm64-game-kernel arm64-game-image arm64-postgres-kernel arm64-postgres-image arm64-oci-image exec-image postgres-image campaign-image docker-image k3s-image game-image nova-game-image test test-linux clean-artifacts
 
 kernel:
 	./build-kernel.sh
@@ -25,6 +25,17 @@ arm64-initramfs:
 	./build-arm64-initramfs.sh
 
 arm64-image: arm64-kernel arm64-initramfs
+
+# Fault-library base: the package-owned /init is appended by
+# workloads/faults::prepare_oci, so this target deliberately does not add a
+# workload-specific init or payload to the base archive.
+arm64-faultlab-kernel:
+	ARM64_KERNEL_PROFILE=faultlab ./build-arm64-kernel.sh
+
+arm64-faultlab-initramfs:
+	bash ./build-arm64-faultlab-initramfs.sh
+
+arm64-faultlab-image: arm64-faultlab-kernel arm64-faultlab-initramfs
 
 # M2's std/TetaNES payload uses a separate userspace-capable kernel and
 # initramfs, preserving the sealed M1 Image and minimal initramfs artifacts.
