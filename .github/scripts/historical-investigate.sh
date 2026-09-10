@@ -98,17 +98,19 @@ meaning=$(jq -r '.properties[0].meaning // ""' <<<"${inspected}")
 
 rewind_ns=$((HORIZON_MS * 1000000 * 3))
 
+# Without --extend the advance stops at the source's recorded end, which is
+# the finding's own moment, so a generous bound still lands exactly there.
 echo "::group::cold fork and one long advance"
 w fork bug-1 --rewind "${rewind_ns}ns" --name whole >"reports/${CASE_ID}.fork-whole.json"
-w run whole --for "$((rewind_ns * 2))ns" --extend >"reports/${CASE_ID}.run-whole.json"
+w run whole --for "$((rewind_ns * 2))ns" >"reports/${CASE_ID}.run-whole.json"
 echo "::endgroup::"
 whole_hash=$(jq -r '.state_hash // ""' "reports/${CASE_ID}.run-whole.json")
 whole_time=$(jq -r '.virtual_time_nanos' "reports/${CASE_ID}.run-whole.json")
 
 echo "::group::the same advance split across two commands"
 w fork bug-1 --rewind "${rewind_ns}ns" --name split >"reports/${CASE_ID}.fork-split.json"
-w run split --for "$((rewind_ns))ns" --extend >"reports/${CASE_ID}.run-split-1.json"
-w run split --for "$((rewind_ns))ns" --extend >"reports/${CASE_ID}.run-split-2.json"
+w run split --for "$((rewind_ns / 2))ns" >"reports/${CASE_ID}.run-split-1.json"
+w run split --for "$((rewind_ns * 2))ns" >"reports/${CASE_ID}.run-split-2.json"
 echo "::endgroup::"
 split_hash=$(jq -r '.state_hash // ""' "reports/${CASE_ID}.run-split-2.json")
 split_time=$(jq -r '.virtual_time_nanos' "reports/${CASE_ID}.run-split-2.json")
