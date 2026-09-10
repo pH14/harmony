@@ -24,7 +24,7 @@ use crate::consonance::{
     FaultConfig, SETTLE_ALLOWANCE_NANOS, SETTLE_STEP_NANOS, branch_config, service_factory,
 };
 use crate::investigate::{
-    Advance, CommandOutcome, Condition, Continuation, Endpoint, SdkEventRecord, enters_window,
+    Advance, CommandOutcome, Condition, Continuation, Endpoint, SdkEventRecord, window_entry,
 };
 use crate::target::{
     ActionWindows, FaultAction, FaultObservations, FaultStop, action_delta, decode_sdk_events,
@@ -123,13 +123,17 @@ impl ConsonanceGuest {
     }
 
     /// Open window `index` from the point currently held: branch under that
-    /// prefix's standing-fault list and stage the host-plane effect its action
-    /// carries.
-    fn open_window(&mut self, index: usize) -> Result<(), Box<dyn Error>> {
+    /// prefix's standing-fault list and, when the run crossed this window's
+    /// start, stage the host-plane effect its action carries.
+    fn open_window(&mut self, index: usize, stage: bool) -> Result<(), Box<dyn Error>> {
         let (parent, at) = self.seal_here()?;
         let prefix = &self.actions[..=index];
         let config = branch_config(self.windows, prefix)?;
-        let effects = self.staged_effects(index, at)?;
+        let effects = if stage {
+            self.staged_effects(index, at)?
+        } else {
+            Vec::new()
+        };
         self.session
             .branch_with_service(parent, config, Vec::new(), effects)?;
         Ok(())
@@ -174,8 +178,9 @@ impl ConsonanceGuest {
             }
             if index < self.actions.len() {
                 let start = self.windows.window(index).0;
-                if enters_window(now, start, index, opened, first_step) {
-                    self.open_window(index)?;
+                let entry = window_entry(now, start, index, opened, first_step);
+                if entry.open {
+                    self.open_window(index, entry.stage)?;
                     opened = Some(index);
                 }
             }
