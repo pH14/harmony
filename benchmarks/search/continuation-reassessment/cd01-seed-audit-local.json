@@ -1,0 +1,15 @@
+{
+  "recorded_utc": "2026-09-10T10:30:07.503414+00:00",
+  "host": "local research checkout",
+  "seeds": [
+    1040692292,
+    2883914186,
+    4193773728,
+    2971383614
+  ],
+  "files_checked": 212,
+  "matches": [],
+  "skipped": [],
+  "scanned_path_content_digest": "780f8007d9fa1789689e3690e623d7ad612525cab04196b7b706f2bffb19639f",
+  "scope": "All tracked JSON/gzip-JSON summary, result, registration and seed records under benchmarks/search, including copied msr1 evidence. No access to reassigned msr1; unrecorded historical use is not certified."
+}

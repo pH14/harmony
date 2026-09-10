@@ -791,3 +791,31 @@ confirmation or validation. Continue experiments on ms02 only, with its qualifie
 existing builds and bounded CPU/memory allocations. Local offline analysis and
 the single PR287 publication continue normally. Do not start, restart or clear
 anything on msr1 for this goal.
+
+## CD01 fresh continuation development is registered
+
+The passed historical/witness/current-native qualification earns one separately
+bounded first-Bombs comparison on ms02 only. CD01 freezes seeds1040692292,
+2883914186,4193773728 and2971383614 before performance outcomes. Use unchanged
+alphabet_continuation_v1 versus alphabet_only, ordinary cutoff3,200M admitted
+frames per cell,3M jobs,4,096 actions,8GiB archives,12GiB service memory and4GiB
+output. Search lasts at most45 minutes, finishing180 seconds and each process
+2,910 seconds. Two sequential-arm pairs run concurrently on cores0–3/4–7;
+each group receives opposite arm orders in the second wave. Start pairs0/1 only.
+
+The full panel has a1.6B nominal search ceiling plus recorded bounded drain and
+32M known auxiliary allowance. The conservative per-cell drain bound is
+4,194,304 because continuation tails are not limited to six actions and origin
+replay must be charged; no outcome after200M gets improvement credit. Dispatch
+ends by2026-09-10T14:32:28Z, with the following hour reserved for synthesis.
+No prior tranche, failed gate or historical ledger changes.
+
+Complete each started bounded pair unless its own resource/measurement failure
+interrupts it, then score the complete wave. Zero wins in the first two pairs
+closes the panel; any incomplete measurement/resource failure also stops further
+wave dispatch. Otherwise run the frozen remaining pairs only within the same
+deadline. Require three strict wins,15% lower mean restricted Bombs cost and
+candidate/control CPU/wall ratios at most1.25. No replayed old tape enters fresh
+search. A pass earns independent confirmation and then MM2; a failure earns no
+longer horizon, earlier milestone rescue, replacement seed or bank/order change.
+The original boss/Wily objective remains active and unachieved.

@@ -1,0 +1,133 @@
+{
+  "format": "continuation-cd01-registration-v1",
+  "registered_utc": "2026-09-10T10:32:28.568179+00:00",
+  "deadline_utc": "2026-09-10T14:32:28.568179+00:00",
+  "synthesis_deadline_utc": "2026-09-10T15:32:28.568179+00:00",
+  "purpose": "Fresh development of the unchanged continuation nominee at its prospectively selected deeper precursor; not a boss/Wily validation panel.",
+  "horizon_frames": 200000000,
+  "nominal_search_limit": 1600000000,
+  "bounded_inflight_drain_per_cell": 4194304,
+  "known_auxiliary_limit": 32000000,
+  "prior_block_ledger_sha256": "8587b689b769bf2b391c5a3f6ddf95c65cd57a62a2dffc3e16c3db48a40f4673",
+  "decision_sha256": "f2546921fc98d98a745c21cd6e1f8846260b03b7c01e9a68267307df86c0f202",
+  "scorer_sha256": "a68eac1b6677a37a2326bcffe38b7e198238f862308ae14006d707b6a57d0d63",
+  "panel_adapter_sha256": "3a159e0e424fa7f93d6f4ea18c2fe7c78a93bd1e0949eff5753c5a9af93657d3",
+  "helper_sha256": {
+    "score_screen.py": "507e727de3bccb1f6b791433def8f258b762f34809432a6176263e82b3b86036",
+    "named_milestone_endpoint.py": "f2badcaa078f4c80c858e78416221b51dbcd8cc624eee53c2f6b2784e0cc678e"
+  },
+  "milestone_stop": {
+    "name": "bombs",
+    "observation_policy": "metroid-named-progress-v2"
+  },
+  "seed_registration_sha256": "5434ea5776ca084515a14de3cc8a65dee57f10345719e6e25880cc1adaa7955e",
+  "seed_audits_sha256": {
+    "local": "e27ddb90c15a2f55bd3c7f87c2b722dae90c7e9773c2aaa2579708698e3820f6",
+    "ms02": "fd4e4ad77091bb60bdd5a021c6d0be7fb8468ef1dca8376796bff3b6c92747d2"
+  },
+  "qualification_sha256": "00abd0d74467c1717482399d24db5516662f507f7de702cbbe014cb721a57f91",
+  "schedule": "Two waves on ms02 only: pairs0/1 then, only if the gate remains attainable, pairs2/3. Each started pair is a bounded sequential two-arm unit. Complete both started pairs unless their own resource/measurement failure interrupts them; score after the wave. Any failure stops further wave dispatch. No restart, replacement or extension.",
+  "identity_difference": "Only mixture alphabet_only versus unchanged alphabet_continuation_v1 differs within a pair. Source, terminal v3, key v10, selector cutoff3, suffix, memory, worker count, assets, CPU set and genesis origin match. Common seed labels do not imply identical random draws after adaptive dispatch diverges.",
+  "screen": {
+    "budget_frames": 200000000,
+    "milestone_stop": {
+      "name": "bombs",
+      "observation_policy": "metroid-named-progress-v2"
+    },
+    "required_strict_wins": 3,
+    "pairs": [
+      {
+        "seed": 1040692292,
+        "control": "cd01-pair-0-control",
+        "candidate": "cd01-pair-0-candidate"
+      },
+      {
+        "seed": 2883914186,
+        "control": "cd01-pair-1-control",
+        "candidate": "cd01-pair-1-candidate"
+      },
+      {
+        "seed": 4193773728,
+        "control": "cd01-pair-2-control",
+        "candidate": "cd01-pair-2-candidate"
+      },
+      {
+        "seed": 2971383614,
+        "control": "cd01-pair-3-control",
+        "candidate": "cd01-pair-3-candidate"
+      }
+    ],
+    "resources": {
+      "max_candidate_to_control_ratio": 1.25,
+      "measurement": "event_stopped_cell_totals_v1"
+    },
+    "criterion": "At least three strict wins and15% lower mean restricted first-Bombs admitted cost; event-stopped CPU and elapsed totals at most1.25 times control. Both-censored pairs are ties. Allocation rule, not population significance.",
+    "early_stop": "Stop further wave dispatch when three wins are mathematically impossible or any measurement/resource condition fails."
+  },
+  "panels": [
+    {
+      "id": "cd01-pair-0",
+      "seed": 1040692292,
+      "host": "ms02",
+      "cpus": "0-3",
+      "arm_order": [
+        "control",
+        "candidate"
+      ],
+      "registration": "cd01-pair-0-registration.json",
+      "registration_sha256": "ab53f5cf3bd575c1ecabb267871a69aa605573c85e63d11bb26dd46e51bcfc4a",
+      "service_runtime_seconds": 5900
+    },
+    {
+      "id": "cd01-pair-1",
+      "seed": 2883914186,
+      "host": "ms02",
+      "cpus": "4-7",
+      "arm_order": [
+        "candidate",
+        "control"
+      ],
+      "registration": "cd01-pair-1-registration.json",
+      "registration_sha256": "a7b73eb8152a59538652ed889b7074c1037bc03d6e0785fbb0b2dcff5b207bb2",
+      "service_runtime_seconds": 5900
+    },
+    {
+      "id": "cd01-pair-2",
+      "seed": 4193773728,
+      "host": "ms02",
+      "cpus": "0-3",
+      "arm_order": [
+        "candidate",
+        "control"
+      ],
+      "registration": "cd01-pair-2-registration.json",
+      "registration_sha256": "eb43f6a59da7f7b4aa2a3c4a739545187afe076d249b01b8b4ca331156681d47",
+      "service_runtime_seconds": 5900
+    },
+    {
+      "id": "cd01-pair-3",
+      "seed": 2971383614,
+      "host": "ms02",
+      "cpus": "4-7",
+      "arm_order": [
+        "control",
+        "candidate"
+      ],
+      "registration": "cd01-pair-3-registration.json",
+      "registration_sha256": "523790f1535f4fc7f198f7d9a510a325a1a9f2874f93d4fab7e28253641472b2",
+      "service_runtime_seconds": 5900
+    }
+  ],
+  "pass": "Earns separately registered independent confirmation of the unchanged policy/endpoint/horizon on fresh seeds, then bounded MM2 transfer. Does not earn untouched validation or complete the goal.",
+  "failure": "Close this current-policy Bombs screen. No longer horizon, earlier milestone rescue, alternate bank/order, replacement seed or automatic heuristic pivot.",
+  "basis": [
+    "All three historical 012 Bombs pairs favor unchanged continuation by about43% mean admitted work, but reuse legacy terminal v2/key v8 and unequal CPU sets; not fresh efficacy.",
+    "FW02 qualifies all six historical Bombs witnesses and CQ01 qualifies actual current continuation dispatch plus full replay/buffer/cross-host identity.",
+    "Existing corrected C01 control reaches Bombs at113.33M on reused seed5; historical candidate arrivals span88.8M\u2013263.3M.200M is a bounded, feasible test, not a claim of population coverage or power.",
+    "Recent50M x86 cells take342\u2013357 seconds.200M at45-minute search caps is a feasibility extrapolation with explicit possible failure; ARM timing does not support spending deeper cells on reassigned msr1.",
+    "At most two four-worker jobs use disjoint fast-core groups. Each group sees one control-first and one candidate-first pair over the full panel.8GiB archives fit inside separate12GiB services.",
+    "Two worst-case5900-second waves consume11800 seconds, fitting inside the14400-second experiment window. Reserve the following hour for synthesis, with no emulator allocation."
+  ],
+  "cost_scope": "Admitted job costs include in-job origin reconstruction and bounded drained jobs. Charge measured held witness replays separately against32M known auxiliary allowance; stop further dispatch on overrun. Setup, unadmitted/failed work and any out-of-job reconstruction remain explicit unknowns. Preserve actual work even on failure.",
+  "drain_bound": "Eight outstanding jobs times4096 total replay-plus-suffix actions times128 frames per action. Continuation tails are not limited to the ordinary one-to-six draw. Only actual drain is charged and no beyond-horizon discovery counts as a200M hit."
+}

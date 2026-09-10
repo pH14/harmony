@@ -215,6 +215,32 @@ After CQ01 closed, the user reassigned msr1 to another task. Its research jobs
 were already terminal and all evidence had been copied locally. Subsequent
 experimentation, including confirmation, must use ms02; msr1 is unavailable.
 
+## CD01: fresh first-Bombs development
+
+[CD01's decision](cd01-decision.md) and [registration](cd01-registration.json)
+freeze four fresh pairs comparing `alphabet_only` with unchanged
+`alphabet_continuation_v1`, first Bombs at200M admitted frames. Only the mixture
+differs within each pair. Source, key/terminal semantics, selector, suffix,
+memory and power-on genesis match. Seed audits find no matches in212 local
+tracked records and1,892 saved ms02 records; reassigned msr1 is not accessed.
+
+Run pairs0/1 first on ms02 cores0–3/4–7 with sequential arms. Only an attainable
+gate earns pairs2/3; each CPU group sees both arm orders over the complete panel.
+A pass requires three strict wins,15% lower mean restricted cost and CPU/wall
+ratios at most1.25. Censored ties, incomplete horizons and resource failures are
+preserved; none earns a longer horizon or replacement seed. Earlier milestones
+are secondary and cannot rescue the registered endpoint.
+
+Each cell has3M jobs,4,096 actions,8GiB archive,12GiB service memory,4GiB output,
+45 search minutes and180 finishing seconds within a2,910-second process limit.
+Nominal search is capped at1.6B plus actual bounded drain; known auxiliary work
+has a separate32M allowance. Continuations can exceed six actions, so the
+conservative drain bound includes a whole4,096-action replay-plus-suffix job
+for each of eight outstanding reservations:4,194,304 frames per cell. This
+grants no score beyond200M. The fixed experiment deadline is2026-09-10T14:32:28Z;
+the following hour is reserved for synthesis. No earlier tranche is extended.
+This registration precedes CD01 native execution.
+
 ## Ordering findings stay separate from this candidate
 
 Two new source fixtures expose existing limitations without changing policies:
