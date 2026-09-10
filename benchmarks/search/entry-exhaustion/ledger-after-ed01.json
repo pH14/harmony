@@ -1,0 +1,87 @@
+{
+  "format": "entry-exhaustion-ed01-closed-ledger-v1",
+  "closed_utc": "2026-09-10T08:49:06.769044+00:00",
+  "prior_ledger_sha256": "d513e6d61266d3dac1ad7cdb6e81017946932134aca42e90313042c918cd2ca1",
+  "registration_sha256": "72e81682b7dd55d602ef368d239cba748899ba6d93d6c167b836f64e5f1f9925",
+  "analysis_sha256": "a063642d7327557ecd55a7bcebcb5157fb1fbd5d130921b81a95e6b6c17b6c4b",
+  "nominal_admitted_search_ceiling": 400000000,
+  "known_auxiliary_ceiling": 8000000,
+  "admitted_search_frames": 190164603,
+  "admitted_stop_drain_frames": 3780,
+  "known_auxiliary_frames": 629852,
+  "cells": [
+    {
+      "id": "ed01-pair-0-candidate",
+      "admitted_frames": 50001056,
+      "stop_threshold_frames": 50000000,
+      "admitted_stop_drain": 1056,
+      "known_auxiliary_frames": 118266,
+      "elapsed_seconds": 862.4313685590168,
+      "cpu_seconds": 2541.180258,
+      "max_process_rss_bytes": 910409728
+    },
+    {
+      "id": "ed01-pair-0-control",
+      "admitted_frames": 42889306,
+      "stop_threshold_frames": 42888488,
+      "admitted_stop_drain": 818,
+      "known_auxiliary_frames": 209440,
+      "elapsed_seconds": 751.7137116779923,
+      "cpu_seconds": 2206.325187,
+      "max_process_rss_bytes": 938266624
+    },
+    {
+      "id": "ed01-pair-1-candidate",
+      "admitted_frames": 50000852,
+      "stop_threshold_frames": 50000000,
+      "admitted_stop_drain": 852,
+      "known_auxiliary_frames": 105028,
+      "elapsed_seconds": 357.1389811920235,
+      "cpu_seconds": 1121.2818989999998,
+      "max_process_rss_bytes": 838987776
+    },
+    {
+      "id": "ed01-pair-1-control",
+      "admitted_frames": 47273389,
+      "stop_threshold_frames": 47272335,
+      "admitted_stop_drain": 1054,
+      "known_auxiliary_frames": 197118,
+      "elapsed_seconds": 342.16602016601246,
+      "cpu_seconds": 1073.088213,
+      "max_process_rss_bytes": 1049174016
+    }
+  ],
+  "cumulative_since_user_resumption_admitted_search_frames": 1273426135,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 60904945,
+  "decision": "stop_entry_cutoff_line",
+  "completed_pairs": 2,
+  "unrun_pairs": [
+    2,
+    3
+  ],
+  "services": {
+    "msr1": {
+      "MainPID": "0",
+      "ExecMainStatus": "0",
+      "MemoryPeak": "[not set]",
+      "CPUUsageNSec": "[not set]",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "unit": "harmony-entry-ed01-pair0-20260910.service",
+      "unrun_output_absent": "/root/harmony-retention-theory-20260908/runs/entry-exhaustion-ed01/ed01-pair-2"
+    },
+    "ms02": {
+      "MainPID": "0",
+      "ExecMainStatus": "0",
+      "MemoryPeak": "[not set]",
+      "CPUUsageNSec": "[not set]",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "unit": "harmony-entry-ed01-pair1-20260910.service",
+      "unrun_output_absent": "/root/harmony-depth-transfer-20260909/runs/entry-exhaustion-ed01/ed01-pair-3"
+    }
+  },
+  "outcome": "Two strict losses: controls reach first energy tank at42,888,488 and47,272,335 admitted frames; both cutoff64 candidates are censored at50M. All four complete and verify; three wins are impossible. Remaining pairs are unrun.",
+  "unknown": "Engine setup, unadmitted and reconstruction work remain unknown. Service aggregate CPU/MemoryPeak are unavailable after teardown; per-cell measured CPU, elapsed and RSS are preserved. No four-pair resource ratio or population efficacy estimate is imputed.",
+  "old_expired_tranche": "489,962,470 admitted search and 30,112,297 known auxiliary frames remain frozen and excluded from these renewed totals."
+}

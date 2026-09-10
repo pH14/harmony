@@ -1,5 +1,10 @@
 # Ablate early entry exhaustion using the existing hard cap
 
+**Closed: ED01 fails after two fresh paired losses.** Both controls reach the
+first energy tank; both cutoff64 candidates exhaust their 50M-frame horizons.
+The remaining two pairs are unrun because three strict wins are impossible.
+No intermediate cutoff, new bank, longer horizon or secondary endpoint follows.
+
 RF01 closes the single-root controller line. This separate selection hypothesis
 uses no resource injection, selected origin, new retention descriptor or action
 operator. Change only the existing semantic-cost selector's entry cutoff from3
@@ -115,3 +120,45 @@ outcomes do not enter ED01. Existing five planted scorer tests pass; empty ED01
 evidence remains incomplete and cannot pass. Registration commits precede all
 fresh execution. A precursor win would still require independent confirmation
 and MM2 transfer before untouched boss/Wily validation.
+
+## ED01 closed at the registered futility gate
+
+The [saved analysis](ed01-analysis.json) verifies all four completed cells and
+stops the line after two strict losses. The control arrivals are exact admitted
+job boundaries under the frozen endpoint convention. A censored value is the
+restricted cost at the 50M horizon, not an observed acquisition time.
+
+| Pair / host | Control first tank, frames | Cutoff64 first tank | Control / candidate elapsed seconds |
+| --- | ---: | --- | ---: |
+| 0 / msr1 | 42,888,488 | Censored at 50,000,000 | 751.71 / 862.43 |
+| 1 / ms02 | 47,272,335 | Censored at 50,000,000 | 342.17 / 357.14 |
+
+Both arms in each pair run sequentially on the same CPU set; their order is
+balanced across hosts. All identities and held milestone replays pass. Both
+services terminate normally with no live main process. Pairs2/3 are never
+launched. The full four-pair cost/resource ratios remain unmeasured; the early
+stop is an allocation decision, not a population significance claim.
+
+The [closed ledger](ledger-after-ed01.json) charges 190,164,603 admitted search
+frames and 629,852 known auxiliary frames. Admitted work includes 3,780 frames
+of bounded stop drain: 1,908 beyond frame caps and 1,872 after milestone arrival.
+Every cell is within its registered limit. Resumed totals are 1,273,426,135
+admitted search and 60,904,945 known auxiliary frames. Setup, unadmitted and
+reconstruction work remain unknown; expired-tranche totals stay separate.
+
+Lossless raw records, witnesses and terminal-service evidence are in
+`ed01-output/`, with raw byte counts and SHA-256 hashes in its manifest. The
+following offline check recomputes both native qualification and development
+analyses, reconciles the ledger, validates the compressed inventory and rejects
+changed selectors or missing attainment witnesses:
+
+```sh
+python3 -m unittest discover -s benchmarks/search/entry-exhaustion -p test_evidence.py -v
+```
+
+The [uniform-access bound](fairness.md), derived after registration, explains
+why eventual access provides little finite-budget assurance without additional
+assumptions. It changes no ED01 decision. The native result does not identify
+which internal allocation effect caused the losses; the exact adverse model
+establishes only that more attempts need not help. No default promotion or
+boss/Wily validation is earned. The original goal remains unachieved.

@@ -671,3 +671,27 @@ drain and8M known auxiliary allowance. Its fixed deadline is2026-09-10T10:14:09Z
 Run pairs0/1 first, one per host, then score the registered gate. Run pairs2/3
 only if the gate remains attainable and their complete limits fit. No retry,
 intermediate cutoff, replacement seed, horizon extension or secondary rescue.
+
+## ED01 closed; no automatic experimental pivot
+
+Both first-wave pairs complete and lose: controls reach the first energy tank
+at 42,888,488 and 47,272,335 admitted frames; both cutoff64 candidates are
+censored at the fixed 50M horizon. All four identities and held witness replays
+pass. Three wins are impossible, so pairs2/3 remain unrun. Both host services
+are terminal. This closes the cutoff ablation with no intermediate value,
+replacement bank, longer horizon, secondary endpoint or independent-confirmation
+allocation. Full four-pair resource ratios are unmeasured.
+
+ED01 charges 190,164,603 admitted search frames, including 3,780 bounded drain,
+and 629,852 known auxiliary frames. Resumed cumulative totals are 1,273,426,135
+admitted search and 60,904,945 known auxiliary frames. Preserve prior tranche
+totals and unknown setup/unadmitted/reconstruction costs. The closed evidence
+and exact recomputation are in ../entry-exhaustion/README.md.
+
+Publish this completed phase in the single draft PR #287. The next work is
+offline synthesis of the existing evidence and source, with no emulator
+allocation earned by this negative result. Any later proposed mechanism needs
+a distinct causal change, a cheap falsifier and an adverse case before a new
+bounded registration. Repeating failed families or adding an observer does not
+meet that bar. The original fresh boss/Wily objective remains active and
+unachieved; this closure is useful negative evidence, not a breakthrough.
