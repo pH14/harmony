@@ -1,0 +1,143 @@
+{
+  "input": "/root/harmony-retention-theory-20260908/endpoint-control-002/first-damage-input.json",
+  "input_sha256": "2b089c703c4b4dc29bfc0dcaf7a534c42c1472a48c06e8fa01815bb41aef3d00",
+  "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+  "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+  "expected_endpoint": {
+    "area": 20,
+    "map_x": 17,
+    "map_y": 29,
+    "x": 132,
+    "y": 129,
+    "pose": 1,
+    "door": 0,
+    "mode": 3,
+    "health": 79,
+    "equipment": 17,
+    "missiles": 0,
+    "missile_capacity": 20,
+    "energy_tanks": 1,
+    "bosses": 0,
+    "ending": false
+  },
+  "expected_context": {
+    "memory": {
+      "area": 20,
+      "mode": 3,
+      "door": 0,
+      "room_number": 255,
+      "loader_present": 0,
+      "kraid_status": 0,
+      "ridley_status": 0,
+      "enemies": [
+        {
+          "slot": 0,
+          "status": 6,
+          "data_index": 9,
+          "special": 1,
+          "hit_points": 139,
+          "x": 108,
+          "y": 108,
+          "name_table": 1
+        },
+        {
+          "slot": 16,
+          "status": 2,
+          "data_index": 6,
+          "special": 128,
+          "hit_points": 4,
+          "x": 104,
+          "y": 183,
+          "name_table": 0
+        },
+        {
+          "slot": 32,
+          "status": 2,
+          "data_index": 10,
+          "special": 0,
+          "hit_points": 255,
+          "x": 147,
+          "y": 66,
+          "name_table": 1
+        },
+        {
+          "slot": 48,
+          "status": 0,
+          "data_index": 10,
+          "special": 0,
+          "hit_points": 255,
+          "x": 166,
+          "y": 106,
+          "name_table": 1
+        },
+        {
+          "slot": 64,
+          "status": 2,
+          "data_index": 10,
+          "special": 0,
+          "hit_points": 255,
+          "x": 119,
+          "y": 42,
+          "name_table": 1
+        },
+        {
+          "slot": 80,
+          "status": 2,
+          "data_index": 10,
+          "special": 0,
+          "hit_points": 255,
+          "x": 129,
+          "y": 49,
+          "name_table": 1
+        }
+      ]
+    },
+    "saved_status": [
+      66,
+      2,
+      130,
+      2,
+      2,
+      2
+    ]
+  },
+  "expected_emulator_sha256": "efdbfdb3c7a2e7b099e2d7fcae8e31cb5db485930f00fd2a514c9a7936eead39",
+  "trial_seeds": [
+    8823693022291249141,
+    2704454082283342896,
+    10959347243541122557,
+    8934586720709837868,
+    3984210722791158544,
+    17776775201559737416,
+    2959258774126197016,
+    2171558246173984489,
+    1799456236513163496,
+    13072185350893782368,
+    3731950786756924008,
+    5444450471203326443,
+    9608575930247457252,
+    4771601403180021379,
+    4375362056314506731,
+    16133180397853559127,
+    735748556030498403,
+    1411815927991737289,
+    570702496533906660,
+    2852608046059310855,
+    5829688850291028564,
+    13282948268946975843,
+    15498685601620450705,
+    5918106498489068910,
+    17083816920029787935,
+    10971532701309663848,
+    16475524484568530910,
+    8207711839556931243,
+    7159321904985075891,
+    15171045696690487740,
+    16555362651187753861,
+    7220864660841151759
+  ],
+  "actions": 128,
+  "frames_per_arm": 8192,
+  "total_frame_limit": 2000000,
+  "expected_suffix_sha256": "0bfad54f29fb460422d53407f3d3c6299364cbdcf1fcd5aad292ea037cb1cbd2"
+}

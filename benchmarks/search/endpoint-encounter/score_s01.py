@@ -13,20 +13,23 @@ def raw(root, name):
     return path.read_bytes() if path.exists() else gzip.decompress(path.with_suffix(path.suffix + '.gz').read_bytes())
 
 
-def score(protocol, output):
-    registration = json.loads((protocol / 's01-registration.json').read_text())
-    request = json.loads((protocol / 's01-request.json').read_text())
+def score(protocol, output, panel='s01'):
+    registration_path = protocol / f'{panel}-registration.json'
+    request_path = protocol / f'{panel}-request.json'
+    registration = json.loads(registration_path.read_text())
+    request = json.loads(request_path.read_text())
+    prefix_frames = registration.get('prefix_physical_frames', 118804)
     summary = json.loads(raw(output, 'summary.json'))
     usage = json.loads(raw(output, 'usage.json'))
     draws = raw(output, 'suffixes.json')
     assert hashlib.sha256(draws).hexdigest() == registration['suffix_sha256']
     suffixes = json.loads(draws)
     assert usage['complete'] and usage['error'] is None
-    assert usage['request_sha256'] == hashlib.sha256((protocol / 's01-request.json').read_bytes()).hexdigest()
+    assert usage['request_sha256'] == hashlib.sha256(request_path.read_bytes()).hexdigest()
     rows = summary['trials']
     assert rows == [json.loads(line) for line in raw(output, 'trials.jsonl').splitlines()]
     assert len(rows) == summary['verified_positive_root_restores'] == 64
-    assert summary['prefix_physical_frames'] == 118804
+    assert summary['prefix_physical_frames'] == prefix_frames
     expected_order = [(i, arm) for i in range(32) for arm in
                       (['ordinary', 'passive'] if i % 2 == 0 else ['passive', 'ordinary'])]
     assert [(r['trial'], r['arm']) for r in rows] == expected_order
@@ -44,7 +47,7 @@ def score(protocol, output):
         used += out['frames']
         assert row['cumulative_physical_frames'] == used
     assert summary['continuation_physical_frames'] == used - summary['prefix_physical_frames']
-    prefix = json.loads((protocol / 'first-encounter-input.json').read_text())['actions']
+    prefix = json.loads((protocol / Path(request['input']).name).read_text())['actions']
     expected_witnesses = set()
     for arm in ['ordinary', 'passive']:
         for kind, field in [('damage', 'first_surviving_damage_frame'), ('defeat', 'surviving_defeat_endpoint')]:
@@ -64,7 +67,7 @@ def score(protocol, output):
             selected = [{**a, 'buttons': 0} for a in selected]
         assert witness['input']['actions'] == prefix + selected
         assert item['verified_held_replays'] == 2
-        assert item['physical_verification_frames'] == 2 * (118804 + item['continuation_frames'])
+        assert item['physical_verification_frames'] == 2 * (prefix_frames + item['continuation_frames'])
         used += item['physical_verification_frames']
     assert used == summary['physical_frames'] == usage['physical_frames_known']
     assert used <= registration['auxiliary_frame_ceiling']
@@ -90,7 +93,7 @@ def score(protocol, output):
                     b['first_surviving_damage_frame'] is not None)]
         pairs[key] += 1
     return {'format': 'metroid-conditional-control-analysis-v1', 'decision': 'complete',
-            'registration_sha256': hashlib.sha256((protocol / 's01-registration.json').read_bytes()).hexdigest(),
+            'registration_sha256': hashlib.sha256(registration_path.read_bytes()).hexdigest(),
             'summary_sha256': hashlib.sha256(raw(output, 'summary.json')).hexdigest(),
             'known_auxiliary_frames': used, 'arms': arms, 'paired_surviving_damage': dict(pairs),
             'witnesses': summary['witnesses'],
@@ -100,7 +103,8 @@ def score(protocol, output):
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--protocol', type=Path, default=Path(__file__).parent)
+    p.add_argument('--panel', choices=['s01', 's02'], default='s01')
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--out', type=Path, required=True)
     a = p.parse_args()
-    a.out.write_text(json.dumps(score(a.protocol, a.output), indent=2) + '\n')
+    a.out.write_text(json.dumps(score(a.protocol, a.output, a.panel), indent=2) + '\n')
