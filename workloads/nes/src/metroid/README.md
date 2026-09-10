@@ -319,3 +319,21 @@ The [observation contract](../../../../benchmarks/search/depth-transfer/boss-obs
 records source arguments, reference data, reset/gap/stale-byte counterexamples,
 and the unresolved possibility of an invisible same-key slot reload. Its output
 is observed HP decrease, not a proven lifetime damage total or search reward.
+
+### Conditional encounter control diagnostic
+
+`metroid-control-probe draws REQUEST OUT` materializes frozen ordinary
+`sample_chord` suffixes without emulation. `metroid-control-probe run CORE ROM
+REQUEST OUT` requires their hash and the exact searched input, asset and positive
+endpoint identities. It restores one unchanged encounter before each ordinary or
+passive trial, checks the snapshot and raw context, then measures guarded HP
+changes one frame at a time with a fresh baseline. Passive commands preserve the
+paired hold durations. Early death can make actual arm costs different.
+
+The request bounds seeds, commands, continuation frames and total physical work.
+At most the first surviving damage and defeat tape per arm are retained; each
+must replay twice from ordinary genesis with the original held commands and
+matching emulator bytes. Per-trial flushed logs and final usage report actual
+frames, including setup and replay. External wall, process-memory and output
+limits are still required. This helper does not change search or supply fresh
+validation. See the [contract](../../../../benchmarks/search/endpoint-encounter/control-contract.md).

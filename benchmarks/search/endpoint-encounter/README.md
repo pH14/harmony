@@ -93,3 +93,13 @@ including setup. The [closed ledger](ledger-after-c01-e01.json) totals
 1,083,261,532 admitted search frames and 49,098,777 known auxiliary frames since
 resumption, with the old tranche and unknown costs kept separate. No further
 fresh search, local combat or observer extension has been dispatched.
+
+## S01 conditional control design
+
+The [control contract](control-contract.md) defines one 32-pair ordinary/passive
+diagnostic from E01's exact endpoint, with unchanged resources. The frozen draw
+request selects 128 ordinary commands per seed before emulation. Planted checks
+reject damage followed by death in the same command, stale/missing context and
+inherited earlier-command progress. Native execution requires a separate
+registration with source, build, generated suffix and resource identities.
+No emulator work is allocated merely by this design or seed freeze.
