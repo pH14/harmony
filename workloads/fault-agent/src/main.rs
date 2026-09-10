@@ -357,13 +357,7 @@ mod real {
                 )?;
             }
             watch_parks(nodes, supervisor, tick);
-            drain_hooks(
-                &mut runtime.hooks,
-                &runtime.recovery,
-                supervisor,
-                sdk,
-                tick,
-            )?;
+            drain_hooks(&mut runtime.hooks, &runtime.recovery, supervisor, sdk, tick)?;
             for (reg, value) in registers.updates(supervisor.snapshot()) {
                 sdk.state_set(reg, value)
                     .map_err(|error| format!("state_set({reg}): {error}"))?;
@@ -457,28 +451,10 @@ mod real {
                 }
             }
             Action::ArmEventKill(node, ordinal) => {
-                let entry = nodes
-                    .get(usize::from(node))
-                    .ok_or_else(|| format!("event kill names unknown node {node}"))?;
-                let control = entry.event_control.as_ref().ok_or_else(|| {
-                    format!(
-                        "event kill node {node} has no Antithesis instrumentation control channel"
-                    )
-                })?;
-                send_event_ordinal(control, ordinal)
-                    .map_err(|error| format!("event kill node {node}: {error}"))?;
+                apply_event_ordinal(nodes, node, ordinal, tick)?;
             }
             Action::DisarmEventKill(node) => {
-                let entry = nodes
-                    .get(usize::from(node))
-                    .ok_or_else(|| format!("event kill names unknown node {node}"))?;
-                let control = entry.event_control.as_ref().ok_or_else(|| {
-                    format!(
-                        "event kill node {node} has no Antithesis instrumentation control channel"
-                    )
-                })?;
-                send_event_ordinal(control, 0)
-                    .map_err(|error| format!("event kill node {node}: {error}"))?;
+                apply_event_ordinal(nodes, node, 0, tick)?;
             }
             Action::Park(node, park) => {
                 let Some(entry) = nodes.get_mut(usize::from(node)) else {
@@ -706,8 +682,7 @@ mod real {
             let process_id = supervisor.allocate_instrumented_process_id()?;
             command
                 .env("HARMONY_EVENT_KILL_FD", child_fd.as_raw_fd().to_string())
-                .env("HARMONY_INSTRUMENTED_PROCESS_ID", process_id.to_string())
-                .env("LD_PRELOAD", "/usr/lib/libvoidstar.so");
+                .env("HARMONY_INSTRUMENTED_PROCESS_ID", process_id.to_string());
         }
         let child = command
             .spawn()
@@ -834,6 +809,32 @@ mod real {
         }
         if u64::from_le_bytes(acknowledgement) != ordinal {
             return Err("event control acknowledgement did not echo the arm".to_owned());
+        }
+        Ok(())
+    }
+
+    /// A node may die on the selected callback while the supervisor is sending
+    /// a later arm or disarm. Retire that stale channel and ensure the process
+    /// group is down; the normal reap/restart path observes the death next tick.
+    fn apply_event_ordinal(
+        nodes: &mut [Node],
+        node: u16,
+        ordinal: u64,
+        tick: u64,
+    ) -> Result<(), String> {
+        let entry = nodes
+            .get_mut(usize::from(node))
+            .ok_or_else(|| format!("event kill names unknown node {node}"))?;
+        let result = entry.event_control.as_ref().map_or_else(
+            || Err("control channel is unavailable".to_owned()),
+            |control| send_event_ordinal(control, ordinal),
+        );
+        if let Err(error) = result {
+            log(tick, &format!("event kill node {node}: {error}"));
+            entry.event_control = None;
+            if let Some(child) = entry.child.as_ref() {
+                signal_child_group(child, libc::SIGKILL);
+            }
         }
         Ok(())
     }
@@ -968,6 +969,9 @@ mod real {
         // `parse_bundle` rejects an empty argv, so the first word exists.
         let mut command = Command::new(&argv[0]);
         command.args(&argv[1..]);
+        if instrumented_events_available() {
+            command.env("LD_PRELOAD", "/usr/lib/libvoidstar.so");
+        }
         command
     }
 

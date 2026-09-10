@@ -30,6 +30,10 @@ Each instrumented start also receives an internal, monotonically increasing
 process incarnation id. The automatic coverage stream uses that id instead of
 the recyclable Linux PID; it is guest state, so snapshots and replay reproduce
 the same allocation without an operator setting.
+When an image declares instrumented events, the same compatibility runtime is
+injected automatically into nodes, hooks, and readiness probes. Instrumented
+helper binaries therefore retain software exits without bundle-specific launch
+commands.
 
 ## The bundle
 
