@@ -206,6 +206,18 @@ pub trait Backend {
         })
     }
 
+    /// Finish the serviced exit without executing its successor instruction.
+    /// Returns another device access when the same instruction needs a further
+    /// userspace response (for example, a fragmented MMIO load or read/modify/write).
+    /// The caller must service that access and call this again before exposing a
+    /// stopped execution. This is completion processing, never a normal guest run.
+    ///
+    /// The default is for backends whose completed exit state is already fully
+    /// represented by save and needs no further userspace device access.
+    fn finish_exit(&mut self) -> Result<Option<Exit<Self::A>>> {
+        Ok(None)
+    }
+
     // --- snapshot / restore ---------------------------------------------------
 
     /// Full guest-visible vCPU state for snapshot/restore. `[refinement]`:
@@ -312,6 +324,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn retire_pending_completion(&mut self) -> Result<()> {
         (**self).retire_pending_completion()
+    }
+
+    fn finish_exit(&mut self) -> Result<Option<Exit<Self::A>>> {
+        (**self).finish_exit()
     }
 
     fn save(&self) -> Result<<Self::A as Arch>::VcpuState> {

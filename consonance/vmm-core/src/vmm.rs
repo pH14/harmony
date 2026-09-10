@@ -15,7 +15,7 @@ use hypercall_proto::{
     SeededEntropy, Service, ServiceId, Status, decode, encode_error, encode_response,
 };
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use vm_state::SnapshotRecords;
 use vmm_backend::{Arch, Backend, CommonExit, Exit};
 use vtime::{IdlePlanner, VClock, VClockConfig};
@@ -177,7 +177,7 @@ impl VmmError {
     }
 }
 
-/// One serviced exit.
+/// A serviced instruction boundary, including any continuation device accesses.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Step {
     /// The exit was serviced; the run continues.
@@ -189,6 +189,12 @@ pub enum Step {
     /// stop detail lives in the Vmm's SDK channel — drain it with
     /// [`Vmm::take_sdk_stop`]. Only ever produced when an SDK channel is wired.
     SdkStop,
+}
+
+/// Result of servicing one access, before the instruction boundary is exposed.
+struct ExitProgress<A: Arch> {
+    step: Step,
+    continuation: Option<Exit<A>>,
 }
 
 /// What a completed run produced (and what the M2 hash is taken over).
@@ -677,6 +683,9 @@ where
     /// [`Vmm::state_blob`] on a worker. Default-off preserves synchronous trace
     /// semantics for every existing composition.
     pub(crate) deferred_virtual_time_checkpoints: bool,
+    /// Host-only checkpoint positions. An interval crossed inside a fragmented
+    /// instruction lands on its final access, where the complete state exists.
+    virtual_time_checkpoint_events: BTreeSet<u64>,
     /// `true` when the **last serviced exit staged *any* backend completion** (an
     /// IO/MMIO read or write, an `Rdmsr`/`Wrmsr`, or a `Cpuid`) whose register-write/RIP-advance is only
     /// committed on the **next** `KVM_RUN`. A snapshot must not be restored into
@@ -764,6 +773,7 @@ where
             virtual_time_trace: None,
             doorbell_exits: 0,
             deferred_virtual_time_checkpoints: false,
+            virtual_time_checkpoint_events: BTreeSet::new(),
             completion_staged: false,
             sdk_snapshot_reentry_required: false,
             snapshot_hashing: false,
@@ -776,6 +786,7 @@ where
     /// Wire the assigned virtual-time clock and deterministic entropy stream.
     pub fn wire_vtime(&mut self, wiring: VtimeWiring) -> &mut Self {
         self.virtual_time_trace = Some(LiveVirtualTimeTrace::default());
+        self.virtual_time_checkpoint_events.clear();
         self.vtime = Some(wiring);
         self
     }
@@ -789,6 +800,7 @@ where
     /// on this same VM. Restore-in-place uses this to preserve the existing
     /// per-branch session segmentation without replacing the VMM.
     pub(crate) fn take_virtual_time_trace(&mut self) -> Option<LiveVirtualTimeTrace> {
+        self.virtual_time_checkpoint_events.clear();
         self.virtual_time_trace.as_mut().map(std::mem::take)
     }
 
@@ -820,11 +832,19 @@ where
         Ok(())
     }
 
+    /// Whether a completed trace event owns a periodic full-state checkpoint.
+    /// An interval crossed inside an instruction lands on its final device
+    /// access; callers must use this predicate rather than event-index modulo.
+    #[must_use]
+    pub fn virtual_time_checkpoint_due(&self, event_index: u64) -> bool {
+        self.virtual_time_checkpoint_events.contains(&event_index)
+    }
+
     /// Install one deferred sparse checkpoint hash at its exact portable event.
     ///
     /// # Errors
     /// Returns [`VmmError::ContractViolation`] unless deferred mode is enabled,
-    /// the event is a due 256-event checkpoint, the event exists, and its hash
+    /// the event owns a completed-instruction checkpoint, exists, and its hash
     /// slot is still empty.
     pub fn checkpoint_virtual_time_trace_at(
         &mut self,
@@ -836,9 +856,9 @@ where
                 "deferred checkpoint installed while synchronous hashing is active".to_string(),
             ));
         }
-        if !event_index.saturating_add(1).is_multiple_of(256) {
+        if !self.virtual_time_checkpoint_due(event_index) {
             return Err(VmmError::ContractViolation(format!(
-                "deferred checkpoint event {event_index} is not a 256-event boundary"
+                "deferred checkpoint event {event_index} is not a completed checkpoint boundary"
             )));
         }
         self.virtual_time_trace
@@ -1652,14 +1672,36 @@ where
         // service below is itself an RNG draw. (Cleared after `run()`, since a failed
         // re-entry did not commit the staged completion.)
         //
-        let exit = self.backend.run()?;
+        let mut exit = self.backend.run()?;
+        // Only an ordinary guest entry clears the deferred SDK delivery latch.
+        // Completion-only entries below cannot deliver that point early.
+        self.sdk_snapshot_reentry_required = false;
+        let mut stop = Step::Continued;
+        let mut checkpoint_due = false;
+        loop {
+            let ExitProgress { step, continuation } =
+                self.service_exit(exit, &mut checkpoint_due)?;
+            if step != Step::Continued {
+                stop = step;
+            }
+            match continuation {
+                Some(next) => exit = next,
+                None => return Ok(stop),
+            }
+        }
+    }
+
+    /// Service one access of the current instruction. Continuations never pass
+    /// through the guest-entry preparation above: no next instruction, IRQ
+    /// injection, deadline check, or scheduled-input delivery can interleave.
+    fn service_exit(
+        &mut self,
+        exit: Exit<B::A>,
+        checkpoint_due: &mut bool,
+    ) -> Result<ExitProgress<B::A>, VmmError> {
         if <B::A as Vendor>::is_doorbell_exit(&exit) {
             self.doorbell_exits = self.doorbell_exits.saturating_add(1);
         }
-        // A successful entry commits the prior exit's userspace-I/O completion.
-        // If `setup_complete` armed the deferred snapshot latch on that prior
-        // exit, the point may now surface after this exit is serviced.
-        self.sdk_snapshot_reentry_required = false;
         let trace_started = if let Some(trace) = self.virtual_time_trace.as_mut() {
             if let Some((class, payload)) = <B::A as Vendor>::normalize_virtual_time_exit(&exit) {
                 let reason = exit.reason();
@@ -1716,6 +1758,7 @@ where
         // unless a page is registered.
         self.pvclock_refresh()?;
         <B::A as Vendor>::post_exit(self)?;
+        let next = <B::A as Vendor>::finish_exit(self)?;
         if trace_started {
             let event_index = self
                 .virtual_time_trace
@@ -1723,11 +1766,19 @@ where
                 .expect("trace was started")
                 .current_event_index()
                 .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
-            let checkpoint = (event_index + 1).is_multiple_of(256);
-            let state_hash =
-                synchronous_checkpoint_due(checkpoint, self.deferred_virtual_time_checkpoints)
-                    .then(|| self.state_hash())
-                    .transpose()?;
+            *checkpoint_due |= (event_index + 1).is_multiple_of(256);
+            if *checkpoint_due && next.is_none() {
+                self.virtual_time_checkpoint_events.insert(event_index);
+            }
+            // A fragment is not yet a complete architectural state. Keep a due
+            // checkpoint pending until this same instruction finishes; the hash
+            // still covers the complete machine and no guest successor executes.
+            let state_hash = synchronous_checkpoint_due(
+                *checkpoint_due && next.is_none(),
+                self.deferred_virtual_time_checkpoints,
+            )
+            .then(|| self.state_hash())
+            .transpose()?;
             let vns_after = self
                 .vtime
                 .as_ref()
@@ -1743,7 +1794,10 @@ where
                 .finish(vns_after, state_hash)
                 .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
         }
-        Ok(step)
+        Ok(ExitProgress {
+            step,
+            continuation: next,
+        })
     }
 
     /// `step()` to a `Terminal`. Returns the serial capture, terminal reason, and
@@ -3963,6 +4017,8 @@ fn service_answer_bytes(answer: &channel::Answer) -> Option<Vec<u8>> {
 mod tests {
     //! Engine tests, driven over the x86 vendor (`MockBackend`'s `Arch` is `X86`) —
     //! the engine is generic, but a test needs *a* vendor to run against.
+
+    use std::collections::VecDeque;
 
     use super::*;
     use crate::virtual_time::NormalizedEventClass;
@@ -7479,6 +7535,381 @@ mod tests {
         fn capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::X86Caps> {
             self.0.capabilities()
         }
+    }
+
+    /// Test-only backend that separates ordinary guest entries from completion
+    /// entries. Each ordinary `run` loads its own continuation script; a
+    /// `finish_exit` fragment is obtained by calling the inner mock's `run`, so
+    /// the VMM must drain the fragment without issuing another outer entry.
+    struct ContinuationBackend {
+        inner: MockBackend,
+        ordinary: VecDeque<Exit<X86>>,
+        continuation_scripts: VecDeque<VecDeque<Exit<X86>>>,
+        current_continuations: VecDeque<Exit<X86>>,
+        ordinary_runs: usize,
+        finish_runs: usize,
+        mapped: Vec<(Gpa, usize)>,
+    }
+
+    impl ContinuationBackend {
+        fn new(ordinary: Vec<Exit<X86>>, continuations: Vec<Vec<Exit<X86>>>) -> Self {
+            assert_eq!(
+                ordinary.len(),
+                continuations.len(),
+                "each ordinary entry needs one continuation script"
+            );
+            Self {
+                inner: configured_mock(Vec::new()),
+                ordinary: ordinary.into(),
+                continuation_scripts: continuations.into_iter().map(VecDeque::from).collect(),
+                current_continuations: VecDeque::new(),
+                ordinary_runs: 0,
+                finish_runs: 0,
+                mapped: Vec::new(),
+            }
+        }
+    }
+
+    impl Backend for ContinuationBackend {
+        type A = X86;
+
+        fn set_policy(&mut self, policy: &X86Policy) -> vmm_backend::Result<()> {
+            self.inner.set_policy(policy)
+        }
+
+        unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> vmm_backend::Result<()> {
+            // Record-only fixture: it neither retains nor dereferences `host`.
+            self.mapped.push((gpa, host.len()));
+            Ok(())
+        }
+
+        fn run(&mut self) -> vmm_backend::Result<Exit<X86>> {
+            if !self.current_continuations.is_empty() {
+                return Err(vmm_backend::BackendError::PendingCompletion);
+            }
+            let exit = self
+                .ordinary
+                .pop_front()
+                .ok_or(vmm_backend::BackendError::Internal(
+                    "continuation test ordinary run queue empty",
+                ))?;
+            let continuations = self.continuation_scripts.pop_front().ok_or(
+                vmm_backend::BackendError::Internal("continuation test script queue empty"),
+            )?;
+            self.current_continuations = continuations;
+            self.ordinary_runs += 1;
+            self.inner.push_exit(exit);
+            self.inner.run()
+        }
+
+        fn inject(&mut self, event: vmm_backend::Injection) -> vmm_backend::Result<()> {
+            self.inner.inject(event)
+        }
+
+        fn set_pending_irq(&mut self, id: Option<u8>) -> vmm_backend::Result<()> {
+            self.inner.set_pending_irq(id)
+        }
+
+        fn take_accepted_interrupt(&mut self) -> Option<u8> {
+            self.inner.take_accepted_interrupt()
+        }
+
+        fn complete_read(&mut self, value: u64) -> vmm_backend::Result<()> {
+            self.inner.complete_read(value)
+        }
+
+        fn complete_fault(&mut self) -> vmm_backend::Result<()> {
+            self.inner.complete_fault()
+        }
+
+        fn complete_ok(&mut self) -> vmm_backend::Result<()> {
+            self.inner.complete_ok()
+        }
+
+        fn complete_hypercall(&mut self, ret: u64) -> vmm_backend::Result<()> {
+            self.inner.complete_hypercall(ret)
+        }
+
+        fn complete_arch(
+            &mut self,
+            completion: vmm_backend::X86Completion,
+        ) -> vmm_backend::Result<()> {
+            self.inner.complete_arch(completion)
+        }
+
+        fn finish_exit(&mut self) -> vmm_backend::Result<Option<Exit<X86>>> {
+            let Some(exit) = self.current_continuations.pop_front() else {
+                return Ok(None);
+            };
+            self.finish_runs += 1;
+            self.inner.push_exit(exit);
+            Ok(Some(self.inner.run()?))
+        }
+
+        fn retire_pending_completion(&mut self) -> vmm_backend::Result<()> {
+            if !self.current_continuations.is_empty() {
+                return Err(vmm_backend::BackendError::PendingCompletion);
+            }
+            self.inner.retire_pending_completion()
+        }
+
+        fn save(&self) -> vmm_backend::Result<VcpuState> {
+            if !self.current_continuations.is_empty() || self.inner.has_pending() {
+                return Err(vmm_backend::BackendError::PendingCompletion);
+            }
+            self.inner.save()
+        }
+
+        fn restore(&mut self, state: &VcpuState) -> vmm_backend::Result<()> {
+            if !self.current_continuations.is_empty() || self.inner.has_pending() {
+                return Err(vmm_backend::BackendError::PendingCompletion);
+            }
+            self.inner.restore(state)
+        }
+
+        fn exit_counts(&self) -> vmm_backend::ExitCounts {
+            self.inner.exit_counts()
+        }
+
+        fn reset_exit_counts(&mut self) {
+            self.inner.reset_exit_counts()
+        }
+
+        fn capabilities(&self) -> vmm_backend::Capabilities<X86Caps> {
+            self.inner.capabilities()
+        }
+    }
+
+    fn continuation_vmm(
+        ordinary: Vec<Exit<X86>>,
+        continuations: Vec<Vec<Exit<X86>>>,
+        seed: u64,
+    ) -> Vmm<ContinuationBackend> {
+        let mut vmm = Vmm::new(
+            ContinuationBackend::new(ordinary, continuations),
+            GuestRam::new(0x2000).unwrap(),
+        );
+        vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), seed).unwrap());
+        vmm.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .unwrap(),
+        );
+        vmm
+    }
+
+    fn boxed_continuation_vmm(
+        ordinary: Vec<Exit<X86>>,
+        continuations: Vec<Vec<Exit<X86>>>,
+        seed: u64,
+    ) -> Vmm<Box<ContinuationBackend>> {
+        let mut vmm = Vmm::new(
+            Box::new(ContinuationBackend::new(ordinary, continuations)),
+            GuestRam::new(0x2000).unwrap(),
+        );
+        vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), seed).unwrap());
+        vmm.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .unwrap(),
+        );
+        vmm
+    }
+
+    fn apic_read(offset: u32) -> Exit<X86> {
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(APIC_MMIO_BASE + u64::from(offset)),
+            size: 4,
+            write: None,
+        })
+    }
+
+    fn apic_write(offset: u32, value: u64) -> Exit<X86> {
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(APIC_MMIO_BASE + u64::from(offset)),
+            size: 4,
+            write: Some(value),
+        })
+    }
+
+    #[test]
+    fn fragmented_lapic_mmio_is_drained_without_an_extra_outer_run() {
+        // The first APIC access returns a read completion. The backend's
+        // finish_exit supplies the write fragment from the same instruction;
+        // using Box here also exercises the trait's boxed continuation forward.
+        let mut source = boxed_continuation_vmm(
+            vec![apic_read(lapic::APIC_VERSION)],
+            vec![vec![apic_write(lapic::APIC_TPR, 0x20)]],
+            7,
+        );
+        source.wire_snapshot_hashing();
+
+        assert_eq!(source.step().unwrap(), Step::Continued);
+        assert_eq!(source.backend.as_ref().ordinary_runs, 1);
+        assert_eq!(source.backend.as_ref().finish_runs, 1);
+        assert!(source.backend.as_ref().ordinary.is_empty());
+        assert_eq!(source.exit_counts().mmio, 2);
+        assert_eq!(
+            source.backend.as_ref().inner.completions(),
+            &[Completion::Read(u64::from(lapic::APIC_VERSION_VALUE))],
+            "the read fragment receives the APIC version response"
+        );
+        assert_eq!(
+            source.devices.lapic.as_ref().unwrap().snapshot().tpr,
+            0x20,
+            "the write fragment updates the LAPIC"
+        );
+
+        let per_mmio =
+            crate::vendor::x86::contract::virtual_time_timing().interrupt_controller_mmio_vns;
+        assert_eq!(source.effective_vns(), Some(per_mmio * 2));
+        let counts = source.exit_counts();
+        let vns = source.effective_vns();
+        let outer_runs = source.backend.as_ref().ordinary_runs;
+        let finish_runs = source.backend.as_ref().finish_runs;
+        let hash = source.state_hash().unwrap();
+        let bytes = source.save_vm_state().unwrap().encode().unwrap();
+        assert_eq!(source.state_hash().unwrap(), hash);
+        assert_eq!(source.save_vm_state().unwrap().encode().unwrap(), bytes);
+        assert_eq!(source.exit_counts(), counts);
+        assert_eq!(source.effective_vns(), vns);
+        assert_eq!(source.backend.as_ref().ordinary_runs, outer_runs);
+        assert_eq!(source.backend.as_ref().finish_runs, finish_runs);
+
+        let decoded = vm_state::VmState::decode(&bytes).unwrap();
+        let memory = source.guest_memory().to_vec();
+        let mut cold = boxed_continuation_vmm(vec![], vec![], 7);
+        cold.wire_snapshot_hashing();
+        cold.restore_snapshot(&memory, &decoded).unwrap();
+        assert_eq!(cold.state_hash().unwrap(), hash);
+        assert_eq!(cold.save_vm_state().unwrap().encode().unwrap(), bytes);
+        assert_eq!(cold.backend.as_ref().ordinary_runs, 0);
+        assert_eq!(cold.backend.as_ref().finish_runs, 0);
+        assert_eq!(cold.exit_counts(), vmm_backend::ExitCounts::default());
+        assert_eq!(cold.effective_vns(), vns);
+        assert_eq!(
+            cold.devices.lapic.as_ref().unwrap().snapshot(),
+            source.devices.lapic.as_ref().unwrap().snapshot()
+        );
+    }
+
+    #[test]
+    fn snapshot_fails_while_a_continuation_remains_queued() {
+        // A stale continuation is not a safe snapshot boundary. This direct
+        // backend entry plants the condition that the production step loop must
+        // drain before exposing a stop or asking for a hash.
+        let mut vmm = continuation_vmm(
+            vec![apic_read(lapic::APIC_VERSION)],
+            vec![vec![apic_write(lapic::APIC_TPR, 0x20)]],
+            7,
+        );
+        vmm.backend.run().unwrap();
+        assert!(matches!(
+            vmm.save_vm_state(),
+            Err(VmmError::Backend(
+                vmm_backend::BackendError::PendingCompletion
+            ))
+        ));
+        assert!(matches!(
+            vmm.state_hash(),
+            Err(VmmError::Backend(
+                vmm_backend::BackendError::PendingCompletion
+            ))
+        ));
+    }
+
+    fn fragmented_checkpoint_script() -> (Vec<Exit<X86>>, Vec<Vec<Exit<X86>>>) {
+        let mut ordinary = Vec::with_capacity(256);
+        let mut continuations = Vec::with_capacity(256);
+        for value in 0..255u32 {
+            ordinary.push(Exit::Arch(X86Exit::Io {
+                port: REPORT_PORT,
+                size: 4,
+                write: Some(value),
+            }));
+            continuations.push(Vec::new());
+        }
+        ordinary.push(apic_read(lapic::APIC_VERSION));
+        continuations.push(vec![apic_write(lapic::APIC_TPR, 0x20)]);
+        (ordinary, continuations)
+    }
+
+    #[test]
+    fn deferred_checkpoint_lands_on_the_final_fragment_and_resets_with_trace_segments() {
+        let (ordinary, continuations) = fragmented_checkpoint_script();
+        let mut synchronous = boxed_continuation_vmm(ordinary.clone(), continuations.clone(), 7);
+        synchronous.wire_snapshot_hashing();
+        for _ in 0..255 {
+            assert_eq!(synchronous.step().unwrap(), Step::Continued);
+        }
+        assert_eq!(synchronous.step().unwrap(), Step::Continued);
+        let synchronous_trace = synchronous.virtual_time_trace().unwrap();
+        assert_eq!(synchronous_trace.normalized_log().events.len(), 257);
+        assert_eq!(
+            synchronous_trace.normalized_log().events[255].state_hash,
+            None,
+            "the first fragment is not a complete checkpoint boundary"
+        );
+        let expected = synchronous
+            .virtual_time_trace()
+            .unwrap()
+            .normalized_log()
+            .events[256]
+            .state_hash
+            .expect("the final fragment owns the synchronous checkpoint");
+
+        let mut deferred = boxed_continuation_vmm(ordinary, continuations, 7);
+        deferred.wire_snapshot_hashing();
+        deferred.defer_virtual_time_checkpoint_hashes().unwrap();
+        for _ in 0..255 {
+            assert_eq!(deferred.step().unwrap(), Step::Continued);
+        }
+        assert_eq!(deferred.step().unwrap(), Step::Continued);
+        let trace = deferred.virtual_time_trace().unwrap();
+        assert_eq!(trace.normalized_log().events.len(), 257);
+        assert_eq!(trace.normalized_log().events[255].state_hash, None);
+        assert_eq!(trace.normalized_log().events[256].state_hash, None);
+        assert!(!deferred.virtual_time_checkpoint_due(255));
+        assert!(deferred.virtual_time_checkpoint_due(256));
+        assert_eq!(deferred.state_hash().unwrap(), expected);
+        deferred
+            .checkpoint_virtual_time_trace_at(256, expected)
+            .unwrap();
+        assert_eq!(
+            deferred
+                .virtual_time_trace()
+                .unwrap()
+                .normalized_log()
+                .events[256]
+                .state_hash,
+            Some(expected)
+        );
+        assert!(
+            deferred
+                .checkpoint_virtual_time_trace_at(255, expected)
+                .is_err()
+        );
+
+        let completed_segment = deferred.take_virtual_time_trace().unwrap();
+        assert_eq!(completed_segment.normalized_log().events.len(), 257);
+        assert!(!deferred.virtual_time_checkpoint_due(256));
+        assert!(
+            deferred
+                .checkpoint_virtual_time_trace_at(256, expected)
+                .is_err()
+        );
+        assert!(
+            deferred
+                .virtual_time_trace()
+                .unwrap()
+                .normalized_log()
+                .events
+                .is_empty()
+        );
     }
 
     #[test]

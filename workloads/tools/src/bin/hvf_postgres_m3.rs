@@ -86,6 +86,7 @@ fn record_pvclock_boundary(
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64", not(miri))))]
 fn audit_checkpoint_hashes(
     events: &[vmm_core::virtual_time::NormalizedEvent],
+    mut checkpoint_due: impl FnMut(u64) -> bool,
 ) -> Result<u64, String> {
     let mut checkpoints = 0u64;
     for (position, event) in events.iter().enumerate() {
@@ -96,7 +97,7 @@ fn audit_checkpoint_hashes(
                 event.event_index
             ));
         }
-        let due = event.event_index.saturating_add(1).is_multiple_of(256);
+        let due = checkpoint_due(event.event_index);
         match (due, event.state_hash.is_some()) {
             (true, true) => checkpoints += 1,
             (true, false) => {
@@ -537,7 +538,7 @@ fn main() -> std::process::ExitCode {
             .virtual_time_trace()
             .and_then(|trace| trace.raw_log().last())
             .and_then(|raw| raw.portable_event_index)
-            .filter(|event_index| event_index.saturating_add(1).is_multiple_of(256));
+            .filter(|event_index| vmm.virtual_time_checkpoint_due(*event_index));
         if let Some(event_index) = checkpoint_event
             && let Err(error) = vmm
                 .state_blob()
@@ -723,7 +724,9 @@ fn main() -> std::process::ExitCode {
     if run_error.is_none()
         && let Some(trace) = vmm.virtual_time_trace()
     {
-        match audit_checkpoint_hashes(&trace.normalized_log().events) {
+        match audit_checkpoint_hashes(&trace.normalized_log().events, |index| {
+            vmm.virtual_time_checkpoint_due(index)
+        }) {
             Ok(audited) if audited == checkpoint_hash_count => {}
             Ok(audited) => {
                 run_error = Some(format!(
@@ -1274,7 +1277,22 @@ mod tests {
         let mut events: Vec<_> = (0..512).map(|index| normalized(index, None)).collect();
         events[255].state_hash = Some([1; 32]);
         events[511].state_hash = Some([2; 32]);
-        assert_eq!(audit_checkpoint_hashes(&events).unwrap(), 2);
+        assert_eq!(
+            audit_checkpoint_hashes(&events, |index| (index + 1).is_multiple_of(256)).unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn checkpoint_audit_uses_final_instruction_boundary() {
+        let mut events: Vec<_> = (0..257).map(|index| normalized(index, None)).collect();
+        events[256].state_hash = Some([1; 32]);
+        assert_eq!(
+            audit_checkpoint_hashes(&events, |index| index == 256).unwrap(),
+            1
+        );
+        events[255].state_hash = events[256].state_hash.take();
+        assert!(audit_checkpoint_hashes(&events, |index| index == 256).is_err());
     }
 
     #[test]
@@ -1297,7 +1315,7 @@ mod tests {
     #[test]
     fn planted_missing_checkpoint_fails_audit() {
         let events: Vec<_> = (0..256).map(|index| normalized(index, None)).collect();
-        assert!(audit_checkpoint_hashes(&events).is_err());
+        assert!(audit_checkpoint_hashes(&events, |index| (index + 1).is_multiple_of(256)).is_err());
     }
 
     #[test]
@@ -1305,7 +1323,7 @@ mod tests {
         let mut events: Vec<_> = (0..256).map(|index| normalized(index, None)).collect();
         events[254].state_hash = Some([1; 32]);
         events[255].state_hash = Some([2; 32]);
-        assert!(audit_checkpoint_hashes(&events).is_err());
+        assert!(audit_checkpoint_hashes(&events, |index| (index + 1).is_multiple_of(256)).is_err());
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]

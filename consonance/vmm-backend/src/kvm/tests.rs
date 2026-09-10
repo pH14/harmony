@@ -447,6 +447,224 @@ fn retire_staged_write_completion_without_pending_uses_immediate_entry() {
     assert_eq!(s.page().immediate_exit(), 0);
 }
 
+#[test]
+fn finish_staged_completion_returns_mmio_load_continuation_and_updates_pending() {
+    let s = SynRun::new();
+    let mut pending = Pending::IoIn {
+        data_offset: PIO_OFF as u64,
+        size: 1,
+    };
+    let mut staged = true;
+    let mut entries = 0;
+    let next = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
+        entries += 1;
+        assert_eq!(s.page().immediate_exit(), 1);
+        // The completed PIO can expose the next fragment of this instruction
+        // as a load from a memory-mapped device.
+        set_reason(&s, KVM_EXIT_MMIO);
+        // SAFETY: union sub-field writes to the owned synthetic run page.
+        unsafe {
+            let mmio = &mut (*s.run()).__bindgen_anon_1.mmio;
+            mmio.phys_addr = 0xFEE0_0080;
+            mmio.len = 4;
+            mmio.is_write = 0;
+        }
+        Ok(())
+    })
+    .unwrap()
+    .expect("successful completion entry returns its continuation");
+
+    assert_eq!(entries, 1);
+    assert_eq!(
+        next,
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(0xFEE0_0080),
+            size: 4,
+            write: None,
+        })
+    );
+    assert_eq!(pending, Pending::MmioLoad { len: 4 });
+    assert!(!staged, "a read continuation now awaits its host value");
+    assert_eq!(s.page().immediate_exit(), 0);
+}
+
+#[test]
+fn finish_staged_completion_returns_mmio_store_continuation_and_keeps_stage() {
+    let s = SynRun::new();
+    let mut pending = Pending::None;
+    let mut staged = true;
+    let next = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
+        assert_eq!(s.page().immediate_exit(), 1);
+        set_reason(&s, KVM_EXIT_MMIO);
+        // SAFETY: union sub-field writes to the owned synthetic run page.
+        unsafe {
+            let mmio = &mut (*s.run()).__bindgen_anon_1.mmio;
+            mmio.phys_addr = 0xFEE0_0000;
+            mmio.len = 4;
+            mmio.is_write = 1;
+            mmio.data[..4].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        }
+        Ok(())
+    })
+    .unwrap()
+    .expect("successful completion entry returns its continuation");
+
+    assert_eq!(
+        next,
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(0xFEE0_0000),
+            size: 4,
+            write: Some(0x1234_5678),
+        })
+    );
+    assert_eq!(pending, Pending::None);
+    assert!(staged, "a store continuation still has a KVM callback");
+    assert_eq!(s.page().immediate_exit(), 0);
+}
+
+#[test]
+fn finish_staged_completion_returns_pio_read_continuation_and_arms_pending() {
+    let s = SynRun::new();
+    let mut pending = Pending::None;
+    let mut staged = true;
+    let next = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
+        assert_eq!(s.page().immediate_exit(), 1);
+        set_reason(&s, KVM_EXIT_IO);
+        // SAFETY: union sub-field writes to the owned synthetic run page.
+        unsafe {
+            let io = &mut (*s.run()).__bindgen_anon_1.io;
+            io.direction = 0;
+            io.size = 2;
+            io.port = 0x60;
+            io.count = 1;
+            io.data_offset = PIO_OFF as u64;
+        }
+        Ok(())
+    })
+    .unwrap()
+    .expect("successful completion entry returns its continuation");
+
+    assert_eq!(
+        next,
+        Exit::Arch(X86Exit::Io {
+            port: 0x60,
+            size: 2,
+            write: None,
+        })
+    );
+    assert_eq!(
+        pending,
+        Pending::IoIn {
+            data_offset: PIO_OFF as u64,
+            size: 2,
+        }
+    );
+    assert!(!staged, "a PIO read continuation awaits its host value");
+    assert_eq!(s.page().immediate_exit(), 0);
+}
+
+#[test]
+fn finish_staged_completion_eintr_reaches_a_no_entry_fixpoint() {
+    let s = SynRun::new();
+    let mut pending = Pending::MmioLoad { len: 8 };
+    let mut staged = true;
+    let mut entries = 0;
+    let first = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
+        entries += 1;
+        assert_eq!(s.page().immediate_exit(), 1);
+        Err(std::io::Error::from_raw_os_error(libc::EINTR))
+    })
+    .unwrap();
+    assert_eq!(first, None);
+    assert_eq!(entries, 1);
+    assert_eq!(pending, Pending::None);
+    assert!(!staged);
+    assert_eq!(s.page().immediate_exit(), 0);
+
+    let second = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
+        entries += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(second, None);
+    assert_eq!(entries, 1, "a consumed completion must not enter again");
+    assert_eq!(s.page().immediate_exit(), 0);
+}
+
+#[test]
+fn finish_staged_completion_raw_error_preserves_state_and_clears_flag() {
+    let s = SynRun::new();
+    let mut pending = Pending::IoIn {
+        data_offset: PIO_OFF as u64,
+        size: 2,
+    };
+    let mut staged = true;
+    let error = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
+        assert_eq!(s.page().immediate_exit(), 1);
+        Err(std::io::Error::from_raw_os_error(libc::EIO))
+    })
+    .expect_err("a non-EINTR completion entry must fail closed");
+
+    assert!(matches!(error, BackendError::Io(_)));
+    assert_eq!(
+        pending,
+        Pending::IoIn {
+            data_offset: PIO_OFF as u64,
+            size: 2,
+        }
+    );
+    assert!(staged, "an uncertain completion remains staged for retry");
+    assert_eq!(s.page().immediate_exit(), 0);
+}
+
+#[test]
+fn finish_staged_completion_rejects_non_device_continuations_without_mutation() {
+    for reason in [
+        KVM_EXIT_HLT,
+        KVM_EXIT_IRQ_WINDOW_OPEN,
+        KVM_EXIT_INTERNAL_ERROR,
+    ] {
+        let s = SynRun::new();
+        let original_pending = Pending::MmioLoad { len: 4 };
+        let mut pending = original_pending;
+        let mut staged = true;
+        let error = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
+            assert_eq!(s.page().immediate_exit(), 1);
+            set_reason(&s, reason);
+            Ok(())
+        })
+        .expect_err("completion-only entry must accept only PIO/MMIO exits");
+
+        assert!(matches!(error, BackendError::Internal(_)));
+        assert_eq!(pending, original_pending);
+        assert!(staged);
+        assert_eq!(s.page().immediate_exit(), 0);
+    }
+}
+
+#[test]
+fn retire_staged_completion_rejects_continuation_without_dropping_it() {
+    let s = SynRun::new();
+    let mut pending = Pending::None;
+    let mut staged = true;
+    set_reason(&s, KVM_EXIT_MMIO);
+    // SAFETY: union sub-field writes to the owned synthetic run page.
+    unsafe {
+        let mmio = &mut (*s.run()).__bindgen_anon_1.mmio;
+        mmio.phys_addr = 0xFEE0_0000;
+        mmio.len = 1;
+        mmio.is_write = 1;
+        mmio.data[0] = 0x42;
+    }
+
+    let error = retire_staged_completion(s.page(), &mut pending, &mut staged, || Ok(()))
+        .expect_err("the legacy retire wrapper cannot discard a continuation");
+    assert!(matches!(error, BackendError::PendingCompletion));
+    assert_eq!(pending, Pending::None);
+    assert!(staged, "the returned store remains serviceable");
+    assert_eq!(s.page().immediate_exit(), 0);
+}
+
 // ---------------------------------------------------------------------------
 // Config / snapshot helpers.
 // ---------------------------------------------------------------------------
