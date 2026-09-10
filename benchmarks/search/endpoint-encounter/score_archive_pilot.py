@@ -24,13 +24,13 @@ def classify(first, executions, frames, horizon):
                                'no_defeat_at_horizon' if complete else 'incomplete')
 
 
-def score(protocol, output):
-    q = read(protocol, 'ap01-request.json')
-    registration = read(protocol, 'ap01-registration.json')
+def score(protocol, output, request_name='ap01-request.json', registration_name='ap01-registration.json'):
+    q = read(protocol, request_name)
+    registration = read(protocol, registration_name)
     report = read(output, 'result.json')
     usage = read(output, 'usage.json')
     assert usage['completed_execution'] and usage['error'] is None
-    assert usage['request_sha256'] == sha(raw(protocol, 'ap01-request.json'))
+    assert usage['request_sha256'] == sha(raw(protocol, request_name))
     assert report['root']['snapshot_sha256'] == q['expected_snapshot_sha256']
     assert sha(raw(output, 'root-snapshot.json')) == read(protocol, 'aq01-prepare-analysis.json')['root_json_sha256']
     assert report['origin']['kind'] == 'snapshot_root'
@@ -67,7 +67,7 @@ def score(protocol, output):
     if success:
         assert not witness['dead'] and witness['context']['memory']['ridley_status'] & 2
     return {'format': 'metroid-archive-capability-ap01-analysis-v1',
-            'registration_sha256': sha(raw(protocol, 'ap01-registration.json')),
+            'registration_sha256': sha(raw(protocol, registration_name)),
             'decision': decision,
             'fixed_horizon_completed': complete_horizon, 'milestone_reached': success,
             'observed_first_milestone': first, 'stop_reason': report['stop_reason'],
