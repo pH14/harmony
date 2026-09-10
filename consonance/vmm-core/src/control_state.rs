@@ -224,6 +224,37 @@ mod tests {
     }
 
     #[test]
+    fn pending_plan_rejects_each_sdk_input_independently() {
+        use environment::channel::Answer as ServiceAnswer;
+        let mut plans = Vec::new();
+        plans.push(InputSpec::seeded(1));
+        let mut configured = InputSpec::seeded(0);
+        let mut policy = ServiceConfig::default();
+        policy.configuration.push(1);
+        configured.set_config(policy);
+        plans.push(configured);
+        let mut payload = InputSpec::seeded(0);
+        payload.set_payloads(Some(vec![vec![2]]));
+        plans.push(payload);
+        let mut answered = InputSpec::seeded(0);
+        answered
+            .record_answer(1, 19, 7, ServiceAnswer::Nominal)
+            .unwrap();
+        plans.push(answered);
+        for pending in plans {
+            let invalid = ControlState {
+                pending,
+                poisoned: None,
+                ..state()
+            };
+            assert_eq!(
+                ControlState::decode(&invalid.encode()),
+                Err("pending control plan contains SDK inputs")
+            );
+        }
+    }
+
+    #[test]
     fn hash_observes_pending_work_and_consumed_history() {
         let baseline = state();
         let mut suffix = Vec::new();
