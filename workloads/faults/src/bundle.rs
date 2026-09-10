@@ -18,7 +18,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Prefix of the recorded vocabulary identifier.
-pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v2";
+pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v3";
 /// Largest node count the guest fault agent accepts: its alive bitmap is one
 /// `u64`, one bit per node, so a wider vocabulary would name nodes the agent
 /// never runs.
@@ -34,6 +34,12 @@ pub struct FaultVocabulary {
     /// runtime bridge needed for synchronous event-ordinal crashes.
     #[serde(default)]
     instrumented_events: bool,
+    /// Whether the compiled Consonance backend can inject a generic host
+    /// interrupt. The x86 backend owns a userspace interrupt fabric; the
+    /// arm64 backend currently delegates the GIC to KVM and cannot service a
+    /// workload interrupt action.
+    #[serde(default)]
+    interrupt_injection: bool,
     places: Vec<u64>,
     /// The place list's `(count, digest)` when the vocabulary was resolved
     /// from a recorded identifier and the addresses themselves are not at hand.
@@ -103,6 +109,7 @@ impl FaultVocabulary {
             nodes,
             hooks: sorted,
             instrumented_events: false,
+            interrupt_injection: compiled_backend_supports_interrupts(),
             places: Vec::new(),
             places_digest: None,
         })
@@ -201,6 +208,12 @@ impl FaultVocabulary {
         self.instrumented_events
     }
 
+    /// Whether this vocabulary admits the generic host interrupt action.
+    #[must_use]
+    pub fn interrupt_injection(&self) -> bool {
+        self.interrupt_injection
+    }
+
     /// Places a park may name, ascending. Empty when the campaign was given
     /// no place list, and when the vocabulary was resolved from a recorded
     /// identifier and the list has not been supplied again.
@@ -226,15 +239,20 @@ impl FaultVocabulary {
         } else {
             "none"
         };
+        let interrupts = if self.interrupt_injection {
+            "enabled"
+        } else {
+            "none"
+        };
         if count == 0 {
             return format!(
-                "{VOCABULARY_FORMAT};nodes={};hooks={hooks};events={events}",
-                self.nodes
+                "{VOCABULARY_FORMAT};nodes={};hooks={hooks};events={events};interrupts={interrupts}",
+                self.nodes,
             );
         }
         format!(
-            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};events={events};places={count}/{digest:016x}",
-            self.nodes
+            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};events={events};interrupts={interrupts};places={count}/{digest:016x}",
+            self.nodes,
         )
     }
 
@@ -269,6 +287,21 @@ impl FaultVocabulary {
             "antithesis" => true,
             _ => return Err("fault vocabulary has an unknown event capability".to_owned()),
         };
+        let interrupt_injection = match fields
+            .next()
+            .and_then(|field| field.strip_prefix("interrupts="))
+            .ok_or("fault vocabulary has no interrupt capability")?
+        {
+            "none" => false,
+            "enabled" => true,
+            _ => return Err("fault vocabulary has an unknown interrupt capability".to_owned()),
+        };
+        if interrupt_injection != compiled_backend_supports_interrupts() {
+            return Err(format!(
+                "fault vocabulary interrupt capability ({interrupt_injection}) does not match the compiled backend ({})",
+                compiled_backend_supports_interrupts()
+            ));
+        }
         let places_digest = match fields.next() {
             None => None,
             Some(field) => {
@@ -299,9 +332,23 @@ impl FaultVocabulary {
                 .collect::<Result<Vec<_>, _>>()?
         };
         let mut vocabulary = Self::new(nodes, hooks)?.with_instrumented_events(instrumented_events);
+        vocabulary.interrupt_injection = interrupt_injection;
         vocabulary.places_digest = places_digest;
         Ok(vocabulary)
     }
+}
+
+/// Whether the backend selected by this build can service a generic workload
+/// interrupt action. The Consonance session binds x86-64 to its userspace
+/// interrupt fabric and arm64 to KVM's in-kernel vGIC, so this capability is a
+/// property of the compiled backend and never an operator setting.
+#[must_use]
+pub const fn compiled_backend_supports_interrupts() -> bool {
+    cfg!(all(
+        feature = "consonance",
+        target_os = "linux",
+        target_arch = "x86_64"
+    ))
 }
 
 #[cfg(test)]
@@ -337,9 +384,14 @@ ready /usr/local/pgsql/bin/pg_isready
             .expect("places");
         assert_eq!(vocabulary.places(), [0x47eca0, 0x4b0e86]);
         let identifier = vocabulary.identifier();
-        assert!(
-            identifier.starts_with("faultlab_bundle_v2;nodes=1;hooks=1,2;events=none;places=2/")
-        );
+        let interrupts = if compiled_backend_supports_interrupts() {
+            "enabled"
+        } else {
+            "none"
+        };
+        assert!(identifier.starts_with(&format!(
+            "faultlab_bundle_v3;nodes=1;hooks=1,2;events=none;interrupts={interrupts};places=2/",
+        )));
         let resolved = FaultVocabulary::from_identifier(&identifier).expect("resolve");
         assert_eq!(resolved.identifier(), identifier);
         assert!(resolved.places().is_empty());
@@ -441,9 +493,14 @@ ready /usr/local/pgsql/bin/pg_isready
             postgres.identifier(),
             "two workloads never record the same alphabet"
         );
+        let interrupts = if compiled_backend_supports_interrupts() {
+            "enabled"
+        } else {
+            "none"
+        };
         assert_eq!(
             etcd.identifier(),
-            "faultlab_bundle_v2;nodes=1;hooks=1,2;events=none"
+            format!("faultlab_bundle_v3;nodes=1;hooks=1,2;events=none;interrupts={interrupts}")
         );
         assert_ne!(
             etcd.identifier(),
@@ -457,20 +514,27 @@ ready /usr/local/pgsql/bin/pg_isready
             "faultlab_bundle_v0;nodes=1;hooks=1",
             "faultlab_bundle_v1;nodes=1;hooks=1",
             "faultlab_bundle_v2;nodes=1",
-            "faultlab_bundle_v2;nodes=0;hooks=1;events=none",
-            "faultlab_bundle_v2;nodes=x;hooks=1;events=none",
-            "faultlab_bundle_v2;nodes=1;hooks=1;events=other",
-            "faultlab_bundle_v2;nodes=1;hooks=1;events=none;extra=2",
-            "faultlab_bundle_v2;nodes=1;hooks=one;events=none",
+            "faultlab_bundle_v3;nodes=0;hooks=1;events=none;interrupts=enabled",
+            "faultlab_bundle_v3;nodes=x;hooks=1;events=none;interrupts=enabled",
+            "faultlab_bundle_v3;nodes=1;hooks=1;events=other;interrupts=enabled",
+            "faultlab_bundle_v3;nodes=1;hooks=1;events=none;interrupts=other",
+            "faultlab_bundle_v3;nodes=1;hooks=1;events=none;interrupts=enabled;extra=2",
+            "faultlab_bundle_v3;nodes=1;hooks=one;events=none;interrupts=enabled",
         ] {
             assert!(
                 FaultVocabulary::from_identifier(identifier).is_err(),
                 "{identifier} must be refused"
             );
         }
-        let no_hooks =
-            FaultVocabulary::from_identifier("faultlab_bundle_v2;nodes=2;hooks=;events=antithesis")
-                .expect("resolve");
+        let interrupts = if compiled_backend_supports_interrupts() {
+            "enabled"
+        } else {
+            "none"
+        };
+        let no_hooks = FaultVocabulary::from_identifier(&format!(
+            "faultlab_bundle_v3;nodes=2;hooks=;events=antithesis;interrupts={interrupts}"
+        ))
+        .expect("resolve");
         assert_eq!(no_hooks.nodes(), 2);
         assert!(no_hooks.hooks().is_empty());
         assert!(no_hooks.instrumented_events());

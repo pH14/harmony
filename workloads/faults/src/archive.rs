@@ -239,7 +239,13 @@ pub fn sample_action(
             [] => Ok(FaultAction::Wait),
             hooks => Ok(FaultAction::Hook(hooks[pick(rand, hooks.len())?])),
         },
-        6 => Ok(FaultAction::Interrupt(VECTORS[pick(rand, VECTORS.len())?])),
+        6 if vocabulary.interrupt_injection() => {
+            Ok(FaultAction::Interrupt(VECTORS[pick(rand, VECTORS.len())?]))
+        }
+        // The arm64 Consonance backend delegates the GIC to KVM, so it has no
+        // generic host interrupt injection seam. Keep the draw deterministic
+        // while replacing the unavailable arm with a supported no-op action.
+        6 => Ok(FaultAction::Wait),
         _ => match vocabulary.places() {
             [] => Ok(FaultAction::Wait),
             places => Ok(FaultAction::Park {
@@ -537,7 +543,16 @@ mod tests {
                 }
             }
         }
-        assert_eq!(kinds.len(), 8, "every action kind is reachable");
+        let expected = if vocabulary.interrupt_injection() {
+            8
+        } else {
+            7
+        };
+        assert_eq!(
+            kinds.len(),
+            expected,
+            "every supported action kind is reachable"
+        );
     }
 
     #[test]
