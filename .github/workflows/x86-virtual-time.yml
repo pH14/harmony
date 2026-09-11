@@ -489,6 +489,23 @@ jobs:
             > reports/npt-ioctl-sha256.txt
           timeout -k 5 30 reports/npt-ioctl-observation \
             2> reports/npt-ioctl-errors.log | tee reports/npt-ioctl-observations.jsonl
+      - name: Compare guest-authored PAE page-table changes
+        if: ${{ always() && inputs.amd_npt_observe }}
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          printf '%s\n' "$cpu" > reports/guest-write-affinity-cpu.txt
+          test_name=live_kvm::amd_default_npt_pae_guest_write_observations
+          printf '%s\n' "$test_name" > reports/guest-write-test-name.txt
+          export NPT_REPORT_DIR="$PWD/reports/guest-write-observations"
+          taskset --cpu-list "$cpu" cargo test --locked -p vmm-core \
+            --test x86_cpu_snapshots "$test_name" \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee reports/amd-npt-guest-write.log
+          grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' reports/amd-npt-guest-write.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

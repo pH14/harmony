@@ -79,7 +79,8 @@ fixed paging expectation prevents the qualification test from reaching capture.
 That mode also runs a direct KVM ioctl diagnostic, even if the identity test
 fails, to compare individual register reads on fresh VMs pinned to one allowed
 CPU. Its retained observations isolate capture effects; they are not a passing
-snapshot qualification.
+snapshot qualification. A further observation has the guest change its own
+PDPT before the stop, ruling out fixes that affect only host memory writes.
 
 ## Architecture boundary
 

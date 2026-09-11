@@ -70,6 +70,13 @@ const WARMUP_MARKER: u8 = 0xA5;
 const WARMUP_LEN: usize = 5 + 2 + 1;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const WARMUP_RIP: usize = CODE_GPA + WARMUP_LEN;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const GUEST_PDPT_WRITE_LEN: usize = 10;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const BASE_PROGRAM_LEN: usize = 21;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const GUEST_PDPT_WRITE: [u8; GUEST_PDPT_WRITE_LEN] =
+    [0xC7, 0x05, 0x00, 0x40, 0x00, 0x00, 0x01, 0x60, 0x00, 0x00];
 
 /// A short bound for this guest after the warmup: one UART exit followed by one
 /// HLT exit. The bound is test control only and never enters guest-visible state
@@ -174,6 +181,28 @@ fn guest_ram_image() -> GuestRam {
     put_u64(bytes, GDT_GPA, 0);
     put_u64(bytes, GDT_GPA + 8, 0x00CF_9B00_0000_FFFF);
     put_u64(bytes, GDT_GPA + 16, 0x00CF_9300_0000_FFFF);
+    ram
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+/// Prefix both physical copies of the guest program with a guest-authored
+/// PDPT write. The existing 21-byte program remains byte-for-byte unchanged
+/// after the prefix, so the only new behavior is the guest's RAM mutation
+/// before its scalar UART warmup.
+fn guest_ram_image_with_guest_pdpt_write() -> GuestRam {
+    let mut ram = guest_ram_image();
+    let bytes = ram.as_mut_bytes();
+
+    bytes.copy_within(
+        CODE_GPA..CODE_GPA + BASE_PROGRAM_LEN,
+        CODE_GPA + GUEST_PDPT_WRITE_LEN,
+    );
+    bytes.copy_within(
+        REMAPPED_CODE_GPA..REMAPPED_CODE_GPA + BASE_PROGRAM_LEN,
+        REMAPPED_CODE_GPA + GUEST_PDPT_WRITE_LEN,
+    );
+    put_bytes(bytes, CODE_GPA, &GUEST_PDPT_WRITE);
+    put_bytes(bytes, REMAPPED_CODE_GPA, &GUEST_PDPT_WRITE);
     ram
 }
 
@@ -455,6 +484,29 @@ mod live_kvm {
             |_| {}
         };
         compose(guest_ram_image(), backend, configure)
+    }
+
+    fn fresh_npt_vmm(configure: bool, guest_writes_pdpt: bool) -> Vmm<KvmBackend> {
+        let backend = KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed: {e}"));
+        let configure: fn(&mut KvmBackend) = if configure {
+            install_pae_entry::<KvmBackend>
+        } else {
+            |_| {}
+        };
+        let guest_ram = if guest_writes_pdpt {
+            guest_ram_image_with_guest_pdpt_write()
+        } else {
+            guest_ram_image()
+        };
+        compose(guest_ram, backend, configure)
+    }
+
+    fn read_guest_u64(vmm: &Vmm<KvmBackend>, gpa: usize) -> u64 {
+        let bytes = vmm.guest_memory();
+        let value = bytes
+            .get(gpa..gpa + 8)
+            .expect("guest RAM read is in bounds");
+        u64::from_le_bytes(value.try_into().expect("guest RAM read is eight bytes"))
     }
 
     fn mmio_guest_ram() -> GuestRam {
@@ -1118,9 +1170,7 @@ mod live_kvm {
         );
     }
 
-    #[test]
-    #[ignore = "diagnostic live AMD KVM NPT; run with --ignored and NPT_REPORT_DIR"]
-    fn amd_default_npt_pae_observations() {
+    fn npt_observations(guest_writes_pdpt: bool) {
         require_kvm();
 
         let cpuinfo = std::fs::read_to_string("/proc/cpuinfo")
@@ -1159,17 +1209,35 @@ mod live_kvm {
             assert_eq!(vmm.exit_counts().total(), 1);
         };
 
-        let mut uninterrupted = fresh_vmm(true);
+        // The guest-authored variant performs the PDPT mutation before the
+        // warmup UART; the original variant retains the host-write transition.
+        let mut uninterrupted = fresh_npt_vmm(true, guest_writes_pdpt);
         wire_snapshot_path(&mut uninterrupted);
         warmup(&mut uninterrupted);
-        switch_guest_pdpt_to_b(&mut uninterrupted);
+        if guest_writes_pdpt {
+            assert_eq!(
+                read_guest_u64(&uninterrupted, PDPT_GPA),
+                PDPT_B_ENTRY,
+                "guest-authored PDPT write must be visible in guest RAM"
+            );
+        } else {
+            switch_guest_pdpt_to_b(&mut uninterrupted);
+        }
         let uninterrupted_endpoint = run_npt_observed(&mut uninterrupted);
         write_npt_endpoint(&report_root, "original", &uninterrupted_endpoint);
 
-        let mut save_and_continue = fresh_vmm(true);
+        let mut save_and_continue = fresh_npt_vmm(true, guest_writes_pdpt);
         wire_snapshot_path(&mut save_and_continue);
         warmup(&mut save_and_continue);
-        switch_guest_pdpt_to_b(&mut save_and_continue);
+        if guest_writes_pdpt {
+            assert_eq!(
+                read_guest_u64(&save_and_continue, PDPT_GPA),
+                PDPT_B_ENTRY,
+                "guest-authored PDPT write must be visible in guest RAM"
+            );
+        } else {
+            switch_guest_pdpt_to_b(&mut save_and_continue);
+        }
         let save_before_memory = save_and_continue.guest_memory().to_vec();
         let save_before_serial = save_and_continue.serial().to_vec();
         let save_before_counts = save_and_continue.exit_counts();
@@ -1194,7 +1262,7 @@ mod live_kvm {
             &save_and_continue_endpoint,
         );
 
-        let mut cold_unobserved = fresh_vmm(false);
+        let mut cold_unobserved = fresh_npt_vmm(false, guest_writes_pdpt);
         wire_snapshot_path(&mut cold_unobserved);
         cold_unobserved
             .restore_snapshot(&save_stop.capture.memory, &save_stop.capture.state)
@@ -1204,7 +1272,7 @@ mod live_kvm {
         let cold_unobserved_endpoint = run_npt_observed(&mut cold_unobserved);
         write_npt_endpoint(&report_root, "cold-unobserved", &cold_unobserved_endpoint);
 
-        let mut cold_observed = fresh_vmm(false);
+        let mut cold_observed = fresh_npt_vmm(false, guest_writes_pdpt);
         wire_snapshot_path(&mut cold_observed);
         cold_observed
             .restore_snapshot(&save_stop.capture.memory, &save_stop.capture.state)
@@ -1229,8 +1297,14 @@ mod live_kvm {
         );
         write_npt_endpoint(&report_root, "cold-observed", &cold_observed_endpoint);
 
-        let original_memory = guest_ram_image().as_bytes().to_vec();
-        let mut wrong_original_ram = fresh_vmm(false);
+        let original_memory = if guest_writes_pdpt {
+            guest_ram_image_with_guest_pdpt_write()
+        } else {
+            guest_ram_image()
+        }
+        .as_bytes()
+        .to_vec();
+        let mut wrong_original_ram = fresh_npt_vmm(false, guest_writes_pdpt);
         wire_snapshot_path(&mut wrong_original_ram);
         wrong_original_ram
             .restore_snapshot(&original_memory, &save_stop.capture.state)
@@ -1242,8 +1316,13 @@ mod live_kvm {
             &wrong_original_ram_endpoint,
         );
 
+        let expected_warmup_rip = if guest_writes_pdpt {
+            WARMUP_RIP + GUEST_PDPT_WRITE_LEN
+        } else {
+            WARMUP_RIP
+        };
         assert!(
-            save_stop.rip == WARMUP_RIP as u64,
+            save_stop.rip == expected_warmup_rip as u64,
             "saved stop RIP must be the warmup boundary"
         );
         assert!(save_stop.rbx == 0, "saved stop RBX must precede INC EBX");
@@ -1315,5 +1394,17 @@ mod live_kvm {
             cold_observed_endpoint.endpoint.state_hash,
             wrong_original_ram_endpoint.endpoint.state_hash
         );
+    }
+
+    #[test]
+    #[ignore = "diagnostic live AMD KVM NPT; run with --ignored and NPT_REPORT_DIR"]
+    fn amd_default_npt_pae_observations() {
+        npt_observations(false);
+    }
+
+    #[test]
+    #[ignore = "diagnostic live AMD KVM NPT; run with --ignored and NPT_REPORT_DIR"]
+    fn amd_default_npt_pae_guest_write_observations() {
+        npt_observations(true);
     }
 }
