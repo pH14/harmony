@@ -16,7 +16,7 @@
 //! mock test keeps the same page-aligned mapping and ownership seam exercised
 //! on every host, including under Miri.
 
-use vmm_backend::{Backend, CommonExit, Exit, Gpa, MockBackend, X86Policy, X86};
+use vmm_backend::{Backend, CommonExit, Exit, Gpa, MockBackend, X86, X86Policy};
 use vmm_core::vendor::x86::contract;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use vmm_core::vendor::x86::contract_vclock_config;
@@ -1672,9 +1672,11 @@ mod live_kvm {
         assert_eq!(save_stop.state.regs.rbx, 0);
         assert_eq!(save_stop.state.xcrs.xcr0, 3);
         assert_eq!(save_stop.moment, Some(10_000));
-        assert!(xsave_output_page(&save_stop.memory)
-            .iter()
-            .all(|&byte| byte == 0));
+        assert!(
+            xsave_output_page(&save_stop.memory)
+                .iter()
+                .all(|&byte| byte == 0)
+        );
         let save_repeated = capture_full_vmm(&save_and_continue);
         assert!(
             save_repeated == save_stop,
