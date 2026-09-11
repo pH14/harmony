@@ -222,6 +222,16 @@ pub const PARK_HITS: [u32; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
 /// thread at the first system call of another task past the deadline, or at
 /// the periodic tick, so a short hold lands within a few milliseconds.
 pub const PARK_HOLD_US: [u32; 3] = [500, 2_000, 10_000];
+/// Visit-count scales an event park may name. A site's visit count spans
+/// orders of magnitude within one horizon, so the ladder is logarithmic: 0
+/// names a site no callback has reached, 16 one reached tens of thousands of
+/// times.
+pub const EVENT_PARK_RARITY: [u8; 5] = [0, 4, 8, 12, 16];
+/// Lengths of an event park's hold, in microseconds. The runtime sleeps inside
+/// the callback, so the hold is exact and can be far longer than a breakpoint
+/// park's: a hold has to outlast a batch commit for another thread to overtake
+/// the held one.
+pub const EVENT_PARK_HOLD_US: [u32; 4] = [1_000, 10_000, 50_000, 250_000];
 
 /// Draw one action from the bundle's vocabulary. A bundle that declares no
 /// hook cannot draw one, so that arm yields `Wait` rather than an action the
@@ -238,7 +248,7 @@ pub fn sample_action(
         Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault vocabulary alternative")?))
     };
     let node = u16::try_from(pick(rand, usize::from(vocabulary.nodes()))?)?;
-    match pick(rand, 8)? {
+    match pick(rand, 9)? {
         0 => Ok(FaultAction::Wait(sample_wait_scale(rand))),
         1 if vocabulary.instrumented_events() => Ok(FaultAction::EventKill {
             node,
@@ -262,6 +272,12 @@ pub fn sample_action(
         // generic host interrupt injection seam. Keep the draw deterministic
         // while replacing the unavailable arm with a supported no-op action.
         6 => Ok(FaultAction::Wait(sample_wait_scale(rand))),
+        7 if vocabulary.instrumented_events() => Ok(FaultAction::EventPark {
+            node,
+            rarity: EVENT_PARK_RARITY[pick(rand, EVENT_PARK_RARITY.len())?],
+            hold_us: EVENT_PARK_HOLD_US[pick(rand, EVENT_PARK_HOLD_US.len())?],
+        }),
+        7 => Ok(FaultAction::Wait(sample_wait_scale(rand))),
         _ => match vocabulary.places() {
             [] => Ok(FaultAction::Wait(sample_wait_scale(rand))),
             places => Ok(FaultAction::Park {
@@ -274,11 +290,17 @@ pub fn sample_action(
     }
 }
 
-/// Draw a wait length uniformly across the binary scales. Uniform over the
-/// scale rather than over the duration, so a short wait that lands between two
-/// faults stays as likely to be drawn as a long one.
+/// Draw a wait length, halving the chance of each next scale. A wait costs
+/// `1 << scale` horizons to run, so drawing the scale uniformly would put most
+/// of a campaign's guest time in its longest waits: at the case's horizon one
+/// scale-7 wait is a minute of guest time, and rebuilding an evicted prefix
+/// full of them costs that many times over. Halving makes the expected cost a
+/// few horizons while every scale stays reachable.
 fn sample_wait_scale(rand: &mut RomuDuoJrRand) -> u8 {
-    (rand.next_u64() % (u64::from(WAIT_MAX_SCALE) + 1)) as u8
+    let scale = rand.next_u64().trailing_zeros();
+    u8::try_from(scale)
+        .unwrap_or(WAIT_MAX_SCALE)
+        .min(WAIT_MAX_SCALE)
 }
 
 /// Draw across every positive `u64` scale without importing a workload event
@@ -563,7 +585,8 @@ mod tests {
             FaultAction::Restart(_) => 4,
             FaultAction::Hook(_) => 5,
             FaultAction::Interrupt(_) => 6,
-            FaultAction::Park { .. } => 7,
+            FaultAction::EventPark { .. } => 7,
+            FaultAction::Park { .. } => 8,
         };
         for _ in 0..2_000 {
             let action = sample_action(&mut rand, &vocabulary).expect("draw an action");
@@ -581,6 +604,15 @@ mod tests {
                     assert!(node < vocabulary.nodes());
                     assert!(PAUSE_TICKS.contains(&ticks));
                 }
+                FaultAction::EventPark {
+                    node,
+                    rarity,
+                    hold_us,
+                } => {
+                    assert!(node < vocabulary.nodes());
+                    assert!(EVENT_PARK_RARITY.contains(&rarity));
+                    assert!(EVENT_PARK_HOLD_US.contains(&hold_us));
+                }
                 FaultAction::Hook(id) => assert!(vocabulary.hooks().contains(&id)),
                 FaultAction::Interrupt(vector) => assert!(VECTORS.contains(&vector)),
                 FaultAction::Park {
@@ -597,9 +629,9 @@ mod tests {
             }
         }
         let expected = if vocabulary.interrupt_injection() {
-            8
+            9
         } else {
-            7
+            8
         };
         assert_eq!(
             kinds.len(),

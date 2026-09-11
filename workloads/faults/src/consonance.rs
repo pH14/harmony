@@ -36,7 +36,7 @@ use sha2::{Digest, Sha256};
 
 use crate::target::{
     ActionWindows, FaultAction, FaultObservations, FaultSnapshot, FaultStop, WAIT_MAX_SCALE,
-    action_delta, decode_sdk_events, standing_windows,
+    action_delta, action_horizons, decode_sdk_events, standing_windows,
 };
 
 /// Guest RAM when a campaign names none. The workloads are real database
@@ -656,7 +656,19 @@ impl Live {
                 .snapshots
                 .iter()
                 .filter(|(prefix, _)| !prefix.is_empty())
-                .min_by_key(|(_, cached)| cached.stamp)
+                // Evict the endpoint that is cheapest to reach again. A
+                // prefix holding long waits costs its whole guest duration to
+                // rebuild, so dropping it for a recently used shallow one
+                // spends minutes of guest time on the next branch from it.
+                .min_by_key(|(prefix, cached)| {
+                    (
+                        prefix
+                            .iter()
+                            .map(|action| action_horizons(*action))
+                            .sum::<u64>(),
+                        cached.stamp,
+                    )
+                })
                 .map(|(prefix, _)| prefix.clone())
             else {
                 break;
