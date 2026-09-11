@@ -43,7 +43,8 @@ static void check_ordinal(const char *executable, uint64_t ordinal)
     int report_channel[2];
     int start_channel[2];
     pid_t child;
-    uint64_t acknowledgement = 0;
+    uint64_t command[HARMONY_EVENT_CMD_WORDS] = {HARMONY_EVENT_CMD_KILL, ordinal, 0};
+    uint64_t acknowledgement[HARMONY_EVENT_CMD_WORDS] = {0, 0, 0};
     uint64_t report[2] = {0, 0};
     unsigned char byte = 0;
     int status;
@@ -81,10 +82,11 @@ static void check_ordinal(const char *executable, uint64_t ordinal)
     (void)close(report_channel[1]);
     (void)close(start_channel[1]);
     assert(read(start_channel[0], &byte, sizeof(byte)) == (ssize_t)sizeof(byte));
-    assert(write(channel[0], &ordinal, sizeof(ordinal)) == (ssize_t)sizeof(ordinal));
-    assert(read(channel[0], &acknowledgement, sizeof(acknowledgement)) ==
+    assert(write(channel[0], command, sizeof(command)) == (ssize_t)sizeof(command));
+    assert(read(channel[0], acknowledgement, sizeof(acknowledgement)) ==
            (ssize_t)sizeof(acknowledgement));
-    assert(acknowledgement == ordinal);
+    assert(acknowledgement[0] == HARMONY_EVENT_CMD_KILL);
+    assert(acknowledgement[1] == ordinal);
     assert(write(start_channel[0], &byte, sizeof(byte)) == (ssize_t)sizeof(byte));
     assert(waitpid(child, &status, 0) == child);
     assert(WIFSIGNALED(status));

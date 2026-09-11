@@ -68,6 +68,7 @@ const F_BUGGIFY_FIRE: u8 = 16;
 // undefined keeps a blob carrying it from decoding into anything.
 const F_RUN_HOOK: u8 = 17;
 const F_PROC_PARK: u8 = 19;
+const F_PROC_EVENT_PARK: u8 = 21;
 
 /// Append a `u16` little-endian.
 pub(crate) fn put_u16(w: &mut Vec<u8>, v: u16) {
@@ -144,6 +145,11 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
             put_u32(w, *hits);
             put_u64(w, hold.0);
         }
+        Fault::ProcEventPark { rarity, hold } => {
+            w.push(F_PROC_EVENT_PARK);
+            w.push(*rarity);
+            put_u64(w, hold.0);
+        }
     }
 }
 
@@ -178,6 +184,14 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
             hits: r.u32()?,
             hold: Span(r.u64()?),
         },
+        F_PROC_EVENT_PARK => {
+            let rarity = r.u8()?;
+            let hold = Span(r.u64()?);
+            if hold.0 == 0 {
+                return Err(EnvError::Malformed);
+            }
+            Fault::ProcEventPark { rarity, hold }
+        }
         _ => return Err(EnvError::Malformed),
     };
     Ok(f)

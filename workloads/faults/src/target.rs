@@ -92,6 +92,19 @@ pub enum FaultAction {
     Pause(u16, u32),
     /// SIGKILL one node and let the agent start it again inside the horizon.
     Restart(u16),
+    /// Hold one thread of an instrumented node at a rare place in its
+    /// deterministic event stream: the first callback after the arm whose own
+    /// site has been visited at most `1 << rarity` times holds its calling
+    /// thread for `hold_us` microseconds. The runtime counts and holds, so the
+    /// coordinate needs no address and survives a rebuild.
+    EventPark {
+        /// The node.
+        node: u16,
+        /// Visit-count scale of the site that holds.
+        rarity: u8,
+        /// Length of the hold in microseconds.
+        hold_us: u32,
+    },
     /// Spawn one workload hook once.
     Hook(u32),
     /// Inject one interrupt vector at the start of the horizon.
@@ -254,6 +267,23 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcRestart),
                 (start, start.saturating_add(horizon / RESTART_DOWN_DIVISOR)),
+            )),
+            perturb: None,
+        },
+        FaultAction::EventPark {
+            node,
+            rarity,
+            hold_us,
+        } => ActionDelta {
+            standing: Some(standing(
+                process_target(
+                    node,
+                    &Fault::ProcEventPark {
+                        rarity,
+                        hold: Span(u64::from(hold_us).saturating_mul(1_000)),
+                    },
+                ),
+                (start, end),
             )),
             perturb: None,
         },
@@ -583,6 +613,31 @@ mod tests {
         assert_eq!(laid[0], (0, 16_000_000_000));
         assert_eq!(laid[1], (16_000_000_000, 16_500_000_000));
         assert_eq!(windows.deadline(&actions), 16_500_000_000);
+    }
+
+    #[test]
+    fn an_event_park_names_a_rarity_and_a_hold_in_nanoseconds() {
+        let delta = action_delta(
+            FaultAction::EventPark {
+                node: 2,
+                rarity: 12,
+                hold_us: 50_000,
+            },
+            (1_000, 2_000),
+        );
+        let standing = delta.standing.expect("an event park stands");
+        assert_eq!(standing.start, 1_000);
+        assert_eq!(standing.end, 2_000);
+        assert_eq!(
+            decode_process_target(&standing.target),
+            Some((
+                2,
+                Fault::ProcEventPark {
+                    rarity: 12,
+                    hold: Span(50_000_000),
+                }
+            ))
+        );
     }
 
     #[test]

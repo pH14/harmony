@@ -446,6 +446,16 @@ fn event_context_digest(actions: &[FaultAction]) -> [u8; 32] {
                 digest.update([6]);
                 digest.update(vector.to_le_bytes());
             }
+            FaultAction::EventPark {
+                node,
+                rarity,
+                hold_us,
+            } => {
+                digest.update([8]);
+                digest.update(node.to_le_bytes());
+                digest.update([rarity]);
+                digest.update(hold_us.to_le_bytes());
+            }
             FaultAction::Park {
                 node,
                 addr,

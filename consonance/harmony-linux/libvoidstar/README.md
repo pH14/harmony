@@ -27,10 +27,20 @@ ranges to modules injected by the Go instrumentor.
 Instrumented workloads may also inherit `HARMONY_EVENT_KILL_FD`. Event control
 begins reading at the first instrumented module registration or callback, so
 the socket and a pending arm pass through an uninstrumented launcher without
-that launcher consuming it. The library reads positive `u64` arm values from that socket and
-kills its own process group after that many future instrumented callbacks. This is a synchronous
-instrumented-event coordinate. Zero disarms the coordinate. Arm publication
-is a bounded atomic replacement and never waits for an earlier callback to drain.
+that launcher consuming it. A command is three little-endian `u64` words,
+`kind` then two arguments, and the library echoes the whole command back once
+the arm is in force. Kind 1 is the event kill: the second word is a count of
+future instrumented callbacks, after which the library kills its own process
+group. Kind 2 is the event park: the second word is a visit-count scale and
+the third a hold in nanoseconds, and the first callback after the arm whose own
+site has been visited at most `1 << scale` times sleeps in place for that long
+before continuing. Both are synchronous instrumented-event coordinates. A zero
+count and a zero hold each disarm their own kind. Each arm acts once; the
+library disarms itself as it fires. Arm publication is a bounded atomic
+replacement and never waits for an earlier callback to drain. Per-site visit
+counts live in a fixed open-addressed table indexed by the edge id, so a site
+seen far more often than the table is wide can alias with another; the park
+coordinate is an approximation of rarity, not an exact count.
 Gate harnesses may additionally pass `HARMONY_EVENT_REPORT_FD`; immediately
 before an armed event kill, the bridge writes the selected ordinal and the
 generated global edge id as two little-endian `u64` values. Production search

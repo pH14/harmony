@@ -90,8 +90,10 @@ pub use standing::{
 /// [`DecisionClass::Process`] discriminant. Byte tag `18` is permanently
 /// unassigned; see `codec.rs`. Bumped to `6` for
 /// [`Fault::ProcEventKill`] (byte tag `20`), whose payload is a generic
-/// ordinal in the instrumented deterministic event stream.
-pub const CATALOG_VERSION: u16 = 6;
+/// ordinal in the instrumented deterministic event stream. Bumped to `7` for
+/// [`Fault::ProcEventPark`] (byte tag `21`), which names a place in that same
+/// stream by how rarely its site has been visited.
+pub const CATALOG_VERSION: u16 = 7;
 
 /// The maximum number of bytes one [`Entropy`](DecisionPoint::Entropy) or
 /// [`Payload`](DecisionPoint::Payload) decision may supply. A faultable service

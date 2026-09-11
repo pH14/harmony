@@ -19,7 +19,7 @@
 //! counted and started again at the next tick, so a workload that crashes on
 //! its own keeps running and the count is the observable.
 
-use crate::faults::{ActiveFaults, Park};
+use crate::faults::{ActiveFaults, EventPark, Park};
 use crate::regs::RegisterSnapshot;
 
 /// One thing the agent must do to the guest this tick, in the order the
@@ -39,6 +39,11 @@ pub enum Action {
     ArmEventKill(u16, u64),
     /// Remove an event-kill arm from a running instrumented node.
     DisarmEventKill(u16),
+    /// Arm a running instrumented node to hold the calling thread of its first
+    /// callback at a rarely visited site.
+    ArmEventPark(u16, EventPark),
+    /// Remove an event-park arm from a running instrumented node.
+    DisarmEventPark(u16),
     /// Launch the hook once, without waiting for it.
     RunHook(u32),
     /// Arm a park on the node's process group through the guest kernel.
@@ -61,6 +66,11 @@ impl Action {
                 format!("arm event kill node {node} ordinal {ordinal}")
             }
             Action::DisarmEventKill(node) => format!("disarm event kill node {node}"),
+            Action::ArmEventPark(node, park) => format!(
+                "arm event park node {node} rarity {} hold {}",
+                park.rarity, park.hold_nanos
+            ),
+            Action::DisarmEventPark(node) => format!("disarm event park node {node}"),
             Action::RunHook(id) => format!("run hook {id}"),
             Action::Park(node, park) => format!(
                 "park node {node} at {:#x} hit {} hold {}",
@@ -244,6 +254,13 @@ impl Supervisor {
                 }
             } else if was.park.is_some() {
                 actions.push(Action::Unpark(node));
+            }
+            if let Some(park) = now.event_park {
+                if was.event_park != Some(park) && state.alive {
+                    actions.push(Action::ArmEventPark(node, park));
+                }
+            } else if was.event_park.is_some() && state.alive {
+                actions.push(Action::DisarmEventPark(node));
             }
             // A restart window closing brings the node back unless a kill still
             // names it.
@@ -430,6 +447,34 @@ mod tests {
         // A different coordinate is a new instruction and arms normally.
         let later = active(&[(0, Fault::ProcEventKill { ordinal: 23 })]);
         assert_eq!(sup.tick(&later, &[]), [Action::ArmEventKill(0, 23)]);
+    }
+
+    #[test]
+    fn an_event_park_arms_once_and_disarms_when_its_window_closes() {
+        let mut sup = Supervisor::new(1);
+        let park = active(&[(
+            0,
+            Fault::ProcEventPark {
+                rarity: 12,
+                hold: Span(50_000_000),
+            },
+        )]);
+        assert_eq!(
+            sup.tick(&park, &[]),
+            [Action::ArmEventPark(
+                0,
+                EventPark {
+                    rarity: 12,
+                    hold_nanos: 50_000_000,
+                }
+            )]
+        );
+        // The same window standing another tick is not a new instruction.
+        assert_eq!(sup.tick(&park, &[]), []);
+        assert_eq!(
+            sup.tick(&ActiveFaults::default(), &[]),
+            [Action::DisarmEventPark(0)]
+        );
     }
 
     #[test]

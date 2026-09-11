@@ -23,6 +23,17 @@ pub struct Park {
     pub hold_nanos: u64,
 }
 
+/// The parameters of a `Fault::ProcEventPark` window: the first instrumented
+/// callback after the arm whose site has been visited at most `1 << rarity`
+/// times holds its own thread for `hold_nanos`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EventPark {
+    /// Visit-count scale of the site that holds.
+    pub rarity: u8,
+    /// Length of the hold in nanoseconds.
+    pub hold_nanos: u64,
+}
+
 /// The process faults in force for one node.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct NodeFaults {
@@ -40,6 +51,9 @@ pub struct NodeFaults {
     /// `Fault::ProcPark` — a breakpoint is armed on the node for the window's
     /// duration, and the thread that takes its k-th hit is held there.
     pub park: Option<Park>,
+    /// `Fault::ProcEventPark` — the instrumented runtime holds the thread of
+    /// the first callback at a site it has rarely visited.
+    pub event_park: Option<EventPark>,
 }
 
 impl NodeFaults {
@@ -95,7 +109,8 @@ impl ActiveFaults {
             | Fault::ProcEventKill { .. }
             | Fault::ProcPause(_)
             | Fault::ProcRestart
-            | Fault::ProcPark { .. } => {}
+            | Fault::ProcPark { .. }
+            | Fault::ProcEventPark { .. } => {}
             // Every other fault belongs to a class the guest does not apply;
             // the host enforces those itself.
             _ => return,
@@ -117,6 +132,12 @@ impl ActiveFaults {
                 flags.park = Some(Park {
                     addr: *addr,
                     hits: *hits,
+                    hold_nanos: hold.0,
+                });
+            }
+            Fault::ProcEventPark { rarity, hold } => {
+                flags.event_park = Some(EventPark {
+                    rarity: *rarity,
                     hold_nanos: hold.0,
                 });
             }
@@ -207,6 +228,7 @@ mod tests {
                 kill: false,
                 event_kill: None,
                 park: None,
+                event_park: None,
             }
         );
         assert_eq!(active.node(2), NodeFaults::default());

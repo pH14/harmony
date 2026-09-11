@@ -7,7 +7,8 @@ the package using a policy supplies the applicable enforcement mechanism.
 
 Process-class faults cover a node's whole lifecycle: pause, kill, restart, a
 workload-defined hook run (`RunHook`), an instrumented-event crash coordinate
-(`ProcEventKill`), and a hold at an execution place (`ProcPark`).
+(`ProcEventKill`), a hold at an execution place (`ProcPark`), and a hold at a
+rarely visited instrumented site (`ProcEventPark`).
 `process_target` and `decode_process_target` give those faults the one target
 encoding a host package and an in-guest agent both read.
 

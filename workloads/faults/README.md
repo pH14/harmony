@@ -23,7 +23,8 @@ in the fault agent's bundle format:
 [`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
 alphabet, and assembles a guest initramfs: the base image, the OCI rootfs, and
 a control member holding the static fault agent and this package's init. The
-`EventKill` action is added automatically only when the image contains the
+`EventKill` and `EventPark` actions are added automatically only when the image
+contains the
 Antithesis runtime bridge, generated symbol metadata, and the build's
 instrumented-node hash attestation; this capability is part of the recorded
 vocabulary used by replay. The
@@ -45,6 +46,7 @@ An input is a list of actions laid end to end over guest time
 | `Pause(node, ticks)` | the node is stopped, then continued inside the horizon |
 | `Restart(node)` | the node is killed and comes back inside the horizon |
 | `Hook(id)` | the agent runs that hook once |
+| `EventPark(node, rarity, hold)` | the instrumented runtime holds one thread of the node for `hold` at the first callback after the arm whose own site has been visited at most `1 << rarity` times |
 | `Park(node, addr, hits, hold)` | guest threads are held at an execution place |
 | `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's seal when settling carried it past that start |
 

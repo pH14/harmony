@@ -500,10 +500,22 @@ mod real {
                 }
             }
             Action::ArmEventKill(node, ordinal) => {
-                apply_event_ordinal(nodes, node, ordinal, tick)?;
+                apply_event_command(nodes, node, [EVENT_CMD_KILL, ordinal, 0], tick)?;
             }
             Action::DisarmEventKill(node) => {
-                apply_event_ordinal(nodes, node, 0, tick)?;
+                apply_event_command(nodes, node, [EVENT_CMD_KILL, 0, 0], tick)?;
+            }
+            Action::ArmEventPark(node, park) => {
+                apply_event_command(
+                    nodes,
+                    node,
+                    [EVENT_CMD_PARK, u64::from(park.rarity), park.hold_nanos],
+                    tick,
+                )?;
+            }
+            Action::DisarmEventPark(node) => {
+                // A zero hold is the runtime's disarm.
+                apply_event_command(nodes, node, [EVENT_CMD_PARK, 0, 0], tick)?;
             }
             Action::Park(node, park) => {
                 let Some(entry) = nodes.get_mut(usize::from(node)) else {
@@ -807,8 +819,20 @@ mod real {
         Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
     }
 
-    fn send_event_ordinal(control: &OwnedFd, ordinal: u64) -> Result<(), String> {
-        let bytes = ordinal.to_le_bytes();
+    /// Command words of the instrumented runtime's control channel, matching
+    /// `libvoidstar`'s `HARMONY_EVENT_CMD_*` kinds.
+    const EVENT_CMD_WORDS: usize = 3;
+    const EVENT_CMD_KILL: u64 = 1;
+    const EVENT_CMD_PARK: u64 = 2;
+
+    fn send_event_command(
+        control: &OwnedFd,
+        command: [u64; EVENT_CMD_WORDS],
+    ) -> Result<(), String> {
+        let mut bytes = [0_u8; EVENT_CMD_WORDS * 8];
+        for (slot, word) in bytes.chunks_exact_mut(8).zip(command) {
+            slot.copy_from_slice(&word.to_le_bytes());
+        }
         let mut written = 0;
         while written < bytes.len() {
             // SAFETY: the pointer names the remaining initialized bytes and the
@@ -832,7 +856,7 @@ mod real {
             }
             written += usize::try_from(count).map_err(|_| "event control write overflow")?;
         }
-        let mut acknowledgement = [0_u8; 8];
+        let mut acknowledgement = [0_u8; EVENT_CMD_WORDS * 8];
         let mut read = 0;
         while read < acknowledgement.len() {
             // SAFETY: the pointer names the remaining initialized destination
@@ -856,7 +880,7 @@ mod real {
             }
             read += usize::try_from(count).map_err(|_| "event control acknowledgement overflow")?;
         }
-        if u64::from_le_bytes(acknowledgement) != ordinal {
+        if acknowledgement != bytes {
             return Err("event control acknowledgement did not echo the arm".to_owned());
         }
         Ok(())
@@ -865,21 +889,21 @@ mod real {
     /// A node may die on the selected callback while the supervisor is sending
     /// a later arm or disarm. Retire that stale channel and ensure the process
     /// group is down; the normal reap/restart path observes the death next tick.
-    fn apply_event_ordinal(
+    fn apply_event_command(
         nodes: &mut [Node],
         node: u16,
-        ordinal: u64,
+        command: [u64; EVENT_CMD_WORDS],
         tick: u64,
     ) -> Result<(), String> {
         let entry = nodes
             .get_mut(usize::from(node))
-            .ok_or_else(|| format!("event kill names unknown node {node}"))?;
+            .ok_or_else(|| format!("event command names unknown node {node}"))?;
         let result = entry.event_control.as_ref().map_or_else(
             || Err("control channel is unavailable".to_owned()),
-            |control| send_event_ordinal(control, ordinal),
+            |control| send_event_command(control, command),
         );
         if let Err(error) = result {
-            log(tick, &format!("event kill node {node}: {error}"));
+            log(tick, &format!("event command node {node}: {error}"));
             entry.event_control = None;
             if let Some(child) = entry.child.as_ref() {
                 signal_child_group(child, libc::SIGKILL);

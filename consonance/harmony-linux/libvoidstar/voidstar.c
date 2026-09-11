@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef HARMONY_OPEN
@@ -72,6 +73,20 @@ static _Atomic uint64_t harmony_next_edge_offset;
 static _Atomic uint64_t harmony_event_remaining;
 static _Atomic uint64_t harmony_event_target;
 static _Atomic bool harmony_event_enabled;
+
+/*
+ * An event park names a place by how rarely its site has been reached rather
+ * than by an address, so the coordinate keeps its meaning across a rebuild of
+ * the workload. Visits are counted per site in a fixed open table: a collision
+ * makes a rare site look common, which loses a park rather than firing a wrong
+ * one. The hold runs on the calling thread only, so every other thread of the
+ * process keeps running through it.
+ */
+#define HARMONY_SITE_SLOTS (UINT64_C(1) << 19)
+static _Atomic uint32_t harmony_site_visits[HARMONY_SITE_SLOTS];
+static _Atomic uint64_t harmony_park_hold_nanos;
+static _Atomic uint32_t harmony_park_ceiling;
+static _Atomic bool harmony_park_armed;
 static pthread_once_t harmony_event_control_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t harmony_event_ready_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t harmony_event_ready_cond = PTHREAD_COND_INITIALIZER;
@@ -117,10 +132,22 @@ static uint32_t process_id_from_environment(void)
     return (uint32_t)value;
 }
 
-static int read_event_command(int fd, uint64_t *value)
+/*
+ * One control command is three little-endian words: the kind, and two
+ * arguments the kind gives meaning to. The whole command is echoed back so the
+ * agent knows which arm is in force before it lets the action proceed.
+ */
+enum {
+    HARMONY_EVENT_CMD_WORDS = 3,
+    HARMONY_EVENT_CMD_KILL = 1,
+    HARMONY_EVENT_CMD_PARK = 2
+};
+
+static int read_event_command(int fd, uint64_t *words)
 {
-    unsigned char bytes[sizeof(*value)];
+    unsigned char bytes[HARMONY_EVENT_CMD_WORDS * sizeof(uint64_t)];
     size_t consumed = 0;
+    size_t index;
 
     while (consumed < sizeof(bytes)) {
         ssize_t result = read(fd, bytes + consumed, sizeof(bytes) - consumed);
@@ -130,14 +157,82 @@ static int read_event_command(int fd, uint64_t *value)
             return -1;
         consumed += (size_t)result;
     }
-    *value = get_u64(bytes);
+    for (index = 0; index < HARMONY_EVENT_CMD_WORDS; ++index)
+        words[index] = get_u64(bytes + index * sizeof(uint64_t));
     return 0;
+}
+
+/* Fire the park at a site visited at most `1 << rarity` times before this
+ * callback. A rarity wider than the counter means every site qualifies. */
+static uint32_t park_ceiling(uint64_t rarity)
+{
+    if (rarity >= 32)
+        return UINT32_MAX;
+    return (uint32_t)(UINT32_C(1) << rarity);
+}
+
+static void park_disarm(void)
+{
+    atomic_store_explicit(&harmony_park_armed, false, memory_order_release);
+    atomic_store_explicit(&harmony_park_hold_nanos, 0, memory_order_release);
+}
+
+static void park_arm(uint64_t rarity, uint64_t hold_nanos)
+{
+    if (hold_nanos == 0) {
+        park_disarm();
+        return;
+    }
+    atomic_store_explicit(
+        &harmony_park_ceiling, park_ceiling(rarity), memory_order_release);
+    atomic_store_explicit(
+        &harmony_park_hold_nanos, hold_nanos, memory_order_release);
+    atomic_store_explicit(&harmony_park_armed, true, memory_order_release);
+}
+
+/* Hold this thread for `hold_nanos`, resuming across a signal. */
+static void park_hold(uint64_t hold_nanos)
+{
+    struct timespec remaining;
+
+    remaining.tv_sec = (time_t)(hold_nanos / UINT64_C(1000000000));
+    remaining.tv_nsec = (long)(hold_nanos % UINT64_C(1000000000));
+    while (nanosleep(&remaining, &remaining) != 0 && errno == EINTR)
+        continue;
+}
+
+/*
+ * Count this callback's site and report whether the park fires here. The
+ * claim is one exchange, so exactly one thread takes an arm however many
+ * callbacks race for it.
+ */
+static bool park_claim(uint64_t edge, uint64_t *hold_nanos)
+{
+    uint64_t slot;
+    uint32_t before;
+
+    slot = edge % HARMONY_SITE_SLOTS;
+    before = atomic_fetch_add_explicit(
+        &harmony_site_visits[slot], 1, memory_order_acq_rel);
+    if (before == UINT32_MAX)
+        atomic_store_explicit(
+            &harmony_site_visits[slot], UINT32_MAX, memory_order_release);
+    if (!atomic_load_explicit(&harmony_park_armed, memory_order_acquire))
+        return false;
+    if (before >= atomic_load_explicit(&harmony_park_ceiling, memory_order_acquire))
+        return false;
+    if (!atomic_exchange_explicit(&harmony_park_armed, false, memory_order_acq_rel))
+        return false;
+    *hold_nanos = atomic_load_explicit(
+        &harmony_park_hold_nanos, memory_order_acquire);
+    return *hold_nanos != 0;
 }
 
 static void *event_control_main(void *unused)
 {
-    uint64_t target;
-    unsigned char acknowledgement[sizeof(target)];
+    uint64_t command[HARMONY_EVENT_CMD_WORDS];
+    unsigned char acknowledgement[sizeof(command)];
+    size_t index;
 
     (void)unused;
     if (pthread_mutex_lock(&harmony_event_ready_lock) != 0)
@@ -150,24 +245,35 @@ static void *event_control_main(void *unused)
         }
     }
     (void)pthread_mutex_unlock(&harmony_event_ready_lock);
-    while (read_event_command(harmony_event_control_fd, &target) == 0) {
+    while (read_event_command(harmony_event_control_fd, command) == 0) {
         /* Disarm before the acknowledgement; callbacks skip publication. */
-        (void)atomic_exchange_explicit(
-            &harmony_event_remaining, 0, memory_order_acq_rel);
-        put_u64(acknowledgement, target);
+        if (command[0] == HARMONY_EVENT_CMD_KILL)
+            (void)atomic_exchange_explicit(
+                &harmony_event_remaining, 0, memory_order_acq_rel);
+        else if (command[0] == HARMONY_EVENT_CMD_PARK)
+            park_disarm();
+        for (index = 0; index < HARMONY_EVENT_CMD_WORDS; ++index)
+            put_u64(acknowledgement + index * sizeof(uint64_t), command[index]);
         if (write_all(harmony_event_control_fd, acknowledgement, sizeof(acknowledgement)) != 0) {
             atomic_store_explicit(&harmony_event_target, 0, memory_order_release);
             atomic_store_explicit(&harmony_event_enabled, false, memory_order_release);
+            park_disarm();
             break;
         }
         /* The arm becomes visible only after its acknowledgement is sent. */
-        atomic_store_explicit(&harmony_event_target, target, memory_order_release);
-        (void)atomic_exchange_explicit(
-            &harmony_event_remaining, target, memory_order_acq_rel);
+        if (command[0] == HARMONY_EVENT_CMD_KILL) {
+            atomic_store_explicit(
+                &harmony_event_target, command[1], memory_order_release);
+            (void)atomic_exchange_explicit(
+                &harmony_event_remaining, command[1], memory_order_acq_rel);
+        } else if (command[0] == HARMONY_EVENT_CMD_PARK) {
+            park_arm(command[1], command[2]);
+        }
     }
     (void)atomic_exchange_explicit(&harmony_event_remaining, 0, memory_order_acq_rel);
     atomic_store_explicit(&harmony_event_target, 0, memory_order_release);
     atomic_store_explicit(&harmony_event_enabled, false, memory_order_release);
+    park_disarm();
     (void)close(harmony_event_control_fd);
     harmony_event_control_fd = -1;
     return NULL;
@@ -485,10 +591,12 @@ bool notify_coverage(uint64_t edge)
 {
     uint64_t claimed;
     uint64_t target = 0;
+    uint64_t hold_nanos = 0;
 
-    (void)edge;
     event_control_activate();
     if (atomic_load_explicit(&harmony_event_enabled, memory_order_acquire)) {
+        if (park_claim(edge, &hold_nanos))
+            park_hold(hold_nanos);
         claimed = event_claim(&target);
         if (claimed == 1) {
             if (harmony_event_report_fd >= 0) {
