@@ -1,19 +1,27 @@
 # The etcd v3.5 consistency workload image
 
-The Dockerfile is the image contract for both arms. It must fetch the pinned
-upstream etcd source, run Antithesis's Go instrumentor, and build the resulting
-instrumented tree. The bundle and hooks are identical; a stock release binary
-is not a valid artifact for this entry.
+The Dockerfile is the image contract for both arms. It fetches the pinned
+upstream etcd source and builds the server through Antithesis's Go instrumentor.
+The bundle, hooks, and workload writer are identical; only the pinned server
+source revision changes between the two arms. A stock release server binary is
+not a valid artifact for this entry.
 
 The build installs `github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-toolexec`
 at the pinned `v0.8.0` release, applies the small MIT-licensed
 `antithesis-sdk-go-v0.8.0-linux-arm64.patch` compatibility patch to the SDK's
-architecture-neutral cgo handler, and runs it through `go build -toolexec`.
-The generated symbol tables are packaged under `/symbols`. `libvoidstar.so`
+architecture-neutral cgo handler, and runs the server through
+`go build -toolexec`. The generated symbol tables are packaged under
+`/symbols`. `libvoidstar.so`
 provides the public runtime ABI and receives the generic event-kill arm from the
 fault agent. The upstream SDK and instrumentor are MIT licensed; Harmony does
 not vendor their source. The runtime image retains the Antithesis SDK and etcd
 license notices under `/licenses`.
+
+The workload writer is a separate, uninstrumented static Go binary. Its
+`writer/go.mod` pins `go.etcd.io/etcd/client/v3` at `v3.5.3` and its checked-in
+`go.sum` locks the module graph. The Dockerfile builds that helper in a stage
+that does not depend on `ETCD_VERSION`, then copies the same output into both
+arms. The helper is not part of the server's Antithesis event stream.
 
 The Docker target platform selects the native build architecture. `TARGETARCH`
 must be `amd64` or `arm64`; the same instrumented source, event protocol, and
@@ -46,8 +54,10 @@ docker save --output etcd-3.5.2-arm64.oci harmony-etcd:3.5.2-arm64
 The guest runs three local instrumented etcd members in one Raft cluster. Their client and peer
 ports are `2379/2380`, `2381/2382`, and `2383/2384`, with independent data directories under
 `/tmp/etcd/data`. The readiness probe requires all three client endpoints to be healthy. Hook 1
-detaches four persistent clients that put uniquely keyed values through the cluster endpoint set
-and journal each acknowledged put outside etcd. Harmony can then kill and restart one member
-while apply is busy. Hook 2 performs one serializable local read through every member and only
-emits a verdict after all three comparisons succeed, so a member that is still down cannot count
-as data loss.
+starts one detached writer helper. The helper owns exactly four persistent etcd clients; each
+client puts uniquely keyed values through the cluster endpoint set as fast as requests complete
+and appends only acknowledged puts to `/tmp/etcd/journal/acked`. Failed puts retry their current
+unique key, so a later hook cannot overwrite a key that an earlier hook had recorded. There are
+no timeout, wait, rate, batch-size, or write-count settings. Hook 2 keeps the `ETCDCTL_API=3`
+serializable local reads through every member and only emits a verdict after all three
+comparisons succeed, so a member that is still down cannot count as data loss.

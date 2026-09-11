@@ -4,6 +4,7 @@ set -eu
 
 journal=/tmp/etcd/journal/acked
 writers_started=/tmp/etcd/journal/writers-started
+writer=/opt/harmony/etcd-writer
 cluster_endpoints='http://127.0.0.1:2379,http://127.0.0.1:2381,http://127.0.0.1:2383'
 member_endpoint_1=http://127.0.0.1:2379
 member_endpoint_2=http://127.0.0.1:2381
@@ -19,42 +20,19 @@ ctl_member() {
   ETCDCTL_API=3 /opt/etcd/etcdctl --endpoints="${endpoint}" "$@"
 }
 
-writer() {
-  worker=$1
-  i=1
-  while :; do
-    key="museum/${worker}/key-${i}"
-    value="value-${worker}-${i}"
-    # Keep pressure on the apply path across a node kill. A failed request is
-    # not journaled and is retried after the restart, so the journal contains
-    # only writes the client actually acknowledged.
-    if ctl put "$key" "$value" >/dev/null 2>&1; then
-      printf '%s\t%s\n' "$key" "$value" >>"${journal}"
-      i=$((i + 1))
-    fi
-  done
-}
-
-if [ "${1:-}" = worker ]; then
-  writer "$2"
-  exit 0
-fi
-
 case "$1" in
   1)
-    # Keep several independent clients applying entries while Harmony is free
-    # to kill the node. Every acknowledged put is journaled outside etcd; hook
-    # 2 compares this client record with the recovered bbolt contents.
-    # `setsid -f` double-forks the workers so this one-shot hook returns while
-    # they keep the apply path busy for later Kill/Restart actions.
+    # Keep four independent persistent clients applying entries while Harmony
+    # is free to kill the node. The helper journals every acknowledged put
+    # outside etcd; hook 2 compares this client record with recovered bbolt
+    # contents. `setsid -f` double-forks the helper so this one-shot hook
+    # returns while its four client loops keep the apply path busy.
     # Search may draw this hook more than once. Only its first invocation owns
-    # the writers: starting them again from key 1 could repair a lost key and
-    # would append duplicate expectations to the external journal.
+    # the helper: starting it again from key 1 could repair a lost key and
+    # would append duplicate expectations to the external journal. The helper
+    # itself is built from the same pinned client module in both etcd arms.
     if mkdir "${writers_started}" 2>/dev/null; then
-      setsid -f "$0" worker 1 >/dev/null 2>&1
-      setsid -f "$0" worker 2 >/dev/null 2>&1
-      setsid -f "$0" worker 3 >/dev/null 2>&1
-      setsid -f "$0" worker 4 >/dev/null 2>&1
+      setsid -f "${writer}" >/dev/null 2>&1
     fi
     echo '@reachable 10'
     ;;

@@ -2,6 +2,27 @@
 ARG DEBIAN_IMAGE=debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 ARG GO_IMAGE=golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
 
+FROM ${GO_IMAGE} AS workload-writer-build
+
+ARG TARGETARCH
+
+SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
+
+RUN case "${TARGETARCH}" in \
+        amd64|arm64) ;; \
+        *) echo "unsupported target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac
+
+WORKDIR /build/writer
+COPY bugs/historical/etcd-3.5-inconsistency/image/writer/go.mod \
+     bugs/historical/etcd-3.5-inconsistency/image/writer/go.sum ./
+RUN go mod download
+COPY bugs/historical/etcd-3.5-inconsistency/image/writer/main.go ./
+RUN mkdir -p /out \
+    && CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
+    go build -mod=readonly -buildvcs=false -o /out/etcd-writer . \
+    && test -x /out/etcd-writer
+
 FROM ${GO_IMAGE} AS instrumented-build
 
 ARG TARGETARCH
@@ -93,15 +114,18 @@ RUN apt-get update \
 
 COPY --from=instrumented-build /out/etcd/etcd /opt/etcd/etcd
 COPY --from=instrumented-build /out/etcd/etcdctl /opt/etcd/etcdctl
+COPY --from=workload-writer-build /out/etcd-writer /opt/harmony/etcd-writer
 COPY --from=instrumented-build /out/libvoidstar.so /usr/lib/libvoidstar.so
 COPY --from=instrumented-build /out/symbols/*.sym.tsv /symbols/
 COPY --from=instrumented-build /out/harmony-instrumented-events /symbols/harmony-instrumented-events
 COPY --from=instrumented-build /out/ETCD-LICENSE /licenses/etcd.txt
 COPY --from=instrumented-build /out/ANTITHESIS-SDK-GO-LICENSE /licenses/antithesis-sdk-go.txt
 
-RUN chmod 0755 /opt/etcd/etcd /opt/etcd/etcdctl /usr/lib/libvoidstar.so \
+RUN chmod 0755 /opt/etcd/etcd /opt/etcd/etcdctl /opt/harmony/etcd-writer \
+        /usr/lib/libvoidstar.so \
     && test -x /opt/etcd/etcd \
     && test -x /opt/etcd/etcdctl \
+    && test -x /opt/harmony/etcd-writer \
     && set -- /symbols/*.sym.tsv \
     && test -s "$1" \
     && test -s /symbols/harmony-instrumented-events \
