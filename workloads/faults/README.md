@@ -99,7 +99,9 @@ hook-completion count.
 and committed request results in an ordered journal. A transaction publishes
 all of its records together after its referenced checkpoint and evidence blobs
 are stored. One process holds the workspace writer lock for the lifetime of the
-open workspace. Publication synchronizes files and directories; an uncertain
+open workspace; failed opens and preparation also release acquired locks, even
+when a spawned child inherited the descriptor. Publication synchronizes files
+and directories; an uncertain
 commit requires reopening the journal before further mutation.
 
 Reopening verifies sequence continuity and referenced blob contents. Unpublished

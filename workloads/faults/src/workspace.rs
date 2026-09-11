@@ -532,7 +532,27 @@ impl State {
     }
 }
 
-fn acquire_lock(root: &Path) -> Result<File, Box<dyn Error>> {
+/// The lock ownership held from successful acquisition through the end of a
+/// workspace operation. Explicitly unlocking on drop matters when a child
+/// inherited a duplicate descriptor: closing this descriptor alone would leave
+/// the open file description locked by that child.
+#[derive(Debug)]
+struct LockGuard(File);
+
+impl LockGuard {
+    #[cfg(test)]
+    fn try_clone(&self) -> std::io::Result<File> {
+        self.0.try_clone()
+    }
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+fn acquire_lock(root: &Path) -> Result<LockGuard, Box<dyn Error>> {
     let path = root.join(LOCK_FILE);
     let lock = OpenOptions::new()
         .create(true)
@@ -552,7 +572,7 @@ fn acquire_lock(root: &Path) -> Result<File, Box<dyn Error>> {
             }
         }
     })?;
-    Ok(lock)
+    Ok(LockGuard(lock))
 }
 
 fn directory_has_committed_or_foreign_entries(path: &Path) -> Result<bool, Box<dyn Error>> {
@@ -750,19 +770,10 @@ impl CommitPhase {
 pub struct Workspace {
     root: PathBuf,
     state: State,
-    _lock: File,
+    _lock: LockGuard,
     poisoned: Cell<bool>,
     #[cfg(test)]
     fail_commit_phase: Cell<Option<CommitPhase>>,
-}
-
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        // Closing only this descriptor may leave a flock alive in a child
-        // that inherited the open file description while spawning. The
-        // owning workspace explicitly releases it before closing its file.
-        let _ = self._lock.unlock();
-    }
 }
 
 impl Workspace {
@@ -2079,6 +2090,34 @@ mod tests {
             "child must retain the inherited descriptor"
         );
         assert_eq!(reopened.expect("owner released lock").sequence(), 1);
+    }
+
+    #[test]
+    fn dropping_an_acquired_lock_before_workspace_construction_releases_it() {
+        use std::process::{Command, Stdio};
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let lock = acquire_lock(directory.path()).expect("acquire lock");
+        let inherited = lock.try_clone().expect("clone descriptor");
+        let mut child = Command::new(std::env::current_exe().expect("test executable"))
+            .arg("inherited_lock_descriptor_child")
+            .env("HARMONY_TEST_HOLD_LOCK_DESCRIPTOR", "1")
+            .stdin(Stdio::from(inherited))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn descriptor holder");
+        drop(lock);
+        let reacquired = acquire_lock(directory.path());
+        let child_was_running = child.try_wait().expect("child status").is_none();
+        child.kill().expect("stop descriptor holder");
+        child.wait().expect("reap descriptor holder");
+
+        assert!(
+            child_was_running,
+            "child must retain the inherited descriptor while the guard drops"
+        );
+        reacquired.expect("acquired lock must release before Workspace construction");
     }
 
     #[test]
