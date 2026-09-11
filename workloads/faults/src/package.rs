@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     archive::FaultMilestones,
-    target::{FaultAction, FaultStop},
+    target::{FaultAction, FaultObservations, FaultStop},
 };
 
 /// Package name recorded in every report.
@@ -116,6 +116,11 @@ pub struct ReplaySummary {
     /// `actions_applied` when every applied action ran in the guest rather
     /// than being answered from a cached snapshot of an earlier run.
     pub guest_horizons: u64,
+    /// The endpoint's registers and liveness. A fault that leaves no trace in
+    /// the stop or the assertions -- a kill that fired, a park that held -- is
+    /// visible only here, so a replay carries them for comparison.
+    #[serde(default)]
+    pub observations: FaultObservations,
 }
 
 /// Whether `replay` reproduced the evidence a campaign recorded for one bug.
@@ -544,6 +549,7 @@ mod live {
             sometimes: observation.sometimes.iter().copied().collect(),
             actions_applied: target.horizons_clocked(),
             guest_horizons: target.guest_horizons_run(),
+            observations: observation.clone(),
         };
         Ok(summary)
     }
@@ -676,6 +682,7 @@ mod tests {
             sometimes: vec![24],
             actions_applied: 3,
             guest_horizons: 3,
+            observations: FaultObservations::default(),
         }
     }
 

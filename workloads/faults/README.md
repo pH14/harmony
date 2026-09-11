@@ -112,7 +112,10 @@ Every replay run boots a session no earlier run has touched, so no snapshot
 another run cached can stand in for guest execution: each run reaches the
 sealed setup point and executes the recorded actions itself. Each run records
 the actions it applied beside the horizons it ran in the guest, and the two are
-equal when nothing came from a cache. A search replays every bug it records the
+equal when nothing came from a cache. Each run also carries the endpoint's
+observations, because a fault whose only trace is a register -- an event kill
+that fired, an event park that held -- cannot be compared across runs from the
+stop and the assertions alone. A search replays every bug it records the
 same way, and reports the bug as confirmed only when the replay reproduced the
 evidence the campaign saw: the assertions it violated, or the same stop when
 the stop was the only evidence. `bug_found` and `first_bug_execution` come from
