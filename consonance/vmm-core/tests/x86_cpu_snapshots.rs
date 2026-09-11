@@ -943,4 +943,377 @@ mod live_kvm {
             negative_endpoint.state_hash
         );
     }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct NptObservedEndpoint {
+        endpoint: Endpoint,
+        pdptr_flags: u64,
+        pdptrs: [u64; 4],
+        rip: u64,
+        rbx: u64,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct NptObservedStop {
+        capture: MmioCapture,
+        serial: Vec<u8>,
+        pdptr_flags: u64,
+        pdptrs: [u64; 4],
+        rip: u64,
+        rbx: u64,
+    }
+
+    fn run_npt_observed(vmm: &mut Vmm<KvmBackend>) -> NptObservedEndpoint {
+        let mut steps = 0;
+        loop {
+            assert!(steps < MAX_STEPS, "AMD NPT guest exceeded the step budget");
+            match vmm.step().expect("run one AMD NPT guest exit") {
+                Step::Continued => steps += 1,
+                Step::Terminal(reason) => {
+                    assert_eq!(reason, TerminalReason::Idle, "AMD NPT guest stopped at HLT");
+                    break;
+                }
+                Step::SdkStop => panic!("unexpected SDK stop in AMD NPT guest"),
+            }
+        }
+
+        let serial = vmm.serial().to_vec();
+        assert_eq!(
+            serial.len(),
+            2,
+            "AMD NPT endpoint must contain two UART bytes"
+        );
+        assert_eq!(serial[0], WARMUP_MARKER);
+        let state = vmm.save_vm_state().expect("save AMD NPT endpoint VM state");
+        assert_eq!(state.regs.rbx, 1, "AMD NPT endpoint must retire INC EBX");
+        let encoded_state = state.encode().expect("encode AMD NPT endpoint VM state");
+        NptObservedEndpoint {
+            endpoint: Endpoint {
+                serial,
+                memory: vmm.guest_memory().to_vec(),
+                encoded_state,
+                state_blob: vmm
+                    .state_blob()
+                    .expect("encode AMD NPT endpoint state blob"),
+                state_hash: vmm.state_hash().expect("hash AMD NPT endpoint state"),
+                effective_vns: vmm.effective_vns(),
+            },
+            pdptr_flags: state.sregs.flags,
+            pdptrs: state.sregs.pdptrs,
+            rip: state.regs.rip,
+            rbx: state.regs.rbx,
+        }
+    }
+
+    fn capture_npt_stop(vmm: &Vmm<KvmBackend>) -> NptObservedStop {
+        let capture = capture_full_vmm(vmm);
+        NptObservedStop {
+            serial: vmm.serial().to_vec(),
+            pdptr_flags: capture.state.sregs.flags,
+            pdptrs: capture.state.sregs.pdptrs,
+            rip: capture.state.regs.rip,
+            rbx: capture.state.regs.rbx,
+            capture,
+        }
+    }
+
+    fn npt_hex(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for &byte in bytes {
+            out.push(HEX[usize::from(byte >> 4)] as char);
+            out.push(HEX[usize::from(byte & 0x0f)] as char);
+        }
+        out
+    }
+
+    fn write_npt_file(path: &std::path::Path, bytes: &[u8]) {
+        use std::io::Write;
+
+        let parent = path.parent().expect("diagnostic file has a parent");
+        std::fs::create_dir_all(parent).expect("create NPT diagnostic directory");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .expect("create immutable NPT diagnostic file");
+        file.write_all(bytes)
+            .expect("write immutable NPT diagnostic file");
+        file.sync_all().expect("sync immutable NPT diagnostic file");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_npt_artifacts(
+        root: &std::path::Path,
+        arm: &str,
+        phase: &str,
+        memory: &[u8],
+        vm_state: &[u8],
+        state_blob: &[u8],
+        serial: &[u8],
+        effective_vns: Option<u64>,
+        state_hash: &[u8; 32],
+        pdptr_flags: u64,
+        pdptrs: [u64; 4],
+        rip: u64,
+        rbx: u64,
+    ) {
+        let directory = root.join(arm).join(phase);
+        write_npt_file(&directory.join("memory.bin"), memory);
+        write_npt_file(&directory.join("vm-state.bin"), vm_state);
+        write_npt_file(&directory.join("state-blob.bin"), state_blob);
+        let serial_json = serial
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let pdptrs_json = pdptrs
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let time_json = effective_vns.map_or_else(|| "null".to_owned(), |time| time.to_string());
+        let summary = format!(
+            "{{\"arm\":\"{arm}\",\"phase\":\"{phase}\",\"serial\":[{serial_json}],\"virtual_time\":{time_json},\"state_hash\":\"{}\",\"pdptr_flags\":{pdptr_flags},\"pdptrs\":[{pdptrs_json}],\"rip\":{rip},\"rbx\":{rbx}}}\n",
+            npt_hex(state_hash)
+        );
+        write_npt_file(&directory.join("summary.json"), summary.as_bytes());
+    }
+
+    fn write_npt_endpoint(root: &std::path::Path, arm: &str, observed: &NptObservedEndpoint) {
+        let endpoint = &observed.endpoint;
+        write_npt_artifacts(
+            root,
+            arm,
+            "endpoint",
+            &endpoint.memory,
+            &endpoint.encoded_state,
+            &endpoint.state_blob,
+            &endpoint.serial,
+            endpoint.effective_vns,
+            &endpoint.state_hash,
+            observed.pdptr_flags,
+            observed.pdptrs,
+            observed.rip,
+            observed.rbx,
+        );
+    }
+
+    fn write_npt_stop(root: &std::path::Path, arm: &str, phase: &str, observed: &NptObservedStop) {
+        let capture = &observed.capture;
+        write_npt_artifacts(
+            root,
+            arm,
+            phase,
+            &capture.memory,
+            &capture.encoded_state,
+            &capture.state_blob,
+            &observed.serial,
+            capture.moment,
+            &capture.state_hash,
+            observed.pdptr_flags,
+            observed.pdptrs,
+            observed.rip,
+            observed.rbx,
+        );
+    }
+
+    #[test]
+    #[ignore = "diagnostic live AMD KVM NPT; run with --ignored and NPT_REPORT_DIR"]
+    fn amd_default_npt_pae_observations() {
+        require_kvm();
+
+        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo")
+            .expect("read /proc/cpuinfo for the AMD NPT diagnostic");
+        assert!(
+            cpuinfo.lines().any(|line| {
+                line.split_once(':').is_some_and(|(key, value)| {
+                    key.trim() == "vendor_id" && value.trim() == "AuthenticAMD"
+                })
+            }),
+            "this diagnostic requires an AuthenticAMD host"
+        );
+        let npt = std::fs::read_to_string("/sys/module/kvm_amd/parameters/npt")
+            .expect("read kvm_amd NPT setting");
+        assert!(
+            matches!(npt.trim(), "Y" | "1"),
+            "this diagnostic requires kvm_amd NPT to be enabled, got {:?}",
+            npt.trim()
+        );
+        let report_root = std::path::PathBuf::from(
+            std::env::var_os("NPT_REPORT_DIR")
+                .expect("NPT_REPORT_DIR must identify the diagnostic output directory"),
+        );
+        std::fs::create_dir_all(&report_root).expect("create NPT diagnostic output directory");
+
+        // Keep the warmup observationally minimal. No vCPU read or save/hash is
+        // allowed before the first arm continues beyond the RAM-only transition.
+        let warmup = |vmm: &mut Vmm<KvmBackend>| {
+            assert_eq!(
+                vmm.step().expect("run AMD NPT scalar UART warmup"),
+                Step::Continued,
+                "the warmup UART OUT is a serviced, non-terminal PIO exit"
+            );
+            assert_eq!(vmm.serial(), &[WARMUP_MARKER]);
+            assert_eq!(vmm.exit_counts().io, 1);
+            assert_eq!(vmm.exit_counts().total(), 1);
+        };
+
+        let mut uninterrupted = fresh_vmm(true);
+        wire_snapshot_path(&mut uninterrupted);
+        warmup(&mut uninterrupted);
+        switch_guest_pdpt_to_b(&mut uninterrupted);
+        let uninterrupted_endpoint = run_npt_observed(&mut uninterrupted);
+        write_npt_endpoint(&report_root, "original", &uninterrupted_endpoint);
+
+        let mut save_and_continue = fresh_vmm(true);
+        wire_snapshot_path(&mut save_and_continue);
+        warmup(&mut save_and_continue);
+        switch_guest_pdpt_to_b(&mut save_and_continue);
+        let save_before_memory = save_and_continue.guest_memory().to_vec();
+        let save_before_serial = save_and_continue.serial().to_vec();
+        let save_before_counts = save_and_continue.exit_counts();
+        let save_before_vns = save_and_continue.effective_vns();
+        let save_stop = capture_npt_stop(&save_and_continue);
+        let save_repeated = capture_npt_stop(&save_and_continue);
+        let save_after_memory = save_and_continue.guest_memory().to_vec();
+        let save_after_serial = save_and_continue.serial().to_vec();
+        let save_after_counts = save_and_continue.exit_counts();
+        let save_after_vns = save_and_continue.effective_vns();
+        let save_and_continue_endpoint = run_npt_observed(&mut save_and_continue);
+        write_npt_stop(&report_root, "save-and-continue", "stop", &save_stop);
+        write_npt_stop(
+            &report_root,
+            "save-and-continue",
+            "stop-repeat",
+            &save_repeated,
+        );
+        write_npt_endpoint(
+            &report_root,
+            "save-and-continue",
+            &save_and_continue_endpoint,
+        );
+
+        let mut cold_unobserved = fresh_vmm(false);
+        wire_snapshot_path(&mut cold_unobserved);
+        cold_unobserved
+            .restore_snapshot(&save_stop.capture.memory, &save_stop.capture.state)
+            .expect("restore AMD NPT unobserved stop");
+        // This arm intentionally runs directly after restore; it does not read
+        // the stopped CPU before establishing its continuation endpoint.
+        let cold_unobserved_endpoint = run_npt_observed(&mut cold_unobserved);
+        write_npt_endpoint(&report_root, "cold-unobserved", &cold_unobserved_endpoint);
+
+        let mut cold_observed = fresh_vmm(false);
+        wire_snapshot_path(&mut cold_observed);
+        cold_observed
+            .restore_snapshot(&save_stop.capture.memory, &save_stop.capture.state)
+            .expect("restore AMD NPT observed stop");
+        let cold_before_memory = cold_observed.guest_memory().to_vec();
+        let cold_before_serial = cold_observed.serial().to_vec();
+        let cold_before_counts = cold_observed.exit_counts();
+        let cold_before_vns = cold_observed.effective_vns();
+        let cold_observed_stop = capture_npt_stop(&cold_observed);
+        let cold_observed_repeated = capture_npt_stop(&cold_observed);
+        let cold_after_memory = cold_observed.guest_memory().to_vec();
+        let cold_after_serial = cold_observed.serial().to_vec();
+        let cold_after_counts = cold_observed.exit_counts();
+        let cold_after_vns = cold_observed.effective_vns();
+        let cold_observed_endpoint = run_npt_observed(&mut cold_observed);
+        write_npt_stop(&report_root, "cold-observed", "stop", &cold_observed_stop);
+        write_npt_stop(
+            &report_root,
+            "cold-observed",
+            "stop-repeat",
+            &cold_observed_repeated,
+        );
+        write_npt_endpoint(&report_root, "cold-observed", &cold_observed_endpoint);
+
+        let original_memory = guest_ram_image().as_bytes().to_vec();
+        let mut wrong_original_ram = fresh_vmm(false);
+        wire_snapshot_path(&mut wrong_original_ram);
+        wrong_original_ram
+            .restore_snapshot(&original_memory, &save_stop.capture.state)
+            .expect("restore AMD NPT original-RAM diagnostic");
+        let wrong_original_ram_endpoint = run_npt_observed(&mut wrong_original_ram);
+        write_npt_endpoint(
+            &report_root,
+            "wrong-original-ram",
+            &wrong_original_ram_endpoint,
+        );
+
+        assert!(
+            save_stop.rip == WARMUP_RIP as u64,
+            "saved stop RIP must be the warmup boundary"
+        );
+        assert!(save_stop.rbx == 0, "saved stop RBX must precede INC EBX");
+        assert!(
+            save_stop.capture == save_repeated.capture,
+            "repeated saved-stop capture must be identical"
+        );
+        assert!(
+            save_after_memory == save_before_memory,
+            "saved capture must not change RAM"
+        );
+        assert!(
+            save_after_serial == save_before_serial,
+            "saved capture must not change UART"
+        );
+        assert!(
+            save_after_counts == save_before_counts,
+            "saved capture must not change exits"
+        );
+        assert!(
+            save_after_vns == save_before_vns,
+            "saved capture must not change virtual time"
+        );
+        assert!(
+            cold_observed_stop.capture == cold_observed_repeated.capture,
+            "repeated cold-stop capture must be identical"
+        );
+        assert!(
+            cold_observed_stop == save_stop,
+            "cold observed stop must reproduce the saved stop"
+        );
+        assert!(
+            cold_after_memory == cold_before_memory,
+            "cold capture must not change RAM"
+        );
+        assert!(
+            cold_after_serial == cold_before_serial,
+            "cold capture must not change UART"
+        );
+        assert!(
+            cold_after_counts == cold_before_counts,
+            "cold capture must not change exits"
+        );
+        assert!(
+            cold_after_vns == cold_before_vns,
+            "cold capture must not change virtual time"
+        );
+        assert!(
+            uninterrupted_endpoint == save_and_continue_endpoint,
+            "original and save-and-continue full NPT endpoints must match"
+        );
+        assert!(
+            save_and_continue_endpoint == cold_unobserved_endpoint,
+            "cold unobserved continuation must match the full endpoint"
+        );
+        assert!(
+            cold_unobserved_endpoint == cold_observed_endpoint,
+            "cold observed continuation must match the full endpoint"
+        );
+        assert!(
+            wrong_original_ram_endpoint.endpoint != uninterrupted_endpoint.endpoint,
+            "wrong original RAM is diagnostic-only and must differ"
+        );
+        println!(
+            "AMD NPT observations: original={:?} save={:?} cold-unobserved={:?} cold-observed={:?} wrong-RAM={:?}",
+            uninterrupted_endpoint.endpoint.state_hash,
+            save_and_continue_endpoint.endpoint.state_hash,
+            cold_unobserved_endpoint.endpoint.state_hash,
+            cold_observed_endpoint.endpoint.state_hash,
+            wrong_original_ram_endpoint.endpoint.state_hash
+        );
+    }
 }

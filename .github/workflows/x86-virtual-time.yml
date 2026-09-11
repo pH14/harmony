@@ -30,6 +30,10 @@ on:
         description: Run the focused AMD default-NPT snapshot identity gate
         type: boolean
         default: false
+      amd_npt_observe:
+        description: Retain all AMD NPT paging observations before comparing identity
+        type: boolean
+        default: false
 
 concurrency:
   group: x86-virtual-time-${{ github.event_name }}-${{ github.ref }}
@@ -52,7 +56,7 @@ jobs:
   # X0: CPU identity, /dev/kvm, the KVM capability table, and one minimal
   # real-mode guest through the public KvmBackend.
   probe:
-    if: ${{ !inputs.amd_npt_snapshot }}
+    if: ${{ !inputs.amd_npt_snapshot && !inputs.amd_npt_observe }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -105,7 +109,7 @@ jobs:
   # comparator and placement-checker negatives standing against the same
   # workload's log. Two replicas so most pushes also sample two hardware draws.
   x1-minimal-guest:
-    if: ${{ !inputs.amd_npt_snapshot }}
+    if: ${{ !inputs.amd_npt_snapshot && !inputs.amd_npt_observe }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -140,7 +144,7 @@ jobs:
   # immutable artifact, never a cross-run cache, so N5 can distinguish an
   # actual rebuild from a restored image.
   guest-image:
-    if: ${{ !inputs.amd_npt_snapshot }}
+    if: ${{ !inputs.amd_npt_snapshot && !inputs.amd_npt_observe }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -175,7 +179,7 @@ jobs:
   # rejected first; only then may both production profiles' two same-seed
   # traps-on boots receive credit.
   n6-instruction-sweep:
-    if: ${{ !inputs.amd_npt_snapshot }}
+    if: ${{ !inputs.amd_npt_snapshot && !inputs.amd_npt_observe }}
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -224,7 +228,7 @@ jobs:
   # execution trace must repeat on both production kernel profiles while the
   # corresponding traps-off boot demonstrably diverges.
   go-runtime:
-    if: ${{ !inputs.amd_npt_snapshot }}
+    if: ${{ !inputs.amd_npt_snapshot && !inputs.amd_npt_observe }}
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -275,7 +279,7 @@ jobs:
   # an unoptimized sha2 makes wall-clock-prohibitive. Two replicas so most
   # pushes sample two hardware draws.
   x2-linux-virtual_time:
-    if: ${{ !inputs.amd_npt_snapshot }}
+    if: ${{ !inputs.amd_npt_snapshot && !inputs.amd_npt_observe }}
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -357,7 +361,7 @@ jobs:
   # (sub-second boots), so a wide matrix is cheap. Report-only: an AMD draw
   # finding no divergent pair is the expected common case.
   x2-intel-hunt:
-    if: ${{ !inputs.amd_npt_snapshot }}
+    if: ${{ !inputs.amd_npt_snapshot && !inputs.amd_npt_observe }}
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -404,7 +408,7 @@ jobs:
   # Linux compile/lint/test truth for the crates the x86 work touches; the
   # macOS development host cannot check cfg(linux) code.
   check:
-    if: ${{ !inputs.amd_npt_snapshot }}
+    if: ${{ !inputs.amd_npt_snapshot && !inputs.amd_npt_observe }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -422,7 +426,7 @@ jobs:
         run: cargo test -p vmm-backend --all-features
 
   amd-npt-snapshot:
-    if: ${{ inputs.amd_npt_snapshot }}
+    if: ${{ inputs.amd_npt_snapshot || inputs.amd_npt_observe }}
     name: AMD default-NPT snapshot identity
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -449,10 +453,19 @@ jobs:
       - name: Compare original, save-and-continue, and cold PAE execution
         env:
           CARGO_TERM_COLOR: never
+          OBSERVE: ${{ inputs.amd_npt_observe }}
+          QUALIFY: ${{ inputs.amd_npt_snapshot }}
         run: |
           set -euo pipefail
+          test "$OBSERVE" != true || test "$QUALIFY" != true
+          test_name=live_kvm::amd_default_npt_pae_snapshot_identity
+          if [[ "$OBSERVE" == true ]]; then
+            test_name=live_kvm::amd_default_npt_pae_observations
+          fi
+          export NPT_REPORT_DIR="$PWD/reports/observations"
+          printf '%s\n' "$test_name" > reports/test-name.txt
           cargo test --locked -p vmm-core --test x86_cpu_snapshots \
-            live_kvm::amd_default_npt_pae_snapshot_identity \
+            "$test_name" \
             -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee reports/amd-npt-snapshot.log
           grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' reports/amd-npt-snapshot.log

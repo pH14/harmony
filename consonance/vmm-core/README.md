@@ -73,6 +73,9 @@ left enabled: it compares complete original, save-and-continue, and cold
 endpoints after a guest page-table RAM change. Its uninterrupted arm does not
 inspect CPU state at the stop. The x86 workflow's manual `amd_npt_snapshot`
 input runs this focused gate and records the host mode without changing it.
+The separate manual `amd_npt_observe` mode retains all paging-arm observations
+before asserting endpoint identity; it provides diagnostic evidence when a
+fixed paging expectation prevents the qualification test from reaching capture.
 
 ## Architecture boundary
 
