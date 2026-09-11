@@ -23,6 +23,13 @@ on:
         description: Qualify MSR, PIO and fragmented MMIO snapshot completion boundaries
         type: boolean
         default: false
+      completion_runner:
+        description: Standard runner image for the CPU completion gate
+        type: choice
+        options:
+          - ubuntu-24.04
+          - ubuntu-22.04
+        default: ubuntu-24.04
       cli_continuation:
         description: Compare actual original, fork, cold and split CLI endpoint identity
         type: boolean
@@ -291,7 +298,7 @@ jobs:
 
   msr-snapshot:
     if: ${{ inputs.msr_snapshot }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.completion_runner == 'ubuntu-22.04' && 'ubuntu-22.04' || 'ubuntu-24.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
