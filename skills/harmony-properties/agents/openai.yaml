@@ -1,0 +1,3 @@
+interface:
+  display_name: "Harmony Properties"
+  short_description: "Derive workload-specific Harmony properties"

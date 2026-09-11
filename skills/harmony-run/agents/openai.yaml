@@ -1,0 +1,3 @@
+interface:
+  display_name: "Harmony Run"
+  short_description: "Run durable Harmony investigations"

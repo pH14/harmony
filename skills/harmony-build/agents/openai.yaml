@@ -1,0 +1,3 @@
+interface:
+  display_name: "Harmony Build"
+  short_description: "Prepare reproducible Harmony artifacts"

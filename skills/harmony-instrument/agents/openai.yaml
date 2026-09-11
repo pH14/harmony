@@ -1,0 +1,3 @@
+interface:
+  display_name: "Harmony Instrument"
+  short_description: "Add Harmony SDK observability safely"
