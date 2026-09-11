@@ -132,6 +132,10 @@ pub struct ReplaySummary {
     pub bug: bool,
     /// How the guest stopped.
     pub stop: FaultStop,
+    /// Virtual time at the observed replay endpoint. Older reports omitted
+    /// this field and therefore deserialize it as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub virtual_time: Option<u64>,
     /// Whole-VM state hash at the endpoint, lowercase hex. Its encoding is
     /// identified by [`state_hash_encoding`](Self::state_hash_encoding).
     pub state_hash: String,
@@ -169,6 +173,7 @@ impl ReplaySummary {
             run: 1,
             bug: observation.is_bug(),
             stop: observation.stop,
+            virtual_time: Some(observation.moment),
             state_hash: state_digest_hex(&state_digest),
             state_hash_encoding: StateHashEncoding::EngineDigest,
             violations: observation.violations.iter().copied().collect(),
@@ -408,6 +413,7 @@ fn retain_replay_finding(
 ) -> Result<(), Box<dyn Error>> {
     if !summary.bug
         || summary.stop != bug.observations.stop
+        || summary.virtual_time != Some(bug.observations.moment)
         || summary.violations
             != bug
                 .observations
@@ -867,6 +873,14 @@ mod tests {
         let bug = crate::report::BugReport::new(1, 1, windows, &[FaultAction::Wait], &observations)
             .unwrap();
         let summary = ReplaySummary::from_observation(&observations, [0x42; 32], 1, 1);
+        let mut mismatched_time = summary.clone();
+        mismatched_time.virtual_time = Some(observations.moment + 1);
+        assert!(
+            retain_replay_finding(&mut report, &bug, &mismatched_time, directory.path()).is_err(),
+            "a summary from another endpoint cannot publish this finding"
+        );
+        assert!(report.bugs.is_empty());
+        assert!(!directory.path().join(bug.file_name()).exists());
         let mut inconsistent = summary.clone();
         inconsistent.violations = vec![8];
         assert!(retain_replay_finding(&mut report, &bug, &inconsistent, directory.path()).is_err());
@@ -1026,6 +1040,7 @@ mod tests {
             run: 1,
             bug,
             stop,
+            virtual_time: None,
             state_hash: "hash".to_owned(),
             state_hash_encoding: StateHashEncoding::LegacySha256OfDigest,
             violations: violations.to_vec(),
@@ -1184,6 +1199,18 @@ mod tests {
             decoded.replays[0].state_hash_encoding,
             StateHashEncoding::EngineDigest
         );
+        assert_eq!(decoded.replays[0].virtual_time, Some(observation.moment));
+    }
+
+    #[test]
+    fn a_replay_summary_json_records_the_observed_virtual_time() {
+        let observation = FaultObservations {
+            moment: 123,
+            ..FaultObservations::default()
+        };
+        let summary = ReplaySummary::from_observation(&observation, [0x42; 32], 1, 1);
+        let value = serde_json::to_value(summary).expect("serialize summary");
+        assert_eq!(value["virtual_time"].as_u64(), Some(observation.moment));
     }
 
     #[test]
@@ -1222,5 +1249,6 @@ mod tests {
             decoded.replays[0].state_hash_encoding,
             StateHashEncoding::LegacySha256OfDigest
         );
+        assert_eq!(decoded.replays[0].virtual_time, None);
     }
 }

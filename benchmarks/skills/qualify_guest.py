@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 from pathlib import Path
 
 from . import build, guest_evidence, guest_files, guest_image, guest_limits, materials, sandbox
@@ -53,13 +54,17 @@ def _prepared_digest(preparer: Path, image: Path, base: Path, agent: Path,
 def qualify(args: argparse.Namespace) -> dict:
     output = args.output.resolve()
     mount = guest_limits.verify_output_mount(output.parent)
+    host_tmpdir = Path(tempfile.gettempdir()).resolve(strict=True)
+    if (not host_tmpdir.is_relative_to(output.parent)
+            or host_tmpdir.stat().st_dev != output.parent.stat().st_dev):
+        raise ValueError('host TMPDIR must be inside the verified output mount before Python starts')
     output.mkdir(exist_ok=False)
     paths = {name: getattr(args, name).resolve(strict=True) for name in ('harmony', 'kernel', 'base', 'agent', 'preparer')}
     pins = {name: _digest(path) for name, path in paths.items()}
     result = {
         'format': 'harmony-skill-guest-qualification-v1', 'qualified': False,
         'model_calls': 0, 'compiler_image': args.image, 'input_sha256': pins, 'checks': {},
-        'output_mount': mount,
+        'output_mount': mount, 'host_tmpdir': str(host_tmpdir),
         'trust_boundary': 'controller-selected pinned CLI and preparer; compiled artifacts execute only in the guest',
         'not_claimed': ['meaningful checker grading', 'general built-source equivalence', 'held-out grading'],
     }

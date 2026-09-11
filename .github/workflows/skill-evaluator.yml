@@ -205,7 +205,8 @@ jobs:
         run: |
           set -euo pipefail
           qualification_image=$(cat compiler-image/image-id.txt)
-          python3 -B -m benchmarks.skills.qualify_guest --image "$qualification_image" \
+          mkdir reports/skill-guest/bounded/host-tmp
+          TMPDIR="$PWD/reports/skill-guest/bounded/host-tmp" python3 -B -m benchmarks.skills.qualify_guest --image "$qualification_image" \
             --harmony target/release/harmony --kernel guest/bzImage-faultlab \
             --base guest/initramfs.cpio.gz \
             --agent workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent \

@@ -142,6 +142,7 @@ _REPLAY_KEYS = {
     "stop",
     "state_hash",
     "state_hash_encoding",
+    "virtual_time",
     "violations",
     "sometimes",
     "actions_applied",
@@ -157,6 +158,9 @@ def _replay_summary(value: Any) -> dict[str, Any]:
     _stop(summary["stop"], "report.replays[0].stop")
     _hash(summary["state_hash"], "report.replays[0].state_hash")
     _encoding(summary["state_hash_encoding"], "report.replays[0].state_hash_encoding")
+    virtual_time = _u64(summary["virtual_time"], "report.replays[0].virtual_time")
+    if virtual_time == 0:
+        _fail("endpoint", "report.replays[0].virtual_time must be positive")
     _ids(summary["violations"], "report.replays[0].violations")
     _ids(summary["sometimes"], "report.replays[0].sometimes")
     _u64(summary["actions_applied"], "report.replays[0].actions_applied")
@@ -307,6 +311,8 @@ def _sidecar(value: Any, summary: dict[str, Any]) -> list[dict[str, Any]]:
     endpoint = _u64(sidecar["virtual_time"], "sidecar.virtual_time")
     if endpoint == 0:
         _fail("endpoint", "sidecar.virtual_time must be positive")
+    if endpoint != summary["virtual_time"]:
+        _fail("endpoint", "sidecar.virtual_time disagrees with the replay summary")
     if _hash(sidecar["state_hash"], "sidecar.state_hash") != summary["state_hash"]:
         _fail("hash", "sidecar and replay state hashes disagree")
     _encoding(sidecar["state_hash_encoding"], "sidecar.state_hash_encoding")

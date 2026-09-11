@@ -162,7 +162,10 @@ class QualifyGuestTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def qualify(self, fixture_case: QualificationFixture) -> dict:
+        host_tmpdir = fixture_case.root / 'host-tmp'
+        host_tmpdir.mkdir()
         with (
+            patch.object(qualify_guest.tempfile, 'gettempdir', return_value=str(host_tmpdir)),
             patch.object(qualify_guest.build, "build_frozen", side_effect=fixture_case.build_frozen),
             patch.object(qualify_guest.sandbox, "_run_bounded", side_effect=fixture_case.run_bounded),
             patch.object(
@@ -172,6 +175,18 @@ class QualifyGuestTests(unittest.TestCase):
             ),
         ):
             return qualify_guest.qualify(fixture_case.args())
+
+    def test_host_temporary_directory_must_share_output_bound(self) -> None:
+        fixture_case = QualificationFixture(self.root)
+        with (
+            patch.object(qualify_guest.guest_limits, 'verify_output_mount', return_value={}),
+            patch.object(qualify_guest.tempfile, 'gettempdir', return_value=str(self.root.parent)),
+            patch.object(qualify_guest.build, 'build_frozen') as compile_guest,
+        ):
+            with self.assertRaisesRegex(ValueError, 'host TMPDIR'):
+                qualify_guest.qualify(fixture_case.args())
+            compile_guest.assert_not_called()
+        self.assertFalse(fixture_case.args().output.exists())
 
     def test_three_cases_use_real_freeze_package_reads_and_digest_pins(self) -> None:
         fixture_case = QualificationFixture(self.root)

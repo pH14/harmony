@@ -170,7 +170,10 @@ New replay outcomes encode the engine's 32-byte state digest directly as
 lowercase hex and mark it with `state_hash_encoding: "engine_digest"`.
 Reports written by earlier versions omit that marker and contain SHA-256 of
 the digest; readers default a missing marker to the legacy interpretation.
-The marker is additive, so older readers continue to parse the report shape.
+Current replay summaries also record the endpoint's `virtual_time`; older
+reports omit it and remain readable, while a retained finding must bind the
+summary to the observed endpoint time. These fields are additive, so older
+readers continue to parse the report shape.
 
 Every replay run boots a session no earlier run has touched, so no snapshot
 another run cached can stand in for guest execution: each run reaches the

@@ -36,6 +36,7 @@ def fixture(*, violation: bool) -> tuple[dict, dict]:
         "stop": {"Assertion": {"point": 8}} if violation else "Deadline",
         "state_hash": HASH,
         "state_hash_encoding": "engine_digest",
+        "virtual_time": ENDPOINT,
         "violations": [8] if violation else [],
         "sometimes": [7],
         "actions_applied": expected,
@@ -196,6 +197,50 @@ class GuestEvidenceTests(unittest.TestCase):
         changed = copy.deepcopy(sidecar)
         changed["virtual_time"] = 0
         self.assertNotEqual(self.assertRejected(report, changed, violation=False).code, "missing_hit")
+
+    def test_replay_time_is_required_and_matches_sidecar_before_missing_hit(self) -> None:
+        for invalid in ("missing", None, True, 0):
+            report, sidecar = fixture(violation=False)
+            report["replays"][0]["sometimes"] = []
+            sidecar["events"] = []
+            if invalid == "missing":
+                del report["replays"][0]["virtual_time"]
+            else:
+                report["replays"][0]["virtual_time"] = invalid
+            with self.subTest(field="replay", value=invalid):
+                error = self.assertRejected(report, sidecar, violation=False)
+                self.assertNotEqual(error.code, "missing_hit")
+
+        report, sidecar = fixture(violation=False)
+        report["replays"][0]["sometimes"] = []
+        sidecar["events"] = []
+        sidecar["virtual_time"] = 10**12
+        error = self.assertRejected(report, sidecar, violation=False)
+        self.assertEqual(error.code, "endpoint")
+
+        report, sidecar = fixture(violation=False)
+        report["replays"][0]["sometimes"] = []
+        sidecar["events"] = []
+        report["replays"][0]["virtual_time"] = ENDPOINT // 2
+        error = self.assertRejected(report, sidecar, violation=False)
+        self.assertEqual(error.code, "endpoint")
+
+    def test_nested_replay_time_is_required_and_matches_parent(self) -> None:
+        report, sidecar = fixture(violation=True)
+        report["bugs"][0]["replay"]["virtual_time"] = ENDPOINT // 2
+        error = self.assertRejected(report, sidecar, violation=True)
+        self.assertNotEqual(error.code, "missing_hit")
+
+        for invalid in ("missing", None, True, 0):
+            report, sidecar = fixture(violation=True)
+            nested = report["bugs"][0]["replay"]
+            if invalid == "missing":
+                del nested["virtual_time"]
+            else:
+                nested["virtual_time"] = invalid
+            with self.subTest(field="nested replay", value=invalid):
+                error = self.assertRejected(report, sidecar, violation=True)
+                self.assertNotEqual(error.code, "missing_hit")
 
     def test_violation_requires_exact_event_and_summary(self) -> None:
         report, sidecar = fixture(violation=True)
