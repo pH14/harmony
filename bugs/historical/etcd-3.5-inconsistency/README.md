@@ -35,16 +35,17 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
 
 ## The triple
 
-- **Workload**: the upstream etcd workload is three supervised local members, driven by four
-  persistent clients through the cluster endpoint set. Each client records every uniquely keyed,
-  acknowledged put in a journal outside etcd and keeps applying entries while Harmony explores
-  faults. Repeated starts of the workload hook reuse the original writers, so a later hook cannot
-  overwrite a lost key. The same workload, image contract, and fault policy will run against
-  v3.5.2 and v3.5.3; only the pinned source revision changes. There are no correctness,
-  portability, batch, timing, wait, timeout, and write-count knobs, fixed probe sequences,
-  version-specific addresses, or configuration knobs. The executable for this entry must be
-  built from that pinned source by the Antithesis Go instrumentation pipeline; a release archive
-  or a stock etcd executable does not satisfy this entry.
+- **Workload**: the upstream etcd workload is three supervised local members, driven by an
+  uninstrumented Go helper that owns exactly four persistent clients through the cluster endpoint
+  set. Each client records every uniquely keyed, acknowledged put in a journal outside etcd and
+  keeps applying entries while Harmony explores faults. Repeated starts of the workload hook reuse
+  the original helper, so a later hook cannot overwrite a lost key. The helper is built from one
+  pinned `go.etcd.io/etcd/client/v3` dependency shared by both arms; v3.5.2 and v3.5.3 differ
+  only in the Antithesis-instrumented server source revision. There are no correctness,
+  portability, batch, timing, wait, timeout, rate, or write-count knobs, fixed probe sequences,
+  version-specific addresses, or configuration knobs. The server executable for this entry must
+  be built from that pinned source by the Antithesis Go instrumentation pipeline; a release
+  archive or a stock etcd server executable does not satisfy this entry.
 - **Fault surface**: a hard process kill of one member followed by the normal supervisor restart,
   while the clients are applying entries. This targets the small interval between consistent-index
   persistence and the corresponding follower entry apply. Dissonance represents the crash
