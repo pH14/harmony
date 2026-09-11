@@ -5,8 +5,9 @@
  * This program deliberately uses the KVM ioctl ABI directly.  It is a
  * diagnostic companion to the Rust fixture, not a second implementation of
  * snapshot/restore and not a qualification oracle.  Each case gets a fresh
- * no-irqchip VM.  The only read ioctl issued between changing the guest PDPT
- * in RAM and the next KVM_RUN is the case's selected ioctl.
+ * no-irqchip VM.  The only selected operation issued between changing the
+ * guest PDPT in RAM and the next KVM_RUN is the case's selected read ioctl or
+ * bounded scratch-memory copy.
  */
 
 #define _GNU_SOURCE
@@ -66,6 +67,7 @@ enum read_case {
     READ_SREGS,
     READ_SREGS2,
     READ_XSAVE,
+    READ_COPY_RAM,
 };
 
 struct selected_case {
@@ -79,6 +81,7 @@ static const struct selected_case SELECTED_CASES[] = {
     {READ_SREGS, "GET_SREGS"},
     {READ_SREGS2, "GET_SREGS2"},
     {READ_XSAVE, "GET_XSAVE"},
+    {READ_COPY_RAM, "COPY_RAM"},
 };
 
 struct case_vm {
@@ -88,6 +91,7 @@ struct case_vm {
     size_t run_size;
     struct kvm_run *run;
     uint8_t *ram;
+    uint8_t *scratch;
 };
 
 struct endpoint {
@@ -105,11 +109,14 @@ struct selected_observation {
     int sregs2_valid;
     uint64_t sregs2_flags;
     uint64_t sregs2_pdptrs[4];
+    int copy_selected;
 };
 
 struct case_result {
     struct endpoint endpoint;
     struct selected_observation selected;
+    size_t copied_ram_bytes;
+    uint64_t copied_ram_fnv64;
 };
 
 static void die_text(const char *message)
@@ -212,6 +219,17 @@ static uint64_t load_u64(const uint8_t *ram, size_t offset)
     require_true(offset <= RAM_LEN - sizeof(value), "guest RAM load overflow");
     memcpy(&value, ram + offset, sizeof(value));
     return value;
+}
+
+static uint64_t fnv1a64(const uint8_t *bytes, size_t length)
+{
+    uint64_t hash = UINT64_C(14695981039346656037);
+
+    for (size_t index = 0; index < length; ++index) {
+        hash ^= bytes[index];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
 }
 
 static void store_bytes(uint8_t *ram, size_t offset, const uint8_t *bytes,
@@ -355,6 +373,7 @@ static struct case_vm create_case_vm(void)
         .run_size = 0,
         .run = MAP_FAILED,
         .ram = MAP_FAILED,
+        .scratch = MAP_FAILED,
     };
     struct kvm_userspace_memory_region region;
     int api_version;
@@ -385,6 +404,10 @@ static struct case_vm create_case_vm(void)
                           vm.vcpu_fd, 0, "mmap KVM run page");
     vm.ram = checked_mmap(NULL, RAM_LEN, PROT_READ | PROT_WRITE,
                           MAP_SHARED | MAP_ANONYMOUS, -1, 0, "mmap guest RAM");
+    vm.scratch = checked_mmap(NULL, RAM_LEN, PROT_READ | PROT_WRITE,
+                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0,
+                              "mmap scratch RAM");
+    memset(vm.scratch, 0x5a, RAM_LEN);
     build_guest_image(vm.ram);
 
     memset(&region, 0, sizeof(region));
@@ -423,6 +446,11 @@ static void destroy_case_vm(struct case_vm *vm)
         if (munmap(vm->ram, RAM_LEN) < 0)
             die_errno("munmap guest RAM");
         vm->ram = MAP_FAILED;
+    }
+    if (vm->scratch != MAP_FAILED) {
+        if (munmap(vm->scratch, RAM_LEN) < 0)
+            die_errno("munmap scratch RAM");
+        vm->scratch = MAP_FAILED;
     }
 }
 
@@ -528,6 +556,10 @@ static struct selected_observation selected_read(const struct case_vm *vm,
         ioctl_result(vm->vcpu_fd, KVM_GET_XSAVE, xsave, "KVM_GET_XSAVE");
         return observation;
     }
+    case READ_COPY_RAM:
+        memcpy(vm->scratch, vm->ram, RAM_LEN);
+        observation.copy_selected = 1;
+        return observation;
     }
     die_text("unknown selected ioctl case");
     return observation;
@@ -549,7 +581,7 @@ static struct case_result run_case(struct case_vm *vm, enum read_case kind)
     retire_first_pio(vm);
     store_u64(vm->ram, PDPT_GPA, PDPT_B_ENTRY);
 
-    /* This call is the sole selected read between the mutation and next run. */
+    /* This call is the sole selected operation between the mutation and run. */
     result.selected = selected_read(vm, kind);
 
     run_once(vm, "second PIO");
@@ -569,6 +601,10 @@ static struct case_result run_case(struct case_vm *vm, enum read_case kind)
     result.endpoint.pd_b = load_u64(vm->ram, PD_B_GPA);
     require_true(result.endpoint.regs.rbx == 1,
                  "the endpoint must retire exactly one INC EBX");
+    if (result.selected.copy_selected) {
+        result.copied_ram_bytes = RAM_LEN;
+        result.copied_ram_fnv64 = fnv1a64(vm->scratch, RAM_LEN);
+    }
     return result;
 }
 
@@ -610,7 +646,8 @@ static void print_endpoint(const struct selected_case *selected, int cpu,
            ",\"reported_pdptr_flags\":%" PRIu64
            ",\"reported_pdptrs\":[%" PRIu64 ",%" PRIu64 ",%" PRIu64
            ",%" PRIu64 "],\"pd_a\":%" PRIu64 ",\"pd_b\":%" PRIu64
-           ",\"pio_count\":2,\"hlt\":true,\"selected_get_regs\":",
+           ",\"pio_count\":2,\"hlt\":true,\"copy_selected\":%s"
+           ",\"copied_ram_bytes\":%zu,\"copied_ram_fnv64\":",
            round, slot, selected->name, cpu, (unsigned int)WARMUP_MARKER,
            (unsigned int)endpoint->second_serial,
            (uint64_t)endpoint->regs.rip, (uint64_t)endpoint->regs.rbx,
@@ -619,7 +656,14 @@ static void print_endpoint(const struct selected_case *selected, int cpu,
            (uint64_t)endpoint->sregs2.pdptrs[1],
            (uint64_t)endpoint->sregs2.pdptrs[2],
            (uint64_t)endpoint->sregs2.pdptrs[3],
-           endpoint->pd_a, endpoint->pd_b);
+           endpoint->pd_a, endpoint->pd_b,
+           result->selected.copy_selected ? "true" : "false",
+           result->copied_ram_bytes);
+    if (result->selected.copy_selected)
+        printf("%" PRIu64, result->copied_ram_fnv64);
+    else
+        printf("null");
+    printf(",\"selected_get_regs\":");
     print_selected_observation(&result->selected);
     printf(",\"selected_get_sregs2\":");
     print_selected_sregs2(&result->selected);
