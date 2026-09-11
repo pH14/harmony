@@ -1831,6 +1831,71 @@ mod tests {
     }
 
     #[test]
+    fn read_vec_retries_interrupted_short_reads_and_propagates_other_errors() {
+        enum Action {
+            Bytes(Vec<u8>),
+            Error(std::io::ErrorKind),
+            Eof,
+        }
+
+        struct ScriptedReader {
+            actions: Vec<Action>,
+            next: usize,
+            largest_request: usize,
+        }
+
+        impl Read for ScriptedReader {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                self.largest_request = self.largest_request.max(output.len());
+                let action = self
+                    .actions
+                    .get_mut(self.next)
+                    .map(|action| std::mem::replace(action, Action::Eof))
+                    .unwrap_or(Action::Eof);
+                self.next += 1;
+                match action {
+                    Action::Bytes(bytes) => {
+                        assert!(bytes.len() <= output.len());
+                        output[..bytes.len()].copy_from_slice(&bytes);
+                        Ok(bytes.len())
+                    }
+                    Action::Error(kind) => Err(std::io::Error::new(kind, "scripted read")),
+                    Action::Eof => Ok(0),
+                }
+            }
+        }
+
+        let mut retrying = ScriptedReader {
+            actions: vec![
+                Action::Error(std::io::ErrorKind::Interrupted),
+                Action::Bytes(vec![0x10, 0x20]),
+                Action::Bytes(vec![0x30]),
+            ],
+            next: 0,
+            largest_request: 0,
+        };
+        assert_eq!(read_vec(&mut retrying, 3).unwrap(), vec![0x10, 0x20, 0x30]);
+        assert_eq!(retrying.next, 3);
+        assert_eq!(retrying.largest_request, 3);
+
+        let mut failing = ScriptedReader {
+            actions: vec![
+                Action::Bytes(vec![0x40]),
+                Action::Error(std::io::ErrorKind::PermissionDenied),
+                Action::Eof,
+            ],
+            next: 0,
+            largest_request: 0,
+        };
+        assert!(matches!(
+            read_vec(&mut failing, 2),
+            Err(PortableSnapshotError::Io(error))
+                if error.kind() == std::io::ErrorKind::PermissionDenied
+        ));
+        assert_eq!(failing.next, 2);
+    }
+
+    #[test]
     fn complete_snapshot_round_trips_byte_exactly() {
         let bytes = encoded();
         assert_eq!(
