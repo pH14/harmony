@@ -20,7 +20,7 @@ nothing else.
 | `ProcRestart` | `SIGKILL` | start the node again |
 | `RunHook` | launch the hook once | nothing: hooks are not awaited |
 | `ProcPark` | arm the park on the node's group | disarm it; a hold in progress finishes |
-| `ProcEventPark` | arm the instrumented runtime to hold one thread at a rarely visited site | disarm the runtime arm |
+| `ProcEventPark` | arm the instrumented runtime to hold one thread at a rarely visited site | read back how many parks held, then disarm the runtime arm |
 
 A window is identified by its target and its start, so two `RunHook` windows
 for one hook that touch launch it twice even when no poll falls in between.

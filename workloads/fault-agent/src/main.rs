@@ -89,9 +89,10 @@ mod real {
     use harmony_fault_agent::faults::ActiveFaults;
     use harmony_fault_agent::recovery::{ReadyHook, RecoveryGate};
     use harmony_fault_agent::regs::{
-        REG_ALIVE, REG_CHECKS_FINISHED, REG_EVENT_KILL_AGE_TICKS, REG_EVENT_KILLS_FIRED,
-        REG_HOOKS_FINISHED, REG_HOOKS_STARTED, REG_PARKED, REG_RESTARTS, REG_SOMETIMES, REG_TICKS,
-        REG_UNEXPECTED_DEATHS, REG_WORKLOAD_DEATHS, Registers,
+        REG_ALIVE, REG_CHECKS_CONCLUSIVE, REG_CHECKS_FINISHED, REG_EVENT_KILL_AGE_TICKS,
+        REG_EVENT_KILLS_FIRED, REG_EVENT_PARKS_FIRED, REG_HOOKS_FINISHED, REG_HOOKS_STARTED,
+        REG_PARKED, REG_RESTARTS, REG_SOMETIMES, REG_TICKS, REG_UNEXPECTED_DEATHS,
+        REG_WORKLOAD_DEATHS, Registers,
     };
     use harmony_fault_agent::supervisor::{Action, Supervisor};
     use harmony_fault_agent::{Clock, TICK_NANOS};
@@ -125,7 +126,7 @@ mod real {
     /// The points the agent declares for itself. A hook's own assertion ids are
     /// workload-owned and are not declared here; they still fire, they just
     /// carry no name in the host's never-fired report.
-    const CATALOG: [Point; 13] = [
+    const CATALOG: [Point; 15] = [
         Point::always(HOOK_FAILURE_POINT, "fault_agent.hook_assertion"),
         Point::state(REG_TICKS, "fault_agent.ticks"),
         Point::state(REG_ALIVE, "fault_agent.alive"),
@@ -139,6 +140,8 @@ mod real {
         Point::state(REG_WORKLOAD_DEATHS, "fault_agent.workload_deaths"),
         Point::state(REG_EVENT_KILL_AGE_TICKS, "fault_agent.event_kill_age_ticks"),
         Point::state(REG_CHECKS_FINISHED, "fault_agent.checks_finished"),
+        Point::state(REG_CHECKS_CONCLUSIVE, "fault_agent.checks_conclusive"),
+        Point::state(REG_EVENT_PARKS_FIRED, "fault_agent.event_parks_fired"),
     ];
 
     type GuestSdk = Sdk<doorbell::DeviceTransport>;
@@ -195,6 +198,10 @@ mod real {
         child: Child,
         output: File,
         reader: LineReader,
+        /// Whether this run has emitted an assertion directive. A check that
+        /// finishes without one reached no verdict, so counting only finished
+        /// runs would credit the search with evidence it never got.
+        verdict: bool,
     }
 
     /// One asynchronous invocation of the bundle readiness command.
@@ -514,7 +521,13 @@ mod real {
                 )?;
             }
             Action::DisarmEventPark(node) => {
-                // A zero hold is the runtime's disarm.
+                // A zero hold is the runtime's disarm. A hold leaves no other
+                // trace, so the fire count is read back before the arm goes.
+                if let Some(reply) =
+                    apply_event_command(nodes, node, [EVENT_CMD_PARK_STATUS, 0, 0], tick)?
+                {
+                    supervisor.note_event_park_fires(reply[1]);
+                }
                 apply_event_command(nodes, node, [EVENT_CMD_PARK, 0, 0], tick)?;
             }
             Action::Park(node, park) => {
@@ -824,11 +837,14 @@ mod real {
     const EVENT_CMD_WORDS: usize = 3;
     const EVENT_CMD_KILL: u64 = 1;
     const EVENT_CMD_PARK: u64 = 2;
+    const EVENT_CMD_PARK_STATUS: u64 = 3;
 
+    /// Send one command and return the runtime's reply words. A reply echoes
+    /// the command except for a status request, which answers in its arguments.
     fn send_event_command(
         control: &OwnedFd,
         command: [u64; EVENT_CMD_WORDS],
-    ) -> Result<(), String> {
+    ) -> Result<[u64; EVENT_CMD_WORDS], String> {
         let mut bytes = [0_u8; EVENT_CMD_WORDS * 8];
         for (slot, word) in bytes.chunks_exact_mut(8).zip(command) {
             slot.copy_from_slice(&word.to_le_bytes());
@@ -880,10 +896,16 @@ mod real {
             }
             read += usize::try_from(count).map_err(|_| "event control acknowledgement overflow")?;
         }
-        if acknowledgement != bytes {
-            return Err("event control acknowledgement did not echo the arm".to_owned());
+        let mut reply = [0_u64; EVENT_CMD_WORDS];
+        for (slot, chunk) in reply.iter_mut().zip(acknowledgement.chunks_exact(8)) {
+            let mut word = [0_u8; 8];
+            word.copy_from_slice(chunk);
+            *slot = u64::from_le_bytes(word);
         }
-        Ok(())
+        if reply[0] != command[0] {
+            return Err("event control acknowledgement did not echo the command".to_owned());
+        }
+        Ok(reply)
     }
 
     /// A node may die on the selected callback while the supervisor is sending
@@ -894,7 +916,7 @@ mod real {
         node: u16,
         command: [u64; EVENT_CMD_WORDS],
         tick: u64,
-    ) -> Result<(), String> {
+    ) -> Result<Option<[u64; EVENT_CMD_WORDS]>, String> {
         let entry = nodes
             .get_mut(usize::from(node))
             .ok_or_else(|| format!("event command names unknown node {node}"))?;
@@ -902,14 +924,17 @@ mod real {
             || Err("control channel is unavailable".to_owned()),
             |control| send_event_command(control, command),
         );
-        if let Err(error) = result {
-            log(tick, &format!("event command node {node}: {error}"));
-            entry.event_control = None;
-            if let Some(child) = entry.child.as_ref() {
-                signal_child_group(child, libc::SIGKILL);
+        match result {
+            Ok(reply) => Ok(Some(reply)),
+            Err(error) => {
+                log(tick, &format!("event command node {node}: {error}"));
+                entry.event_control = None;
+                if let Some(child) = entry.child.as_ref() {
+                    signal_child_group(child, libc::SIGKILL);
+                }
+                Ok(None)
             }
         }
-        Ok(())
     }
 
     /// Launch a hook with its stdout in a file of its own. `launch` counts
@@ -937,6 +962,7 @@ mod real {
             id: spec.id,
             generation,
             child,
+            verdict: false,
             output,
             reader: LineReader::new(),
         })
@@ -956,7 +982,7 @@ mod real {
             let lines = read_lines(&mut hook.output, &mut hook.reader);
             if recovery.accepts(hook.generation) {
                 for line in lines {
-                    forward(&line, hook.id, supervisor, sdk, tick)?;
+                    let _ = forward(&line, hook.id, supervisor, sdk, tick)?;
                 }
             }
             let status = match hook.child.try_wait() {
@@ -969,10 +995,10 @@ mod real {
             let final_lines = read_lines(&mut hook.output, &mut hook.reader);
             if valid {
                 for line in final_lines {
-                    forward(&line, hook.id, supervisor, sdk, tick)?;
+                    let _ = forward(&line, hook.id, supervisor, sdk, tick)?;
                 }
                 if let Some(line) = hook.reader.flush() {
-                    forward(&line, hook.id, supervisor, sdk, tick)?;
+                    let _ = forward(&line, hook.id, supervisor, sdk, tick)?;
                 }
             }
             if valid && status.code() == Some(HOOK_FAILURE_STATUS) {
@@ -1032,7 +1058,7 @@ mod real {
         };
         if let Some(check) = runtime.check.as_mut() {
             for line in read_lines(&mut check.output, &mut check.reader) {
-                forward(&line, CHECK_HOOK_ID, supervisor, sdk, tick)?;
+                check.verdict |= forward(&line, CHECK_HOOK_ID, supervisor, sdk, tick)?;
             }
             let status = match check.child.try_wait() {
                 Ok(Some(status)) => status,
@@ -1040,10 +1066,10 @@ mod real {
                 Err(error) => return Err(format!("check: {error}")),
             };
             for line in read_lines(&mut check.output, &mut check.reader) {
-                forward(&line, CHECK_HOOK_ID, supervisor, sdk, tick)?;
+                check.verdict |= forward(&line, CHECK_HOOK_ID, supervisor, sdk, tick)?;
             }
             if let Some(line) = check.reader.flush() {
-                forward(&line, CHECK_HOOK_ID, supervisor, sdk, tick)?;
+                check.verdict |= forward(&line, CHECK_HOOK_ID, supervisor, sdk, tick)?;
             }
             if status.code() == Some(HOOK_FAILURE_STATUS) {
                 log(tick, "check failed its assertion");
@@ -1052,7 +1078,7 @@ mod real {
             } else if let Some(signal) = status.signal() {
                 log(tick, &format!("check died on signal {signal}"));
             }
-            supervisor.note_check_finished();
+            supervisor.note_check_finished(check.verdict);
             runtime.check = None;
             runtime.next_check_tick = tick + CHECK_INTERVAL_TICKS;
             return Ok(());
@@ -1094,15 +1120,15 @@ mod real {
         supervisor: &mut Supervisor,
         sdk: &mut GuestSdk,
         tick: u64,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let directive = match parse_directive(line) {
             Ok(Some(directive)) => directive,
-            Ok(None) => return Ok(()),
+            Ok(None) => return Ok(false),
             Err(error) => {
                 // A malformed directive is the workload's bug, not the agent's;
                 // it is surfaced on serial and the run continues.
                 log(tick, &format!("hook {hook}: {error}"));
-                return Ok(());
+                return Ok(false);
             }
         };
         let result = match directive {
@@ -1118,7 +1144,9 @@ mod real {
                 sdk.assert_always(cond, point)
             }
         };
-        result.map_err(|error| format!("hook {hook} directive {line:?}: {error}"))
+        result
+            .map(|()| true)
+            .map_err(|error| format!("hook {hook} directive {line:?}: {error}"))
     }
 
     fn command(argv: &[String]) -> Command {

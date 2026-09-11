@@ -77,7 +77,10 @@ with the boot that reaches setup.
 over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
 which pairs the sometimes-assertion set with node liveness, unexpected deaths,
 EventKill-fired outcomes, hook progress, and whether the workload process was
-still running. A `check` reports assertions through the same directives a hook
+still running. A check that finishes without emitting an assertion reached no
+verdict, so conclusive runs are counted separately from finished ones, and event
+parks that actually held are read back from the instrumented runtime because a
+hold leaves no other trace. A `check` reports assertions through the same directives a hook
 uses, so its evidence joins that key without the search having to draw
 anything. `EventKill` outcomes are decoded
 from the agent's dedicated monotonic fired counter rather than inferred from

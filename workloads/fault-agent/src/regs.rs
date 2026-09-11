@@ -48,6 +48,10 @@ pub const REG_EVENT_KILL_AGE_TICKS: u32 = 11;
 /// whose oracle never completed from one whose oracle completed and found
 /// nothing, which read the same in the assertion evidence.
 pub const REG_CHECKS_FINISHED: u32 = 12;
+/// Runs of the bundle's `check` command that reached a verdict.
+pub const REG_CHECKS_CONCLUSIVE: u32 = 13;
+/// Event parks that reached their site and held.
+pub const REG_EVENT_PARKS_FIRED: u32 = 14;
 
 /// The number of `assert_sometimes` ids [`REG_SOMETIMES`] can hold. A hit at a
 /// higher id still reaches the host as an assertion event; it just has no bit.
@@ -87,12 +91,16 @@ pub struct RegisterSnapshot {
     pub event_kill_age_ticks: u64,
     /// [`REG_CHECKS_FINISHED`].
     pub checks_finished: u64,
+    /// Runs of the bundle's `check` command that emitted an assertion.
+    pub checks_conclusive: u64,
+    /// Event parks that reached their site and held.
+    pub event_parks_fired: u64,
 }
 
 impl RegisterSnapshot {
     /// The `(register, value)` pairs in register order.
     #[must_use]
-    pub fn pairs(&self) -> [(u32, u64); 12] {
+    pub fn pairs(&self) -> [(u32, u64); 14] {
         [
             (REG_TICKS, self.ticks),
             (REG_ALIVE, self.alive),
@@ -106,6 +114,8 @@ impl RegisterSnapshot {
             (REG_WORKLOAD_DEATHS, self.workload_deaths),
             (REG_EVENT_KILL_AGE_TICKS, self.event_kill_age_ticks),
             (REG_CHECKS_FINISHED, self.checks_finished),
+            (REG_CHECKS_CONCLUSIVE, self.checks_conclusive),
+            (REG_EVENT_PARKS_FIRED, self.event_parks_fired),
         ]
     }
 }
@@ -172,6 +182,8 @@ mod tests {
                 (REG_WORKLOAD_DEATHS, 0),
                 (REG_EVENT_KILL_AGE_TICKS, 0),
                 (REG_CHECKS_FINISHED, 0),
+                (REG_CHECKS_CONCLUSIVE, 0),
+                (REG_EVENT_PARKS_FIRED, 0),
             ]
         );
     }

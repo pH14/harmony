@@ -69,11 +69,27 @@ static void a_zero_hold_disarms(void)
     assert(!park_claim(4000, &held));
 }
 
+/// A hold is counted so the host can tell an arm that fired from one that
+/// never reached its site.
+static void a_hold_is_counted(void)
+{
+    uint64_t held = 0;
+    uint64_t before = atomic_load(&harmony_park_fires);
+
+    park_disarm();
+    park_arm(0, UINT64_C(1000));
+    assert(park_claim(5000, &held));
+    assert(atomic_load(&harmony_park_fires) == before + 1);
+    assert(!park_claim(5001, &held));
+    assert(atomic_load(&harmony_park_fires) == before + 1);
+}
+
 int main(void)
 {
     holds_at_an_unvisited_site();
     skips_a_site_visited_past_the_ceiling();
     one_arm_holds_one_callback();
     a_zero_hold_disarms();
+    a_hold_is_counted();
     return 0;
 }

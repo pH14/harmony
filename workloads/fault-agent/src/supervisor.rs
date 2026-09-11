@@ -98,6 +98,12 @@ pub struct Counters {
     pub event_kill_age_ticks: u64,
     /// Runs of the bundle's `check` command that finished.
     pub checks_finished: u64,
+    /// Runs of the bundle's `check` command that emitted an assertion
+    /// directive. A run that finished without one reached no verdict.
+    pub checks_conclusive: u64,
+    /// Event parks that reached their site and held, read back from the
+    /// instrumented runtime.
+    pub event_parks_fired: u64,
     /// Node starts after the initial one.
     pub restarts: u64,
     /// Bitmap of the `assert_sometimes` ids a hook has reported.
@@ -335,8 +341,18 @@ impl Supervisor {
     }
 
     /// Record that one run of the bundle's check finished.
-    pub fn note_check_finished(&mut self) {
+    /// Record the runtime's running total of event parks that held. The
+    /// runtime counts per process, so a restarted node starts from zero and the
+    /// agent keeps the greatest total it has seen.
+    pub fn note_event_park_fires(&mut self, fires: u64) {
+        self.counters.event_parks_fired = self.counters.event_parks_fired.max(fires);
+    }
+
+    pub fn note_check_finished(&mut self, verdict: bool) {
         self.counters.checks_finished += 1;
+        if verdict {
+            self.counters.checks_conclusive += 1;
+        }
     }
 
     /// Record an `assert_sometimes` hit reported by a hook. Ids at or beyond
@@ -380,6 +396,8 @@ impl Supervisor {
             event_kills_fired: self.counters.event_kills_fired,
             event_kill_age_ticks: self.counters.event_kill_age_ticks,
             checks_finished: self.counters.checks_finished,
+            checks_conclusive: self.counters.checks_conclusive,
+            event_parks_fired: self.counters.event_parks_fired,
             restarts: self.counters.restarts,
             parked: self.counters.parked,
             workload_deaths: self.counters.workload_deaths,

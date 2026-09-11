@@ -87,6 +87,9 @@ static _Atomic uint32_t harmony_site_visits[HARMONY_SITE_SLOTS];
 static _Atomic uint64_t harmony_park_hold_nanos;
 static _Atomic uint32_t harmony_park_ceiling;
 static _Atomic bool harmony_park_armed;
+/* Parks that reached their site and held. The host reads this back through the
+   control channel, because a hold leaves no other trace the agent can see. */
+static _Atomic uint64_t harmony_park_fires;
 static pthread_once_t harmony_event_control_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t harmony_event_ready_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t harmony_event_ready_cond = PTHREAD_COND_INITIALIZER;
@@ -140,7 +143,8 @@ static uint32_t process_id_from_environment(void)
 enum {
     HARMONY_EVENT_CMD_WORDS = 3,
     HARMONY_EVENT_CMD_KILL = 1,
-    HARMONY_EVENT_CMD_PARK = 2
+    HARMONY_EVENT_CMD_PARK = 2,
+    HARMONY_EVENT_CMD_PARK_STATUS = 3
 };
 
 static int read_event_command(int fd, uint64_t *words)
@@ -223,6 +227,7 @@ static bool park_claim(uint64_t edge, uint64_t *hold_nanos)
         return false;
     if (!atomic_exchange_explicit(&harmony_park_armed, false, memory_order_acq_rel))
         return false;
+    (void)atomic_fetch_add_explicit(&harmony_park_fires, 1, memory_order_acq_rel);
     *hold_nanos = atomic_load_explicit(
         &harmony_park_hold_nanos, memory_order_acquire);
     return *hold_nanos != 0;
@@ -252,6 +257,12 @@ static void *event_control_main(void *unused)
                 &harmony_event_remaining, 0, memory_order_acq_rel);
         else if (command[0] == HARMONY_EVENT_CMD_PARK)
             park_disarm();
+        if (command[0] == HARMONY_EVENT_CMD_PARK_STATUS) {
+            command[1] = atomic_load_explicit(
+                &harmony_park_fires, memory_order_acquire);
+            command[2] = atomic_load_explicit(
+                &harmony_park_armed, memory_order_acquire) ? 1 : 0;
+        }
         for (index = 0; index < HARMONY_EVENT_CMD_WORDS; ++index)
             put_u64(acknowledgement + index * sizeof(uint64_t), command[index]);
         if (write_all(harmony_event_control_fd, acknowledgement, sizeof(acknowledgement)) != 0) {

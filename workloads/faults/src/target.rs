@@ -55,6 +55,10 @@ pub mod reg {
     pub const EVENT_KILL_AGE_TICKS: u32 = 11;
     /// Runs of the bundle's check command that finished.
     pub const CHECKS_FINISHED: u32 = 12;
+    /// Runs of the bundle's `check` command that reached a verdict.
+    pub const CHECKS_CONCLUSIVE: u32 = 13;
+    /// Event parks that reached their site and held.
+    pub const EVENT_PARKS_FIRED: u32 = 14;
 }
 
 const NS_SHIFT: u32 = 24;
@@ -486,6 +490,12 @@ pub struct FaultObservations {
     /// verdict at all, which is different from a verdict that found nothing.
     #[serde(default)]
     pub checks_finished: u64,
+    /// Runs of the bundle's `check` command that reached a verdict.
+    #[serde(default)]
+    pub checks_conclusive: u64,
+    /// Event parks that reached their site and held.
+    #[serde(default)]
+    pub event_parks_fired: u64,
     /// The `sometimes` bitmap the agent publishes for the first 48 sites.
     pub sometimes_register: u64,
     /// Every `sometimes` site hit, decoded from namespace-1 hits.
@@ -514,6 +524,8 @@ impl FaultObservations {
             workload_deaths: value(reg::WORKLOAD_DEATHS),
             event_kill_age_ticks: value(reg::EVENT_KILL_AGE_TICKS),
             checks_finished: value(reg::CHECKS_FINISHED),
+            checks_conclusive: value(reg::CHECKS_CONCLUSIVE),
+            event_parks_fired: value(reg::EVENT_PARKS_FIRED),
             sometimes_register: value(reg::SOMETIMES),
             sometimes: capture.sometimes.clone(),
             violations: capture.violations.clone(),
