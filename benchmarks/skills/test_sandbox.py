@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -291,9 +292,13 @@ class StagePayloadTests(unittest.TestCase):
             temporary_dir = root / "tmp"
             work.mkdir()
             temporary_dir.mkdir()
-            script = sandbox._STAGE_SCRIPT
-            script = script.replace('"/work', json.dumps(str(work))[:-1])
-            script = script.replace('"/tmp', json.dumps(str(temporary_dir))[:-1])
+            # Substitute once: Linux temporary roots themselves start with /tmp.
+            directories = {"work": work, "tmp": temporary_dir}
+            script = re.sub(
+                r'"/(work|tmp)(?=/|")',
+                lambda match: json.dumps(str(directories[match[1]]))[:-1],
+                sandbox._STAGE_SCRIPT,
+            )
             input_file = tempfile.TemporaryFile(mode="w+b")
             try:
                 input_file.write(payload)

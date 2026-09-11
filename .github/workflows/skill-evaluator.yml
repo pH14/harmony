@@ -19,14 +19,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Portable material and process checks
-        run: python3 -B -m unittest -v benchmarks/skills/test_materials.py benchmarks/skills/test_sandbox.py
-      - name: Build and freeze the qualification tool image
+      - name: Record qualification source and host
         run: |
           set -euo pipefail
           mkdir -p reports/skill-evaluator
           git rev-parse HEAD > reports/skill-evaluator/candidate-head.txt
           uname -a > reports/skill-evaluator/host.txt
+      - name: Portable material and process checks
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest -v benchmarks/skills/test_materials.py benchmarks/skills/test_sandbox.py 2>&1 | tee reports/skill-evaluator/portable-tests.log
+      - name: Build and freeze the qualification tool image
+        run: |
+          set -euo pipefail
           docker version > reports/skill-evaluator/docker-version.txt
           docker build --file benchmarks/skills/Dockerfile.qualify --tag harmony-skill-qualification:local benchmarks/skills
           docker image inspect --format '{{.Id}}' harmony-skill-qualification:local > reports/skill-evaluator/image-id.txt
