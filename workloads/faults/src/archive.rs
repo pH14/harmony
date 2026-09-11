@@ -307,15 +307,23 @@ pub fn sample_action(
 /// abandoned.
 pub const WAIT_DRAW_MAX_SCALE: u8 = 5;
 
-/// Draw a wait length, halving the chance of each next scale. A wait costs
-/// `1 << scale` horizons to run, so drawing the scale uniformly would put most
-/// of a campaign's guest time in its longest waits: rebuilding an evicted
-/// prefix full of them costs that duration over again. Halving makes the
-/// expected cost a few horizons while every drawn scale stays reachable.
+/// Shortest wait the draw produces. A workload's oracle needs the cluster up,
+/// writes acknowledged and a recovered member to read back before it can reach
+/// a verdict, which takes tens of horizons. An input shorter than that ends
+/// before the oracle says anything, so the same guest time spent on fewer and
+/// longer inputs buys far more verdicts than on many short ones.
+pub const WAIT_DRAW_MIN_SCALE: u8 = 3;
+
+/// Draw a wait length, halving the chance of each next scale above the floor. A
+/// wait costs `1 << scale` horizons to run, so drawing the scale uniformly
+/// would put most of a campaign's guest time in its longest waits: rebuilding
+/// an evicted prefix full of them costs that duration over again. Halving keeps
+/// the expected cost near the floor while every drawn scale stays reachable.
 fn sample_wait_scale(rand: &mut RomuDuoJrRand) -> u8 {
     let scale = rand.next_u64().trailing_zeros();
     u8::try_from(scale)
         .unwrap_or(WAIT_DRAW_MAX_SCALE)
+        .saturating_add(WAIT_DRAW_MIN_SCALE)
         .min(WAIT_DRAW_MAX_SCALE)
 }
 
@@ -589,7 +597,9 @@ mod tests {
             let action = sample_action(&mut rand, &vocabulary).expect("draw an action");
             kinds.insert(kind(&action));
             match action {
-                FaultAction::Wait(scale) => assert!(scale <= WAIT_DRAW_MAX_SCALE),
+                FaultAction::Wait(scale) => {
+                    assert!((WAIT_DRAW_MIN_SCALE..=WAIT_DRAW_MAX_SCALE).contains(&scale))
+                }
                 FaultAction::EventKill { node, rarity } => {
                     assert!(node < vocabulary.nodes());
                     assert!(EVENT_SITE_RARITY.contains(&rarity));

@@ -87,7 +87,10 @@ from the agent's dedicated monotonic fired counter rather than inferred from
 aggregate unexpected deaths. A drawn input is bounded in guest time as well as in actions: a `Wait` runs for
 many horizons, so the draw shortens a wait that would push the whole input past
 one horizon per permitted action, and cuts the suffix where even a one-horizon
-action no longer fits. A workload's progress decays with guest history, so a
+action no longer fits. A drawn `Wait` also has a floor. A workload's oracle
+needs the cluster up, writes acknowledged and a recovered member to read back
+before it reaches a verdict, so an input shorter than that ends before the
+oracle says anything and the execution that ran it answers nothing. A workload's progress decays with guest history, so a
 session that runs far past what the workload sustains buys nothing and holds a
 worker for the whole of it. `EventKill` and `EventPark` both draw a visit-count
 scale and leave the site to the runtime, which counts visits per site and
