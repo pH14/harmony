@@ -25,9 +25,10 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use sha2::{Digest, Sha256};
 use vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time;
 use vmm_core::virtual_time::{NormalizedLog, check_delivery_placement, compare_normalized_logs};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
@@ -789,4 +790,919 @@ fn x2_component_diff_first_checkpoint() {
         }
     }
     println!("X2_CKPT_NO_DIVERGENT_PAIR attempts={attempts}");
+}
+
+/// A checkpoint observed while advancing one arm. The event index is the
+/// position recorded by the normalized trace; it is not an assertion about
+/// where an earlier non-checkpoint divergence originated.
+#[derive(Clone, Debug)]
+struct CheckpointRecord {
+    event_index: u64,
+    state_hash: [u8; 32],
+    /// The one full-state blob captured at this exact completed checkpoint.
+    /// Keeping it here lets the pair compare the bytes that produced the
+    /// installed hash without taking another CPU observation.
+    state_blob: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+enum CheckpointAdvance {
+    Checkpoint {
+        event_index: u64,
+        state_hash: [u8; 32],
+    },
+    Terminal(TerminalReason),
+    Error(String),
+    Budget(String),
+}
+
+/// Per-arm progress for the bounded lockstep driver and its evidence summary.
+struct CheckpointArm {
+    steps: u64,
+    reason: Option<TerminalReason>,
+    error: Option<String>,
+    budget: Option<String>,
+    last_checkpoint: Option<CheckpointRecord>,
+    checkpoint_current: bool,
+    /// A checkpoint capture that could not be installed (for example, because
+    /// the zero-side-effect check failed). Evidence may use these exact bytes,
+    /// but must label them as uninstalled rather than as the current checkpoint.
+    uninstalled_blob: Option<Vec<u8>>,
+    capture_attempted: bool,
+    #[allow(clippy::disallowed_methods)]
+    started: Instant,
+}
+
+impl CheckpointArm {
+    #[allow(clippy::disallowed_methods)]
+    fn new() -> Self {
+        Self {
+            steps: 0,
+            reason: None,
+            error: None,
+            budget: None,
+            last_checkpoint: None,
+            checkpoint_current: false,
+            uninstalled_blob: None,
+            capture_attempted: false,
+            started: Instant::now(),
+        }
+    }
+}
+
+/// The step and wall budgets are shared by both arms. A checkpoint is only
+/// compared after A reaches its next checkpoint and B reaches its corresponding
+/// next checkpoint, so neither arm can run ahead without consuming this budget.
+struct CheckpointPairBudget {
+    steps: u64,
+    max_steps: u64,
+    started: Instant,
+    wall: Duration,
+}
+
+impl CheckpointPairBudget {
+    #[allow(clippy::disallowed_methods)]
+    fn new(max_steps: u64, wall: Duration) -> Self {
+        Self {
+            steps: 0,
+            max_steps,
+            started: Instant::now(),
+            wall,
+        }
+    }
+
+    fn exhausted(&self) -> Option<&'static str> {
+        if self.steps >= self.max_steps {
+            Some("pair step budget exhausted")
+        } else if self.started.elapsed() >= self.wall {
+            Some("pair wall-clock budget exhausted")
+        } else {
+            None
+        }
+    }
+
+    fn record_step(&mut self) {
+        self.steps = self.steps.saturating_add(1);
+    }
+}
+
+/// Advance exactly until the next newly recorded full-state checkpoint, a
+/// terminal/error, or the shared pair budget. The final `step()` that records a
+/// checkpoint is the last guest entry made by this helper; it never probes the
+/// successor instruction before returning.
+fn advance_until_checkpoint(
+    vmm: &mut StockVmm,
+    arm: &mut CheckpointArm,
+    budget: &mut CheckpointPairBudget,
+) -> CheckpointAdvance {
+    if let Some(reason) = arm.reason {
+        return CheckpointAdvance::Terminal(reason);
+    }
+    if let Some(error) = &arm.error {
+        return CheckpointAdvance::Error(error.clone());
+    }
+    if let Some(reason) = &arm.budget {
+        return CheckpointAdvance::Budget(reason.clone());
+    }
+
+    // The previous checkpoint remains useful as provenance, but once this arm
+    // is asked to advance again it no longer describes the current stopped
+    // state. Evidence must take a separate stopped-state capture until the next
+    // deferred checkpoint is installed.
+    arm.checkpoint_current = false;
+    arm.uninstalled_blob = None;
+    arm.capture_attempted = false;
+
+    let first_new_event = vmm
+        .virtual_time_trace()
+        .expect("boot_linux_stock_virtual_time wires the trace")
+        .normalized_log()
+        .events
+        .len();
+    loop {
+        if let Some(reason) = budget.exhausted() {
+            let reason = reason.to_owned();
+            arm.budget = Some(reason.clone());
+            return CheckpointAdvance::Budget(reason);
+        }
+
+        let step = match vmm.step() {
+            Ok(step) => step,
+            Err(error) => {
+                let error = format!("{error}");
+                arm.error = Some(error.clone());
+                return CheckpointAdvance::Error(error);
+            }
+        };
+        budget.record_step();
+        arm.steps = arm.steps.saturating_add(1);
+
+        let checkpoint_event_index = vmm
+            .virtual_time_trace()
+            .expect("boot_linux_stock_virtual_time wires the trace")
+            .normalized_log()
+            .events
+            .get(first_new_event..)
+            .and_then(|events| {
+                events.iter().find(|event| {
+                    event.state_hash.is_none() && vmm.virtual_time_checkpoint_due(event.event_index)
+                })
+            })
+            .map(|event| event.event_index);
+        if let Some(event_index) = checkpoint_event_index {
+            // Deferred checkpoint mode leaves the hash slot empty until this
+            // host-side capture.  This is the only state_blob read for the
+            // matching path: the exact bytes are hashed and installed before
+            // the pair compares its normalized prefixes.
+            arm.capture_attempted = true;
+            let state_before = stable_checkpoint_observation(vmm);
+            let state_blob = match vmm.state_blob() {
+                Ok(blob) => blob,
+                Err(error) => {
+                    let error = format!("checkpoint state_blob capture: {error}");
+                    arm.error = Some(error.clone());
+                    return CheckpointAdvance::Error(error);
+                }
+            };
+            let state_after = stable_checkpoint_observation(vmm);
+            let mut capture_changes = Vec::new();
+            if state_before.memory != state_after.memory {
+                capture_changes.push("RAM");
+            }
+            if state_before.serial != state_after.serial {
+                capture_changes.push("serial");
+            }
+            if state_before.counts != state_after.counts {
+                capture_changes.push("exit counts");
+            }
+            if state_before.virtual_time != state_after.virtual_time {
+                capture_changes.push("virtual time");
+            }
+            if !capture_changes.is_empty() {
+                let error = format!(
+                    "checkpoint state_blob capture changed {}",
+                    capture_changes.join(", ")
+                );
+                arm.uninstalled_blob = Some(state_blob);
+                arm.error = Some(error.clone());
+                return CheckpointAdvance::Error(error);
+            }
+            let state_hash: [u8; 32] = Sha256::digest(&state_blob).into();
+            if let Err(error) = vmm.checkpoint_virtual_time_trace_at(event_index, state_hash) {
+                let error = format!("install deferred checkpoint hash: {error}");
+                arm.uninstalled_blob = Some(state_blob);
+                arm.error = Some(error.clone());
+                return CheckpointAdvance::Error(error);
+            }
+            arm.last_checkpoint = Some(CheckpointRecord {
+                event_index,
+                state_hash,
+                state_blob,
+            });
+            arm.checkpoint_current = true;
+
+            // If this boundary also returned a terminal/SDK stop, remember it
+            // now so the next lockstep round does not probe a successor entry.
+            match step {
+                Step::Terminal(reason) => arm.reason = Some(reason),
+                Step::SdkStop => arm.reason = Some(TerminalReason::SdkStop),
+                Step::Continued => {}
+            }
+            return CheckpointAdvance::Checkpoint {
+                event_index,
+                state_hash,
+            };
+        }
+
+        match step {
+            Step::Continued => {}
+            Step::Terminal(reason) => {
+                arm.reason = Some(reason);
+                return CheckpointAdvance::Terminal(reason);
+            }
+            Step::SdkStop => {
+                arm.reason = Some(TerminalReason::SdkStop);
+                return CheckpointAdvance::Terminal(TerminalReason::SdkStop);
+            }
+        }
+    }
+}
+
+fn checkpoint_run(vmm: &StockVmm, arm: &CheckpointArm) -> BootRun {
+    let trace = vmm
+        .virtual_time_trace()
+        .expect("boot_linux_stock_virtual_time wires the trace");
+    let placement_error = check_delivery_placement(trace.schedule(), trace.normalized_log())
+        .err()
+        .map(|error| error.to_string());
+    BootRun {
+        reason: arm.reason,
+        steps: arm.steps,
+        reached_userspace: find(vmm.serial(), REACHED_USERSPACE),
+        guest_ready: find(vmm.serial(), GUEST_READY),
+        pvclock_registered: find(vmm.serial(), PVCLOCK_REGISTERED),
+        step_error: arm.error.clone(),
+        placement_error,
+        wall: arm.started.elapsed(),
+        log: trace.normalized_log().clone(),
+        digest: trace.normalized_digest(),
+    }
+}
+
+#[derive(Clone)]
+struct StableCheckpointObservation {
+    memory: Vec<u8>,
+    serial: Vec<u8>,
+    counts: vmm_backend::ExitCounts,
+    virtual_time: u64,
+}
+
+fn stable_checkpoint_observation(vmm: &StockVmm) -> StableCheckpointObservation {
+    StableCheckpointObservation {
+        memory: vmm.guest_memory().to_vec(),
+        serial: vmm.serial().to_vec(),
+        counts: vmm.exit_counts(),
+        virtual_time: vmm.effective_vns().unwrap_or(0),
+    }
+}
+
+/// Write one evidence file without ever replacing an existing path. The report
+/// root is also create-only, so a repeated run cannot silently overwrite a prior
+/// divergence capture.
+fn write_checkpoint_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("create {}: {error}", path.display()))?;
+    file.write_all(bytes)
+        .map_err(|error| format!("write {}: {error}", path.display()))?;
+    Ok(())
+}
+
+fn normalized_checkpoint_log(run: &BootRun) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    for event in &run.log.events {
+        writeln!(
+            output,
+            "EVENT {} {:?} {} {} {:?} {}",
+            event.event_index,
+            event.class,
+            hex(&event.payload_digest),
+            event.vns_after,
+            event.interrupts,
+            event
+                .state_hash
+                .map(|hash| hex(&hash))
+                .unwrap_or_else(|| "-".into()),
+        )
+        .expect("write normalized checkpoint log");
+    }
+    writeln!(output, "DIGEST {}", hex(&run.digest)).expect("write normalized checkpoint digest");
+    output
+}
+
+fn checkpoint_advance_description(advance: &CheckpointAdvance) -> String {
+    match advance {
+        CheckpointAdvance::Checkpoint {
+            event_index,
+            state_hash,
+        } => format!("checkpoint event={} hash={}", event_index, hex(state_hash),),
+        CheckpointAdvance::Terminal(reason) => format!("terminal={reason:?}"),
+        CheckpointAdvance::Error(error) => format!("error={error}"),
+        CheckpointAdvance::Budget(reason) => format!("budget={reason}"),
+    }
+}
+
+fn xsave_bitmap(value: &[u8], start: usize, end: usize) -> Option<u64> {
+    value
+        .get(start..end)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u64::from_le_bytes)
+}
+
+fn memory_from_state_blob(blob: &[u8]) -> Result<&[u8], String> {
+    if blob.len() < 12 || &blob[..4] != b"MEM\0" {
+        return Err("state blob does not begin with a MEM chunk".into());
+    }
+    let length = u64::from_le_bytes(
+        blob[4..12]
+            .try_into()
+            .expect("state blob MEM length has eight bytes"),
+    );
+    let length = usize::try_from(length).map_err(|_| "MEM length does not fit usize")?;
+    let end = 12usize
+        .checked_add(length)
+        .ok_or("state blob MEM length overflows usize")?;
+    blob.get(12..end)
+        .ok_or_else(|| "state blob MEM chunk is truncated".into())
+}
+
+fn state_blob_chunk<'a>(blob: &'a [u8], wanted: &[u8; 4]) -> Result<&'a [u8], String> {
+    let mut offset = 0usize;
+    let mut found = None;
+    while offset < blob.len() {
+        let header_end = offset
+            .checked_add(12)
+            .ok_or("state blob chunk header offset overflows usize")?;
+        let header = blob
+            .get(offset..header_end)
+            .ok_or_else(|| "state blob chunk header is truncated".to_string())?;
+        let tag: [u8; 4] = header[..4]
+            .try_into()
+            .expect("state blob chunk tag has four bytes");
+        let length = u64::from_le_bytes(
+            header[4..12]
+                .try_into()
+                .expect("state blob chunk length has eight bytes"),
+        );
+        let length =
+            usize::try_from(length).map_err(|_| "state blob chunk length overflows usize")?;
+        let end = header_end
+            .checked_add(length)
+            .ok_or("state blob chunk length overflows usize")?;
+        let payload = blob
+            .get(header_end..end)
+            .ok_or_else(|| "state blob chunk payload is truncated".to_string())?;
+        if &tag == wanted {
+            if found.is_some() {
+                return Err(format!("state blob contains duplicate {:?} chunk", wanted));
+            }
+            found = Some(payload);
+        }
+        offset = end;
+    }
+    found.ok_or_else(|| format!("state blob is missing {:?} chunk", wanted))
+}
+
+struct VmStateCapture {
+    bytes: Option<Vec<u8>>,
+    rip: Option<u64>,
+    raw_xstate_bv: Option<u64>,
+    xsave_restore_bv: Option<u64>,
+    source: &'static str,
+    current_matches_retained: &'static str,
+}
+
+fn capture_checkpoint_arm(
+    directory: &Path,
+    label: &str,
+    vmm: &StockVmm,
+    arm: &CheckpointArm,
+) -> (String, Vec<String>) {
+    let mut errors = Vec::new();
+    let before = stable_checkpoint_observation(vmm);
+    let run = checkpoint_run(vmm, arm);
+
+    // A checkpoint record owns the exact state_blob that produced its installed
+    // hash. Use that retained blob for evidence; only a discrepancy before the
+    // first checkpoint needs a one-time stopped-state fallback capture.
+    let fallback_state_blob =
+        if !arm.checkpoint_current && arm.uninstalled_blob.is_none() && !arm.capture_attempted {
+            match vmm.state_blob() {
+                Ok(blob) => Some(blob),
+                Err(error) => {
+                    errors.push(format!("save {label} fallback state blob: {error}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+    let state_blob = if arm.checkpoint_current {
+        arm.last_checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.state_blob.as_slice())
+    } else if let Some(blob) = arm.uninstalled_blob.as_deref() {
+        Some(blob)
+    } else {
+        fallback_state_blob.as_deref()
+    };
+    let state_blob_source = if arm.checkpoint_current && arm.last_checkpoint.is_some() {
+        "retained_checkpoint"
+    } else if arm.uninstalled_blob.is_some() {
+        "uninstalled_checkpoint_capture"
+    } else if state_blob.is_some() {
+        "stopped_discrepancy_fallback"
+    } else {
+        "unavailable"
+    };
+
+    let memory = match state_blob {
+        Some(blob) => match memory_from_state_blob(blob) {
+            Ok(memory) => {
+                if memory != vmm.guest_memory() {
+                    errors.push(format!(
+                        "{label} {state_blob_source} MEM differs from live guest RAM"
+                    ));
+                }
+                memory
+            }
+            Err(error) => {
+                errors.push(format!("parse {label} retained state blob MEM: {error}"));
+                vmm.guest_memory()
+            }
+        },
+        None => vmm.guest_memory(),
+    };
+    if let Err(error) = write_checkpoint_file(&directory.join("memory.bin"), memory) {
+        errors.push(error);
+    }
+    if let Err(error) = write_checkpoint_file(
+        &directory.join("state-blob.bin"),
+        state_blob.unwrap_or_default(),
+    ) {
+        errors.push(error);
+    }
+
+    // `VMST` is the exact `save_vm_state().encode()` payload folded into a
+    // snapshot-hashing state_blob. Copy it out of the retained blob for the
+    // evidence file and decode that same byte slice for register metadata. A
+    // later save is only a full verification observation; it can never replace
+    // the retained bytes that produced the checkpoint hash.
+    let retained_vm_state = match state_blob {
+        Some(blob) => match state_blob_chunk(blob, b"VMST") {
+            Ok(bytes) => Some(bytes.to_vec()),
+            Err(error) => {
+                errors.push(format!("extract {label} retained VMST: {error}"));
+                None
+            }
+        },
+        None => None,
+    };
+    let mut vm_state = match retained_vm_state {
+        Some(bytes) => {
+            if let Err(error) = write_checkpoint_file(&directory.join("vm-state.bin"), &bytes) {
+                errors.push(error);
+            }
+            match vm_state::VmState::decode(&bytes) {
+                Ok(state) => VmStateCapture {
+                    rip: Some(state.regs.rip),
+                    raw_xstate_bv: xsave_bitmap(&state.xsave.0, 512, 520),
+                    xsave_restore_bv: state.xsave_restore_bv,
+                    bytes: Some(bytes),
+                    source: "retained_vmst",
+                    current_matches_retained: "not-checked",
+                },
+                Err(error) => {
+                    errors.push(format!("decode {label} retained VMST: {error}"));
+                    VmStateCapture {
+                        bytes: Some(bytes),
+                        rip: None,
+                        raw_xstate_bv: None,
+                        xsave_restore_bv: None,
+                        source: "retained_vmst_decode_error",
+                        current_matches_retained: "not-checked",
+                    }
+                }
+            }
+        }
+        None => VmStateCapture {
+            bytes: None,
+            rip: None,
+            raw_xstate_bv: None,
+            xsave_restore_bv: None,
+            source: "unavailable",
+            current_matches_retained: "not-checked",
+        },
+    };
+
+    match vmm.save_vm_state() {
+        Ok(state) => match state.encode() {
+            Ok(bytes) => match vm_state.bytes.as_deref() {
+                Some(retained) => {
+                    let matches = bytes == retained;
+                    vm_state.current_matches_retained = if matches { "true" } else { "false" };
+                    if !matches {
+                        errors.push(format!(
+                            "{label} stopped save_vm_state differs from retained checkpoint VMST"
+                        ));
+                    }
+                }
+                None => {
+                    // There was no retained VMST (for example, a malformed
+                    // fallback blob); preserve the separate capture only as a
+                    // diagnostic, never as the retained checkpoint artifact.
+                    vm_state.current_matches_retained = "not-applicable";
+                }
+            },
+            Err(error) => {
+                errors.push(format!("encode {label} verification vm-state: {error}"));
+            }
+        },
+        Err(error) => {
+            errors.push(format!("save {label} verification vm-state: {error}"));
+        }
+    }
+    if vm_state.bytes.is_none() {
+        // Keep the manifest's file set explicit even when the retained VMST
+        // could not be decoded or extracted; the outcome records the error.
+        if let Err(error) = write_checkpoint_file(&directory.join("vm-state.bin"), &[]) {
+            errors.push(error);
+        }
+    }
+
+    let after = stable_checkpoint_observation(vmm);
+    let memory_unchanged = before.memory == after.memory;
+    let serial_unchanged = before.serial == after.serial;
+    let counts_unchanged = before.counts == after.counts;
+    let virtual_time_unchanged = before.virtual_time == after.virtual_time;
+    if !memory_unchanged {
+        errors.push(format!("{label} guest RAM changed during capture"));
+    }
+    if !serial_unchanged {
+        errors.push(format!("{label} serial changed during capture"));
+    }
+    if !counts_unchanged {
+        errors.push(format!("{label} exit counts changed during capture"));
+    }
+    if !virtual_time_unchanged {
+        errors.push(format!("{label} virtual time changed during capture"));
+    }
+
+    if let Err(error) = write_checkpoint_file(
+        &directory.join("normalized.log"),
+        normalized_checkpoint_log(&run).as_bytes(),
+    ) {
+        errors.push(error);
+    }
+
+    let (checkpoint_event_index, recorded_hash) = match &arm.last_checkpoint {
+        Some(checkpoint) => (
+            checkpoint.event_index.to_string(),
+            hex(&checkpoint.state_hash),
+        ),
+        None => ("-".into(), "-".into()),
+    };
+    let (captured_blob_hash, checkpoint_hash_matches_blob) =
+        match (arm.checkpoint_current, &arm.last_checkpoint, state_blob) {
+            (true, Some(checkpoint), Some(blob)) => {
+                let digest: [u8; 32] = Sha256::digest(blob).into();
+                let matches = digest == checkpoint.state_hash;
+                if !matches {
+                    errors.push(format!(
+                        "{label} recorded checkpoint hash does not match retained state blob"
+                    ));
+                }
+                (hex(&digest), matches.to_string())
+            }
+            (_, _, Some(blob)) => {
+                let digest: [u8; 32] = Sha256::digest(blob).into();
+                (hex(&digest), "not-applicable".into())
+            }
+            _ => ("-".into(), "unavailable".into()),
+        };
+    let rip = vm_state
+        .rip
+        .map(|value| format!("{value:#x}"))
+        .unwrap_or_else(|| "-".into());
+    let raw_xstate_bv = vm_state
+        .raw_xstate_bv
+        .map(|value| format!("{value:#x}"))
+        .unwrap_or_else(|| "-".into());
+    let xsave_restore_bv = vm_state
+        .xsave_restore_bv
+        .map(|value| format!("{value:#x}"))
+        .unwrap_or_else(|| "-".into());
+    let vm_state_sha256 = vm_state
+        .bytes
+        .as_deref()
+        .map(Sha256::digest)
+        .map(|digest| hex(&digest))
+        .unwrap_or_else(|| "-".into());
+
+    let summary = format!(
+        "arm={label}\n\
+         steps={}\n\
+         terminal={:?}\n\
+         error={:?}\n\
+         budget={:?}\n\
+         normalized_events={}\n\
+         checkpoint_current={}\n\
+         observed_checkpoint_event_index={checkpoint_event_index}\n\
+         observed_checkpoint_hash={recorded_hash}\n\
+         state_blob_source={state_blob_source}\n\
+         captured_state_blob_sha256={captured_blob_hash}\n\
+         checkpoint_hash_matches_captured_state_blob={checkpoint_hash_matches_blob}\n\
+         virtual_time_vns={}\n\
+         exit_counts={:?}\n\
+         rip={rip}\n\
+         raw_xstate_bv={raw_xstate_bv}\n\
+         xsave_restore_bv={xsave_restore_bv}\n\
+         vm_state_source={}\n\
+         vm_state_sha256={vm_state_sha256}\n\
+         vm_state_matches_retained_checkpoint={}\n\
+         ram_unchanged={memory_unchanged}\n\
+         serial_unchanged={serial_unchanged}\n\
+         exit_counts_unchanged={counts_unchanged}\n\
+         virtual_time_unchanged={virtual_time_unchanged}\n",
+        arm.steps,
+        arm.reason,
+        arm.error,
+        arm.budget,
+        run.log.events.len(),
+        arm.checkpoint_current,
+        after.virtual_time,
+        after.counts,
+        vm_state.source,
+        vm_state.current_matches_retained,
+    );
+    (summary, errors)
+}
+
+/// Retain both stopped arms before the caller turns the discrepancy into a test
+/// failure. Every child artifact uses `create_new`; the final outcome is written
+/// even when one of the capture operations fails.
+fn capture_checkpoint_pair(
+    report_root: &Path,
+    vmm_a: &StockVmm,
+    arm_a: &CheckpointArm,
+    vmm_b: &StockVmm,
+    arm_b: &CheckpointArm,
+    reason: &str,
+) -> String {
+    let mut errors = Vec::new();
+    if let Err(error) = std::fs::create_dir(report_root) {
+        return format!(
+            "could not create required report root {}: {error}",
+            report_root.display()
+        );
+    }
+    let directory_a = report_root.join("arm-a");
+    let directory_b = report_root.join("arm-b");
+    if let Err(error) = std::fs::create_dir(&directory_a) {
+        errors.push(format!("create {}: {error}", directory_a.display()));
+    }
+    if let Err(error) = std::fs::create_dir(&directory_b) {
+        errors.push(format!("create {}: {error}", directory_b.display()));
+    }
+
+    let manifest = format!(
+        "format=harmony-x2-checkpoint-capture-v1\n\
+         reason={reason}\n\
+         checkpoint_position=observed_at_stopped_arm\n\
+         arm_a=arm-a\n\
+         arm_b=arm-b\n\
+         files=memory.bin,vm-state.bin,state-blob.bin,normalized.log\n",
+    );
+    if let Err(error) =
+        write_checkpoint_file(&report_root.join("manifest.txt"), manifest.as_bytes())
+    {
+        errors.push(error);
+    }
+
+    let (summary_a, mut errors_a) = capture_checkpoint_arm(&directory_a, "A", vmm_a, arm_a);
+    let (summary_b, mut errors_b) = capture_checkpoint_arm(&directory_b, "B", vmm_b, arm_b);
+    errors.append(&mut errors_a);
+    errors.append(&mut errors_b);
+
+    let summary = format!(
+        "format=harmony-x2-checkpoint-capture-v1\n\
+         reason={reason}\n\
+         checkpoint_position=observed_at_stopped_arm; not_divergence_origin\n\
+         [arm-a]\n{summary_a}\n\
+         [arm-b]\n{summary_b}\n",
+    );
+    if let Err(error) = write_checkpoint_file(&report_root.join("summary.txt"), summary.as_bytes())
+    {
+        errors.push(error);
+    }
+
+    let outcome = if errors.is_empty() {
+        "capture_status=complete\n".to_owned()
+    } else {
+        format!(
+            "capture_status=completed_with_errors\nerrors={}\n{}\n",
+            errors.len(),
+            errors.join("\n"),
+        )
+    };
+    if let Err(error) = write_checkpoint_file(&report_root.join("outcome.txt"), outcome.as_bytes())
+    {
+        errors.push(error);
+    }
+    if errors.is_empty() {
+        "capture_status=complete".into()
+    } else {
+        format!(
+            "capture_status=completed_with_errors errors={}\\n{}",
+            errors.len(),
+            errors.join(" | ")
+        )
+    }
+}
+
+fn checkpoint_blob_divergence(arm_a: &CheckpointArm, arm_b: &CheckpointArm) -> Option<String> {
+    match (&arm_a.last_checkpoint, &arm_b.last_checkpoint) {
+        (Some(a), Some(b)) if a.event_index != b.event_index => Some(format!(
+            "checkpoint_event_position_divergence arm_a={} arm_b={}",
+            a.event_index, b.event_index
+        )),
+        (Some(a), Some(b)) if a.state_hash != b.state_hash => Some(format!(
+            "checkpoint_hash_divergence event_a={} event_b={} arm_a={} arm_b={}",
+            a.event_index,
+            b.event_index,
+            hex(&a.state_hash),
+            hex(&b.state_hash),
+        )),
+        (Some(a), Some(b)) if a.state_blob != b.state_blob => Some(format!(
+            "checkpoint_state_blob_divergence event_a={} event_b={}",
+            a.event_index, b.event_index
+        )),
+        (Some(_), None) | (None, Some(_)) => Some("checkpoint_capture_presence_divergence".into()),
+        _ => None,
+    }
+}
+
+fn required_checkpoint_report_root() -> PathBuf {
+    std::env::var_os("X2_CHECKPOINT_REPORT_DIR")
+        .map(PathBuf::from)
+        .expect("X2_CHECKPOINT_REPORT_DIR is required for checkpoint divergence evidence")
+}
+
+/// **X2 checkpoint capture gate.** Advance two same-seed Linux boots in
+/// checkpoint lockstep. The driver stops at each newly recorded full-state hash,
+/// compares the complete normalized prefixes, and retains both stopped states on
+/// the first discrepancy before failing. A finite matching pair must reach clean
+/// userspace with the patched clock page registered. This is a bounded diagnostic
+/// and does not claim universal cross-host qualification.
+#[test]
+#[ignore = "live gate (real KVM + built guest image); run with -- --ignored --nocapture"]
+fn x2_first_divergence_checkpoint_captures() {
+    require_kvm();
+    let report_root = required_checkpoint_report_root();
+    let kernel = require_artifact("bzImage");
+    let initramfs = require_artifact("initramfs.cpio.gz");
+    let max_steps = env_u64(
+        "X2_CHECKPOINT_MAX_STEPS",
+        env_u64("X2_MAX_STEPS", DEFAULT_MAX_STEPS),
+    );
+    let wall = Duration::from_secs(env_u64("X2_WALL_SECS", DEFAULT_WALL_SECS));
+    let mut budget = CheckpointPairBudget::new(max_steps, wall);
+    let mut arm_a = CheckpointArm::new();
+    let mut arm_b = CheckpointArm::new();
+
+    let mut vmm_a =
+        boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+            .expect("boot_linux_stock_virtual_time arm A");
+    let mut vmm_b =
+        boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+            .expect("boot_linux_stock_virtual_time arm B");
+    // Evidence needs the exact typed VMST payload alongside each retained
+    // state_blob; opt into the snapshot hash chunk before either guest enters.
+    vmm_a.wire_snapshot_hashing();
+    vmm_b.wire_snapshot_hashing();
+    vmm_a
+        .defer_virtual_time_checkpoint_hashes()
+        .expect("defer virtual-time checkpoints arm A before first step");
+    vmm_b
+        .defer_virtual_time_checkpoint_hashes()
+        .expect("defer virtual-time checkpoints arm B before first step");
+    let mut checkpoints = 0u64;
+
+    loop {
+        let advance_a = advance_until_checkpoint(&mut vmm_a, &mut arm_a, &mut budget);
+        let advance_b = advance_until_checkpoint(&mut vmm_b, &mut arm_b, &mut budget);
+        let log_a = &vmm_a
+            .virtual_time_trace()
+            .expect("arm A virtual_time trace")
+            .normalized_log();
+        let log_b = &vmm_b
+            .virtual_time_trace()
+            .expect("arm B virtual_time trace")
+            .normalized_log();
+
+        if let Err(divergence) = compare_normalized_logs(log_a, log_b) {
+            let reason = format!(
+                "normalized_log_divergence event_index={} field={:?}",
+                divergence.event_index, divergence.field
+            );
+            let evidence =
+                capture_checkpoint_pair(&report_root, &vmm_a, &arm_a, &vmm_b, &arm_b, &reason);
+            panic!(
+                "same-seed checkpoint prefixes diverged: {divergence:?}; evidence at {} ({evidence})",
+                report_root.display()
+            );
+        }
+
+        match (&advance_a, &advance_b) {
+            (CheckpointAdvance::Checkpoint { .. }, CheckpointAdvance::Checkpoint { .. }) => {
+                if let Some(divergence) = checkpoint_blob_divergence(&arm_a, &arm_b) {
+                    let evidence = capture_checkpoint_pair(
+                        &report_root,
+                        &vmm_a,
+                        &arm_a,
+                        &vmm_b,
+                        &arm_b,
+                        &divergence,
+                    );
+                    panic!(
+                        "same-seed checkpoint state blobs diverged; evidence at {} ({evidence})",
+                        report_root.display()
+                    );
+                }
+                checkpoints = checkpoints.saturating_add(1);
+            }
+            (CheckpointAdvance::Terminal(_), CheckpointAdvance::Terminal(_)) => break,
+            _ => {
+                let reason = format!(
+                    "lockstep_stop_mismatch arm_a={} arm_b={}",
+                    checkpoint_advance_description(&advance_a),
+                    checkpoint_advance_description(&advance_b),
+                );
+                let evidence =
+                    capture_checkpoint_pair(&report_root, &vmm_a, &arm_a, &vmm_b, &arm_b, &reason);
+                panic!(
+                    "same-seed checkpoint lockstep stopped inconsistently; evidence at {} ({evidence})",
+                    report_root.display()
+                );
+            }
+        }
+    }
+
+    let run_a = checkpoint_run(&vmm_a, &arm_a);
+    let run_b = checkpoint_run(&vmm_b, &arm_b);
+    let valid_finite_pair = checkpoints != 0
+        && run_a.reason == Some(TerminalReason::Idle)
+        && run_b.reason == Some(TerminalReason::Idle)
+        && run_a.step_error.is_none()
+        && run_b.step_error.is_none()
+        && arm_a.budget.is_none()
+        && arm_b.budget.is_none()
+        && run_a.reached_userspace
+        && run_b.reached_userspace
+        && run_a.guest_ready
+        && run_b.guest_ready
+        && run_a.pvclock_registered
+        && run_b.pvclock_registered
+        && run_a.placement_error.is_none()
+        && run_b.placement_error.is_none();
+    if !valid_finite_pair {
+        let reason = format!(
+            "matching_prefixes_but_not_clean_finite_pair arm_a={:?} arm_b={:?}",
+            advance_summary(&arm_a),
+            advance_summary(&arm_b),
+        );
+        let evidence =
+            capture_checkpoint_pair(&report_root, &vmm_a, &arm_a, &vmm_b, &arm_b, &reason);
+        panic!(
+            "checkpoint pair did not reach a clean finite userspace terminal; evidence at {} ({evidence})",
+            report_root.display()
+        );
+    }
+
+    println!(
+        "X2_CHECKPOINT_MATCHED_FINITE_PAIR checkpoints={} events={} digest={}",
+        checkpoints,
+        run_a.log.events.len(),
+        hex(&run_a.digest),
+    );
+}
+
+fn advance_summary(
+    arm: &CheckpointArm,
+) -> (&Option<TerminalReason>, &Option<String>, &Option<String>) {
+    (&arm.reason, &arm.error, &arm.budget)
 }
