@@ -103,12 +103,15 @@ The `check` command reports through the same directives and the same exit code.
 It is not held behind the post-restart readiness wait that hooks are: a check is
 responsible for deciding for itself whether it could read the workload at all.
 One starts whenever a node has died or restarted since the last one started,
-which is when the verdict can change, and otherwise on a slow heartbeat so an
-undisturbed run still produces evidence. The check reads the workload back
-through its own client and competes with it for the guest's single processor,
-so the heartbeat is slow on purpose: a faster one spends the run on validation
-rather than on load, and past a few tens of guest seconds it takes enough of
-the processor that the workload stops making progress.
+which is when the verdict can change, and otherwise on a heartbeat that follows
+what the last check cost. A check that asserted something read the workload back
+through its own client and competed with it for the guest's single processor, so
+the next one waits: a faster heartbeat spends the run on validation rather than
+on load, and past a few tens of guest seconds it takes enough of the processor
+that the workload stops making progress. A check that asserted nothing found no
+workload to compare and returned without reading a node, so the next one follows
+soon. A run that never reaches a first comparison produces no evidence at all,
+and the runs a search draws are short.
 
 Any other line is ordinary output. A hook that exits 42 reports a failed
 assertion without writing a line. A line that starts with `@` but does not parse

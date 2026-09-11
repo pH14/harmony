@@ -118,8 +118,8 @@ mod real {
     /// search can draw.
     const CHECK_HOOK_ID: u32 = u32::MAX;
 
-    /// Ticks between one check finishing and the next starting when nothing
-    /// has happened to the nodes. The check reads the workload back through its
+    /// Ticks between a check that compared the workload against the nodes and
+    /// the next one starting. Such a check reads the workload back through its
     /// own client and competes with it for the guest's single processor, so a
     /// fast timer spends the run's processor on validation rather than on the
     /// workload, and past some guest history the workload stops making
@@ -127,6 +127,13 @@ mod real {
     /// is when the evidence can change; this interval only keeps an undisturbed
     /// run producing evidence.
     const CHECK_INTERVAL_TICKS: u64 = 2_000;
+
+    /// Ticks before retrying a check that asserted nothing. Such a check found
+    /// no workload to compare and returned without reading a node, so it cost
+    /// almost nothing and the slow interval would only delay the first real
+    /// comparison. A short run has to reach one or it produces no evidence at
+    /// all, and the runs a search draws are short.
+    const CHECK_RETRY_TICKS: u64 = 200;
 
     /// The points the agent declares for itself. A hook's own assertion ids are
     /// workload-owned and are not declared here; they still fire, they just
@@ -1088,8 +1095,13 @@ mod real {
                 log(tick, &format!("check died on signal {signal}"));
             }
             supervisor.note_check_finished(check.verdict);
+            runtime.next_check_tick = tick
+                + if check.verdict {
+                    CHECK_INTERVAL_TICKS
+                } else {
+                    CHECK_RETRY_TICKS
+                };
             runtime.check = None;
-            runtime.next_check_tick = tick + CHECK_INTERVAL_TICKS;
             return Ok(());
         }
         // A check compares the workload against every node, so one that starts
