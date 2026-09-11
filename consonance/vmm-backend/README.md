@@ -58,3 +58,9 @@ memory while retaining the same paging registers. Linux performs this reset
 conditionally in [`__set_sregs2`](https://github.com/torvalds/linux/blob/v6.12/arch/x86/kvm/x86.c#L11986). Synthetic tests check the
 write sequence and error handling; the Nova restore oracle checks 200 restored
 continuations across a branching snapshot tree on KVM.
+
+This diagnostic branch also synchronizes translations at each ordinary KVM
+entry by toggling CR0.WP and reinstalling the exact live SREGS2. Snapshot reads,
+completion-only calls, and internal EINTR/IRQ-window retries do not perform
+this operation. A failed write poisons the backend against entry, capture, and
+restore. This is an experiment pending hardware and compatibility qualification.

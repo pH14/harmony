@@ -131,6 +131,8 @@ pub struct KvmBackend {
     cpuid_installed: bool,
     msr_filter_installed: bool,
     pending: Pending,
+    /// Latched if the diagnostic ordinary-entry synchronization write fails.
+    entry_coherence_poisoned: bool,
     /// `true` after KVM returns a userspace completion (including a write-style
     /// PIO/MMIO callback) and before a `KVM_RUN` consumes it. This is separate
     /// from `pending`: the latter is cleared as soon as the VMM supplies the
@@ -227,6 +229,7 @@ impl KvmBackend {
             cpuid_installed: false,
             msr_filter_installed: false,
             pending: Pending::None,
+            entry_coherence_poisoned: false,
             completion_staged: false,
             completion_exit: None,
             pending_irq: None,
@@ -315,6 +318,28 @@ impl KvmBackend {
             return Err(BackendError::PendingCompletion);
         }
         Ok(())
+    }
+
+    /// Synchronize translations once per ordinary entry, after all userspace
+    /// instruction completions are retired. Capture and completion-only paths
+    /// never call this; internal EINTR/IRQ-window retries stay in enter_guest.
+    fn synchronize_entry_translations(&mut self) -> Result<()> {
+        let fd = self.vcpu.as_raw_fd();
+        synchronize_entry_sregs(
+            &mut self.entry_coherence_poisoned,
+            || {
+                // SAFETY: the owned vCPU fd remains live throughout the call;
+                // raw_get_sregs2 fills an initialized full-sized SREGS2 value.
+                unsafe { raw_get_sregs2(fd) }
+            },
+            |sregs| {
+                // SAFETY: fd is the same stopped, owned vCPU, and sregs points
+                // to a complete live value. The pure sequence executes no
+                // KVM_RUN between the transient and exact writes; failures
+                // poison further entry/capture/restore. Sequencing is Miri-tested.
+                unsafe { raw_set_sregs2(fd, sregs) }
+            },
+        )
     }
 
     /// Issue `KVM_RUN`, then map the raw exit via the pure [`decode_exit`]. Retries
@@ -884,6 +909,7 @@ impl Backend for KvmBackend {
         {
             return Err(BackendError::PendingCompletion);
         }
+        self.synchronize_entry_translations()?;
         self.enter_guest()
     }
 
@@ -986,6 +1012,7 @@ impl Backend for KvmBackend {
     }
 
     fn save(&self) -> Result<VcpuState> {
+        ensure_entry_coherence_usable(self.entry_coherence_poisoned)?;
         let regs = self.vcpu.get_regs().map_err(kvm_err)?;
         // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_sregs2` writes a full
         // `kvm_sregs2` (incl. flags/PDPTRs). Excluded under Miri.
@@ -1014,6 +1041,7 @@ impl Backend for KvmBackend {
     }
 
     fn restore(&mut self, state: &VcpuState) -> Result<()> {
+        ensure_entry_coherence_usable(self.entry_coherence_poisoned)?;
         // `KVM_SET_*` does not disarm completion state held in `kvm_run`.
         // Reject before validation or mutation so an old IO/MMIO/MSR result can
         // never commit over the restored registers on the next KVM_RUN.

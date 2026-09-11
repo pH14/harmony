@@ -1095,6 +1095,94 @@ fn restore_sregs_stops_at_either_failed_write() {
 }
 
 #[test]
+fn entry_coherence_preserves_raw_registers_and_cached_pdptrs() {
+    for cr0 in [0x21, 0x10021, 0x80000021, 0x80010021] {
+        let mut saved = to_kvm_sregs2(&VcpuSregs {
+            cr0,
+            cr3: 0x4000,
+            cr4: 0x20,
+            flags: 1,
+            pdptrs: [0x5001, 0x6001, 0x7001, 0x8001],
+            ..VcpuSregs::default()
+        });
+        saved.ds.unusable = 1;
+        saved.ds.type_ = 0xB;
+        saved.ds.limit = 0xABCD;
+        let mut poisoned = false;
+        let mut reads = 0;
+        let mut writes = Vec::new();
+        synchronize_entry_sregs(
+            &mut poisoned,
+            || {
+                reads += 1;
+                Ok(saved)
+            },
+            |state| {
+                writes.push(*state);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(!poisoned);
+        assert_eq!(reads, 1);
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0].cr0, saved.cr0 ^ (1 << 16));
+        writes[0].cr0 = saved.cr0;
+        assert_eq!(writes[0], saved, "only WP changes temporarily");
+        assert_eq!(
+            writes[1], saved,
+            "raw fields survive without canonicalization"
+        );
+    }
+}
+
+#[test]
+fn entry_coherence_read_error_performs_no_write_and_remains_usable() {
+    let mut poisoned = false;
+    let result = synchronize_entry_sregs(
+        &mut poisoned,
+        || Err(BackendError::Internal("read failure")),
+        |_| panic!("read failure must not write"),
+    );
+    assert!(result.is_err());
+    assert!(!poisoned);
+    assert!(ensure_entry_coherence_usable(poisoned).is_ok());
+}
+
+#[test]
+fn entry_coherence_write_errors_poison_and_prevent_retry() {
+    for failure in [1, 2] {
+        let mut poisoned = false;
+        let mut calls = 0;
+        let result = synchronize_entry_sregs(
+            &mut poisoned,
+            || Ok(kvm_sregs2::default()),
+            |_| {
+                calls += 1;
+                if calls == failure {
+                    Err(BackendError::Internal("write failure"))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, failure);
+        assert!(poisoned);
+        assert!(ensure_entry_coherence_usable(poisoned).is_err());
+        assert!(
+            synchronize_entry_sregs(
+                &mut poisoned,
+                || panic!("poisoned backend must not read"),
+                |_| panic!("poisoned backend must not write"),
+            )
+            .is_err()
+        );
+        assert!(poisoned);
+    }
+}
+
+#[test]
 fn event_restore_preserves_pending_and_clears_displaced_exceptions() {
     for event in [
         VcpuEvents::default(),

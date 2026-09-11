@@ -576,15 +576,50 @@ pub(crate) fn saved_msrs(
 /// write changes CR0, even when the live value is unknown. WP does not change
 /// execution mode; no guest instruction may run between these two writes.
 /// A failed write aborts restoration so the caller discards the partial VM.
-pub(crate) fn restore_sregs2_with_flush<F>(state: &VcpuSregs, mut set: F) -> Result<()>
+pub(crate) fn restore_sregs2_with_flush<F>(state: &VcpuSregs, set: F) -> Result<()>
 where
     F: FnMut(&kvm_sregs2) -> Result<()>,
 {
-    let target = to_kvm_sregs2(state);
-    let mut transient = target;
+    write_sregs2_with_flush(&to_kvm_sregs2(state), set)
+}
+
+fn write_sregs2_with_flush<F>(target: &kvm_sregs2, mut set: F) -> Result<()>
+where
+    F: FnMut(&kvm_sregs2) -> Result<()>,
+{
+    let mut transient = *target;
     transient.cr0 ^= 1 << 16; // Architectural CR0.WP.
     set(&transient)?;
-    set(&target)
+    set(target)
+}
+
+/// A failed coherence write may leave transient special registers installed.
+/// Such a backend cannot run, capture, or restore again; construct a new one.
+pub(crate) fn ensure_entry_coherence_usable(poisoned: bool) -> Result<()> {
+    if poisoned {
+        Err(BackendError::Internal(
+            "entry coherence failed; discard this KVM backend",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Diagnostic ordinary-entry policy. Read and reinstall the exact live SREGS2
+/// around a WP toggle, with no guest entry between writes. Retain raw fields,
+/// including cached PDPTRs and unusable-segment residue, without canonicalizing.
+/// Read errors leave state untouched; any write error permanently poisons it.
+pub(crate) fn synchronize_entry_sregs<R, W>(poisoned: &mut bool, read: R, set: W) -> Result<()>
+where
+    R: FnOnce() -> Result<kvm_sregs2>,
+    W: FnMut(&kvm_sregs2) -> Result<()>,
+{
+    ensure_entry_coherence_usable(*poisoned)?;
+    let target = read()?;
+    *poisoned = true;
+    write_sregs2_with_flush(&target, set)?;
+    *poisoned = false;
+    Ok(())
 }
 
 /// Validate a snapshot's cheap shape against this backend's config *before* any
