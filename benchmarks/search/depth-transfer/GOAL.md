@@ -1437,3 +1437,29 @@ four-arm schemas and planted failures. No SR02 native execution has run at this
 publication. No retry, old-seed reuse, pooling, control promotion or horizon rescue.
 No fresh development, confirmation, MM2 or untouched panel is allocated. Full goal
 remains active and unachieved; msr1 is not accessed.
+
+
+## SR02 closure: valid conditional futility
+
+Eight valid cells complete the first two seed quartets with no living defeat in
+any arm. Every restricted event interval is[1,004,645,1,004,645]; zero strict wins
+against all three controls makes the required3/4 impossible. The registered rule
+stops eight unrun cells. Resource ratios pass; the endpoint gate fails. No retry,
+control promotion, old-data pooling or horizon extension follows.
+
+Cost19,873,998 physical =8,002,217 admitted +11,871,781 auxiliary. Actual execution
+takes170.482798seconds, with at most two four-worker cells on disjoint ms02 CPUs.
+All151 artifacts, complete replay/witness/cost receipts, exact decisions and
+stopped services verify offline. Allocation closed; unused45,126,002 physical
+frames released. Resumed ledger2,994,490,470 admitted /89,073,024 known auxiliary;
+historical unknowns unchanged. msr1 remains outside scope.
+
+Next audit a distinct action-reuse mechanism in source before any new native
+allocation: existing continuations drop same-slot transitions and trigger only
+on ordinary preference improvement, so scoped progress alone cannot express that
+learning opportunity. Review the actual APIs and prior failed continuation gates;
+use finite productive and adverse phase-dependent worlds before choosing a policy.
+Learned suffixes must come from the current campaign, with bounded storage and
+replayable controls; historical tapes are diagnostic only. This is an open source
+question, not evidence of efficacy or a new experiment. Full goal remains active
+and unachieved, including fresh development, confirmation, MM2 and untouched gates.

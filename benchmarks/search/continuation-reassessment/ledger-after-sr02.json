@@ -1,0 +1,17 @@
+{
+  "format": "retention-ledger-after-sr02-v1",
+  "before": {
+    "admitted_search": 2986488253,
+    "known_auxiliary": 77201243
+  },
+  "sr02": {
+    "admitted_search": 8002217,
+    "known_auxiliary": 11871781
+  },
+  "sr02_total_measured_physical": 19873998,
+  "after": {
+    "admitted_search": 2994490470,
+    "known_auxiliary": 89073024
+  },
+  "scope": "Eight complete SR02 search/replay/direct-helper lifetimes, eight unrun cells. Valid conditional futility closure; all earlier incomplete cost components remain unknown."
+}

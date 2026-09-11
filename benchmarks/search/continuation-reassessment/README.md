@@ -580,3 +580,16 @@ No boss defeat occurs; this is implementation evidence, not an efficacy screen.
 All61 native artifacts and complete resource/cost receipts verify offline. The
 owned service is stopped and allocation closed; only ms02 is used. A controlled
 1M-frame conditional screen needs a separate prospective registration.
+
+
+### Scoped-return conditional screen: closed for futility
+
+[SR02](sr02-results.md) completes two fresh seed quartets, eight valid 1M-frame
+cells, with no living Ridley defeat in any arm. Zero interval-safe wins make the
+required3/4 wins impossible, so the registered rule stops the other eight cells.
+Resource comparisons pass; the endpoint criterion fails. All151 artifacts and
+19,873,998 physical frames verify offline, with every owned service stopped.
+Elapsed execution is170.48seconds. This valid conditional negative is not pooled
+with PG02 or promoted into a fresh-search claim. The next direction is a source
+and finite-world audit of productive scoped action reuse, preserving the existing
+continuation and return failures. No further native allocation exists.

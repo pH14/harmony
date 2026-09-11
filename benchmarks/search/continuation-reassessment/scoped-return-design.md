@@ -108,3 +108,13 @@ compatibility, semantic ownership and test-strength lenses in REVIEWING.md were
 applied. No unsafe code or its invariants changed. SR01 subsequently qualifies native activation and complete replay in all four
 arms; see sr01-results.md. Efficacy remains unmeasured; passing implementation
 checks does not close the research goal.
+
+
+## Conditional outcome
+
+[SR02](sr02-results.md) subsequently completes eight valid1M-frame cells and stops
+at the prespecified futility gate: neither candidate nor any comparator defeats
+the boss in either completed quartet. There are zero strict wins and no route to
+the required three with only two quartets remaining. This nominee earns no larger
+horizon or fresh-development allocation. Its one-step allocation identity remains
+true; it never implied campaign-level efficacy. Full goal remains unachieved.
