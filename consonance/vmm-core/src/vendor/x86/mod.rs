@@ -208,14 +208,10 @@ impl Vendor for X86 {
     fn encode_snapshot_for_hash(
         snapshot: &Self::Snapshot,
     ) -> Result<Vec<u8>, vm_state::VmStateError> {
-        // `xsave_restore_bv` preserves the raw init-state spelling needed by
-        // KVM restore. The canonical hash deliberately treats those spellings
-        // as one XSAVE state; the complete `VmState::encode` bytes remain the
-        // persisted restore input, and complete portable artifacts cover those
-        // bytes with their trailing digest.
-        let mut canonical = snapshot.clone();
-        canonical.xsave_restore_bv = None;
-        <vm_state::VmState as vm_state::SnapshotRecords>::encode(&canonical)
+        // The VMST hash chunk must cover the complete restore record. In
+        // particular, xsave_restore_bv changes the guest state reconstructed by
+        // KVM for a future XSAVE instruction and cannot be projected away.
+        <vm_state::VmState as vm_state::SnapshotRecords>::encode(snapshot)
     }
 
     fn encode_device_state(devices: &Self::Devices) -> Vec<u8> {

@@ -239,20 +239,21 @@ pub trait Vendor: Arch + Sized {
 
     // --- state records (hash + snapshot) --------------------------------------
 
-    /// The canonical byte encoding of the vCPU record set for the engine's `VCPU`
-    /// hash chunk. Deterministic; canonicalizes exactly what the snapshot records
-    /// canonicalize, so a restored VM hashes like a never-restored one. Restore-only
-    /// provenance that is retained in the persisted snapshot may be omitted here when
-    /// it is an alternate representation of the same canonical machine state.
+    /// The complete canonical byte encoding of the vCPU record set for the engine's
+    /// `VCPU` hash chunk. Deterministic; canonicalizes exactly what the snapshot
+    /// records canonicalize, so a restored VM hashes like a never-restored one.
+    /// Every field that can affect the future guest state belongs in this encoding;
+    /// representation details retained by snapshot records are not omitted from
+    /// the identity.
     fn encode_vcpu_chunk(vcpu: &Self::VcpuState) -> Vec<u8>;
 
-    /// Encode the vendor snapshot record set for the optional `VMST` hash chunk.
+    /// Encode the complete vendor snapshot record set for the optional `VMST` hash
+    /// chunk.
     ///
-    /// The persisted [`vm_state::SnapshotRecords::encode`] bytes remain the authoritative
-    /// restore input and retain every validated field. A vendor may project a
-    /// restore-only representation detail out of this fingerprint while keeping it
-    /// in those persisted bytes. The default uses the complete canonical record
-    /// encoding.
+    /// The persisted [`vm_state::SnapshotRecords::encode`] bytes are the authoritative
+    /// restore input and retain every validated field. The hash encoding must cover
+    /// those same complete records; the default uses their canonical encoding so
+    /// architecture-specific implementations cannot silently drop restore state.
     fn encode_snapshot_for_hash(
         snapshot: &Self::Snapshot,
     ) -> Result<Vec<u8>, vm_state::VmStateError> {

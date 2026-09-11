@@ -701,12 +701,14 @@ where
     /// host-control latch, not guest or replay state.
     pub(crate) sdk_snapshot_reentry_required: bool,
     /// When set ([`Vmm::wire_snapshot_hashing`]), [`Vmm::state_blob`] folds the
-    /// vendor's **canonical `vm_state` fingerprint projection** into the hash as a
-    /// `VMST` chunk — the snapshot/branch path's canonical record identity. Default
-    /// **off**, so M1/M2/corpus/Linux-boot blobs are byte-for-byte unchanged (their
-    /// goldens do not move); a snapshot/branch consumer opts in. The persisted
-    /// bytes from [`Vmm::save_vm_state`] remain the complete restore input and may
-    /// retain representation-only provenance projected out of this fingerprint.
+    /// vendor's **complete canonical `vm_state` encoding** into the hash as a
+    /// `VMST` chunk — the snapshot/branch path's complete record identity. Default
+    /// **off**, so M1/M2/corpus/Linux-boot blobs and legacy `None` XSAVE provenance
+    /// remain byte-for-byte unchanged (their goldens do not move); a
+    /// snapshot/branch consumer opts in. A present XSAVE restore bitmap remains in
+    /// the `VCPU` chunk in either mode. The persisted bytes from
+    /// [`Vmm::save_vm_state`] are the same complete restore records used for this
+    /// hash chunk.
     pub(crate) snapshot_hashing: bool,
     /// Earliest host-scheduled event that may wake an idle guest. This is only
     /// consulted after an `Idle` exit; normal execution always runs to the next
@@ -1023,14 +1025,15 @@ where
         Ok(())
     }
 
-    /// Opt this VMM into folding the vendor's **canonical `vm_state` fingerprint
-    /// projection** into [`Vmm::state_hash`] (a `VMST` chunk). Default off, so
-    /// M1/M2/corpus/Linux-boot hashes are byte-for-byte unchanged; the
-    /// snapshot/branch path calls this so the canonical snapshot record identity
-    /// (not just the ad-hoc register layout) drives the determinism fingerprint
-    /// (task 39 Phase 1 / BRINGUP). Persisted `vm_state` bytes remain the complete
-    /// restore input; complete portable artifacts cover those bytes with their
-    /// trailing digest.
+    /// Opt this VMM into folding the vendor's **complete canonical `vm_state`
+    /// encoding** into [`Vmm::state_hash`] (a `VMST` chunk). Default off, so
+    /// M1/M2/corpus/Linux-boot hashes and legacy `None` XSAVE provenance are
+    /// byte-for-byte unchanged; the snapshot/branch path calls this so the
+    /// complete snapshot record identity (not just the ad-hoc register layout)
+    /// drives the determinism fingerprint (task 39 Phase 1 / BRINGUP). A present
+    /// XSAVE restore bitmap is included in the `VCPU` chunk even when this switch
+    /// is off. Persisted `vm_state` bytes are the complete restore input and are
+    /// encoded unchanged in this chunk when enabled.
     pub fn wire_snapshot_hashing(&mut self) -> &mut Self {
         self.snapshot_hashing = true;
         self
@@ -1842,15 +1845,13 @@ where
     }
 
     /// Canonical, length-prefixed, domain-tagged serialization of the machine's
-    /// state fingerprint: materialized guest memory ‖ the vendor's canonical
-    /// projection of `Backend::save()` ‖ serial capture ‖ device + terminal state ‖
+    /// state fingerprint: materialized guest memory ‖ the vendor's complete
+    /// encoding of `Backend::save()` ‖ serial capture ‖ device + terminal state ‖
     /// (when wired) V-time + seeded-RNG determinism state. Pure (no map iteration
-    /// into bytes, no float, no wall-clock); calling
-    /// it twice is identical. Vendor projections may omit restore-only capture
-    /// provenance when it is an alternate encoding of the same canonical state;
-    /// the persisted snapshot bytes retain that provenance separately, and the
-    /// complete portable artifact digest covers it. This fingerprint is not a
-    /// proof of whole-guest future equivalence.
+    /// into bytes, no float, no wall-clock); calling it twice is identical. When
+    /// snapshot hashing is wired, the `VMST` chunk also contains the complete
+    /// persisted snapshot record. This fingerprint is not a proof of whole-guest
+    /// future equivalence.
     ///
     /// The `VTIM` chunk is present **only** when the determinism path is wired
     /// (virtual-time wiring). It captures the state that governs future RDTSC/RNG
@@ -1962,12 +1963,11 @@ where
             bytes.push(u8::from(pv.armed));
             put_chunk(&mut out, b"PVCK", &bytes);
         }
-        // The vendor's canonical `vm_state` fingerprint projection, folded into the
-        // hash **only** when the snapshot/branch path opts in
-        // (`wire_snapshot_hashing`). Default-off keeps M1/M2/corpus/Linux-boot blobs
-        // byte-for-byte unchanged (their goldens do not move — task 39 "gate the
-        // swap"); when on, two states whose canonical projection differs hash
-        // differently. The complete persisted snapshot remains the restore input.
+        // The vendor's complete canonical `vm_state` encoding, folded into the hash
+        // **only** when the snapshot/branch path opts in (`wire_snapshot_hashing`).
+        // Default-off keeps M1/M2/corpus/Linux-boot blobs byte-for-byte unchanged
+        // (their goldens do not move — task 39 "gate the swap"); when on, every
+        // difference in the persisted snapshot records hashes differently.
         // Capture errors propagate: omitting a failed register or codec read
         // would weaken the whole-state identity being compared.
         if self.sdk_snapshot_reentry_required {
@@ -4265,8 +4265,8 @@ mod tests {
     }
 
     #[test]
-    fn state_hash_normalizes_xsave_restore_provenance() {
-        let hash_for = |restore_bv: Option<u64>, snapshot_hashing| {
+    fn state_hash_covers_xsave_restore_provenance() {
+        let state_for = |restore_bv: Option<u64>, snapshot_hashing| {
             let mut backend = configured_mock(Vec::new());
             backend.set_state(VcpuState {
                 xsave: canonical_xsave_image(),
@@ -4277,20 +4277,42 @@ mod tests {
             if snapshot_hashing {
                 vmm.wire_snapshot_hashing();
             }
-            vmm.state_hash().unwrap()
+            (vmm.state_blob().unwrap(), vmm.state_hash().unwrap())
         };
 
         for snapshot_hashing in [false, true] {
-            assert_eq!(
-                hash_for(Some(3), snapshot_hashing),
-                hash_for(Some(2), snapshot_hashing),
-                "raw XSAVE init-state provenance is outside the canonical hash"
+            let (three_blob, three_hash) = state_for(Some(3), snapshot_hashing);
+            let (two_blob, two_hash) = state_for(Some(2), snapshot_hashing);
+            let (none_blob, none_hash) = state_for(None, snapshot_hashing);
+            assert_ne!(
+                three_blob, two_blob,
+                "distinct XSAVE restore bitmaps must reach the canonical hash"
             );
-            assert_eq!(
-                hash_for(Some(3), snapshot_hashing),
-                hash_for(None, snapshot_hashing),
-                "raw provenance does not change the legacy canonical fingerprint"
+            assert_ne!(
+                three_hash, two_hash,
+                "distinct XSAVE restore bitmaps must change state_hash"
             );
+            assert_ne!(
+                three_blob, none_blob,
+                "present XSAVE restore provenance must differ from legacy absence"
+            );
+            assert_ne!(
+                three_hash, none_hash,
+                "present XSAVE restore provenance must differ from legacy state_hash"
+            );
+            assert_ne!(two_blob, none_blob);
+            assert_ne!(two_hash, none_hash);
+            if !snapshot_hashing {
+                assert_eq!(
+                    none_hash,
+                    [
+                        0x82, 0x05, 0x10, 0xc1, 0x83, 0x86, 0xa3, 0xa5, 0xc3, 0x55, 0xd6, 0x77,
+                        0x2f, 0x36, 0x72, 0x37, 0x22, 0xa2, 0x58, 0x9a, 0xad, 0x95, 0xbe, 0x93,
+                        0x91, 0xa3, 0x43, 0x1c, 0x52, 0xb1, 0x69, 0x2d,
+                    ],
+                    "legacy None XSAVE provenance must preserve the vCPU hash"
+                );
+            }
         }
     }
 
@@ -4325,7 +4347,7 @@ mod tests {
     }
 
     #[test]
-    fn xsave_hash_projection_only_omits_restore_provenance() {
+    fn xsave_hash_includes_complete_snapshot_records() {
         let snapshot = vm_state::VmState {
             xsave: vm_state::XsaveImage(canonical_xsave_image()),
             xsave_restore_bv: Some(3),
@@ -4335,27 +4357,33 @@ mod tests {
             engine_state: vec![0x66, 0x77],
             ..Default::default()
         };
-        let mut legacy = snapshot.clone();
-        legacy.xsave_restore_bv = None;
-        let projected =
-            <X86 as crate::vendor::Vendor>::encode_snapshot_for_hash(&snapshot).unwrap();
+        let encoded = <X86 as crate::vendor::Vendor>::encode_snapshot_for_hash(&snapshot).unwrap();
         assert_eq!(
-            projected,
-            <vm_state::VmState as SnapshotRecords>::encode(&legacy).unwrap(),
-            "x86 projection must equal the complete legacy record encoding"
+            encoded,
+            <vm_state::VmState as SnapshotRecords>::encode(&snapshot).unwrap(),
+            "x86 VMST hash bytes must equal the complete persisted record"
         );
         assert!(
-            !projected.is_empty(),
-            "projection must retain the VMST record"
+            !encoded.is_empty(),
+            "complete VMST hash bytes must be present"
+        );
+
+        let mut changed_bv = snapshot.clone();
+        changed_bv.xsave_restore_bv = Some(2);
+        let changed_bv_encoded =
+            <X86 as crate::vendor::Vendor>::encode_snapshot_for_hash(&changed_bv).unwrap();
+        assert_ne!(
+            encoded, changed_bv_encoded,
+            "distinct XSAVE restore bitmaps must reach the complete VMST hash bytes"
         );
 
         let mut changed = snapshot;
         changed.contract_hash[0] ^= 1;
-        let changed_projected =
+        let changed_encoded =
             <X86 as crate::vendor::Vendor>::encode_snapshot_for_hash(&changed).unwrap();
         assert_ne!(
-            projected, changed_projected,
-            "unrelated snapshot records must remain in the canonical projection"
+            encoded, changed_encoded,
+            "unrelated snapshot records must remain in the complete VMST hash bytes"
         );
     }
 

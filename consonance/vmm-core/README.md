@@ -20,9 +20,10 @@ clock is consulted.
 Guest RAM is owned by `Vmm` for the lifetime of the backend. The canonical state
 fingerprint and snapshot machinery cover guest memory, vCPU state, device state,
 timer state, virtual time, entropy, control state, and protocol state. Vendor
-fingerprints may project representation-only restore provenance; persisted
-snapshot bytes retain the complete restore input, and the complete portable
-artifact digest covers it.
+fingerprint encodings cover the complete state records used for restore, while
+the complete portable artifact digest covers the same persisted bytes. The
+VMST switch is still default-off for legacy paths; a present v6
+`xsave_restore_bv` intentionally changes the VCPU identity in either mode.
 Snapshots can be restored into a copy-on-write memory mapping. SDK state
 capture retains pending stops and unanswered service requests without consuming
 them, including the response sequence and request identity. Portable format 4
@@ -54,19 +55,17 @@ runnable lifecycle default. A terminal restore does not enter the guest again.
 X86 CPU capture retains SREGS2 flags and cached PAE PDPTRs, plus debug-register
 flags. Nonzero extended fields select VM-state v5; zero values retain v3/v4
 bytes. Cached PDPTRs are distinct from the current PDPT contents in guest RAM
-and must survive restore without reloading them from that memory. A
-standard-format XSAVE capture retains the original `XSTATE_BV` in the required
-v6 tag-15 record, whether or not canonicalization changes the x87/SSE
-init-state bits; the value is validated before restore. Short or compacted
-images retain the legacy no-provenance behavior. The canonical state fingerprint
-deliberately projects this raw representation detail away, while persisted
-`vm_state` records retain it and the complete portable artifact digest covers
-it. Keeping provenance on every standard-format capture also keeps the sidecar
-wire length fixed across equivalent raw-header spellings, so 512-byte sparse
-charge rounding cannot change archive admission. A matching fingerprint is not
-a proof of whole-guest future equivalence; focused guest-byte coverage remains
-required. Legacy records without that field keep their historical normalized
-restore behavior and cannot recover discarded header provenance.
+and must survive restore without reloading them from that memory. Every
+standard-format XSAVE capture retains the original `XSTATE_BV` in the v6
+tag-15 record, whether or not canonicalization changes the x87/SSE init-state
+bits. The value is validated before restore and included in both the vCPU
+identity and the complete VMST identity when snapshot hashing is wired. Short
+or compacted images retain the legacy no-provenance behavior. Always retaining
+the field for standard captures also avoids a 14-byte record-length variation
+crossing a sparse sidecar charge boundary. A matching fingerprint is not a proof
+of whole-guest future equivalence; focused guest-byte coverage remains required.
+Legacy records without that field keep their historical normalized restore
+behavior and cannot recover discarded header provenance.
 
 Hardware continuation coverage depends on the backend and paging mode. AMD
 default NPT has an unresolved PAE capture divergence
