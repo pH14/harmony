@@ -16,7 +16,7 @@
 //! mock test keeps the same page-aligned mapping and ownership seam exercised
 //! on every host, including under Miri.
 
-use vmm_backend::{Backend, CommonExit, Exit, Gpa, MockBackend, X86, X86Policy};
+use vmm_backend::{Backend, CommonExit, Exit, Gpa, MockBackend, X86Policy, X86};
 use vmm_core::vendor::x86::contract;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use vmm_core::vendor::x86::contract_vclock_config;
@@ -1406,5 +1406,462 @@ mod live_kvm {
     #[ignore = "diagnostic live AMD KVM NPT; run with --ignored and NPT_REPORT_DIR"]
     fn amd_default_npt_pae_guest_write_observations() {
         npt_observations(true);
+    }
+
+    const XSAVE_GPA: usize = 0x8000;
+    const XSAVE_PAGE_LEN: usize = PAGE_SIZE;
+    const XSAVE_WARMUP_LEN: usize = 10;
+    const XSAVE_PROGRAM_LEN: usize = 34;
+    const XSAVE_ENDPOINT_RIP: usize = CODE_GPA + XSAVE_PROGRAM_LEN;
+    const XSAVE_MARKER: u8 = 0x42;
+
+    /// `FNINIT; UART A5; EAX=3, EDX=0; XSAVE [0x8000]; UART 42; INC EBX; HLT`.
+    ///
+    /// The first UART is the only stop before the guest XSAVE instruction. The
+    /// output page is 64-byte aligned and remains entirely within the static PD
+    /// A mapping. The same bytes are installed at the remapped physical copy so
+    /// this fixture does not depend on a PDPT transition.
+    const XSAVE_PROGRAM: [u8; XSAVE_PROGRAM_LEN] = [
+        0xDB,
+        0xE3, // FNINIT
+        0xBA,
+        0xF8,
+        0x03,
+        0x00,
+        0x00, // MOV EDX, 0x3f8
+        0xB0,
+        WARMUP_MARKER, // MOV AL, 0xa5
+        0xEE,          // OUT DX, AL
+        0xB8,
+        0x03,
+        0x00,
+        0x00,
+        0x00, // MOV EAX, 3
+        0x31,
+        0xD2, // XOR EDX, EDX
+        0x0F,
+        0xAE,
+        0x25,
+        0x00,
+        0x80,
+        0x00,
+        0x00, // XSAVE [0x8000]
+        0xBA,
+        0xF8,
+        0x03,
+        0x00,
+        0x00, // MOV EDX, 0x3f8
+        0xB0,
+        XSAVE_MARKER, // MOV AL, 0x42
+        0xEE,         // OUT DX, AL
+        0x43,         // INC EBX
+        0xF4,         // HLT
+    ];
+
+    fn xsave_guest_ram_image() -> GuestRam {
+        let mut ram = guest_ram_image();
+        let bytes = ram.as_mut_bytes();
+        bytes[XSAVE_GPA..XSAVE_GPA + XSAVE_PAGE_LEN].fill(0);
+        put_bytes(bytes, CODE_GPA, &XSAVE_PROGRAM);
+        put_bytes(bytes, REMAPPED_CODE_GPA, &XSAVE_PROGRAM);
+        ram
+    }
+
+    /// Enable the guest-visible FXSAVE/XSAVE execution state after the normal
+    /// production PAE entry has been installed by setting the required CR4 and
+    /// XCR0 bits on that valid entry state.
+    fn install_xsave_entry(backend: &mut KvmBackend) {
+        install_pae_entry(backend);
+        let mut state = backend.save().expect("save XSAVE entry template");
+        state.sregs.cr4 |= (1 << 9) | (1 << 18); // OSFXSR | OSXSAVE
+        state.sregs.cr0 &= !((1 << 2) | (1 << 3)); // EM | TS clear
+        state.xcr0 = 3; // x87 + SSE
+        backend
+            .restore(&state)
+            .expect("restore XSAVE-capable PAE entry state");
+    }
+
+    fn fresh_xsave_vmm(configure: bool) -> Vmm<KvmBackend> {
+        let backend = KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed: {e}"));
+        let configure: fn(&mut KvmBackend) = if configure {
+            install_xsave_entry
+        } else {
+            |_| {}
+        };
+        compose(xsave_guest_ram_image(), backend, configure)
+    }
+
+    /// Stop after the scalar UART and immediately return. The uninterrupted
+    /// arm deliberately performs no vCPU read, save, or hash between this stop
+    /// and the continuation endpoint.
+    fn run_xsave_warmup(vmm: &mut Vmm<KvmBackend>) {
+        assert_eq!(
+            vmm.step().expect("run XSAVE scalar UART warmup"),
+            Step::Continued,
+            "the warmup UART OUT must be a serviced, non-terminal PIO exit"
+        );
+    }
+
+    fn xsave_output_page(memory: &[u8]) -> &[u8] {
+        memory
+            .get(XSAVE_GPA..XSAVE_GPA + XSAVE_PAGE_LEN)
+            .expect("XSAVE output page is within guest RAM")
+    }
+
+    fn xsave_header_words(bytes: &[u8]) -> (u64, u64) {
+        let xstate_bv = bytes
+            .get(512..520)
+            .and_then(|field| field.try_into().ok())
+            .map(u64::from_le_bytes)
+            .expect("XSAVE bytes must include XSTATE_BV");
+        let xcomp_bv = bytes
+            .get(520..528)
+            .and_then(|field| field.try_into().ok())
+            .map(u64::from_le_bytes)
+            .expect("XSAVE bytes must include XCOMP_BV");
+        (xstate_bv, xcomp_bv)
+    }
+
+    fn run_xsave_to_hlt(vmm: &mut Vmm<KvmBackend>) -> MmioCapture {
+        let before_counts = vmm.exit_counts();
+        let mut steps = 0;
+        loop {
+            assert!(steps < MAX_STEPS, "XSAVE guest exceeded the step budget");
+            match vmm.step().expect("run one XSAVE guest exit") {
+                Step::Continued => steps += 1,
+                Step::Terminal(reason) => {
+                    assert_eq!(reason, TerminalReason::Idle, "XSAVE guest stopped at HLT");
+                    break;
+                }
+                Step::SdkStop => panic!("unexpected SDK stop in XSAVE guest"),
+            }
+        }
+
+        assert_eq!(
+            vmm.serial(),
+            &[WARMUP_MARKER, XSAVE_MARKER],
+            "guest XSAVE continuation must reach the second UART"
+        );
+        let after_counts = vmm.exit_counts();
+        assert_eq!(
+            after_counts.io,
+            before_counts.io + 1,
+            "continuation must service exactly one additional UART"
+        );
+        assert_eq!(
+            after_counts.idle,
+            before_counts.idle + 1,
+            "continuation must stop at exactly one HLT"
+        );
+        assert_eq!(
+            after_counts.total(),
+            before_counts.total() + 2,
+            "continuation must add only the UART and HLT exits"
+        );
+        let capture = capture_full_vmm(vmm);
+        assert_eq!(capture.state.regs.rip, XSAVE_ENDPOINT_RIP as u64);
+        assert_eq!(capture.state.regs.rbx, 1, "guest INC EBX must retire once");
+        assert_eq!(
+            capture.state.xcrs.xcr0, 3,
+            "endpoint must retain x87+SSE XCR0"
+        );
+        assert_eq!(capture.moment, Some(20_000));
+        assert!(
+            xsave_output_page(&capture.memory)
+                .iter()
+                .any(|&byte| byte != 0),
+            "guest XSAVE must write a nonzero output page"
+        );
+        capture
+    }
+
+    fn write_xsave_capture(
+        root: &std::path::Path,
+        arm: &str,
+        phase: &str,
+        capture: &MmioCapture,
+        serial: &[u8],
+    ) {
+        write_npt_artifacts(
+            root,
+            arm,
+            phase,
+            &capture.memory,
+            &capture.encoded_state,
+            &capture.state_blob,
+            serial,
+            capture.moment,
+            &capture.state_hash,
+            capture.state.sregs.flags,
+            capture.state.sregs.pdptrs,
+            capture.state.regs.rip,
+            capture.state.regs.rbx,
+        );
+        let directory = root.join(arm).join(phase);
+        write_npt_file(
+            &directory.join("xsave-output.bin"),
+            xsave_output_page(&capture.memory),
+        );
+    }
+
+    fn print_xsave_headers(label: &str, capture: &MmioCapture) {
+        let (state_bv, state_xcomp) = xsave_header_words(&capture.state.xsave.0);
+        let (guest_bv, guest_xcomp) = xsave_header_words(xsave_output_page(&capture.memory));
+        println!(
+            "XSAVE {label}: vcpu XSTATE_BV=0x{state_bv:016x} XCOMP_BV=0x{state_xcomp:016x}; guest XSTATE_BV=0x{guest_bv:016x} XCOMP_BV=0x{guest_xcomp:016x}"
+        );
+    }
+
+    fn assert_xsave_endpoint_equal(
+        label: &str,
+        left: &MmioCapture,
+        left_serial: &[u8],
+        right: &MmioCapture,
+        right_serial: &[u8],
+    ) {
+        assert_eq!(left_serial, right_serial, "{label}: serial differs");
+        assert!(left.memory == right.memory, "{label}: guest RAM differs");
+        assert!(left.state == right.state, "{label}: vCPU state differs");
+        assert!(
+            left.encoded_state == right.encoded_state,
+            "{label}: encoded VM state differs"
+        );
+        assert!(
+            left.state_blob == right.state_blob,
+            "{label}: full state blob differs"
+        );
+        assert_eq!(
+            left.state_hash, right.state_hash,
+            "{label}: state hash differs"
+        );
+        assert_eq!(left.moment, right.moment, "{label}: virtual time differs");
+    }
+
+    #[test]
+    #[ignore = "live KVM; run with --ignored and XSAVE_CONTINUATION_REPORT_DIR"]
+    fn xsave_guest_bytes_survive_cold_continuation() {
+        require_kvm();
+        let report_root = std::path::PathBuf::from(
+            std::env::var_os("XSAVE_CONTINUATION_REPORT_DIR")
+                .expect("XSAVE_CONTINUATION_REPORT_DIR must identify diagnostic output"),
+        );
+
+        // The uninterrupted arm reaches the endpoint without any vCPU/save/hash
+        // observation between the first UART and the guest XSAVE instruction.
+        let mut uninterrupted = fresh_xsave_vmm(true);
+        wire_snapshot_path(&mut uninterrupted);
+        run_xsave_warmup(&mut uninterrupted);
+        let uninterrupted_endpoint = run_xsave_to_hlt(&mut uninterrupted);
+        let uninterrupted_serial = uninterrupted.serial().to_vec();
+
+        // Capture at the first UART boundary, repeat the full save/encode/decode
+        // operation, and prove it does not change state, RAM, UART, exits, or
+        // virtual time before continuing the same VMM.
+        let mut save_and_continue = fresh_xsave_vmm(true);
+        wire_snapshot_path(&mut save_and_continue);
+        run_xsave_warmup(&mut save_and_continue);
+        let save_before_memory = save_and_continue.guest_memory().to_vec();
+        let save_before_serial = save_and_continue.serial().to_vec();
+        let save_before_counts = save_and_continue.exit_counts();
+        let save_before_moment = save_and_continue.effective_vns();
+        let save_stop = capture_full_vmm(&save_and_continue);
+        assert_eq!(
+            save_stop.state.regs.rip,
+            (CODE_GPA + XSAVE_WARMUP_LEN) as u64
+        );
+        assert_eq!(save_stop.state.regs.rbx, 0);
+        assert_eq!(save_stop.state.xcrs.xcr0, 3);
+        assert_eq!(save_stop.moment, Some(10_000));
+        assert!(xsave_output_page(&save_stop.memory)
+            .iter()
+            .all(|&byte| byte == 0));
+        let save_repeated = capture_full_vmm(&save_and_continue);
+        assert!(
+            save_repeated == save_stop,
+            "repeated XSAVE boundary capture must be byte-identical"
+        );
+        assert!(
+            save_repeated.memory == save_before_memory,
+            "XSAVE capture must not change guest RAM"
+        );
+        assert_eq!(save_and_continue.serial(), save_before_serial.as_slice());
+        assert_eq!(save_and_continue.exit_counts(), save_before_counts);
+        assert_eq!(save_and_continue.effective_vns(), save_before_moment);
+        assert_eq!(save_repeated.state.regs.rip, save_stop.state.regs.rip);
+        assert_eq!(save_repeated.state.regs.rbx, save_stop.state.regs.rbx);
+        let save_and_continue_endpoint = run_xsave_to_hlt(&mut save_and_continue);
+        let save_and_continue_serial = save_and_continue.serial().to_vec();
+
+        write_xsave_capture(
+            &report_root,
+            "original",
+            "endpoint",
+            &uninterrupted_endpoint,
+            &uninterrupted_serial,
+        );
+        write_xsave_capture(
+            &report_root,
+            "save-and-continue",
+            "stop",
+            &save_stop,
+            &save_before_serial,
+        );
+        write_xsave_capture(
+            &report_root,
+            "save-and-continue",
+            "stop-repeat",
+            &save_repeated,
+            &save_before_serial,
+        );
+        write_xsave_capture(
+            &report_root,
+            "save-and-continue",
+            "endpoint",
+            &save_and_continue_endpoint,
+            &save_and_continue_serial,
+        );
+        drop(save_and_continue);
+
+        // The unobserved cold arm runs immediately after restore. This is a
+        // separate continuation path: no vCPU/save/hash read can normalize a
+        // cold-only state before the guest executes XSAVE.
+        let mut cold_unobserved = fresh_xsave_vmm(false);
+        wire_snapshot_path(&mut cold_unobserved);
+        cold_unobserved
+            .restore_snapshot(&save_stop.memory, &save_stop.state)
+            .expect("restore XSAVE continuation snapshot");
+        let cold_unobserved_endpoint = run_xsave_to_hlt(&mut cold_unobserved);
+        let cold_unobserved_serial = cold_unobserved.serial().to_vec();
+        drop(cold_unobserved);
+
+        // The observed cold arm supplies the explicit post-restore capture
+        // fixpoint and zero-side-effect checks without replacing the immediate
+        // continuation path above.
+        let mut cold_observed = fresh_xsave_vmm(false);
+        wire_snapshot_path(&mut cold_observed);
+        cold_observed
+            .restore_snapshot(&save_stop.memory, &save_stop.state)
+            .expect("restore observed XSAVE continuation snapshot");
+        let cold_before_memory = cold_observed.guest_memory().to_vec();
+        let cold_before_serial = cold_observed.serial().to_vec();
+        let cold_before_counts = cold_observed.exit_counts();
+        let cold_before_moment = cold_observed.effective_vns();
+        let cold_observed_stop = capture_full_vmm(&cold_observed);
+        assert_eq!(
+            cold_observed_stop.state.regs.rip,
+            (CODE_GPA + XSAVE_WARMUP_LEN) as u64
+        );
+        assert_eq!(cold_observed_stop.state.regs.rbx, 0);
+        let cold_observed_repeated = capture_full_vmm(&cold_observed);
+        assert!(
+            cold_observed_repeated == cold_observed_stop,
+            "repeated cold XSAVE boundary capture must be byte-identical"
+        );
+        assert!(cold_observed_repeated.memory == cold_before_memory);
+        assert_eq!(cold_observed.serial(), cold_before_serial.as_slice());
+        assert_eq!(cold_observed.exit_counts(), cold_before_counts);
+        assert_eq!(cold_observed.effective_vns(), cold_before_moment);
+        assert_eq!(
+            cold_observed_repeated.state.regs.rip,
+            cold_observed_stop.state.regs.rip
+        );
+        assert_eq!(
+            cold_observed_repeated.state.regs.rbx,
+            cold_observed_stop.state.regs.rbx
+        );
+        let cold_observed_endpoint = run_xsave_to_hlt(&mut cold_observed);
+        let cold_observed_serial = cold_observed.serial().to_vec();
+
+        // Retain every complete endpoint and stop before making cross-arm
+        // identity assertions, so a later mismatch never discards the raw
+        // evidence needed to diagnose it.
+        write_xsave_capture(
+            &report_root,
+            "cold-unobserved",
+            "endpoint",
+            &cold_unobserved_endpoint,
+            &cold_unobserved_serial,
+        );
+        write_xsave_capture(
+            &report_root,
+            "cold-observed",
+            "stop",
+            &cold_observed_stop,
+            &cold_before_serial,
+        );
+        write_xsave_capture(
+            &report_root,
+            "cold-observed",
+            "stop-repeat",
+            &cold_observed_repeated,
+            &cold_before_serial,
+        );
+        write_xsave_capture(
+            &report_root,
+            "cold-observed",
+            "endpoint",
+            &cold_observed_endpoint,
+            &cold_observed_serial,
+        );
+
+        for (label, capture) in [
+            ("original/endpoint", &uninterrupted_endpoint),
+            ("save-and-continue/stop", &save_stop),
+            ("save-and-continue/stop-repeat", &save_repeated),
+            ("save-and-continue/endpoint", &save_and_continue_endpoint),
+            ("cold-unobserved/endpoint", &cold_unobserved_endpoint),
+            ("cold-observed/stop", &cold_observed_stop),
+            ("cold-observed/stop-repeat", &cold_observed_repeated),
+            ("cold-observed/endpoint", &cold_observed_endpoint),
+        ] {
+            print_xsave_headers(label, capture);
+        }
+
+        assert!(
+            cold_observed_stop == save_stop,
+            "cold observed stop must reproduce the saved boundary"
+        );
+        assert_eq!(cold_before_serial, save_before_serial);
+        assert_xsave_endpoint_equal(
+            "original/save-and-continue",
+            &uninterrupted_endpoint,
+            &uninterrupted_serial,
+            &save_and_continue_endpoint,
+            &save_and_continue_serial,
+        );
+        assert_xsave_endpoint_equal(
+            "save-and-continue/cold-unobserved",
+            &save_and_continue_endpoint,
+            &save_and_continue_serial,
+            &cold_unobserved_endpoint,
+            &cold_unobserved_serial,
+        );
+        assert_xsave_endpoint_equal(
+            "cold-unobserved/cold-observed",
+            &cold_unobserved_endpoint,
+            &cold_unobserved_serial,
+            &cold_observed_endpoint,
+            &cold_observed_serial,
+        );
+        assert_eq!(
+            uninterrupted_endpoint.state.regs.rip,
+            XSAVE_ENDPOINT_RIP as u64
+        );
+        assert_eq!(
+            save_and_continue_endpoint.state.regs.rip,
+            XSAVE_ENDPOINT_RIP as u64
+        );
+        assert_eq!(
+            cold_unobserved_endpoint.state.regs.rip,
+            XSAVE_ENDPOINT_RIP as u64
+        );
+        assert_eq!(
+            cold_observed_endpoint.state.regs.rip,
+            XSAVE_ENDPOINT_RIP as u64
+        );
+        assert_eq!(uninterrupted_endpoint.state.regs.rbx, 1);
+        assert_eq!(save_and_continue_endpoint.state.regs.rbx, 1);
+        assert_eq!(cold_unobserved_endpoint.state.regs.rbx, 1);
+        assert_eq!(cold_observed_endpoint.state.regs.rbx, 1);
     }
 }

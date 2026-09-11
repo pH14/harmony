@@ -525,6 +525,24 @@ jobs:
             -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee reports/mmio-completion.log
           grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' reports/mmio-completion.log
+      - name: Compare guest XSAVE bytes across cold continuation
+        if: ${{ always() && inputs.amd_npt_observe }}
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          printf '%s\n' "$cpu" > reports/xsave-continuation-affinity-cpu.txt
+          printf '%s\n' 'live_kvm::xsave_guest_bytes_survive_cold_continuation' > reports/xsave-continuation-test-name.txt
+          XSAVE_CONTINUATION_REPORT_DIR="$PWD/reports/xsave-continuation" \
+            taskset -c "$cpu" cargo test --locked -p vmm-core --test x86_cpu_snapshots \
+              live_kvm::xsave_guest_bytes_survive_cold_continuation \
+              -- --ignored --exact --test-threads=1 --nocapture \
+              2>&1 | tee reports/xsave-continuation.log
+          grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' reports/xsave-continuation.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
