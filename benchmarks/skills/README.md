@@ -50,3 +50,16 @@ Actual Docker canaries separately qualify the Linux execution and compilation
 boundaries. Guest boot, meaningful checker controls, general built-source
 semantics, and private held-out grading require further trusted services outside
 the agent sandbox; passing these infrastructure checks does not qualify them.
+
+`guest_image.package_artifacts` writes a deterministic Docker-save archive from
+copied build artifacts and a controller-owned bundle. `qualify_guest` uses fixed
+benign compiled fixtures to test real KVM boot and SDK delivery through the
+shipping CLI. It retains inputs, binaries, invocation, report, and complete event
+sidecar. The silent fixture must be rejected as missing telemetry; a delivered
+assertion is not evidence of a meaningful application checker.
+
+Run the qualification workflow manually with `guest_artifact_run_id` naming a
+trusted run containing `guest-images-<run-id>`. The selected kernel/base hashes
+are recorded; an empty input skips KVM execution. Portable packaging and evidence
+checks still run on pull requests. Guest images must match the fault-agent kernel
+interface described in the guest build documentation.

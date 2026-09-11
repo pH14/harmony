@@ -7,6 +7,12 @@ on:
       - skills/**
       - .github/workflows/skill-evaluator.yml
   workflow_dispatch:
+    inputs:
+      guest_artifact_run_id:
+        description: Trusted guest-image artifact run to qualify on real KVM (empty skips guest execution)
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -78,7 +84,7 @@ jobs:
       - name: Portable artifact boundary checks
         run: |
           set -euo pipefail
-          python3 -B -m unittest -v benchmarks/skills/test_build.py 2>&1 | tee reports/skill-build/portable-tests.log
+          python3 -B -m unittest -v benchmarks/skills/test_build.py benchmarks/skills/test_guest_image.py benchmarks/skills/test_guest_evidence.py 2>&1 | tee reports/skill-build/portable-tests.log
       - name: Build and retain trusted compiler image
         run: |
           set -euo pipefail
@@ -99,5 +105,101 @@ jobs:
         with:
           name: skill-build-${{ github.run_id }}
           path: reports/skill-build
+          if-no-files-found: error
+          retention-days: 7
+
+  guest:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.guest_artifact_run_id != '' }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record guest qualification source and host
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p reports/skill-guest
+          git rev-parse HEAD > reports/skill-guest/tested-checkout-head.txt
+          if [[ -n "$PR_HEAD_SHA" ]]; then
+            printf '%s\n' "$PR_HEAD_SHA" > reports/skill-guest/pr-head.txt
+          fi
+          uname -a > reports/skill-guest/host.txt
+          lscpu >> reports/skill-guest/host.txt
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+      - name: Portable image and telemetry checks
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest -v benchmarks/skills/test_guest_image.py benchmarks/skills/test_guest_evidence.py 2>&1 | tee reports/skill-guest/portable-tests.log
+      - uses: actions/download-artifact@v4
+        with:
+          name: skill-build-${{ github.run_id }}
+          path: compiler-image
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.guest_artifact_run_id }}
+          name: guest-images-${{ inputs.guest_artifact_run_id }}
+          path: guest
+      - name: Verify and load retained compiler image
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          path = Path('compiler-image/tool-image.tar')
+          digest = hashlib.sha256()
+          with path.open('rb') as stream:
+              for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                  digest.update(chunk)
+          if digest.hexdigest() != path.with_name('tool-image-sha256.txt').read_text().split()[0]:
+              raise SystemExit('compiler image digest mismatch')
+          PY
+          docker image load -i compiler-image/tool-image.tar
+          cp compiler-image/image-id.txt reports/skill-guest/compiler-image-id.txt
+          cp compiler-image/tool-image-sha256.txt reports/skill-guest/compiler-image-tar-sha256.txt
+          sha256sum guest/bzImage-faultlab guest/initramfs.cpio.gz > reports/skill-guest/guest-input-sha256.txt
+      - name: Install static guest toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
+          rustup target add x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            workloads/fault-agent -> target
+      - name: Build shipping CLI and guest agent
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p harmony-cli
+          cargo build --locked --release --manifest-path workloads/fault-agent/Cargo.toml --target x86_64-unknown-linux-musl
+          sha256sum target/release/harmony workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent > reports/skill-guest/tool-sha256.txt
+      - name: Actual build-to-guest SDK delivery without model calls
+        run: |
+          set -euo pipefail
+          qualification_image=$(cat compiler-image/image-id.txt)
+          python3 -B -m benchmarks.skills.qualify_guest --image "$qualification_image" \
+            --harmony target/release/harmony --kernel guest/bzImage-faultlab \
+            --base guest/initramfs.cpio.gz \
+            --agent workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent \
+            --output reports/skill-guest/cases > reports/skill-guest/result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: skill-guest-${{ github.run_id }}
+          path: reports/skill-guest
           if-no-files-found: error
           retention-days: 7
