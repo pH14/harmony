@@ -9,8 +9,10 @@
 //! little-endian, length-bounded, and protected by a trailing SHA-256 digest
 //! for complete artifacts. Version 5 conditionally carries an opaque
 //! control-plane state section after the existing body; empty control state
-//! retains the byte layout of v4. Readers also retain v3 compatibility, and
-//! SDK pending-stop fields remain available in every format from v4 onward.
+//! retains the byte layout of v4. Version 6 keeps the v5 field order while
+//! allowing sections beyond the legacy fixed bounds. Readers also retain
+//! v3/v4/v5 compatibility, and SDK pending-stop fields remain available in
+//! every format from v4 onward.
 
 use std::{
     collections::BTreeMap,
@@ -28,7 +30,8 @@ use snapshot_store::PAGE_SIZE;
 const MAGIC: [u8; 8] = *b"HMSNAP01";
 const V3_VERSION: u16 = 3;
 const LEGACY_VERSION: u16 = 4;
-const VERSION: u16 = 5;
+const V5_VERSION: u16 = 5;
+const VERSION: u16 = 6;
 const FLAG_SDK: u16 = 1;
 const FLAG_TAINTED: u16 = 1 << 1;
 const KNOWN_FLAGS: u16 = FLAG_SDK | FLAG_TAINTED;
@@ -193,19 +196,22 @@ impl PortableSnapshotRef<'_> {
     pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<(), PortableSnapshotError> {
         let sdk = self.sdk.map(encode_sdk).transpose()?;
         let policy = self.policy.encode();
-        let version = if self.control_state.is_empty() {
-            LEGACY_VERSION
-        } else {
-            VERSION
-        };
+        let version = complete_version(
+            self.vm_state.len(),
+            sdk.as_ref().map_or(0, Vec::len),
+            policy.len(),
+            self.control_state.len(),
+        );
         if self.vm_state.is_empty() {
             return Err(PortableSnapshotError::BadFlags);
         }
-        check_len("memory", self.memory.len(), self.memory.len())?;
-        check_len("vm_state", self.vm_state.len(), MAX_VM_STATE_LEN)?;
-        check_len("sdk", sdk.as_ref().map_or(0, Vec::len), MAX_SDK_LEN)?;
-        check_len("policy", policy.len(), MAX_POLICY_LEN)?;
-        check_len("control_state", self.control_state.len(), MAX_CONTROL_LEN)?;
+        if version != VERSION {
+            check_len("memory", self.memory.len(), self.memory.len())?;
+            check_len("vm_state", self.vm_state.len(), MAX_VM_STATE_LEN)?;
+            check_len("sdk", sdk.as_ref().map_or(0, Vec::len), MAX_SDK_LEN)?;
+            check_len("policy", policy.len(), MAX_POLICY_LEN)?;
+            check_len("control_state", self.control_state.len(), MAX_CONTROL_LEN)?;
+        }
 
         let mut flags = 0;
         if sdk.is_some() {
@@ -223,7 +229,7 @@ impl PortableSnapshotRef<'_> {
         put_len(&mut out, self.vm_state.len())?;
         put_len(&mut out, sdk.as_ref().map_or(0, Vec::len))?;
         put_len(&mut out, policy.len())?;
-        if version == VERSION {
+        if version >= V5_VERSION {
             put_len(&mut out, self.control_state.len())?;
         }
         put_u64(&mut out, self.at)?;
@@ -237,7 +243,7 @@ impl PortableSnapshotRef<'_> {
             out.write_all(bytes)?;
         }
         out.write_all(&policy)?;
-        if version == VERSION {
+        if version >= V5_VERSION {
             out.write_all(self.control_state)?;
         }
         // Finish the authenticated body before consuming the hash adapter;
@@ -263,7 +269,11 @@ impl PortableSnapshot {
             return Err(PortableSnapshotError::BadMagic);
         }
         let version = get_u16(&mut input)?;
-        if version != V3_VERSION && version != LEGACY_VERSION && version != VERSION {
+        if version != V3_VERSION
+            && version != LEGACY_VERSION
+            && version != V5_VERSION
+            && version != VERSION
+        {
             return Err(PortableSnapshotError::BadVersion(version));
         }
         let flags = get_u16(&mut input)?;
@@ -278,11 +288,11 @@ impl PortableSnapshot {
                 max: expected_memory_len as u64,
             });
         }
-        let vm_state_len = bounded_len(&mut input, "vm_state", MAX_VM_STATE_LEN)?;
-        let sdk_len = bounded_len(&mut input, "sdk", MAX_SDK_LEN)?;
-        let policy_len = bounded_len(&mut input, "policy", MAX_POLICY_LEN)?;
-        let control_len = if version == VERSION {
-            bounded_len(&mut input, "control_state", MAX_CONTROL_LEN)?
+        let vm_state_len = section_len(&mut input, "vm_state", version, MAX_VM_STATE_LEN)?;
+        let sdk_len = section_len(&mut input, "sdk", version, MAX_SDK_LEN)?;
+        let policy_len = section_len(&mut input, "policy", version, MAX_POLICY_LEN)?;
+        let control_len = if version >= V5_VERSION {
+            section_len(&mut input, "control_state", version, MAX_CONTROL_LEN)?
         } else {
             0
         };
@@ -290,7 +300,7 @@ impl PortableSnapshot {
         if vm_state_len == 0
             || has_sdk != (sdk_len != 0)
             || policy_len == 0
-            || (version == VERSION && control_len == 0)
+            || (version == V5_VERSION && control_len == 0)
         {
             return Err(PortableSnapshotError::BadFlags);
         }
@@ -345,27 +355,31 @@ pub(crate) fn encode_sparse_sidecar(
 ) -> Result<Vec<u8>, PortableSnapshotError> {
     let sdk = sidecar.sdk.map(encode_sdk).transpose()?;
     let policy = sidecar.policy.encode();
-    let version = if sidecar.control_state.is_empty() {
-        LEGACY_VERSION
-    } else {
-        VERSION
-    };
+    let version = sparse_version(
+        sidecar.vm_state.len(),
+        sdk.as_ref().map_or(0, Vec::len),
+        policy.len(),
+        sidecar.state_blob_suffix.len(),
+        sidecar.control_state.len(),
+    );
     if sidecar.vm_state.is_empty() {
         return Err(PortableSnapshotError::BadFlags);
     }
-    check_len("vm_state", sidecar.vm_state.len(), MAX_VM_STATE_LEN)?;
-    check_len("sdk", sdk.as_ref().map_or(0, Vec::len), MAX_SDK_LEN)?;
-    check_len("policy", policy.len(), MAX_POLICY_LEN)?;
-    check_len(
-        "state_blob_suffix",
-        sidecar.state_blob_suffix.len(),
-        MAX_SUFFIX_LEN,
-    )?;
-    check_len(
-        "control_state",
-        sidecar.control_state.len(),
-        MAX_CONTROL_LEN,
-    )?;
+    if version != SPARSE_VERSION {
+        check_len("vm_state", sidecar.vm_state.len(), MAX_VM_STATE_LEN)?;
+        check_len("sdk", sdk.as_ref().map_or(0, Vec::len), MAX_SDK_LEN)?;
+        check_len("policy", policy.len(), MAX_POLICY_LEN)?;
+        check_len(
+            "state_blob_suffix",
+            sidecar.state_blob_suffix.len(),
+            MAX_SUFFIX_LEN,
+        )?;
+        check_len(
+            "control_state",
+            sidecar.control_state.len(),
+            MAX_CONTROL_LEN,
+        )?;
+    }
 
     let mut flags = 0;
     if sdk.is_some() {
@@ -383,7 +397,7 @@ pub(crate) fn encode_sparse_sidecar(
     put_len(&mut out, sdk.as_ref().map_or(0, Vec::len))?;
     put_len(&mut out, policy.len())?;
     put_len(&mut out, sidecar.state_blob_suffix.len())?;
-    if version == SPARSE_VERSION {
+    if version >= V5_VERSION {
         put_len(&mut out, sidecar.control_state.len())?;
     }
     put_u64(&mut out, sidecar.at)?;
@@ -396,10 +410,12 @@ pub(crate) fn encode_sparse_sidecar(
     }
     out.extend_from_slice(&policy);
     out.extend_from_slice(sidecar.state_blob_suffix);
-    if version == SPARSE_VERSION {
+    if version >= V5_VERSION {
         out.extend_from_slice(sidecar.control_state);
     }
-    check_len("sidecar", out.len(), MAX_SPARSE_SIDECAR_LEN)?;
+    if version != SPARSE_VERSION {
+        check_len("sidecar", out.len(), MAX_SPARSE_SIDECAR_LEN)?;
+    }
     Ok(out)
 }
 
@@ -410,25 +426,31 @@ pub(crate) fn encode_sparse_sidecar(
 pub(crate) fn decode_sparse_sidecar(
     bytes: &[u8],
 ) -> Result<SparsePortableSidecar, PortableSnapshotError> {
-    check_len("sidecar", bytes.len(), MAX_SPARSE_SIDECAR_LEN)?;
     let mut input = SliceReader::new(bytes);
     if input.take(SPARSE_MAGIC.len())? != SPARSE_MAGIC {
         return Err(PortableSnapshotError::BadMagic);
     }
     let version = input.u16()?;
-    if version != V3_VERSION && version != LEGACY_VERSION && version != SPARSE_VERSION {
+    if version != V3_VERSION
+        && version != LEGACY_VERSION
+        && version != V5_VERSION
+        && version != SPARSE_VERSION
+    {
         return Err(PortableSnapshotError::BadVersion(version));
+    }
+    if version != SPARSE_VERSION {
+        check_len("sidecar", bytes.len(), MAX_SPARSE_SIDECAR_LEN)?;
     }
     let flags = input.u16()?;
     if flags & !SPARSE_KNOWN_FLAGS != 0 {
         return Err(PortableSnapshotError::BadFlags);
     }
-    let vm_state_len = input.bounded_len("vm_state", MAX_VM_STATE_LEN)?;
-    let sdk_len = input.bounded_len("sdk", MAX_SDK_LEN)?;
-    let policy_len = input.bounded_len("policy", MAX_POLICY_LEN)?;
-    let suffix_len = input.bounded_len("state_blob_suffix", MAX_SUFFIX_LEN)?;
-    let control_len = if version == SPARSE_VERSION {
-        input.bounded_len("control_state", MAX_CONTROL_LEN)?
+    let vm_state_len = input.section_len("vm_state", version, MAX_VM_STATE_LEN)?;
+    let sdk_len = input.section_len("sdk", version, MAX_SDK_LEN)?;
+    let policy_len = input.section_len("policy", version, MAX_POLICY_LEN)?;
+    let suffix_len = input.section_len("state_blob_suffix", version, MAX_SUFFIX_LEN)?;
+    let control_len = if version >= V5_VERSION {
+        input.section_len("control_state", version, MAX_CONTROL_LEN)?
     } else {
         0
     };
@@ -436,7 +458,7 @@ pub(crate) fn decode_sparse_sidecar(
     if vm_state_len == 0
         || policy_len == 0
         || has_sdk != (sdk_len != 0)
-        || (version == SPARSE_VERSION && control_len == 0)
+        || (version == V5_VERSION && control_len == 0)
     {
         return Err(PortableSnapshotError::BadFlags);
     }
@@ -490,7 +512,6 @@ fn encode_sdk(sdk: &SdkSnapshot) -> Result<Vec<u8>, PortableSnapshotError> {
             out.extend_from_slice(&threshold.to_le_bytes());
         }
     }
-    check_len("sdk", out.len(), MAX_SDK_LEN)?;
     Ok(out)
 }
 
@@ -604,6 +625,47 @@ fn decode_pending_stop(
     })
 }
 
+// The old versions retain their resource limits and byte layouts. Version 6
+// changes the allocation policy, not the ownership or meaning of a section.
+fn complete_version(vm: usize, sdk: usize, policy: usize, control: usize) -> u16 {
+    if vm > MAX_VM_STATE_LEN
+        || sdk > MAX_SDK_LEN
+        || policy > MAX_POLICY_LEN
+        || control > MAX_CONTROL_LEN
+    {
+        VERSION
+    } else if control == 0 {
+        LEGACY_VERSION
+    } else {
+        V5_VERSION
+    }
+}
+
+fn sparse_version(vm: usize, sdk: usize, policy: usize, suffix: usize, control: usize) -> u16 {
+    if suffix > MAX_SUFFIX_LEN {
+        VERSION
+    } else {
+        complete_version(vm, sdk, policy, control)
+    }
+}
+
+fn section_len<R: Read>(
+    input: &mut R,
+    section: &'static str,
+    version: u16,
+    legacy_max: usize,
+) -> Result<usize, PortableSnapshotError> {
+    bounded_len(
+        input,
+        section,
+        if version == VERSION {
+            isize::MAX as usize
+        } else {
+            legacy_max
+        },
+    )
+}
+
 fn check_len(section: &'static str, got: usize, max: usize) -> Result<(), PortableSnapshotError> {
     if got > max {
         return Err(PortableSnapshotError::Length {
@@ -631,12 +693,24 @@ fn bounded_len<R: Read>(
 }
 
 fn read_vec<R: Read>(input: &mut R, len: usize) -> Result<Vec<u8>, PortableSnapshotError> {
+    // Never reserve a declared section length before receiving its bytes. A
+    // truncated header advertising a huge v6 section costs only this buffer.
+    let mut chunk = [0_u8; 64 * 1024];
     let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(len)
-        .map_err(|_| PortableSnapshotError::Malformed("section allocation"))?;
-    bytes.resize(len, 0);
-    input.read_exact(&mut bytes)?;
+    while bytes.len() < len {
+        let wanted = (len - bytes.len()).min(chunk.len());
+        let received = match input.read(&mut chunk[..wanted]) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if received == 0 {
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+        }
+        bytes
+            .try_reserve(received)
+            .map_err(|_| PortableSnapshotError::Malformed("section allocation"))?;
+        bytes.extend_from_slice(&chunk[..received]);
+    }
     Ok(bytes)
 }
 
@@ -809,6 +883,20 @@ impl<'a> SliceReader<'a> {
         Ok(copy)
     }
 
+    fn section_len(
+        &mut self,
+        section: &'static str,
+        version: u16,
+        legacy_max: usize,
+    ) -> Result<usize, PortableSnapshotError> {
+        let max = if version == VERSION {
+            self.bytes.len()
+        } else {
+            legacy_max
+        };
+        self.bounded_len(section, max)
+    }
+
     fn bounded_len(
         &mut self,
         section: &'static str,
@@ -835,6 +923,211 @@ impl<'a> SliceReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_six_round_trips_large_sections_with_optional_control() {
+        let (memory, vm, sdk, _) = fixture();
+        let policy = ServiceConfig {
+            identity: b"large".to_vec(),
+            configuration: vec![0x45; MAX_POLICY_LEN],
+        };
+        for control in [&[][..], &b"opaque-control"[..]] {
+            let mut full = Vec::new();
+            PortableSnapshotRef {
+                memory: &memory,
+                vm_state: &vm,
+                sdk: Some(&sdk),
+                policy: &policy,
+                at: 23,
+                sdk_events: 2,
+                trace_events: 17,
+                trace_schedules: 5,
+                tainted: true,
+                state_hash: [0xa5; 32],
+                control_state: control,
+            }
+            .write_to(&mut full)
+            .unwrap();
+            assert_eq!(u16::from_le_bytes(full[8..10].try_into().unwrap()), VERSION);
+            let restored = PortableSnapshot::read_from(full.as_slice(), memory.len()).unwrap();
+            assert_eq!(restored.memory, memory);
+            assert_eq!(restored.vm_state, vm);
+            assert_eq!(restored.policy, policy);
+            assert_eq!(restored.control_state, control);
+            assert_eq!(restored.sdk.unwrap().events, sdk.events);
+            let mut trailing = full.clone();
+            trailing.push(0);
+            assert!(PortableSnapshot::read_from(trailing.as_slice(), memory.len()).is_err());
+            let mut corrupt = full;
+            let end = corrupt.len() - 1;
+            corrupt[end] ^= 1;
+            assert!(PortableSnapshot::read_from(corrupt.as_slice(), memory.len()).is_err());
+            let sparse = encode_sparse_sidecar(&SparsePortableSidecarRef {
+                vm_state: &vm,
+                sdk: Some(&sdk),
+                policy: &policy,
+                at: 23,
+                sdk_events: 2,
+                trace_events: 17,
+                trace_schedules: 5,
+                tainted: true,
+                state_blob_suffix: b"suffix",
+                control_state: control,
+            })
+            .unwrap();
+            assert_eq!(
+                u16::from_le_bytes(sparse[8..10].try_into().unwrap()),
+                VERSION
+            );
+            let restored = decode_sparse_sidecar(&sparse).unwrap();
+            assert_eq!(restored.vm_state, vm);
+            assert_eq!(restored.policy, policy);
+            assert_eq!(restored.control_state, control);
+            assert_eq!(restored.sdk.unwrap().events, sdk.events);
+            assert_eq!(restored.state_blob_suffix, b"suffix");
+            let mut trailing = sparse.clone();
+            trailing.push(0);
+            assert!(decode_sparse_sidecar(&trailing).is_err());
+            let mut huge = sparse;
+            huge[12..20].copy_from_slice(&u64::MAX.to_le_bytes());
+            assert!(matches!(
+                decode_sparse_sidecar(&huge),
+                Err(PortableSnapshotError::Length {
+                    section: "vm_state",
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "large stream size regression; small SDK codecs run under Miri"
+    )]
+    fn sdk_stream_beyond_legacy_limit_selects_version_six_without_dropping_events() {
+        let (memory, vm, mut sdk, policy) = fixture();
+        sdk.events = (0..65)
+            .map(|at| (at, 9, vec![at as u8; 1024 * 1024]))
+            .collect();
+        let mut full = Vec::new();
+        PortableSnapshotRef {
+            memory: &memory,
+            vm_state: &vm,
+            sdk: Some(&sdk),
+            policy: &policy,
+            at: 65,
+            sdk_events: 65,
+            trace_events: 0,
+            trace_schedules: 0,
+            tainted: false,
+            state_hash: [0xa5; 32],
+            control_state: &[],
+        }
+        .write_to(&mut full)
+        .unwrap();
+        assert_eq!(u16::from_le_bytes(full[8..10].try_into().unwrap()), VERSION);
+        let restored = PortableSnapshot::read_from(full.as_slice(), memory.len()).unwrap();
+        assert_eq!(restored.sdk.unwrap().events, sdk.events);
+        drop(full);
+        let sparse = encode_sparse_sidecar(&SparsePortableSidecarRef {
+            vm_state: &vm,
+            sdk: Some(&sdk),
+            policy: &policy,
+            at: 65,
+            sdk_events: 65,
+            trace_events: 0,
+            trace_schedules: 0,
+            tainted: false,
+            state_blob_suffix: &[],
+            control_state: &[],
+        })
+        .unwrap();
+        assert_eq!(
+            u16::from_le_bytes(sparse[8..10].try_into().unwrap()),
+            VERSION
+        );
+        assert_eq!(
+            decode_sparse_sidecar(&sparse).unwrap().sdk.unwrap().events,
+            sdk.events
+        );
+    }
+
+    #[test]
+    fn version_selection_preserves_old_layouts_and_admits_each_large_section() {
+        assert_eq!(
+            complete_version(MAX_VM_STATE_LEN, MAX_SDK_LEN, MAX_POLICY_LEN, 0),
+            LEGACY_VERSION
+        );
+        assert_eq!(
+            complete_version(
+                MAX_VM_STATE_LEN,
+                MAX_SDK_LEN,
+                MAX_POLICY_LEN,
+                MAX_CONTROL_LEN
+            ),
+            V5_VERSION
+        );
+        for lengths in [
+            (MAX_VM_STATE_LEN + 1, 0, 0, 0),
+            (1, MAX_SDK_LEN + 1, 0, 0),
+            (1, 0, MAX_POLICY_LEN + 1, 0),
+            (1, 0, 0, MAX_CONTROL_LEN + 1),
+        ] {
+            assert_eq!(
+                complete_version(lengths.0, lengths.1, lengths.2, lengths.3),
+                VERSION
+            );
+            assert_eq!(
+                sparse_version(lengths.0, lengths.1, lengths.2, 0, lengths.3),
+                VERSION
+            );
+        }
+        assert_eq!(sparse_version(1, 0, 0, MAX_SUFFIX_LEN, 0), LEGACY_VERSION);
+        assert_eq!(sparse_version(1, 0, 0, MAX_SUFFIX_LEN + 1, 0), VERSION);
+    }
+
+    #[test]
+    fn huge_version_six_declaration_reads_only_bounded_actual_bytes() {
+        // A v5 header has the same section positions as v6. Remove all body
+        // bytes and advertise a representable, enormous vendor-state section.
+        let mut header = encoded_with_control_state(b"control");
+        header[8..10].copy_from_slice(&VERSION.to_le_bytes());
+        header[12..20].copy_from_slice(&0_u64.to_le_bytes());
+        header[20..28].copy_from_slice(&(isize::MAX as u64).to_le_bytes());
+        header.truncate(116);
+        struct BoundedReads<'a> {
+            bytes: &'a [u8],
+            largest: usize,
+        }
+        impl Read for BoundedReads<'_> {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                self.largest = self.largest.max(out.len());
+                assert!(
+                    out.len() <= 64 * 1024,
+                    "declared length used as allocation/read size"
+                );
+                self.bytes.read(out)
+            }
+        }
+        let mut reader = BoundedReads {
+            bytes: &header,
+            largest: 0,
+        };
+        let result = PortableSnapshot::read_from(&mut reader, 0);
+        assert!(
+            matches!(result, Err(PortableSnapshotError::Io(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof)
+        );
+        assert_eq!(reader.largest, 64 * 1024);
+        header[20..28].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(matches!(
+            PortableSnapshot::read_from(header.as_slice(), 0),
+            Err(PortableSnapshotError::Length {
+                section: "vm_state",
+                ..
+            })
+        ));
+    }
 
     fn refresh_digest(bytes: &mut [u8]) {
         let body_len = bytes.len() - 32;
@@ -870,7 +1163,8 @@ mod tests {
         assert_eq!(MAGIC, *b"HMSNAP01");
         assert_eq!(V3_VERSION, 3);
         assert_eq!(LEGACY_VERSION, 4);
-        assert_eq!(VERSION, 5);
+        assert_eq!(V5_VERSION, 5);
+        assert_eq!(VERSION, 6);
         assert_eq!((FLAG_SDK, FLAG_TAINTED, KNOWN_FLAGS), (1, 2, 3));
         assert_eq!(MAX_VM_STATE_LEN, 16 * 1024 * 1024);
         assert_eq!(MAX_SDK_LEN, 64 * 1024 * 1024);
@@ -893,7 +1187,7 @@ mod tests {
                 + 128
         );
 
-        for old_version in [1_u16, 2] {
+        for old_version in [1_u16, 2, VERSION + 1] {
             let mut old = encoded();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             refresh_digest(&mut old);
@@ -1017,7 +1311,7 @@ mod tests {
             let bytes = encoded_with_control_state(&control_state);
             assert_eq!(
                 u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
-                VERSION
+                V5_VERSION
             );
             // v5 adds one u64 length after the four v4 section lengths.
             assert_eq!(
@@ -1057,7 +1351,7 @@ mod tests {
             let bytes = sparse_sidecar_fixture_with_control_state(&control_state);
             assert_eq!(
                 u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
-                SPARSE_VERSION
+                V5_VERSION
             );
             // v5 adds one u64 length after the four v4 sidecar lengths.
             assert_eq!(
@@ -1179,7 +1473,7 @@ mod tests {
             decode_sparse_sidecar(&bad_version),
             Err(PortableSnapshotError::BadVersion(u16::MAX))
         ));
-        for old_version in [1_u16, 2] {
+        for old_version in [1_u16, 2, VERSION + 1] {
             let mut old = original.clone();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             assert!(matches!(
