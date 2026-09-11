@@ -28,6 +28,39 @@ pub const AGENT_TICK_NANOS: u64 = 10_000_000;
 const RESTART_DOWN_DIVISOR: u64 = 4;
 /// Largest action count one fault input may carry.
 pub const MAX_FAULT_ACTIONS: usize = 256;
+/// Largest horizon count one fault input may span. A `Wait` runs for many
+/// horizons, so without this an input of the permitted length could run for
+/// tens of thousands of them. A workload's own progress decays with guest
+/// history -- its journals and indexes grow while its oracle keeps reading
+/// them back -- so a session that runs far past what the workload sustains
+/// buys nothing and holds a worker for the whole of it. One horizon per
+/// permitted action is the same budget measured in guest time.
+pub const MAX_INPUT_HORIZONS: u64 = MAX_FAULT_ACTIONS as u64;
+
+/// Clamp `suffix` so the whole input spans at most [`MAX_INPUT_HORIZONS`].
+///
+/// A `Wait` that does not fit is shortened to the scale that does, and the
+/// suffix is cut where even a one-horizon action no longer fits. Shortening
+/// before cutting keeps the drawn action list's shape: the same faults land in
+/// the same order, over less guest time.
+pub fn clamp_to_horizon_budget(spent: u64, suffix: &mut Vec<FaultAction>) {
+    let mut spent = spent;
+    let mut kept = 0;
+    for action in suffix.iter_mut() {
+        let left = MAX_INPUT_HORIZONS.saturating_sub(spent);
+        if left == 0 {
+            break;
+        }
+        if let FaultAction::Wait(scale) = action {
+            let fits = u64::BITS - 1 - left.leading_zeros().min(u64::BITS - 1);
+            let capped = u8::try_from(fits).unwrap_or(WAIT_MAX_SCALE).min(*scale);
+            *action = FaultAction::Wait(capped);
+        }
+        spent = spent.saturating_add(action_horizons(*action));
+        kept += 1;
+    }
+    suffix.truncate(kept);
+}
 
 /// Guest fault-agent state registers, namespace 2 of the SDK event stream.
 pub mod reg {
@@ -573,6 +606,43 @@ mod tests {
     use super::*;
     use control_proto::Moment;
     use fault_policy::decode_process_target;
+
+    #[test]
+    fn a_suffix_inside_the_horizon_budget_is_unchanged() {
+        let mut suffix = vec![FaultAction::Wait(3), FaultAction::Kill(0)];
+        let before = suffix.clone();
+        clamp_to_horizon_budget(0, &mut suffix);
+        assert_eq!(suffix, before);
+    }
+
+    #[test]
+    fn a_wait_past_the_budget_is_shortened_rather_than_dropped() {
+        let mut suffix = vec![FaultAction::Wait(WAIT_MAX_SCALE)];
+        clamp_to_horizon_budget(MAX_INPUT_HORIZONS - 4, &mut suffix);
+        assert_eq!(suffix, vec![FaultAction::Wait(2)]);
+    }
+
+    #[test]
+    fn a_suffix_is_cut_where_no_action_fits() {
+        let mut suffix = vec![
+            FaultAction::Wait(4),
+            FaultAction::Kill(0),
+            FaultAction::Restart(0),
+        ];
+        clamp_to_horizon_budget(MAX_INPUT_HORIZONS - 1, &mut suffix);
+        assert_eq!(suffix, vec![FaultAction::Wait(0)]);
+        let mut spent = vec![FaultAction::Kill(0)];
+        clamp_to_horizon_budget(MAX_INPUT_HORIZONS, &mut spent);
+        assert!(spent.is_empty());
+    }
+
+    #[test]
+    fn no_drawn_input_can_span_more_horizons_than_the_budget() {
+        let mut suffix = vec![FaultAction::Wait(WAIT_MAX_SCALE); MAX_FAULT_ACTIONS];
+        clamp_to_horizon_budget(0, &mut suffix);
+        let spanned: u64 = suffix.iter().copied().map(action_horizons).sum();
+        assert!(spanned <= MAX_INPUT_HORIZONS, "spanned {spanned}");
+    }
 
     const ROOT: u64 = 1_000;
     const WINDOWS: ActionWindows = ActionWindows {

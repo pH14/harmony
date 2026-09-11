@@ -122,10 +122,11 @@ mod real {
     /// has happened to the nodes. The check reads the workload back through its
     /// own client and competes with it for the guest's single processor, so a
     /// fast timer spends the run's processor on validation rather than on the
-    /// workload. A node death or restart starts one immediately, which is when
-    /// the evidence can change; this interval only keeps an undisturbed run
-    /// producing evidence.
-    const CHECK_INTERVAL_TICKS: u64 = 500;
+    /// workload, and past some guest history the workload stops making
+    /// progress at all. A node death or restart starts one immediately, which
+    /// is when the evidence can change; this interval only keeps an undisturbed
+    /// run producing evidence.
+    const CHECK_INTERVAL_TICKS: u64 = 2_000;
 
     /// The points the agent declares for itself. A hook's own assertion ids are
     /// workload-owned and are not declared here; they still fire, they just

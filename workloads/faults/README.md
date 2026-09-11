@@ -84,7 +84,12 @@ hold leaves no other trace. A `check` reports assertions through the same direct
 uses, so its evidence joins that key without the search having to draw
 anything. `EventKill` outcomes are decoded
 from the agent's dedicated monotonic fired counter rather than inferred from
-aggregate unexpected deaths. `EventKill` draws choose a binary scale before a coordinate,
+aggregate unexpected deaths. A drawn input is bounded in guest time as well as in actions: a `Wait` runs for
+many horizons, so the draw shortens a wait that would push the whole input past
+one horizon per permitted action, and cuts the suffix where even a one-horizon
+action no longer fits. A workload's progress decays with guest history, so a
+session that runs far past what the workload sustains buys nothing and holds a
+worker for the whole of it. `EventKill` draws choose a binary scale before a coordinate,
 so finite event prefixes are searchable without a workload-specific upper
 bound. Each observed ordinal remains distinct as fired or unfired evidence; the
 coordinator keeps those bounds per action prefix and node, then probes the

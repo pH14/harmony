@@ -43,7 +43,10 @@ use crate::{
     bundle::{FaultVocabulary, MAX_NODES},
     consonance::{FaultConfig, FaultTarget, identity, snapshot_memory_charge},
     report::{CampaignMeasures, KillAges},
-    target::{FaultAction, FaultObservations, FaultSnapshot, MAX_FAULT_ACTIONS, WAIT_MAX_SCALE},
+    target::{
+        FaultAction, FaultObservations, FaultSnapshot, MAX_FAULT_ACTIONS, WAIT_MAX_SCALE,
+        action_horizons, clamp_to_horizon_budget,
+    },
 };
 
 /// Stream format written by fault-package campaigns.
@@ -516,6 +519,13 @@ fn draw_fault_suffix(
         |_| Ok(None),
         |rand| sample_action(rand, &run.vocabulary),
     )?;
+    let spent = parent
+        .unwrap_or_default()
+        .iter()
+        .copied()
+        .map(action_horizons)
+        .sum();
+    clamp_to_horizon_budget(spent, &mut suffix);
     if !run.coordinate_refinement {
         if !state.legacy_anchors.is_empty() {
             let bound = NonZeroUsize::new(state.legacy_anchors.len())
