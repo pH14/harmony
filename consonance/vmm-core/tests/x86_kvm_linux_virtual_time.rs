@@ -1104,6 +1104,28 @@ fn normalized_checkpoint_log(run: &BootRun) -> String {
     output
 }
 
+fn normalized_checkpoint_schedule(vmm: &StockVmm) -> String {
+    use std::fmt::Write as _;
+
+    let trace = vmm
+        .virtual_time_trace()
+        .expect("boot_linux_stock_virtual_time wires the trace");
+    let mut output = String::new();
+    for scheduled in trace.schedule() {
+        writeln!(
+            output,
+            "SCHEDULE index={} deadline_vns={} armed_for_event={} canceled_at_event={:?} interrupt_id={}",
+            scheduled.schedule_index,
+            scheduled.deadline_vns,
+            scheduled.armed_for_event,
+            scheduled.canceled_at_event,
+            scheduled.interrupt_id,
+        )
+        .expect("write normalized checkpoint schedule");
+    }
+    output
+}
+
 fn checkpoint_advance_description(advance: &CheckpointAdvance) -> String {
     match advance {
         CheckpointAdvance::Checkpoint {
@@ -1569,6 +1591,48 @@ fn checkpoint_blob_divergence(arm_a: &CheckpointArm, arm_b: &CheckpointArm) -> O
     }
 }
 
+fn retain_final_checkpoint_pair(
+    report_root: &Path,
+    run_a: &BootRun,
+    vmm_a: &StockVmm,
+    run_b: &BootRun,
+    vmm_b: &StockVmm,
+) -> Result<(), String> {
+    let final_root = report_root.join("final");
+    std::fs::create_dir(&final_root)
+        .map_err(|error| format!("create {}: {error}", final_root.display()))?;
+    write_checkpoint_file(
+        &final_root.join("arm-a.normalized.log"),
+        normalized_checkpoint_log(run_a).as_bytes(),
+    )?;
+    write_checkpoint_file(
+        &final_root.join("arm-b.normalized.log"),
+        normalized_checkpoint_log(run_b).as_bytes(),
+    )?;
+    write_checkpoint_file(
+        &final_root.join("arm-a.schedule.txt"),
+        normalized_checkpoint_schedule(vmm_a).as_bytes(),
+    )?;
+    write_checkpoint_file(
+        &final_root.join("arm-b.schedule.txt"),
+        normalized_checkpoint_schedule(vmm_b).as_bytes(),
+    )?;
+    let digest = format!(
+        "format=harmony-x2-checkpoint-final-v1\n\
+         status=matched_finite_pair\n\
+         arm_a_events={}\n\
+         arm_b_events={}\n\
+         arm_a_normalized_digest={}\n\
+         arm_b_normalized_digest={}\n",
+        run_a.log.events.len(),
+        run_b.log.events.len(),
+        hex(&run_a.digest),
+        hex(&run_b.digest),
+    );
+    write_checkpoint_file(&final_root.join("digest.txt"), digest.as_bytes())?;
+    Ok(())
+}
+
 fn required_checkpoint_report_root() -> PathBuf {
     std::env::var_os("X2_CHECKPOINT_REPORT_DIR")
         .map(PathBuf::from)
@@ -1586,6 +1650,13 @@ fn required_checkpoint_report_root() -> PathBuf {
 fn x2_first_divergence_checkpoint_captures() {
     require_kvm();
     let report_root = required_checkpoint_report_root();
+    std::fs::create_dir(&report_root).unwrap_or_else(|error| {
+        panic!(
+            "create required checkpoint report root {} before boot: {error}",
+            report_root.display()
+        )
+    });
+    let discrepancy_root = report_root.join("discrepancy");
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs.cpio.gz");
     let max_steps = env_u64(
@@ -1603,10 +1674,6 @@ fn x2_first_divergence_checkpoint_captures() {
     let mut vmm_b =
         boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
             .expect("boot_linux_stock_virtual_time arm B");
-    // Evidence needs the exact typed VMST payload alongside each retained
-    // state_blob; opt into the snapshot hash chunk before either guest enters.
-    vmm_a.wire_snapshot_hashing();
-    vmm_b.wire_snapshot_hashing();
     // The stock Linux boot helper hashes CPU/device state but does not opt in
     // to the complete persisted snapshot record. This diagnostic needs VMST
     // in the exact retained blob, so explicitly include it before any entry.
@@ -1621,6 +1688,7 @@ fn x2_first_divergence_checkpoint_captures() {
         .defer_virtual_time_checkpoint_hashes()
         .expect("defer virtual-time checkpoints arm B before first step");
     let mut checkpoints = 0u64;
+    let mut first_checkpoint_captured = false;
 
     loop {
         let advance_a = advance_until_checkpoint(&mut vmm_a, &mut arm_a, &mut budget);
@@ -1640,10 +1708,10 @@ fn x2_first_divergence_checkpoint_captures() {
                 divergence.event_index, divergence.field
             );
             let evidence =
-                capture_checkpoint_pair(&report_root, &vmm_a, &arm_a, &vmm_b, &arm_b, &reason);
+                capture_checkpoint_pair(&discrepancy_root, &vmm_a, &arm_a, &vmm_b, &arm_b, &reason);
             panic!(
                 "same-seed checkpoint prefixes diverged: {divergence:?}; evidence at {} ({evidence})",
-                report_root.display()
+                discrepancy_root.display()
             );
         }
 
@@ -1661,10 +1729,10 @@ fn x2_first_divergence_checkpoint_captures() {
                 hex(&trace_b.normalized_digest()),
             );
             let evidence =
-                capture_checkpoint_pair(&report_root, &vmm_a, &arm_a, &vmm_b, &arm_b, &reason);
+                capture_checkpoint_pair(&discrepancy_root, &vmm_a, &arm_a, &vmm_b, &arm_b, &reason);
             panic!(
                 "same-seed complete traces diverged; evidence at {} ({evidence})",
-                report_root.display()
+                discrepancy_root.display()
             );
         }
 
@@ -1672,7 +1740,7 @@ fn x2_first_divergence_checkpoint_captures() {
             (CheckpointAdvance::Checkpoint { .. }, CheckpointAdvance::Checkpoint { .. }) => {
                 if let Some(divergence) = checkpoint_blob_divergence(&arm_a, &arm_b) {
                     let evidence = capture_checkpoint_pair(
-                        &report_root,
+                        &discrepancy_root,
                         &vmm_a,
                         &arm_a,
                         &vmm_b,
@@ -1681,8 +1749,26 @@ fn x2_first_divergence_checkpoint_captures() {
                     );
                     panic!(
                         "same-seed checkpoint state blobs diverged; evidence at {} ({evidence})",
-                        report_root.display()
+                        discrepancy_root.display()
                     );
+                }
+                if !first_checkpoint_captured {
+                    let first_checkpoint_root = report_root.join("first-checkpoint");
+                    let evidence = capture_checkpoint_pair(
+                        &first_checkpoint_root,
+                        &vmm_a,
+                        &arm_a,
+                        &vmm_b,
+                        &arm_b,
+                        "first_matching_checkpoint",
+                    );
+                    if evidence != "capture_status=complete" {
+                        panic!(
+                            "first matching checkpoint capture failed after retaining evidence at {} ({evidence})",
+                            first_checkpoint_root.display()
+                        );
+                    }
+                    first_checkpoint_captured = true;
                 }
                 checkpoints = checkpoints.saturating_add(1);
             }
@@ -1693,11 +1779,17 @@ fn x2_first_divergence_checkpoint_captures() {
                     checkpoint_advance_description(&advance_a),
                     checkpoint_advance_description(&advance_b),
                 );
-                let evidence =
-                    capture_checkpoint_pair(&report_root, &vmm_a, &arm_a, &vmm_b, &arm_b, &reason);
+                let evidence = capture_checkpoint_pair(
+                    &discrepancy_root,
+                    &vmm_a,
+                    &arm_a,
+                    &vmm_b,
+                    &arm_b,
+                    &reason,
+                );
                 panic!(
                     "same-seed checkpoint lockstep stopped inconsistently; evidence at {} ({evidence})",
-                    report_root.display()
+                    discrepancy_root.display()
                 );
             }
         }
@@ -1727,13 +1819,21 @@ fn x2_first_divergence_checkpoint_captures() {
             advance_summary(&arm_b),
         );
         let evidence =
-            capture_checkpoint_pair(&report_root, &vmm_a, &arm_a, &vmm_b, &arm_b, &reason);
+            capture_checkpoint_pair(&discrepancy_root, &vmm_a, &arm_a, &vmm_b, &arm_b, &reason);
         panic!(
             "checkpoint pair did not reach a clean finite userspace terminal; evidence at {} ({evidence})",
-            report_root.display()
+            discrepancy_root.display()
         );
     }
 
+    retain_final_checkpoint_pair(&report_root, &run_a, &vmm_a, &run_b, &vmm_b).unwrap_or_else(
+        |error| {
+            panic!(
+                "matched finite checkpoint pair could not retain final evidence under {}: {error}",
+                report_root.display()
+            )
+        },
+    );
     println!(
         "X2_CHECKPOINT_MATCHED_FINITE_PAIR checkpoints={} events={} digest={}",
         checkpoints,
