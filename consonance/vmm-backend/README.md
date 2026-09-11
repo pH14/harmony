@@ -30,6 +30,13 @@ distinct from injected ones and restores replace the complete exception record.
 Exit counters include continuation accesses exactly once. Virtual-time policy,
 device models, snapshot formats, and entropy live above this crate.
 
+XSAVE captures retain component-presence bits even when a component contains
+init values: clearing a bit can change the next guest XSAVE after cold restore.
+Only ignored payload and host metadata are normalized. Captures that retain
+previously discarded bits intentionally have different state hashes and cache
+identities. Legacy snapshots remain readable, but bits already cleared by an
+older writer cannot be recovered.
+
 The `contract-tests` feature exposes the shared backend contract exam, and the
 `mock` feature enables portable fixtures:
 

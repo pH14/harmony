@@ -424,7 +424,7 @@ impl KvmBackend {
     /// Read the host-sized XSAVE image: `KVM_GET_XSAVE2` (the
     /// `KVM_CAP_XSAVE2`-reported size) where available, else the fixed 4 KiB
     /// `KVM_GET_XSAVE`. The returned bytes are `VcpuState.xsave` after
-    /// [`canonicalize_xsave`] collapses the init-optimization encodings.
+    /// [`canonicalize_xsave`] normalizes ignored bytes while retaining component presence.
     fn save_xsave(&self) -> Result<Vec<u8>> {
         let mut bytes = match self.xsave2_size {
             // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_xsave2` allocates and
