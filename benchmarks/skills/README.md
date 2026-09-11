@@ -20,7 +20,16 @@ contents and freeze its identity with the
 cohort. Agent files, inherited configuration, provider credentials, private
 case data, and grader code must not be baked into it. The sandbox stages only
 the selected arm and dispatches explicit command argument arrays with resource
-limits and a fresh environment. Docker remains a controller capability.
+limits and a fresh environment. Both arms use `/work/frozen/materials` and
+`/work/workspace`, so their directory names do not reveal an extra arm label.
+Docker remains a controller capability.
+
+`trial.TrialSession` stages one arm, accepts bounded tool requests, and reserves
+a final controller-owned collection call for a source allowlist fixed in the
+frozen settings. Its immutable submission contains copied bytes, hashes and
+command receipts. Collection, cleanup or material-integrity failure prevents a
+submission; the sandbox is destroyed before source bytes reach the builder.
+The session provides tool execution, not a model/provider adapter.
 
 `build.build_frozen` compiles a controller-selected frozen submission in a
 fresh sandbox, then collects an explicit artifact allowlist through a bounded
@@ -39,7 +48,7 @@ it does not qualify guest boot or a semantic grader.
 Portable checks run from the repository root:
 
 ```sh
-python3 -B -m unittest benchmarks/skills/test_materials.py benchmarks/skills/test_sandbox.py benchmarks/skills/test_build.py benchmarks/skills/test_guest_image.py benchmarks/skills/test_guest_evidence.py benchmarks/skills/test_guest_files.py benchmarks/skills/test_guest_limits.py benchmarks/skills/test_qualify_guest.py benchmarks/skills/test_artifact_run.py benchmarks/skills/test_behavior.py benchmarks/skills/test_checker_guest.py benchmarks/skills/test_qualify_semantics.py
+python3 -B -m unittest benchmarks/skills/test_materials.py benchmarks/skills/test_sandbox.py benchmarks/skills/test_build.py benchmarks/skills/test_guest_image.py benchmarks/skills/test_guest_evidence.py benchmarks/skills/test_guest_files.py benchmarks/skills/test_guest_limits.py benchmarks/skills/test_qualify_guest.py benchmarks/skills/test_artifact_run.py benchmarks/skills/test_behavior.py benchmarks/skills/test_checker_guest.py benchmarks/skills/test_qualify_semantics.py benchmarks/skills/test_trial.py benchmarks/skills/test_qualify_trials.py
 ```
 
 The [qualification workflow](../../.github/workflows/skill-evaluator.yml) records
@@ -96,5 +105,11 @@ their distinct expected outcomes. Timeouts, compilation failures and malformed
 evidence cannot count as successful negative controls. Both domains and all
 controls are pinned; changing them requires an explicit qualification review.
 These finite checks do not prove general program equivalence or skill benefit.
-The manual guest workflow runs this gate after SDK transport qualification and
-retains each source manifest, artifact, observation and guest evidence cut.
+The manual guest workflow runs `qualify_semantics --trial-arms` after SDK
+transport qualification. Fixed no-model actions inventory each staged arm and
+edit its source; only the collected bytes are frozen and compiled. Across both
+cases and arms, 20 trials cover 570 numeric queries and 96 guest controls.
+Identical scripted edits must produce identical source manifests, binaries,
+behavior, endpoint evidence and complete guest events across arms. The scripts
+are qualification fixtures, not prompts for evaluated models. CI retains trial
+receipts, source manifests, artifacts, observations and guest evidence cuts.

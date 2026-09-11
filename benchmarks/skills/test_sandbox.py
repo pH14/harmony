@@ -395,7 +395,7 @@ class StagePayloadTests(unittest.TestCase):
                 input_file.close()
             self.assertEqual(result.exit_code, 0)
             self.assertEqual(result.stdout.decode().strip(), digest)
-            frozen_script = work / "frozen/skills/.agent/skills/script"
+            frozen_script = work / "frozen/materials/.agent/skills/script"
             workspace_script = work / "workspace/.agent/skills/script"
             self.assertEqual(frozen_script.stat().st_mode & 0o777, 0o555)
             self.assertEqual(workspace_script.stat().st_mode & 0o777, 0o711)

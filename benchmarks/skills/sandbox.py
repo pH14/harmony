@@ -652,7 +652,7 @@ try:
         os.makedirs(directory, mode=0o700, exist_ok=True)
         os.chmod(directory, 0o700)
     frozen_parent = "/work/frozen"
-    frozen = os.path.join(frozen_parent, arm)
+    frozen = os.path.join(frozen_parent, "materials")
     os.mkdir(frozen_parent, 0o700)
     os.mkdir(frozen, 0o700)
     for name in directories:
