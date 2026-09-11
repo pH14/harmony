@@ -83,11 +83,9 @@ RUN mkdir -p /out/etcd /out/symbols \
            ANTITHESIS_SYMBOL_PREFIX=etcd-server \
            go build -toolexec=antithesis-go-toolexec -buildvcs=false -o /out/etcd/etcd .) \
     && (cd /build/etcd/etcdctl \
-        && CGO_ENABLED=1 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
-           ANTITHESIS_SDK_MODULE_DIR="${sdk_dir}" \
-           ANTITHESIS_SYMBOLS_DIR=/out/symbols \
-           ANTITHESIS_SYMBOL_PREFIX=etcdctl \
-           go build -toolexec=antithesis-go-toolexec -buildvcs=false -o /out/etcd/etcdctl .) \
+        && CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
+           go build -buildvcs=false -o /out/etcd/etcdctl .) \
+    && ! grep -a -q antithesishq/antithesis-sdk-go/instrumentation /out/etcd/etcdctl \
     && test -x /out/etcd/etcd \
     && test -x /out/etcd/etcdctl \
     && set -- /out/symbols/*.sym.tsv \

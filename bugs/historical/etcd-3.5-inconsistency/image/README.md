@@ -17,6 +17,11 @@ fault agent. The upstream SDK and instrumentor are MIT licensed; Harmony does
 not vendor their source. The runtime image retains the Antithesis SDK and etcd
 license notices under `/licenses`.
 
+`etcdctl` is built from the same pinned source without the instrumentor, so the oracle's own
+client stays out of the server's event stream. An instrumented client would put most of the
+callbacks the search draws coordinates from inside the oracle rather than inside the server, and
+would charge every read the cost of registering its symbol tables.
+
 The workload writer is a separate, uninstrumented static Go binary. Its
 `writer/go.mod` pins `go.etcd.io/etcd/client/v3` at `v3.5.3` and its checked-in
 `go.sum` locks the module graph. The Dockerfile builds that helper in a stage
