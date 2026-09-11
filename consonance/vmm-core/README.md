@@ -76,6 +76,10 @@ input runs this focused gate and records the host mode without changing it.
 The separate manual `amd_npt_observe` mode retains all paging-arm observations
 before asserting endpoint identity; it provides diagnostic evidence when a
 fixed paging expectation prevents the qualification test from reaching capture.
+That mode also runs a direct KVM ioctl diagnostic, even if the identity test
+fails, to compare individual register reads on fresh VMs pinned to one allowed
+CPU. Its retained observations isolate capture effects; they are not a passing
+snapshot qualification.
 
 ## Architecture boundary
 

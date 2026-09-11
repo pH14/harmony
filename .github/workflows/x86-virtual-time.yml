@@ -469,6 +469,20 @@ jobs:
             -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee reports/amd-npt-snapshot.log
           grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' reports/amd-npt-snapshot.log
+      - name: Isolate raw KVM observation calls
+        if: ${{ always() && inputs.amd_npt_observe }}
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          cc --version > reports/npt-ioctl-compiler.txt
+          cp .github/scripts/npt-ioctl-observation.c reports/
+          cc -std=c11 -O2 -Wall -Wextra -Werror \
+            .github/scripts/npt-ioctl-observation.c -o reports/npt-ioctl-observation \
+            2>&1 | tee reports/npt-ioctl-build.log
+          sha256sum reports/npt-ioctl-observation.c reports/npt-ioctl-observation \
+            > reports/npt-ioctl-sha256.txt
+          timeout -k 5 30 reports/npt-ioctl-observation \
+            2> reports/npt-ioctl-errors.log | tee reports/npt-ioctl-observations.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
