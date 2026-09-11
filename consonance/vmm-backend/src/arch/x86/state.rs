@@ -295,8 +295,6 @@ const XSTATE_BV: usize = 512;
 const XCOMP_BV: usize = 520;
 /// The end of the two standard-format header words used by this module.
 const XSAVE_HEADER_END: usize = XCOMP_BV + 8;
-/// Init-state provenance can only add back the x87 and SSE component bits.
-const X87_SSE_BV: u64 = 0b11;
 /// x87 control/status/tag/opcode/instruction/operand words in the legacy area.
 const X87_CONTROL: std::ops::Range<usize> = 0..24;
 /// ST0–ST7 in the legacy area.
@@ -422,11 +420,7 @@ pub fn restore_xsave_image(image: &[u8], restore_bv: Option<u64>) -> Result<Vec<
     let Some((canonical_bv, xcomp_bv)) = standard_xsave_header(image) else {
         return Err(BackendError::InvalidState);
     };
-    if xcomp_bv != 0
-        || restore_bv == canonical_bv
-        || (restore_bv ^ canonical_bv) & !X87_SSE_BV != 0
-        || restore_bv & canonical_bv != canonical_bv
-    {
+    if xcomp_bv != 0 || restore_bv == canonical_bv {
         return Err(BackendError::InvalidState);
     }
 
@@ -434,6 +428,9 @@ pub fn restore_xsave_image(image: &[u8], restore_bv: Option<u64>) -> Result<Vec<
     restored[XSTATE_BV..XSTATE_BV + 8].copy_from_slice(&restore_bv.to_le_bytes());
     let mut canonical = restored.clone();
     canonicalize_xsave(&mut canonical);
+    // Re-canonicalization subsumes the allowed-bit and no-drop checks: bits
+    // outside x87/SSE remain in the header, while dropping a live canonical
+    // component changes its bytes. Keep one exact equality proof for both.
     if canonical != image {
         return Err(BackendError::InvalidState);
     }
@@ -517,12 +514,6 @@ mod tests {
     #[test]
     fn malformed_restore_provenance_is_rejected_without_mutating_the_source() {
         let canonical = init_image(0);
-        for restore_bv in [0, 0x4] {
-            assert!(matches!(
-                restore_xsave_image(&canonical, Some(restore_bv)),
-                Err(BackendError::InvalidState)
-            ));
-        }
 
         let mut malformed = canonical.clone();
         malformed[X87_ST.start] = 0xEE;
@@ -544,6 +535,27 @@ mod tests {
         assert_eq!(restore_xsave_image(&short, None).unwrap(), short);
         assert!(matches!(
             restore_xsave_image(&short, Some(1)),
+            Err(BackendError::InvalidState)
+        ));
+    }
+
+    #[test]
+    fn restore_provenance_rejects_non_init_state_bits() {
+        let canonical = init_image(0);
+        assert!(matches!(
+            restore_xsave_image(&canonical, Some(0x4)),
+            Err(BackendError::InvalidState)
+        ));
+    }
+
+    #[test]
+    fn restore_provenance_rejects_an_unchanged_canonical_header() {
+        let mut canonical = init_image(0);
+        let expected = canonical.clone();
+        canonicalize_xsave(&mut canonical);
+        assert_eq!(canonical, expected);
+        assert!(matches!(
+            restore_xsave_image(&canonical, Some(0)),
             Err(BackendError::InvalidState)
         ));
     }
@@ -696,8 +708,15 @@ mod tests {
         exact.truncate(XCOMP_BV + 8);
         exact[MXCSR_MASK].copy_from_slice(&0x0002_FFFFu32.to_le_bytes());
         exact[LEGACY_TAIL].fill(0xa5);
-        canonicalize_xsave(&mut exact);
+        let restore_bv = canonicalize_xsave_with_restore_bv(&mut exact);
+        assert_eq!(restore_bv, Some(0x2));
         assert_eq!(exact[MXCSR_MASK], MXCSR_MASK_PINNED);
         assert!(exact[LEGACY_TAIL].iter().all(|&byte| byte == 0));
+
+        let restored = restore_xsave_image(&exact, restore_bv).unwrap();
+        assert_eq!(restored[XSTATE_BV..XSTATE_BV + 8], 0x2u64.to_le_bytes());
+        let mut recanonicalized = restored;
+        canonicalize_xsave(&mut recanonicalized);
+        assert_eq!(recanonicalized, exact);
     }
 }

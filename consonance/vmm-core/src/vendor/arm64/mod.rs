@@ -674,6 +674,29 @@ mod comparator_tests {
     use super::*;
 
     #[test]
+    fn default_snapshot_hash_projection_keeps_arm64_record_bytes() {
+        let snapshot = Arm64VmState {
+            regs: vm_state::Arm64Regs {
+                x: [0x11; 31],
+                pc: 0x2200,
+                ..Default::default()
+            },
+            hypercall: vec![0x33, 0x44],
+            devices: vm_state::DeviceBlob(vec![0x55, 0x66]),
+            contract_hash: [0x77; 32],
+            engine_state: vec![0x88, 0x99],
+            ..Default::default()
+        };
+        let expected = <Arm64VmState as vm_state::SnapshotRecords>::encode(&snapshot).unwrap();
+        let actual = <Arm64 as Vendor>::encode_snapshot_for_hash(&snapshot).unwrap();
+        assert_eq!(actual, expected);
+        assert!(
+            !actual.is_empty(),
+            "default projection must retain the ARM record"
+        );
+    }
+
+    #[test]
     fn architectural_text_helpers_emit_the_exact_frozen_shapes() {
         let mut out = Vec::new();
         write_u64(&mut out, "u64", 0x12).unwrap();

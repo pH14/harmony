@@ -241,8 +241,23 @@ pub trait Vendor: Arch + Sized {
 
     /// The canonical byte encoding of the vCPU record set for the engine's `VCPU`
     /// hash chunk. Deterministic; canonicalizes exactly what the snapshot records
-    /// canonicalize, so a restored VM hashes like a never-restored one.
+    /// canonicalize, so a restored VM hashes like a never-restored one. Restore-only
+    /// provenance that is retained in the persisted snapshot may be omitted here when
+    /// it is an alternate representation of the same canonical machine state.
     fn encode_vcpu_chunk(vcpu: &Self::VcpuState) -> Vec<u8>;
+
+    /// Encode the vendor snapshot record set for the optional `VMST` hash chunk.
+    ///
+    /// The persisted [`vm_state::SnapshotRecords::encode`] bytes remain the authoritative
+    /// restore input and retain every validated field. A vendor may project a
+    /// restore-only representation detail out of this fingerprint while keeping it
+    /// in those persisted bytes. The default uses the complete canonical record
+    /// encoding.
+    fn encode_snapshot_for_hash(
+        snapshot: &Self::Snapshot,
+    ) -> Result<Vec<u8>, vm_state::VmStateError> {
+        <Self::Snapshot as vm_state::SnapshotRecords>::encode(snapshot)
+    }
 
     /// The device residual-register bytes of the engine's `DEV\0` hash chunk (the
     /// engine appends its own terminal-reason bytes after them).

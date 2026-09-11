@@ -1103,7 +1103,9 @@ pub(crate) fn encode_lapic_state(s: &lapic::LapicState) -> Vec<u8> {
 }
 
 /// Deterministic, fixed-layout encoding of a `VcpuState` (no map iteration into
-/// bytes beyond the already-sorted `BTreeMap`; no float; no host clock).
+/// bytes beyond the already-sorted `BTreeMap`; no float; no host clock). The
+/// restore-only XSAVE provenance is retained in the persisted `VmState` record,
+/// but is deliberately outside this canonical fingerprint chunk.
 pub(crate) fn encode_vcpu_state(s: &VcpuState) -> Vec<u8> {
     let mut v = Vec::new();
     let r = &s.regs;
@@ -1164,13 +1166,6 @@ pub(crate) fn encode_vcpu_state(s: &VcpuState) -> Vec<u8> {
     }
     v.extend_from_slice(&(s.xsave.len() as u64).to_le_bytes());
     v.extend_from_slice(&s.xsave);
-    // `None` is deliberately omitted so v3-v5 VCPU chunks remain byte-for-byte
-    // stable. A present value is guest-visible restore provenance, so include it
-    // in the identity even when VMST snapshot hashing is disabled.
-    if let Some(restore_bv) = s.xsave_restore_bv {
-        v.extend_from_slice(b"XSRB");
-        v.extend_from_slice(&restore_bv.to_le_bytes());
-    }
     v
 }
 
@@ -1392,42 +1387,44 @@ pub(crate) fn vcpu_components(s: &VcpuState, out: &mut Vec<(&'static str, [u8; 3
     out.push(("xsave-legacy", part(0, 512)));
     let header_start = 512.min(xs.len());
     let header_end = 576.min(xs.len());
-    let mut header = xs[header_start..header_end].to_vec();
-    if let Some(restore_bv) = s.xsave_restore_bv {
-        header.extend_from_slice(b"XSRB");
-        header.extend_from_slice(&restore_bv.to_le_bytes());
+    out.push(("xsave-header", dig(&xs[header_start..header_end])));
+    // Keep restore provenance visible to the diagnostic localizer without
+    // conflating it with the canonical XSAVE header digest used by the hash.
+    if let Some(value) = s.xsave_restore_bv {
+        out.push(("xsave-restore-bv", dig(&value.to_le_bytes())));
     }
-    out.push(("xsave-header", dig(&header)));
     out.push(("xsave-extended", part(576, xs.len())));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::{Digest, Sha256};
+
+    fn canonical_xsave_image() -> Vec<u8> {
+        let mut image = vec![0; 576];
+        image[0..2].copy_from_slice(&0x037Fu16.to_le_bytes());
+        image[24..28].copy_from_slice(&0x1F80u32.to_le_bytes());
+        image[28..32].copy_from_slice(&0x0000FFFFu32.to_le_bytes());
+        image[512..520].copy_from_slice(&3u64.to_le_bytes());
+        vmm_backend::arch::x86::canonicalize_xsave(&mut image);
+        image
+    }
 
     fn xsave_state(restore_bv: Option<u64>) -> VcpuState {
         VcpuState {
-            // A standard-format-sized fixture is sufficient here: this test is
-            // about the identity suffix, while the backend owns image validation.
-            xsave: vec![0; 576],
+            xsave: canonical_xsave_image(),
             xsave_restore_bv: restore_bv,
             ..Default::default()
         }
     }
 
     #[test]
-    fn xsave_restore_provenance_is_optional_identity_suffix() {
-        let legacy = encode_vcpu_state(&xsave_state(None));
+    fn xsave_restore_provenance_is_omitted_from_canonical_vcpu_chunk() {
         let with_three = encode_vcpu_state(&xsave_state(Some(3)));
         let with_two = encode_vcpu_state(&xsave_state(Some(2)));
 
-        // The absent field must retain the pre-v6 VCPU bytes exactly; a present
-        // value appends a domain-tagged record so old hashes remain stable.
-        assert!(with_three.starts_with(&legacy));
-        assert_eq!(with_three.len(), legacy.len() + 12);
-        assert_eq!(with_two.len(), legacy.len() + 12);
-        assert_ne!(with_three, with_two);
-        assert_ne!(Sha256::digest(&with_three), Sha256::digest(&with_two));
+        // The raw init-state spelling is persisted separately in the v6 VM-state
+        // record. It is intentionally absent from the canonical VCPU hash chunk.
+        assert_eq!(with_three, with_two);
     }
 }

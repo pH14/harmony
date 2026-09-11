@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The deterministic VMM event loop, the owned guest-RAM backing, and the
-//! all-observable-state hash.
+//! canonical state fingerprint.
 //!
 //! [`Vmm`] drives the vCPU **only** through [`vmm_backend::Backend::run`] and
 //! dispatches the returned [`vmm_backend::Exit`] to the device shims and the
 //! contract policy (default-deny: any unmodeled exit fails closed as a
 //! [`VmmError::ContractViolation`], never a silent value). It is generic over the
 //! backend, so the same loop runs the scripted `MockBackend` on macOS and a live
-//! `KvmBackend` on the box. [`Vmm::state_hash`] is the M2 determinism hash over
-//! all observable state.
+//! `KvmBackend` on the box. [`Vmm::state_hash`] is the M2 canonical state
+//! fingerprint.
 
 use hypercall_proto::{
     MAX_PAYLOAD, SDK_COVERAGE_QUANTUM, SDK_COVERAGE_REQUEST_LEN, SDK_COVERAGE_RESPONSE_LEN,
@@ -701,12 +701,12 @@ where
     /// host-control latch, not guest or replay state.
     pub(crate) sdk_snapshot_reentry_required: bool,
     /// When set ([`Vmm::wire_snapshot_hashing`]), [`Vmm::state_blob`] folds the
-    /// **canonical `vm_state` encoding** into the hash as a `VMST` chunk — the
-    /// snapshot/branch path's "the canonical `vm_state` blob drives `state_hash`"
-    /// (BRINGUP). Default **off**, so M1/M2/corpus/Linux-boot blobs are byte-for-
-    /// byte unchanged (their goldens do not move); a snapshot/branch consumer opts
-    /// in. The chunk is the same bytes a [`Vmm::save_vm_state`] would seal, so two
-    /// states whose canonical blob differs hash differently.
+    /// vendor's **canonical `vm_state` fingerprint projection** into the hash as a
+    /// `VMST` chunk — the snapshot/branch path's canonical record identity. Default
+    /// **off**, so M1/M2/corpus/Linux-boot blobs are byte-for-byte unchanged (their
+    /// goldens do not move); a snapshot/branch consumer opts in. The persisted
+    /// bytes from [`Vmm::save_vm_state`] remain the complete restore input and may
+    /// retain representation-only provenance projected out of this fingerprint.
     pub(crate) snapshot_hashing: bool,
     /// Earliest host-scheduled event that may wake an idle guest. This is only
     /// consulted after an `Idle` exit; normal execution always runs to the next
@@ -1023,11 +1023,14 @@ where
         Ok(())
     }
 
-    /// Opt this VMM into folding the **canonical `vm_state` blob** into
-    /// [`Vmm::state_hash`] (a `VMST` chunk). Default off, so M1/M2/corpus/Linux-boot
-    /// hashes are byte-for-byte unchanged; the snapshot/branch path calls this so a
-    /// snapshot's `vm_state` integrity (not just the ad-hoc register layout) drives
-    /// the determinism hash (task 39 Phase 1 / BRINGUP).
+    /// Opt this VMM into folding the vendor's **canonical `vm_state` fingerprint
+    /// projection** into [`Vmm::state_hash`] (a `VMST` chunk). Default off, so
+    /// M1/M2/corpus/Linux-boot hashes are byte-for-byte unchanged; the
+    /// snapshot/branch path calls this so the canonical snapshot record identity
+    /// (not just the ad-hoc register layout) drives the determinism fingerprint
+    /// (task 39 Phase 1 / BRINGUP). Persisted `vm_state` bytes remain the complete
+    /// restore input; complete portable artifacts cover those bytes with their
+    /// trailing digest.
     pub fn wire_snapshot_hashing(&mut self) -> &mut Self {
         self.snapshot_hashing = true;
         self
@@ -1838,11 +1841,16 @@ where
         })
     }
 
-    /// Canonical, length-prefixed, domain-tagged serialization of **all observable
-    /// state**: materialized guest memory ‖ `Backend::save()` ‖ serial capture ‖
-    /// device + terminal state ‖ (when wired) V-time + seeded-RNG determinism
-    /// state. Pure (no map iteration into bytes, no float, no wall-clock); calling
-    /// it twice is identical.
+    /// Canonical, length-prefixed, domain-tagged serialization of the machine's
+    /// state fingerprint: materialized guest memory ‖ the vendor's canonical
+    /// projection of `Backend::save()` ‖ serial capture ‖ device + terminal state ‖
+    /// (when wired) V-time + seeded-RNG determinism state. Pure (no map iteration
+    /// into bytes, no float, no wall-clock); calling
+    /// it twice is identical. Vendor projections may omit restore-only capture
+    /// provenance when it is an alternate encoding of the same canonical state;
+    /// the persisted snapshot bytes retain that provenance separately, and the
+    /// complete portable artifact digest covers it. This fingerprint is not a
+    /// proof of whole-guest future equivalence.
     ///
     /// The `VTIM` chunk is present **only** when the determinism path is wired
     /// (virtual-time wiring). It captures the state that governs future RDTSC/RNG
@@ -1861,12 +1869,14 @@ where
         Ok(out)
     }
 
-    /// The canonical state-blob bytes after the RAM chunk.
+    /// The canonical state-fingerprint bytes after the RAM chunk.
     ///
     /// Keeping this suffix separate lets [`Vmm::state_hash`] stream the large RAM
     /// slice directly into SHA-256 instead of first allocating a second full-image
-    /// `Vec`. It is also the seal-time hash recipe used by portable snapshot export;
-    /// the suffix contains only fixed-size machine/channel state.
+    /// `Vec`. It is also the seal-time fingerprint recipe used by portable snapshot
+    /// export; the suffix contains only fixed-size machine/channel state. Portable
+    /// artifacts separately retain the complete `vm_state` bytes used for restore;
+    /// their trailing digest covers those bytes.
     pub(crate) fn state_blob_suffix(&self) -> Result<Vec<u8>, VmmError> {
         let mut out = Vec::new();
         let vcpu = match &self.saved_state {
@@ -1952,11 +1962,12 @@ where
             bytes.push(u8::from(pv.armed));
             put_chunk(&mut out, b"PVCK", &bytes);
         }
-        // The canonical `vm_state` blob, folded into the hash **only** when the
-        // snapshot/branch path opts in (`wire_snapshot_hashing`). Default-off keeps
-        // M1/M2/corpus/Linux-boot blobs byte-for-byte unchanged (their goldens do
-        // not move — task 39 "gate the swap"); when on, two states whose canonical
-        // blob differs hash differently, so a snapshot's integrity is in the hash.
+        // The vendor's canonical `vm_state` fingerprint projection, folded into the
+        // hash **only** when the snapshot/branch path opts in
+        // (`wire_snapshot_hashing`). Default-off keeps M1/M2/corpus/Linux-boot blobs
+        // byte-for-byte unchanged (their goldens do not move — task 39 "gate the
+        // swap"); when on, two states whose canonical projection differs hash
+        // differently. The complete persisted snapshot remains the restore input.
         // Capture errors propagate: omitting a failed register or codec read
         // would weaken the whole-state identity being compared.
         if self.sdk_snapshot_reentry_required {
@@ -1965,9 +1976,8 @@ where
             put_chunk(&mut out, b"SDRE", &[1]);
         }
         if self.snapshot_hashing {
-            let bytes = self
-                .build_snapshot_state(&vcpu)?
-                .encode()
+            let snapshot = self.build_snapshot_state(&vcpu)?;
+            let bytes = <B::A as Vendor>::encode_snapshot_for_hash(&snapshot)
                 .map_err(SnapshotError::from)?;
             put_chunk(&mut out, b"VMST", &bytes);
         }
@@ -1999,8 +2009,9 @@ where
         v
     }
 
-    /// `sha256(state_blob())` — the M2 determinism hash and the unison
-    /// `state_hash`.
+    /// `sha256(state_blob())` — the canonical M2 determinism fingerprint and the
+    /// unison `state_hash`. A matching fingerprint does not prove equality of every
+    /// raw restore representation or of every possible future guest execution.
     pub fn state_hash(&self) -> Result<[u8; 32], VmmError> {
         let mut hasher = Sha256::new();
         // Stream the potentially hundreds-of-megabytes MEM chunk directly into
@@ -4227,6 +4238,16 @@ mod tests {
         m
     }
 
+    fn canonical_xsave_image() -> Vec<u8> {
+        let mut image = vec![0; 576];
+        image[0..2].copy_from_slice(&0x037Fu16.to_le_bytes());
+        image[24..28].copy_from_slice(&0x1F80u32.to_le_bytes());
+        image[28..32].copy_from_slice(&0x0000FFFFu32.to_le_bytes());
+        image[512..520].copy_from_slice(&3u64.to_le_bytes());
+        vmm_backend::arch::x86::canonicalize_xsave(&mut image);
+        image
+    }
+
     /// A `Vmm<MockBackend>` with deterministic virtual time wired.
     fn vtime_vmm(exits: Vec<Exit<X86>>, seed: u64) -> Vmm<MockBackend> {
         let mut vmm = Vmm::new(configured_mock(exits), GuestRam::new(0x1000).unwrap());
@@ -4244,20 +4265,98 @@ mod tests {
     }
 
     #[test]
-    fn state_hash_distinguishes_xsave_restore_provenance() {
-        let hash_for = |restore_bv| {
+    fn state_hash_normalizes_xsave_restore_provenance() {
+        let hash_for = |restore_bv: Option<u64>, snapshot_hashing| {
             let mut backend = configured_mock(Vec::new());
             backend.set_state(VcpuState {
-                xsave: vec![0; 576],
-                xsave_restore_bv: Some(restore_bv),
+                xsave: canonical_xsave_image(),
+                xsave_restore_bv: restore_bv,
                 ..Default::default()
             });
-            Vmm::new(backend, GuestRam::new(0x1000).unwrap())
-                .state_hash()
-                .unwrap()
+            let mut vmm = Vmm::new(backend, GuestRam::new(0x1000).unwrap());
+            if snapshot_hashing {
+                vmm.wire_snapshot_hashing();
+            }
+            vmm.state_hash().unwrap()
         };
 
-        assert_ne!(hash_for(3), hash_for(2));
+        for snapshot_hashing in [false, true] {
+            assert_eq!(
+                hash_for(Some(3), snapshot_hashing),
+                hash_for(Some(2), snapshot_hashing),
+                "raw XSAVE init-state provenance is outside the canonical hash"
+            );
+            assert_eq!(
+                hash_for(Some(3), snapshot_hashing),
+                hash_for(None, snapshot_hashing),
+                "raw provenance does not change the legacy canonical fingerprint"
+            );
+        }
+    }
+
+    #[test]
+    fn xsave_restore_provenance_stays_in_persisted_snapshot_bytes() {
+        let state_for = |restore_bv| {
+            let state = vm_state::VmState {
+                xsave: vm_state::XsaveImage(canonical_xsave_image()),
+                xsave_restore_bv: Some(restore_bv),
+                ..Default::default()
+            };
+            state.encode().unwrap()
+        };
+        let encoded_three = state_for(3);
+        let encoded_two = state_for(2);
+        assert_ne!(
+            encoded_three, encoded_two,
+            "distinct restore provenance must remain distinct on the wire"
+        );
+        assert_eq!(
+            vm_state::VmState::decode(&encoded_three)
+                .unwrap()
+                .xsave_restore_bv,
+            Some(3)
+        );
+        assert_eq!(
+            vm_state::VmState::decode(&encoded_two)
+                .unwrap()
+                .xsave_restore_bv,
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn xsave_hash_projection_only_omits_restore_provenance() {
+        let snapshot = vm_state::VmState {
+            xsave: vm_state::XsaveImage(canonical_xsave_image()),
+            xsave_restore_bv: Some(3),
+            hypercall: vec![0x11, 0x22],
+            devices: vm_state::DeviceBlob(vec![0x33, 0x44]),
+            contract_hash: [0x55; 32],
+            engine_state: vec![0x66, 0x77],
+            ..Default::default()
+        };
+        let mut legacy = snapshot.clone();
+        legacy.xsave_restore_bv = None;
+        let projected =
+            <X86 as crate::vendor::Vendor>::encode_snapshot_for_hash(&snapshot).unwrap();
+        assert_eq!(
+            projected,
+            <vm_state::VmState as SnapshotRecords>::encode(&legacy).unwrap(),
+            "x86 projection must equal the complete legacy record encoding"
+        );
+        assert!(
+            !projected.is_empty(),
+            "projection must retain the VMST record"
+        );
+
+        let mut changed = snapshot;
+        changed.contract_hash[0] ^= 1;
+        let changed_projected =
+            <X86 as crate::vendor::Vendor>::encode_snapshot_for_hash(&changed).unwrap();
+        assert_ne!(
+            projected, changed_projected,
+            "unrelated snapshot records must remain in the canonical projection"
+        );
     }
 
     #[test]
@@ -6221,6 +6320,45 @@ mod tests {
         let mut v3 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         v3.report_stream = vec![0xDEAD_BEEF];
         assert_eq!(v.state_components(), v3.state_components());
+
+        // Restore provenance is an optional diagnostic field, kept separate
+        // from the canonical XSAVE header so a raw init-state spelling cannot
+        // masquerade as a canonical-header divergence.
+        let mut raw_backend = configured_mock(vec![]);
+        let raw_state = VcpuState {
+            xsave_restore_bv: Some(3),
+            ..Default::default()
+        };
+        raw_backend.set_state(raw_state);
+        let raw = Vmm::new(raw_backend, GuestRam::new(0x1000).unwrap());
+        assert!(
+            raw.state_components()
+                .iter()
+                .any(|(label, _)| *label == "xsave-restore-bv")
+        );
+        let mut raw_two_backend = configured_mock(vec![]);
+        raw_two_backend.set_state(VcpuState {
+            xsave_restore_bv: Some(2),
+            ..Default::default()
+        });
+        let raw_two = Vmm::new(raw_two_backend, GuestRam::new(0x1000).unwrap());
+        let component = |vmm: &Vmm<MockBackend>, name| {
+            vmm.state_components()
+                .into_iter()
+                .find(|(label, _)| *label == name)
+                .unwrap_or_else(|| panic!("missing diagnostic component {name}"))
+                .1
+        };
+        assert_eq!(
+            component(&raw, "xsave-header"),
+            component(&raw_two, "xsave-header"),
+            "raw provenance stays out of the canonical XSAVE header component"
+        );
+        assert_ne!(
+            component(&raw, "xsave-restore-bv"),
+            component(&raw_two, "xsave-restore-bv"),
+            "the diagnostic provenance component still distinguishes raw values"
+        );
     }
 
     /// Task-27 item 2, the fix itself: `state_hash`/`state_blob` must **not** take a

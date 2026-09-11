@@ -1974,6 +1974,72 @@ mod tests {
     }
 
     #[test]
+    fn complete_snapshot_digest_covers_xsave_restore_provenance() {
+        fn canonical_xsave_image() -> Vec<u8> {
+            let mut image = vec![0; 576];
+            image[0..2].copy_from_slice(&0x037Fu16.to_le_bytes());
+            image[24..28].copy_from_slice(&0x1F80u32.to_le_bytes());
+            image[28..32].copy_from_slice(&0x0000FFFFu32.to_le_bytes());
+            image[512..520].copy_from_slice(&3u64.to_le_bytes());
+            vmm_backend::arch::x86::canonicalize_xsave(&mut image);
+            image
+        }
+
+        let encode_vm_state = |restore_bv| {
+            vm_state::VmState {
+                xsave: vm_state::XsaveImage(canonical_xsave_image()),
+                xsave_restore_bv: Some(restore_bv),
+                ..Default::default()
+            }
+            .encode()
+            .unwrap()
+        };
+        let (memory, _, sdk, policy) = fixture();
+        let vm_three = encode_vm_state(3);
+        let vm_two = encode_vm_state(2);
+        assert_eq!(vm_three.len(), vm_two.len());
+        assert_ne!(vm_three, vm_two);
+
+        let mut artifact = Vec::new();
+        PortableSnapshotRef {
+            memory: &memory,
+            vm_state: &vm_three,
+            sdk: Some(&sdk),
+            policy: &policy,
+            at: 23,
+            sdk_events: 2,
+            trace_events: 17,
+            trace_schedules: 5,
+            tainted: true,
+            state_hash: [0xa5; 32],
+            control_state: &[],
+        }
+        .write_to(&mut artifact)
+        .unwrap();
+        let decoded = PortableSnapshot::read_from(artifact.as_slice(), memory.len()).unwrap();
+        assert_eq!(decoded.vm_state, vm_three);
+        assert_eq!(
+            vm_state::VmState::decode(&decoded.vm_state)
+                .unwrap()
+                .xsave_restore_bv,
+            Some(3)
+        );
+
+        // Replace only the integrity-covered VM-state payload with the other raw
+        // provenance value. The stale trailing digest must reject it.
+        let version = u16::from_le_bytes(artifact[8..10].try_into().unwrap());
+        let header_len = if version >= V5_VERSION { 116 } else { 108 };
+        let memory_len =
+            usize::try_from(u64::from_le_bytes(artifact[12..20].try_into().unwrap())).unwrap();
+        let vm_start = header_len + memory_len;
+        artifact[vm_start..vm_start + vm_two.len()].copy_from_slice(&vm_two);
+        assert!(matches!(
+            PortableSnapshot::read_from(artifact.as_slice(), memory.len()),
+            Err(PortableSnapshotError::DigestMismatch)
+        ));
+    }
+
+    #[test]
     fn planted_corruption_in_each_load_bearing_section_is_rejected() {
         let original = encoded();
         const HEADER_LEN: usize = 108;
