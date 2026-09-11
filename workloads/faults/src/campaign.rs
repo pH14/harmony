@@ -8,7 +8,10 @@ use std::{
     io::Write,
     num::NonZeroUsize,
     path::PathBuf,
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use searcher::{
@@ -18,8 +21,8 @@ use searcher::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignConfig,
             CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
             CampaignStreamHeader, CampaignTypes, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
-            Evaluation, GamePolicies, InitialDrawState, InputPolicy, Reporting, SnapshotCheckpoint,
-            TargetExecution, postcard_result_sha256, run_campaign_checkpointed,
+            Evaluation, GamePolicies, InitialDrawState, InputPolicy, RefinementRequest, Reporting,
+            SnapshotCheckpoint, TargetExecution, postcard_result_sha256, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
     },
@@ -30,10 +33,11 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     archive::{
-        DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord, FaultInput,
-        FaultMilestones, FaultProgressWatermark, KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS,
-        REPLACEMENT_IDENTIFIER, action_time, archive_key, bug_outcome, merge_milestones,
-        merge_progress_watermark, milestone_key, milestones, sample_action,
+        DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord,
+        FaultCoordinateTelemetry, FaultInput, FaultMilestones, FaultProgressWatermark,
+        KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS, REPLACEMENT_IDENTIFIER, action_time, archive_key,
+        bug_outcome, merge_milestones, merge_progress_watermark, milestone_key, milestones,
+        sample_action,
     },
     bundle::{FaultVocabulary, MAX_NODES},
     consonance::{FaultConfig, FaultTarget, identity, snapshot_memory_charge},
@@ -56,6 +60,7 @@ const IMAGE_FIELD: &str = "image";
 const HORIZON_FIELD: &str = "horizon_nanos";
 const COORDINATE_POLICY_FIELD: &str = "event_coordinate_policy";
 const COORDINATE_POLICY_IDENTIFIER: &str = "prefix_bisection_v2";
+const REFINEMENT_COORDINATE_POLICY_IDENTIFIER: &str = "prefix_bisection_v3";
 const LEGACY_COORDINATE_POLICY_IDENTIFIER: &str = "legacy_global_anchor";
 
 /// Header placeholder for a run with no adaptive draw table.
@@ -70,6 +75,10 @@ pub struct FaultCampaignRun {
     /// Whether suffix draws receive their exact selected parent input. Old
     /// streams omit this policy and retain their parent-independent draws.
     coordinate_refinement: bool,
+    /// Whether admitted coordinate observations enqueue parent redraws. This
+    /// is versioned separately so streams from the prior parent-aware draw
+    /// remain replayable.
+    refinement_redraw: bool,
 }
 
 /// Image identity shared by fault-package workers.
@@ -89,6 +98,10 @@ pub struct FaultGame {
     /// Event outcomes produced by workers and consumed at ordered admission.
     /// The full input key avoids making completion order observable.
     event_outcomes: Mutex<BTreeMap<[u8; 32], Vec<bool>>>,
+    /// Admission-thread marker consumed by the optional generic redraw hook.
+    event_observation: Mutex<Option<[u8; 32]>>,
+    /// Stream policy selected by the current live or replay run.
+    refinement_redraw: AtomicBool,
 }
 
 impl FaultGame {
@@ -103,6 +116,8 @@ impl FaultGame {
             root_seal: OnceLock::new(),
             coordinate_brackets: Mutex::new(FaultDrawState::default()),
             event_outcomes: Mutex::new(BTreeMap::new()),
+            event_observation: Mutex::new(None),
+            refinement_redraw: AtomicBool::new(false),
         }
     }
 
@@ -133,6 +148,10 @@ impl FaultGame {
             .lock()
             .expect("fault event outcome mutex poisoned")
             .clear();
+        *self
+            .event_observation
+            .lock()
+            .expect("fault event observation mutex poisoned") = None;
     }
 
     fn coordinate_state(&self) -> FaultDrawState {
@@ -187,6 +206,9 @@ pub struct FaultCampaignEvidence {
     champion_input: FaultInput,
     champion_milestones: FaultMilestones,
     bugs: Vec<FaultBugRecord>,
+    coordinate_attempted: u64,
+    coordinate_fired: u64,
+    coordinate_refined: u64,
 }
 
 const EVENT_NODE_COUNT: usize = MAX_NODES as usize;
@@ -606,6 +628,7 @@ impl FaultCampaignConfig {
             run: FaultCampaignRun {
                 vocabulary: self.vocabulary.clone(),
                 coordinate_refinement: true,
+                refinement_redraw: true,
             },
             suffix: self.suffix,
             mixture: self.mixture,
@@ -709,6 +732,14 @@ impl CampaignTypes for FaultGame {
 }
 
 impl Reporting for FaultGame {
+    fn diagnostics(evidence: &FaultCampaignEvidence) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "event_coordinate_attempted": evidence.coordinate_attempted,
+            "event_coordinate_fired": evidence.coordinate_fired,
+            "event_coordinate_refined": evidence.coordinate_refined,
+        }))
+    }
+
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -747,6 +778,11 @@ impl Reporting for FaultGame {
             rejected: state.rejected,
             deaths: state.deaths,
             bugs: evidence.bugs.clone(),
+            coordinate_telemetry: FaultCoordinateTelemetry {
+                attempted: evidence.coordinate_attempted,
+                fired: evidence.coordinate_fired,
+                refined: evidence.coordinate_refined,
+            },
             selector: state.selector,
         }
     }
@@ -779,7 +815,9 @@ impl InputPolicy for FaultGame {
             (VOCABULARY_FIELD.to_owned(), run.vocabulary.identifier()),
             (
                 COORDINATE_POLICY_FIELD.to_owned(),
-                if run.coordinate_refinement {
+                if run.refinement_redraw {
+                    REFINEMENT_COORDINATE_POLICY_IDENTIFIER
+                } else if run.coordinate_refinement {
                     COORDINATE_POLICY_IDENTIFIER
                 } else {
                     LEGACY_COORDINATE_POLICY_IDENTIFIER
@@ -794,11 +832,14 @@ impl InputPolicy for FaultGame {
         &self,
         policies: &GamePolicies,
     ) -> Result<FaultCampaignRun, Box<dyn Error>> {
-        let coordinate_refinement = policies.get(COORDINATE_POLICY_FIELD).map(String::as_str)
-            == Some(COORDINATE_POLICY_IDENTIFIER);
+        let coordinate_policy = policies.get(COORDINATE_POLICY_FIELD).map(String::as_str);
+        let coordinate_refinement = coordinate_policy == Some(COORDINATE_POLICY_IDENTIFIER)
+            || coordinate_policy == Some(REFINEMENT_COORDINATE_POLICY_IDENTIFIER);
+        let refinement_redraw = coordinate_policy == Some(REFINEMENT_COORDINATE_POLICY_IDENTIFIER);
         let run = FaultCampaignRun {
             vocabulary: FaultVocabulary::from_identifier(recorded(policies, VOCABULARY_FIELD)?)?,
             coordinate_refinement,
+            refinement_redraw,
         };
         let expected = self.policies(&run);
         if policies != &expected {
@@ -838,9 +879,11 @@ impl InputPolicy for FaultGame {
 
     fn initial_draw_state(
         &self,
-        _run: &FaultCampaignRun,
+        run: &FaultCampaignRun,
         _origin: Option<(&str, &FaultArchiveReport)>,
     ) -> Result<InitialDrawState<Self>, Box<dyn Error>> {
+        self.refinement_redraw
+            .store(run.refinement_redraw, Ordering::Relaxed);
         self.reset_coordinate_brackets();
         Ok((self.coordinate_state(), None))
     }
@@ -1109,6 +1152,15 @@ impl Evaluation for FaultGame {
         {
             let prefix_len = input.actions.len().saturating_sub(1);
             self.observe_event_coordinate(&input.actions[..prefix_len], node, ordinal, fired);
+            *self
+                .event_observation
+                .lock()
+                .expect("fault event observation mutex poisoned") =
+                Some(event_context_digest(&input.actions));
+            evidence.coordinate_attempted = evidence.coordinate_attempted.saturating_add(1);
+            if fired {
+                evidence.coordinate_fired = evidence.coordinate_fired.saturating_add(1);
+            }
         }
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);
@@ -1141,6 +1193,52 @@ impl Evaluation for FaultGame {
             }
         }
         Ok(())
+    }
+
+    fn refinement_request<F>(
+        &self,
+        parent_id: u64,
+        action: &FaultCampaignActionResult,
+        input: F,
+    ) -> Result<Option<RefinementRequest<Self::Action>>, Box<dyn Error>>
+    where
+        F: FnOnce() -> Result<FaultInput, Box<dyn Error>>,
+    {
+        if !self.refinement_redraw.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let FaultAction::EventKill { node, .. } = action.action else {
+            return Ok(None);
+        };
+        let input = input()?;
+        let observed = self
+            .event_observation
+            .lock()
+            .expect("fault event observation mutex poisoned")
+            .take();
+        if observed != Some(event_context_digest(&input.actions)) {
+            return Ok(None);
+        }
+        let prefix_len = input.actions.len().saturating_sub(1);
+        let Some(ordinal) = self
+            .coordinate_state()
+            .next_probe(&input.actions[..prefix_len], node)
+        else {
+            return Ok(None);
+        };
+        Ok(Some(RefinementRequest {
+            parent_id,
+            prefix: input.actions[..prefix_len].to_vec(),
+            action: FaultAction::EventKill { node, ordinal },
+        }))
+    }
+
+    fn refinement_dispatched(
+        &self,
+        evidence: &mut FaultCampaignEvidence,
+        _request: &RefinementRequest<Self::Action>,
+    ) {
+        evidence.coordinate_refined = evidence.coordinate_refined.saturating_add(1);
     }
 
     fn source_entries<'a>(
@@ -1205,6 +1303,7 @@ mod tests {
         FaultCampaignRun {
             vocabulary: FaultVocabulary::new(nodes, hooks).expect("vocabulary"),
             coordinate_refinement: true,
+            refinement_redraw: true,
         }
     }
 
@@ -1386,5 +1485,112 @@ mod tests {
             .expect("second prefix bracket");
         assert_eq!(second.bracket.fired, Some(64));
         assert_eq!(second.bracket.unfired, None);
+    }
+
+    #[test]
+    fn admitted_event_observation_requests_the_next_exact_prefix_probe() {
+        let game = game();
+        let run = run(1, vec![]);
+        game.initial_draw_state(&run, None).expect("draw state");
+        let prefix = vec![FaultAction::Wait, FaultAction::Kill(0)];
+        let observed = FaultAction::EventKill {
+            node: 0,
+            ordinal: 8,
+        };
+        let mut input = prefix.clone();
+        input.push(observed);
+        game.record_event_outcome(input.clone(), true);
+        let action = FaultCampaignActionResult {
+            action: observed,
+            observations: Vec::new(),
+            milestones: FaultMilestones::default(),
+            dead: false,
+            victory: false,
+            failed: false,
+            candidate: None,
+        };
+        let mut evidence = FaultCampaignEvidence::default();
+        game.merge_action_evidence(&mut evidence, &action, 1, || {
+            Ok(FaultInput {
+                actions: input.clone(),
+            })
+        })
+        .expect("merge event observation");
+        let request = game
+            .refinement_request(7, &action, || {
+                Ok(FaultInput {
+                    actions: input.clone(),
+                })
+            })
+            .expect("refinement hook")
+            .expect("fired event requests a redraw");
+        assert_eq!(request.parent_id, 7);
+        assert_eq!(request.prefix, prefix);
+        assert_eq!(
+            request.action,
+            FaultAction::EventKill {
+                node: 0,
+                ordinal: 4,
+            }
+        );
+        assert_eq!(evidence.coordinate_attempted, 1);
+        assert_eq!(evidence.coordinate_fired, 1);
+        game.refinement_dispatched(&mut evidence, &request);
+        assert_eq!(evidence.coordinate_refined, 1);
+    }
+
+    #[test]
+    fn live_and_recorded_refinement_draws_replay_the_same_pending_suffix() {
+        let game = game();
+        let run = run(1, vec![]);
+        let state = FaultDrawState::default();
+        let parent = FaultInput {
+            actions: vec![FaultAction::Wait],
+        };
+        let request = RefinementRequest {
+            parent_id: 7,
+            prefix: vec![FaultAction::Wait, FaultAction::Kill(0)],
+            action: FaultAction::EventKill {
+                node: 0,
+                ordinal: 4,
+            },
+        };
+        let mixture = MixtureDraw {
+            mixture: DrawMixture::AlphabetOnly,
+            weight: 0,
+            splice_weight: 0,
+        };
+        let live = game
+            .expand_suffix_for_refinement(
+                &run,
+                &state,
+                &parent,
+                &request,
+                SuffixShape::OneOrTwo,
+                mixture,
+                19,
+            )
+            .expect("live refinement draw");
+        let recorded = game
+            .expand_suffix_recorded_for_refinement(
+                &run,
+                &state,
+                &parent,
+                &request,
+                SuffixShape::OneOrTwo,
+                mixture,
+                None,
+                19,
+            )
+            .expect("recorded refinement draw");
+        assert_eq!(live, recorded);
+        assert_eq!(live.get(0), Some(&FaultAction::Kill(0)));
+        assert_eq!(
+            live.get(1),
+            Some(&FaultAction::EventKill {
+                node: 0,
+                ordinal: 4,
+            })
+        );
     }
 }

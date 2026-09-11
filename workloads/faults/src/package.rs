@@ -416,6 +416,7 @@ mod live {
             "archive_entries": archive.entries.len(),
             "progress": archive.progress_watermark,
             "milestones": archive.milestones,
+            "coordinate_telemetry": archive.coordinate_telemetry,
             "bugs_found": campaign_report.bugs_found,
             "executions_to_first_bug": campaign_report.executions_to_first_bug,
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),

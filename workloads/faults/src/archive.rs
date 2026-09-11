@@ -298,6 +298,18 @@ pub struct FaultBugRecord {
     pub observations: FaultObservations,
 }
 
+/// Observation-only coordinate-refinement counters. These are reported for
+/// campaign diagnostics and never feed archive selection or admission.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaultCoordinateTelemetry {
+    /// EventKill observations admitted, fired or unfired.
+    pub attempted: u64,
+    /// EventKill observations whose arm fired.
+    pub fired: u64,
+    /// Redraw requests actually dispatched by the coordinator.
+    pub refined: u64,
+}
+
 /// The campaign outcome a bug list implies: how many bugs were found and the
 /// admission position of the first.
 #[must_use]
@@ -339,6 +351,9 @@ pub struct FaultArchiveReport {
     pub deaths: u64,
     /// Bugs found, in admission order, bounded by [`MAX_RECORDED_BUGS`].
     pub bugs: Vec<FaultBugRecord>,
+    /// Non-decision EventKill refinement telemetry.
+    #[serde(default)]
+    pub coordinate_telemetry: FaultCoordinateTelemetry,
     /// Generic selector accounting.
     #[serde(default)]
     pub selector: SelectorAccounting,

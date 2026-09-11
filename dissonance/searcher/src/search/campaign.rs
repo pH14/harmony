@@ -415,6 +415,79 @@ pub trait InputPolicy: CampaignTypes {
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         self.expand_suffix(run, state, shape, mixture, mutation_seed)
     }
+    /// Expand a bounded redraw requested by the evaluator after an admitted
+    /// observation. The request is opaque to the searcher: its prefix is the
+    /// exact full input before the observed action, and its action is the
+    /// evaluator's next adaptive choice. The generic default replays the
+    /// parent-relative prefix, then forces that action before the ordinary
+    /// draw's remaining tail.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the ordinary suffix cannot be drawn or is empty.
+    fn expand_suffix_for_refinement(
+        &self,
+        run: &Self::Run,
+        state: &Self::DrawState,
+        parent: &Input<Self::Action>,
+        request: &RefinementRequest<Self::Action>,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        mutation_seed: u64,
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        let ordinary =
+            self.expand_suffix_with_parent(run, state, parent, shape, mixture, mutation_seed)?;
+        if ordinary.is_empty() {
+            return Err("refinement draw produced an empty suffix".into());
+        }
+        if request.prefix.len() < parent.actions.len()
+            || request.prefix.get(..parent.actions.len()) != Some(parent.actions.as_slice())
+        {
+            return Err("refinement request prefix does not extend its parent".into());
+        }
+        let mut suffix = request.prefix[parent.actions.len()..].to_vec();
+        suffix.push(request.action);
+        suffix.extend(ordinary.into_iter().skip(1));
+        Ok(suffix)
+    }
+    /// Recorded counterpart of [`Self::expand_suffix_for_refinement`]. The
+    /// ordinary tail is re-derived through the policy's checkpoint-aware
+    /// recorded path before the exact pending prefix and forced action are
+    /// restored.
+    #[allow(clippy::too_many_arguments)]
+    fn expand_suffix_recorded_for_refinement(
+        &self,
+        run: &Self::Run,
+        state: &Self::DrawState,
+        parent: &Input<Self::Action>,
+        request: &RefinementRequest<Self::Action>,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        before: Option<&Self::DrawCheckpoint>,
+        mutation_seed: u64,
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        let ordinary = self.expand_suffix_recorded_with_parent(
+            run,
+            state,
+            parent,
+            shape,
+            mixture,
+            before,
+            mutation_seed,
+        )?;
+        if ordinary.is_empty() {
+            return Err("refinement draw produced an empty suffix".into());
+        }
+        if request.prefix.len() < parent.actions.len()
+            || request.prefix.get(..parent.actions.len()) != Some(parent.actions.as_slice())
+        {
+            return Err("refinement request prefix does not extend its parent".into());
+        }
+        let mut suffix = request.prefix[parent.actions.len()..].to_vec();
+        suffix.push(request.action);
+        suffix.extend(ordinary.into_iter().skip(1));
+        Ok(suffix)
+    }
     /// Expand one recorded mutation seed against the recorded draw-state
     /// version, verifying the version exists and matches.
     ///
@@ -690,6 +763,29 @@ pub trait Evaluation: CampaignTypes {
     ) -> Result<(), Box<dyn Error>>
     where
         F: FnOnce() -> Result<Input<Self::Action>, Box<dyn Error>>;
+    /// Optionally request a bounded redraw after this action's evidence has
+    /// been admitted. The input callback materializes the exact prefix only
+    /// for evaluators that need it; the stable parent id is supplied by the
+    /// coordinator and must be preserved by a returned request.
+    fn refinement_request<F>(
+        &self,
+        _parent_id: u64,
+        _action: &CampaignActionResult<Self>,
+        _input: F,
+    ) -> Result<Option<RefinementRequest<Self::Action>>, Box<dyn Error>>
+    where
+        F: FnOnce() -> Result<Input<Self::Action>, Box<dyn Error>>,
+    {
+        Ok(None)
+    }
+    /// Record a dispatched redraw in evaluator-owned telemetry. This hook is
+    /// observational and cannot alter selection or admission state.
+    fn refinement_dispatched(
+        &self,
+        _evidence: &mut Self::Evidence,
+        _request: &RefinementRequest<Self::Action>,
+    ) {
+    }
     /// The retained entries of a source archive report.
     fn source_entries<'a>(
         &self,
@@ -978,6 +1074,37 @@ pub enum CampaignSpliceRecord {
     },
 }
 
+/// One evaluator-requested redraw. The coordinator treats the parent id and
+/// action as opaque data; the evaluator decides what the action means.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefinementRequest<A: Ord> {
+    /// Stable archive id of the exact prefix to redraw.
+    pub parent_id: u64,
+    /// Complete input before the observed action. The coordinator verifies
+    /// that this starts at `parent_id` and replays its parent-relative tail.
+    pub prefix: Vec<A>,
+    /// Action the evaluator wants at the first suffix boundary.
+    pub action: A,
+}
+
+/// Stream evidence for one dispatched redraw. The exact pending prefix and
+/// forced action are postcard encoded so replay can verify the evaluator
+/// supplied the same opaque request without teaching the searcher about a
+/// workload's action vocabulary.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CampaignRefinementRecord {
+    /// Bounded postcard encoding of the complete input before the observed
+    /// action, preserving the exact rejected suffix for replay.
+    pub prefix_postcard: Vec<u8>,
+    /// Bounded postcard encoding of the forced first action.
+    pub action_postcard: Vec<u8>,
+}
+
+const MAX_REFINEMENT_REQUESTS: usize = 256;
+const MAX_REFINEMENT_PREFIX_ACTIONS: usize = 256;
+const MAX_REFINEMENT_PREFIX_BYTES: usize = 4096;
+const MAX_REFINEMENT_ACTION_BYTES: usize = 256;
+
 /// One admission decision for one candidate boundary, in candidate order.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
@@ -1031,6 +1158,10 @@ pub struct CampaignJobRecord {
     /// historical streams that predate explicit concurrent splice evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub splice: Option<CampaignSpliceRecord>,
+    /// Dispatch-time evaluator redraw. Absent in historical streams and for
+    /// ordinary search jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refinement: Option<CampaignRefinementRecord>,
 
     /// Selector draw record.
     pub selector: SelectorDraw,
@@ -1304,6 +1435,37 @@ fn draw_state_memory_is_within_reserve(bytes: usize, reserve: usize) -> bool {
     bytes <= reserve
 }
 
+/// The coordinator owns a fixed-capacity queue for evaluator redraws. Keep
+/// that allocation inside the deterministic draw-state reserve so the queue
+/// cannot evade the campaign's global memory budget.
+fn refinement_queue_memory_reserve<G: Game + ?Sized>() -> usize {
+    std::mem::size_of::<RefinementRequest<G::Action>>()
+        .saturating_mul(MAX_REFINEMENT_REQUESTS)
+        .saturating_add(
+            std::mem::size_of::<G::Action>()
+                .saturating_mul(MAX_REFINEMENT_REQUESTS)
+                .saturating_mul(MAX_REFINEMENT_PREFIX_ACTIONS),
+        )
+}
+
+fn draw_state_memory_reserve_with_refinement<G: Game + ?Sized>(
+    game: &G,
+    run: &G::Run,
+    max_actions: usize,
+) -> usize {
+    game.draw_state_memory_reserve_bytes(run, max_actions)
+        .saturating_add(refinement_queue_memory_reserve::<G>())
+}
+
+fn draw_state_memory_bytes_with_refinement<G: Game + ?Sized>(
+    game: &G,
+    state: &G::DrawState,
+    core: &CoordinatorCore<G>,
+) -> usize {
+    game.draw_state_memory_bytes(state)
+        .saturating_add(core.refinement_memory_bytes())
+}
+
 fn resident_memory_is_within_budget(bytes: usize, memory_budget_mib: Option<usize>) -> bool {
     memory_budget_mib.is_none_or(|budget_mib| bytes <= budget_mib.saturating_mul(1024 * 1024))
 }
@@ -1542,6 +1704,8 @@ pub(crate) struct CoordinatorCore<G: Game + ?Sized> {
     probe_refused: u64,
     max_actions: usize,
     pub(crate) mixture_energy: MixtureEnergy,
+    refinement_requests: VecDeque<RefinementRequest<G::Action>>,
+    refinement_backpressured: u64,
 }
 
 impl<G: Game + ?Sized> CoordinatorCore<G> {
@@ -1556,7 +1720,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         archive.max_entries = archive_entry_limit;
         if let Some(memory_budget_mib) = memory_budget_mib {
             let total = memory_budget_mib.saturating_mul(1024 * 1024);
-            let draw_reserve = game.draw_state_memory_reserve_bytes(run, max_actions);
+            let draw_reserve = draw_state_memory_reserve_with_refinement(game, run, max_actions);
             archive.set_memory_budget(
                 total.saturating_sub(draw_reserve),
                 G::snapshot_memory_charge,
@@ -1576,7 +1740,75 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
             probe_refused: 0,
             max_actions,
             mixture_energy: MixtureEnergy::default(),
+            refinement_requests: VecDeque::with_capacity(MAX_REFINEMENT_REQUESTS),
+            refinement_backpressured: 0,
         }
+    }
+
+    /// Queue one evaluator redraw while retaining its parent metadata. A
+    /// parent receives at most one queued request, so repeated observations
+    /// cannot grow memory without bound; a full queue applies backpressure by
+    /// accounting and dropping the optional request.
+    fn enqueue_refinement_request(
+        &mut self,
+        mut request: RefinementRequest<G::Action>,
+    ) -> Result<(), Box<dyn Error>> {
+        if request.prefix.len() >= self.max_actions
+            || request.prefix.len() > MAX_REFINEMENT_PREFIX_ACTIONS
+        {
+            return Err("refinement request prefix exceeds its action bound".into());
+        }
+        // Normalize evaluator-owned capacity before retaining the request;
+        // a large spare allocation must not bypass the queue's logical bound.
+        let prefix_len = request.prefix.len();
+        let mut prefix = Vec::with_capacity(prefix_len);
+        prefix.extend(request.prefix);
+        request.prefix = prefix;
+        if self.refinement_requests.iter().any(|queued| {
+            queued.parent_id == request.parent_id
+                && queued.prefix == request.prefix
+                && queued.action == request.action
+        }) {
+            return Ok(());
+        }
+        if self.refinement_requests.len() >= MAX_REFINEMENT_REQUESTS {
+            self.refinement_backpressured = self.refinement_backpressured.saturating_add(1);
+            return Ok(());
+        }
+        self.archive
+            .pin_metadata(request.parent_id)
+            .map_err(|error| -> Box<dyn Error> { error.into() })?;
+        self.refinement_requests.push_back(request);
+        Ok(())
+    }
+
+    /// Take the oldest redraw for dispatch. Its queue metadata pin remains in
+    /// place until the caller acquires the normal in-flight job pin.
+    fn take_refinement_request(&mut self) -> Option<RefinementRequest<G::Action>> {
+        self.refinement_requests.pop_front()
+    }
+
+    fn release_refinement_request_pin(&mut self, parent_id: u64) {
+        self.archive.unpin_metadata(parent_id);
+    }
+
+    fn clear_refinement_requests(&mut self) {
+        while let Some(request) = self.refinement_requests.pop_front() {
+            self.archive.unpin_metadata(request.parent_id);
+        }
+    }
+
+    fn refinement_memory_bytes(&self) -> usize {
+        let queue_bytes = std::mem::size_of::<RefinementRequest<G::Action>>()
+            .saturating_mul(self.refinement_requests.capacity());
+        let prefix_bytes = self
+            .refinement_requests
+            .iter()
+            .map(|request| {
+                std::mem::size_of::<G::Action>().saturating_mul(request.prefix.capacity())
+            })
+            .sum::<usize>();
+        queue_bytes.saturating_add(prefix_bytes)
     }
 
     /// Retain genesis at execution zero.
@@ -1829,6 +2061,23 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                 input.actions.extend_from_slice(&pending_suffix);
                 Ok(input)
             })?;
+            let current_parent_id = self
+                .archive
+                .stable_id(current_parent)
+                .ok_or("campaign action parent is missing")?;
+            if let Some(request) = game.refinement_request(current_parent_id, &action, || {
+                let mut input = self
+                    .archive
+                    .materialize_input(current_parent)
+                    .map_err(|error| -> Box<dyn Error> { error.into() })?;
+                input.actions.extend_from_slice(&pending_suffix);
+                Ok(input)
+            })? {
+                if request.parent_id != current_parent_id {
+                    return Err("refinement request names a different stable parent".into());
+                }
+                self.enqueue_refinement_request(request)?;
+            }
             if action.dead {
                 self.deaths = self.deaths.saturating_add(1);
             }
@@ -2384,6 +2633,7 @@ struct PendingJob {
     mixture_weight: u8,
     splice_weight: u8,
     splice: Option<CampaignSpliceRecord>,
+    refinement: Option<CampaignRefinementRecord>,
     selector: SelectorDraw,
     draw_table_before: Option<EmpiricalStepCheckpoint>,
 }
@@ -2740,6 +2990,85 @@ fn expand_suffix_recorded_for_parent<G: Game>(
     }
 }
 
+/// Expand a queued redraw from its stable parent. Redraws always materialize
+/// the exact prefix because the request is scoped to that prefix even when an
+/// ordinary draw policy is parent-independent.
+#[allow(clippy::too_many_arguments)]
+fn expand_suffix_for_refinement<G: Game>(
+    game: &G,
+    run: &G::Run,
+    state: &G::DrawState,
+    archive: &Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
+    parent_index: usize,
+    request: &RefinementRequest<G::Action>,
+    shape: SuffixShape,
+    mixture: MixtureDraw,
+    mutation_seed: u64,
+) -> Result<Vec<G::Action>, Box<dyn Error>> {
+    let parent = archive
+        .materialize_input(parent_index)
+        .map_err(|error| -> Box<dyn Error> { error.into() })?;
+    game.expand_suffix_for_refinement(run, state, &parent, request, shape, mixture, mutation_seed)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expand_suffix_recorded_for_refinement<G: Game>(
+    game: &G,
+    run: &G::Run,
+    state: &G::DrawState,
+    archive: &Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
+    parent_index: usize,
+    request: &RefinementRequest<G::Action>,
+    shape: SuffixShape,
+    mixture: MixtureDraw,
+    before: Option<&G::DrawCheckpoint>,
+    mutation_seed: u64,
+) -> Result<Vec<G::Action>, Box<dyn Error>> {
+    let parent = archive
+        .materialize_input(parent_index)
+        .map_err(|error| -> Box<dyn Error> { error.into() })?;
+    game.expand_suffix_recorded_for_refinement(
+        run,
+        state,
+        &parent,
+        request,
+        shape,
+        mixture,
+        before,
+        mutation_seed,
+    )
+}
+
+/// Apply the configured time bound only to the fresh tail of a refinement.
+/// The already rejected parent-relative suffix and the forced adaptive action
+/// must both reach the worker before a bound can cut any newly drawn actions.
+fn bound_refinement_suffix<A: Ord>(
+    suffix: &mut Vec<A>,
+    parent_actions: usize,
+    request: &RefinementRequest<A>,
+    shape: SuffixShape,
+    action_time: fn(&A) -> u64,
+    longest_action_time: u64,
+) -> Result<(), Box<dyn Error>> {
+    let prefix = request
+        .prefix
+        .get(parent_actions..)
+        .ok_or("refinement request prefix is shorter than its parent")?;
+    let forced_index = prefix.len();
+    if suffix.get(..forced_index) != Some(prefix)
+        || suffix.get(forced_index) != Some(&request.action)
+    {
+        return Err("refinement suffix does not preserve its pending prefix".into());
+    }
+    let required = forced_index.saturating_add(1);
+    if suffix.len() > required {
+        let mut tail = suffix.split_off(required);
+        shape.bound_time(&mut tail, action_time, longest_action_time);
+        suffix.extend(tail);
+    }
+    Ok(())
+}
+
 /// Run a campaign, also returning every retained entry's snapshot so a later
 /// whole-tree resume can restore the population instead of re-emulating it.
 ///
@@ -2835,7 +3164,9 @@ where
     }
     if let Some(memory_budget_mib) = config.memory_budget_mib {
         let budget = memory_budget_mib.saturating_mul(1024 * 1024);
-        if budget <= game.draw_state_memory_reserve_bytes(&config.run, config.action_limit) {
+        if budget
+            <= draw_state_memory_reserve_with_refinement(game, &config.run, config.action_limit)
+        {
             return Err("campaign memory budget is too small for the bounded draw state".into());
         }
     }
@@ -2850,9 +3181,12 @@ where
         } => Some((file_sha256.as_str(), report.as_ref())),
     };
     let (mut draw_state, draw_table_header) = game.initial_draw_state(&config.run, draw_origin)?;
+    let initial_draw_state_memory = game
+        .draw_state_memory_bytes(&draw_state)
+        .saturating_add(refinement_queue_memory_reserve::<G>());
     if !draw_state_memory_is_within_reserve(
-        game.draw_state_memory_bytes(&draw_state),
-        game.draw_state_memory_reserve_bytes(&config.run, config.action_limit),
+        initial_draw_state_memory,
+        draw_state_memory_reserve_with_refinement(game, &config.run, config.action_limit),
     ) {
         return Err("initial draw state exceeds its deterministic memory reserve".into());
     }
@@ -2882,10 +3216,9 @@ where
         .frames_clocked(&bootstrap_target)
         .saturating_sub(frames_before);
     drop(bootstrap_target);
-    let bootstrap_memory_bytes = core
-        .archive
-        .resident_memory_bytes()
-        .saturating_add(game.draw_state_memory_bytes(&draw_state));
+    let bootstrap_memory_bytes = core.archive.resident_memory_bytes().saturating_add(
+        draw_state_memory_bytes_with_refinement(game, &draw_state, &core),
+    );
     if !resident_memory_is_within_budget(bootstrap_memory_bytes, config.memory_budget_mib) {
         return Err("campaign bootstrap state exceeds its deterministic memory budget".into());
     }
@@ -2976,6 +3309,130 @@ where
                 let max_actions = core.max_actions;
                 core.archive.establish_liveness_anchor(max_actions);
                 let mut consecutive_skips = 0_u64;
+                // Redraws get the same one-in-four service point as other
+                // auxiliary work. The remaining slots stay available to the
+                // ordinary selector, so a stream of observations cannot
+                // monopolize the campaign.
+                if reserved.wrapping_add(1).is_multiple_of(4) {
+                    while let Some(request) = core.take_refinement_request() {
+                        let parent_id = request.parent_id;
+                        let refinement = (|| -> Result<Option<SelectedJob<G>>, Box<dyn Error>> {
+                            let Some(parent_index) = core.archive.index_of_id(parent_id) else {
+                                return Ok(None);
+                            };
+                            if core.archive.entries[parent_index].input_len >= max_actions {
+                                return Ok(None);
+                            }
+                            let mutation_seed = rand.next_u64();
+                            let mixture_weight = match config.mixture {
+                                DrawMixture::Energy { scale }
+                                | DrawMixture::EnergySplice { scale }
+                                | DrawMixture::EnergySpliceContinuation { scale }
+                                | DrawMixture::EnergySpliceContinuationIsolated { scale } => {
+                                    core.mixture_energy.biased_weight(scale)
+                                }
+                                _ => default_mixture_weight(),
+                            };
+                            let splice_weight = 0;
+                            let checkpoint = game.draw_checkpoint(draw_state)?;
+                            let draw_table_before =
+                                draw_checkpoint_to_wire(game, checkpoint.as_ref())?;
+                            let prefix_postcard = postcard::to_allocvec(&request.prefix)?;
+                            if prefix_postcard.len() > MAX_REFINEMENT_PREFIX_BYTES {
+                                return Err(
+                                    "refinement request prefix exceeds its stream bound".into()
+                                );
+                            }
+                            let action_postcard = postcard::to_allocvec(&request.action)?;
+                            if action_postcard.len() > MAX_REFINEMENT_ACTION_BYTES {
+                                return Err("refinement action exceeds its stream bound".into());
+                            }
+                            let mut suffix = expand_suffix_for_refinement(
+                                game,
+                                &config.run,
+                                draw_state,
+                                &core.archive,
+                                parent_index,
+                                &request,
+                                config.suffix,
+                                MixtureDraw {
+                                    mixture: config.mixture,
+                                    weight: mixture_weight,
+                                    splice_weight,
+                                },
+                                mutation_seed,
+                            )?;
+                            bound_refinement_suffix(
+                                &mut suffix,
+                                core.archive.entries[parent_index].input_len,
+                                &request,
+                                config.suffix,
+                                action_time,
+                                longest_action_time,
+                            )?;
+                            core.archive.pin_metadata(parent_id)?;
+                            let (snapshot, replay, snapshot_id) =
+                                match core.archive.pin_job_origin(parent_index) {
+                                    Ok(origin) => origin,
+                                    Err(error) => {
+                                        core.archive.unpin_metadata(parent_id);
+                                        return Err(error.into());
+                                    }
+                                };
+                            *reserved = reserved.saturating_add(1);
+                            let (parent_actions, parent_milestones) = {
+                                let entry = &core.archive.entries[parent_index];
+                                (entry.input_len, entry.milestones)
+                            };
+                            game.refinement_dispatched(&mut core.evidence, &request);
+                            Ok(Some((
+                                JobSpec {
+                                    reservation: 0,
+                                    snapshot,
+                                    replay,
+                                    parent_actions,
+                                    parent_milestones,
+                                    suffix,
+                                },
+                                PendingJob {
+                                    snapshot_id,
+                                    worker,
+                                    parent_id,
+                                    mutation_seed,
+                                    mixture_weight,
+                                    splice_weight,
+                                    splice: None,
+                                    refinement: Some(CampaignRefinementRecord {
+                                        prefix_postcard,
+                                        action_postcard,
+                                    }),
+                                    selector: SelectorDraw {
+                                        path: SelectorPath::Uniform,
+                                        classes_skipped: 0,
+                                        counter_reset: false,
+                                        concentration: None,
+                                    },
+                                    draw_table_before,
+                                },
+                            )))
+                        })();
+                        match refinement {
+                            Ok(Some(selected)) => {
+                                // The normal in-flight metadata and snapshot
+                                // pins are now held by the pending job.
+                                core.release_refinement_request_pin(parent_id);
+                                return Ok(Some(selected));
+                            }
+                            Ok(None) => {
+                                core.release_refinement_request_pin(parent_id);
+                            }
+                            Err(error) => {
+                                core.release_refinement_request_pin(parent_id);
+                                return Err(error);
+                            }
+                        }
+                    }
+                }
                 // One fixed slot in four may carry an observed transition.
                 // The complete tail is recorded before old metadata can be
                 // reclaimed; serial replay needs no retained donor snapshot.
@@ -3040,6 +3497,7 @@ where
                                 mixture_weight,
                                 splice_weight,
                                 splice,
+                                refinement: None,
                                 selector,
                                 draw_table_before,
                             },
@@ -3179,6 +3637,7 @@ where
                             mixture_weight,
                             splice_weight,
                             splice,
+                            refinement: None,
                             selector,
                             draw_table_before,
                         },
@@ -3311,13 +3770,17 @@ where
                         .archive
                         .index_of_id(pending_job.parent_id)
                         .ok_or("completed job parent is no longer resident")?;
-                    let isolated_continuation = config.mixture.isolates_continuations()
+                    let is_refinement = pending_job.refinement.is_some();
+                    let isolated_continuation = !is_refinement
+                        && config.mixture.isolates_continuations()
                         && pending_job.selector.path == SelectorPath::Continuation;
-                    if isolated_continuation {
-                        core.archive.record_isolated_continuation(parent_index);
-                    } else {
-                        core.archive
-                            .record_selection(parent_index, &pending_job.selector);
+                    if !is_refinement {
+                        if isolated_continuation {
+                            core.archive.record_isolated_continuation(parent_index);
+                        } else {
+                            core.archive
+                                .record_selection(parent_index, &pending_job.selector);
+                        }
                     }
                     let retained_ids = retained_archive_indexes(&core, &decisions);
                     let new_slot_descendant = retained_ids
@@ -3326,7 +3789,7 @@ where
                     let new_cell_descendant = retained_ids
                         .iter()
                         .any(|id| core.archive.opened_new_cell(*id));
-                    if !isolated_continuation {
+                    if !is_refinement && !isolated_continuation {
                         core.archive.record_selection_outcome(
                             parent_index,
                             !retained_ids.is_empty(),
@@ -3334,15 +3797,17 @@ where
                             new_cell_descendant,
                         );
                     }
-                    record_mixture_outcome(
-                        &mut core.mixture_energy,
-                        config.mixture,
-                        pending_job.selector.path,
-                        pending_job.mutation_seed,
-                        pending_job.mixture_weight,
-                        pending_job.splice_weight,
-                        new_slot_descendant,
-                    )?;
+                    if !is_refinement {
+                        record_mixture_outcome(
+                            &mut core.mixture_energy,
+                            config.mixture,
+                            pending_job.selector.path,
+                            pending_job.mutation_seed,
+                            pending_job.mixture_weight,
+                            pending_job.splice_weight,
+                            new_slot_descendant,
+                        )?;
+                    }
                     if victories_before == 0
                         && let (Some(path), Some(input)) =
                             (&config.victory_input_path, &core.victory_input)
@@ -3351,10 +3816,15 @@ where
                     }
                     let draw_table_after =
                         finish_record(game, &config.run, &mut draw_state, &core, &decisions)?;
-                    let draw_state_memory_bytes = game.draw_state_memory_bytes(&draw_state);
+                    let draw_state_memory_bytes =
+                        draw_state_memory_bytes_with_refinement(game, &draw_state, &core);
                     if !draw_state_memory_is_within_reserve(
                         draw_state_memory_bytes,
-                        game.draw_state_memory_reserve_bytes(&config.run, config.action_limit),
+                        draw_state_memory_reserve_with_refinement(
+                            game,
+                            &config.run,
+                            config.action_limit,
+                        ),
                     ) {
                         return Err(
                             "live draw state exceeds its deterministic memory reserve".into()
@@ -3395,6 +3865,7 @@ where
                         mixture_weight: pending_job.mixture_weight,
                         splice_weight: pending_job.splice_weight,
                         splice: pending_job.splice,
+                        refinement: pending_job.refinement,
                         selector: pending_job.selector,
                         draw_table_before: pending_job.draw_table_before,
                         draw_table_after,
@@ -3541,6 +4012,7 @@ where
     // Every worker and queued specification has been joined at this point.
     // Drop any non-selectable payload retained only by an in-flight Arc so
     // final artifacts describe the deterministic breeding population.
+    core.clear_refinement_requests();
     core.archive.preserve_inactive_snapshots(false)?;
     core.archive.compact_history_for_final_report()?;
     core.finish_curve();
@@ -3549,13 +4021,14 @@ where
             &core,
             &counters,
             &coordinator_profile,
-            game.draw_state_memory_bytes(&draw_state),
+            draw_state_memory_bytes_with_refinement(game, &draw_state, &core),
             telemetry_started,
             sink,
         )?;
     }
     let stream_sha256 = writer.finish()?;
-    counters.draw_state_memory_bytes = game.draw_state_memory_bytes(&draw_state);
+    counters.draw_state_memory_bytes =
+        draw_state_memory_bytes_with_refinement(game, &draw_state, &core);
     Ok(build_report(
         game,
         &header,
@@ -3810,13 +4283,18 @@ where
     let (mut draw_state, replay_draw_header) = game.initial_draw_state(&replay_run, draw_origin)?;
     if let Some(memory_budget_mib) = header.memory_budget_mib {
         let budget = memory_budget_mib.saturating_mul(1024 * 1024);
-        if budget <= game.draw_state_memory_reserve_bytes(&replay_run, header.action_limit) {
+        if budget
+            <= draw_state_memory_reserve_with_refinement(game, &replay_run, header.action_limit)
+        {
             return Err("recorded memory budget is too small for the bounded draw state".into());
         }
     }
+    let initial_draw_state_memory = game
+        .draw_state_memory_bytes(&draw_state)
+        .saturating_add(refinement_queue_memory_reserve::<G>());
     if !draw_state_memory_is_within_reserve(
-        game.draw_state_memory_bytes(&draw_state),
-        game.draw_state_memory_reserve_bytes(&replay_run, header.action_limit),
+        initial_draw_state_memory,
+        draw_state_memory_reserve_with_refinement(game, &replay_run, header.action_limit),
     ) {
         return Err("replay draw state exceeds its deterministic memory reserve".into());
     }
@@ -3864,10 +4342,9 @@ where
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
-    let bootstrap_memory_bytes = core
-        .archive
-        .resident_memory_bytes()
-        .saturating_add(game.draw_state_memory_bytes(&draw_state));
+    let bootstrap_memory_bytes = core.archive.resident_memory_bytes().saturating_add(
+        draw_state_memory_bytes_with_refinement(game, &draw_state, &core),
+    );
     if !resident_memory_is_within_budget(bootstrap_memory_bytes, header.memory_budget_mib) {
         return Err(
             "campaign replay bootstrap state exceeds its deterministic memory budget".into(),
@@ -4006,13 +4483,45 @@ where
                     .archive
                     .index_of_id(job.parent_id)
                     .ok_or("recorded job names a parent the archive does not hold")?;
-                let ((snapshot, replay, snapshot_id), parent_actions, parent_milestones) = {
+                let refinement_request = if let Some(record) = job.refinement.as_ref() {
+                    if record.prefix_postcard.len() > MAX_REFINEMENT_PREFIX_BYTES {
+                        return Err("recorded refinement prefix exceeds its stream bound".into());
+                    }
+                    if record.action_postcard.len() > MAX_REFINEMENT_ACTION_BYTES {
+                        return Err("recorded refinement action exceeds its stream bound".into());
+                    }
+                    let prefix: Vec<G::Action> = postcard::from_bytes(&record.prefix_postcard)?;
+                    if prefix.len() > MAX_REFINEMENT_PREFIX_ACTIONS {
+                        return Err("recorded refinement prefix exceeds its action bound".into());
+                    }
+                    let action: G::Action = postcard::from_bytes(&record.action_postcard)?;
+                    let request = core
+                        .take_refinement_request()
+                        .ok_or("recorded refinement job has no pending request")?;
+                    if request.parent_id != job.parent_id
+                        || request.prefix != prefix
+                        || request.action != action
+                    {
+                        core.release_refinement_request_pin(request.parent_id);
+                        return Err(
+                            "recorded refinement job does not match its pending request".into()
+                        );
+                    }
+                    game.refinement_dispatched(&mut core.evidence, &request);
+                    Some(request)
+                } else {
+                    None
+                };
+                let parent_data = (|| -> Result<
+                    ((Arc<G::Snapshot>, Vec<G::Action>, u64), usize, G::Milestones),
+                    Box<dyn Error>,
+                > {
                     let entry = core
                         .archive
                         .entries
                         .get(parent_index)
                         .ok_or("recorded job names a parent the archive does not hold")?;
-                    (
+                    Ok((
                         if legacy_schedule {
                             let (snapshot, replay) = core.archive.job_origin(parent_index)?;
                             (snapshot, replay, job.parent_id)
@@ -4023,25 +4532,66 @@ where
                         },
                         entry.input_len,
                         entry.milestones,
-                    )
-                };
+                    ))
+                })();
+                let ((snapshot, replay, snapshot_id), parent_actions, parent_milestones) =
+                    match parent_data {
+                        Ok(data) => data,
+                        Err(error) => {
+                            if refinement_request.is_some() {
+                                core.release_refinement_request_pin(job.parent_id);
+                            }
+                            return Err(error);
+                        }
+                    };
+                if refinement_request.is_some() {
+                    // The normal in-flight origin/metadata references are now
+                    // established, so release only the queue's temporary pin.
+                    core.release_refinement_request_pin(job.parent_id);
+                }
                 if legacy_schedule {
                     core.archive.consume_recorded_snapshot_use(job.parent_id);
                 }
                 let strategy =
                     energy_strategy(job.mutation_seed, job.mixture_weight, job.splice_weight)?;
-                let spliced = replay_splice(
-                    &mut core,
-                    parent_index,
-                    header.action_limit,
-                    strategy,
-                    job.splice.clone(),
-                )?;
+                let spliced = if refinement_request.is_some() {
+                    if job.splice.is_some() || strategy == EnergyStrategy::Splice {
+                        return Err("recorded refinement job carries splice state".into());
+                    }
+                    None
+                } else {
+                    replay_splice(
+                        &mut core,
+                        parent_index,
+                        header.action_limit,
+                        strategy,
+                        job.splice.clone(),
+                    )?
+                };
                 let draw_checkpoint_before =
                     game.draw_checkpoint_from_wire(job.draw_table_before.as_ref())?;
-                let mut suffix = match spliced {
-                    Some(tail) => tail,
-                    None => expand_suffix_recorded_for_parent(
+                let mut suffix = match (refinement_request.as_ref(), spliced) {
+                    (Some(request), None) => expand_suffix_recorded_for_refinement(
+                        game,
+                        &replay_run,
+                        &draw_state,
+                        &core.archive,
+                        parent_index,
+                        request,
+                        replay_suffix,
+                        MixtureDraw {
+                            mixture: replay_mixture,
+                            weight: job.mixture_weight,
+                            splice_weight: job.splice_weight,
+                        },
+                        draw_checkpoint_before.as_ref(),
+                        job.mutation_seed,
+                    )?,
+                    (Some(_), Some(_)) => {
+                        return Err("recorded refinement job has an unexpected splice tail".into());
+                    }
+                    (None, Some(tail)) => tail,
+                    (None, None) => expand_suffix_recorded_for_parent(
                         game,
                         &replay_run,
                         &draw_state,
@@ -4057,7 +4607,18 @@ where
                         job.mutation_seed,
                     )?,
                 };
-                replay_suffix.bound_time(&mut suffix, action_time, longest_action_time);
+                if let Some(request) = refinement_request.as_ref() {
+                    bound_refinement_suffix(
+                        &mut suffix,
+                        parent_actions,
+                        request,
+                        replay_suffix,
+                        action_time,
+                        longest_action_time,
+                    )?;
+                } else {
+                    replay_suffix.bound_time(&mut suffix, action_time, longest_action_time);
+                }
                 let job_frames_before = game.frames_clocked(&target);
                 let result = game.execute_job(
                     &replay_run,
@@ -4116,23 +4677,25 @@ where
                 }
                 game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector)?;
-                if replay_mixture.isolates_continuations()
-                    && job.selector.path == SelectorPath::Continuation
-                {
-                    core.archive.record_isolated_continuation(parent_index);
-                } else {
-                    core.archive.record_selection(parent_index, &job.selector);
-                    let retained_ids = retained_archive_indexes(&core, &decisions);
-                    core.archive.record_selection_outcome(
-                        parent_index,
-                        !retained_ids.is_empty(),
-                        retained_ids
-                            .iter()
-                            .any(|id| core.archive.opened_new_slot(*id)),
-                        retained_ids
-                            .iter()
-                            .any(|id| core.archive.opened_new_cell(*id)),
-                    );
+                if job.refinement.is_none() {
+                    if replay_mixture.isolates_continuations()
+                        && job.selector.path == SelectorPath::Continuation
+                    {
+                        core.archive.record_isolated_continuation(parent_index);
+                    } else {
+                        core.archive.record_selection(parent_index, &job.selector);
+                        let retained_ids = retained_archive_indexes(&core, &decisions);
+                        core.archive.record_selection_outcome(
+                            parent_index,
+                            !retained_ids.is_empty(),
+                            retained_ids
+                                .iter()
+                                .any(|id| core.archive.opened_new_slot(*id)),
+                            retained_ids
+                                .iter()
+                                .any(|id| core.archive.opened_new_cell(*id)),
+                        );
+                    }
                 }
                 if !legacy_schedule {
                     core.archive.unpin_job_origin(snapshot_id);
@@ -4190,6 +4753,7 @@ where
             }
         }
     }
+    core.clear_refinement_requests();
     core.archive.preserve_inactive_snapshots(false)?;
     core.archive.compact_history_for_final_report()?;
     core.finish_curve();
@@ -4203,7 +4767,8 @@ where
         resume_input_sha256: header.resume_input_sha256.clone(),
         resume_actions: header.resume_actions,
     };
-    counters.draw_state_memory_bytes = game.draw_state_memory_bytes(&draw_state);
+    counters.draw_state_memory_bytes =
+        draw_state_memory_bytes_with_refinement(game, &draw_state, &core);
     Ok(build_report(
         game,
         &header,
