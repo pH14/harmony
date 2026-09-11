@@ -18,10 +18,12 @@ SREGS and DEBUGREGS fixed records with the captured CPU fields (`flags` and
 and zero extended x86 fields retain the byte-identical v3 writer shape; an
 engine-only state retains the byte-identical v4 shape. ARM continues to use the
 v3/v4 record set. X86 version 6 retains the v5 record layouts and adds required
-tag 15, an exact eight-byte `xsave_restore_bv` value, when that optional field
-is present; its engine-state section remains optional. A state without that
-field retains the v3/v4/v5 bytes. Fixed-layout records use zerocopy wire types; variable
-sections are length-delimited. MSRs use `BTreeMap` order, and timer entries
+tag 15, an exact eight-byte `xsave_restore_bv` value. Standard-format XSAVE
+captures carry that raw value even when normalization leaves the header
+unchanged; legacy or nonstandard captures may omit it and retain the v3/v4/v5
+bytes. The engine-state section remains optional. Fixed-layout records use
+zerocopy wire types; variable sections are length-delimited. MSRs use
+`BTreeMap` order, and timer entries
 retain their firing order, so encoding is independent of insertion order.
 
 `VmState::encode` validates the state before writing. Timer entries must be
