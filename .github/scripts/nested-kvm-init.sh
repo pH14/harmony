@@ -9,7 +9,7 @@ printf 'CONTAINING_KERNEL='
 uname -r
 while read -r module; do
     insmod "$module" || status=1
-done < /modules.txt
+done < /modules.txt || status=1
 if [ -f /expected-sync-shadow ]; then
     sync=$(cat /sys/module/kvm/parameters/harmony_sync_shadow) || status=1
     printf 'INNER_SYNC_SHADOW=%s\n' "$sync"
