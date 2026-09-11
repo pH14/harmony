@@ -31,6 +31,11 @@ kernel=${PWD}/guest/bzImage-faultlab
 base_initramfs=${PWD}/guest/initramfs.cpio.gz
 chmod +x "${harmony}" "${agent}"
 
+# A hosted runner's processor is drawn from a pool and decides how many
+# executions the wall budget buys, so a campaign's execution count means
+# nothing without it.
+echo "runner cpu: $(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//') x $(nproc)"
+
 mkdir -p reports
 out="reports/${CASE_ID}.${ARM}.search"
 console="reports/${CASE_ID}.${ARM}.search.console.txt"

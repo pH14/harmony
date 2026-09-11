@@ -114,11 +114,24 @@ it covers. Repeating the loop on one processor with such a hold reproduced it:
 
 ## Discovery contract
 
-The case has one locked execution profile. CI will run the same search campaign on both
-instrumented arms on demand or on schedule, bounded by wall time alone. The vulnerable arm must
-find and replay assertion 1 with evidence point 11; the v3.5.3 control must reach point 11 and
-stay clean under the identical campaign. A search miss is a regression in the test machinery, not
-a request to tune the workload.
+The case has one locked execution profile, bounded by wall time alone. CI runs the same search
+campaign on both instrumented arms on demand or on schedule. The vulnerable arm must find and
+replay assertion 1 with evidence point 11; the control must reach point 11 and stay clean under
+the identical campaign. A search miss is a regression in the test machinery, not a request to
+tune the workload.
+
+One campaign per arm under that profile:
+
+| arm | bug found | executions | executions to first hit | conclusive checks | kills fired of armed |
+|---|---|---|---|---|---|
+| 3.5.2 | yes | 1495 | 1492 | 5 | 239 of 596 |
+| 3.5.3 | no | 4900 | - | 6 | 724 of 1889 |
+
+Replaying the vulnerable arm's recorded input three times reproduces assertion 1 with evidence
+point 11 and the same whole-VM state hash every time. Replaying that identical input on the
+control reaches evidence point 11, reports no violation, and likewise repeats exactly. The
+control reaches the oracle at least as often as the vulnerable arm does, so its clean result
+says the fix holds rather than saying the oracle stayed silent.
 
 The only expected difference between the arms is the upstream etcd fix. Performance experiments
 may add separate profiles later, but they cannot alter the correctness or portability contract
@@ -126,6 +139,6 @@ of this case.
 
 ## Why this entry is first
 
-Single binary, no kernel or version gymnastics, a generic instrumented event ordinal, and a cheap
+Single binary, no kernel or version gymnastics, a generic instrumented event coordinate, and a cheap
 oracle make this a useful first target. It also has a natural sibling in the later defragmentation
 bug once this lands.
