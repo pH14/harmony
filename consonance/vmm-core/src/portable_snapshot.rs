@@ -2040,6 +2040,123 @@ mod tests {
     }
 
     #[test]
+    fn sparse_sidecar_keeps_standard_xsave_provenance_at_a_fixed_charge_boundary() {
+        // This is the standard-format image shape returned by KVM_GET_XSAVE:
+        // a complete XSAVE header, a zero XCOMP_BV, and the architectural x87
+        // and SSE init values. The backend canonicalizer must retain raw BV
+        // provenance for all three equivalent encodings.
+        fn captured_xsave(raw_bv: u64) -> (Vec<u8>, Option<u64>) {
+            let mut image = vec![0_u8; 4096];
+            image[0..2].copy_from_slice(&0x037f_u16.to_le_bytes());
+            image[24..28].copy_from_slice(&0x1f80_u32.to_le_bytes());
+            image[28..32].copy_from_slice(&0xffff_u32.to_le_bytes());
+            image[512..520].copy_from_slice(&raw_bv.to_le_bytes());
+            let restore_bv = vmm_backend::arch::x86::canonicalize_xsave_with_restore_bv(&mut image);
+            (image, restore_bv)
+        }
+
+        fn vm_state(image: Vec<u8>, restore_bv: Option<u64>) -> vm_state::VmState {
+            vm_state::VmState {
+                sregs: vm_state::VcpuSregs {
+                    flags: 1,
+                    ..Default::default()
+                },
+                xsave: vm_state::XsaveImage(image),
+                xsave_restore_bv: restore_bv,
+                ..Default::default()
+            }
+        }
+
+        let (canonical, restore_zero) = captured_xsave(0);
+        assert_eq!(restore_zero, Some(0));
+        let legacy_vm = vm_state(canonical.clone(), None).encode().unwrap();
+
+        let policy = ServiceConfig::default();
+        let control_state = b"control";
+        let encode = |vm: &[u8], suffix: &[u8]| {
+            encode_sparse_sidecar(&SparsePortableSidecarRef {
+                vm_state: vm,
+                sdk: None,
+                policy: &policy,
+                at: 23,
+                sdk_events: 2,
+                trace_events: 17,
+                trace_schedules: 5,
+                tainted: false,
+                state_blob_suffix: suffix,
+                control_state,
+            })
+            .unwrap()
+        };
+
+        // Choose the opaque suffix so the old v5 sidecar ends exactly on a
+        // 512-byte SharedState chunk boundary. Adding tag 15 to the VM-state
+        // contributes 6 bytes of TLV framing plus its 8-byte payload, so a
+        // fresh capture must cross exactly one chunk for every raw BV.
+        const SHARED_STATE_CHUNK_SIZE: usize = 512;
+        const XSAVE_RESTORE_BV_TLV_LEN: usize = 2 + 4 + 8;
+        let without_suffix = encode(&legacy_vm, &[]);
+        let suffix_len = (SHARED_STATE_CHUNK_SIZE - without_suffix.len() % SHARED_STATE_CHUNK_SIZE)
+            % SHARED_STATE_CHUNK_SIZE;
+        let suffix = vec![0xa7; suffix_len];
+        let legacy_sidecar = encode(&legacy_vm, &suffix);
+        assert_eq!(legacy_sidecar.len() % SHARED_STATE_CHUNK_SIZE, 0);
+        assert_eq!(
+            decode_sparse_sidecar(&legacy_sidecar).unwrap().vm_state,
+            legacy_vm
+        );
+        assert_eq!(
+            vm_state::VmState::decode(&legacy_vm)
+                .unwrap()
+                .xsave_restore_bv,
+            None
+        );
+
+        let mut v6_len = None;
+        for raw_bv in [0_u64, 2, 3] {
+            let (image, restore_bv) = captured_xsave(raw_bv);
+            assert_eq!(image, canonical);
+            assert_eq!(restore_bv, Some(raw_bv));
+
+            let vm = vm_state(image, restore_bv);
+            let vm_bytes = vm.encode().unwrap();
+            assert_eq!(vm_bytes.len(), legacy_vm.len() + XSAVE_RESTORE_BV_TLV_LEN);
+            assert_eq!(
+                vm_state::VmState::decode(&vm_bytes)
+                    .unwrap()
+                    .xsave_restore_bv,
+                Some(raw_bv)
+            );
+
+            let sidecar = encode(&vm_bytes, &suffix);
+            assert_eq!(
+                u16::from_le_bytes(sidecar[8..10].try_into().unwrap()),
+                V5_VERSION
+            );
+            assert_eq!(
+                sidecar.len(),
+                legacy_sidecar.len() + XSAVE_RESTORE_BV_TLV_LEN
+            );
+            assert_eq!(
+                sidecar.len() % SHARED_STATE_CHUNK_SIZE,
+                XSAVE_RESTORE_BV_TLV_LEN
+            );
+            let decoded = decode_sparse_sidecar(&sidecar).unwrap();
+            assert_eq!(
+                vm_state::VmState::decode(&decoded.vm_state)
+                    .unwrap()
+                    .xsave_restore_bv,
+                Some(raw_bv)
+            );
+            if let Some(previous) = v6_len {
+                assert_eq!(sidecar.len(), previous);
+            } else {
+                v6_len = Some(sidecar.len());
+            }
+        }
+    }
+
+    #[test]
     fn planted_corruption_in_each_load_bearing_section_is_rejected() {
         let original = encoded();
         const HEADER_LEN: usize = 108;

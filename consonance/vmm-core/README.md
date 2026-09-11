@@ -54,13 +54,17 @@ runnable lifecycle default. A terminal restore does not enter the guest again.
 X86 CPU capture retains SREGS2 flags and cached PAE PDPTRs, plus debug-register
 flags. Nonzero extended fields select VM-state v5; zero values retain v3/v4
 bytes. Cached PDPTRs are distinct from the current PDPT contents in guest RAM
-and must survive restore without reloading them from that memory. When XSAVE
-canonicalization clears an x87/SSE init-state bit, capture retains the original
-`XSTATE_BV` in the optional v6 tag-15 record; the value is validated before
-restore. The canonical state fingerprint deliberately projects this raw
-representation detail away, while persisted `vm_state` records retain it and the
-complete portable artifact digest covers it. A matching fingerprint is not a
-proof of whole-guest future equivalence; focused guest-byte coverage remains
+and must survive restore without reloading them from that memory. A
+standard-format XSAVE capture retains the original `XSTATE_BV` in the required
+v6 tag-15 record, whether or not canonicalization changes the x87/SSE
+init-state bits; the value is validated before restore. Short or compacted
+images retain the legacy no-provenance behavior. The canonical state fingerprint
+deliberately projects this raw representation detail away, while persisted
+`vm_state` records retain it and the complete portable artifact digest covers
+it. Keeping provenance on every standard-format capture also keeps the sidecar
+wire length fixed across equivalent raw-header spellings, so 512-byte sparse
+charge rounding cannot change archive admission. A matching fingerprint is not
+a proof of whole-guest future equivalence; focused guest-byte coverage remains
 required. Legacy records without that field keep their historical normalized
 restore behavior and cannot recover discarded header provenance.
 
