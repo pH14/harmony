@@ -1369,6 +1369,17 @@ fn capture_checkpoint_arm(
         errors.push(error);
     }
 
+    let schedule = vmm
+        .virtual_time_trace()
+        .expect("checkpoint capture virtual_time trace")
+        .schedule();
+    if let Err(error) = write_checkpoint_file(
+        &directory.join("schedule.txt"),
+        format!("{schedule:#?}\n").as_bytes(),
+    ) {
+        errors.push(error);
+    }
+
     let (checkpoint_event_index, recorded_hash) = match &arm.last_checkpoint {
         Some(checkpoint) => (
             checkpoint.event_index.to_string(),
@@ -1486,7 +1497,7 @@ fn capture_checkpoint_pair(
          checkpoint_position=observed_at_stopped_arm\n\
          arm_a=arm-a\n\
          arm_b=arm-b\n\
-         files=memory.bin,vm-state.bin,state-blob.bin,normalized.log\n",
+         files=memory.bin,vm-state.bin,state-blob.bin,normalized.log,schedule.txt\n",
     );
     if let Err(error) =
         write_checkpoint_file(&report_root.join("manifest.txt"), manifest.as_bytes())
@@ -1632,6 +1643,27 @@ fn x2_first_divergence_checkpoint_captures() {
                 capture_checkpoint_pair(&report_root, &vmm_a, &arm_a, &vmm_b, &arm_b, &reason);
             panic!(
                 "same-seed checkpoint prefixes diverged: {divergence:?}; evidence at {} ({evidence})",
+                report_root.display()
+            );
+        }
+
+        // Event equality alone omits cancelled and undelivered deadlines.
+        // Compare the complete trace recipe before either arm can re-enter,
+        // including the round where both arms reach their final terminal.
+        let trace_a = vmm_a.virtual_time_trace().expect("arm A trace");
+        let trace_b = vmm_b.virtual_time_trace().expect("arm B trace");
+        if trace_a.normalized_digest() != trace_b.normalized_digest()
+            || trace_a.schedule() != trace_b.schedule()
+        {
+            let reason = format!(
+                "normalized_trace_divergence digest_a={} digest_b={}",
+                hex(&trace_a.normalized_digest()),
+                hex(&trace_b.normalized_digest()),
+            );
+            let evidence =
+                capture_checkpoint_pair(&report_root, &vmm_a, &arm_a, &vmm_b, &arm_b, &reason);
+            panic!(
+                "same-seed complete traces diverged; evidence at {} ({evidence})",
                 report_root.display()
             );
         }
