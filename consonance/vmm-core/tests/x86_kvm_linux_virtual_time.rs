@@ -1481,6 +1481,7 @@ fn capture_checkpoint_pair(
 
     let manifest = format!(
         "format=harmony-x2-checkpoint-capture-v1\n\
+         hash_recipe=full_state_blob_with_vmst\n\
          reason={reason}\n\
          checkpoint_position=observed_at_stopped_arm\n\
          arm_a=arm-a\n\
@@ -1500,6 +1501,7 @@ fn capture_checkpoint_pair(
 
     let summary = format!(
         "format=harmony-x2-checkpoint-capture-v1\n\
+         hash_recipe=full_state_blob_with_vmst\n\
          reason={reason}\n\
          checkpoint_position=observed_at_stopped_arm; not_divergence_origin\n\
          [arm-a]\n{summary_a}\n\
@@ -1594,6 +1596,13 @@ fn x2_first_divergence_checkpoint_captures() {
     // state_blob; opt into the snapshot hash chunk before either guest enters.
     vmm_a.wire_snapshot_hashing();
     vmm_b.wire_snapshot_hashing();
+    // The stock Linux boot helper hashes CPU/device state but does not opt in
+    // to the complete persisted snapshot record. This diagnostic needs VMST
+    // in the exact retained blob, so explicitly include it before any entry.
+    // Its hashes therefore use a broader recipe than the older X2 gates.
+    vmm_a.wire_snapshot_hashing();
+    vmm_b.wire_snapshot_hashing();
+    assert!(vmm_a.snapshot_hashing_wired() && vmm_b.snapshot_hashing_wired());
     vmm_a
         .defer_virtual_time_checkpoint_hashes()
         .expect("defer virtual-time checkpoints arm A before first step");
