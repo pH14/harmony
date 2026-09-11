@@ -35,6 +35,9 @@ pub const REG_RESTARTS: u32 = 7;
 pub const REG_PARKED: u32 = 8;
 /// Node deaths observed while an EventKill arm was active.
 pub const REG_EVENT_KILLS_FIRED: u32 = 9;
+/// Exits of the bundle's `workload` process. The agent never restarts it, so a
+/// non-zero value means the load stopped and later evidence is weaker.
+pub const REG_WORKLOAD_DEATHS: u32 = 10;
 
 /// The number of `assert_sometimes` ids [`REG_SOMETIMES`] can hold. A hit at a
 /// higher id still reaches the host as an assertion event; it just has no bit.
@@ -68,12 +71,14 @@ pub struct RegisterSnapshot {
     pub parked: u64,
     /// [`REG_EVENT_KILLS_FIRED`].
     pub event_kills_fired: u64,
+    /// [`REG_WORKLOAD_DEATHS`].
+    pub workload_deaths: u64,
 }
 
 impl RegisterSnapshot {
     /// The `(register, value)` pairs in register order.
     #[must_use]
-    pub fn pairs(&self) -> [(u32, u64); 9] {
+    pub fn pairs(&self) -> [(u32, u64); 10] {
         [
             (REG_TICKS, self.ticks),
             (REG_ALIVE, self.alive),
@@ -84,6 +89,7 @@ impl RegisterSnapshot {
             (REG_RESTARTS, self.restarts),
             (REG_PARKED, self.parked),
             (REG_EVENT_KILLS_FIRED, self.event_kills_fired),
+            (REG_WORKLOAD_DEATHS, self.workload_deaths),
         ]
     }
 }
@@ -103,7 +109,7 @@ impl Registers {
 
     /// The `(register, value)` pairs to emit for `snapshot`: the tick register
     /// always, every other register whose value moved, and on the first call
-    /// all eight so the host starts from a complete picture.
+    /// all of them so the host starts from a complete picture.
     pub fn updates(&mut self, snapshot: RegisterSnapshot) -> Vec<(u32, u64)> {
         let pairs = snapshot.pairs();
         let updates = match self.last {
@@ -147,6 +153,7 @@ mod tests {
                 (REG_RESTARTS, 0),
                 (REG_PARKED, 0),
                 (REG_EVENT_KILLS_FIRED, 0),
+                (REG_WORKLOAD_DEATHS, 0),
             ]
         );
     }
@@ -185,10 +192,7 @@ mod tests {
             event_kills_fired: 1,
             ..RegisterSnapshot::default()
         });
-        assert_eq!(
-            updates,
-            [(REG_TICKS, 1), (REG_EVENT_KILLS_FIRED, 1)]
-        );
+        assert_eq!(updates, [(REG_TICKS, 1), (REG_EVENT_KILLS_FIRED, 1)]);
     }
 
     #[test]

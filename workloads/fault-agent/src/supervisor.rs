@@ -90,6 +90,8 @@ pub struct Counters {
     pub sometimes: u64,
     /// Threads the guest kernel has parked at a place.
     pub parked: u64,
+    /// Exits of the bundle's `workload` process.
+    pub workload_deaths: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -280,6 +282,12 @@ impl Supervisor {
         self.counters.parked += 1;
     }
 
+    /// Record that the bundle's workload process exited. The agent does not
+    /// restart it, so this marks the moment load stopped.
+    pub fn note_workload_death(&mut self) {
+        self.counters.workload_deaths += 1;
+    }
+
     /// Record an `assert_sometimes` hit reported by a hook. Ids at or beyond
     /// [`regs::SOMETIMES_BITMAP_IDS`](crate::regs::SOMETIMES_BITMAP_IDS) are
     /// still forwarded to the host by the caller; only the bitmap register is
@@ -321,6 +329,7 @@ impl Supervisor {
             event_kills_fired: self.counters.event_kills_fired,
             restarts: self.counters.restarts,
             parked: self.counters.parked,
+            workload_deaths: self.counters.workload_deaths,
         }
     }
 }

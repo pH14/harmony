@@ -6,7 +6,14 @@
 //! node <name> <argv...>    a supervised long-lived process
 //! hook <id> <argv...>      a one-shot command a RunHook fault launches
 //! ready <argv...>          a command that exits 0 once setup is done
+//! workload <argv...>       a long-lived process started once, after ready
+//! check <argv...>          a command rerun on a fixed cadence, forever
 //! ```
+//!
+//! `workload` and `check` remove the need for a search to spend actions on
+//! starting load or on validating: the agent starts the workload once ready
+//! passes and never restarts it, and it reruns the check on its own cadence.
+//! A check's directives feed evidence exactly as a hook's do.
 //!
 //! The setup line is where a workload prepares the root filesystem it needs:
 //! the image's init mounts `/proc`, `/sys` and `/dev` and nothing else, so a
@@ -53,6 +60,10 @@ pub struct Bundle {
     pub ready: Option<Vec<String>>,
     /// The one-shot preparation command, if the bundle declares one.
     pub setup: Option<Vec<String>>,
+    /// The load generator the agent starts once readiness passes.
+    pub workload: Option<Vec<String>>,
+    /// The validation command the agent reruns on its own cadence.
+    pub check: Option<Vec<String>>,
 }
 
 impl Bundle {
@@ -70,8 +81,8 @@ impl Bundle {
 /// build reports a usable location.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum BundleError {
-    /// A line started with something other than `setup`, `node`, `hook`, or
-    /// `ready`.
+    /// A line started with something other than `setup`, `node`, `hook`,
+    /// `ready`, `workload`, or `check`.
     #[error("line {line}: unknown item {word:?}")]
     UnknownItem {
         /// The 1-based line number.
@@ -122,6 +133,18 @@ pub enum BundleError {
     /// More than one setup command.
     #[error("line {line}: a second setup command")]
     DuplicateSetup {
+        /// The 1-based line number.
+        line: usize,
+    },
+    /// More than one workload command.
+    #[error("line {line}: a second workload command")]
+    DuplicateWorkload {
+        /// The 1-based line number.
+        line: usize,
+    },
+    /// More than one check command.
+    #[error("line {line}: a second check command")]
+    DuplicateCheck {
         /// The 1-based line number.
         line: usize,
     },
@@ -194,6 +217,34 @@ pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
                     return Err(BundleError::DuplicateSetup { line });
                 }
                 bundle.setup = Some(argv);
+            }
+            "workload" => {
+                let argv: Vec<String> = words.collect();
+                if argv.is_empty() {
+                    return Err(BundleError::Incomplete {
+                        line,
+                        item: "workload",
+                        need: 1,
+                    });
+                }
+                if bundle.workload.is_some() {
+                    return Err(BundleError::DuplicateWorkload { line });
+                }
+                bundle.workload = Some(argv);
+            }
+            "check" => {
+                let argv: Vec<String> = words.collect();
+                if argv.is_empty() {
+                    return Err(BundleError::Incomplete {
+                        line,
+                        item: "check",
+                        need: 1,
+                    });
+                }
+                if bundle.check.is_some() {
+                    return Err(BundleError::DuplicateCheck { line });
+                }
+                bundle.check = Some(argv);
             }
             _ => return Err(BundleError::UnknownItem { line, word: item }),
         }
@@ -375,7 +426,45 @@ ready /usr/bin/etcdctl endpoint health
 
     #[test]
     fn a_bundle_without_a_setup_line_declares_none() {
-        assert_eq!(parse_bundle("node a /a\n").unwrap().setup, None);
+        let bundle = parse_bundle("node a /a\n").unwrap();
+        assert_eq!(bundle.setup, None);
+        assert_eq!(bundle.workload, None);
+        assert_eq!(bundle.check, None);
+    }
+
+    #[test]
+    fn workload_and_check_lines_are_kept_whole_and_declared_once() {
+        let bundle = parse_bundle(
+            "node a /a\nworkload /opt/harmony/etcd-writer\ncheck /opt/harmony/hooks.sh 2\n",
+        )
+        .unwrap();
+        assert_eq!(bundle.workload.unwrap(), ["/opt/harmony/etcd-writer"]);
+        assert_eq!(bundle.check.unwrap(), ["/opt/harmony/hooks.sh", "2"]);
+
+        assert_eq!(
+            parse_bundle("node a /a\nworkload /w\nworkload /x\n"),
+            Err(BundleError::DuplicateWorkload { line: 3 })
+        );
+        assert_eq!(
+            parse_bundle("node a /a\ncheck /c\ncheck /d\n"),
+            Err(BundleError::DuplicateCheck { line: 3 })
+        );
+        assert_eq!(
+            parse_bundle("node a /a\nworkload\n"),
+            Err(BundleError::Incomplete {
+                line: 2,
+                item: "workload",
+                need: 1,
+            })
+        );
+        assert_eq!(
+            parse_bundle("node a /a\ncheck\n"),
+            Err(BundleError::Incomplete {
+                line: 2,
+                item: "check",
+                need: 1,
+            })
+        );
     }
 
     #[test]

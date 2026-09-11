@@ -36,12 +36,12 @@
     "assertion": 1,
     "evidence": 11,
     "kind": "always",
-    "hook": 2,
+    "source": "the agent's continuous check, not a drawn hook",
     "detector": "client journal versus serializable reads from every recovered etcd member",
     "fires_on": "an acknowledged key is missing or has a different value on any recovered member after restart",
     "silent_when": ["a member is down", "the journal is empty", "a local member read is inconclusive"]
   },
-  "actions": ["Wait", "EventKill", "Kill", "Pause", "Restart", "Hook"],
+  "actions": ["Wait", "EventKill", "Kill", "Pause", "Restart"],
   "run": {
     "horizon_ms": 500,
     "ram_mib": 512,

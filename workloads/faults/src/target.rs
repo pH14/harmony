@@ -49,6 +49,8 @@ pub mod reg {
     pub const PARKED: u32 = 8;
     /// Node deaths observed while an EventKill arm was active.
     pub const EVENT_KILLS_FIRED: u32 = 9;
+    /// Exits of the agent-started workload process.
+    pub const WORKLOAD_DEATHS: u32 = 10;
 }
 
 const NS_SHIFT: u32 = 24;
@@ -401,6 +403,10 @@ pub struct FaultObservations {
     pub restarts: u64,
     /// Threads the guest kernel parked at a place.
     pub parked: u64,
+    /// Exits of the agent-started workload process. The agent never restarts
+    /// it, so anything above zero means the load stopped before the endpoint.
+    #[serde(default)]
+    pub workload_deaths: u64,
     /// The `sometimes` bitmap the agent publishes for the first 48 sites.
     pub sometimes_register: u64,
     /// Every `sometimes` site hit, decoded from namespace-1 hits.
@@ -426,6 +432,7 @@ impl FaultObservations {
             event_kills_fired: value(reg::EVENT_KILLS_FIRED),
             restarts: value(reg::RESTARTS),
             parked: value(reg::PARKED),
+            workload_deaths: value(reg::WORKLOAD_DEATHS),
             sometimes_register: value(reg::SOMETIMES),
             sometimes: capture.sometimes.clone(),
             violations: capture.violations.clone(),

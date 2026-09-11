@@ -17,6 +17,8 @@ in the fault agent's bundle format:
 | `hook <id> <argv...>` | a command the search can run at any moment |
 | `setup <argv...>` | runs once, before any node starts |
 | `ready <argv...>` | must pass before the run's setup point is sealed |
+| `workload <argv...>` | load started once after ready and never restarted |
+| `check <argv...>` | an oracle the agent reruns on its own cadence |
 
 [`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
 alphabet, and assembles a guest initramfs: the base image, the OCI rootfs, and
@@ -72,7 +74,10 @@ with the boot that reaches setup.
 [`campaign`](src/campaign.rs) implements the game-neutral campaign interface
 over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
 which pairs the sometimes-assertion set with node liveness, unexpected deaths,
-EventKill-fired outcomes, and hook progress. `EventKill` outcomes are decoded
+EventKill-fired outcomes, hook progress, and whether the workload process was
+still running. A `check` reports assertions through the same directives a hook
+uses, so its evidence joins that key without the search having to draw
+anything. `EventKill` outcomes are decoded
 from the agent's dedicated monotonic fired counter rather than inferred from
 aggregate unexpected deaths. `EventKill` draws choose a binary scale before a coordinate,
 so finite event prefixes are searchable without a workload-specific upper

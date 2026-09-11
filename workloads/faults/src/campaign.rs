@@ -1584,7 +1584,7 @@ mod tests {
             )
             .expect("recorded refinement draw");
         assert_eq!(live, recorded);
-        assert_eq!(live.get(0), Some(&FaultAction::Kill(0)));
+        assert_eq!(live.first(), Some(&FaultAction::Kill(0)));
         assert_eq!(
             live.get(1),
             Some(&FaultAction::EventKill {

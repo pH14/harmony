@@ -179,7 +179,9 @@ impl FaultVocabulary {
                         format!("bundle line {line_number}: hook id {id:?} is not a u32: {error}")
                     })?);
                 }
-                "ready" | "setup" => {}
+                // The agent runs these itself on its own schedule, so they add
+                // nothing the search can name.
+                "ready" | "setup" | "workload" | "check" => {}
                 other => {
                     return Err(format!(
                         "bundle line {line_number}: unknown keyword {other:?}"

@@ -90,7 +90,8 @@ mod real {
     use harmony_fault_agent::recovery::{ReadyHook, RecoveryGate};
     use harmony_fault_agent::regs::{
         REG_ALIVE, REG_EVENT_KILLS_FIRED, REG_HOOKS_FINISHED, REG_HOOKS_STARTED, REG_PARKED,
-        REG_RESTARTS, REG_SOMETIMES, REG_TICKS, REG_UNEXPECTED_DEATHS, Registers,
+        REG_RESTARTS, REG_SOMETIMES, REG_TICKS, REG_UNEXPECTED_DEATHS, REG_WORKLOAD_DEATHS,
+        Registers,
     };
     use harmony_fault_agent::supervisor::{Action, Supervisor};
     use harmony_fault_agent::{Clock, TICK_NANOS};
@@ -111,10 +112,20 @@ mod real {
     /// directive line.
     const HOOK_FAILURE_STATUS: i32 = 42;
 
+    /// The hook id the bundle's `check` command runs under. It is outside the
+    /// range a bundle can declare, so a check never collides with a hook the
+    /// search can draw.
+    const CHECK_HOOK_ID: u32 = u32::MAX;
+
+    /// Ticks between one check finishing and the next starting. The check is
+    /// the workload's own validation, so it runs on the agent's cadence rather
+    /// than on a drawn action, and a slow check simply delays its successor.
+    const CHECK_INTERVAL_TICKS: u64 = 8;
+
     /// The points the agent declares for itself. A hook's own assertion ids are
     /// workload-owned and are not declared here; they still fire, they just
     /// carry no name in the host's never-fired report.
-    const CATALOG: [Point; 10] = [
+    const CATALOG: [Point; 11] = [
         Point::always(HOOK_FAILURE_POINT, "fault_agent.hook_assertion"),
         Point::state(REG_TICKS, "fault_agent.ticks"),
         Point::state(REG_ALIVE, "fault_agent.alive"),
@@ -125,6 +136,7 @@ mod real {
         Point::state(REG_RESTARTS, "fault_agent.restarts"),
         Point::state(REG_PARKED, "fault_agent.parked"),
         Point::state(REG_EVENT_KILLS_FIRED, "fault_agent.event_kills_fired"),
+        Point::state(REG_WORKLOAD_DEATHS, "fault_agent.workload_deaths"),
     ];
 
     type GuestSdk = Sdk<doorbell::DeviceTransport>;
@@ -196,16 +208,26 @@ mod real {
         recovery: RecoveryGate,
         recovery_probe: Option<RecoveryProbe>,
         retired_probes: Vec<Child>,
+        /// The bundle's `workload` process. The agent starts it once and never
+        /// restarts it, so a workload that dies leaves the run without load.
+        workload: Option<Child>,
+        /// The bundle's `check` command while one invocation is running.
+        check: Option<Hook>,
+        /// The earliest tick at which the next check may start.
+        next_check_tick: u64,
     }
 
     impl HookRuntime {
-        fn new() -> Self {
+        fn new(workload: Option<Child>) -> Self {
             Self {
                 hooks: Vec::new(),
                 launches: 0,
                 recovery: RecoveryGate::initially_ready(),
                 recovery_probe: None,
                 retired_probes: Vec::new(),
+                workload,
+                check: None,
+                next_check_tick: 0,
             }
         }
     }
@@ -247,6 +269,8 @@ mod real {
             .map_err(|error| format!("setup_complete: {error}"))?;
         log(0, "setup complete");
 
+        let workload = start_workload(&bundle)?;
+
         poll_loop(
             args,
             &bundle,
@@ -254,7 +278,26 @@ mod real {
             &mut supervisor,
             &mut sdk,
             &mut clock,
+            workload,
         )
+    }
+
+    /// Start the bundle's long-lived load generator, once, after the cluster is
+    /// ready. The search never draws this: a run whose load has to be started
+    /// by a drawn hook spends its inputs on getting the workload going instead
+    /// of on faults.
+    fn start_workload(bundle: &Bundle) -> Result<Option<Child>, String> {
+        let Some(argv) = &bundle.workload else {
+            return Ok(None);
+        };
+        let child = command(argv)
+            .process_group(0)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("workload {:?}: {error}", argv[0]))?;
+        log(0, "workload started");
+        Ok(Some(child))
     }
 
     /// Run the bundle's setup command to completion. The image's init mounts
@@ -319,9 +362,10 @@ mod real {
         supervisor: &mut Supervisor,
         sdk: &mut GuestSdk,
         clock: &mut SleepClock,
+        workload: Option<Child>,
     ) -> Result<(), String> {
         let mut registers = Registers::new();
-        let mut runtime = HookRuntime::new();
+        let mut runtime = HookRuntime::new(workload);
         let mut buf = [0_u8; MAX_PAYLOAD];
 
         loop {
@@ -358,7 +402,9 @@ mod real {
                 )?;
             }
             watch_parks(nodes, supervisor, tick);
+            reap_workload(&mut runtime.workload, supervisor, tick);
             drain_hooks(&mut runtime.hooks, &runtime.recovery, supervisor, sdk, tick)?;
+            run_check(bundle, &mut runtime, &args.hook_dir, supervisor, sdk, tick)?;
             for (reg, value) in registers.updates(supervisor.snapshot()) {
                 sdk.state_set(reg, value)
                     .map_err(|error| format!("state_set({reg}): {error}"))?;
@@ -916,6 +962,88 @@ mod real {
         for index in finished.into_iter().rev() {
             hooks.remove(index);
         }
+        Ok(())
+    }
+
+    /// Notice a workload that has exited. The agent never restarts it, so the
+    /// count is the evidence that load stopped partway through a run.
+    fn reap_workload(workload: &mut Option<Child>, supervisor: &mut Supervisor, tick: u64) {
+        let Some(child) = workload.as_mut() else {
+            return;
+        };
+        let exited = match child.try_wait() {
+            Ok(Some(status)) => {
+                log(tick, &format!("workload exited {status}"));
+                true
+            }
+            Ok(None) => false,
+            Err(error) => {
+                log(tick, &format!("workload: {error}"));
+                true
+            }
+        };
+        if exited {
+            *workload = None;
+            supervisor.note_workload_death();
+        }
+    }
+
+    /// Run the bundle's check on the agent's own cadence. Its directives reach
+    /// the SDK exactly as a hook's do, so evidence does not depend on the
+    /// search drawing an action. A check validates its own preconditions and
+    /// stays silent when it cannot read the workload, so unlike a drawn hook it
+    /// is not held back by the post-restart readiness gate.
+    fn run_check(
+        bundle: &Bundle,
+        runtime: &mut HookRuntime,
+        hook_dir: &Path,
+        supervisor: &mut Supervisor,
+        sdk: &mut GuestSdk,
+        tick: u64,
+    ) -> Result<(), String> {
+        let Some(argv) = &bundle.check else {
+            return Ok(());
+        };
+        if let Some(check) = runtime.check.as_mut() {
+            for line in read_lines(&mut check.output, &mut check.reader) {
+                forward(&line, CHECK_HOOK_ID, supervisor, sdk, tick)?;
+            }
+            let status = match check.child.try_wait() {
+                Ok(Some(status)) => status,
+                Ok(None) => return Ok(()),
+                Err(error) => return Err(format!("check: {error}")),
+            };
+            for line in read_lines(&mut check.output, &mut check.reader) {
+                forward(&line, CHECK_HOOK_ID, supervisor, sdk, tick)?;
+            }
+            if let Some(line) = check.reader.flush() {
+                forward(&line, CHECK_HOOK_ID, supervisor, sdk, tick)?;
+            }
+            if status.code() == Some(HOOK_FAILURE_STATUS) {
+                log(tick, "check failed its assertion");
+                sdk.assert_always(false, HOOK_FAILURE_POINT)
+                    .map_err(|error| format!("assert_always: {error}"))?;
+            } else if let Some(signal) = status.signal() {
+                log(tick, &format!("check died on signal {signal}"));
+            }
+            runtime.check = None;
+            runtime.next_check_tick = tick + CHECK_INTERVAL_TICKS;
+            return Ok(());
+        }
+        if tick < runtime.next_check_tick {
+            return Ok(());
+        }
+        runtime.launches += 1;
+        let spec = HookSpec {
+            id: CHECK_HOOK_ID,
+            argv: argv.clone(),
+        };
+        runtime.check = Some(spawn_hook(
+            &spec,
+            hook_dir,
+            runtime.launches,
+            runtime.recovery.generation(),
+        )?);
         Ok(())
     }
 

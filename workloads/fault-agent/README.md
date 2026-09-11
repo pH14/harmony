@@ -47,7 +47,16 @@ setup <argv...>          a command run once, before any node starts
 node <name> <argv...>    a supervised long-lived process
 hook <id> <argv...>      a one-shot command a RunHook fault launches
 ready <argv...>          a command that exits 0 once setup is done
+workload <argv...>       a long-lived process started once, after ready
+check <argv...>          a command rerun on a fixed cadence, forever
 ```
+
+The `workload` process is the load the faults act on and the `check` command is
+its oracle. Both run on the agent's own schedule, so a search spends its drawn
+actions on faults rather than on starting load and asking for verdicts. The
+agent never restarts a `workload`; it counts the exit instead, because a run
+whose load stopped early carries weaker evidence than one whose load ran
+throughout.
 
 A node's id is its line order among `node` lines, from 0 — the same id the host
 names in a `DecisionClass::Process` target, so the two sides agree without a
@@ -83,6 +92,11 @@ which the agent forwards to the SDK:
 @always <u32> <0|1>       assert_always(cond) at that point
 ```
 
+The `check` command reports through the same directives and the same exit code.
+It is not held behind the post-restart readiness wait that hooks are: a check
+runs continuously and is responsible for deciding for itself whether it could
+read the workload at all.
+
 Any other line is ordinary output. A hook that exits 42 reports a failed
 assertion without writing a line. A line that starts with `@` but does not parse
 is logged on serial rather than ignored, so a misspelled oracle line does not
@@ -92,8 +106,8 @@ read as a healthy run.
 
 The agent publishes IJON state registers the host reads back as SDK events:
 completed ticks, the alive bitmap, hook actions accepted and finished, the bitmap of
-reported `assert_sometimes` ids, unexpected deaths, restarts, and parked
-threads, and EventKill-fired deaths. The tick register is emitted every tick so
+reported `assert_sometimes` ids, unexpected deaths, restarts, parked
+threads, EventKill-fired deaths, and workload exits. The tick register is emitted every tick so
 liveness is always fresh; the others are emitted only when they change. The
 EventKill-fired register is monotonic and is separate from unexpected deaths so
 the host can identify the outcome of an EventKill action without inferring it

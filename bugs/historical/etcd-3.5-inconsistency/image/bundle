@@ -3,5 +3,5 @@ node member-1 /opt/harmony/node.sh member-1 /tmp/etcd/data/member-1 2379 2380
 node member-2 /opt/harmony/node.sh member-2 /tmp/etcd/data/member-2 2381 2382
 node member-3 /opt/harmony/node.sh member-3 /tmp/etcd/data/member-3 2383 2384
 ready /opt/harmony/ready.sh
-hook 1 /opt/harmony/hooks.sh 1
-hook 2 /opt/harmony/hooks.sh 2
+workload /opt/harmony/etcd-writer
+check /opt/harmony/hooks.sh 2

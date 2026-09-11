@@ -38,8 +38,9 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
 - **Workload**: the upstream etcd workload is three supervised local members, driven by an
   uninstrumented Go helper that owns exactly four persistent clients through the cluster endpoint
   set. Each client records every uniquely keyed, acknowledged put in a journal outside etcd and
-  keeps applying entries while Harmony explores faults. Repeated starts of the workload hook reuse
-  the original helper, so a later hook cannot overwrite a lost key. The helper is built from one
+  keeps applying entries while Harmony explores faults. The fault agent starts the helper once the
+  cluster is ready and never restarts it, and the helper resumes each client's sequence from the
+  journal, so no incarnation can overwrite a lost key. The helper is built from one
   pinned `go.etcd.io/etcd/client/v3` dependency shared by both arms; v3.5.2 and v3.5.3 differ
   only in the Antithesis-instrumented server source revision. There are no correctness,
   portability, batch, timing, wait, timeout, rate, or write-count knobs, fixed probe sequences,
@@ -52,8 +53,8 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
   coordinate as the ordinal of an instrumented deterministic event. The Antithesis runtime
   receives that ordinal over an inherited control channel and kills the member synchronously
   after that many future callbacks.
-- **Oracle**: the hook journals each acknowledged put outside etcd, then after all three members
-  are ready performs one serializable local prefix read through each member. It compares every
+- **Oracle**: the helper journals each acknowledged put outside etcd, and the fault agent reruns a
+  check that performs serializable local reads through each member. It compares every
   member's recovered key/value set with the unique acknowledged ledger. An acknowledged-but-
   missing or changed value on any member is the case's only failing assertion. A down member,
   empty journal, or failed local read is silent, so a crash alone cannot be mistaken for

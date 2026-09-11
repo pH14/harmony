@@ -19,7 +19,7 @@ use crate::target::{FaultAction, FaultObservations};
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
 /// Recorded archive-key policy.
-pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_sometimes_hooks_alive_v4_event_deaths";
+pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_sometimes_hooks_alive_v5_workload";
 /// Completed hooks beyond this count stop distinguishing archive cells. A hook
 /// the workload lets re-run cheaply, such as a read-back that finds nothing to
 /// check, would otherwise turn repetition into an endless supply of new cells
@@ -39,6 +39,7 @@ pub struct FaultArchiveGroup {
     alive: u64,
     unexpected_deaths: u64,
     parked: u64,
+    workload_alive: bool,
 }
 
 /// Quality-diversity key for one fault-library endpoint: which `sometimes`
@@ -70,6 +71,10 @@ pub struct FaultArchiveKey {
     /// A park that fired and one that never reached its hit are different
     /// states of the workload.
     pub parked: u64,
+    /// Whether the agent-started workload process was still running. An
+    /// endpoint reached with the load still applying and one reached after it
+    /// died are different states, and only the first is strong evidence.
+    pub workload_alive: bool,
 }
 
 impl ArchiveKey for FaultArchiveKey {
@@ -92,6 +97,7 @@ impl ArchiveKey for FaultArchiveKey {
             alive: self.alive,
             unexpected_deaths: self.unexpected_deaths,
             parked: self.parked,
+            workload_alive: self.workload_alive,
         };
         match depth {
             0 => full,
@@ -130,6 +136,7 @@ pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
         alive: observations.alive,
         unexpected_deaths: observations.unexpected_deaths.min(HOOKS_FINISHED_KEY_CAP),
         parked: observations.parked.min(HOOKS_FINISHED_KEY_CAP),
+        workload_alive: observations.workload_deaths == 0,
     }
 }
 
@@ -387,8 +394,19 @@ mod tests {
                 alive: 0b11,
                 unexpected_deaths: 0,
                 parked: 0,
+                workload_alive: true,
             }
         );
+    }
+
+    #[test]
+    fn a_dead_workload_keeps_its_endpoint_out_of_the_running_workload_cell() {
+        let running = endpoint(&[1], 1, 0b11);
+        let mut stopped = running.clone();
+        stopped.workload_deaths = 1;
+        assert!(archive_key(&running).workload_alive);
+        assert!(!archive_key(&stopped).workload_alive);
+        assert_ne!(archive_key(&running), archive_key(&stopped));
     }
 
     #[test]

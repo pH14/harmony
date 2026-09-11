@@ -4,7 +4,6 @@ set -eu
 
 journal=/tmp/etcd/journal/acked
 verified=/tmp/etcd/journal/verified
-writer=/opt/harmony/etcd-writer
 member_endpoint_1=http://127.0.0.1:2379
 member_endpoint_2=http://127.0.0.1:2381
 member_endpoint_3=http://127.0.0.1:2383
@@ -122,17 +121,6 @@ select_entries() {
 }
 
 case "$1" in
-  1)
-    # Keep four independent persistent clients applying entries while Harmony
-    # is free to kill the node. The helper journals every acknowledged put
-    # outside etcd; the checks below compare that client record with recovered
-    # bbolt contents. `setsid -f` double-forks the helper so this one-shot hook
-    # returns while its four client loops keep the apply path busy. The helper
-    # resumes its sequence numbers from the journal, so starting it again
-    # cannot rewrite a key an earlier incarnation already recorded.
-    setsid -f "${writer}" >/dev/null 2>&1
-    echo '@reachable 10'
-    ;;
   2)
     # The window check: verify what has been acknowledged since the last
     # passing check. Its cost follows the window rather than the whole

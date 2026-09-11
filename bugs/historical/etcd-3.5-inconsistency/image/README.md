@@ -53,20 +53,21 @@ docker save --output etcd-3.5.2-arm64.oci harmony-etcd:3.5.2-arm64
 
 The guest runs three local instrumented etcd members in one Raft cluster. Their client and peer
 ports are `2379/2380`, `2381/2382`, and `2383/2384`, with independent data directories under
-`/tmp/etcd/data`. The readiness probe requires all three client endpoints to be healthy. Hook 1
-starts one detached writer helper. The helper owns exactly four persistent etcd clients; each
+`/tmp/etcd/data`. The readiness probe requires all three client endpoints to be healthy. The
+bundle's `workload` line is the writer helper, which the fault agent starts once the cluster is
+ready. The helper owns exactly four persistent etcd clients; each
 client puts uniquely keyed values through the cluster endpoint set as fast as requests complete
 and appends only acknowledged puts to `/tmp/etcd/journal/acked`. A failed put retries its own
 key, and a restarted helper resumes each worker's sequence from the journal, so no incarnation
 can rewrite a key an earlier one recorded. Sequence numbers are zero padded, so a key's byte
 order matches its numeric order.
 
-Two hooks read the members back with `ETCDCTL_API=3` serializable local reads, and both emit a
+Two checks read the members back with `ETCDCTL_API=3` serializable local reads, and both emit a
 verdict only after all three comparisons succeed, so a member that is still down cannot count as
 data loss. A restarted member reports itself healthy while it is still applying the entries it
 missed, so each member is read until the keys it lacks either run out or stop running out: a
 member that is merely behind shrinks that set on every read, and a key it will never hold holds
-the set at one size. Hook 2 compares the keys acknowledged since the last passing check, reading one range
-per worker, and its cost follows that window rather than the whole history. Hook 3 compares the
-entire journal against every member's whole prefix; running it once at the end of a measurement
-reports a loss that no window covered.
+the set at one size. `hooks.sh 2` is the bundle's `check` line: it compares the keys acknowledged
+since the last passing check, reading one range per worker, so its cost follows that window rather
+than the whole history. `hooks.sh 3` compares the entire journal against every member's whole
+prefix; running it once at the end of a measurement reports a loss that no window covered.
