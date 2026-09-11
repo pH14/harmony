@@ -14,7 +14,7 @@ use searcher::search::{
 };
 
 use crate::bundle::FaultVocabulary;
-use crate::target::{FaultAction, FaultObservations, WAIT_MAX_SCALE, action_horizons};
+use crate::target::{FaultAction, FaultObservations, action_horizons};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
@@ -290,17 +290,25 @@ pub fn sample_action(
     }
 }
 
+/// Longest wait the draw produces. The type allows up to `WAIT_MAX_SCALE`, but
+/// a single action's guest duration is bounded by the wall limit that catches a
+/// hung guest, and guest time advances far slower than host time while the
+/// workload is saturating the processor. Measured on the etcd case at a 500 ms
+/// horizon: a 12-action input drawn at scale 5 or below runs in about 20
+/// seconds of host time, while one scale-6 action exceeded 256 seconds and was
+/// abandoned.
+pub const WAIT_DRAW_MAX_SCALE: u8 = 5;
+
 /// Draw a wait length, halving the chance of each next scale. A wait costs
 /// `1 << scale` horizons to run, so drawing the scale uniformly would put most
-/// of a campaign's guest time in its longest waits: at the case's horizon one
-/// scale-7 wait is a minute of guest time, and rebuilding an evicted prefix
-/// full of them costs that many times over. Halving makes the expected cost a
-/// few horizons while every scale stays reachable.
+/// of a campaign's guest time in its longest waits: rebuilding an evicted
+/// prefix full of them costs that duration over again. Halving makes the
+/// expected cost a few horizons while every drawn scale stays reachable.
 fn sample_wait_scale(rand: &mut RomuDuoJrRand) -> u8 {
     let scale = rand.next_u64().trailing_zeros();
     u8::try_from(scale)
-        .unwrap_or(WAIT_MAX_SCALE)
-        .min(WAIT_MAX_SCALE)
+        .unwrap_or(WAIT_DRAW_MAX_SCALE)
+        .min(WAIT_DRAW_MAX_SCALE)
 }
 
 /// Draw across every positive `u64` scale without importing a workload event
@@ -592,7 +600,7 @@ mod tests {
             let action = sample_action(&mut rand, &vocabulary).expect("draw an action");
             kinds.insert(kind(&action));
             match action {
-                FaultAction::Wait(scale) => assert!(scale <= WAIT_MAX_SCALE),
+                FaultAction::Wait(scale) => assert!(scale <= WAIT_DRAW_MAX_SCALE),
                 FaultAction::EventKill { node, ordinal } => {
                     assert!(node < vocabulary.nodes());
                     assert!(ordinal > 0);
@@ -713,7 +721,10 @@ mod tests {
     fn every_action_costs_one_horizon() {
         assert_eq!(action_time(&FaultAction::Wait(0)), 1);
         assert_eq!(action_time(&FaultAction::Wait(5)), 32);
-        assert_eq!(action_time(&FaultAction::Wait(WAIT_MAX_SCALE)), 128);
+        assert_eq!(
+            action_time(&FaultAction::Wait(crate::target::WAIT_MAX_SCALE)),
+            128
+        );
         assert_eq!(action_time(&FaultAction::Kill(4)), 1);
     }
 }
