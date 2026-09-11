@@ -593,7 +593,7 @@ where
     set(target)
 }
 
-/// A failed coherence write may leave transient special registers installed.
+/// A failed coherence operation may have invalidated only part of the MMU state.
 /// Such a backend cannot run, capture, or restore again; construct a new one.
 pub(crate) fn ensure_entry_coherence_usable(poisoned: bool) -> Result<()> {
     if poisoned {
@@ -605,21 +605,29 @@ pub(crate) fn ensure_entry_coherence_usable(poisoned: bool) -> Result<()> {
     }
 }
 
-/// Diagnostic ordinary-entry policy. Read and reinstall the exact live SREGS2
-/// around a WP toggle, with no guest entry between writes. Retain raw fields,
-/// including cached PDPTRs and unusable-segment residue, without canonicalizing.
-/// Read errors leave state untouched; any write error permanently poisons it.
-pub(crate) fn synchronize_entry_sregs<R, W>(poisoned: &mut bool, read: R, set: W) -> Result<()>
+/// Diagnostic ordinary-entry invalidation. The callback discards cached shadow
+/// translations without changing guest registers or entering the guest. A failed
+/// operation poisons the backend; no retry may hide an incomplete operation.
+pub(crate) fn invalidate_entry_shadow<F>(poisoned: &mut bool, invalidate: F) -> Result<()>
 where
-    R: FnOnce() -> Result<kvm_sregs2>,
-    W: FnMut(&kvm_sregs2) -> Result<()>,
+    F: FnOnce() -> Result<()>,
 {
     ensure_entry_coherence_usable(*poisoned)?;
-    let target = read()?;
     *poisoned = true;
-    write_sregs2_with_flush(&target, set)?;
+    invalidate()?;
     *poisoned = false;
     Ok(())
+}
+
+/// Versioned reply from the private Linux 6.17 diagnostic VM ioctl ("HSY1").
+pub(crate) fn validate_shadow_invalidation_reply(reply: i32) -> Result<()> {
+    if reply == 0x4853_5931 {
+        Ok(())
+    } else {
+        Err(BackendError::Internal(
+            "unexpected diagnostic shadow invalidation ABI",
+        ))
+    }
 }
 
 /// Validate a snapshot's cheap shape against this backend's config *before* any

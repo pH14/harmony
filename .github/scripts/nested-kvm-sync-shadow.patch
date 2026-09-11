@@ -10,3 +10,17 @@
 @@ -2946 +2952 @@
 -		if (synchronizing)
 +		if (synchronizing || harmony_sync_shadow)
+--- a/arch/x86/kvm/x86.c
++++ b/arch/x86/kvm/x86.c
+@@ -6939,0 +6940,11 @@
++	/* Private ABI for the isolated Harmony Linux 6.17 experiment only. */
++	case _IO(KVMIO, 0xf0):
++		if (arg) {
++			r = -EINVAL;
++			break;
++		}
++		mutex_lock(&kvm->slots_lock);
++		kvm_arch_flush_shadow_all(kvm);
++		mutex_unlock(&kvm->slots_lock);
++		r = 0x48535931; /* "HSY1": invalidation completed, no guest entry. */
++		break;

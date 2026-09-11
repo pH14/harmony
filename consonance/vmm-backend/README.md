@@ -59,8 +59,9 @@ conditionally in [`__set_sregs2`](https://github.com/torvalds/linux/blob/v6.12/a
 write sequence and error handling; the Nova restore oracle checks 200 restored
 continuations across a branching snapshot tree on KVM.
 
-This diagnostic branch also synchronizes translations at each ordinary KVM
-entry by toggling CR0.WP and reinstalling the exact live SREGS2. Snapshot reads,
-completion-only calls, and internal EINTR/IRQ-window retries do not perform
-this operation. A failed write poisons the backend against entry, capture, and
-restore. This is an experiment pending hardware and compatibility qualification.
+This diagnostic branch invalidates cached translations at each ordinary entry
+through a private VM ioctl in its pinned Linux 6.17 kernel. The kernel holds the
+memslot lock and calls `kvm_arch_flush_shadow_all`; it does not replace registers
+or memory slots. Capture, completion-only calls, and internal retries do not
+invoke it. An error or unexpected ABI reply poisons the backend. Stock kernels
+lack this ioctl. This is an unqualified experiment, not a supported backend mode.

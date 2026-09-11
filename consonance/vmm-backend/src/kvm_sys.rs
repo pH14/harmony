@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `KvmBackend` — the **box-only syscall orchestration** for the stock-KVM
-//! [`Backend`] (`#[cfg(target_os = "linux")]`).
+//! `KvmBackend` — the **box-only syscall orchestration** for the KVM
+//! [`Backend`] (`#[cfg(target_os = "linux")]`). This diagnostic branch also
+//! requires the private invalidation ioctl in its pinned Linux 6.17 kernel.
 //!
 //! Creates the VM with **`KVM_IRQCHIP_NONE`** (R1): no in-kernel
 //! irqchip/LAPIC/PIT, one vCPU, a single memslot for bring-up. The guest LAPIC is
@@ -17,11 +18,10 @@
 //! covered + mutation-tested by that module's non-`#[ignore]` synthetic-`kvm_run`
 //! tests; this file just wires those helpers to the ioctls.
 //!
-//! The two granted `unsafe` purposes (rule #7), each with a `// SAFETY:` comment:
-//! (1) `KVM_SET_USER_MEMORY_REGION` registration in [`KvmBackend::map_memory`],
-//! and (2) `mmap`-ing the `kvm_run` shared page in [`KvmBackend::new`]. The raw
-//! `mmap`/`ioctl` syscalls sit behind `#[cfg(not(miri))]` seams with `#[cfg(miri)]`
-//! stubs.
+//! Unsafe memory registration, shared-page mapping, and raw fd ioctls each
+//! have a local `// SAFETY:` invariant. Raw `mmap`/`ioctl` syscalls sit behind
+//! `#[cfg(not(miri))]` seams with `#[cfg(miri)]` stubs; sequencing and reply
+//! validation are exercised through the pure helpers.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::os::fd::AsRawFd;
@@ -131,7 +131,7 @@ pub struct KvmBackend {
     cpuid_installed: bool,
     msr_filter_installed: bool,
     pending: Pending,
-    /// Latched if the diagnostic ordinary-entry synchronization write fails.
+    /// Latched if diagnostic ordinary-entry invalidation fails.
     entry_coherence_poisoned: bool,
     /// `true` after KVM returns a userspace completion (including a write-style
     /// PIO/MMIO callback) and before a `KVM_RUN` consumes it. This is separate
@@ -320,26 +320,18 @@ impl KvmBackend {
         Ok(())
     }
 
-    /// Synchronize translations once per ordinary entry, after all userspace
-    /// instruction completions are retired. Capture and completion-only paths
-    /// never call this; internal EINTR/IRQ-window retries stay in enter_guest.
+    /// Discard cached translations once per ordinary entry. The private VM
+    /// ioctl belongs only to the pinned diagnostic kernel; completion-only and
+    /// internal EINTR/IRQ-window re-entries never issue it.
     fn synchronize_entry_translations(&mut self) -> Result<()> {
-        let fd = self.vcpu.as_raw_fd();
-        synchronize_entry_sregs(
-            &mut self.entry_coherence_poisoned,
-            || {
-                // SAFETY: the owned vCPU fd remains live throughout the call;
-                // raw_get_sregs2 fills an initialized full-sized SREGS2 value.
-                unsafe { raw_get_sregs2(fd) }
-            },
-            |sregs| {
-                // SAFETY: fd is the same stopped, owned vCPU, and sregs points
-                // to a complete live value. The pure sequence executes no
-                // KVM_RUN between the transient and exact writes; failures
-                // poison further entry/capture/restore. Sequencing is Miri-tested.
-                unsafe { raw_set_sregs2(fd, sregs) }
-            },
-        )
+        let fd = self.vm.as_raw_fd();
+        invalidate_entry_shadow(&mut self.entry_coherence_poisoned, || {
+            // SAFETY: fd is this backend's live, owned VM descriptor. The private
+            // diagnostic ioctl takes no pointer, serializes with the kernel's
+            // memslot lock, and invalidates translations without KVM_RUN or any
+            // register/memory-slot replacement. Failure poisons further use.
+            unsafe { raw_invalidate_shadow(fd) }
+        })
     }
 
     /// Issue `KVM_RUN`, then map the raw exit via the pure [`decode_exit`]. Retries
@@ -588,6 +580,26 @@ unsafe fn raw_interrupt(fd: std::os::fd::RawFd, vector: u32) -> Result<()> {
 /// Miri stub for the `KVM_INTERRUPT` ioctl (never reached under Miri).
 #[cfg(miri)]
 unsafe fn raw_interrupt(_fd: std::os::fd::RawFd, _vector: u32) -> Result<()> {
+    Err(BackendError::Internal("ioctl unavailable under miri"))
+}
+
+/// Invoke the pinned diagnostic kernel's private, VM-scoped invalidation ABI.
+///
+/// # Safety
+/// `fd` must be a valid owned VM fd for the diagnostic Linux 6.17 kernel.
+#[cfg(not(miri))]
+unsafe fn raw_invalidate_shadow(fd: std::os::fd::RawFd) -> Result<()> {
+    // SAFETY: the caller supplies a live VM fd. The request has no memory
+    // argument; an explicit zero is required by the diagnostic kernel ABI.
+    let reply = unsafe { libc::ioctl(fd, ioc(0, 0xAE, 0xF0, 0) as libc::c_ulong, 0) };
+    if reply < 0 {
+        return Err(BackendError::Io(std::io::Error::last_os_error()));
+    }
+    validate_shadow_invalidation_reply(reply)
+}
+
+#[cfg(miri)]
+unsafe fn raw_invalidate_shadow(_fd: std::os::fd::RawFd) -> Result<()> {
     Err(BackendError::Internal("ioctl unavailable under miri"))
 }
 
