@@ -766,13 +766,7 @@ impl Drop for Workspace {
 }
 
 impl Workspace {
-    /// Create a workspace at `root` and commit its pinned facts.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the directory cannot be written or already holds
-    /// a journal.
-    pub fn create(root: &Path, facts: WorkspaceFacts) -> Result<Self, Box<dyn Error>> {
+    fn prepare(root: &Path) -> Result<Self, Box<dyn Error>> {
         fs::create_dir_all(root)?;
         let lock = acquire_lock(root)?;
         sync_directory_chain(root)?;
@@ -790,14 +784,24 @@ impl Workspace {
         sync_directory_chain(root)?;
         sync_directory_chain(&journal)?;
         sync_directory_chain(&blobs)?;
-        let mut workspace = Self {
+        Ok(Self {
             root: root.to_path_buf(),
             state: State::default(),
             _lock: lock,
             poisoned: Cell::new(false),
             #[cfg(test)]
             fail_commit_phase: Cell::new(None),
-        };
+        })
+    }
+
+    /// Create a workspace at `root` and commit its pinned facts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory cannot be written or already holds
+    /// a journal.
+    pub fn create(root: &Path, facts: WorkspaceFacts) -> Result<Self, Box<dyn Error>> {
+        let mut workspace = Self::prepare(root)?;
         workspace.commit(vec![Record::Facts(Box::new(facts))])?;
         Ok(workspace)
     }
@@ -2357,8 +2361,7 @@ pub fn publish(
         executions: report.executions,
         declarations,
     };
-    let mut workspace = Workspace::create(root, facts)?;
-    let mut records = Vec::new();
+    let mut records = vec![Record::Facts(Box::new(facts))];
     for (index, bug) in reports.iter().enumerate() {
         let summary = summaries[&bug.execution];
         let moment = format!("m-{:04}", index.saturating_add(1));
@@ -2400,6 +2403,7 @@ pub fn publish(
             state_hash_encoding: summary.state_hash_encoding,
         })));
     }
+    let mut workspace = Workspace::prepare(root)?;
     workspace.commit(records)?;
     Ok(workspace)
 }
@@ -2589,6 +2593,17 @@ mod publish_tests {
             &options(directory.path()),
         )
         .expect("publish");
+        assert_eq!(workspace.sequence(), 1);
+        let transaction: Transaction = serde_json::from_str(
+            &std::fs::read_to_string(directory.path().join(JOURNAL_DIR).join("000001.json"))
+                .expect("published transaction"),
+        )
+        .expect("decode published transaction");
+        assert_eq!(transaction.sequence, 1);
+        assert_eq!(transaction.records.len(), 3);
+        assert!(matches!(transaction.records[0], Record::Facts(_)));
+        assert!(matches!(transaction.records[1], Record::Moment(_)));
+        assert!(matches!(transaction.records[2], Record::Finding(_)));
         assert_eq!(workspace.facts().identity, report.identity);
         assert_eq!(workspace.facts().root_seal, 1_000);
         assert_eq!(workspace.facts().horizon_nanos, 500_000_000);
@@ -2625,6 +2640,9 @@ mod publish_tests {
         // Reopening reads the same history.
         drop(workspace);
         let reopened = Workspace::open(directory.path()).expect("open");
+        assert_eq!(reopened.sequence(), 1);
+        assert_eq!(reopened.facts().identity, report.identity);
+        assert_eq!(reopened.moments().len(), 1);
         assert_eq!(reopened.findings().len(), 1);
         assert_eq!(
             reopened.findings()[0].state_hash_encoding,
@@ -2634,6 +2652,89 @@ mod publish_tests {
             reopened.moments()[0].state_hash_encoding,
             crate::package::StateHashEncoding::EngineDigest
         );
+    }
+
+    #[test]
+    fn an_initial_transaction_failure_never_publishes_facts_without_its_records() {
+        for phase in [
+            CommitPhase::BeforeWrite,
+            CommitPhase::AfterFileSync,
+            CommitPhase::AfterPublication,
+            CommitPhase::AfterDirectorySync,
+        ] {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let mut workspace = Workspace::prepare(directory.path()).expect("prepare");
+            workspace.fail_commit_phase.set(Some(phase));
+            let records = vec![
+                Record::Facts(Box::new(facts_for_test())),
+                Record::Moment(Box::new(MomentRecord {
+                    id: "m-0001".to_owned(),
+                    virtual_time: 42,
+                    ..MomentRecord::default()
+                })),
+                Record::Finding(Box::new(Finding {
+                    id: "bug-1".to_owned(),
+                    moment: "m-0001".to_owned(),
+                    ..Finding::default()
+                })),
+            ];
+            let error = workspace
+                .commit(records.clone())
+                .expect_err("injected initial transaction failure");
+            assert!(error.to_string().contains("injected"), "{phase:?}: {error}");
+            drop(workspace);
+
+            let reopened = Workspace::open(directory.path());
+            if matches!(phase, CommitPhase::BeforeWrite | CommitPhase::AfterFileSync) {
+                assert!(reopened.is_err(), "{phase:?}: partial facts publication");
+                assert!(
+                    !directory
+                        .path()
+                        .join(JOURNAL_DIR)
+                        .join("000001.json")
+                        .exists()
+                );
+                let mut retry = Workspace::prepare(directory.path()).expect("retry prepare");
+                retry.commit(records).expect("retry initial transaction");
+                drop(retry);
+                let reopened = Workspace::open(directory.path()).expect("reopen retry");
+                assert_eq!(reopened.sequence(), 1, "{phase:?}");
+                assert_eq!(reopened.facts().identity, "workspace-test");
+                assert_eq!(
+                    reopened.moment("m-0001").expect("moment").virtual_time,
+                    42,
+                    "{phase:?}"
+                );
+                assert_eq!(
+                    reopened.finding("bug-1").expect("finding").moment,
+                    "m-0001",
+                    "{phase:?}"
+                );
+            } else {
+                let reopened = reopened.expect("published initial transaction");
+                assert_eq!(reopened.sequence(), 1, "{phase:?}");
+                assert_eq!(reopened.facts().identity, "workspace-test");
+                assert_eq!(
+                    reopened.moment("m-0001").expect("moment").virtual_time,
+                    42,
+                    "{phase:?}"
+                );
+                assert_eq!(
+                    reopened.finding("bug-1").expect("finding").moment,
+                    "m-0001",
+                    "{phase:?}"
+                );
+            }
+        }
+    }
+
+    fn facts_for_test() -> WorkspaceFacts {
+        WorkspaceFacts {
+            format: FORMAT.to_owned(),
+            package: "faults".to_owned(),
+            identity: "workspace-test".to_owned(),
+            ..WorkspaceFacts::default()
+        }
     }
 
     #[test]

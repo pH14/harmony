@@ -115,7 +115,8 @@ a raw machine checkpoint alone does not supply the plan.
 [`declarations`](src/declarations.rs) retains workload-authored descriptions and
 property meanings without inferring a verdict from a silent assertion.
 
-The CLI publishes this workspace after a search or replay. A replay retains
+The CLI publishes the workspace facts, findings, and their moments in one
+transaction after a search or replay. A replay retains
 its first reproduced finding from that run's actual observations and state
 digest. [`investigate`](src/investigate.rs) implements `fork`, bounded `run`, and
 `exec`:
