@@ -457,8 +457,15 @@ jobs:
           printf 'CPU_VENDOR=%s\nKVM_AMD_NPT=%s\n' "$vendor" "$npt" | tee snapshot-report/paging-mode.txt
           cat /proc/cpuinfo > snapshot-report/cpuinfo.txt
           amd_npt=false
-          if [[ "$vendor" == AuthenticAMD && "$npt" =~ ^(Y|1)$ ]]; then
-            amd_npt=true
+          if [[ "$vendor" == AuthenticAMD ]]; then
+            case "$npt" in
+              Y|1) amd_npt=true ;;
+              N|0) ;;
+              *) echo "Unknown AMD NPT mode: $npt" >&2; exit 1 ;;
+            esac
+          elif [[ "$vendor" != GenuineIntel ]]; then
+            echo "Unknown x86 CPU vendor: $vendor" >&2
+            exit 1
           fi
           printf 'vendor=%s\nnpt=%s\namd_npt=%s\n' "$vendor" "$npt" "$amd_npt" >> "$GITHUB_OUTPUT"
       - name: Run required KVM completion and full-VMM tests
@@ -506,7 +513,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$NPT_REPORT_DIR"
-          printf '%s\n' 'PAE_STATUS=known-unresolved-amd-default-npt-guest-authored-observation' | tee snapshot-report/pae-status.txt
+          printf 'PAE_STATUS=%s\n' 'known-unresolved-amd-default-npt-guest-authored-observation' | tee snapshot-report/pae-status.txt
           printf '%s\n' 'cargo test --locked --release -p vmm-core --test x86_cpu_snapshots live_kvm::amd_default_npt_pae_guest_write_observations -- --ignored --exact --test-threads=1 --nocapture' | tee snapshot-report/pae-full-vmm.command
           set +e
           cargo test --locked --release -p vmm-core --test x86_cpu_snapshots \
@@ -526,15 +533,18 @@ jobs:
             printf '%s\n' 'PAE_OBSERVATION=guest-authored-test-passed-on-amd-default-npt' | tee -a snapshot-report/pae-status.txt
           elif [[ "$cargo_rc" -ne 0 ]] && grep -Fq 'running 1 test' snapshot-report/pae-full-vmm.log && \
               grep -Fq 'test result: FAILED. 0 passed; 1 failed; 0 ignored;' snapshot-report/pae-full-vmm.log; then
-            printf '%s\n' 'PAE_OBSERVATION=guest-authored-strict-test-failed-on-amd-default-npt' | tee -a snapshot-report/pae-status.txt
+            printf 'PAE_OBSERVATION=%s\n' 'guest-authored-strict-test-failed-on-amd-default-npt' | tee -a snapshot-report/pae-status.txt
             printf '%s\n' 'The strict guest-authored PAE oracle failed on AMD default NPT; retaining the raw diagnostic outcome without qualification.'
             exit "$cargo_rc"
           else
-            printf '%s\n' 'PAE_OBSERVATION=unexpected-harness-or-infrastructure-failure' | tee -a snapshot-report/pae-status.txt
+            printf 'PAE_OBSERVATION=%s\n' 'unexpected-harness-or-infrastructure-failure' | tee -a snapshot-report/pae-status.txt
             exit 1
           fi
       - name: Validate AMD default-NPT PAE observation classification
         if: ${{ always() && steps.host.outputs.amd_npt == 'true' }}
+        env:
+          # Public diagnostic status, not a credential.
+          KNOWN_PAE_FAILURE: PAE_OBSERVATION=guest-authored-strict-test-failed-on-amd-default-npt # pragma: allowlist secret
         run: |
           set -euo pipefail
           status=snapshot-report/pae-status.txt
@@ -567,7 +577,7 @@ jobs:
             grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
             require_phase_evidence
             printf '%s\n' 'AMD default-NPT PAE observation passed; raw evidence retained and reported as observational.'
-          elif grep -Fq 'PAE_OBSERVATION=guest-authored-strict-test-failed-on-amd-default-npt' "$status"; then
+          elif grep -Fq "$KNOWN_PAE_FAILURE" "$status"; then
             grep -Eq '^PAE_TEST_EXIT=[1-9][0-9]*$' "$status"
             grep -Fq 'running 1 test' "$log"
             grep -Fq 'test result: FAILED. 0 passed; 1 failed; 0 ignored;' "$log"
