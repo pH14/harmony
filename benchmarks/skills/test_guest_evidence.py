@@ -64,7 +64,7 @@ def fixture(*, violation: bool) -> tuple[dict, dict]:
         report["bugs"] = [
             {
                 "execution": 1,
-                "actions": [{"Hook": 1}],
+                "actions": [{"Hook": 1}, "Wait"],
                 "stop": {"Assertion": {"point": 8}},
                 "violations": [8],
                 "sometimes": [7],
@@ -224,6 +224,66 @@ class GuestEvidenceTests(unittest.TestCase):
         sidecar["events"] = []
         report["replays"][0]["sometimes"] = [9]
         self.assertNotEqual(self.assertRejected(report, sidecar, violation=False).code, "missing_hit")
+
+    def test_violation_binds_one_confirmed_bug_to_the_actual_replay(self) -> None:
+        mutations = []
+        report, sidecar = fixture(violation=True)
+        changed = copy.deepcopy(report)
+        changed["bugs"] = []
+        mutations.append((changed, sidecar))
+
+        report, sidecar = fixture(violation=True)
+        changed = copy.deepcopy(report)
+        changed["bugs"].append(copy.deepcopy(changed["bugs"][0]))
+        mutations.append((changed, sidecar))
+
+        report, sidecar = fixture(violation=True)
+        changed = copy.deepcopy(report)
+        changed["bugs"][0]["confirmed"] = False
+        mutations.append((changed, sidecar))
+
+        report, sidecar = fixture(violation=True)
+        changed = copy.deepcopy(report)
+        changed["bugs"][0]["actions"] = []
+        mutations.append((changed, sidecar))
+
+        report, sidecar = fixture(violation=True)
+        changed = copy.deepcopy(report)
+        changed["bugs"][0]["stop"] = "Deadline"
+        mutations.append((changed, sidecar))
+
+        report, sidecar = fixture(violation=True)
+        changed = copy.deepcopy(report)
+        changed["bugs"][0]["replay"] = None
+        mutations.append((changed, sidecar))
+
+        for changed_report, changed_sidecar in mutations:
+            with self.subTest(report=changed_report):
+                self.assertNotEqual(
+                    self.assertRejected(changed_report, changed_sidecar, violation=True).code,
+                    "missing_hit",
+                )
+
+        nested_fields = ("stop", "violations", "sometimes", "state_hash", "state_hash_encoding")
+        for field in nested_fields:
+            report, sidecar = fixture(violation=True)
+            report["bugs"][0]["replay"][field] = copy.deepcopy(report["replays"][0][field])
+            if field == "stop":
+                report["bugs"][0]["replay"][field] = "Deadline"
+            elif field == "violations":
+                report["bugs"][0]["replay"][field] = []
+            elif field == "sometimes":
+                report["bugs"][0]["replay"][field] = []
+            elif field == "state_hash":
+                report["bugs"][0]["replay"][field] = "cd" * 32
+            else:
+                report["bugs"][0]["replay"][field] = "legacy_sha256_of_digest"
+            self.assertNotEqual(self.assertRejected(report, sidecar, violation=True).code, "missing_hit")
+
+        report, sidecar = fixture(violation=True)
+        sidecar["events"] = []
+        report["bugs"][0]["confirmed"] = False
+        self.assertNotEqual(self.assertRejected(report, sidecar, violation=True).code, "missing_hit")
 
     def test_event_count_and_payload_bounds_are_enforced_without_truncation(self) -> None:
         report, sidecar = fixture(violation=False)

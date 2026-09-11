@@ -108,6 +108,22 @@ def _ids(value: Any, name: str) -> list[int]:
     return result
 
 
+def _fixed_actions(value: Any, name: str) -> list[Any]:
+    # `replay_once` gives the complete input slice to `BugReport::new`; the
+    # retained record therefore includes the trailing Wait even when Hook 1
+    # stops the guest before that second action executes.
+    actions = _list(value, name)
+    if len(actions) != 2:
+        _fail("actions", f"{name} must contain the fixed Hook 1 prefix and trailing Wait")
+    hook = _object(actions[0], f"{name}[0]")
+    _keys(hook, {"Hook"}, f"{name}[0]")
+    if _u32(hook["Hook"], f"{name}[0].Hook") != 1:
+        _fail("actions", f"{name}[0] must spawn Hook 1")
+    if _string(actions[1], f"{name}[1]") != "Wait":
+        _fail("actions", f"{name}[1] must be Wait")
+    return actions
+
+
 def _stop(value: Any, name: str) -> tuple[str, int | None]:
     if type(value) is str:
         if value != "Deadline":
@@ -166,7 +182,7 @@ def _bug_summary(value: Any, index: int) -> None:
     bug = _object(value, name)
     _keys(bug, _BUG_KEYS, name)
     _u64(bug["execution"], f"{name}.execution")
-    _list(bug["actions"], f"{name}.actions")
+    _fixed_actions(bug["actions"], f"{name}.actions")
     _stop(bug["stop"], f"{name}.stop")
     _ids(bug["violations"], f"{name}.violations")
     _ids(bug["sometimes"], f"{name}.sometimes")
@@ -236,6 +252,8 @@ def _report(value: Any, kernel_sha256: str, agent_sha256: str, violation: bool) 
     bugs = _list(report["bugs"], "report.bugs")
     if not violation and bugs:
         _fail("summary", "a non-violating replay must not publish a bug")
+    if violation and len(bugs) != 1:
+        _fail("summary", "a violating replay must publish exactly one bug")
     for index, bug in enumerate(bugs):
         _bug_summary(bug, index)
 
@@ -247,8 +265,17 @@ def _report(value: Any, kernel_sha256: str, agent_sha256: str, violation: bool) 
         _fail("summary", "replay summary must be run 1")
     if summary["bug"] != violation:
         _fail("summary", "replay summary bug flag disagrees with the fixture mode")
-    if summary["state_hash"] != (bugs[0]["state_hash"] if bugs else summary["state_hash"]):
-        _fail("summary", "bug and replay state hashes disagree")
+    if bugs:
+        bug = bugs[0]
+        if bug["state_hash"] != summary["state_hash"]:
+            _fail("summary", "bug and replay state hashes disagree")
+        if bug["execution"] != 1 or bug["confirmed"] is not True:
+            _fail("summary", "the retained bug must be the confirmed first replay")
+        if bug["replay"] is None or bug["replay"] != summary:
+            _fail("summary", "retained bug replay does not equal the actual replay summary")
+        for field in ("stop", "violations", "sometimes", "state_hash", "state_hash_encoding"):
+            if bug[field] != summary[field]:
+                _fail("summary", f"retained bug {field} disagrees with the actual replay")
     expected_horizons = 1 if violation else 2
     if summary["actions_applied"] != expected_horizons or summary["guest_horizons"] != expected_horizons:
         _fail("summary", "replay horizons do not match the fixture mode")

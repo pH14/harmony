@@ -162,6 +162,10 @@ Both modes write `report.json` ([`package`](src/package.rs)) with the pinned
 image, kernel and agent hashes, the execution identity, the run bounds, and
 either the bugs found or the replay outcomes.
 
+The `prepared_image_digest` example accepts `IMAGE BASE AGENT` and prints the
+lowercase SHA-256 of the initramfs produced by `prepare_oci`. It is a
+prepare-only identity check and does not boot a guest or execute the workload.
+
 New replay outcomes encode the engine's 32-byte state digest directly as
 lowercase hex and mark it with `state_hash_encoding: "engine_digest"`.
 Reports written by earlier versions omit that marker and contain SHA-256 of

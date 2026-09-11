@@ -39,7 +39,7 @@ it does not qualify guest boot or a semantic grader.
 Portable checks run from the repository root:
 
 ```sh
-python3 -B -m unittest benchmarks/skills/test_materials.py benchmarks/skills/test_sandbox.py benchmarks/skills/test_build.py
+python3 -B -m unittest benchmarks/skills/test_materials.py benchmarks/skills/test_sandbox.py benchmarks/skills/test_build.py benchmarks/skills/test_guest_image.py benchmarks/skills/test_guest_evidence.py benchmarks/skills/test_guest_files.py benchmarks/skills/test_guest_limits.py benchmarks/skills/test_qualify_guest.py
 ```
 
 The [qualification workflow](../../.github/workflows/skill-evaluator.yml) records
@@ -55,7 +55,19 @@ the agent sandbox; passing these infrastructure checks does not qualify them.
 copied build artifacts and a controller-owned bundle. `qualify_guest` uses fixed
 benign compiled fixtures to test real KVM boot and SDK delivery through the
 shipping CLI. It retains inputs, binaries, invocation, report, and complete event
-sidecar. The silent fixture must be rejected as missing telemetry; a delivered
+sidecar. The controller trusts and pins the shipping CLI and prepare-only helper;
+compiled artifacts execute only inside the guest. The helper prepares the supplied
+archive through the production image assembler, and its digest must equal the
+report's prepared-image digest. Archive, actions, tool inputs, and frozen sources
+are rechecked after execution. Read-only modes prevent accidental edits; these
+checks do not make a malicious host CLI trustworthy.
+
+The guest qualification output parent must be a dedicated Linux `tmpfs` mount,
+with `nodev,nosuid,noexec`, at most 512 MiB and 16,384 inodes. CI mounts it before
+execution and unmounts it after retaining artifacts. CLI output, home, caches and
+temporary files stay within this bound. Evidence JSON reads use an anchored
+directory descriptor, reject symlinks and nonregular files, and cap actual bytes.
+The silent fixture must be rejected as missing telemetry; a delivered
 assertion is not evidence of a meaningful application checker.
 
 Run the qualification workflow manually with `guest_artifact_run_id` naming a

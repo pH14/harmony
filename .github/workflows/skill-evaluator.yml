@@ -84,7 +84,7 @@ jobs:
       - name: Portable artifact boundary checks
         run: |
           set -euo pipefail
-          python3 -B -m unittest -v benchmarks/skills/test_build.py benchmarks/skills/test_guest_image.py benchmarks/skills/test_guest_evidence.py 2>&1 | tee reports/skill-build/portable-tests.log
+          python3 -B -m unittest -v benchmarks/skills/test_build.py benchmarks/skills/test_guest_image.py benchmarks/skills/test_guest_evidence.py benchmarks/skills/test_guest_files.py benchmarks/skills/test_guest_limits.py benchmarks/skills/test_qualify_guest.py 2>&1 | tee reports/skill-build/portable-tests.log
       - name: Build and retain trusted compiler image
         run: |
           set -euo pipefail
@@ -141,7 +141,7 @@ jobs:
       - name: Portable image and telemetry checks
         run: |
           set -euo pipefail
-          python3 -B -m unittest -v benchmarks/skills/test_guest_image.py benchmarks/skills/test_guest_evidence.py 2>&1 | tee reports/skill-guest/portable-tests.log
+          python3 -B -m unittest -v benchmarks/skills/test_guest_image.py benchmarks/skills/test_guest_evidence.py benchmarks/skills/test_guest_files.py benchmarks/skills/test_guest_limits.py benchmarks/skills/test_qualify_guest.py 2>&1 | tee reports/skill-guest/portable-tests.log
       - uses: actions/download-artifact@v4
         with:
           name: skill-build-${{ github.run_id }}
@@ -181,12 +181,26 @@ jobs:
           workspaces: |
             . -> target
             workloads/fault-agent -> target
+            workloads/faults -> target
       - name: Build shipping CLI and guest agent
         run: |
           set -euo pipefail
           cargo build --locked --release -p harmony-cli
           cargo build --locked --release --manifest-path workloads/fault-agent/Cargo.toml --target x86_64-unknown-linux-musl
-          sha256sum target/release/harmony workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent > reports/skill-guest/tool-sha256.txt
+          cargo build --locked --release --manifest-path workloads/faults/Cargo.toml --example prepared_image_digest
+          sha256sum workloads/faults/target/release/examples/prepared_image_digest target/release/harmony workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent > reports/skill-guest/tool-sha256.txt
+      - name: Qualify actual filesystem byte and inode bounds
+        run: |
+          set -euo pipefail
+          mkdir reports/skill-guest/storage-canary
+          sudo mount -t tmpfs -o size=8M,nr_inodes=128,nodev,nosuid,noexec,mode=700,uid="$(id -u)",gid="$(id -g)" tmpfs reports/skill-guest/storage-canary
+          trap 'sudo umount reports/skill-guest/storage-canary' EXIT
+          python3 -B -m benchmarks.skills.qualify_guest_storage reports/skill-guest/storage-canary > reports/skill-guest/storage-result.json
+      - name: Mount bounded guest output storage
+        run: |
+          set -euo pipefail
+          mkdir reports/skill-guest/bounded
+          sudo mount -t tmpfs -o size=512M,nr_inodes=16384,nodev,nosuid,noexec,mode=700,uid="$(id -u)",gid="$(id -g)" tmpfs reports/skill-guest/bounded
       - name: Actual build-to-guest SDK delivery without model calls
         run: |
           set -euo pipefail
@@ -195,7 +209,8 @@ jobs:
             --harmony target/release/harmony --kernel guest/bzImage-faultlab \
             --base guest/initramfs.cpio.gz \
             --agent workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent \
-            --output reports/skill-guest/cases > reports/skill-guest/result.json
+            --preparer workloads/faults/target/release/examples/prepared_image_digest \
+            --output reports/skill-guest/bounded/cases > reports/skill-guest/result.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -203,3 +218,9 @@ jobs:
           path: reports/skill-guest
           if-no-files-found: error
           retention-days: 7
+      - name: Unmount guest output storage
+        if: always()
+        run: |
+          if mountpoint -q reports/skill-guest/bounded; then
+            sudo umount reports/skill-guest/bounded
+          fi

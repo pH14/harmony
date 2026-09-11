@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import re
 from pathlib import Path
 
-from . import build, guest_evidence, guest_image, materials, sandbox
+from . import build, guest_evidence, guest_files, guest_image, guest_limits, materials, sandbox
 
 _SOURCE = r'''#include <stdio.h>
 #include <string.h>
@@ -37,23 +39,28 @@ def _digest(path: Path) -> str:
     return value.hexdigest()
 
 
-def _json_file(path: Path) -> dict:
-    if path.stat().st_size > 16 * 1024**2:
-        raise ValueError('guest evidence exceeds the qualification bound')
-    document = json.loads(path.read_text(), object_pairs_hook=build._unique_object)
-    if not isinstance(document, dict):
-        raise ValueError('guest evidence must be an object')
-    return document
+def _prepared_digest(preparer: Path, image: Path, base: Path, agent: Path,
+                     env: dict[str, str]) -> str:
+    outcome = sandbox._run_bounded([str(preparer), str(image), str(base), str(agent)],
+                                   timeout=30, output_limit=4096, env=env)
+    if (outcome.exit_code != 0 or outcome.timed_out or outcome.output_overflow
+            or re.fullmatch(rb"[0-9a-f]{64}\n", outcome.stdout) is None):
+        raise ValueError('trusted image preparation did not return a bounded digest: '
+                         + outcome.stderr.decode('utf-8', errors='replace'))
+    return outcome.stdout.decode('ascii').strip()
 
 
 def qualify(args: argparse.Namespace) -> dict:
     output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=False)
-    paths = {name: getattr(args, name).resolve(strict=True) for name in ('harmony', 'kernel', 'base', 'agent')}
+    mount = guest_limits.verify_output_mount(output.parent)
+    output.mkdir(exist_ok=False)
+    paths = {name: getattr(args, name).resolve(strict=True) for name in ('harmony', 'kernel', 'base', 'agent', 'preparer')}
     pins = {name: _digest(path) for name, path in paths.items()}
     result = {
         'format': 'harmony-skill-guest-qualification-v1', 'qualified': False,
         'model_calls': 0, 'compiler_image': args.image, 'input_sha256': pins, 'checks': {},
+        'output_mount': mount,
+        'trust_boundary': 'controller-selected pinned CLI and preparer; compiled artifacts execute only in the guest',
         'not_claimed': ['meaningful checker grading', 'general built-source equivalence', 'held-out grading'],
     }
     limits = sandbox.Limits(wall=40, toolcalls=2, memorybytes=256 * 1024**2,
@@ -82,23 +89,42 @@ def qualify(args: argparse.Namespace) -> dict:
             action_path.write_text('[{"Hook":1},"Wait"]\n')
             home = case / 'home'
             home.mkdir()
+            temporary = case / 'tmp'
+            temporary.mkdir()
+            env = {'PATH': '/usr/bin:/bin', 'HOME': str(home), 'TMPDIR': str(temporary),
+                   'XDG_CACHE_HOME': str(home / 'cache'), 'LC_ALL': 'C.UTF-8'}
+            inputs = {'archive': image_path, 'actions': action_path, 'artifact': case / 'app.bin'}
+            input_pins = {name: _digest(path) for name, path in inputs.items()}
+            for path in inputs.values():
+                path.chmod(0o444)
+            prepared = _prepared_digest(paths['preparer'], image_path, paths['base'], paths['agent'], env)
             argv = [str(paths['harmony']), 'search', '--package', 'faults', str(image_path),
                     '--kernel', str(paths['kernel']), '--base-initramfs', str(paths['base']),
                     '--fault-agent', str(paths['agent']), '--replay', str(action_path), '--repeat', '1',
                     '--seed', '1', '--workers', '1', '--horizon-ms', '1000', '--ram-mib', '512',
                     '--wall-minutes', '1', '--out', str(case / 'run')]
             (case / 'invocation.json').write_text(json.dumps(argv, indent=2))
-            outcome = sandbox._run_bounded(argv, timeout=90, output_limit=1024**2,
-                                           env={'PATH': '/usr/bin:/bin', 'HOME': str(home),
-                                                'XDG_CACHE_HOME': str(home / 'cache'), 'LC_ALL': 'C.UTF-8'})
-            (case / 'cli.stdout').write_bytes(outcome.stdout)
-            (case / 'cli.stderr').write_bytes(outcome.stderr)
-            if outcome.exit_code != 0 or outcome.timed_out or outcome.output_overflow:
-                raise ValueError('guest CLI did not complete within its bounds')
-            if any(_digest(path) != pins[name] for name, path in paths.items()):
-                raise ValueError('pinned execution inputs changed')
-            report = _json_file(case / 'run/report.json')
-            events = _json_file(case / 'run/replay-1-events.json')
+            # Anchor the case before executing the trusted CLI: evidence cannot
+            # redirect reads through a subsequently replaced path or symlink.
+            case_fd = os.open(case, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                outcome = sandbox._run_bounded(argv, timeout=90, output_limit=1024**2, env=env)
+                (case / 'cli.stdout').write_bytes(outcome.stdout)
+                (case / 'cli.stderr').write_bytes(outcome.stderr)
+                if outcome.exit_code != 0 or outcome.timed_out or outcome.output_overflow:
+                    raise ValueError('guest CLI did not complete within its bounds')
+                if (any(_digest(path) != pins[name] for name, path in paths.items())
+                        or any(_digest(path) != input_pins[name] for name, path in inputs.items())):
+                    raise ValueError('pinned execution inputs changed')
+                materials.verify_pair(pair)
+                if _digest(pair / 'manifest.json') != manifest:
+                    raise ValueError('frozen source manifest changed')
+                report = guest_files.read_json_at(case_fd, 'run/report.json')
+                events = guest_files.read_json_at(case_fd, 'run/replay-1-events.json')
+            finally:
+                os.close(case_fd)
+            if report.get('image_sha256') != prepared:
+                raise ValueError('report image does not match the prepared supplied archive')
             if silent:
                 try:
                     guest_evidence.validate_fixture(report, events, pins['kernel'], pins['agent'], violation=False)
@@ -111,7 +137,9 @@ def qualify(args: argparse.Namespace) -> dict:
             else:
                 evidence = guest_evidence.validate_fixture(report, events, pins['kernel'], pins['agent'], violation=not bool(condition))
             result['checks'][label] = {'passed': True, 'artifact_sha256': artifact.sha256,
-                                       'image_archive_sha256': hashlib.sha256(archive).hexdigest(),
+                                       'image_archive_sha256': input_pins['archive'],
+                                       'actions_sha256': input_pins['actions'],
+                                       'prepared_image_sha256': prepared,
                                        'source_manifest_sha256': manifest, 'evidence': evidence}
         except Exception as error:
             result['checks'][label] = {'passed': False, 'detail': str(error)}
@@ -122,7 +150,7 @@ def qualify(args: argparse.Namespace) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', required=True)
-    for name in ('harmony', 'kernel', 'base', 'agent', 'output'):
+    for name in ('harmony', 'kernel', 'base', 'agent', 'preparer', 'output'):
         parser.add_argument('--' + name, required=True, type=Path)
     args = parser.parse_args()
     try:
