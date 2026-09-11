@@ -1092,6 +1092,13 @@ mod real {
             runtime.next_check_tick = tick + CHECK_INTERVAL_TICKS;
             return Ok(());
         }
+        // A check compares the workload against every node, so one that starts
+        // with a node down cannot reach a verdict. It is not free either: each
+        // unreachable node costs the client's connect timeout. Waiting for the
+        // whole set spends the processor only on checks that can decide.
+        if !supervisor.all_alive() {
+            return Ok(());
+        }
         let events = supervisor
             .counters()
             .unexpected_deaths

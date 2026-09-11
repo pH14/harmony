@@ -74,7 +74,9 @@ missed, so each member is read until the keys it lacks either run out or stop ru
 member that is merely behind shrinks that set on every read, and a key it will never hold holds
 the set at one size. `hooks.sh 2` is the bundle's `check` line: it compares the keys acknowledged
 since the last passing check, reading one range per worker, so its cost follows that window rather
-than the whole history. Its watermark is a byte offset into the journal, and it reads only the bytes
+than the whole history. Those ranges go through `etcd-reader`, one process per member holding one
+connection, because the guest has a single processor and spawning a client for each range costs
+more than the reads do. Its watermark is a byte offset into the journal, and it reads only the bytes
 past that offset, trimmed back to the last complete record so the next window starts on a boundary.
 A check that re-read the whole journal would cost more on every run and would eventually take the
 processor the workload needs. `hooks.sh 3` compares the entire journal against every member's whole

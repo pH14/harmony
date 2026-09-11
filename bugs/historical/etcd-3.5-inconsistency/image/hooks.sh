@@ -31,19 +31,11 @@ read_member_prefix() {
 
 # Write only the sequence span each worker contributed to the current window.
 # `window_bounds` holds one `worker low high` line per worker. Keys are zero
-# padded, so one range request per worker isolates exactly that span. Returns
-# non-zero when any of those requests failed.
+# padded, so one range request per worker isolates exactly that span, and one
+# reader process answers them all over a single connection. Returns non-zero
+# when any of those requests failed.
 read_member_window() {
-  endpoint=$1
-  status=0
-  while read -r worker low high; do
-    [ -n "${worker}" ] || continue
-    from=$(printf 'museum/%s/key-%012d' "${worker}" "${low}")
-    # An etcdctl range end is exclusive.
-    to=$(printf 'museum/%s/key-%012d' "${worker}" "$((high + 1))")
-    ctl_member "${endpoint}" get "${from}" "${to}" --consistency=s || status=1
-  done <"${window_bounds}"
-  return "${status}"
+  /opt/harmony/etcd-reader "$1" "${window_bounds}"
 }
 
 # Compare an expectation file against every member's local bbolt view and emit

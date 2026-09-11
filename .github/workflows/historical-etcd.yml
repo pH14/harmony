@@ -148,11 +148,13 @@ jobs:
             docker run --rm --entrypoint /bin/sh "harmony-etcd:${version}" -c \
               'test -x /opt/etcd/etcd && test -x /opt/etcd/etcdctl \
                && test -x /opt/harmony/etcd-writer \
+               && test -x /opt/harmony/etcd-reader \
                && set -- /symbols/*.sym.tsv && test -s "$1" \
                && test -s /symbols/harmony-instrumented-events \
                && test -s /usr/lib/libvoidstar.so \
                && test -s /licenses/etcd.txt && test -s /licenses/antithesis-sdk-go.txt \
                && ! grep -a -q antithesishq/antithesis-sdk-go/instrumentation /opt/harmony/etcd-writer \
+               && ! grep -a -q antithesishq/antithesis-sdk-go/instrumentation /opt/harmony/etcd-reader \
                && grep -a -q antithesishq/antithesis-sdk-go/instrumentation /opt/etcd/etcd'
             docker save --output "oci-images/${IMAGE_PREFIX}-${version}.oci" "harmony-etcd:${version}"
           }

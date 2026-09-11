@@ -387,6 +387,12 @@ impl Supervisor {
         bits
     }
 
+    /// Whether every node the bundle declares is running.
+    #[must_use]
+    pub fn all_alive(&self) -> bool {
+        self.nodes.iter().all(|state| state.alive)
+    }
+
     /// The counters as published.
     #[must_use]
     pub fn counters(&self) -> Counters {
