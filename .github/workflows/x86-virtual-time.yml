@@ -90,6 +90,20 @@ jobs:
           ls -l /dev/kvm
       - name: Run probe
         run: ./target/debug/x86_kvm_probe | tee probe-report.txt
+      - name: Resume-flag snapshot identity
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD > resume-flag-checkout.txt
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          printf '%s\n' "$cpu" > resume-flag-affinity-cpu.txt
+          timeout --signal=TERM --kill-after=5s 180s \
+            taskset -c "$cpu" cargo test --locked -p vmm-backend --test kvm_smoke \
+            resume_flag_preserves_instruction_breakpoint_continuation \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee resume-flag.log
+          grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' resume-flag.log
       - name: kvm_smoke (live stock-KVM tests; informational at X0)
         if: always()
         continue-on-error: true
@@ -102,6 +116,9 @@ jobs:
             probe-report.txt
             probe-negative.txt
             kvm-smoke.txt
+            resume-flag.log
+            resume-flag-checkout.txt
+            resume-flag-affinity-cpu.txt
           if-no-files-found: error
 
   # X1: ten same-seed runs of the virtual_time run loop over the stock
@@ -561,6 +578,24 @@ jobs:
               -- --ignored --exact --test-threads=1 --nocapture \
               2>&1 | tee reports/xsave-live-registers.log
           grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' reports/xsave-live-registers.log
+      - name: Preserve resume-flag breakpoint behavior across cold continuation
+        if: ${{ always() && inputs.amd_npt_observe }}
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          printf '%s\n' "$cpu" > reports/resume-flag-affinity-cpu.txt
+          printf '%s\n' 'resume_flag_preserves_instruction_breakpoint_continuation' > reports/resume-flag-test-name.txt
+          timeout --signal=TERM --kill-after=5s 180s \
+            taskset -c "$cpu" cargo test --locked -p vmm-backend --test kvm_smoke \
+            resume_flag_preserves_instruction_breakpoint_continuation \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee reports/resume-flag.log
+          grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' reports/resume-flag.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

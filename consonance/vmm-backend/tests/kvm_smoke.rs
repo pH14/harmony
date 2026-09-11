@@ -1007,3 +1007,237 @@ fn capabilities_report_the_stock_backend_name() {
     let caps = backend.capabilities();
     assert_eq!(caps.name, "kvm-stock");
 }
+
+const RF_CODE_GPA: u64 = 0x1000;
+const RF_HANDLER_GPA: u64 = 0x2000;
+const RF_STACK_TOP: u64 = 0x8000;
+const RF_UART_PORT: u16 = 0x3F8;
+const RF_WARM_MARKER: u8 = 0x42;
+const RF_DEBUG_MARKER: u8 = 0x99;
+const RF_RFLAGS: u64 = 0x1_0002;
+const RF_DR7: u64 = 0x401;
+
+/// `INC BX; OUT 0x42; HLT` in flat 16-bit real mode. The execution breakpoint
+/// is at the first instruction, so RF determines whether this path reaches the
+/// UART marker or vectors to the handler below.
+const RF_PROGRAM: [u8; 8] = [0x43, 0xBA, 0xF8, 0x03, 0xB0, RF_WARM_MARKER, 0xEE, 0xF4];
+
+/// The #DB handler emits a distinct marker and halts. It has no return path,
+/// keeping the diagnostic bounded even when the restored snapshot loses RF.
+const RF_HANDLER: [u8; 7] = [0xBA, 0xF8, 0x03, 0xB0, RF_DEBUG_MARKER, 0xEE, 0xF4];
+
+fn setup_resume_flag_guest(backend: &mut KvmBackend, mem: &mut GuestMem, rflags: u64) {
+    setup_real_mode(backend, mem, &RF_PROGRAM);
+    // Vector 1 points to the flat real-mode handler at 0x2000.
+    backend
+        .write_guest(Gpa(4), &[0x00, 0x20, 0x00, 0x00])
+        .expect("load #DB IVT entry");
+    backend
+        .write_guest(Gpa(RF_HANDLER_GPA), &RF_HANDLER)
+        .expect("load #DB handler");
+
+    // Start from KVM's valid template and change only the guest-visible state
+    // needed by this witness. In particular, the stack receives the #DB frame
+    // and the debug register points at the first instruction.
+    let mut state = backend.save().expect("save RF setup state");
+    state.regs.rip = RF_CODE_GPA;
+    state.regs.rbx = 0;
+    state.regs.rsp = RF_STACK_TOP;
+    state.regs.rflags = rflags;
+    state.sregs.ss.base = 0;
+    state.sregs.ss.limit = 0xFFFF;
+    state.sregs.ss.selector = 0;
+    state.sregs.ss.type_ = 3;
+    state.sregs.ss.present = 1;
+    state.sregs.ss.dpl = 0;
+    state.sregs.ss.db = 0;
+    state.sregs.ss.s = 1;
+    state.sregs.ss.g = 0;
+    state.sregs.ss.l = 0;
+    state.sregs.ss.unusable = 0;
+    state.sregs.idt.base = 0;
+    state.sregs.idt.limit = 0x03FF;
+    state.debugregs.db[0] = RF_CODE_GPA;
+    state.debugregs.dr7 = RF_DR7;
+    backend
+        .restore(&state)
+        .expect("restore RF breakpoint setup state");
+}
+
+struct ResumeFlagEndpoint {
+    markers: Vec<u8>,
+    state: VcpuState,
+    ram: Vec<u8>,
+}
+
+/// Run only the short main/handler program, accepting one UART write and one
+/// halt. The fixed exit budget bounds repeated surfaced exits; the workflow's
+/// outer timeout bounds a guest entry that does not return.
+fn run_resume_flag_guest(backend: &mut KvmBackend, mem: &mut GuestMem) -> ResumeFlagEndpoint {
+    let mut markers = Vec::new();
+    let mut halted = false;
+    for _ in 0..4 {
+        match backend.run().expect("run RF guest") {
+            Exit::Arch(X86Exit::Io {
+                port: RF_UART_PORT,
+                size: 1,
+                write: Some(value),
+            }) => markers.push(value as u8),
+            Exit::Common(CommonExit::Idle) => {
+                halted = true;
+                break;
+            }
+            other => panic!("RF guest produced unexpected exit: {other:?}"),
+        }
+    }
+    assert!(halted, "RF guest did not reach HLT within the bounded run");
+    ResumeFlagEndpoint {
+        markers,
+        state: backend.save().expect("save RF endpoint"),
+        ram: mem.as_mut_slice().to_vec(),
+    }
+}
+
+fn log_resume_flag_endpoint(label: &str, endpoint: &ResumeFlagEndpoint) {
+    println!(
+        "resume-flag {label}: markers={:?} rflags={:#x} rip={:#x} rbx={} dr0={:#x} dr7={:#x}",
+        endpoint.markers,
+        endpoint.state.regs.rflags,
+        endpoint.state.regs.rip,
+        endpoint.state.regs.rbx,
+        endpoint.state.debugregs.db[0],
+        endpoint.state.debugregs.dr7,
+    );
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
+fn resume_flag_preserves_instruction_breakpoint_continuation() {
+    // Original: after the state restore, run immediately. There is deliberately
+    // no save/read between restore and the first KVM entry.
+    let original = {
+        let mut mem = GuestMem::new(0x10000);
+        let mut backend = new_backend_or_explain();
+        setup_resume_flag_guest(&mut backend, &mut mem, RF_RFLAGS);
+        let endpoint = run_resume_flag_guest(&mut backend, &mut mem);
+        log_resume_flag_endpoint("original", &endpoint);
+        endpoint
+    };
+
+    // Save-and-continue: take two entry captures before running, then continue
+    // the same live vCPU. These captures must be observationally inert, while
+    // the RF assertion itself is delayed until every endpoint is collected.
+    let (saved_state, saved_ram, saved_endpoint) = {
+        let mut mem = GuestMem::new(0x10000);
+        let mut backend = new_backend_or_explain();
+        setup_resume_flag_guest(&mut backend, &mut mem, RF_RFLAGS);
+        let before_ram = mem.as_mut_slice().to_vec();
+        let before_counts = backend.exit_counts();
+        let saved_state = backend.save().expect("save RF entry state");
+        let repeated_state = backend.save().expect("repeat RF entry state");
+        println!(
+            "resume-flag saved-entry: rflags={:#x} rip={:#x} rbx={} dr0={:#x} dr7={:#x}",
+            saved_state.regs.rflags,
+            saved_state.regs.rip,
+            saved_state.regs.rbx,
+            saved_state.debugregs.db[0],
+            saved_state.debugregs.dr7,
+        );
+
+        assert_eq!(saved_state.debugregs.db[0], RF_CODE_GPA, "saved DR0");
+        assert_eq!(
+            saved_state.debugregs.dr7 & 0xf0003,
+            1,
+            "DR0 must be enabled as a one-byte execution breakpoint"
+        );
+        assert_eq!(saved_state, repeated_state, "repeated RF saves differ");
+        assert_eq!(
+            backend.exit_counts(),
+            before_counts,
+            "save changed exit counts"
+        );
+        assert_eq!(mem.as_mut_slice(), before_ram, "save changed guest RAM");
+        let saved_ram = before_ram;
+        let saved_endpoint = run_resume_flag_guest(&mut backend, &mut mem);
+        log_resume_flag_endpoint("save-and-continue", &saved_endpoint);
+        (saved_state, saved_ram, saved_endpoint)
+    };
+
+    // An independent RF-cleared control must actually trigger the breakpoint.
+    // This prevents an inert debug-register setup from making every arm pass.
+    let rf_clear_control = {
+        let mut mem = GuestMem::new(0x10000);
+        let mut backend = new_backend_or_explain();
+        setup_resume_flag_guest(&mut backend, &mut mem, RF_RFLAGS & !(1 << 16));
+        let endpoint = run_resume_flag_guest(&mut backend, &mut mem);
+        log_resume_flag_endpoint("rf-cleared-control", &endpoint);
+        endpoint
+    };
+
+    // Cold restore: the source backend and its mapped memory have been dropped
+    // by the preceding scope before this fresh backend is created.
+    let cold = {
+        let mut mem = GuestMem::new(0x10000);
+        let mut backend = new_backend_or_explain();
+        setup_resume_flag_guest(&mut backend, &mut mem, RF_RFLAGS);
+        backend
+            .write_guest(Gpa(0), &saved_ram)
+            .expect("restore RF guest RAM");
+        backend
+            .restore(&saved_state)
+            .expect("cold restore RF entry state");
+        let endpoint = run_resume_flag_guest(&mut backend, &mut mem);
+        log_resume_flag_endpoint("cold", &endpoint);
+        endpoint
+    };
+
+    assert_eq!(
+        rf_clear_control.markers,
+        vec![RF_DEBUG_MARKER],
+        "RF-cleared control must take the armed instruction breakpoint"
+    );
+    assert_eq!(
+        rf_clear_control.state.regs.rbx, 0,
+        "the breakpoint must fault before INC BX"
+    );
+    assert_eq!(
+        rf_clear_control.state.regs.rip,
+        RF_HANDLER_GPA + RF_HANDLER.len() as u64
+    );
+
+    for (label, endpoint) in [
+        ("original", &original),
+        ("save-and-continue", &saved_endpoint),
+        ("cold", &cold),
+    ] {
+        assert_eq!(endpoint.markers, vec![RF_WARM_MARKER], "{label} marker");
+        assert_eq!(endpoint.state.regs.rbx, 1, "{label} INC BX");
+    }
+    assert_ne!(cold.markers, vec![RF_DEBUG_MARKER], "cold took #DB handler");
+
+    // This is intentionally after endpoint collection: the current canonical
+    // save path clears RF, and the failed assertion should retain the causal
+    // marker/RIP/RBX observations above for the owning architecture fix.
+    assert_ne!(
+        saved_state.regs.rflags & (1 << 16),
+        0,
+        "saved RF must be retained"
+    );
+
+    assert!(
+        original.state == saved_endpoint.state,
+        "original and save-and-continue endpoint CPU state differ"
+    );
+    assert!(
+        original.state == cold.state,
+        "original and cold endpoint CPU state differ"
+    );
+    assert!(
+        original.ram == saved_endpoint.ram,
+        "original and save-and-continue endpoint RAM differ"
+    );
+    assert!(
+        original.ram == cold.ram,
+        "original and cold endpoint RAM differ"
+    );
+}
