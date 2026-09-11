@@ -207,7 +207,11 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: [manifest, guest, images, tools]
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    # The campaign's own bound is the case's wall budget plus the twenty
+    # minutes historical-search.sh allows a run that stops answering. This
+    # leaves that bound room to fire first, so a campaign that overruns is
+    # reported rather than cut off with no artifacts.
+    timeout-minutes: 345
     strategy:
       fail-fast: false
       matrix:
