@@ -60,6 +60,31 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
   corruption. The multi-member oracle directly observes the follower-local divergence from the
   upstream report.
 
+## Reachability of the bug window
+
+`image/reachability.sh` measures how often the cluster reaches a lost acknowledged key under
+plain random member kills, with no Dissonance involved. Each iteration kills one random member,
+restarts it, waits for all three to be ready, and runs the oracle. The instrumented server
+reaches the Harmony device only inside a guest, so this measurement runs against an image whose
+`/usr/lib/libvoidstar.so` has been removed; the instrumented callbacks remain compiled in and
+resolve to no-ops.
+
+| configuration | kills | acknowledged writes | conclusive checks | first hit |
+|---|---|---|---|---|
+| 3.5.2, one core | 152 | 1,730,465 | 152 | none |
+| 3.5.2, four cores | 45 | 251,363 | 45 | none |
+| 3.5.2, ten cores | 62 | 361,668 | 62 | kill 5, 13 and 44, in three runs of three |
+| 3.5.3, one core | 59 | 1,058,445 | 59 | none |
+| 3.5.3, four cores | 71 | 708,950 | 71 | none |
+| 3.5.3, ten cores | 61 | 1,161,176 | 61 | none |
+
+Every one of the 450 checks was conclusive. The race needs several runnable cores: one core
+went through 1.7 million acknowledged writes without losing a key, four cores lost none in
+251,363, and ten cores lost one in every run, once after 15,003. A guest with one virtual CPU
+therefore cannot reach this window by killing members alone. Reaching it requires holding the
+applying thread long enough for the periodic commit to run while the consistent index is ahead
+of the data it claims to cover.
+
 ## Discovery contract
 
 The case has one locked execution profile. CI will run the same bounded search campaign on both
