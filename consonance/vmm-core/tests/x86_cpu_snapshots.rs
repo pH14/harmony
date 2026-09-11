@@ -1653,6 +1653,13 @@ mod live_kvm {
         run_xsave_warmup(&mut uninterrupted);
         let uninterrupted_endpoint = run_xsave_to_hlt(&mut uninterrupted);
         let uninterrupted_serial = uninterrupted.serial().to_vec();
+        write_xsave_capture(
+            &report_root,
+            "original",
+            "endpoint",
+            &uninterrupted_endpoint,
+            &uninterrupted_serial,
+        );
 
         // Capture at the first UART boundary, repeat the full save/encode/decode
         // operation, and prove it does not change state, RAM, UART, exits, or
@@ -1665,6 +1672,13 @@ mod live_kvm {
         let save_before_counts = save_and_continue.exit_counts();
         let save_before_moment = save_and_continue.effective_vns();
         let save_stop = capture_full_vmm(&save_and_continue);
+        write_xsave_capture(
+            &report_root,
+            "save-and-continue",
+            "stop",
+            &save_stop,
+            &save_before_serial,
+        );
         assert_eq!(
             save_stop.state.regs.rip,
             (CODE_GPA + XSAVE_WARMUP_LEN) as u64
@@ -1678,6 +1692,13 @@ mod live_kvm {
                 .all(|&byte| byte == 0)
         );
         let save_repeated = capture_full_vmm(&save_and_continue);
+        write_xsave_capture(
+            &report_root,
+            "save-and-continue",
+            "stop-repeat",
+            &save_repeated,
+            &save_before_serial,
+        );
         assert!(
             save_repeated == save_stop,
             "repeated XSAVE boundary capture must be byte-identical"
@@ -1694,27 +1715,6 @@ mod live_kvm {
         let save_and_continue_endpoint = run_xsave_to_hlt(&mut save_and_continue);
         let save_and_continue_serial = save_and_continue.serial().to_vec();
 
-        write_xsave_capture(
-            &report_root,
-            "original",
-            "endpoint",
-            &uninterrupted_endpoint,
-            &uninterrupted_serial,
-        );
-        write_xsave_capture(
-            &report_root,
-            "save-and-continue",
-            "stop",
-            &save_stop,
-            &save_before_serial,
-        );
-        write_xsave_capture(
-            &report_root,
-            "save-and-continue",
-            "stop-repeat",
-            &save_repeated,
-            &save_before_serial,
-        );
         write_xsave_capture(
             &report_root,
             "save-and-continue",
@@ -1734,6 +1734,13 @@ mod live_kvm {
             .expect("restore XSAVE continuation snapshot");
         let cold_unobserved_endpoint = run_xsave_to_hlt(&mut cold_unobserved);
         let cold_unobserved_serial = cold_unobserved.serial().to_vec();
+        write_xsave_capture(
+            &report_root,
+            "cold-unobserved",
+            "endpoint",
+            &cold_unobserved_endpoint,
+            &cold_unobserved_serial,
+        );
         drop(cold_unobserved);
 
         // The observed cold arm supplies the explicit post-restore capture
@@ -1749,12 +1756,26 @@ mod live_kvm {
         let cold_before_counts = cold_observed.exit_counts();
         let cold_before_moment = cold_observed.effective_vns();
         let cold_observed_stop = capture_full_vmm(&cold_observed);
+        write_xsave_capture(
+            &report_root,
+            "cold-observed",
+            "stop",
+            &cold_observed_stop,
+            &cold_before_serial,
+        );
         assert_eq!(
             cold_observed_stop.state.regs.rip,
             (CODE_GPA + XSAVE_WARMUP_LEN) as u64
         );
         assert_eq!(cold_observed_stop.state.regs.rbx, 0);
         let cold_observed_repeated = capture_full_vmm(&cold_observed);
+        write_xsave_capture(
+            &report_root,
+            "cold-observed",
+            "stop-repeat",
+            &cold_observed_repeated,
+            &cold_before_serial,
+        );
         assert!(
             cold_observed_repeated == cold_observed_stop,
             "repeated cold XSAVE boundary capture must be byte-identical"
@@ -1774,30 +1795,8 @@ mod live_kvm {
         let cold_observed_endpoint = run_xsave_to_hlt(&mut cold_observed);
         let cold_observed_serial = cold_observed.serial().to_vec();
 
-        // Retain every complete endpoint and stop before making cross-arm
-        // identity assertions, so a later mismatch never discards the raw
-        // evidence needed to diagnose it.
-        write_xsave_capture(
-            &report_root,
-            "cold-unobserved",
-            "endpoint",
-            &cold_unobserved_endpoint,
-            &cold_unobserved_serial,
-        );
-        write_xsave_capture(
-            &report_root,
-            "cold-observed",
-            "stop",
-            &cold_observed_stop,
-            &cold_before_serial,
-        );
-        write_xsave_capture(
-            &report_root,
-            "cold-observed",
-            "stop-repeat",
-            &cold_observed_repeated,
-            &cold_before_serial,
-        );
+        // Each completed phase is retained before the next guest continuation
+        // or cross-arm assertion can fail.
         write_xsave_capture(
             &report_root,
             "cold-observed",
