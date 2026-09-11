@@ -205,6 +205,10 @@ mod real {
         /// The park armed on the node's process group, while its window is
         /// open.
         park: Option<park::Handle>,
+        /// Whether an event park is armed in this node's process. A hold
+        /// leaves no trace outside the runtime's own counter, and that counter
+        /// dies with the process, so an armed node is polled every tick.
+        event_park_armed: bool,
     }
 
     /// A launched hook and the output file it writes directives to.
@@ -285,6 +289,7 @@ mod real {
                 event_control: None,
                 event_report: None,
                 park: None,
+                event_park_armed: false,
             })
             .collect();
         for (id, node) in nodes.iter_mut().enumerate() {
@@ -433,6 +438,7 @@ mod real {
                     tick,
                 )?;
             }
+            watch_event_parks(nodes, supervisor, tick);
             watch_parks(nodes, supervisor, tick);
             reap_workload(&mut runtime.workload, supervisor, tick);
             drain_hooks(&mut runtime.hooks, &runtime.recovery, supervisor, sdk, tick)?;
@@ -536,6 +542,7 @@ mod real {
                 if let Some(entry) = nodes.get_mut(usize::from(node)) {
                     entry.park = None;
                     entry.event_control = None;
+                    entry.event_park_armed = false;
                 }
                 if let Some(probe) = runtime.recovery_probe.take() {
                     retire_probe(probe.child, &mut runtime.retired_probes);
@@ -548,6 +555,7 @@ mod real {
             Action::Start(node) => {
                 if let Some(entry) = nodes.get_mut(usize::from(node)) {
                     entry.park = None;
+                    entry.event_park_armed = false;
                     let (child, control, report) = spawn_node(&entry.spec, supervisor)?;
                     entry.child = Some(child);
                     entry.event_control = control;
@@ -573,6 +581,9 @@ mod real {
                     [EVENT_CMD_PARK, u64::from(park.rarity), park.hold_nanos],
                     tick,
                 )?;
+                if let Some(entry) = nodes.get_mut(usize::from(node)) {
+                    entry.event_park_armed = true;
+                }
             }
             Action::DisarmEventPark(node) => {
                 // A zero hold is the runtime's disarm. A hold leaves no other
@@ -580,9 +591,12 @@ mod real {
                 if let Some(reply) =
                     apply_event_command(nodes, node, [EVENT_CMD_PARK_STATUS, 0, 0], tick)?
                 {
-                    supervisor.note_event_park_fires(reply[1]);
+                    supervisor.note_event_park_fires(node, reply[1]);
                 }
                 apply_event_command(nodes, node, [EVENT_CMD_PARK, 0, 0], tick)?;
+                if let Some(entry) = nodes.get_mut(usize::from(node)) {
+                    entry.event_park_armed = false;
+                }
             }
             Action::Park(node, park) => {
                 let Some(entry) = nodes.get_mut(usize::from(node)) else {
@@ -729,6 +743,25 @@ mod real {
             None => log(tick, &format!("hook {} is not declared", ready.id)),
         }
         Ok(())
+    }
+
+    /// Read back how often each armed event park has held. The runtime counts
+    /// fires in the process, so the count is lost when the process dies; the
+    /// poll keeps the agent's copy at most one tick behind.
+    fn watch_event_parks(nodes: &mut [Node], supervisor: &mut Supervisor, tick: u64) {
+        for index in 0..nodes.len() {
+            if !nodes[index].event_park_armed {
+                continue;
+            }
+            // The node count is capped at `bundle::MAX_NODES`, so the index
+            // always fits a u16 node id.
+            let node = index as u16;
+            match apply_event_command(nodes, node, [EVENT_CMD_PARK_STATUS, 0, 0], tick) {
+                Ok(Some(reply)) => supervisor.note_event_park_fires(node, reply[1]),
+                Ok(None) => {}
+                Err(error) => log(tick, &format!("event park node {node} status: {error}")),
+            }
+        }
     }
 
     /// Log each park's hit and release once, and count the hits.

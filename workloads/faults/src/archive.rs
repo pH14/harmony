@@ -226,8 +226,11 @@ pub const PARK_HOLD_US: [u32; 3] = [500, 2_000, 10_000];
 /// Visit-count scales an event park or an event kill may name. A site's visit
 /// count spans orders of magnitude within one horizon, so the ladder is
 /// logarithmic: 0 names a site no callback has reached, 16 one reached tens of
-/// thousands of times.
-pub const EVENT_SITE_RARITY: [u8; 5] = [0, 4, 8, 12, 16];
+/// thousands of times, 24 one reached millions of times. The high rungs are
+/// what an arm placed after the workload has settled needs: coverage stops
+/// growing once a workload reaches its steady state, so a low rung finds no
+/// site to fire at and the arm stands until the input ends.
+pub const EVENT_SITE_RARITY: [u8; 7] = [0, 4, 8, 12, 16, 20, 24];
 /// Lengths of an event park's hold, in microseconds. The runtime sleeps inside
 /// the callback, so the hold is exact and can be far longer than a breakpoint
 /// park's: a hold has to outlast a batch commit for another thread to overtake

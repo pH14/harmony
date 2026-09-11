@@ -138,6 +138,23 @@ struct NodeState {
     /// input ends, so without this the restarted node would be armed again and
     /// the same coordinate would kill it over and over.
     event_kill_fired: Option<u64>,
+    /// Park fires read back from processes of this node that have since died.
+    /// The runtime's counter lives in the process, so a replacement starts at
+    /// zero and what the dead one held has to be kept here.
+    event_park_fires_banked: u64,
+    /// The last park-fire count read from this node's running process.
+    event_park_fires_live: u64,
+}
+
+impl NodeState {
+    /// Bank what this node's process held before its replacement starts
+    /// counting from zero.
+    fn bank_event_park_fires(&mut self) {
+        self.event_park_fires_banked = self
+            .event_park_fires_banked
+            .saturating_add(self.event_park_fires_live);
+        self.event_park_fires_live = 0;
+    }
 }
 
 /// The agent's model of its nodes and the last answer it applied.
@@ -166,6 +183,8 @@ impl Supervisor {
                     event_kill_armed: None,
                     event_kill_armed_tick: 0,
                     event_kill_fired: None,
+                    event_park_fires_banked: 0,
+                    event_park_fires_live: 0,
                 };
                 node_count
             ],
@@ -214,6 +233,7 @@ impl Supervisor {
                         .saturating_sub(state.event_kill_armed_tick);
                 }
             }
+            state.bank_event_park_fires();
         }
 
         let mut actions = Vec::new();
@@ -231,6 +251,7 @@ impl Supervisor {
                     state.alive = false;
                     state.paused = false;
                     state.event_kill_armed = None;
+                    state.bank_event_park_fires();
                 }
                 state.expected_down = true;
             }
@@ -326,6 +347,7 @@ impl Supervisor {
         }
 
         self.previous = active.clone();
+        self.recount_event_park_fires();
         actions
     }
 
@@ -362,8 +384,24 @@ impl Supervisor {
         self.counters.event_kill_site = edge;
     }
 
-    pub fn note_event_park_fires(&mut self, fires: u64) {
-        self.counters.event_parks_fired = self.counters.event_parks_fired.max(fires);
+    pub fn note_event_park_fires(&mut self, node: u16, fires: u64) {
+        let Some(state) = self.nodes.get_mut(usize::from(node)) else {
+            return;
+        };
+        state.event_park_fires_live = fires;
+        self.recount_event_park_fires();
+    }
+
+    fn recount_event_park_fires(&mut self) {
+        self.counters.event_parks_fired = self
+            .nodes
+            .iter()
+            .map(|state| {
+                state
+                    .event_park_fires_banked
+                    .saturating_add(state.event_park_fires_live)
+            })
+            .fold(0_u64, u64::saturating_add);
     }
 
     /// Record that one run of the bundle's check finished, and whether it
@@ -493,6 +531,31 @@ mod tests {
         // A different coordinate is a new instruction and arms normally.
         let later = active(&[(0, Fault::ProcEventKill { rarity: 23 })]);
         assert_eq!(sup.tick(&later, &[]), [Action::ArmEventKill(0, 23)]);
+    }
+
+    #[test]
+    fn park_fires_survive_the_process_that_held_them() {
+        let mut sup = Supervisor::new(2);
+        let park = active(&[(
+            0,
+            Fault::ProcEventPark {
+                rarity: 16,
+                hold: Span(2_000_000_000),
+            },
+        )]);
+        sup.tick(&park, &[]);
+        sup.note_event_park_fires(0, 3);
+        assert_eq!(sup.counters().event_parks_fired, 3);
+
+        // The replacement process counts from zero. What the dead one held is
+        // still evidence, so the total only ever grows.
+        sup.tick(&active(&[(0, Fault::ProcRestart)]), &[]);
+        sup.note_event_park_fires(0, 1);
+        assert_eq!(sup.counters().event_parks_fired, 4);
+
+        // Another node's fires add to the same total rather than replacing it.
+        sup.note_event_park_fires(1, 2);
+        assert_eq!(sup.counters().event_parks_fired, 6);
     }
 
     #[test]

@@ -22,6 +22,11 @@ nothing else.
 | `ProcPark` | arm the park on the node's group | disarm it; a hold in progress finishes |
 | `ProcEventPark` | arm the instrumented runtime to hold one thread at a rarely visited site | read back how many parks held, then disarm the runtime arm |
 
+The runtime counts park fires in the process that holds, so the count dies with
+that process. The agent polls an armed node every tick and keeps a running
+total per node, which is what makes a hold still count when the node is killed
+or restarted before its park window closes.
+
 A window is identified by its target and its start, so two `RunHook` windows
 for one hook that touch launch it twice even when no poll falls in between.
 

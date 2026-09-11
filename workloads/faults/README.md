@@ -94,7 +94,9 @@ scale and leave the site to the runtime, which counts visits per site and
 resolves the coordinate itself. The host never names a site, so the coordinate
 survives a rebuild of the workload. A rare site is reached late and seldom,
 which is where a crash finds state a hot site has already passed through many
-times. The runtime reports the edge of the site that killed, and the campaign
+times. The scale ladder reaches sites visited millions of times, because a
+workload's coverage stops growing once it settles: past that point a low scale
+names no site at all and the arm never fires. The runtime reports the edge of the site that killed, and the campaign
 summary carries it as `fired_site`; the image's `/symbols` tables are what turn
 that edge into a file and a line. An `EventPark` may hold for longer than a
 horizon, and its arm stands for the whole hold. Every other fault lands on a
