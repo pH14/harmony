@@ -1054,6 +1054,37 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "large aggregate codec boundary; exercised natively")]
+    fn version_six_sparse_state_can_exceed_the_old_aggregate_limit() {
+        let (_, vm, _, policy) = fixture();
+        let control = vec![0xc1; MAX_SPARSE_SIDECAR_LEN + 1];
+        let bytes = encode_sparse_sidecar(&SparsePortableSidecarRef {
+            vm_state: &vm,
+            sdk: None,
+            policy: &policy,
+            at: 23,
+            sdk_events: 0,
+            trace_events: 17,
+            trace_schedules: 5,
+            tainted: true,
+            state_blob_suffix: b"suffix",
+            control_state: &control,
+        })
+        .expect("version six must not retain the old aggregate cap");
+        assert!(bytes.len() > MAX_SPARSE_SIDECAR_LEN);
+        assert_eq!(
+            u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
+            VERSION
+        );
+        let restored = decode_sparse_sidecar(&bytes).expect("decode large version six state");
+        assert_eq!(restored.control_state, control);
+        assert_eq!(restored.vm_state, vm);
+        assert_eq!(restored.policy, policy);
+        assert_eq!(restored.at, 23);
+        assert_eq!(restored.state_blob_suffix, b"suffix");
+    }
+
+    #[test]
     fn version_selection_preserves_old_layouts_and_admits_each_large_section() {
         assert_eq!(
             complete_version(MAX_VM_STATE_LEN, MAX_SDK_LEN, MAX_POLICY_LEN, 0),
@@ -1085,6 +1116,54 @@ mod tests {
         }
         assert_eq!(sparse_version(1, 0, 0, MAX_SUFFIX_LEN, 0), LEGACY_VERSION);
         assert_eq!(sparse_version(1, 0, 0, MAX_SUFFIX_LEN + 1, 0), VERSION);
+    }
+
+    #[test]
+    fn noninterrupted_read_error_is_returned_without_reading_past_it() {
+        struct FailedReader(usize);
+        impl Read for FailedReader {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                self.0 += 1;
+                if self.0 == 1 {
+                    return Err(std::io::ErrorKind::PermissionDenied.into());
+                }
+                output[0] = b'x';
+                Ok(1)
+            }
+        }
+        let mut input = FailedReader(0);
+        assert!(matches!(read_vec(&mut input, 1),
+            Err(PortableSnapshotError::Io(error)) if error.kind() == std::io::ErrorKind::PermissionDenied
+        ));
+        assert_eq!(
+            input.0, 1,
+            "only Interrupted permits retrying a section read"
+        );
+    }
+
+    #[test]
+    fn interrupted_section_reads_retry_without_losing_or_repeating_bytes() {
+        struct InterruptedReader {
+            bytes: std::io::Cursor<Vec<u8>>,
+            interrupt: bool,
+        }
+        impl Read for InterruptedReader {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                self.interrupt = !self.interrupt;
+                if self.interrupt {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let len = output.len().min(3);
+                self.bytes.read(&mut output[..len])
+            }
+        }
+        let expected = b"section bytes across interrupted reads".to_vec();
+        let mut input = InterruptedReader {
+            bytes: std::io::Cursor::new(expected.clone()),
+            interrupt: false,
+        };
+        assert_eq!(read_vec(&mut input, expected.len()).unwrap(), expected);
+        assert_eq!(input.bytes.position(), expected.len() as u64);
     }
 
     #[test]

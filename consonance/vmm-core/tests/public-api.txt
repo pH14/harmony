@@ -5,6 +5,7 @@ pub vmm_core::control::RestoreMode::InPlace
 pub vmm_core::control::RestoreMode::Memcpy
 pub vmm_core::control::RestoreMode::Remap
 pub enum vmm_core::control::ServeError
+pub vmm_core::control::ServeError::CommandState(&'static str)
 pub vmm_core::control::ServeError::Io(std::io::error::Error)
 pub vmm_core::control::ServeError::Poisoned
 pub vmm_core::control::ServeError::Protocol(control_proto::error::ProtocolError)

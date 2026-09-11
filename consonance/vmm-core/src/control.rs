@@ -8562,6 +8562,129 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "snapshot store uses mapped storage")]
+    fn restore_rejects_each_invalid_command_metadata_field_before_changing_the_vm() {
+        for future_completion in [false, true] {
+            let mut source = server(vec![]);
+            hello(&mut source);
+            source
+                .handle(&Request::ExecStart { cmd: "x".into() })
+                .unwrap()
+                .unwrap();
+            let (cut, _) = snap_tainted(&mut source);
+            if future_completion {
+                let mut command = super::RetainedExec::new("x", 0, 0);
+                command
+                    .feed(b"HXEC-0-:37:HXEC-0-", Moment(501), false)
+                    .unwrap();
+                let meta = source.snapshot_meta.get_mut(&cut.0).unwrap();
+                let mut control = super::ControlState::decode(&meta.control_state)
+                    .unwrap()
+                    .unwrap();
+                control.exec = Some(command.encode());
+                meta.control_state = control.encode();
+            } else {
+                source.tainted_snaps.remove(&cut.0);
+            }
+            let before = hash(&mut source);
+            assert_eq!(replay(&mut source, cut), Err(ControlError::RestoreFailed));
+            assert_eq!(
+                hash(&mut source),
+                before,
+                "failed metadata preflight changed the live VM"
+            );
+            assert_eq!(source.vmm.as_ref().unwrap().effective_vns(), Some(500));
+        }
+    }
+
+    #[test]
+    fn exec_completion_mask_ignores_pending_and_stops_on_actual_completion() {
+        let until = control_proto::StopConditions {
+            deadline: Some(Moment(501)),
+            on: control_proto::StopMask::NONE.arm(control_proto::class_bit::EXEC_COMPLETE),
+        };
+        let mut pending = server(vec![]);
+        pending.vmm = Some(vmm_at_sync(
+            vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })],
+            500,
+            0xBA5E,
+        ));
+        hello(&mut pending);
+        pending
+            .handle(&Request::ExecStart { cmd: "x".into() })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            pending
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline { vtime: Moment(501) }))
+        );
+        assert!(pending.retained_exec.as_ref().unwrap().is_pending());
+
+        // The mock guest writes the command's real completion frame through
+        // UART exits; no host-side parser completion is manufactured.
+        let exits = b"output\nHXEC-0-:37:HXEC-0-"
+            .iter()
+            .map(|byte| {
+                Exit::Arch(X86Exit::Io {
+                    port: 0x3f8,
+                    size: 1,
+                    write: Some(u32::from(*byte)),
+                })
+            })
+            .chain([Exit::Arch(X86Exit::Rdmsr { index: 0x10 })])
+            .collect();
+        let mut completed = server(vec![]);
+        completed.vmm = Some(vmm_at_sync(exits, 500, 0xBA5E));
+        hello(&mut completed);
+        completed
+            .handle(&Request::ExecStart { cmd: "x".into() })
+            .unwrap()
+            .unwrap();
+        let stop = completed
+            .handle(&Request::Run {
+                until: control_proto::StopConditions {
+                    deadline: Some(Moment(500_000)),
+                    on: until.on,
+                },
+                resolve: None,
+            })
+            .unwrap()
+            .unwrap();
+        let Reply::Stop(StopReason::ExecComplete { vtime, id: 0 }) = stop else {
+            panic!("expected an actual command completion, got {stop:?}");
+        };
+        assert!(vtime.0 < 500_000);
+        let Reply::ExecState(Some(status)) =
+            completed.handle(&Request::ExecStatus).unwrap().unwrap()
+        else {
+            panic!("missing retained completion");
+        };
+        assert_eq!(status.output, b"output\n");
+        assert_eq!(
+            status.completion,
+            control_proto::ExecCompletion::Exited {
+                status: 37,
+                at: vtime
+            }
+        );
+        // A caller that does not opt into this stop class can keep running.
+        let next_deadline = Moment(vtime.0 + 1);
+        assert!(matches!(
+            completed.handle(&Request::Run {
+                until: control_proto::StopConditions {
+                    deadline: Some(next_deadline), on: control_proto::StopMask::NONE,
+                }, resolve: None,
+            }).unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline { vtime })) if vtime >= next_deadline
+        ));
+    }
+
+    #[test]
     fn legacy_exec_preserves_accepted_inputs_through_the_common_scheduler() {
         let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut server);

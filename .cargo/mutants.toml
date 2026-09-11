@@ -90,6 +90,12 @@ exclude_globs = [
 
 # Equivalent mutations in portable logic.
 exclude_re = [
+    # At len == keep, trim_scan_buffer's inclusive guard computes discard=0:
+    # copy_within(0.., 0), truncate(len), and adding zero leave every valid
+    # parser state unchanged (scan_base is already capped by construction).
+    # Only this exact equivalent boundary mutation is excluded; scanner
+    # sizing/arithmetic mutations remain covered by maximum-width split frames.
+    "consonance/vmm-core/src/exec\\.rs:248:35: replace > with >= in ExecSession::trim_scan_buffer$",
     "consonance/vmm-backend/src/arch/x86/mod\\.rs:.*replace <impl ArchExit for X86Exit>::stages_completion -> bool with true",
     # The nominal handler has empty configuration and no dynamic state.
     # Empty borrowed/owned slices have the same byte contract; Vec::new() and

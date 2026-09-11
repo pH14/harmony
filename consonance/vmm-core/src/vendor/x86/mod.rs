@@ -346,4 +346,56 @@ mod profile_tests {
             assert!(!<X86 as Vendor>::is_doorbell_exit(&exit));
         }
     }
+
+    #[test]
+    fn portable_vendor_state_preserves_uart_fifo_and_legacy_empty_shape() {
+        // This exercises the vendor seam used by the raw device-state hash on
+        // every host that builds vmm-core; it does not require KVM hardware.
+        let empty = X86Devices::new();
+        let legacy = <X86 as Vendor>::encode_device_state(&empty);
+        assert_eq!(legacy, vec![0; 8 + 1]);
+
+        let mut ab_devices = X86Devices::new();
+        <X86 as Vendor>::inject_serial_input(&mut ab_devices, b"ab");
+        let ab = <X86 as Vendor>::encode_device_state(&ab_devices);
+        assert_eq!(ab.len(), legacy.len() + 4 + 4 + 2);
+        assert_eq!(&ab[..legacy.len()], &legacy);
+        assert_eq!(&ab[legacy.len()..], b"DEV2\x02\x00\x00\x00ab");
+
+        let mut ba_devices = X86Devices::new();
+        <X86 as Vendor>::inject_serial_input(&mut ba_devices, b"ba");
+        let ba = <X86 as Vendor>::encode_device_state(&ba_devices);
+        assert_ne!(ab, ba, "the raw hash input must retain UART FIFO order");
+
+        // Decode a full portable device record and feed it through the real
+        // 8250 restore/read path: the next guest RBR reads must consume the
+        // saved bytes in order, while output and register shadows survive.
+        let source = records::DeviceState {
+            uart: records::UartState {
+                capture: b"out".to_vec(),
+                regs: [0x01, 0x02, 0xC7, 0x03, 0x03, 0x00, 0x00, 0x00],
+                dlab: false,
+                dlm: 0x09,
+                rx: b"ab".to_vec(),
+            },
+            ..Default::default()
+        };
+        let uart = records::decode_device_blob(&records::encode_device_blob(&source).0)
+            .unwrap()
+            .uart;
+        let mut restored = X86Devices::new();
+        restored
+            .uart
+            .restore(uart.capture, uart.regs, uart.dlab, uart.dlm, uart.rx);
+        assert_eq!(restored.uart.read_in(devices::UART_PORT_BASE), Some(b'a'));
+        assert_eq!(restored.uart.rx_remaining(), b"b");
+        assert_eq!(restored.uart.read_in(devices::UART_PORT_BASE), Some(b'b'));
+        assert!(restored.uart.rx_remaining().is_empty());
+        assert_eq!(restored.uart.capture(), b"out");
+        assert_eq!(
+            restored.uart.shadow_regs(),
+            &[0x01, 0x02, 0xC7, 0x03, 0x03, 0x00, 0x00, 0x00]
+        );
+        assert!(!restored.uart.dlab());
+    }
 }

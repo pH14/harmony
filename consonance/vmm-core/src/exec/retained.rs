@@ -379,6 +379,124 @@ mod tests {
     }
 
     #[test]
+    fn pending_feed_without_new_serial_bytes_preserves_the_parser() {
+        let mut command = RetainedExec::new("x", 7, 0);
+        command.feed(b"", Moment(10), false).unwrap();
+        command.feed(b"partial", Moment(11), false).unwrap();
+        let before = command.encode();
+        command.feed(b"partial", Moment(12), false).unwrap();
+        assert_eq!(command.encode(), before);
+        assert_eq!(
+            command.feed(b"short", Moment(13), false),
+            Err("exec serial cursor exceeds output length")
+        );
+        assert_eq!(command.encode(), before);
+        command.feed(b"partial", Moment(14), true).unwrap();
+        assert_eq!(
+            command.view(Moment(14)).completion,
+            ExecCompletion::Aborted { at: Moment(14) }
+        );
+    }
+
+    #[test]
+    fn each_pending_overlap_coordinate_must_agree_with_capture() {
+        for change_base in [false, true] {
+            let mut command = RetainedExec::new("x", 7, 0);
+            command.feed(b"captured output", Moment(1), false).unwrap();
+            // Leave room in the absolute stream so that this isolates the
+            // capture/overlap relationship, not the separate cursor bound.
+            command.cursor += 10;
+            if change_base {
+                command.session.scan_base = 1;
+            } else {
+                command.session.scan_buffer[0] ^= 1;
+            }
+            assert!(matches!(
+                RetainedExec::decode(&command.encode()),
+                Err("exec scanner overlap does not match capture")
+            ));
+        }
+    }
+
+    #[test]
+    fn completed_parser_checks_status_cut_and_each_scanner_coordinate() {
+        for field in ["status", "cut", "scan_bytes", "scan_base"] {
+            let mut command = RetainedExec::new("x", 7, 0);
+            let token = marker(&command);
+            let serial = format!("output {token}:37:{token}");
+            command.feed(serial.as_bytes(), Moment(1), false).unwrap();
+            let expected = match field {
+                "status" => {
+                    command.completion = ExecCompletion::Exited {
+                        status: 38,
+                        at: Moment(1),
+                    };
+                    "exec completion disagrees with parser"
+                }
+                "cut" => {
+                    command.session.done = Some(Done::Sentinel { status: 37, cut: 0 });
+                    "exec completion disagrees with parser"
+                }
+                "scan_bytes" => {
+                    command.session.scan_buffer.push(b'x');
+                    "completed exec retains scanner state"
+                }
+                "scan_base" => {
+                    command.session.scan_base = 1;
+                    "completed exec retains scanner state"
+                }
+                _ => unreachable!(),
+            };
+            // The public lifecycle validator must reject corrupted in-memory
+            // state too; decode reconstructs status/cut canonically.
+            assert_eq!(
+                command.validate_at(Moment(1), serial.len()),
+                Err(expected),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn aborted_parser_rejects_each_retained_scanner_coordinate() {
+        for change_base in [false, true] {
+            let mut command = RetainedExec::new("x", 7, 0);
+            command.feed(b"output", Moment(1), true).unwrap();
+            if change_base {
+                command.session.scan_base = 1;
+            } else {
+                command.session.scan_buffer.push(b'x');
+            }
+            assert!(matches!(
+                RetainedExec::decode(&command.encode()),
+                Err("aborted exec retains scanner state")
+            ));
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "one-megabyte capture boundary; covered natively")]
+    fn truncated_pending_overlap_rejects_an_early_base_and_changed_bytes() {
+        let mut command = RetainedExec::new("x", 7, 0);
+        command
+            .feed(&vec![b'x'; MAX_CAPTURE + 1], Moment(1), false)
+            .unwrap();
+        let valid = command.encode();
+        let mut early = RetainedExec::decode(&valid).unwrap();
+        early.session.scan_base -= 1;
+        assert!(matches!(
+            RetainedExec::decode(&early.encode()),
+            Err("truncated exec scanner overlap is incomplete")
+        ));
+        let mut changed = RetainedExec::decode(&valid).unwrap();
+        changed.session.scan_buffer[0] = b'y';
+        assert!(matches!(
+            RetainedExec::decode(&changed.encode()),
+            Err("exec scanner overlap does not match capture")
+        ));
+    }
+
+    #[test]
     fn partial_sentinel_roundtrips_and_continues_with_nonzero_status() {
         let mut warm = RetainedExec::new("false", 7, 0);
         let token = marker(&warm);
@@ -581,6 +699,21 @@ mod tests {
         assert_eq!(
             decoded.validate_serial(Moment(1), &serial),
             Err("exec scanner differs from VM serial output")
+        );
+    }
+
+    #[test]
+    fn untruncated_capture_must_match_bytes_older_than_the_scanner_overlap() {
+        let serial: Vec<u8> = (0..=255).collect();
+        let mut command = RetainedExec::new("x", 7, 0);
+        command.feed(&serial, Moment(1), false).unwrap();
+        let restored = RetainedExec::decode(&command.encode()).unwrap();
+        restored.validate_serial(Moment(1), &serial).unwrap();
+        let mut changed = serial;
+        changed[0] ^= 1;
+        assert_eq!(
+            restored.validate_serial(Moment(1), &changed),
+            Err("exec capture differs from VM serial output")
         );
     }
 

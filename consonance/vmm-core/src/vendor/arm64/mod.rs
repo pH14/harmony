@@ -814,6 +814,55 @@ mod comparator_tests {
     }
 
     #[test]
+    fn portable_vendor_state_preserves_uart_fifo_and_legacy_empty_shape() {
+        // This exercises the vendor seam used by the raw device-state hash on
+        // every host that builds vmm-core; it does not require ARM hardware.
+        let empty = Arm64Devices::new();
+        let legacy = <Arm64 as Vendor>::encode_device_state(&empty);
+        assert_eq!(legacy, vec![0; 5 * std::mem::size_of::<u32>()]);
+
+        let mut ab_devices = Arm64Devices::new();
+        <Arm64 as Vendor>::inject_serial_input(&mut ab_devices, b"ab");
+        let ab = <Arm64 as Vendor>::encode_device_state(&ab_devices);
+        assert_eq!(ab.len(), legacy.len() + 4 + 4 + 2);
+        assert_eq!(&ab[..legacy.len()], &legacy);
+        assert_eq!(
+            &ab[legacy.len()..],
+            &[0x41, 0x44, 0x56, 0x32, 2, 0, 0, 0, b'a', b'b']
+        );
+
+        let mut ba_devices = Arm64Devices::new();
+        <Arm64 as Vendor>::inject_serial_input(&mut ba_devices, b"ba");
+        let ba = <Arm64 as Vendor>::encode_device_state(&ba_devices);
+        assert_ne!(ab, ba, "the raw hash input must retain UART FIFO order");
+
+        // Decode a full portable device record and feed it through the real
+        // PL011 restore/read path: the next guest DR reads must consume the
+        // saved bytes in order, while output and register shadows survive.
+        let source = records::Arm64DeviceState {
+            uart_capture: b"out".to_vec(),
+            uart_regs: [13, 1, 0x70, 0x301, 0x10],
+            uart_rx: b"ab".to_vec(),
+            ..Default::default()
+        };
+        let decoded = records::decode_device_blob(&records::encode_device_blob(&source).0).unwrap();
+        let records::Arm64DeviceState {
+            uart_capture,
+            uart_regs,
+            uart_rx,
+            ..
+        } = decoded;
+        let mut restored = Arm64Devices::new();
+        restored.uart.restore(uart_capture, uart_regs, uart_rx);
+        assert_eq!(restored.uart.read(devices::reg::DR), u32::from(b'a'));
+        assert_eq!(restored.uart.rx_remaining(), b"b");
+        assert_eq!(restored.uart.read(devices::reg::DR), u32::from(b'b'));
+        assert!(restored.uart.rx_remaining().is_empty());
+        assert_eq!(restored.uart.capture(), b"out");
+        assert_eq!(restored.uart.shadow_regs(), &[13, 1, 0x70, 0x301, 0x10]);
+    }
+
+    #[test]
     fn doorbell_classifier_accepts_only_dword_stores_in_the_frame() {
         let ring = Exit::Common(CommonExit::Mmio {
             gpa: Gpa(board::DOORBELL.0),

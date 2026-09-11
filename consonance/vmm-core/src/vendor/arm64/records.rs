@@ -899,6 +899,32 @@ mod tests {
     }
 
     #[test]
+    fn uart_rx_hash_extension_is_explicit_and_order_sensitive() {
+        // The compact device-state bytes feed the vendor's raw state hash, so
+        // an unread FIFO must be represented even though an empty FIFO keeps
+        // the historical hash input unchanged.
+        let mut empty = Vec::new();
+        append_uart_rx_hash(&mut empty, &[]);
+        assert!(empty.is_empty());
+
+        let mut ab = Vec::new();
+        append_uart_rx_hash(&mut ab, b"ab");
+        assert_eq!(
+            ab,
+            [
+                DEVICE_BLOB_MAGIC_RX.to_le_bytes().as_slice(),
+                2u32.to_le_bytes().as_slice(),
+                b"ab",
+            ]
+            .concat()
+        );
+
+        let mut ba = Vec::new();
+        append_uart_rx_hash(&mut ba, b"ba");
+        assert_ne!(ab, ba, "the raw hash input must retain FIFO order");
+    }
+
+    #[test]
     fn current_pvclock_record_round_trips_a_pending_registration() {
         let pending = sample_with_pending_pvclock();
         let blob = encode_device_blob(&pending).0;

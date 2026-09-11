@@ -526,10 +526,13 @@ mod tests {
     )]
     fn capture_is_bounded() {
         let mut s = ExecSession::new("yes", 8);
-        // Feed more than the cap in one shot.
-        let big = vec![b'x'; MAX_CAPTURE + 4096];
+        let big = vec![b'x'; MAX_CAPTURE];
         s.feed(&big);
-        assert!(s.truncated());
+        assert_eq!(s.capture.len(), MAX_CAPTURE);
+        assert!(!s.truncated(), "an exactly full capture has lost no bytes");
+        s.feed(b"x");
+        assert!(s.truncated(), "the first byte beyond the cap is discarded");
+        s.feed(&[b'x'; 4096]);
         assert!(!s.is_done());
         // Neither the retained output nor the streaming overlap grows with the
         // input. The latter is allowed one bounded chunk while it is being fed.
@@ -611,6 +614,29 @@ mod tests {
     }
 
     #[test]
+    fn maximum_status_completes_when_every_byte_is_a_separate_feed() {
+        let mut session = ExecSession::new("x", u64::MAX);
+        let marker = String::from_utf8(session.marker.clone()).unwrap();
+        let sentinel = format!("{marker}:{}:{marker}", u64::MAX);
+        for byte in sentinel.bytes() {
+            session.feed(&[byte]);
+        }
+        assert!(session.is_done());
+        assert_eq!(session.into_outcome().status, Some(u64::MAX));
+    }
+
+    #[test]
+    fn status_digit_limit_counts_leading_zeroes() {
+        let mut session = ExecSession::new("x", 44);
+        let marker = String::from_utf8(session.marker.clone()).unwrap();
+        session.feed(format!("{marker}:000000000000000000000:{marker}").as_bytes());
+        assert!(!session.is_done(), "21 zeroes exceed the wire digit limit");
+        session.feed(format!("{marker}:00000000000000000007:{marker}").as_bytes());
+        assert!(session.is_done());
+        assert_eq!(session.into_outcome().status, Some(7));
+    }
+
+    #[test]
     fn overlong_status_and_incomplete_or_wrong_nonce_stay_pending() {
         let mut s = ExecSession::new("x", 44);
         let marker = String::from_utf8(s.marker.clone()).unwrap();
@@ -627,7 +653,10 @@ mod tests {
             !s.is_done(),
             "an incomplete closing marker must remain pending"
         );
-        assert!(s.scan_buffer.len() <= s.sentinel_max_len().saturating_sub(1));
+        // Bound retained overlap by an actual maximum-width wire sentinel,
+        // independently of the scanner's sizing arithmetic.
+        let longest_sentinel = format!("{marker}:{}:{marker}", u64::MAX);
+        assert!(s.scan_buffer.len() < longest_sentinel.len());
     }
 
     /// A marker with no digits between the colons (e.g. a corrupted/partial line)
