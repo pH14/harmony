@@ -506,6 +506,25 @@ jobs:
             -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee reports/amd-npt-guest-write.log
           grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' reports/amd-npt-guest-write.log
+      - name: Retain scalar and MMIO completion evidence on either vendor
+        if: ${{ always() && inputs.amd_npt_observe }}
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          rustc --version --verbose > reports/completion-toolchain.txt
+          cargo test --locked -p vmm-backend --test kvm_smoke serviced_ \
+            -- --ignored --test-threads=1 --nocapture \
+            2>&1 | tee reports/scalar-completion.log
+          grep -F 'test result: ok. 4 passed; 0 failed; 0 ignored;' reports/scalar-completion.log
+          cargo test --locked -p vmm-core --test x86_cpu_snapshots \
+            live_kvm::mmio_rmw_finishes_before_full_vmm_snapshot \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee reports/mmio-completion.log
+          grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' reports/mmio-completion.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
