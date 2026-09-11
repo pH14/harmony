@@ -425,6 +425,7 @@ pub trait InputPolicy: CampaignTypes {
     /// # Errors
     ///
     /// Returns an error when the ordinary suffix cannot be drawn or is empty.
+    #[allow(clippy::too_many_arguments)]
     fn expand_suffix_for_refinement(
         &self,
         run: &Self::Run,
@@ -1086,6 +1087,9 @@ pub struct RefinementRequest<A: Ord> {
     /// Action the evaluator wants at the first suffix boundary.
     pub action: A,
 }
+
+type RefinementParentData<A, S, M> = ((Arc<S>, Vec<A>, u64), usize, M);
+type RefinementParentResult<A, S, M> = Result<RefinementParentData<A, S, M>, Box<dyn Error>>;
 
 /// Stream evidence for one dispatched redraw. The exact pending prefix and
 /// forced action are postcard encoded so replay can verify the evaluator
@@ -4512,28 +4516,26 @@ where
                 } else {
                     None
                 };
-                let parent_data = (|| -> Result<
-                    ((Arc<G::Snapshot>, Vec<G::Action>, u64), usize, G::Milestones),
-                    Box<dyn Error>,
-                > {
-                    let entry = core
-                        .archive
-                        .entries
-                        .get(parent_index)
-                        .ok_or("recorded job names a parent the archive does not hold")?;
-                    Ok((
-                        if legacy_schedule {
-                            let (snapshot, replay) = core.archive.job_origin(parent_index)?;
-                            (snapshot, replay, job.parent_id)
-                        } else {
-                            replay_job_snapshots
-                                .remove(&replay_job_slot)
-                                .ok_or("recorded job has no replayed in-flight snapshot")?
-                        },
-                        entry.input_len,
-                        entry.milestones,
-                    ))
-                })();
+                let parent_data =
+                    (|| -> RefinementParentResult<G::Action, G::Snapshot, G::Milestones> {
+                        let entry = core
+                            .archive
+                            .entries
+                            .get(parent_index)
+                            .ok_or("recorded job names a parent the archive does not hold")?;
+                        Ok((
+                            if legacy_schedule {
+                                let (snapshot, replay) = core.archive.job_origin(parent_index)?;
+                                (snapshot, replay, job.parent_id)
+                            } else {
+                                replay_job_snapshots
+                                    .remove(&replay_job_slot)
+                                    .ok_or("recorded job has no replayed in-flight snapshot")?
+                            },
+                            entry.input_len,
+                            entry.milestones,
+                        ))
+                    })();
                 let ((snapshot, replay, snapshot_id), parent_actions, parent_milestones) =
                     match parent_data {
                         Ok(data) => data,
