@@ -1129,6 +1129,7 @@ mod live_kvm {
 
     const XSAVE_GPA: usize = 0x9000;
     const XSAVE_PAGE_LEN: usize = PAGE_SIZE;
+    const XSAVE_WARMUP_LEN: usize = 10;
     const XSAVE_PROGRAM_LEN: usize = 34;
     const XSAVE_ENDPOINT_RIP: usize = CODE_GPA + XSAVE_PROGRAM_LEN;
     const XSAVE_MARKER: u8 = 0x42;
@@ -1288,6 +1289,11 @@ mod live_kvm {
                 .all(|&byte| byte == 0),
             "XSAVE output must be empty at the saved UART boundary"
         );
+        assert_eq!(
+            save_stop.state.regs.rip,
+            (CODE_GPA + XSAVE_WARMUP_LEN) as u64
+        );
+        assert_eq!(save_stop.state.regs.rbx, 0);
         let save_repeated = capture_full_vmm(&save_and_continue);
         retain_capture(
             report.as_deref(),
