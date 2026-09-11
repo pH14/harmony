@@ -227,6 +227,7 @@ jobs:
         with:
           name: skill-guest-${{ github.run_id }}
           path: reports/skill-guest
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
       - name: Unmount guest output storage
