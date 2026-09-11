@@ -17,10 +17,11 @@ fault agent. The upstream SDK and instrumentor are MIT licensed; Harmony does
 not vendor their source. The runtime image retains the Antithesis SDK and etcd
 license notices under `/licenses`.
 
-`etcdctl` is built from the same pinned source without the instrumentor, so the oracle's own
+`etcdctl` is built from the same pinned source without the instrumentor, so the readiness probe's
 client stays out of the server's event stream. An instrumented client would put most of the
-callbacks the search draws coordinates from inside the oracle rather than inside the server, and
-would charge every read the cost of registering its symbol tables.
+callbacks the search draws coordinates from inside the probe rather than inside the server, and
+would charge every read the cost of registering its symbol tables. `etcd-oracle` is uninstrumented
+for the same reason.
 
 The workload writer is a separate, uninstrumented static Go binary. Its
 `writer/go.mod` pins `go.etcd.io/etcd/client/v3` at `v3.5.3` and its checked-in
@@ -67,20 +68,26 @@ key, and a restarted helper resumes each worker's sequence from the journal, so 
 can rewrite a key an earlier one recorded. Sequence numbers are zero padded, so a key's byte
 order matches its numeric order.
 
-Two checks read the members back with `ETCDCTL_API=3` serializable local reads, and both emit a
-verdict only after all three comparisons succeed, so a member that is still down cannot count as
-data loss. A restarted member reports itself healthy while it is still applying the entries it
-missed, so each member is read until the keys it lacks either run out or stop running out: a
-member that is merely behind shrinks that set on every read, and a key it will never hold holds
-the set at one size. `hooks.sh 2` is the bundle's `check` line: it compares the keys acknowledged
-since the last passing check, reading one range per worker, so its cost follows that window rather
-than the whole history. Those ranges go through `etcd-reader`, one process per member holding one
-connection, because the guest has a single processor and spawning a client for each range costs
-more than the reads do. Its watermark is a byte offset into the journal, and it reads only the bytes
-past that offset, trimmed back to the last complete record so the next window starts on a boundary.
-A check that re-read the whole journal would cost more on every run and would eventually take the
-processor the workload needs. `hooks.sh 3` compares the entire journal against every member's whole
-prefix; running it once at the end of a measurement reports a loss that no window covered.
+Both checks run inside `etcd-oracle`, a single uninstrumented Go binary. It reads the members back
+with serializable local reads and emits a verdict only after all three comparisons succeed, so a
+member that is still down cannot count as data loss. A restarted member reports itself healthy
+while it is still applying the entries it missed, so each member is read until the keys it lacks
+either run out or stop running out: a member that is merely behind shrinks that set on every read,
+and a key it will never hold holds the set at one size. `hooks.sh 2` is the bundle's `check` line:
+it runs `etcd-oracle window`, which compares the keys acknowledged since the last passing check,
+reading one range per worker, so its cost follows that window rather than the whole history. Its
+watermark is a byte offset into the journal, and it reads only the bytes past that offset, trimmed
+back to the last complete record so the next window starts on a boundary. A check that re-read the
+whole journal would cost more on every run and would eventually take the processor the workload
+needs. `hooks.sh 3` runs `etcd-oracle sweep`, comparing the entire journal against every member's
+whole prefix; running it once at the end of a measurement reports a loss that no window covered.
+
+The whole check is one process because the guest has a single processor and shares it with the
+three members under test. Driving the check from shell spawns a process for each step -- the
+watermark, the window, the record selection, a client per member range, the sort and the diff --
+and under one emulated processor those spawns cost more than the reads and the comparison do.
+They cost most when a member has just restarted and the oracle is deciding whether it is behind
+or has lost data, which is the moment the member most needs the processor.
 
 The watermark file also carries the running count of records the oracle has confirmed on every
 member, and a passing check reports it as `@verified`. It says how much of the load was actually

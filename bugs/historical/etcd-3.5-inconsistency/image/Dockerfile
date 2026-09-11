@@ -18,15 +18,15 @@ COPY bugs/historical/etcd-3.5-inconsistency/image/writer/go.mod \
      bugs/historical/etcd-3.5-inconsistency/image/writer/go.sum ./
 RUN go mod download
 COPY bugs/historical/etcd-3.5-inconsistency/image/writer/main.go ./
-COPY bugs/historical/etcd-3.5-inconsistency/image/writer/reader ./reader
+COPY bugs/historical/etcd-3.5-inconsistency/image/writer/oracle ./oracle
 RUN mkdir -p /out \
     && CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
     go build -mod=readonly -buildvcs=false -o /out/etcd-writer . \
     && CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
-    go build -mod=readonly -buildvcs=false -o /out/etcd-reader ./reader \
-    && ! grep -a -q antithesishq/antithesis-sdk-go/instrumentation /out/etcd-reader \
+    go build -mod=readonly -buildvcs=false -o /out/etcd-oracle ./oracle \
+    && ! grep -a -q antithesishq/antithesis-sdk-go/instrumentation /out/etcd-oracle \
     && test -x /out/etcd-writer \
-    && test -x /out/etcd-reader
+    && test -x /out/etcd-oracle
 
 FROM ${GO_IMAGE} AS instrumented-build
 
@@ -118,7 +118,7 @@ RUN apt-get update \
 COPY --from=instrumented-build /out/etcd/etcd /opt/etcd/etcd
 COPY --from=instrumented-build /out/etcd/etcdctl /opt/etcd/etcdctl
 COPY --from=workload-writer-build /out/etcd-writer /opt/harmony/etcd-writer
-COPY --from=workload-writer-build /out/etcd-reader /opt/harmony/etcd-reader
+COPY --from=workload-writer-build /out/etcd-oracle /opt/harmony/etcd-oracle
 COPY --from=instrumented-build /out/libvoidstar.so /usr/lib/libvoidstar.so
 COPY --from=instrumented-build /out/symbols/*.sym.tsv /symbols/
 COPY --from=instrumented-build /out/harmony-instrumented-events /symbols/harmony-instrumented-events
@@ -126,11 +126,11 @@ COPY --from=instrumented-build /out/ETCD-LICENSE /licenses/etcd.txt
 COPY --from=instrumented-build /out/ANTITHESIS-SDK-GO-LICENSE /licenses/antithesis-sdk-go.txt
 
 RUN chmod 0755 /opt/etcd/etcd /opt/etcd/etcdctl /opt/harmony/etcd-writer \
-        /opt/harmony/etcd-reader /usr/lib/libvoidstar.so \
+        /opt/harmony/etcd-oracle /usr/lib/libvoidstar.so \
     && test -x /opt/etcd/etcd \
     && test -x /opt/etcd/etcdctl \
     && test -x /opt/harmony/etcd-writer \
-    && test -x /opt/harmony/etcd-reader \
+    && test -x /opt/harmony/etcd-oracle \
     && set -- /symbols/*.sym.tsv \
     && test -s "$1" \
     && test -s /symbols/harmony-instrumented-events \
