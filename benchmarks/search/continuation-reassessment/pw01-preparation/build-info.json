@@ -1,0 +1,33 @@
+{
+  "source_commit": "adc8e70394a97e212fd36fdd002b48761808df7d",
+  "source_tree": "fdbfcadfb7056bb5ce1852d5995edc144ad24eef",
+  "archive_sha256": "e97d5121bc68ce7e56589ab210f1cbdbb162aab01066210ee9caddd1506d9616",
+  "archive_bytes": 196616526,
+  "format": "metroid-progress-word-build-v1",
+  "command": [
+    "cargo",
+    "build",
+    "--locked",
+    "--release",
+    "--manifest-path",
+    "/root/harmony-depth-transfer-20260909/source-progress-word-001/workloads/nes/Cargo.toml",
+    "--bin",
+    "metroid-archive-challenge",
+    "--features",
+    "metroid-retention-progress",
+    "-j",
+    "4"
+  ],
+  "started_utc": "2026-09-11T00:45:19.917134+00:00",
+  "source": "/root/harmony-depth-transfer-20260909/source-progress-word-001",
+  "target": "/root/harmony-depth-transfer-20260909/build-cache-progress-word-001",
+  "host": "ms02",
+  "emulator_executed": false,
+  "compile_timeout_seconds": 540,
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.0\nLLVM version: 22.1.8\n",
+  "cargo": "cargo 1.98.0 (797e8a9bc 2026-08-05)\n",
+  "exit_code": 0,
+  "ended_utc": "2026-09-11T00:45:38.373251+00:00",
+  "binary_sha256": "fa5ea5bdf83c79f27a73e3b4f6678f7dfca71cac3ace40baff8e45a7ea6d09e5",
+  "binary_bytes": 2907720
+}

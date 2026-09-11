@@ -607,3 +607,15 @@ replay, including planted corruption. Source checks pass181 searcher and197 NES
 tests plus strict Clippy. This is zero-emulator source qualification. A short
 native qualification needs a new prospective registration on ms02; SR02 and the
 older continuation failure stay closed. See pw00-source-manifest.json for checks.
+
+
+### Research paused; cancelled PW01 preparation preserved
+
+The user paused research before PW01 was published as an active allocation or
+executed. Its native source build completed, but no qualification cells ran.
+[The cancelled proposal](pw01-design.md), scorer tests, build provenance and
+[cleanup receipts](pw01-preparation-manifest.json) are retained for review. The
+runner rejects the cancelled registration before host access or process creation.
+Four offline tests pass, including that refusal. All task-owned ms02 services and
+working files were cleared after a verified local results backup. No experiment
+may resume without the user's instruction; the scientific goal is unachieved.

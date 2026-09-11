@@ -1,0 +1,13 @@
+RuntimeMaxUSec=10min
+Result=success
+ExecMainStatus=0
+MemoryPeak=1214369792
+MemorySwapPeak=0
+CPUUsageNSec=59333222000
+AllowedCPUs=0-3
+MemoryMax=12884901888
+MemorySwapMax=0
+TasksMax=128
+ActiveState=active
+SubState=exited
+InvocationID=571e1784dc70462c96648b01f34f98c3

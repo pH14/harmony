@@ -1487,3 +1487,19 @@ binary identities, scorer tests and strict ceilings before execution. No native
 allocation exists yet. The failed continuation and SR02 nominees remain closed;
 no fresh-search efficacy claim follows. Full goal remains active and unachieved.
 Only ms02 is available; msr1 belongs to another task.
+
+
+## User pause — 2026-09-11 00:55 UTC
+
+Research is paused by explicit user instruction. Do not resume automatically.
+PW01 was only an unpublished draft and ran zero emulator frames. Its proposal
+is cancelled; no allocation remains. All task-owned ms02 processes/services are
+cleared and /root/harmony-depth-transfer-20260909 was removed after a verified
+local backup of 1,877 result/build-record files (2,457,581,360 raw bytes). This
+released 7,834,435,584 bytes. Source work remains in PR #287 at adc8e703. The local
+checkpoint records the backup and cleanup receipts. The scientific goal remains
+unachieved. Wait for the user's explicit resume instruction; msr1 is unavailable.
+
+The cancelled PW01 proposal, offline gates and build/cleanup provenance are now
+preserved in Git at the user’s request. This publication does not reactivate it.
+See ../continuation-reassessment/pw01-preparation-manifest.json.
