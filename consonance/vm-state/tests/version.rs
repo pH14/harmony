@@ -21,10 +21,20 @@ fn future_version_is_rejected_but_peekable() {
 #[test]
 fn current_version_round_trips_and_peeks() {
     let mut state = fully_populated();
-    state.sregs.flags = 1;
+    state.xsave_restore_bv = Some(0x0102_0304_0506_0708);
     state.engine_state = vec![0xCA, 0xFE];
     let blob = state.encode().unwrap();
     assert_eq!(VmState::peek_version(&blob), Ok(VM_STATE_VERSION));
+    assert_eq!(VmState::decode(&blob), Ok(state));
+}
+
+#[test]
+fn v5_cpu_records_remain_compatible_without_restore_bits() {
+    let mut state = fully_populated();
+    state.sregs.flags = 1;
+    state.engine_state = vec![0xCA, 0xFE];
+    let blob = state.encode().unwrap();
+    assert_eq!(VmState::peek_version(&blob), Ok(5));
     assert_eq!(VmState::decode(&blob), Ok(state));
 }
 

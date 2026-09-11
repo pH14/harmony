@@ -326,6 +326,29 @@ impl From<&XcrsWire> for Xcrs {
     }
 }
 
+/// X86 v6 tag 15: the original XSAVE `XSTATE_BV` used when restoring the
+/// normalized image. The fixed eight-byte payload is intentionally separate
+/// from the opaque XSAVE image section.
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+pub(crate) struct XsaveRestoreBvWire {
+    value: U64,
+}
+
+impl From<u64> for XsaveRestoreBvWire {
+    fn from(value: u64) -> Self {
+        Self {
+            value: value.into(),
+        }
+    }
+}
+
+impl From<&XsaveRestoreBvWire> for u64 {
+    fn from(w: &XsaveRestoreBvWire) -> Self {
+        w.value.get()
+    }
+}
+
 /// `KVM_GET_DEBUGREGS` — `DR0..DR3`, `DR6`, `DR7`.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]

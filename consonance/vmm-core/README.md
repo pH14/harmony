@@ -51,7 +51,12 @@ runnable lifecycle default. A terminal restore does not enter the guest again.
 X86 CPU capture retains SREGS2 flags and cached PAE PDPTRs, plus debug-register
 flags. Nonzero extended fields select VM-state v5; zero values retain v3/v4
 bytes. Cached PDPTRs are distinct from the current PDPT contents in guest RAM
-and must survive restore without reloading them from that memory.
+and must survive restore without reloading them from that memory. When XSAVE
+canonicalization clears an x87/SSE init-state bit, capture retains the original
+`XSTATE_BV` in the optional v6 tag-15 record; the value is validated before
+restore and included in the VCPU identity. Legacy records without that field
+keep their historical normalized restore behavior and cannot recover discarded
+header provenance.
 
 Hardware continuation coverage depends on the backend and paging mode. AMD
 default NPT has an unresolved PAE capture divergence

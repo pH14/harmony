@@ -875,6 +875,17 @@ impl<B: Backend<A = X86>> Vmm<B> {
         if s.contract_hash != contract::contract_hash() {
             return Err(VmmError::Snapshot(SnapshotError::ContractMismatch));
         }
+        // Validate the optional raw XSAVE header provenance before decoding or
+        // committing any platform state. The backend helper reconstructs the
+        // candidate image, re-canonicalizes it, and rejects metadata that could
+        // alter canonical guest state or select a compacted/short image. The
+        // eventual backend restore repeats this conversion; this early check is
+        // the reject-before-mutation half of the restore atomicity contract.
+        vmm_backend::restore_xsave_image(&s.xsave.0, s.xsave_restore_bv).map_err(|error| {
+            VmmError::ContractViolation(format!(
+                "restore_vm_state: invalid XSAVE restore provenance: {error}"
+            ))
+        })?;
         // Decode the vmm-core device blob (total, never panics).
         let dev = records::decode_device_blob(&s.devices.0)?;
         // Reject an UNRESTORABLE `kvm_vcpu_events` blob up front — a foreign / malformed v3
@@ -1153,6 +1164,13 @@ pub(crate) fn encode_vcpu_state(s: &VcpuState) -> Vec<u8> {
     }
     v.extend_from_slice(&(s.xsave.len() as u64).to_le_bytes());
     v.extend_from_slice(&s.xsave);
+    // `None` is deliberately omitted so v3-v5 VCPU chunks remain byte-for-byte
+    // stable. A present value is guest-visible restore provenance, so include it
+    // in the identity even when VMST snapshot hashing is disabled.
+    if let Some(restore_bv) = s.xsave_restore_bv {
+        v.extend_from_slice(b"XSRB");
+        v.extend_from_slice(&restore_bv.to_le_bytes());
+    }
     v
 }
 
@@ -1372,6 +1390,44 @@ pub(crate) fn vcpu_components(s: &VcpuState, out: &mut Vec<(&'static str, [u8; 3
         dig(&xs[lo..hi])
     };
     out.push(("xsave-legacy", part(0, 512)));
-    out.push(("xsave-header", part(512, 576)));
+    let header_start = 512.min(xs.len());
+    let header_end = 576.min(xs.len());
+    let mut header = xs[header_start..header_end].to_vec();
+    if let Some(restore_bv) = s.xsave_restore_bv {
+        header.extend_from_slice(b"XSRB");
+        header.extend_from_slice(&restore_bv.to_le_bytes());
+    }
+    out.push(("xsave-header", dig(&header)));
     out.push(("xsave-extended", part(576, xs.len())));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn xsave_state(restore_bv: Option<u64>) -> VcpuState {
+        VcpuState {
+            // A standard-format-sized fixture is sufficient here: this test is
+            // about the identity suffix, while the backend owns image validation.
+            xsave: vec![0; 576],
+            xsave_restore_bv: restore_bv,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn xsave_restore_provenance_is_optional_identity_suffix() {
+        let legacy = encode_vcpu_state(&xsave_state(None));
+        let with_three = encode_vcpu_state(&xsave_state(Some(3)));
+        let with_two = encode_vcpu_state(&xsave_state(Some(2)));
+
+        // The absent field must retain the pre-v6 VCPU bytes exactly; a present
+        // value appends a domain-tagged record so old hashes remain stable.
+        assert!(with_three.starts_with(&legacy));
+        assert_eq!(with_three.len(), legacy.len() + 12);
+        assert_eq!(with_two.len(), legacy.len() + 12);
+        assert_ne!(with_three, with_two);
+        assert_ne!(Sha256::digest(&with_three), Sha256::digest(&with_two));
+    }
 }

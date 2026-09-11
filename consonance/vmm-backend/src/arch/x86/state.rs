@@ -14,6 +14,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::error::{BackendError, Result};
 use crate::types::MpState;
 
 /// Full guest-visible vCPU state for snapshot/restore. The per-vCPU input to the
@@ -40,8 +41,16 @@ pub struct VcpuState {
     /// ⇒ equal bytes.
     pub msrs: BTreeMap<u32, u64>,
     /// FPU/XSAVE state image (`KVM_GET_XSAVE2`). Length is host-XSAVE-area sized;
-    /// restored verbatim.
+    /// the image is canonicalized for deterministic hashing. When the source
+    /// KVM image used an init-state component bit that canonicalization clears,
+    /// [`Self::xsave_restore_bv`] retains only that raw header provenance so a
+    /// restore can re-establish the guest-visible encoding without changing the
+    /// canonical image.
     pub xsave: Vec<u8>,
+    /// Original `XSTATE_BV` when capture cleared the x87/SSE init-state bits.
+    /// `None` preserves the legacy restore behavior and is the normal value for
+    /// images whose canonical header already matches the raw header.
+    pub xsave_restore_bv: Option<u64>,
 }
 
 /// General-purpose registers, `RIP`, and `RFLAGS` (`KVM_GET_REGS` /
@@ -284,6 +293,10 @@ pub fn canonicalize_sregs(sregs: &mut VcpuSregs) {
 const XSTATE_BV: usize = 512;
 /// `XCOMP_BV` in the XSAVE header; nonzero selects the compacted format.
 const XCOMP_BV: usize = 520;
+/// The end of the two standard-format header words used by this module.
+const XSAVE_HEADER_END: usize = XCOMP_BV + 8;
+/// Init-state provenance can only add back the x87 and SSE component bits.
+const X87_SSE_BV: u64 = 0b11;
 /// x87 control/status/tag/opcode/instruction/operand words in the legacy area.
 const X87_CONTROL: std::ops::Range<usize> = 0..24;
 /// ST0–ST7 in the legacy area.
@@ -313,15 +326,17 @@ const LEGACY_TAIL: std::ops::Range<usize> = 416..512;
 /// Canonicalize the x87 and SSE components of a standard-format XSAVE image to
 /// init-compressed form, in place.
 ///
-/// XSAVE's init optimization gives one guest-visible state two encodings: a
+/// XSAVE's init optimization gives one component state two encodings: a
 /// component can be recorded present (`XSTATE_BV` bit set, area holding the
 /// init values) or absent (bit clear, area architecturally ignored), and which
 /// one hardware writes varies with host scheduling rather than guest behavior
 /// (observed on Xeon Platinum 8573C: the x87 bit flips across same-seed boots
-/// while every state byte matches). Determinism rule #4 forbids host-derived
-/// bytes in `VcpuState`, so both encodings must collapse to one: a component
-/// whose area holds the init values gets its bit cleared, and a component
-/// whose bit is clear gets the init values written into its ignored area.
+/// while every state byte matches). `XSTATE_BV` is guest-observable, so this
+/// helper chooses one encoding for the canonical identity image; capture code
+/// that must preserve the guest-visible encoding pairs it with
+/// [`canonicalize_xsave_with_restore_bv`]. A component whose area holds the
+/// init values gets its bit cleared, and a component whose bit is clear gets
+/// the init values written into its ignored area.
 /// `MXCSR_MASK` — a host capability constant the save instruction writes, which
 /// differs across vendors — is pinned to the contract value for the same
 /// reason: it is not guest state, and restore ignores it; the legacy tail —
@@ -329,7 +344,7 @@ const LEGACY_TAIL: std::ops::Range<usize> = 416..512;
 /// Compacted-format images (nonzero `XCOMP_BV`) have a different layout and
 /// are left untouched.
 pub fn canonicalize_xsave(image: &mut [u8]) {
-    if image.len() < XCOMP_BV + 8 || image[XCOMP_BV..XCOMP_BV + 8] != [0u8; 8] {
+    if image.len() < XSAVE_HEADER_END || image[XCOMP_BV..XSAVE_HEADER_END] != [0u8; 8] {
         return;
     }
 
@@ -361,6 +376,70 @@ pub fn canonicalize_xsave(image: &mut [u8]) {
     image[XSTATE_BV..XSTATE_BV + 8].copy_from_slice(&bv.to_le_bytes());
 }
 
+fn standard_xsave_header(image: &[u8]) -> Option<(u64, u64)> {
+    if image.len() < XSAVE_HEADER_END {
+        return None;
+    }
+    let xstate_bv = u64::from_le_bytes(image[XSTATE_BV..XSTATE_BV + 8].try_into().ok()?);
+    let xcomp_bv = u64::from_le_bytes(image[XCOMP_BV..XSAVE_HEADER_END].try_into().ok()?);
+    Some((xstate_bv, xcomp_bv))
+}
+
+/// Canonicalize a live XSAVE image and retain the raw init-state header when
+/// canonicalization changes it.
+///
+/// The image remains the canonical representation used by state hashing. The
+/// optional return value is deliberately limited to the original `XSTATE_BV`;
+/// all component bytes remain in the canonical image and are restored only
+/// after the provenance has passed [`restore_xsave_image`]'s checks.
+pub fn canonicalize_xsave_with_restore_bv(image: &mut [u8]) -> Option<u64> {
+    let original = standard_xsave_header(image)
+        .filter(|&(_, xcomp_bv)| xcomp_bv == 0)
+        .map(|(xstate_bv, _)| xstate_bv);
+    canonicalize_xsave(image);
+    let canonical = standard_xsave_header(image)
+        .filter(|&(_, xcomp_bv)| xcomp_bv == 0)
+        .map(|(xstate_bv, _)| xstate_bv);
+    match (original, canonical) {
+        (Some(original), Some(canonical)) if original != canonical => Some(original),
+        _ => None,
+    }
+}
+
+/// Reconstruct the guest-visible XSAVE header from capture provenance.
+///
+/// `image` is the canonical image stored in a [`VcpuState`]. With no
+/// provenance, the legacy restore path is preserved exactly and the bytes are
+/// returned without interpreting their header. With provenance, only the x87
+/// and SSE init-state bits may differ from the canonical header; canonical
+/// present bits may not be dropped. The reconstructed image is re-canonicalized
+/// before acceptance, proving that it is the same canonical state that was
+/// captured. No live/backend state is touched by this helper.
+pub fn restore_xsave_image(image: &[u8], restore_bv: Option<u64>) -> Result<Vec<u8>> {
+    let Some(restore_bv) = restore_bv else {
+        return Ok(image.to_vec());
+    };
+    let Some((canonical_bv, xcomp_bv)) = standard_xsave_header(image) else {
+        return Err(BackendError::InvalidState);
+    };
+    if xcomp_bv != 0
+        || restore_bv == canonical_bv
+        || (restore_bv ^ canonical_bv) & !X87_SSE_BV != 0
+        || restore_bv & canonical_bv != canonical_bv
+    {
+        return Err(BackendError::InvalidState);
+    }
+
+    let mut restored = image.to_vec();
+    restored[XSTATE_BV..XSTATE_BV + 8].copy_from_slice(&restore_bv.to_le_bytes());
+    let mut canonical = restored.clone();
+    canonicalize_xsave(&mut canonical);
+    if canonical != image {
+        return Err(BackendError::InvalidState);
+    }
+    Ok(restored)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,13 +467,85 @@ mod tests {
     }
 
     #[test]
+    fn capture_and_restore_preserve_x87_and_sse_init_presence() {
+        for (raw_bv, canonical_bv) in [(0x3, 0), (0x2, 0), (0x7, 0x4)] {
+            let mut canonical = init_image(raw_bv);
+            assert_eq!(
+                canonicalize_xsave_with_restore_bv(&mut canonical),
+                Some(raw_bv)
+            );
+            assert_eq!(
+                u64::from_le_bytes(canonical[XSTATE_BV..XSTATE_BV + 8].try_into().unwrap()),
+                canonical_bv
+            );
+            let restored = restore_xsave_image(&canonical, Some(raw_bv)).unwrap();
+            assert_eq!(
+                u64::from_le_bytes(restored[XSTATE_BV..XSTATE_BV + 8].try_into().unwrap()),
+                raw_bv
+            );
+            let mut recanonicalized = restored.clone();
+            canonicalize_xsave(&mut recanonicalized);
+            assert_eq!(recanonicalized, canonical);
+        }
+    }
+
+    #[test]
+    fn restore_provenance_cannot_drop_a_canonical_component() {
+        let mut canonical = init_image(1);
+        canonical[X87_ST.start] = 0x55;
+        assert_eq!(canonicalize_xsave_with_restore_bv(&mut canonical), None);
+        assert_eq!(
+            u64::from_le_bytes(canonical[XSTATE_BV..XSTATE_BV + 8].try_into().unwrap()),
+            1
+        );
+        assert!(matches!(
+            restore_xsave_image(&canonical, Some(2)),
+            Err(BackendError::InvalidState)
+        ));
+    }
+
+    #[test]
     fn live_state_is_untouched() {
         let mut image = init_image(0x3);
         image[0..2].copy_from_slice(&0x027Fu16.to_le_bytes());
         image[SSE_XMM.start] = 0x5A;
         let before = image.clone();
-        canonicalize_xsave(&mut image);
+        assert_eq!(canonicalize_xsave_with_restore_bv(&mut image), None);
         assert_eq!(image, before);
+    }
+
+    #[test]
+    fn malformed_restore_provenance_is_rejected_without_mutating_the_source() {
+        let canonical = init_image(0);
+        for restore_bv in [0, 0x4] {
+            assert!(matches!(
+                restore_xsave_image(&canonical, Some(restore_bv)),
+                Err(BackendError::InvalidState)
+            ));
+        }
+
+        let mut malformed = canonical.clone();
+        malformed[X87_ST.start] = 0xEE;
+        let before = malformed.clone();
+        assert!(matches!(
+            restore_xsave_image(&malformed, Some(1)),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(malformed, before);
+
+        let mut compacted = canonical;
+        compacted[XCOMP_BV..XSAVE_HEADER_END].copy_from_slice(&1_u64.to_le_bytes());
+        assert!(matches!(
+            restore_xsave_image(&compacted, Some(1)),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(restore_xsave_image(&compacted, None).unwrap(), compacted);
+        let short = [0xA5; XSAVE_HEADER_END - 1];
+        assert_eq!(restore_xsave_image(&short, None).unwrap(), short);
+        assert!(matches!(
+            restore_xsave_image(&short, Some(1)),
+            Err(BackendError::InvalidState)
+        ));
     }
 
     #[test]

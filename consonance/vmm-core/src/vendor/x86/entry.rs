@@ -158,6 +158,7 @@ pub fn long_mode_entry(
         mp_state: MpState::Runnable,
         msrs: Default::default(),
         xsave: Vec::new(),
+        xsave_restore_bv: None,
     }
 }
 

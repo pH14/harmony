@@ -11,7 +11,8 @@ mod state;
 pub use config::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
 pub use state::{
     DebugRegs, DescriptorTable, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VcpuState,
-    canonicalize_regs, canonicalize_sregs, canonicalize_xsave,
+    canonicalize_regs, canonicalize_sregs, canonicalize_xsave, canonicalize_xsave_with_restore_bv,
+    restore_xsave_image,
 };
 
 use crate::arch::{Arch, ArchExit};

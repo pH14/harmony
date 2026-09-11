@@ -26,11 +26,13 @@
 //! binary container (house style — cf. `hypercall-proto`'s frames), not a text
 //! format and not a third-party crate's byte layout. The format **version is
 //! part of the determinism contract**: x86 [`VmState::decode`] accepts the v3,
-//! v4, and v5 record sets, and rejects every other version
+//! v4, v5, and v6 record sets, and rejects every other version
 //! ([`VmStateError::UnsupportedVersion`]) rather than silently misreading. The
 //! v3 writer shape is retained when the engine-owned state and extended x86 CPU
 //! fields are empty; a nonempty engine state selects v4 unless those CPU fields
-//! require the v5 records. Every required tag is present exactly once; a
+//! require the v5 records. An `xsave_restore_bv` value selects v6, whose tag 15
+//! preserves the original XSAVE `XSTATE_BV` when backend normalization changes
+//! the image. Every required tag is present exactly once; a
 //! missing, unknown, duplicate, or out-of-order section is a decode error,
 //! never a best-effort zero-filled restore.
 //!
@@ -81,9 +83,11 @@ pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 /// **v4** adds a required trailing engine-owned opaque state section when that
 /// state is nonempty. **v5** uses extended x86 SREGS and DEBUGREGS records when
 /// their newly captured fields are nonzero; its engine-state section is
-/// optional. For byte compatibility, x86 encoding retains the v3 or v4 bytes
-/// whenever those new CPU fields are zero. ARM remains on its v3/v4 record set;
-/// [`Arm64VmState::decode`] rejects x86-only v5 blobs.
+/// optional. **v6** keeps those v5 record layouts, adds required x86 tag 15 for
+/// `xsave_restore_bv`, and keeps engine state optional. For byte compatibility,
+/// x86 encoding retains the v3, v4, or v5 bytes whenever the v6-only field is
+/// absent. ARM remains on its v3/v4 record set; [`Arm64VmState::decode`] rejects
+/// x86-only v5 and v6 blobs.
 /// **v2** (`docs/ARCHITECTURE.md`) added the container header's **arch
 /// tag**: the register/sysreg record set a blob carries is per-architecture, and
 /// the record *tags* alone cannot tell an x86 `REGS` section from an arm64 one —
@@ -91,10 +95,15 @@ pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 /// that a loud [`VmStateError::UnsupportedArch`] instead of a silent
 /// reinterpretation. A v1 blob (no tag) is rejected at the version gate, never
 /// parsed with the v2 reader.
-pub const VM_STATE_VERSION: u16 = 5;
+pub const VM_STATE_VERSION: u16 = 6;
+
+/// The explicit x86 v5 CPU-record version. This remains separate from the
+/// latest x86 version so states without `xsave_restore_bv` retain their v5
+/// bytes exactly.
+pub(crate) const VM_STATE_CPU_VERSION: u16 = 5;
 
 /// The v4 record version used for the engine-state extension. This remains
-/// crate-private because the public latest version is the x86 v5 format, while
+/// crate-private because the public latest version is the x86 v6 format, while
 /// ARM continues to use this v4 shape.
 pub(crate) const VM_STATE_ENGINE_VERSION: u16 = 4;
 
@@ -141,6 +150,10 @@ pub struct VmState {
     pub msrs: MsrBlock,
     /// `KVM_GET_XSAVE2` — the FPU/XSAVE state image.
     pub xsave: XsaveImage,
+    /// Original XSAVE `XSTATE_BV` to use when restoring an image whose x87/SSE
+    /// present bits were cleared by backend normalization. `None` retains the
+    /// v3-v5 wire shapes; a value selects the x86 v6 tag-15 section.
+    pub xsave_restore_bv: Option<u64>,
     /// V-time clock snapshot (`snapshot_vns` + ratio config), mirrored from
     /// `vtime`.
     pub vtime: VtimeState,

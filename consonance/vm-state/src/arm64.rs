@@ -57,7 +57,7 @@ const TAG_ENGINE_STATE: u16 = 13;
 
 /// Length of the fixed container header (shared with the x86 record set).
 /// Version 4 adds a TLV section and does not change this 10-byte header. The
-/// arm64 record set remains on v3/v4 even though x86's latest version is v5.
+/// arm64 record set remains on v3/v4 even though x86's latest version is v6.
 const HEADER_LEN: usize = 10;
 
 /// The complete non-memory arm64 machine snapshot (skeleton record set).
@@ -842,16 +842,30 @@ mod tests {
     }
 
     #[test]
-    fn x86_v5_is_not_an_arm64_record_version() {
-        let mut x86 = VmState::default();
-        x86.sregs.flags = 1;
-        let x86_bytes = x86.encode().unwrap();
+    fn x86_v5_and_v6_are_not_arm64_record_versions() {
+        let mut x86_v5 = VmState::default();
+        x86_v5.sregs.flags = 1;
+        let x86_v5_bytes = x86_v5.encode().unwrap();
         assert_eq!(
-            u16::from_le_bytes(x86_bytes[4..6].try_into().unwrap()),
+            u16::from_le_bytes(x86_v5_bytes[4..6].try_into().unwrap()),
+            5
+        );
+        assert_eq!(
+            Arm64VmState::decode(&x86_v5_bytes),
+            Err(VmStateError::UnsupportedVersion(5))
+        );
+
+        let x86_v6 = VmState {
+            xsave_restore_bv: Some(0x0102_0304_0506_0708),
+            ..Default::default()
+        };
+        let x86_v6_bytes = x86_v6.encode().unwrap();
+        assert_eq!(
+            u16::from_le_bytes(x86_v6_bytes[4..6].try_into().unwrap()),
             crate::VM_STATE_VERSION
         );
         assert_eq!(
-            Arm64VmState::decode(&x86_bytes),
+            Arm64VmState::decode(&x86_v6_bytes),
             Err(VmStateError::UnsupportedVersion(crate::VM_STATE_VERSION))
         );
     }

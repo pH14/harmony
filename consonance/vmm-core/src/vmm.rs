@@ -4244,6 +4244,23 @@ mod tests {
     }
 
     #[test]
+    fn state_hash_distinguishes_xsave_restore_provenance() {
+        let hash_for = |restore_bv| {
+            let mut backend = configured_mock(Vec::new());
+            backend.set_state(VcpuState {
+                xsave: vec![0; 576],
+                xsave_restore_bv: Some(restore_bv),
+                ..Default::default()
+            });
+            Vmm::new(backend, GuestRam::new(0x1000).unwrap())
+                .state_hash()
+                .unwrap()
+        };
+
+        assert_ne!(hash_for(3), hash_for(2));
+    }
+
+    #[test]
     fn deferred_checkpoint_hash_is_byte_identical_and_cannot_overwrite() {
         let exits = || {
             (0..256)
@@ -8642,6 +8659,49 @@ mod tests {
                 ..Default::default()
             },
             "exception_has_payload",
+        );
+    }
+
+    #[test]
+    fn restore_vm_state_rejects_invalid_xsave_provenance_before_mutation() {
+        // The fixture's short XSAVE image plus an arbitrary restore BV is
+        // intentionally malformed. Validation must call the pure backend
+        // reconstruction helper before the target backend or RAM receives any
+        // state from the source snapshot.
+        let source = full_vmm(nonzero_state(), vec![], 0, 1);
+        let mut snapshot = source.save_vm_state().unwrap();
+        snapshot.xsave_restore_bv = Some(u64::MAX);
+
+        let mut target_state = nonzero_state();
+        target_state.regs.rax = 0xDEAD;
+        target_state.regs.rbx = 0xBEEF;
+        let mut target = full_vmm(target_state, vec![], 0, 9);
+        let target_memory = vec![0x5A; 0x2000];
+        target.restore_guest_memory(&target_memory).unwrap();
+        let before = target.backend.save().unwrap();
+        let before_blob = target.save_vm_state().unwrap().encode().unwrap();
+        let before_vns = target.effective_vns();
+        let source_memory = vec![0xA5; 0x2000];
+        match target.restore_snapshot(&source_memory, &snapshot) {
+            Err(VmmError::ContractViolation(message)) => {
+                assert!(message.contains("XSAVE restore provenance"), "{message}")
+            }
+            other => panic!("malformed XSAVE provenance must be rejected, got {other:?}"),
+        }
+        assert_eq!(
+            target.backend.save().unwrap(),
+            before,
+            "rejecting malformed XSAVE provenance must leave the target vCPU untouched"
+        );
+        assert!(
+            target.guest_memory() == target_memory,
+            "rejecting malformed XSAVE provenance must leave target RAM untouched"
+        );
+        assert_eq!(target.effective_vns(), before_vns);
+        assert_eq!(
+            target.save_vm_state().unwrap().encode().unwrap(),
+            before_blob,
+            "rejecting malformed XSAVE provenance must leave devices and V-time untouched"
         );
     }
 

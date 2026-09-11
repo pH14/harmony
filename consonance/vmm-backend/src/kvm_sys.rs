@@ -37,7 +37,9 @@ use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
 use crate::arch::x86::Injection;
 use crate::arch::x86::VcpuState;
 use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Exit, X86Policy};
-use crate::arch::x86::{canonicalize_regs, canonicalize_sregs, canonicalize_xsave};
+use crate::arch::x86::{
+    canonicalize_regs, canonicalize_sregs, canonicalize_xsave_with_restore_bv, restore_xsave_image,
+};
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, Exit, ExitCounts};
@@ -423,22 +425,23 @@ impl KvmBackend {
 
     /// Read the host-sized XSAVE image: `KVM_GET_XSAVE2` (the
     /// `KVM_CAP_XSAVE2`-reported size) where available, else the fixed 4 KiB
-    /// `KVM_GET_XSAVE`. The returned bytes are `VcpuState.xsave` after
-    /// [`canonicalize_xsave`] collapses the init-optimization encodings.
-    fn save_xsave(&self) -> Result<Vec<u8>> {
+    /// `KVM_GET_XSAVE`. The returned bytes are the canonical `VcpuState.xsave`
+    /// plus optional raw `XSTATE_BV` provenance for init-optimization bits that
+    /// canonicalization cleared.
+    fn save_xsave(&self) -> Result<(Vec<u8>, Option<u64>)> {
         let mut bytes = match self.xsave2_size {
             // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_xsave2` allocates and
             // fills exactly `n` bytes (`n >= size_of::<kvm_xsave>()`). Miri-excluded.
             Some(n) => unsafe { raw_get_xsave2(self.vcpu.as_raw_fd(), n)? },
             None => xsave_to_bytes(&self.vcpu.get_xsave().map_err(kvm_err)?),
         };
-        canonicalize_xsave(&mut bytes);
-        Ok(bytes)
+        let restore_bv = canonicalize_xsave_with_restore_bv(&mut bytes);
+        Ok((bytes, restore_bv))
     }
 
-    /// Restore the XSAVE image saved by [`Self::save_xsave`]. The byte length was
-    /// already validated by `validate_restore_shape`; the `None` legacy path
-    /// re-checks defensively.
+    /// Write the already-validated and reconstructed XSAVE image saved by
+    /// [`Self::save_xsave`]. The caller must perform reconstruction before the
+    /// first KVM state mutation.
     fn restore_xsave(&self, bytes: &[u8]) -> Result<()> {
         match self.xsave2_size {
             // SAFETY: `vcpu` is valid; `raw_set_xsave` reads `bytes` (the validated
@@ -994,7 +997,7 @@ impl Backend for KvmBackend {
         let kevents = self.vcpu.get_vcpu_events().map_err(kvm_err)?;
         let mp = self.vcpu.get_mp_state().map_err(kvm_err)?;
         let xcrs = self.vcpu.get_xcrs().map_err(kvm_err)?;
-        let xsave = self.save_xsave()?;
+        let (xsave, xsave_restore_bv) = self.save_xsave()?;
         let msrs = self.save_msrs()?;
 
         let mut sregs = from_kvm_sregs2(&sregs2);
@@ -1010,6 +1013,7 @@ impl Backend for KvmBackend {
             mp_state: mp_from_kvm(mp.mp_state),
             msrs,
             xsave,
+            xsave_restore_bv,
         })
     }
 
@@ -1025,6 +1029,10 @@ impl Backend for KvmBackend {
         // indices, and the XSAVE image must be the host image size.
         let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
         validate_restore_shape(state, self.msr_filter.as_ref(), xsave_len)?;
+        // Reconstruct and validate the guest-visible header before the first
+        // SET ioctl. A malformed provenance record must leave the live vCPU
+        // untouched just like any other invalid snapshot shape.
+        let xsave = restore_xsave_image(&state.xsave, state.xsave_restore_bv)?;
 
         self.vcpu
             .set_regs(&to_kvm_regs(&state.regs))
@@ -1047,7 +1055,7 @@ impl Backend for KvmBackend {
         };
         self.vcpu.set_mp_state(mp).map_err(kvm_err)?;
         self.vcpu.set_xcrs(&xcrs_of(state.xcr0)).map_err(kvm_err)?;
-        self.restore_xsave(&state.xsave)?;
+        self.restore_xsave(&xsave)?;
         self.restore_msrs(state)?;
 
         // The architectural interrupt/event state above is authoritative for

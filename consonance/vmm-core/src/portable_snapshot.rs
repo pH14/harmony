@@ -1007,6 +1007,54 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
+        ignore = "161 MiB sparse-sidecar boundary regression; native-only allocation is intentional"
+    )]
+    fn sparse_v6_preserves_a_sidecar_larger_than_the_legacy_total_bound() {
+        // A suffix beyond MAX_SUFFIX_LEN selects v6. Make the resulting sidecar
+        // itself exceed MAX_SPARSE_SIDECAR_LEN so the v6 reader/writer branches
+        // cannot accidentally retain the legacy aggregate limit.
+        let suffix = vec![0xA7; MAX_SPARSE_SIDECAR_LEN + 1];
+        let policy = ServiceConfig::default();
+        let mut encoded = encode_sparse_sidecar(&SparsePortableSidecarRef {
+            vm_state: b"large-vm-state",
+            sdk: None,
+            policy: &policy,
+            at: 23,
+            sdk_events: 2,
+            trace_events: 17,
+            trace_schedules: 5,
+            tainted: true,
+            state_blob_suffix: &suffix,
+            control_state: &[],
+        })
+        .unwrap();
+        assert_eq!(
+            u16::from_le_bytes(encoded[8..10].try_into().unwrap()),
+            VERSION
+        );
+        assert!(encoded.len() > MAX_SPARSE_SIDECAR_LEN);
+
+        let decoded = decode_sparse_sidecar(&encoded).unwrap();
+        assert_eq!(decoded.vm_state, b"large-vm-state");
+        assert_eq!(decoded.state_blob_suffix, suffix);
+        drop(decoded);
+        drop(suffix);
+
+        // The same bytes are invalid under v5's bounded reader. Relabel in
+        // place so the test does not keep a second giant encoded clone alive.
+        encoded[8..10].copy_from_slice(&V5_VERSION.to_le_bytes());
+        assert!(matches!(
+            decode_sparse_sidecar(&encoded),
+            Err(PortableSnapshotError::Length {
+                section: "sidecar",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
         ignore = "large stream size regression; small SDK codecs run under Miri"
     )]
     fn sdk_stream_beyond_legacy_limit_selects_version_six_without_dropping_events() {

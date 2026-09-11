@@ -254,24 +254,34 @@ pub fn arb_vm_state() -> impl Strategy<Value = VmState> {
                     arb_hypercall(),
                     arb_devices(),
                     arb_contract_hash(),
+                    proptest::option::of(any::<u64>()),
                     proptest::collection::vec(any::<u8>(), 0..64),
                 )
                     .prop_map(
-                        move |(hypercall, devices, contract_hash, engine_state)| VmState {
-                            regs,
-                            sregs,
-                            xcrs,
-                            debugregs,
-                            events,
-                            mp_state,
-                            msrs: msrs.clone(),
-                            xsave: xsave.clone(),
-                            vtime,
-                            timers: timers.clone(),
+                        move |(
                             hypercall,
                             devices,
                             contract_hash,
+                            xsave_restore_bv,
                             engine_state,
+                        )| {
+                            VmState {
+                                regs,
+                                sregs,
+                                xcrs,
+                                debugregs,
+                                events,
+                                mp_state,
+                                msrs: msrs.clone(),
+                                xsave: xsave.clone(),
+                                vtime,
+                                timers: timers.clone(),
+                                hypercall,
+                                devices,
+                                contract_hash,
+                                xsave_restore_bv,
+                                engine_state,
+                            }
                         },
                     )
             },
@@ -359,6 +369,7 @@ pub fn fully_populated() -> VmState {
         mp_state: MpState::Halted,
         msrs: MsrBlock(msrs),
         xsave: XsaveImage(vec![0x7f, 0x1f, 0x00, 0x00, 0xaa, 0xbb, 0xcc, 0xdd]),
+        xsave_restore_bv: None,
         vtime: VtimeState {
             guest_hz: 2_000_000_000,
             guest_base: 0,

@@ -165,6 +165,7 @@ pub vm_state::VmState::timers: vm_state::TimerQueueState
 pub vm_state::VmState::vtime: vm_state::VtimeState
 pub vm_state::VmState::xcrs: vm_state::Xcrs
 pub vm_state::VmState::xsave: vm_state::XsaveImage
+pub vm_state::VmState::xsave_restore_bv: core::option::Option<u64>
 impl vm_state::VmState
 pub fn vm_state::VmState::decode(&[u8]) -> core::result::Result<vm_state::VmState, vm_state::VmStateError>
 pub fn vm_state::VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>

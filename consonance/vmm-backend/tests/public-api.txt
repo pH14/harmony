@@ -246,6 +246,7 @@ pub vmm_backend::arch::x86::VcpuState::regs: vmm_backend::VcpuRegs
 pub vmm_backend::arch::x86::VcpuState::sregs: vmm_backend::VcpuSregs
 pub vmm_backend::arch::x86::VcpuState::xcr0: u64
 pub vmm_backend::arch::x86::VcpuState::xsave: alloc::vec::Vec<u8>
+pub vmm_backend::arch::x86::VcpuState::xsave_restore_bv: core::option::Option<u64>
 pub struct vmm_backend::arch::x86::X86
 impl vmm_backend::arch::Arch for vmm_backend::arch::x86::X86
 pub type vmm_backend::arch::x86::X86::Caps = vmm_backend::arch::x86::X86Caps
@@ -263,6 +264,8 @@ pub vmm_backend::arch::x86::X86Policy::msr_filter: vmm_backend::MsrFilter
 pub fn vmm_backend::arch::x86::canonicalize_regs(&mut vmm_backend::VcpuRegs)
 pub fn vmm_backend::arch::x86::canonicalize_sregs(&mut vmm_backend::VcpuSregs)
 pub fn vmm_backend::arch::x86::canonicalize_xsave(&mut [u8])
+pub fn vmm_backend::arch::x86::canonicalize_xsave_with_restore_bv(&mut [u8]) -> core::option::Option<u64>
+pub fn vmm_backend::arch::x86::restore_xsave_image(&[u8], core::option::Option<u64>) -> vmm_backend::Result<alloc::vec::Vec<u8>>
 pub trait vmm_backend::arch::Arch
 pub type vmm_backend::arch::Arch::Caps: core::marker::Copy + core::fmt::Debug + core::cmp::PartialEq
 pub type vmm_backend::arch::Arch::Completion: core::fmt::Debug
@@ -848,6 +851,7 @@ pub vmm_backend::VcpuState::regs: vmm_backend::VcpuRegs
 pub vmm_backend::VcpuState::sregs: vmm_backend::VcpuSregs
 pub vmm_backend::VcpuState::xcr0: u64
 pub vmm_backend::VcpuState::xsave: alloc::vec::Vec<u8>
+pub vmm_backend::VcpuState::xsave_restore_bv: core::option::Option<u64>
 pub struct vmm_backend::X86
 impl vmm_backend::arch::Arch for vmm_backend::arch::x86::X86
 pub type vmm_backend::arch::x86::X86::Caps = vmm_backend::arch::x86::X86Caps
@@ -1068,6 +1072,8 @@ pub fn vmm_backend::Arm64KvmBackend<K>::save(&self) -> vmm_backend::Result<vmm_b
 pub fn vmm_backend::Arm64KvmBackend<K>::set_pending_irq(&mut self, core::option::Option<vmm_backend::arch::arm64::GicIntId>) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::set_policy(&mut self, &vmm_backend::arch::arm64::Arm64Policy) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::take_accepted_interrupt(&mut self) -> core::option::Option<vmm_backend::arch::arm64::GicIntId>
+pub fn vmm_backend::canonicalize_xsave_with_restore_bv(&mut [u8]) -> core::option::Option<u64>
+pub fn vmm_backend::restore_xsave_image(&[u8], core::option::Option<u64>) -> vmm_backend::Result<alloc::vec::Vec<u8>>
 pub type vmm_backend::MockArm64Caps = vmm_backend::Capabilities<vmm_backend::arch::arm64::Arm64Caps>
 pub type vmm_backend::MockCaps = vmm_backend::Capabilities<vmm_backend::arch::x86::X86Caps>
 pub type vmm_backend::Result<T> = core::result::Result<T, vmm_backend::BackendError>

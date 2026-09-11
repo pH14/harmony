@@ -266,6 +266,7 @@ pub(crate) fn vcpu_state_from(s: &VmState) -> vmm_backend::VcpuState {
         mp_state: from_vm_mp_state(s.mp_state),
         msrs: s.msrs.0.clone(),
         xsave: s.xsave.0.clone(),
+        xsave_restore_bv: s.xsave_restore_bv,
     }
 }
 
@@ -288,6 +289,7 @@ pub(crate) fn fill_vcpu_state(out: &mut VmState, s: &vmm_backend::VcpuState) {
     out.mp_state = to_vm_mp_state(s.mp_state);
     out.msrs = MsrBlock(s.msrs.clone());
     out.xsave = XsaveImage(s.xsave.clone());
+    out.xsave_restore_bv = s.xsave_restore_bv;
     // vmm-core holds no `vtime::TimerQueue`: the only timer is the userspace xAPIC
     // timer, whose state rides in the device blob. So the typed timer queue is
     // empty (trivially satisfies the codec's ordering invariants).
@@ -1245,6 +1247,7 @@ mod tests {
             mp_state: vmm_backend::MpState::Halted,
             msrs,
             xsave: (0u16..600).map(|i| i as u8).collect(),
+            xsave_restore_bv: None,
         }
     }
 
@@ -1258,6 +1261,16 @@ mod tests {
         fill_vcpu_state(&mut s, &original);
         let back = vcpu_state_from(&s);
         assert_eq!(back, original);
+    }
+
+    #[test]
+    fn xsave_restore_provenance_round_trips_through_vm_state() {
+        let mut original = sample_vcpu();
+        original.xsave_restore_bv = Some(3);
+        let mut s = VmState::default();
+        fill_vcpu_state(&mut s, &original);
+        assert_eq!(s.xsave_restore_bv, Some(3));
+        assert_eq!(vcpu_state_from(&s).xsave_restore_bv, Some(3));
     }
 
     #[test]

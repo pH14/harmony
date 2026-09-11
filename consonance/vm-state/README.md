@@ -17,7 +17,10 @@ SREGS and DEBUGREGS fixed records with the captured CPU fields (`flags` and
 `pdptrs`) and permits the engine-state section to be absent. Empty engine state
 and zero extended x86 fields retain the byte-identical v3 writer shape; an
 engine-only state retains the byte-identical v4 shape. ARM continues to use the
-v3/v4 record set. Fixed-layout records use zerocopy wire types; variable
+v3/v4 record set. X86 version 6 retains the v5 record layouts and adds required
+tag 15, an exact eight-byte `xsave_restore_bv` value, when that optional field
+is present; its engine-state section remains optional. A state without that
+field retains the v3/v4/v5 bytes. Fixed-layout records use zerocopy wire types; variable
 sections are length-delimited. MSRs use `BTreeMap` order, and timer entries
 retain their firing order, so encoding is independent of insertion order.
 
@@ -31,7 +34,9 @@ duplicates, and trailing bytes return typed errors.
 rest of the blob. `VM_STATE_VERSION` identifies the newest writer format;
 `VM_STATE_LEGACY_VERSION` names the retained v3 shape. The golden test pins the
 bytes of a fully populated legacy-compatible state, and the version tests pin
-the v4 reader/writer compatibility path.
+the v4/v5 reader/writer compatibility paths. The v6 restore-bits section is
+validated for wire shape here; vmm-core owns any backend-specific validation of
+the captured XSAVE image.
 
 ## Ownership boundaries
 
