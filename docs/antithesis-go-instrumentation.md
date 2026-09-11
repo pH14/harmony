@@ -22,18 +22,17 @@ build constraints from amd64 to amd64 or arm64; it does not alter the handler's
 ABI or event behavior. The Docker `TARGETARCH` selects the matching native Go
 and `libvoidstar.so` build for `linux/amd64` or `linux/arm64`.
 
-The generic process fault `ProcEventKill { ordinal }` sends a positive ordinal to an inherited Unix
-socket. `libvoidstar.so` consumes the arm in a runtime thread and kills its own process group
-synchronously after that many future callbacks. Zero disarms it. The ordinal is serialized in the
-fault reproducer, so a retained action prefix and replay use the same event
-coordinate. The image build verifies the instrumented node marker in the executable and writes a
-hash attestation beside the generated symbol tables. Dissonance admits the action automatically
-only when staging finds that attestation, the runtime bridge, and nonempty `.sym.tsv` metadata, and
-records the capability in the replay vocabulary; an arm that cannot reach the instrumented runtime
-fails the execution loudly. Initial draws
-choose uniformly among binary scales, which covers finite callback prefixes without importing a
-workload bound. A fired coordinate changes the unexpected-death archive state, retained prefixes
-become anchors for dyadic refinement, and replay reuses the exact serialized ordinal.
+The generic process faults `ProcEventKill { rarity }` and `ProcEventPark { rarity, hold }` send
+their arm to an inherited Unix socket. `libvoidstar.so` counts how often each instrumented site has
+been reached and fires at the first callback after the arm whose own site has been visited at most
+`1 << rarity` times: a kill stops the process group synchronously, a park sleeps the calling thread
+for the hold. The runtime owns the visit counts, so the host never names a site and the coordinate
+survives a rebuild. The rarity and hold are serialized in the fault reproducer, so a retained
+action prefix and replay use the same coordinate. The image build verifies the instrumented node
+marker in the executable and writes a hash attestation beside the generated symbol tables.
+Dissonance admits the action automatically only when staging finds that attestation, the runtime
+bridge, and nonempty `.sym.tsv` metadata, and records the capability in the replay vocabulary; an
+arm that cannot reach the instrumented runtime fails the execution loudly.
 
 The [upstream SDK license](https://github.com/antithesishq/antithesis-sdk-go/blob/main/LICENSE) is
 MIT and covers the instrumentor source. The public documentation describes the same toolexec build

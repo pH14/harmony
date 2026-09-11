@@ -1,7 +1,5 @@
 # etcd v3.5.0–3.5.2 — silent data inconsistency after untimely crash
 
-**Status: Antithesis Go instrumentation is wired; CI is the acceptance gate.**
-
 ## The bug
 
 etcd v3.5.0 (PR [#12855](https://github.com/etcd-io/etcd/pull/12855)) introduced backend hooks
@@ -48,11 +46,12 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
   be built from that pinned source by the Antithesis Go instrumentation pipeline; a release
   archive or a stock etcd server executable does not satisfy this entry.
 - **Fault surface**: a hard process kill of one member followed by the normal supervisor restart,
-  while the clients are applying entries. This targets the small interval between consistent-index
-  persistence and the corresponding follower entry apply. Dissonance represents the crash
-  coordinate as the ordinal of an instrumented deterministic event. The Antithesis runtime
-  receives that ordinal over an inherited control channel and kills the member synchronously
-  after that many future callbacks.
+  while the clients are applying entries, and a hold that sleeps one member's thread at an
+  instrumented site. Together these target the small interval between consistent-index persistence
+  and the corresponding follower entry apply. Dissonance names the crash and hold coordinates by
+  how rare the site is: the Antithesis runtime receives the rarity over an inherited control
+  channel and fires at the first callback after the arm whose own site has been visited at most
+  `1 << rarity` times.
 - **Oracle**: the helper journals each acknowledged put outside etcd, and the fault agent reruns a
   check that performs serializable local reads through each member. It compares every
   member's recovered key/value set with the unique acknowledged ledger. An acknowledged-but-
@@ -61,56 +60,14 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
   corruption. The multi-member oracle directly observes the follower-local divergence from the
   upstream report.
 
-## Reachability of the bug window
+## Why the search holds a thread
 
-`image/reachability.sh` measures how often the cluster reaches a lost acknowledged key under
-plain random member kills, with no Dissonance involved. Each iteration kills one random member,
-restarts it, waits for all three to be ready, and runs the oracle. The instrumented server
-reaches the Harmony device only inside a guest, so this measurement runs against an image whose
-`/usr/lib/libvoidstar.so` has been removed; the instrumented callbacks remain compiled in and
-resolve to no-ops.
-
-| configuration | kills | acknowledged writes | conclusive checks | first hit |
-|---|---|---|---|---|
-| 3.5.2, one core | 152 | 1,730,465 | 152 | none |
-| 3.5.2, four cores | 45 | 251,363 | 45 | none |
-| 3.5.2, ten cores | 62 | 361,668 | 62 | kill 5, 13 and 44, in three runs of three |
-| 3.5.3, one core | 59 | 1,058,445 | 59 | none |
-| 3.5.3, four cores | 71 | 708,950 | 71 | none |
-| 3.5.3, ten cores | 61 | 1,161,176 | 61 | none |
-
-Every one of the 450 checks was conclusive. The race needs several runnable cores: one core
-went through 1.7 million acknowledged writes without losing a key, four cores lost none in
-251,363, and ten cores lost one in every run, once after 15,003. A guest with one virtual CPU
-therefore cannot reach this window by killing members alone. Reaching it requires holding the
-applying thread long enough for the periodic commit to run while the consistent index is ahead
-of the data it claims to cover.
-
-## What plain kills reach
-
-Before any search ran, the cluster was driven by a loop that killed a random member and restarted
-it, with no deterministic execution underneath. Each run counted its kill iterations and whether
-any acknowledged key went missing from a recovered member. The arms were run both on all of the
-host's cores and pinned to one, because the window needs a commit to overtake the applying thread
-and a single processor removes the parallelism that lets it.
-
-| arm | processors | runs | kill iterations | runs that lost a key |
-|---|---|---|---|---|
-| 3.5.2 | all | 5 | 120 | 4 |
-| 3.5.2 | pinned to one | 3 | 152 | 0 |
-| 3.5.3 | all | 2 | 158 | 0 |
-| 3.5.3 | pinned to one | 1 | 59 | 0 |
-
-Killing members reaches the window on 3.5.2 and never on 3.5.3, which is the case's premise. It
-reaches it only with more than one processor. Consonance runs one processor, so the search has to
-recreate on one processor what parallelism produced on many: holding a thread at an instrumented
-site long enough for the periodic commit to run while the consistent index is ahead of the data
-it covers. Repeating the loop on one processor with such a hold reproduced it:
-
-| arm | runs | kill iterations | runs that lost a key |
-|---|---|---|---|
-| 3.5.2 | 5 | 202 | 3 |
-| 3.5.3 | 5 | 272 | 0 |
+The window opens when a periodic commit persists the consistent index while the applying thread is
+still behind it, which needs two threads running at once. Plain random member kills reach it on
+3.5.2 on a multiprocessor host and never on one processor, and never on 3.5.3 either way. Consonance
+runs one virtual processor, so the search has to recreate on one processor what parallelism produced
+on many: holding a thread at an instrumented site long enough for the commit to run ahead of the
+data it claims to cover. The case's fault surface therefore pairs the event kill with an event park.
 
 ## Discovery contract
 
