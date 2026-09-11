@@ -100,8 +100,7 @@ set_config --enable ACPI_SLEEP
 set_config --disable MODULES
 set_config --enable DEBUG_INFO_NONE
 set_config --disable DEBUG_INFO
-set_config --disable SYSTEM_TRUSTED_KEYRING
-set_config --disable SYSTEM_REVOCATION_LIST
+# Kconfig may select keyrings; only external certificate paths must be empty.
 set_config --set-str SYSTEM_TRUSTED_KEYS ''
 set_config --set-str SYSTEM_REVOCATION_KEYS ''
 set_config --set-str LOCALVERSION "$KERNEL_LOCALVERSION"
@@ -109,6 +108,16 @@ set_config --set-str LOCALVERSION "$KERNEL_LOCALVERSION"
 make --directory="$kernel_src" ARCH="$KERNEL_ARCH" -j4 olddefconfig
 config="$kernel_src/.config"
 [ -s "$config" ] || fail "kernel configuration was not generated"
+
+# Retain the inputs before validation so configuration failures retain their evidence.
+mkdir -p -- "$reports_dir"
+cp -- "$config" "$reports_dir/nested-custom-kernel.config"
+{
+    printf 'kernel_source_url=%s\n' "$KERNEL_URL"
+    printf 'kernel_source_sha256=%s\n' "$archive_sha256"
+    sha256sum -- "$patch_file" "$config"
+    printf 'build_parallelism=4\n'
+} > "$reports_dir/nested-custom-build-inputs.txt"
 
 require_config_y() {
     local symbol=$1
@@ -154,22 +163,10 @@ done
 require_config_disabled CONFIG_MODULES
 require_config_disabled CONFIG_DEBUG_INFO
 require_config_y CONFIG_DEBUG_INFO_NONE
-require_config_disabled CONFIG_SYSTEM_TRUSTED_KEYRING
-require_config_disabled CONFIG_SYSTEM_REVOCATION_LIST
 require_config_empty_string CONFIG_SYSTEM_TRUSTED_KEYS
 require_config_empty_string CONFIG_SYSTEM_REVOCATION_KEYS
 grep -qx "CONFIG_LOCALVERSION=\"$KERNEL_LOCALVERSION\"" "$config" || \
     fail "CONFIG_LOCALVERSION was not retained"
-
-# Retain the inputs even if compilation later fails or times out.
-mkdir -p -- "$reports_dir"
-cp -- "$config" "$reports_dir/nested-custom-kernel.config"
-{
-    printf 'kernel_source_url=%s\n' "$KERNEL_URL"
-    printf 'kernel_source_sha256=%s\n' "$archive_sha256"
-    sha256sum -- "$patch_file" "$config"
-    printf 'build_parallelism=4\n'
-} > "$reports_dir/nested-custom-build-inputs.txt"
 
 printf 'nested-kvm-build-kernel: building bzImage with make -j4\n'
 make --directory="$kernel_src" ARCH="$KERNEL_ARCH" -j4 bzImage
