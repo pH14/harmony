@@ -231,8 +231,12 @@ pub const EVENT_SITE_RARITY: [u8; 5] = [0, 4, 8, 12, 16];
 /// Lengths of an event park's hold, in microseconds. The runtime sleeps inside
 /// the callback, so the hold is exact and can be far longer than a breakpoint
 /// park's: a hold has to outlast a batch commit for another thread to overtake
-/// the held one.
-pub const EVENT_PARK_HOLD_US: [u32; 4] = [1_000, 10_000, 50_000, 250_000];
+/// the held one. The ladder reaches past a horizon because a fault in the next
+/// action lands on a horizon boundary, so only a hold longer than the horizon
+/// can still be holding a thread when that fault arrives.
+pub const EVENT_PARK_HOLD_US: [u32; 7] = [
+    1_000, 10_000, 50_000, 250_000, 500_000, 1_000_000, 2_000_000,
+];
 
 /// Draw one action from the bundle's vocabulary. A bundle that declares no
 /// hook cannot draw one, so that arm yields `Wait` rather than an action the

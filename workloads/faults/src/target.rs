@@ -312,23 +312,30 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
             )),
             perturb: None,
         },
+        // The arm stands for as long as the hold it installs. A hold longer
+        // than a horizon is the only way a thread is still held when the next
+        // action's fault arrives, and an arm that expired with its own action
+        // could only ever name places the workload reaches early.
         FaultAction::EventPark {
             node,
             rarity,
             hold_us,
-        } => ActionDelta {
-            standing: Some(standing(
-                process_target(
-                    node,
-                    &Fault::ProcEventPark {
-                        rarity,
-                        hold: Span(u64::from(hold_us).saturating_mul(1_000)),
-                    },
-                ),
-                (start, end),
-            )),
-            perturb: None,
-        },
+        } => {
+            let hold = u64::from(hold_us).saturating_mul(1_000);
+            ActionDelta {
+                standing: Some(standing(
+                    process_target(
+                        node,
+                        &Fault::ProcEventPark {
+                            rarity,
+                            hold: Span(hold),
+                        },
+                    ),
+                    (start, end.max(start.saturating_add(hold))),
+                )),
+                perturb: None,
+            }
+        }
         FaultAction::Hook(id) => ActionDelta {
             standing: Some(standing(
                 process_target(0, &Fault::RunHook(id)),
@@ -718,11 +725,11 @@ mod tests {
                 rarity: 12,
                 hold_us: 50_000,
             },
-            (1_000, 2_000),
+            (1_000, 500_001_000),
         );
         let standing = delta.standing.expect("an event park stands");
         assert_eq!(standing.start, 1_000);
-        assert_eq!(standing.end, 2_000);
+        assert_eq!(standing.end, 500_001_000);
         assert_eq!(
             decode_process_target(&standing.target),
             Some((
@@ -733,6 +740,20 @@ mod tests {
                 }
             ))
         );
+    }
+
+    #[test]
+    fn an_event_park_holding_past_its_horizon_stands_for_the_whole_hold() {
+        let delta = action_delta(
+            FaultAction::EventPark {
+                node: 2,
+                rarity: 0,
+                hold_us: 2_000_000,
+            },
+            (1_000, 500_001_000),
+        );
+        let standing = delta.standing.expect("an event park stands");
+        assert_eq!(standing.end, 2_000_001_000);
     }
 
     #[test]

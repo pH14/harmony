@@ -96,7 +96,10 @@ survives a rebuild of the workload. A rare site is reached late and seldom,
 which is where a crash finds state a hot site has already passed through many
 times. The runtime reports the edge of the site that killed, and the campaign
 summary carries it as `fired_site`; the image's `/symbols` tables are what turn
-that edge into a file and a line.
+that edge into a file and a line. An `EventPark` may hold for longer than a
+horizon, and its arm stands for the whole hold. Every other fault lands on a
+horizon boundary, so only a hold that outlasts the horizon leaves a thread still
+held when the next action's fault arrives.
 
 ## Running it
 
