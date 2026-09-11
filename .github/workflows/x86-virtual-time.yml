@@ -407,3 +407,99 @@ jobs:
         run: cargo clippy -p vmm-backend -p vmm-core --all-features --all-targets -- -D warnings
       - name: tests (portable)
         run: cargo test -p vmm-backend --all-features
+
+  # Bounded snapshot/completion qualification on the runner's built product
+  # tree. These are exact, ignored KVM regressions from #295/#299/#301/#302;
+  # every command must run one test and prove that in its own log. The PAE
+  # result is vendor/paging-aware because #314 is a known AMD default-NPT
+  # failure. Its strict oracle and raw log remain retained as evidence; a
+  # known AMD/NPT failure is never reported as universal qualification.
+  snapshot-hardware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+      - name: Grant /dev/kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -c /dev/kvm
+          ls -l /dev/kvm
+      - name: Record host vendor and paging mode
+        run: |
+          set -euo pipefail
+          mkdir -p snapshot-report
+          git rev-parse HEAD > snapshot-report/source-revision.txt
+          uname -a > snapshot-report/host.txt
+          lscpu >> snapshot-report/host.txt
+          grep -m1 'model name' /proc/cpuinfo >> snapshot-report/host.txt
+          grep -m1 'vendor_id' /proc/cpuinfo >> snapshot-report/host.txt
+          vendor=$(awk -F: '/^vendor_id[[:space:]]*:/{gsub(/[[:space:]]/, "", $2); print $2; exit}' /proc/cpuinfo)
+          npt=unavailable
+          if test -r /sys/module/kvm_amd/parameters/npt; then
+            npt=$(tr -d '[:space:]' < /sys/module/kvm_amd/parameters/npt)
+          fi
+          printf 'CPU_VENDOR=%s\nKVM_AMD_NPT=%s\n' "$vendor" "$npt" | tee snapshot-report/paging-mode.txt
+          cat /proc/cpuinfo > snapshot-report/cpuinfo.txt
+      - name: Run required KVM completion and full-VMM tests
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          mkdir -p snapshot-report
+
+          run_exact() {
+            local package=$1
+            local binary=$2
+            local test_name=$3
+            local label=$4
+            local log="snapshot-report/${label}.log"
+            printf '%s\n' "cargo test --locked --release -p ${package} --test ${binary} ${test_name} -- --ignored --exact --test-threads=1 --nocapture" | tee "snapshot-report/${label}.command"
+            cargo test --locked --release -p "$package" --test "$binary" "$test_name" \
+              -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee "$log"
+            grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
+          }
+
+          run_exact vmm-backend kvm_smoke serviced_pio_is_exactly_snapshottable_without_guest_execution pio
+          run_exact vmm-backend kvm_smoke serviced_msr_is_exactly_snapshottable_without_guest_execution msr
+          run_exact vmm-backend kvm_smoke serviced_exception_payload_round_trips_and_empty_restore_clears_it exception-payload
+          run_exact vmm-backend kvm_smoke serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu mmio-backend
+          run_exact vmm-core x86_cpu_snapshots live_kvm::mmio_rmw_finishes_before_full_vmm_snapshot mmio-full-vmm
+
+          vendor=$(awk -F= '/^CPU_VENDOR=/{print $2}' snapshot-report/paging-mode.txt)
+          npt=$(awk -F= '/^KVM_AMD_NPT=/{print $2}' snapshot-report/paging-mode.txt)
+          pae_log=snapshot-report/pae-full-vmm.log
+          printf '%s\n' 'cargo test --locked --release -p vmm-core --test x86_cpu_snapshots live_kvm::pae_cached_pdptrs_survive_full_vmm_snapshot_restore -- --ignored --exact --test-threads=1 --nocapture' | tee snapshot-report/pae-full-vmm.command
+          if [[ "$vendor" == AuthenticAMD && "$npt" =~ ^(Y|1)$ ]]; then
+            printf '%s\n' 'PAE_STATUS=known-unresolved-amd-default-npt' | tee snapshot-report/pae-status.txt
+            set +e
+            cargo test --locked --release -p vmm-core --test x86_cpu_snapshots \
+              live_kvm::pae_cached_pdptrs_survive_full_vmm_snapshot_restore \
+              -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee "$pae_log"
+            rc=${PIPESTATUS[0]}
+            set -e
+            printf 'PAE_TEST_EXIT=%s\n' "$rc" | tee -a snapshot-report/pae-status.txt
+            if [[ "$rc" -eq 0 ]]; then
+              grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$pae_log"
+              printf '%s\n' 'PAE_OBSERVATION=passed-on-amd-default-npt' | tee -a snapshot-report/pae-status.txt
+            else
+              printf '%s\n' 'PAE_OBSERVATION=failed-known-amd-default-npt' | tee -a snapshot-report/pae-status.txt
+              printf '%s\n' 'The strict PAE oracle failed on the known AMD default-NPT case; retaining this run as evidence.'
+            fi
+          else
+            printf '%s\n' 'PAE_STATUS=required-gate' | tee snapshot-report/pae-status.txt
+            run_exact vmm-core x86_cpu_snapshots live_kvm::pae_cached_pdptrs_survive_full_vmm_snapshot_restore pae-full-vmm
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-snapshot-hardware-${{ github.run_id }}
+          path: snapshot-report
+          if-no-files-found: error
+          retention-days: 30

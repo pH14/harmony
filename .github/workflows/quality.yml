@@ -182,15 +182,27 @@ jobs:
           cargo test --locked --release --manifest-path dissonance/Cargo.toml --all-features
           cargo deny --manifest-path dissonance/Cargo.toml check
 
-      - name: Workload support and fault toolkit gates
+      - name: Workload support gates
         run: |
-          for package in oci guest-image nes-protocol fault-policy faults tools; do
+          for package in oci guest-image nes-protocol fault-policy tools; do
             manifest="workloads/$package/Cargo.toml"
             cargo fmt --manifest-path "$manifest" --all -- --check
             cargo clippy --locked --manifest-path "$manifest" --all-features --all-targets -- -D warnings
             cargo test --locked --manifest-path "$manifest" --all-features
             cargo deny --manifest-path "$manifest" check --config deny.toml
           done
+
+      # workloads/faults is an excluded standalone workspace. Keep its
+      # portable report and replay contracts visible as their own gate so a
+      # change to #294/#300 cannot hide behind the heterogeneous workload loop.
+      # This intentionally exercises no CLI, evaluator, guest image, or KVM
+      # path; the package's all-feature tests are host-portable.
+      - name: workloads/faults portable gates (out-of-workspace manifest)
+        run: |
+          cargo fmt --manifest-path workloads/faults/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path workloads/faults/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --locked --manifest-path workloads/faults/Cargo.toml --all-features
+          cargo deny --manifest-path workloads/faults/Cargo.toml check --config deny.toml
 
       # workloads/fault-agent is out-of-workspace (its own manifest). Its
       # portable bundle, reconcile, and directive logic tests on any host; the
