@@ -8,7 +8,7 @@ root=$(mktemp -d)
 trap 'rm -rf -- "$root"' EXIT
 mkdir -p "$root"/{bin,dev,proc,sys,tmp,modules}
 cp "$(command -v busybox)" "$root/bin/busybox"
-for applet in sh mount insmod uname cat poweroff sleep; do
+for applet in sh mount insmod uname cat poweroff sleep mkdir grep tar base64 wc; do
   ln -s busybox "$root/bin/$applet"
 done
 cc -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -O2 -static \
@@ -39,6 +39,11 @@ else
   done < reports/nested-module-deps.txt
   test -s "$root/modules.txt"
 fi
+if test "${NESTED_SNAPSHOT_TESTS:-false}" = true; then
+  test "$kernel_image" = reports/nested-custom-bzImage
+  bash .github/scripts/nested-kvm-stage-tests.sh "$root"
+  : > "$root/expected-snapshot-tests"
+fi
 python3 .github/scripts/nested-kvm-initramfs.py "$root" reports/nested-initramfs.gz
 sha256sum "$root/bin/nested-kvm-hlt" reports/nested-initramfs.gz > reports/nested-image-sha256.txt
 sudo sha256sum "$kernel_image" > reports/nested-kernel-sha256.txt
@@ -51,6 +56,11 @@ sudo timeout --signal=TERM --kill-after=5s 120s qemu-system-x86_64 \
   2>&1 | tee reports/nested-console.raw || status=$?
 printf '%s\n' "$status" > reports/nested-qemu-status.txt
 tr -d '\r' < reports/nested-console.raw > reports/nested-console.txt
+if test "${NESTED_SNAPSHOT_TESTS:-false}" = true; then
+  python3 .github/scripts/nested-kvm-extract-evidence.py \
+    reports/nested-console.txt reports/nested-snapshot-evidence
+  grep -Fx 'INNER_SNAPSHOT_TESTS_STATUS=0' reports/nested-console.txt
+fi
 test "$status" -eq 0
 test "$(grep -cx 'INNER_KVM_HLT=pass' reports/nested-console.txt)" -eq 1
 grep -Fx 'INNER_PROBE_STATUS=0' reports/nested-console.txt

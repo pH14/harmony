@@ -6,6 +6,10 @@ on:
         description: Boot the isolated diagnostic synchronized-shadow kernel
         type: boolean
         default: false
+      snapshot_tests:
+        description: Run the four existing full-VMM snapshot tests inside the custom kernel
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -42,15 +46,28 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends busybox-static qemu-system-x86 zstd build-essential flex bison libelf-dev libssl-dev bc
+      - name: Prepare snapshot test toolchain
+        if: inputs.snapshot_tests
+        env:
+          CUSTOM_KERNEL: ${{ inputs.custom_kernel }}
+        run: |
+          test "$CUSTOM_KERNEL" = true
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup default 1.97.0
       - name: Build the isolated diagnostic kernel
         if: inputs.custom_kernel
         run: bash .github/scripts/nested-kvm-build-kernel.sh
       - name: Execute HLT through KVM inside a disposable kernel VM
         env:
           CUSTOM_KERNEL: ${{ inputs.custom_kernel }}
+          NESTED_SNAPSHOT_TESTS: ${{ inputs.snapshot_tests }}
         run: |
           if test "$CUSTOM_KERNEL" = true; then
-            printf '%s\n' 'Isolated custom-kernel inner KVM HLT probe; no snapshot qualification.' > reports/scope.txt
+            if test "$NESTED_SNAPSHOT_TESTS" = true; then
+              printf '%s\n' 'Isolated custom-kernel PAE, MMIO, and XSAVE tests; general snapshot correctness unproven.' > reports/scope.txt
+            else
+              printf '%s\n' 'Isolated custom-kernel inner KVM HLT probe; no snapshot qualification.' > reports/scope.txt
+            fi
             bash .github/scripts/nested-kvm-boot.sh reports/nested-custom-bzImage
           else
             printf '%s\n' 'Isolated stock-kernel inner KVM HLT probe; no snapshot qualification.' > reports/scope.txt

@@ -25,6 +25,35 @@ fi
 if [ "$status" -eq 0 ]; then
     /bin/nested-kvm-hlt || status=$?
 fi
+if [ -f /expected-snapshot-tests ] && [ "$status" -eq 0 ]; then
+    mkdir -p /reports || status=1
+    export XSAVE_CONTINUATION_REPORT_DIR=/reports/xsave-continuation
+    export XSAVE_LIVE_REGISTERS_REPORT_DIR=/reports/xsave-live-registers
+    for case in pae_cached_pdptrs_survive_full_vmm_snapshot_restore \
+        mmio_rmw_finishes_before_full_vmm_snapshot \
+        xsave_guest_bytes_survive_cold_continuation \
+        xsave_live_registers_survive_cold_continuation; do
+        /bin/x86_cpu_snapshots "live_kvm::$case" --exact --ignored \
+            --test-threads=1 --nocapture > "/reports/$case.log" 2>&1 || status=1
+        cat "/reports/$case.log" || status=1
+        grep -q '^test result: ok. 1 passed; 0 failed; 0 ignored;' \
+            "/reports/$case.log" || status=1
+    done
+    if tar -czf /tmp/snapshot-evidence.tar.gz -C /reports .; then
+        size=$(wc -c < /tmp/snapshot-evidence.tar.gz)
+        if [ "$size" -le 16777216 ]; then
+            printf 'SNAPSHOT_EVIDENCE_BEGIN\n'
+            base64 /tmp/snapshot-evidence.tar.gz || status=1
+            printf 'SNAPSHOT_EVIDENCE_END\n'
+        else
+            printf 'Snapshot evidence exceeds 16 MiB compressed limit\n'
+            status=1
+        fi
+    else
+        status=1
+    fi
+    printf 'INNER_SNAPSHOT_TESTS_STATUS=%s\n' "$status"
+fi
 printf 'INNER_PROBE_STATUS=%s\n' "$status"
 poweroff -f
 while :; do sleep 1; done
