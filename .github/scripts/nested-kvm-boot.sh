@@ -4,6 +4,7 @@ set -euo pipefail
 kernel_version=$(uname -r)
 kernel_image=${1:-/boot/vmlinuz-$kernel_version}
 command_line="console=ttyS0 panic=1 rdinit=/init"
+guest_memory=512M
 root=$(mktemp -d)
 trap 'rm -rf -- "$root"' EXIT
 mkdir -p "$root"/{bin,dev,proc,sys,tmp,modules}
@@ -44,13 +45,17 @@ if test "${NESTED_SNAPSHOT_TESTS:-false}" = true; then
   test "$kernel_image" = reports/nested-custom-bzImage
   bash .github/scripts/nested-kvm-stage-tests.sh "$root"
   : > "$root/expected-snapshot-tests"
+  # Raw captures for six cases exceed the 256 MiB rootfs limit of a 512 MiB
+  # guest. Retain them without changing the tested 4 MiB inner VMs.
+  guest_memory=2048M
 fi
 python3 .github/scripts/nested-kvm-initramfs.py "$root" reports/nested-initramfs.gz
 sha256sum "$root/bin/nested-kvm-hlt" reports/nested-initramfs.gz > reports/nested-image-sha256.txt
 sudo sha256sum "$kernel_image" > reports/nested-kernel-sha256.txt
+printf '%s\n' "$guest_memory" > reports/nested-guest-memory.txt
 status=0
 sudo timeout --signal=TERM --kill-after=5s 120s qemu-system-x86_64 \
-  -machine pc,accel=kvm -cpu host -m 512M -smp 1 -nodefaults \
+  -machine pc,accel=kvm -cpu host -m "$guest_memory" -smp 1 -nodefaults \
   -display none -serial stdio -monitor none -nic none -no-reboot \
   -kernel "$kernel_image" -initrd reports/nested-initramfs.gz \
   -append "$command_line" \
