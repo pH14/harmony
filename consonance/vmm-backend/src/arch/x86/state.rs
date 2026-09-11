@@ -234,20 +234,14 @@ pub struct VcpuEvents {
     pub triple_fault_pending: u8,
 }
 
-/// `RFLAGS.RF` (resume flag).
-const RFLAGS_RF: u64 = 1 << 16;
-
-/// Canonicalize exit-mechanics residue in the general registers, in place.
+/// Preserve general registers verbatim for snapshotting.
 ///
-/// At an exit taken mid-instruction (an MMIO access the host emulates), VMX
-/// saves `RFLAGS` with `RF` set — the fault-restart semantics of SDM vol. 3,
-/// "Saving RFLAGS" — while SVM reports it clear. The instruction is completed by the
-/// emulator either way, and `RF` self-clears at the next instruction boundary,
-/// so the bit carries no guest-visible state at a serviced exit. Cleared so
-/// equal guest state hashes equally across vendors.
-pub fn canonicalize_regs(regs: &mut VcpuRegs) {
-    regs.rflags &= !RFLAGS_RF;
-}
+/// This compatibility entry point formerly cleared `RFLAGS.RF` as MMIO exit
+/// residue. RF suppresses an instruction breakpoint before the next instruction
+/// executes, so clearing it can change a cold continuation. The backend retires
+/// serviced exit completions separately; capture must retain the resulting
+/// architectural flags, including a deliberately set RF.
+pub fn canonicalize_regs(_regs: &mut VcpuRegs) {}
 
 /// Canonicalize the architecturally-ignored fields of unusable segments, in
 /// place.
@@ -432,25 +426,24 @@ mod tests {
     }
 
     #[test]
-    fn rf_exit_residue_collapses_across_vendors() {
-        // The measured cross-vendor pair at an MMIO exit (run 33127863719):
-        // VMX reports RF set in the exit-time RFLAGS, SVM reports it clear.
-        let mut intel = VcpuRegs {
+    fn resume_flag_distinguishes_debug_restart_states() {
+        let mut resume = VcpuRegs {
             rflags: 0x10282,
             ..VcpuRegs::default()
         };
-        let mut amd = VcpuRegs {
+        let mut ordinary = VcpuRegs {
             rflags: 0x282,
             ..VcpuRegs::default()
         };
-        canonicalize_regs(&mut intel);
-        canonicalize_regs(&mut amd);
-        assert_eq!(intel, amd);
-        assert_eq!(intel.rflags, 0x282);
+        canonicalize_regs(&mut resume);
+        canonicalize_regs(&mut ordinary);
+        assert_ne!(resume, ordinary);
+        assert_eq!(resume.rflags, 0x10282);
+        assert_eq!(ordinary.rflags, 0x282);
     }
 
     #[test]
-    fn regs_other_than_rf_are_untouched() {
+    fn general_registers_are_untouched() {
         let mut regs = VcpuRegs {
             rax: 0x1234,
             rsp: 0xffff_ffff_8260_3e98,
@@ -462,7 +455,7 @@ mod tests {
         assert_eq!(regs.rax, 0x1234);
         assert_eq!(regs.rsp, 0xffff_ffff_8260_3e98);
         assert_eq!(regs.rip, 0xffff_ffff_8125_6a62);
-        assert_eq!(regs.rflags, 0xac6);
+        assert_eq!(regs.rflags, 0x10ac6);
     }
 
     #[test]
