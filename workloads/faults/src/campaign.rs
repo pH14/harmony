@@ -19,10 +19,11 @@ use searcher::{
         archive::{RetentionPolicy, SelectorPolicy},
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignConfig,
-            CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
-            CampaignStreamHeader, CampaignTypes, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
-            Evaluation, GamePolicies, InitialDrawState, InputPolicy, RefinementRequest, Reporting,
-            SnapshotCheckpoint, TargetExecution, postcard_result_sha256, run_campaign_checkpointed,
+            CampaignExecutionOptions, CampaignJobResult, CampaignModeReport, CampaignOrigin,
+            CampaignProgressRecord, CampaignStreamHeader, CampaignTypes,
+            DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Evaluation, GamePolicies, InitialDrawState,
+            InputPolicy, RefinementRequest, Reporting, ResultBuffering, SnapshotCheckpoint,
+            TargetExecution, postcard_result_sha256, run_campaign_checkpointed_with_options,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
     },
@@ -1290,8 +1291,23 @@ pub fn run_fault_campaign_checkpointed(
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
 ) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
-    let (report, checkpoint) =
-        run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)?;
+    // Admission is ordered, so a worker that finishes early cannot be refilled
+    // until every earlier reservation admits. A fault input's cost spans two
+    // orders of magnitude, because one Wait runs for `1 << scale` horizons, so
+    // one long job at the admission cursor idles every other worker. A second
+    // buffered result per worker lets each start its next reserved job while
+    // its first waits its turn.
+    let (report, checkpoint) = run_campaign_checkpointed_with_options(
+        game,
+        &config.generic(),
+        origin,
+        stream,
+        progress,
+        CampaignExecutionOptions {
+            result_buffering: ResultBuffering::TwoPerWorker,
+            ..CampaignExecutionOptions::default()
+        },
+    )?;
     Ok((FaultCampaignReport::new(report), checkpoint))
 }
 
