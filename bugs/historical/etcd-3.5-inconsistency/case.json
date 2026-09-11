@@ -51,7 +51,7 @@
     "seed": 1,
     "workers": 4,
     "executions": 4000,
-    "actions": 24,
+    "actions": 48,
     "wall_minutes": 150
   },
   "discovery_mode": "guided",

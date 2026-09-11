@@ -34,14 +34,14 @@ members and padded to four bytes, which Linux initramfs requires before a raw
 
 ## Actions
 
-An input is a list of actions, each running for one fixed horizon of guest
-time ([`target`](src/target.rs)):
+An input is a list of actions laid end to end over guest time
+([`target`](src/target.rs)). Every action but `Wait` runs for one horizon:
 
 | action | effect |
 |---|---|
-| `Wait` | nothing; the workload runs undisturbed for a horizon |
+| `Wait(scale)` | nothing; the workload runs undisturbed for `1 << scale` horizons, scale 0 to 7 |
 | `Kill(node)` | the node stays down for the whole horizon |
-| `EventKill(node, ordinal)` | the instrumented runtime kills the node synchronously at a deterministic event ordinal |
+| `EventKill(node, ordinal)` | the instrumented runtime kills the node synchronously at a deterministic event ordinal; the arm stands until it fires or the input ends |
 | `Pause(node, ticks)` | the node is stopped, then continued inside the horizon |
 | `Restart(node)` | the node is killed and comes back inside the horizon |
 | `Hook(id)` | the agent runs that hook once |

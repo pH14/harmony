@@ -41,7 +41,7 @@ use crate::{
     },
     bundle::{FaultVocabulary, MAX_NODES},
     consonance::{FaultConfig, FaultTarget, identity, snapshot_memory_charge},
-    target::{FaultAction, FaultObservations, FaultSnapshot, MAX_FAULT_ACTIONS},
+    target::{FaultAction, FaultObservations, FaultSnapshot, MAX_FAULT_ACTIONS, WAIT_MAX_SCALE},
 };
 
 /// Stream format written by fault-package campaigns.
@@ -416,7 +416,10 @@ fn event_context_digest(actions: &[FaultAction]) -> [u8; 32] {
     digest.update((actions.len() as u64).to_le_bytes());
     for action in actions {
         match *action {
-            FaultAction::Wait => digest.update([0]),
+            FaultAction::Wait(scale) => {
+                digest.update([0]);
+                digest.update([scale]);
+            }
             FaultAction::Kill(node) => {
                 digest.update([1]);
                 digest.update(node.to_le_bytes());
@@ -794,7 +797,7 @@ impl InputPolicy for FaultGame {
     }
 
     fn longest_action_time(&self) -> u64 {
-        1
+        1 << WAIT_MAX_SCALE
     }
 
     fn policies(&self, run: &FaultCampaignRun) -> GamePolicies {
@@ -1425,7 +1428,7 @@ mod tests {
     #[test]
     fn event_coordinate_observations_are_folded_in_admission_order() {
         let game = game();
-        let first_prefix = [FaultAction::Wait];
+        let first_prefix = [FaultAction::Wait(0)];
         let second_prefix = [FaultAction::Kill(0)];
         let fired = FaultAction::EventKill {
             node: 2,
@@ -1492,7 +1495,7 @@ mod tests {
         let game = game();
         let run = run(1, vec![]);
         game.initial_draw_state(&run, None).expect("draw state");
-        let prefix = vec![FaultAction::Wait, FaultAction::Kill(0)];
+        let prefix = vec![FaultAction::Wait(0), FaultAction::Kill(0)];
         let observed = FaultAction::EventKill {
             node: 0,
             ordinal: 8,
@@ -1545,11 +1548,11 @@ mod tests {
         let run = run(1, vec![]);
         let state = FaultDrawState::default();
         let parent = FaultInput {
-            actions: vec![FaultAction::Wait],
+            actions: vec![FaultAction::Wait(0)],
         };
         let request = RefinementRequest {
             parent_id: 7,
-            prefix: vec![FaultAction::Wait, FaultAction::Kill(0)],
+            prefix: vec![FaultAction::Wait(0), FaultAction::Kill(0)],
             action: FaultAction::EventKill {
                 node: 0,
                 ordinal: 4,

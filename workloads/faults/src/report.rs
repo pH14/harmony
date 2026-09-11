@@ -216,7 +216,7 @@ mod tests {
                 ..FaultObservations::default()
             },
         };
-        let bugs = [bug(4, FaultAction::Kill(0)), bug(9, FaultAction::Wait)];
+        let bugs = [bug(4, FaultAction::Kill(0)), bug(9, FaultAction::Wait(0))];
         let windows = ActionWindows {
             root_seal: 7,
             ..WINDOWS

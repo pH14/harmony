@@ -89,9 +89,9 @@ mod real {
     use harmony_fault_agent::faults::ActiveFaults;
     use harmony_fault_agent::recovery::{ReadyHook, RecoveryGate};
     use harmony_fault_agent::regs::{
-        REG_ALIVE, REG_EVENT_KILLS_FIRED, REG_HOOKS_FINISHED, REG_HOOKS_STARTED, REG_PARKED,
-        REG_RESTARTS, REG_SOMETIMES, REG_TICKS, REG_UNEXPECTED_DEATHS, REG_WORKLOAD_DEATHS,
-        Registers,
+        REG_ALIVE, REG_CHECKS_FINISHED, REG_EVENT_KILL_AGE_TICKS, REG_EVENT_KILLS_FIRED,
+        REG_HOOKS_FINISHED, REG_HOOKS_STARTED, REG_PARKED, REG_RESTARTS, REG_SOMETIMES, REG_TICKS,
+        REG_UNEXPECTED_DEATHS, REG_WORKLOAD_DEATHS, Registers,
     };
     use harmony_fault_agent::supervisor::{Action, Supervisor};
     use harmony_fault_agent::{Clock, TICK_NANOS};
@@ -125,7 +125,7 @@ mod real {
     /// The points the agent declares for itself. A hook's own assertion ids are
     /// workload-owned and are not declared here; they still fire, they just
     /// carry no name in the host's never-fired report.
-    const CATALOG: [Point; 11] = [
+    const CATALOG: [Point; 13] = [
         Point::always(HOOK_FAILURE_POINT, "fault_agent.hook_assertion"),
         Point::state(REG_TICKS, "fault_agent.ticks"),
         Point::state(REG_ALIVE, "fault_agent.alive"),
@@ -137,6 +137,8 @@ mod real {
         Point::state(REG_PARKED, "fault_agent.parked"),
         Point::state(REG_EVENT_KILLS_FIRED, "fault_agent.event_kills_fired"),
         Point::state(REG_WORKLOAD_DEATHS, "fault_agent.workload_deaths"),
+        Point::state(REG_EVENT_KILL_AGE_TICKS, "fault_agent.event_kill_age_ticks"),
+        Point::state(REG_CHECKS_FINISHED, "fault_agent.checks_finished"),
     ];
 
     type GuestSdk = Sdk<doorbell::DeviceTransport>;
@@ -1026,6 +1028,7 @@ mod real {
             } else if let Some(signal) = status.signal() {
                 log(tick, &format!("check died on signal {signal}"));
             }
+            supervisor.note_check_finished();
             runtime.check = None;
             runtime.next_check_tick = tick + CHECK_INTERVAL_TICKS;
             return Ok(());

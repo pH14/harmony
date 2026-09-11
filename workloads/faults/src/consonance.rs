@@ -35,8 +35,8 @@ use searcher::target::ExitKind;
 use sha2::{Digest, Sha256};
 
 use crate::target::{
-    ActionWindows, FaultAction, FaultObservations, FaultSnapshot, FaultStop, action_delta,
-    decode_sdk_events, standing_windows,
+    ActionWindows, FaultAction, FaultObservations, FaultSnapshot, FaultStop, WAIT_MAX_SCALE,
+    action_delta, decode_sdk_events, standing_windows,
 };
 
 /// Guest RAM when a campaign names none. The workloads are real database
@@ -47,9 +47,22 @@ pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-v1";
 const SEED: u64 = 0x4661_756c_744c_6162;
 /// Virtual-time bound on reaching the fault agent's `setup_complete`.
 const SETUP_BUDGET: u64 = 120_000_000_000;
-/// Wall-clock limit on one guest run. A guest spinning on a frozen clock never
-/// exits and never reaches its deadline, so only host time can notice it.
-const WALL_LIMIT: Duration = Duration::from_secs(60);
+/// Shortest wall-clock limit on one guest run. A guest spinning on a frozen
+/// clock never exits and never reaches its deadline, so only host time can
+/// notice it.
+const WALL_LIMIT_FLOOR: Duration = Duration::from_secs(60);
+/// How much host time a run may spend per unit of the guest time it was asked
+/// for. The limit only has to separate a slow run from a stopped one, so it is
+/// well above the roughly real-time rate a healthy guest runs at.
+const WALL_LIMIT_FACTOR: u32 = 4;
+
+/// The wall-clock limit for a session whose actions span at most
+/// `1 << WAIT_MAX_SCALE` horizons each. A fixed limit would abandon the
+/// longest `Wait` as a hang.
+fn wall_limit(horizon_nanos: u64) -> Duration {
+    let longest = Duration::from_nanos(horizon_nanos.saturating_mul(1 << WAIT_MAX_SCALE));
+    WALL_LIMIT_FLOOR.max(longest.saturating_mul(WALL_LIMIT_FACTOR))
+}
 /// Prefix snapshots one evaluator keeps resident besides the sealed setup
 /// point. Each holds the pages its run dirtied, and a campaign creates one per
 /// action, so an unbounded cache grows without limit across a long run; an
@@ -113,7 +126,7 @@ impl FaultConfig {
         // slow every run, starting with the boot that reaches setup.
         SessionConfig::new(ram, SEED, SETUP_BUDGET, self.cmdline())
             .with_identity_tag(IDENTITY_TAG)
-            .with_wall_limit(WALL_LIMIT)
+            .with_wall_limit(wall_limit(self.horizon_nanos))
             .with_deferred_virtual_time_checkpoint_hashes()
     }
 }
@@ -682,7 +695,7 @@ impl Live {
             // reconcile, and that shifts the guest's timing enough for a
             // rebuilt endpoint to differ from the one first observed.
             self.branch(last, &actions[..=index])?;
-            let (observation, sealed) = self.run_action(index)?;
+            let (observation, sealed) = self.run_action(&actions[..=index])?;
             let Some((snap, moment)) = sealed else {
                 return Ok(Err(observation));
             };
@@ -718,7 +731,7 @@ impl Live {
             }
         };
         self.branch(parent, &next)?;
-        let (observation, sealed) = self.run_action(prefix.len())?;
+        let (observation, sealed) = self.run_action(&next)?;
         if let Some((snap, moment)) = sealed {
             self.remember(next, snap, moment)?;
         }
@@ -750,7 +763,8 @@ impl Live {
         let Some(index) = actions.len().checked_sub(1) else {
             return Ok(Vec::new());
         };
-        let Some(perturb) = action_delta(actions[index], self.windows.window(index)).perturb else {
+        let Some(perturb) = action_delta(actions[index], self.windows.last_window(actions)).perturb
+        else {
             return Ok(Vec::new());
         };
         let fault = fault_policy::HostFault::decode(&perturb.fault)
@@ -767,9 +781,9 @@ impl Live {
     /// from it.
     fn run_action(
         &mut self,
-        index: usize,
+        actions: &[FaultAction],
     ) -> Result<(FaultObservations, Option<(SnapId, u64)>), String> {
-        let deadline = self.windows.deadline(index);
+        let deadline = self.windows.deadline(actions);
         self.horizons_run = self.horizons_run.saturating_add(1);
         let stop = match self.session.run_until(deadline) {
             Ok(stop) => stop,

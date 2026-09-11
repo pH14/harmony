@@ -14,7 +14,7 @@ use searcher::search::{
 };
 
 use crate::bundle::FaultVocabulary;
-use crate::target::{FaultAction, FaultObservations};
+use crate::target::{FaultAction, FaultObservations, WAIT_MAX_SCALE, action_horizons};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
@@ -183,6 +183,10 @@ pub struct FaultProgressWatermark {
     pub hooks_finished: u64,
     /// Greatest agent tick count.
     pub ticks: u64,
+    /// Greatest number of finished runs of the bundle's check. A campaign
+    /// whose oracle never finishes a run reports nothing for a reason that has
+    /// nothing to do with the workload.
+    pub checks_finished: u64,
 }
 
 /// Fold one endpoint's observations into a progress watermark.
@@ -195,14 +199,16 @@ pub fn merge_progress_watermark(
             sometimes_sites: observation.sometimes_bitmap().count_ones(),
             hooks_finished: observation.hooks_finished,
             ticks: observation.ticks,
+            checks_finished: observation.checks_finished,
         });
     }
 }
 
-/// Every action costs exactly one horizon, so route cost is action count.
+/// Route cost in horizons. Only a `Wait` costs more than one, so the searcher
+/// prices a long stretch of undisturbed execution for what it actually runs.
 #[must_use]
-pub fn action_time(_action: &FaultAction) -> u64 {
-    1
+pub fn action_time(action: &FaultAction) -> u64 {
+    action_horizons(*action)
 }
 
 /// Pause durations in agent ticks.
@@ -233,12 +239,12 @@ pub fn sample_action(
     };
     let node = u16::try_from(pick(rand, usize::from(vocabulary.nodes()))?)?;
     match pick(rand, 8)? {
-        0 => Ok(FaultAction::Wait),
+        0 => Ok(FaultAction::Wait(sample_wait_scale(rand))),
         1 if vocabulary.instrumented_events() => Ok(FaultAction::EventKill {
             node,
             ordinal: sample_event_ordinal(rand),
         }),
-        1 => Ok(FaultAction::Wait),
+        1 => Ok(FaultAction::Wait(sample_wait_scale(rand))),
         2 => Ok(FaultAction::Kill(node)),
         3 => Ok(FaultAction::Pause(
             node,
@@ -246,7 +252,7 @@ pub fn sample_action(
         )),
         4 => Ok(FaultAction::Restart(node)),
         5 => match vocabulary.hooks() {
-            [] => Ok(FaultAction::Wait),
+            [] => Ok(FaultAction::Wait(sample_wait_scale(rand))),
             hooks => Ok(FaultAction::Hook(hooks[pick(rand, hooks.len())?])),
         },
         6 if vocabulary.interrupt_injection() => {
@@ -255,9 +261,9 @@ pub fn sample_action(
         // The arm64 Consonance backend delegates the GIC to KVM, so it has no
         // generic host interrupt injection seam. Keep the draw deterministic
         // while replacing the unavailable arm with a supported no-op action.
-        6 => Ok(FaultAction::Wait),
+        6 => Ok(FaultAction::Wait(sample_wait_scale(rand))),
         _ => match vocabulary.places() {
-            [] => Ok(FaultAction::Wait),
+            [] => Ok(FaultAction::Wait(sample_wait_scale(rand))),
             places => Ok(FaultAction::Park {
                 node,
                 addr: places[pick(rand, places.len())?],
@@ -266,6 +272,13 @@ pub fn sample_action(
             }),
         },
     }
+}
+
+/// Draw a wait length uniformly across the binary scales. Uniform over the
+/// scale rather than over the duration, so a short wait that lands between two
+/// faults stays as likely to be drawn as a long one.
+fn sample_wait_scale(rand: &mut RomuDuoJrRand) -> u8 {
+    (rand.next_u64() % (u64::from(WAIT_MAX_SCALE) + 1)) as u8
 }
 
 /// Draw across every positive `u64` scale without importing a workload event
@@ -543,7 +556,7 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(11);
         let mut kinds = BTreeSet::new();
         let kind = |action: &FaultAction| match action {
-            FaultAction::Wait => 0,
+            FaultAction::Wait(_) => 0,
             FaultAction::EventKill { .. } => 1,
             FaultAction::Kill(_) => 2,
             FaultAction::Pause(..) => 3,
@@ -556,7 +569,7 @@ mod tests {
             let action = sample_action(&mut rand, &vocabulary).expect("draw an action");
             kinds.insert(kind(&action));
             match action {
-                FaultAction::Wait => {}
+                FaultAction::Wait(scale) => assert!(scale <= WAIT_MAX_SCALE),
                 FaultAction::EventKill { node, ordinal } => {
                     assert!(node < vocabulary.nodes());
                     assert!(ordinal > 0);
@@ -666,7 +679,9 @@ mod tests {
 
     #[test]
     fn every_action_costs_one_horizon() {
-        assert_eq!(action_time(&FaultAction::Wait), 1);
+        assert_eq!(action_time(&FaultAction::Wait(0)), 1);
+        assert_eq!(action_time(&FaultAction::Wait(5)), 32);
+        assert_eq!(action_time(&FaultAction::Wait(WAIT_MAX_SCALE)), 128);
         assert_eq!(action_time(&FaultAction::Kill(4)), 1);
     }
 }

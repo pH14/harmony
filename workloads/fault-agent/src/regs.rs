@@ -39,6 +39,16 @@ pub const REG_EVENT_KILLS_FIRED: u32 = 9;
 /// non-zero value means the load stopped and later evidence is weaker.
 pub const REG_WORKLOAD_DEATHS: u32 = 10;
 
+/// Agent ticks between the most recent EventKill arm and the death it caused.
+/// It says how far past its arm an event coordinate actually reached, which is
+/// what tells a coordinate that fired immediately from one that ran on.
+pub const REG_EVENT_KILL_AGE_TICKS: u32 = 11;
+
+/// Runs of the bundle's `check` command that finished. It separates a run
+/// whose oracle never completed from one whose oracle completed and found
+/// nothing, which read the same in the assertion evidence.
+pub const REG_CHECKS_FINISHED: u32 = 12;
+
 /// The number of `assert_sometimes` ids [`REG_SOMETIMES`] can hold. A hit at a
 /// higher id still reaches the host as an assertion event; it just has no bit.
 pub const SOMETIMES_BITMAP_IDS: u32 = 48;
@@ -73,12 +83,16 @@ pub struct RegisterSnapshot {
     pub event_kills_fired: u64,
     /// [`REG_WORKLOAD_DEATHS`].
     pub workload_deaths: u64,
+    /// Agent ticks the most recent fired EventKill arm survived.
+    pub event_kill_age_ticks: u64,
+    /// [`REG_CHECKS_FINISHED`].
+    pub checks_finished: u64,
 }
 
 impl RegisterSnapshot {
     /// The `(register, value)` pairs in register order.
     #[must_use]
-    pub fn pairs(&self) -> [(u32, u64); 10] {
+    pub fn pairs(&self) -> [(u32, u64); 12] {
         [
             (REG_TICKS, self.ticks),
             (REG_ALIVE, self.alive),
@@ -90,6 +104,8 @@ impl RegisterSnapshot {
             (REG_PARKED, self.parked),
             (REG_EVENT_KILLS_FIRED, self.event_kills_fired),
             (REG_WORKLOAD_DEATHS, self.workload_deaths),
+            (REG_EVENT_KILL_AGE_TICKS, self.event_kill_age_ticks),
+            (REG_CHECKS_FINISHED, self.checks_finished),
         ]
     }
 }
@@ -154,6 +170,8 @@ mod tests {
                 (REG_PARKED, 0),
                 (REG_EVENT_KILLS_FIRED, 0),
                 (REG_WORKLOAD_DEATHS, 0),
+                (REG_EVENT_KILL_AGE_TICKS, 0),
+                (REG_CHECKS_FINISHED, 0),
             ]
         );
     }
