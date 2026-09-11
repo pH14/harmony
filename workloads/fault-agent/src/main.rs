@@ -118,10 +118,14 @@ mod real {
     /// search can draw.
     const CHECK_HOOK_ID: u32 = u32::MAX;
 
-    /// Ticks between one check finishing and the next starting. The check is
-    /// the workload's own validation, so it runs on the agent's cadence rather
-    /// than on a drawn action, and a slow check simply delays its successor.
-    const CHECK_INTERVAL_TICKS: u64 = 8;
+    /// Ticks between one check finishing and the next starting when nothing
+    /// has happened to the nodes. The check reads the workload back through its
+    /// own client and competes with it for the guest's single processor, so a
+    /// fast timer spends the run's processor on validation rather than on the
+    /// workload. A node death or restart starts one immediately, which is when
+    /// the evidence can change; this interval only keeps an undisturbed run
+    /// producing evidence.
+    const CHECK_INTERVAL_TICKS: u64 = 500;
 
     /// The points the agent declares for itself. A hook's own assertion ids are
     /// workload-owned and are not declared here; they still fire, they just
@@ -224,6 +228,9 @@ mod real {
         check: Option<Hook>,
         /// The earliest tick at which the next check may start.
         next_check_tick: u64,
+        /// Node deaths and restarts counted when the last check started. A
+        /// change means the evidence may have changed too.
+        checked_events: u64,
     }
 
     impl HookRuntime {
@@ -237,6 +244,7 @@ mod real {
                 workload,
                 check: None,
                 next_check_tick: 0,
+                checked_events: 0,
             }
         }
     }
@@ -1083,9 +1091,14 @@ mod real {
             runtime.next_check_tick = tick + CHECK_INTERVAL_TICKS;
             return Ok(());
         }
-        if tick < runtime.next_check_tick {
+        let events = supervisor
+            .counters()
+            .unexpected_deaths
+            .saturating_add(supervisor.counters().restarts);
+        if tick < runtime.next_check_tick && events == runtime.checked_events {
             return Ok(());
         }
+        runtime.checked_events = events;
         runtime.launches += 1;
         let spec = HookSpec {
             id: CHECK_HOOK_ID,

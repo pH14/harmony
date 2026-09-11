@@ -49,7 +49,7 @@ node <name> <argv...>    a supervised long-lived process
 hook <id> <argv...>      a one-shot command a RunHook fault launches
 ready <argv...>          a command that exits 0 once setup is done
 workload <argv...>       a long-lived process started once, after ready
-check <argv...>          a command rerun on a fixed cadence, forever
+check <argv...>          a command rerun after every node death or restart
 ```
 
 The `workload` process is the load the faults act on and the `check` command is
@@ -94,9 +94,13 @@ which the agent forwards to the SDK:
 ```
 
 The `check` command reports through the same directives and the same exit code.
-It is not held behind the post-restart readiness wait that hooks are: a check
-runs continuously and is responsible for deciding for itself whether it could
-read the workload at all.
+It is not held behind the post-restart readiness wait that hooks are: a check is
+responsible for deciding for itself whether it could read the workload at all.
+One starts whenever a node has died or restarted since the last one started,
+which is when the verdict can change, and otherwise on a slow heartbeat so an
+undisturbed run still produces evidence. The check reads the workload back
+through its own client and competes with it for the guest's processor, so a
+faster cadence would spend the run on validation rather than on load.
 
 Any other line is ordinary output. A hook that exits 42 reports a failed
 assertion without writing a line. A line that starts with `@` but does not parse

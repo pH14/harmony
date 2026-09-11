@@ -123,25 +123,37 @@ select_entries() {
 case "$1" in
   2)
     # The window check: verify what has been acknowledged since the last
-    # passing check. Its cost follows the window rather than the whole
-    # history, so a long run stays linear. Hook 3 catches what a window
+    # passing check. The watermark is a byte offset, so the check reads only
+    # the bytes appended since then and never the whole journal. A check that
+    # re-read the history would cost more on every run and would eventually
+    # consume the processor the workload needs. Hook 3 catches what a window
     # stepped over.
     [ -s "${journal}" ] || exit 0
-    snapshot=${journal}.$$
-    expected=${snapshot}.expected
-    window_bounds=${snapshot}.bounds
-    trap 'rm -f "${snapshot}" "${expected}" "${window_bounds}"' EXIT
-    cp "${journal}" "${snapshot}" 2>/dev/null || exit 0
+    work=${journal}.$$
+    expected=${work}.expected
+    window=${work}.window
+    window_bounds=${work}.bounds
+    trap 'rm -f "${expected}" "${window}" "${window_bounds}"' EXIT
 
-    total=$(wc -l <"${snapshot}")
     start=0
     if [ -f "${verified}" ]; then
       start=$(awk 'NR == 1 && $0 ~ /^[0-9]+$/ { print $0 }' "${verified}")
       [ -n "${start}" ] || start=0
     fi
-    [ "${total}" -gt "${start}" ] || exit 0
+    size=$(wc -c <"${journal}")
+    [ "${size}" -gt "${start}" ] || exit 0
 
-    tail -n "+$((start + 1))" "${snapshot}" | select_entries \
+    tail -c "+$((start + 1))" "${journal}" | head -c "$((size - start))" >"${window}"
+    # Workers append concurrently, so the window can end mid-record. Step its
+    # end back to the last newline, so the next window starts on a boundary and
+    # no record is skipped.
+    consumed=$(LC_ALL=C awk '{ total += length($0) + 1 } END { print total + 0 }' "${window}")
+    if [ -n "$(tail -c 1 "${window}")" ]; then
+      fragment=$(LC_ALL=C awk 'END { print length($0) + 1 }' "${window}")
+      consumed=$((consumed - fragment))
+    fi
+    [ "${consumed}" -gt 0 ] || exit 0
+    head -c "${consumed}" "${window}" | select_entries \
       | LC_ALL=C sort -u >"${expected}"
     [ -s "${expected}" ] || exit 0
 
@@ -166,7 +178,7 @@ case "$1" in
     set -e
     # Advance the watermark only when every member was read and agreed.
     if [ "${verdict}" -eq 1 ]; then
-      echo "${total}" >"${verified}"
+      echo "$((start + consumed))" >"${verified}"
     fi
     exit 0
     ;;

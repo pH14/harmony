@@ -50,11 +50,13 @@ const SETUP_BUDGET: u64 = 120_000_000_000;
 /// Shortest wall-clock limit on one guest run. A guest spinning on a frozen
 /// clock never exits and never reaches its deadline, so only host time can
 /// notice it.
-const WALL_LIMIT_FLOOR: Duration = Duration::from_secs(60);
+const WALL_LIMIT_FLOOR: Duration = Duration::from_secs(900);
 /// How much host time a run may spend per unit of the guest time it was asked
-/// for. The limit only has to separate a slow run from a stopped one, so it is
-/// well above the roughly real-time rate a healthy guest runs at.
-const WALL_LIMIT_FACTOR: u32 = 4;
+/// for. The limit only has to separate a slow run from a stopped one. A healthy
+/// guest runs at roughly real time, but a workload that reaches its own
+/// periodic maintenance stalls far longer than that for one stretch, so the
+/// factor is well clear of the rate rather than close to it.
+const WALL_LIMIT_FACTOR: u32 = 16;
 
 /// The wall-clock limit for a session whose actions span at most
 /// `1 << WAIT_MAX_SCALE` horizons each. A fixed limit would abandon the
