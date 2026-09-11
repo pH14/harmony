@@ -63,7 +63,10 @@ order matches its numeric order.
 
 Two hooks read the members back with `ETCDCTL_API=3` serializable local reads, and both emit a
 verdict only after all three comparisons succeed, so a member that is still down cannot count as
-data loss. Hook 2 compares the keys acknowledged since the last passing check, reading one range
+data loss. A restarted member reports itself healthy while it is still applying the entries it
+missed, so each member is read until the keys it lacks either run out or stop running out: a
+member that is merely behind shrinks that set on every read, and a key it will never hold holds
+the set at one size. Hook 2 compares the keys acknowledged since the last passing check, reading one range
 per worker, and its cost follows that window rather than the whole history. Hook 3 compares the
 entire journal against every member's whole prefix; running it once at the end of a measurement
 reports a loss that no window covered.

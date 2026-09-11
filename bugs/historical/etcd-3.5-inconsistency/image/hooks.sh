@@ -54,6 +54,15 @@ read_member_window() {
 # A failed read or a malformed response leaves the oracle inconclusive and
 # silent: a member that is still recovering is not evidence of data loss.
 # Returns 1 when every member agreed, 2 on a loss, and 0 when inconclusive.
+#
+# A restarted member reports itself healthy while it is still applying the
+# entries it missed, so a single read of a lagging member misses acknowledged
+# keys it will hold moments later. The two cases are told apart by whether the
+# member converges: applying shrinks the missing set, and a key the member will
+# never hold keeps it at the same size. Each member is therefore read until its
+# missing set empties or stops shrinking.
+settle_plateau_reads=15
+
 compare_against_members() {
   expected=$1
   reader=$2
@@ -61,15 +70,34 @@ compare_against_members() {
   conclusive=1
   failed=0
   for endpoint in "${member_endpoint_1}" "${member_endpoint_2}" "${member_endpoint_3}"; do
-    if ! "${reader}" "${endpoint}" >"${work}.raw" 2>/dev/null; then
-      conclusive=0
-    elif pair_range_output <"${work}.raw" >"${work}.paired" \
-      && LC_ALL=C sort "${work}.paired" >"${work}.sorted"; then
-      missing=$(LC_ALL=C comm -23 "${expected}" "${work}.sorted")
-      [ -z "${missing}" ] || failed=1
-    else
-      conclusive=0
-    fi
+    remaining=-1
+    plateau=0
+    while :; do
+      if ! "${reader}" "${endpoint}" >"${work}.raw" 2>/dev/null; then
+        conclusive=0
+        break
+      fi
+      if ! pair_range_output <"${work}.raw" >"${work}.paired" \
+        || ! LC_ALL=C sort "${work}.paired" >"${work}.sorted"; then
+        conclusive=0
+        break
+      fi
+      missing=$(LC_ALL=C comm -23 "${expected}" "${work}.sorted" | wc -l)
+      if [ "${missing}" -eq 0 ]; then
+        break
+      fi
+      if [ "${remaining}" -lt 0 ] || [ "${missing}" -lt "${remaining}" ]; then
+        remaining=${missing}
+        plateau=0
+      else
+        plateau=$((plateau + 1))
+        if [ "${plateau}" -ge "${settle_plateau_reads}" ]; then
+          failed=1
+          break
+        fi
+      fi
+      sleep 0.2
+    done
   done
   rm -f "${work}.raw" "${work}.paired" "${work}.sorted"
   if [ "${conclusive}" -ne 1 ]; then
