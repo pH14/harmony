@@ -196,3 +196,13 @@ additional choices are the `..._scoped_return_control_v1:3,6,12,2` and
 validation before file/core I/O. All arms of a return experiment must use the
 same feature build; use the coin-consuming control to separate redirection from
 changed random tapes. This caller remains a supplied-state qualification tool.
+
+Its optional `mixture` field defaults to `alphabet_only`. The additional
+`alphabet_scoped_progress_reuse_v1` and
+`alphabet_scoped_progress_fresh_control_v1` choices require the
+`metroid-retention-progress` feature and the unchanged default selector. Their
+bounded queue learns only from the current campaign's retained same-slot
+progress; the control returns to the same queued parent with fresh actions.
+Other mixtures and combinations with scoped-return selectors fail validation
+before I/O. All existing execution, frame, memory, action and wall limits apply.
+See the [mechanism and qualification gates](../../benchmarks/search/continuation-reassessment/progress-word-design.md).

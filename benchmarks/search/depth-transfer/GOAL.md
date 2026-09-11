@@ -1463,3 +1463,27 @@ Learned suffixes must come from the current campaign, with bounded storage and
 replayable controls; historical tapes are diagnostic only. This is an open source
 question, not evidence of efficacy or a new experiment. Full goal remains active
 and unachieved, including fresh development, confirmation, MM2 and untouched gates.
+
+
+## Productive scoped word source gate
+
+The new explicit reuse and matched fresh-action modes learn one bounded trial
+from a retained same-slot progress event. Ordinary actions and the legacy
+selector stay fixed. The matched control changes only the queued trial's suffix
+from identical history; later histories may diverge. A production finite model
+exhibits both useful transport and a fatal hidden phase change, so endpoint
+progress is not a proof of future benefit. See progress-word-design.md in the
+continuation-reassessment directory for the conditional renewal identity, its
+assumptions, executable counterexamples and exact policy contract.
+
+Full searcher checks pass181 tests, NES all-feature checks pass197, and strict
+Clippy passes for both. Complete campaigns exercise actual reuse, one/four workers,
+both buffers, snapshot eviction and replay corruption checks. The default caller
+also preserves omitted-mixture behavior and rejects unsupported combinations.
+This is source qualification with no emulator frames; the admitted/auxiliary
+ledger is unchanged. Next prepare one separate, short native implementation
+qualification with a new frozen seed and matched/ordinary controls. Publish its
+binary identities, scorer tests and strict ceilings before execution. No native
+allocation exists yet. The failed continuation and SR02 nominees remain closed;
+no fresh-search efficacy claim follows. Full goal remains active and unachieved.
+Only ms02 is available; msr1 belongs to another task.

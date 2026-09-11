@@ -303,3 +303,166 @@ fn workloads_with_two_ordinary_members_keep_their_ordinary_rule() {
         assert_eq!(kept, BTreeSet::from([0, 1]));
     }
 }
+
+#[test]
+fn productive_word_is_learned_only_from_a_retained_qualified_same_slot_transition() {
+    let mut a = Toy::new(|_| 1);
+    a.slot_retention = SlotRetentionPolicy::ResourceGuardedProgress2;
+    a.enable_continuations(Some(ContinuationLearning::ScopedProgress));
+    offer(&mut a, 0, key(114), 1);
+    assert!(
+        a.pop_continuation().is_none(),
+        "bootstrap supplies no learned word"
+    );
+    a.insert(
+        Some(0),
+        1,
+        ArchiveCandidate {
+            suffix: vec![0, 1],
+            key: key(117),
+            milestones: (),
+        },
+        1,
+    )
+    .unwrap();
+    let trial = a
+        .pop_continuation()
+        .expect("retained improvement must enqueue a trial");
+    assert_eq!((trial.parent, trial.donor, trial.leaf), (1, 0, 1));
+    assert_eq!(trial.actions, [0, 1]);
+    assert!(
+        a.pop_continuation().is_none(),
+        "one event supplies only one attempt"
+    );
+    assert!(a.progress_trial_parent_eligible(1, 100));
+    assert!(
+        !a.progress_trial_parent_eligible(1, 3),
+        "action ceiling remains strict"
+    );
+    a.snapshot_selectable[1] = false;
+    a.snapshot_selectable[0] = false;
+    assert!(
+        !a.progress_trial_parent_eligible(1, 100),
+        "missing reconstruction origin is ineligible"
+    );
+    a.snapshot_selectable[1] = true;
+    a.snapshot_selectable[0] = true;
+    a.deactivate(1);
+    assert!(
+        !a.progress_trial_parent_eligible(1, 100),
+        "stale ids cannot pin/revive a state"
+    );
+
+    for mut k in [key(114), key(110), key(117)] {
+        if k.progress.as_ref().unwrap().value == 117 {
+            k.resources = Some([78, 1]);
+        }
+        let mut a = Toy::new(|_| 1);
+        a.slot_retention = SlotRetentionPolicy::ResourceGuardedProgress2;
+        a.enable_continuations(Some(ContinuationLearning::ScopedProgress));
+        offer(&mut a, 0, key(114), 1);
+        a.insert(
+            Some(0),
+            1,
+            ArchiveCandidate {
+                suffix: vec![0, 1],
+                key: k,
+                milestones: (),
+            },
+            1,
+        )
+        .unwrap();
+        assert!(a.pop_continuation().is_none());
+    }
+}
+
+#[test]
+fn retaining_an_ordinary_improvement_does_not_bypass_word_qualification() {
+    let base = key(114);
+    let better = Key {
+        resources: Some([80, 0]),
+        ..key(117)
+    };
+    let mut wrong_scope = better;
+    wrong_scope.progress.as_mut().unwrap().scope += 1;
+    for (from, to) in [
+        (
+            base,
+            Key {
+                progress: None,
+                ..better
+            },
+        ),
+        (
+            Key {
+                progress: None,
+                ..base
+            },
+            better,
+        ),
+        (base, wrong_scope),
+        (
+            Key {
+                resources: None,
+                ..base
+            },
+            better,
+        ),
+        (
+            base,
+            Key {
+                progress: base.progress,
+                ..better
+            },
+        ),
+        (
+            base,
+            Key {
+                resources: Some([78, 1]),
+                ..better
+            },
+        ),
+    ] {
+        let mut a = Toy::new(|_| 1);
+        a.enable_continuations(Some(ContinuationLearning::ScopedProgress));
+        offer(&mut a, 0, from, 1);
+        let kept = a
+            .insert(
+                Some(0),
+                1,
+                ArchiveCandidate {
+                    suffix: vec![1],
+                    key: to,
+                    milestones: (),
+                },
+                1,
+            )
+            .unwrap();
+        assert!(kept.is_some(), "ordinary preference must retain {to:?}");
+        assert!(!resource_guarded_progress(from, to));
+        assert!(
+            a.pop_continuation().is_none(),
+            "from={from:?}, to={to:?}, kept={kept:?}"
+        );
+    }
+    let mut a = Toy::new(|_| 1);
+    a.enable_continuations(Some(ContinuationLearning::ScopedProgress));
+    offer(&mut a, 0, base, 1);
+    // A qualified transition rejected by ordinary retention supplies no word.
+    assert!(resource_guarded_progress(base, key(117)));
+    assert!(
+        a.insert(
+            Some(0),
+            1,
+            ArchiveCandidate {
+                suffix: vec![1],
+                key: key(117),
+                milestones: (),
+            },
+            1
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert!(a.pop_continuation().is_none());
+}

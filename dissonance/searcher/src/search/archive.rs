@@ -20,7 +20,7 @@ use std::{
 };
 
 use crate::search::{
-    continuation::{Continuation, ContinuationBank},
+    continuation::{Continuation, ContinuationBank, ContinuationLearning},
     key_counts::{KEY_COUNT_CAPACITY, KeyCounts},
     rand::RomuDuoJrRand,
 };
@@ -274,6 +274,21 @@ pub fn retention_policy_from_identifier(
 /// recency-concentrated draw within it. The string is pinned by every stream
 /// already written.
 pub const SELECTOR_IDENTIFIER: &str = "room_cell_uniform_128";
+
+/// Snapshot-local comparison only; no claim of dominance over future outcomes.
+fn resource_guarded_progress<K: ArchiveKey>(base: K, next: K) -> bool {
+    match (
+        base.retention_progress(),
+        next.retention_progress(),
+        base.retention_resources(),
+        next.retention_resources(),
+    ) {
+        (Some(a), Some(b), Some(ar), Some(br)) => {
+            a.scope == b.scope && b.value > a.value && br[0] >= ar[0] && br[1] >= ar[1]
+        }
+        _ => false,
+    }
+}
 
 /// Give-up thresholds for the retiring selector: consecutive barren draws at
 /// which a class is skipped in selection exactly as exhausted classes are
@@ -3299,20 +3314,34 @@ where
             return Err("archive population limit did not retire an entry".into());
         }
         if let Some(bank) = &mut self.continuations {
-            if replacements.iter().any(|replaced| {
-                key.preference_cmp(self.entries[*replaced].key) == Ordering::Greater
-            }) {
-                bank.improved(key.group(0), self.next_entry_id);
-            }
-            if let Some(parent) = parent_id {
-                let entry = &self.entries[parent];
-                bank.record(
-                    entry.key.group(0),
-                    key.group(0),
-                    entry.id,
-                    self.next_entry_id,
-                    &suffix,
-                );
+            match bank.learning() {
+                ContinuationLearning::ScopedProgress => {
+                    if let Some(parent) = parent_id {
+                        let entry = &self.entries[parent];
+                        if entry.key.group(0) == key.group(0)
+                            && resource_guarded_progress(entry.key, key)
+                        {
+                            bank.progressed(entry.id, self.next_entry_id, &suffix);
+                        }
+                    }
+                }
+                ContinuationLearning::Exits => {
+                    if replacements.iter().any(|replaced| {
+                        key.preference_cmp(self.entries[*replaced].key) == Ordering::Greater
+                    }) {
+                        bank.improved(key.group(0), self.next_entry_id);
+                    }
+                    if let Some(parent) = parent_id {
+                        let entry = &self.entries[parent];
+                        bank.record(
+                            entry.key.group(0),
+                            key.group(0),
+                            entry.id,
+                            self.next_entry_id,
+                            &suffix,
+                        );
+                    }
+                }
             }
         }
         for replaced in replacements {
@@ -4299,21 +4328,10 @@ where
             return proposed;
         }
         let alternate = self.entries[other].key;
-        match (
-            key.retention_progress(),
-            alternate.retention_progress(),
-            key.retention_resources(),
-            alternate.retention_resources(),
-        ) {
-            (Some(base), Some(next), Some(resources), Some(other_resources))
-                if base.scope == next.scope
-                    && next.value > base.value
-                    && other_resources[0] >= resources[0]
-                    && other_resources[1] >= resources[1] =>
-            {
-                other
-            }
-            _ => proposed,
+        if resource_guarded_progress(key, alternate) {
+            other
+        } else {
+            proposed
         }
     }
 
@@ -4465,8 +4483,14 @@ where
 
     /// Enable bounded learned transition reuse. Its full capacity is reserved
     /// against the campaign budget before bootstrap in both live and replay.
-    pub(crate) fn enable_continuations(&mut self, enabled: bool) {
-        self.continuations = enabled.then(ContinuationBank::default);
+    pub(crate) fn enable_continuations(&mut self, learning: Option<ContinuationLearning>) {
+        self.continuations = learning.map(ContinuationBank::new);
+    }
+
+    pub(crate) fn progress_trial_parent_eligible(&self, id: usize, max_actions: usize) -> bool {
+        self.active.get(id).copied().unwrap_or(false)
+            && self.origin_resident(id)
+            && self.entries[id].input_len < max_actions
     }
 
     /// Stale parents are deliberately not pinned by speculative work. The
@@ -4487,11 +4511,11 @@ where
                     0
                 },
             )
-            .saturating_add(if self.continuations.is_some() {
-                ContinuationBank::<K::Group, A>::reserve_bytes()
-            } else {
-                0
-            })
+            .saturating_add(
+                self.continuations
+                    .as_ref()
+                    .map_or(0, ContinuationBank::memory_reserve_bytes),
+            )
     }
 
     /// Deterministic bytes charged to compact entry metadata, excluding its

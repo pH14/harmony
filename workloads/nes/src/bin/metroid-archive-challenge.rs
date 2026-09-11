@@ -21,7 +21,7 @@ use nes_workload::{
             replay_campaign_checkpointed, replay_campaign_checkpointed_measured,
             run_campaign_checkpointed_measured, run_campaign_checkpointed_with_options,
         },
-        draw::{draw_mixture_from_identifier, suffix_shape_from_identifier},
+        draw::{DrawMixture, draw_mixture_from_identifier, suffix_shape_from_identifier},
         physical_work::{PhysicalWorkMeter, PhysicalWorkReceipt},
     },
     target::{ExitKind, Target},
@@ -69,6 +69,8 @@ struct Request {
     #[serde(default)]
     selector: Option<String>,
     #[serde(default)]
+    mixture: Option<String>,
+    #[serde(default)]
     expected_retention_progress: Option<ScopedProgress>,
     #[serde(default)]
     measure_physical_work: bool,
@@ -114,6 +116,28 @@ fn selector_policy(q: &Request) -> Result<SelectorPolicy> {
     }
     Ok(policy)
 }
+fn mixture_policy(q: &Request) -> Result<DrawMixture> {
+    let policy = draw_mixture_from_identifier(q.mixture.as_deref().unwrap_or("alphabet_only"))?;
+    match policy {
+        DrawMixture::AlphabetOnly => {}
+        DrawMixture::AlphabetScopedProgressReuse
+        | DrawMixture::AlphabetScopedProgressFreshControl => {
+            if !cfg!(feature = "metroid-retention-progress") {
+                return Err(
+                    "scoped progress words require the explicit Metroid feature build".into(),
+                );
+            }
+            if !matches!(
+                selector_policy(q)?,
+                SelectorPolicy::EnergyProgressCheapest(_)
+            ) {
+                return Err("scoped progress words require the unchanged caller selector".into());
+            }
+        }
+        _ => return Err("mixture is outside this caller's qualified family".into()),
+    }
+    Ok(policy)
+}
 fn valid_limits(q: &Request, execute: bool) -> bool {
     (1..=4).contains(&q.workers)
         && (1..=20_000).contains(&q.executions)
@@ -127,6 +151,7 @@ fn valid_limits(q: &Request, execute: bool) -> bool {
         && (!execute || q.expected_snapshot_sha256.is_some())
         && slot_policy(q).is_ok()
         && selector_policy(q).is_ok()
+        && mixture_policy(q).is_ok()
 }
 fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -364,7 +389,7 @@ fn evaluate(q: &Request, output: &Path, execute: bool, cost: &mut Cost) -> Resul
         materialize_final_artifacts: true,
         run: MetroidCampaignRun,
         suffix: suffix_shape_from_identifier("one_to_six")?,
-        mixture: draw_mixture_from_identifier("alphabet_only")?,
+        mixture: mixture_policy(q)?,
         retention: RetentionPolicy::AdmitAlive,
         selector: selector_policy(q)?,
         victory_input_path: Some(output.join("victory-input.json")),
@@ -547,6 +572,43 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
     use nes_workload::metroid::target::ButtonChord;
+    #[test]
+    fn scoped_progress_word_requests_preserve_defaults_and_exclude_selector_combinations() {
+        let legacy: Value = serde_json::from_str(include_str!(
+            "../../../../benchmarks/search/endpoint-encounter/ap01-request.json"
+        ))
+        .unwrap();
+        assert!(legacy.get("mixture").is_none());
+        let mut q: Request = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(mixture_policy(&q).unwrap(), DrawMixture::AlphabetOnly);
+        q.mixture = Some("alphabet_only".into());
+        assert!(valid_limits(&q, true));
+        for id in [
+            "alphabet_scoped_progress_reuse_v1",
+            "alphabet_scoped_progress_fresh_control_v1",
+        ] {
+            let mut serialized = legacy.clone();
+            serialized["mixture"] = json!(id);
+            let mut q: Request = serde_json::from_value(serialized).unwrap();
+            assert_eq!(
+                valid_limits(&q, true),
+                cfg!(feature = "metroid-retention-progress")
+            );
+            q.selector = Some(
+                "room_cell_uniform_128_energy_progress_cheapest_scoped_return_half_v1:3,6,12,2"
+                    .into(),
+            );
+            assert!(!valid_limits(&q, true));
+        }
+        for id in [
+            "alphabet_continuation_v1",
+            "alphabet_scoped_progress_reuse_v2",
+            "unknown",
+        ] {
+            q.mixture = Some(id.into());
+            assert!(!valid_limits(&q, true));
+        }
+    }
     #[test]
     fn selector_requests_preserve_omission_and_validate_before_io() {
         let legacy: Value = serde_json::from_str(include_str!(

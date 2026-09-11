@@ -593,3 +593,17 @@ Elapsed execution is170.48seconds. This valid conditional negative is not pooled
 with PG02 or promoted into a fresh-search claim. The next direction is a source
 and finite-world audit of productive scoped action reuse, preserving the existing
 continuation and return failures. No further native allocation exists.
+
+
+### Productive scoped word source gate
+
+[The action-reuse design](progress-word-design.md) states the frozen-state
+cost-per-hit identity and demonstrates the missing transport assumption with
+production finite worlds: the same learned word advances in one and kills after
+a hidden phase change in the other. Two explicit modes share their learned
+queue/parent and differ in reuse versus a fresh alphabet suffix. Full campaign
+fixtures verify real dispatch, snapshot pressure, worker/buffer invariance and
+replay, including planted corruption. Source checks pass181 searcher and197 NES
+tests plus strict Clippy. This is zero-emulator source qualification. A short
+native qualification needs a new prospective registration on ms02; SR02 and the
+older continuation failure stay closed. See pw00-source-manifest.json for checks.

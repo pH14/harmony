@@ -993,7 +993,10 @@ pub enum CampaignSpliceRecord {
         /// Dispatch-time deepest descendant archive id.
         leaf_id: u64,
         /// Exact generic action tail selected at dispatch, postcard encoded.
-        /// Older streams omit it and use donor/leaf reconstruction.
+        /// Older streams omit it and use donor/leaf reconstruction. For the
+        /// explicit scoped-progress fresh control, donor/leaf identify the
+        /// queued learning event; these bytes are the independently redrawn
+        /// control suffix, verified against its mutation seed during replay.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tail_postcard: Option<Vec<u8>>,
     },
@@ -3046,7 +3049,7 @@ where
     core.archive.selector_policy = config.selector.clone();
     core.archive.slot_retention = options.slot_retention;
     core.archive
-        .enable_continuations(config.mixture.uses_continuations());
+        .enable_continuations(config.mixture.continuation_learning());
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target =
         TrackedTarget::new(game, meter).map_err(|error| -> Box<dyn Error> {
@@ -3166,6 +3169,9 @@ where
                         };
                         if !core.archive.active[parent_index]
                             || core.archive.entries[parent_index].input_len >= max_actions
+                            || (config.mixture.continuation_learning()
+                                == Some(crate::search::continuation::ContinuationLearning::ScopedProgress)
+                                && !core.archive.progress_trial_parent_eligible(parent_index, max_actions))
                         {
                             continue;
                         }
@@ -3192,6 +3198,35 @@ where
                         };
                         let checkpoint = game.draw_checkpoint(draw_state)?;
                         let draw_table_before = draw_checkpoint_to_wire(game, checkpoint.as_ref())?;
+                        // Queue, parent, learned-word duplicate gate and RNG draws
+                        // match from identical history. Only the trial's suffix
+                        // changes. A fresh control draw is executed even if its
+                        // prefixes are known, avoiding a second parent filter.
+                        if config.mixture.redraws_progress_word() {
+                            suffix = game.expand_suffix(
+                                &config.run,
+                                draw_state,
+                                config.suffix,
+                                MixtureDraw {
+                                    mixture: DrawMixture::AlphabetOnly,
+                                    weight: default_mixture_weight(),
+                                    splice_weight: 0,
+                                },
+                                mutation_seed,
+                            )?;
+                            config
+                                .suffix
+                                .bound_time(&mut suffix, action_time, longest_action_time);
+                        }
+                        if config.mixture.continuation_learning()
+                            == Some(
+                                crate::search::continuation::ContinuationLearning::ScopedProgress,
+                            )
+                            && (suffix.is_empty()
+                                || suffix.len() > crate::search::continuation::PROGRESS_ACTION_CAP)
+                        {
+                            return Err("scoped progress trial exceeds its action bound".into());
+                        }
                         let splice = Some(CampaignSpliceRecord::Tail {
                             donor_id: continuation.donor,
                             leaf_id: continuation.leaf,
@@ -4064,7 +4099,7 @@ where
     core.archive.slot_retention =
         super::archive::SlotRetentionPolicy::from_identifier(header.slot_retention.as_deref())?;
     core.archive
-        .enable_continuations(replay_mixture.uses_continuations());
+        .enable_continuations(replay_mixture.continuation_learning());
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = TrackedTarget::new(game, meter).map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
@@ -4267,6 +4302,15 @@ where
                     strategy,
                     job.splice.clone(),
                 )?;
+                if job.selector.path == SelectorPath::Continuation
+                    && replay_mixture.continuation_learning()
+                        == Some(crate::search::continuation::ContinuationLearning::ScopedProgress)
+                    && spliced.as_ref().is_none_or(|tail| {
+                        tail.len() > crate::search::continuation::PROGRESS_ACTION_CAP
+                    })
+                {
+                    return Err("scoped progress word exceeds its six-action bound".into());
+                }
                 let draw_checkpoint_before =
                     game.draw_checkpoint_from_wire(job.draw_table_before.as_ref())?;
                 let mut suffix = match spliced {
@@ -4285,6 +4329,32 @@ where
                     )?,
                 };
                 replay_suffix.bound_time(&mut suffix, action_time, longest_action_time);
+                if job.selector.path == SelectorPath::Continuation
+                    && replay_mixture.continuation_learning()
+                        == Some(crate::search::continuation::ContinuationLearning::ScopedProgress)
+                {
+                    if suffix.len() > crate::search::continuation::PROGRESS_ACTION_CAP {
+                        return Err("scoped progress word exceeds its six-action bound".into());
+                    }
+                    if replay_mixture.redraws_progress_word() {
+                        let mut expected = game.expand_suffix_recorded(
+                            &replay_run,
+                            &draw_state,
+                            replay_suffix,
+                            MixtureDraw {
+                                mixture: DrawMixture::AlphabetOnly,
+                                weight: default_mixture_weight(),
+                                splice_weight: 0,
+                            },
+                            draw_checkpoint_before.as_ref(),
+                            job.mutation_seed,
+                        )?;
+                        replay_suffix.bound_time(&mut expected, action_time, longest_action_time);
+                        if postcard::to_allocvec(&expected)? != postcard::to_allocvec(&suffix)? {
+                            return Err("scoped progress fresh-control suffix diverged".into());
+                        }
+                    }
+                }
                 let job_frames_before = game.frames_clocked(&target);
                 let result = game.execute_job(
                     &replay_run,
@@ -5981,6 +6051,10 @@ mod tests {
         assert_eq!(round_trip, job);
     }
 }
+
+#[cfg(test)]
+#[path = "campaign_progress_reuse_tests.rs"]
+mod progress_reuse_tests;
 
 #[cfg(test)]
 #[path = "campaign_continuation_tests.rs"]

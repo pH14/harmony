@@ -117,7 +117,7 @@ to splice energy, so its existing comparisons describe that combined mechanism;
 they do not isolate the effect of triggered replay. The v2 identifier enables a
 paired test of the separation while preserving recorded v1 behavior.
 
-The continuation bank retains at most 8,192 observed exits, eight destinations
+For these exit policies, the continuation bank retains at most 8,192 observed exits, eight destinations
 per source slot, 128 actions per exit, and 1,024 pending attempts. It charges a
 fixed conservative capacity reserve against the logical memory budget before
 bootstrap. Pending attempts do not pin historical snapshots: stale parents are
@@ -125,6 +125,33 @@ skipped. Dispatch records the complete action tail, so later donor reclamation
 cannot change serial replay. Only same-slot `preference_cmp` is consulted;
 preferences are never compared between unrelated locations. A workload that
 reports no preference improvements gets no continuation attempts.
+
+`alphabet_scoped_progress_reuse_v1` instead learns from a retained, same-slot
+parent-to-child transition with strictly higher known `retention_progress`, the
+same known scope, and neither known resource axis lower. It queues the observed
+parent-relative word for one trial from that child's state. Words have one to
+six actions; at most 1,024 are pending, with the oldest discarded on overflow and
+the newest tried first. This mode stores no exit graph and charges a separate,
+fixed queue-capacity reserve before bootstrap. A queued id pins no snapshots;
+inactive, missing, unreconstructable or action-limited parents are skipped.
+One in four reservation slots can dispatch a trial; ordinary draws use the
+unchanged alphabet distribution. Ordinary duplicate skips also consume
+reservation slots, so this is not a quarter of executed jobs or physical frames.
+Trials use isolated continuation accounting. Retention remains an independent
+choice: an improvement rejected by retention supplies no word.
+
+`alphabet_scoped_progress_fresh_control_v1` uses the same queue, parent checks,
+learned-word duplicate gate and seed consumption, then draws a fresh alphabet
+suffix from that seed and the current draw checkpoint. It executes that draw
+without a second duplicate filter. Thus the first differing suffix has the same
+parent and learning history; later histories can diverge. Both modes record the
+resolved suffix as a continuation tail. In the control, donor/leaf ids name the
+learning event, while tail bytes contain the fresh draw; replay rederives that
+draw and rejects a mismatch. Both enforce the six-action bound before replay
+time truncation. These explicit policies preserve all older identifiers and
+defaults. Their [finite-world tests and theory](../../benchmarks/search/continuation-reassessment/progress-word-design.md)
+include a phase change that makes a previously productive word fatal. Scoped
+progress is evidence for a bounded test, not a certificate of future success.
 
 The existing queue prioritizes newer improvement batches; within each batch,
 destination-key iteration followed by a stack pop tries larger destination

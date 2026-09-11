@@ -9,6 +9,14 @@ use std::{
 };
 
 pub(crate) const ACTION_CAP: usize = 128;
+/// Productive words stay within the ordinary one-to-six suffix ceiling.
+pub(crate) const PROGRESS_ACTION_CAP: usize = 6;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ContinuationLearning {
+    Exits,
+    ScopedProgress,
+}
 const EXIT_CAP: usize = 8192;
 const EXITS_PER_SLOT: usize = 8;
 const QUEUE_CAP: usize = 1024;
@@ -22,6 +30,7 @@ pub(crate) struct Continuation<A> {
 }
 
 pub(crate) struct ContinuationBank<K: Ord, A> {
+    learning: ContinuationLearning,
     exits: BTreeMap<K, BTreeMap<K, Continuation<A>>>,
     order: VecDeque<(K, K)>,
     pending: VecDeque<Continuation<A>>,
@@ -30,6 +39,7 @@ pub(crate) struct ContinuationBank<K: Ord, A> {
 impl<K: Copy + Ord, A: Clone> Default for ContinuationBank<K, A> {
     fn default() -> Self {
         Self {
+            learning: ContinuationLearning::Exits,
             exits: BTreeMap::new(),
             order: VecDeque::new(),
             pending: VecDeque::new(),
@@ -38,6 +48,47 @@ impl<K: Copy + Ord, A: Clone> Default for ContinuationBank<K, A> {
 }
 
 impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
+    pub fn new(learning: ContinuationLearning) -> Self {
+        Self {
+            learning,
+            ..Self::default()
+        }
+    }
+
+    pub fn learning(&self) -> ContinuationLearning {
+        self.learning
+    }
+
+    pub fn memory_reserve_bytes(&self) -> usize {
+        match self.learning {
+            ContinuationLearning::Exits => Self::reserve_bytes(),
+            ContinuationLearning::ScopedProgress => {
+                // No exits are stored in this mode. Cover queue slack, owned
+                // action payloads and allocator overhead at the fixed ceiling.
+                let record = size_of::<Continuation<A>>() + PROGRESS_ACTION_CAP * size_of::<A>();
+                size_of::<Self>() + QUEUE_CAP * (record + 64) * 2
+            }
+        }
+    }
+
+    /// Queue one trial of the observed word from its retained result state.
+    /// Qualification belongs to the archive, which owns the full opaque keys.
+    /// Stable ids do not pin snapshots; dispatch must reject stale parents.
+    pub fn progressed(&mut self, donor: u64, child: u64, actions: &[A]) {
+        if actions.is_empty() || actions.len() > PROGRESS_ACTION_CAP {
+            return;
+        }
+        if self.pending.len() == QUEUE_CAP {
+            self.pending.pop_front();
+        }
+        self.pending.push_back(Continuation {
+            parent: child,
+            donor,
+            leaf: child,
+            actions: actions.to_vec(),
+        });
+    }
+
     /// A fixed conservative reserve covers map nodes, deque slack, and all
     /// bounded action payloads. Consumption can occur at different moments in
     /// serial replay; the charge is independent of that host-side timing.
@@ -106,6 +157,28 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_queue_is_bounded_and_does_not_store_an_exit_graph() {
+        let mut bank = ContinuationBank::<u8, u8>::new(ContinuationLearning::ScopedProgress);
+        let reserve = bank.memory_reserve_bytes();
+        bank.progressed(0, 1, &[]);
+        bank.progressed(0, 1, &[1; PROGRESS_ACTION_CAP + 1]);
+        assert!(bank.pop().is_none());
+        for id in 0..QUEUE_CAP + 8 {
+            bank.progressed(id as u64, id as u64 + 1, &[1; PROGRESS_ACTION_CAP]);
+        }
+        assert_eq!(bank.pending.len(), QUEUE_CAP);
+        assert!(bank.exits.is_empty() && bank.order.is_empty());
+        assert_eq!(bank.pending.front().unwrap().donor, 8);
+        assert_eq!(bank.pop().unwrap().donor, (QUEUE_CAP + 7) as u64);
+        assert_eq!(bank.memory_reserve_bytes(), reserve);
+        assert!(reserve < ContinuationBank::<u8, u8>::reserve_bytes());
+        assert_eq!(
+            ContinuationBank::<u8, u8>::default().memory_reserve_bytes(),
+            ContinuationBank::<u8, u8>::reserve_bytes()
+        );
+    }
 
     #[test]
     fn improvement_reuses_only_observed_exits_with_the_new_parent() {
