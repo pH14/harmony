@@ -1,0 +1,355 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Diagnostics / x86 raw XSAVE
+
+# Each engine runs baseline and raw initramfses on the same host. Matrix
+# entries can use different hardware, so differences between engine entries
+# are descriptive evidence, not a controlled attribution to an engine change.
+on:
+  workflow_dispatch: {}
+  workflow_call: {}
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+  ORIGINAL_RUN_ID: "34495183986"
+
+jobs:
+  build-raw-guest:
+    name: Build raw-save diagnostic guests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: Record diagnostic source and locked toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p reports/build
+          git rev-parse HEAD | tee reports/build/diagnostic-head.txt
+          git status --short > reports/build/diagnostic-status.txt
+          nix --version | tee reports/build/nix-version.txt
+          nix flake metadata --json > reports/build/flake-metadata.json
+          sha256sum flake.lock > reports/build/flake-lock-sha256.txt
+
+      - name: Build N6 guests with raw-save diagnostics
+        env:
+          HARMONY_N6_RAW_SAVE_DIAGNOSTICS: "1"
+        run: |
+          set -euo pipefail
+          HARMONY_N6_RAW_SAVE_DIAGNOSTICS=1 nix run .#guest-images -- \
+            --output "$PWD/diagnostic-guests" \
+            --n6
+          test -s diagnostic-guests/MANIFEST.sha256
+          (cd diagnostic-guests && sha256sum -c MANIFEST.sha256)
+
+      - name: Record raw input identities
+        run: |
+          set -euo pipefail
+          {
+            find diagnostic-guests -type f -print0 | sort -z | while IFS= read -r -d '' file; do
+              sha256sum "$file"
+            done
+          } > reports/build/raw-guest-sha256.txt
+          cp diagnostic-guests/MANIFEST.sha256 reports/build/MANIFEST.sha256
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-n6-raw-save-build-${{ github.run_id }}
+          path: diagnostic-guests
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-n6-raw-save-build-report-${{ github.run_id }}
+          path: reports/build
+          if-no-files-found: warn
+          retention-days: 30
+
+  compare-engines:
+    name: Compare ${{ matrix.label }}
+    needs: build-raw-guest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: original
+            engine: 71bc888769b945e1ffa3f075e90871cdcdaa7c1f
+          - label: current
+            engine: ${{ github.sha }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout diagnostic tools at the dispatched head
+        uses: actions/checkout@v4
+        with:
+          path: diagnostic-tools
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Checkout engine at the pinned comparison head
+        uses: actions/checkout@v4
+        with:
+          path: engine
+          ref: ${{ matrix.engine }}
+          persist-credentials: false
+
+      - name: Install locked Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+
+      - name: Record heads, host, and toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p "reports/${{ matrix.label }}/baseline" "reports/${{ matrix.label }}/raw"
+          git -C diagnostic-tools rev-parse HEAD > "reports/${{ matrix.label }}/diagnostic-head.txt"
+          git -C engine rev-parse HEAD > "reports/${{ matrix.label }}/engine-head.txt"
+          {
+            uname -a
+            lscpu
+          } > "reports/${{ matrix.label }}/host.txt"
+          rustc --version --verbose > "reports/${{ matrix.label }}/rustc.txt"
+          cargo --version > "reports/${{ matrix.label }}/cargo.txt"
+          cat "reports/${{ matrix.label }}/diagnostic-head.txt"
+          cat "reports/${{ matrix.label }}/engine-head.txt"
+
+      - name: Grant KVM access
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-harmony-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          ls -l /dev/kvm > "reports/${{ matrix.label }}/kvm.txt"
+
+      - name: Download retained original guest artifact
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ env.ORIGINAL_RUN_ID }}
+          name: x86-guest-image
+          path: original-guest
+
+      - name: Download raw diagnostic build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: x86-n6-raw-save-build-${{ github.run_id }}
+          path: raw-build
+
+      - name: Verify and stage immutable guest inputs
+        run: |
+          set -euo pipefail
+          original_root=$PWD/original-guest/x86_64
+          raw_root=$PWD/raw-build/x86_64
+          original_manifest=$PWD/original-guest/MANIFEST.sha256
+          raw_manifest=$PWD/raw-build/MANIFEST.sha256
+          test -d "$original_root"
+          test -d "$raw_root"
+          test -s "$original_manifest"
+          test -s "$raw_manifest"
+          test -s "$original_root/bzImage"
+          test -s "$original_root/bzImage-faultlab"
+          test -s "$original_root/bzImage-n6-traps-off"
+          test -s "$original_root/initramfs-n6.cpio.gz"
+          test -s "$original_root/initramfs-n6-traps-off.cpio.gz"
+          test -s "$raw_root/initramfs-n6.cpio.gz"
+          test -s "$raw_root/initramfs-n6-traps-off.cpio.gz"
+          (cd "$(dirname "$original_manifest")" && sha256sum -c "$(basename "$original_manifest")")
+          (cd "$(dirname "$raw_manifest")" && sha256sum -c "$(basename "$raw_manifest")")
+
+          build_dir=$PWD/engine/consonance/harmony-linux/build
+          mkdir -p "$build_dir"
+          for name in bzImage bzImage-faultlab bzImage-n6-traps-off \
+              initramfs-n6.cpio.gz initramfs-n6-traps-off.cpio.gz; do
+            cp "$original_root/$name" "$build_dir/$name"
+          done
+          cp "$raw_root/initramfs-n6.cpio.gz" "$build_dir/initramfs-n6-raw-save.cpio.gz"
+          cp "$raw_root/initramfs-n6-traps-off.cpio.gz" \
+            "$build_dir/initramfs-n6-traps-off-raw-save.cpio.gz"
+
+          {
+            find original-guest -type f -print0 | sort -z | while IFS= read -r -d '' file; do
+              sha256sum "$file"
+            done
+            find raw-build -type f -print0 | sort -z | while IFS= read -r -d '' file; do
+              sha256sum "$file"
+            done
+          } > "reports/${{ matrix.label }}/input-sha256.txt"
+          printf 'original_run_id=%s\n' "$ORIGINAL_RUN_ID" \
+            >> "reports/${{ matrix.label }}/input-sha256.txt"
+          printf 'raw_build_run_id=%s\n' "$GITHUB_RUN_ID" \
+            >> "reports/${{ matrix.label }}/input-sha256.txt"
+
+      - name: Inspect raw diagnostic capture helper
+        run: |
+          set -euo pipefail
+          raw_archive="$PWD/raw-build/x86_64/initramfs-n6.cpio.gz"
+          test -s "$raw_archive"
+          raw_init="$PWD/reports/${{ matrix.label }}/raw-init"
+          raw_nm="$PWD/reports/${{ matrix.label }}/raw-init-nm.txt"
+          raw_full_objdump="$PWD/reports/${{ matrix.label }}/raw-init-objdump.txt"
+          raw_objdump="$PWD/reports/${{ matrix.label }}/raw-init-capture-objdump.txt"
+          tools_report="$PWD/reports/${{ matrix.label }}/assembly-tools.txt"
+          for tool in gzip cpio nm objdump cc; do
+            command -v "$tool" >/dev/null
+          done
+          gzip -dc "$raw_archive" | cpio -i --to-stdout --quiet init > "$raw_init"
+          test -s "$raw_init"
+          {
+            for tool in gzip cpio nm objdump cc; do
+              printf '%s=' "$tool"
+              command -v "$tool"
+              "$tool" --version 2>&1 | sed -n '1p'
+            done
+          } > "$tools_report"
+          nm -a "$raw_init" > "$raw_nm"
+          mapfile -t capture_symbols < <(awk '$NF ~ /^capture_raw_save/ { print $NF }' "$raw_nm")
+          if [[ "${#capture_symbols[@]}" -ne 1 ]]; then
+            echo "expected exactly one capture_raw_save-prefixed symbol" >&2
+            cat "$raw_nm" >&2
+            exit 1
+          fi
+          printf '%s\n' "${capture_symbols[0]}" > \
+            "reports/${{ matrix.label }}/raw-init-capture-symbol.txt"
+          objdump --disassemble="${capture_symbols[0]}" "$raw_init" > "$raw_objdump"
+          test -s "$raw_objdump"
+          objdump -d "$raw_init" > "$raw_full_objdump"
+          test -s "$raw_full_objdump"
+          sha256sum "$raw_init" "$raw_archive" > \
+            "reports/${{ matrix.label }}/raw-init-evidence-sha256.txt"
+
+      - name: Compile N6 sweep once before both runs
+        run: |
+          set -uo pipefail
+          set +e
+          (
+            cd engine
+            timeout -k 10 900 cargo test --locked --release -p vmm-core \
+              --test n6_x86_instruction_sweep --no-run
+          ) 2>&1 | tee "reports/${{ matrix.label }}/compile-test.log"
+          compile_status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$compile_status" > "reports/${{ matrix.label }}/compile-status.txt"
+          exit "$compile_status"
+
+      - name: Run baseline and raw-save sweeps, retaining both statuses
+        run: |
+          set -uo pipefail
+          baseline_report="$PWD/reports/${{ matrix.label }}/baseline"
+          raw_report="$PWD/reports/${{ matrix.label }}/raw"
+          baseline_status=0
+          raw_status=0
+
+          set +e
+          (
+            cd engine
+            N6_REPORT_DIR="$baseline_report" timeout -k 10 1800 \
+              cargo test --locked --release -p vmm-core --test n6_x86_instruction_sweep \
+                -- --ignored --test-threads=1 --nocapture
+          ) 2>&1 | tee "reports/${{ matrix.label }}/baseline-test.log"
+          baseline_pipeline=("${PIPESTATUS[@]}")
+          set -e
+          baseline_status=${baseline_pipeline[0]}
+          test "${baseline_pipeline[1]}" -eq 0
+          printf '%s\n' "$baseline_status" > "reports/${{ matrix.label }}/baseline-status.txt"
+          printf '125\n' > "reports/${{ matrix.label }}/raw-status.txt"
+
+          cp "$PWD/engine/consonance/harmony-linux/build/initramfs-n6-raw-save.cpio.gz" \
+            "$PWD/engine/consonance/harmony-linux/build/initramfs-n6.cpio.gz"
+          cp "$PWD/engine/consonance/harmony-linux/build/initramfs-n6-traps-off-raw-save.cpio.gz" \
+            "$PWD/engine/consonance/harmony-linux/build/initramfs-n6-traps-off.cpio.gz"
+          for variant in n6 n6-traps-off; do
+            cmp "$PWD/engine/consonance/harmony-linux/build/initramfs-${variant}-raw-save.cpio.gz" \
+              "$PWD/engine/consonance/harmony-linux/build/initramfs-${variant}.cpio.gz"
+          done
+          set +e
+          (
+            cd engine
+            N6_REPORT_DIR="$raw_report" timeout -k 10 1800 \
+              cargo test --locked --release -p vmm-core --test n6_x86_instruction_sweep \
+                -- --ignored --test-threads=1 --nocapture
+          ) 2>&1 | tee "reports/${{ matrix.label }}/raw-test.log"
+          raw_pipeline=("${PIPESTATUS[@]}")
+          set -e
+          raw_status=${raw_pipeline[0]}
+          test "${raw_pipeline[1]}" -eq 0
+
+          printf '%s\n' "$baseline_status" > "reports/${{ matrix.label }}/baseline-status.txt"
+          printf '%s\n' "$raw_status" > "reports/${{ matrix.label }}/raw-status.txt"
+          printf 'baseline_status=%s\nraw_status=%s\n' "$baseline_status" "$raw_status" \
+            > "reports/${{ matrix.label }}/test-status.txt"
+
+      - name: Compare complete raw-save report pairs
+        run: |
+          set -u
+          raw_report="$PWD/reports/${{ matrix.label }}/raw"
+          report_tool="$PWD/diagnostic-tools/consonance/harmony-linux/scripts/n6-raw-save-report.py"
+          pairs=0
+          report_status=0
+          set +e
+          for profile in bzImage bzImage-faultlab; do
+            first="$raw_report/${profile}-1.log"
+            second="$raw_report/${profile}-2.log"
+            if [[ -s "$first" && -s "$second" ]]; then
+              pairs=$((pairs + 1))
+              python3 "$report_tool" "$first" "$second" \
+                --output "$raw_report/${profile}-raw-save-report.json" \
+                > "$raw_report/${profile}-raw-save-report.log" 2>&1
+              status=$?
+              printf '%s\n' "$status" > "$raw_report/${profile}-raw-save-report.status"
+              if [[ $status -ne 0 ]]; then
+                report_status=1
+              fi
+            fi
+          done
+          set -e
+          if [[ $pairs -lt 1 ]]; then
+            echo "raw-save diagnostics produced no complete profile pair" >&2
+            report_status=1
+          fi
+          printf 'complete_pairs=%s\nreport_status=%s\n' "$pairs" "$report_status" \
+            > "$raw_report/raw-save-report-status.txt"
+          printf '%s\n' "$report_status" > "$raw_report/raw-save-report-exit.txt"
+          exit "$report_status"
+
+      - name: Fail unless both sweeps completed successfully
+        if: always()
+        run: |
+          set -euo pipefail
+          baseline_status=$(cat "reports/${{ matrix.label }}/baseline-status.txt")
+          raw_status=$(cat "reports/${{ matrix.label }}/raw-status.txt")
+          if [[ "$baseline_status" -ne 0 || "$raw_status" -ne 0 ]]; then
+            echo "baseline_status=$baseline_status raw_status=$raw_status" >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-n6-raw-save-${{ matrix.label }}-${{ github.run_id }}
+          path: reports/${{ matrix.label }}
+          if-no-files-found: error
+          retention-days: 30

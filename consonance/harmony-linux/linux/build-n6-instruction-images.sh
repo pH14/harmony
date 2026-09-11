@@ -46,6 +46,16 @@ case "$(uname -m)" in
         ;;
 esac
 
+diagnostics=()
+case "${HARMONY_N6_RAW_SAVE_DIAGNOSTICS:-0}" in
+    0) ;;
+    1)
+        [ "$arch" = x86_64 ] || { echo "FAIL: raw save diagnostics require x86_64" >&2; exit 1; }
+        diagnostics=(-DN6_RAW_SAVE_DIAGNOSTICS=1)
+        ;;
+    *) echo "FAIL: HARMONY_N6_RAW_SAVE_DIAGNOSTICS must be 0 or 1" >&2; exit 1 ;;
+esac
+
 echo "== N6: generator/verifier negative controls"
 python3 "$generator" --table "$table" self-test
 python3 "$generator" --table "$table" guest-assembly --arch "$arch" \
@@ -101,7 +111,7 @@ build_guest() {
         -static -fno-pie -no-pie -Wl,--build-id=none -Wl,-z,noexecstack \
         -Wl,--gc-sections "${march[@]}" \
         -I"$n6_root" -DN6_ARCH='"'"$arch"'"' -DN6_AUDIT_REJECTED=1 \
-        "${extra[@]}" -o "$binary" \
+        "${extra[@]}" "${diagnostics[@]}" -o "$binary" \
         "$LINUX_DIR/n6-instruction-guest.c" "$n6_root/n6-generated.S"
     python3 "$entropy_scan" "$binary"
 }

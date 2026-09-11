@@ -100,6 +100,57 @@ static uint64_t fnv1a(const unsigned char *data, size_t length)
 	return fnv1a_update(UINT64_C(1469598103934665603), data, length);
 }
 
+#if defined(N6_RAW_SAVE_DIAGNOSTICS) && defined(__x86_64__)
+/* Diagnostic capture only: preserve all bytes before formatting the result.
+ * General-register-only copying avoids adding floating-point/vector writes.
+ * Extra guest instructions can perturb timing, so this is evidence gathering,
+ * never a replacement for the unchanged same-seed acceptance comparison. */
+static volatile unsigned char raw_saves[N6_TABLE_OPERATION_COUNT][PAGE_BYTES];
+static uint64_t raw_values[N6_TABLE_OPERATION_COUNT];
+static int raw_valid[N6_TABLE_OPERATION_COUNT];
+
+static __attribute__((noinline, target("general-regs-only")))
+void capture_raw_save(size_t operation_index, const struct shared_result *shared)
+{
+	size_t index;
+	for (index = 0; index < PAGE_BYTES; index++)
+		raw_saves[operation_index][index] = shared->data[index];
+	raw_values[operation_index] = shared->value;
+	raw_valid[operation_index] = 1;
+}
+
+static void report_raw_saves(void)
+{
+	static const char hex[] = "0123456789abcdef";
+	unsigned char bytes[PAGE_BYTES];
+	char line[PAGE_BYTES * 2 + 256];
+	size_t operation_index;
+	for (operation_index = 0; operation_index < N6_TABLE_OPERATION_COUNT;
+	     operation_index++) {
+		const char *name = n6_operations[operation_index].name;
+		size_t index;
+		int used;
+		if (!raw_valid[operation_index] ||
+		    (strncmp(name, "FXSAVE", 6) != 0 && strncmp(name, "XSAVE", 5) != 0))
+			continue;
+		for (index = 0; index < PAGE_BYTES; index++)
+			bytes[index] = raw_saves[operation_index][index];
+		used = snprintf(line, sizeof(line),
+			"N6_RAW_SAVE name=%s value=%016llx hash=%016llx bytes=", name,
+			(unsigned long long)raw_values[operation_index],
+			(unsigned long long)fnv1a(bytes, PAGE_BYTES));
+		if (used < 0 || (size_t)used + PAGE_BYTES * 2 >= sizeof(line))
+			fail("raw-save-report-overflow");
+		for (index = 0; index < PAGE_BYTES; index++) {
+			line[used + index * 2] = hex[bytes[index] >> 4];
+			line[used + index * 2 + 1] = hex[bytes[index] & 15];
+		}
+		line[used + PAGE_BYTES * 2] = '\0';
+		write_marker(line);
+	}
+}
+#endif
+
 #if defined(__aarch64__)
 static uint64_t digest_text(uint64_t hash, const char *text)
 {
@@ -166,6 +217,9 @@ static void run_operation(struct operation_runner *runner,
 			(uint64_t (*)(void *))(void *)(runner->jit +
 				operation_index * PAGE_BYTES);
 		runner->shared->value = function(runner->shared->data);
+#if defined(N6_RAW_SAVE_DIAGNOSTICS) && defined(__x86_64__)
+		capture_raw_save(operation_index, runner->shared);
+#endif
 		(void)snprintf(result, 64, "value:%016llx:mem:%016llx",
 			       (unsigned long long)runner->shared->value,
 			       (unsigned long long)fnv1a(runner->shared->data,
@@ -372,6 +426,9 @@ int main(void)
 			fail("report-line-overflow");
 		write_marker(line);
 	}
+#if defined(N6_RAW_SAVE_DIAGNOSTICS) && defined(__x86_64__)
+	report_raw_saves();
+#endif
 	(void)snprintf(line, sizeof(line),
 		"N6_GUEST_OK arch=%s table_rows=%d exercised_rows=%zu operations=%d",
 		N6_ARCH, N6_TABLE_ROW_COUNT, row_index, N6_TABLE_OPERATION_COUNT);

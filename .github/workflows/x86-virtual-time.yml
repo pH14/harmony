@@ -24,7 +24,12 @@ on:
       - .github/workflows/x86-virtual-time.yml
   schedule:
     - cron: "13 3 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      raw_xsave:
+        description: Run the isolated baseline/raw XSAVE diagnostic matrix
+        type: boolean
+        default: false
 
 concurrency:
   group: x86-virtual-time-${{ github.event_name }}-${{ github.ref }}
@@ -47,6 +52,7 @@ jobs:
   # X0: CPU identity, /dev/kvm, the KVM capability table, and one minimal
   # real-mode guest through the public KvmBackend.
   probe:
+    if: ${{ !inputs.raw_xsave }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -99,6 +105,7 @@ jobs:
   # comparator and placement-checker negatives standing against the same
   # workload's log. Two replicas so most pushes also sample two hardware draws.
   x1-minimal-guest:
+    if: ${{ !inputs.raw_xsave }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -133,6 +140,7 @@ jobs:
   # immutable artifact, never a cross-run cache, so N5 can distinguish an
   # actual rebuild from a restored image.
   guest-image:
+    if: ${{ !inputs.raw_xsave }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -167,6 +175,7 @@ jobs:
   # rejected first; only then may both production profiles' two same-seed
   # traps-on boots receive credit.
   n6-instruction-sweep:
+    if: ${{ !inputs.raw_xsave }}
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -215,6 +224,7 @@ jobs:
   # execution trace must repeat on both production kernel profiles while the
   # corresponding traps-off boot demonstrably diverges.
   go-runtime:
+    if: ${{ !inputs.raw_xsave }}
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -265,6 +275,7 @@ jobs:
   # an unoptimized sha2 makes wall-clock-prohibitive. Two replicas so most
   # pushes sample two hardware draws.
   x2-linux-virtual_time:
+    if: ${{ !inputs.raw_xsave }}
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -346,6 +357,7 @@ jobs:
   # (sub-second boots), so a wide matrix is cheap. Report-only: an AMD draw
   # finding no divergent pair is the expected common case.
   x2-intel-hunt:
+    if: ${{ !inputs.raw_xsave }}
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -392,6 +404,7 @@ jobs:
   # Linux compile/lint/test truth for the crates the x86 work touches; the
   # macOS development host cannot check cfg(linux) code.
   check:
+    if: ${{ !inputs.raw_xsave }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -407,3 +420,10 @@ jobs:
         run: cargo clippy -p vmm-backend -p vmm-core --all-features --all-targets -- -D warnings
       - name: tests (portable)
         run: cargo test -p vmm-backend --all-features
+
+  raw-xsave-diagnostics:
+    if: ${{ inputs.raw_xsave }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/xsave-diagnostics.yml
