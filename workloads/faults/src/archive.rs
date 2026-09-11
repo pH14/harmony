@@ -14,6 +14,7 @@ use searcher::search::{
 };
 
 use crate::bundle::FaultVocabulary;
+use crate::report::CampaignMeasures;
 use crate::target::{FaultAction, FaultObservations, action_horizons};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
@@ -407,6 +408,9 @@ pub struct FaultArchiveReport {
     /// Generic selector accounting.
     #[serde(default)]
     pub selector: SelectorAccounting,
+    /// What the campaign bought, for the operator.
+    #[serde(default)]
+    pub measures: CampaignMeasures,
 }
 
 #[cfg(test)]

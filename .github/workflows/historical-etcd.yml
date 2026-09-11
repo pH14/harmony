@@ -44,7 +44,6 @@ jobs:
       seed: ${{ steps.read.outputs.seed }}
       workers: ${{ steps.read.outputs.workers }}
       actions: ${{ steps.read.outputs.actions }}
-      executions: ${{ steps.read.outputs.executions }}
       wall_minutes: ${{ steps.read.outputs.wall_minutes }}
       knobs: ${{ steps.read.outputs.knobs }}
       oracle_assertion: ${{ steps.read.outputs.oracle_assertion }}
@@ -87,7 +86,6 @@ jobs:
           emit oracle_assertion "$(jq -r .oracle.assertion "${case_json}")"
           emit oracle_evidence "$(jq -r .oracle.evidence "${case_json}")"
           emit knobs ""
-          emit executions "$(jq -r .search.executions "${case_json}")"
       - name: Summarize the manifest
         run: |
           set -euo pipefail
@@ -241,7 +239,6 @@ jobs:
           SEED: ${{ needs.manifest.outputs.seed }}
           WORKERS: ${{ needs.manifest.outputs.workers }}
           ACTIONS: ${{ needs.manifest.outputs.actions }}
-          EXECUTIONS: ${{ needs.manifest.outputs.executions }}
           WALL_MINUTES: ${{ needs.manifest.outputs.wall_minutes }}
           KNOBS: ${{ needs.manifest.outputs.knobs }}
           ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}

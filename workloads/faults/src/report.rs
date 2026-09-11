@@ -127,6 +127,66 @@ pub fn write_bug_reports(
     Ok(written)
 }
 
+/// What a campaign did, in the terms an operator uses to decide whether it is
+/// worth continuing: how much guest time it bought, how much of the workload
+/// the oracle actually verified, and whether the faults it drew fired.
+///
+/// Every field is a plain count. None of them reaches a search decision, an
+/// archive key, or a recorded byte. The archive fold fills every field it can
+/// see from endpoints; `guest_seconds` and `fired_site` come from the run that
+/// clocked the horizons and holds the image's symbol table.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CampaignMeasures {
+    /// Guest seconds executed across every admitted action.
+    pub guest_seconds: u64,
+    /// Greatest count of workload units an endpoint's oracle verified.
+    pub acknowledged_writes: u64,
+    /// EventKill arms whose coordinate was reached.
+    pub kills_fired: u64,
+    /// EventKill arms the run ended without reaching.
+    pub kills_unfired: u64,
+    /// Median agent ticks a fired arm survived between its arm and its kill.
+    pub kill_age_ticks_median: u64,
+    /// Greatest agent ticks a fired arm survived.
+    pub kill_age_ticks_max: u64,
+    /// Check runs that reached a verdict.
+    pub checks_conclusive: u64,
+    /// Check runs that finished without one.
+    pub checks_inconclusive: u64,
+    /// Symbol of the instrumented site where an arm fired, when the image
+    /// named one.
+    pub fired_site: Option<String>,
+}
+
+/// The fired-arm ages a campaign saw, folded into their median and maximum.
+///
+/// Ages arrive one at a time and out of order, so the fold keeps them and
+/// sorts once. The list is bounded by the campaign's execution budget.
+#[derive(Clone, Debug, Default)]
+pub struct KillAges(Vec<u64>);
+
+impl KillAges {
+    /// Record one fired arm's age in agent ticks.
+    pub fn push(&mut self, ticks: u64) {
+        self.0.push(ticks);
+    }
+
+    /// Median and maximum, both zero when no arm fired.
+    #[must_use]
+    pub fn summarize(&self) -> (u64, u64) {
+        if self.0.is_empty() {
+            return (0, 0);
+        }
+        let mut sorted = self.0.clone();
+        sorted.sort_unstable();
+        // Even counts take the lower of the two middle values, so the median is
+        // always an age some arm actually reached.
+        let median = sorted[(sorted.len() - 1) / 2];
+        let max = *sorted.last().unwrap_or(&0);
+        (median, max)
+    }
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes
         .iter()
@@ -159,6 +219,22 @@ mod tests {
             &observations,
         )
         .expect("build a report")
+    }
+
+    #[test]
+    fn no_fired_arm_leaves_both_kill_ages_at_zero() {
+        assert_eq!(KillAges::default().summarize(), (0, 0));
+    }
+
+    #[test]
+    fn kill_ages_report_the_lower_middle_value_and_the_greatest() {
+        let mut ages = KillAges::default();
+        for ticks in [9, 1, 5, 3] {
+            ages.push(ticks);
+        }
+        assert_eq!(ages.summarize(), (3, 9));
+        ages.push(7);
+        assert_eq!(ages.summarize(), (5, 9));
     }
 
     #[test]

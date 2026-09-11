@@ -406,6 +406,14 @@ mod live {
             horizon_nanos: archive.horizon_nanos,
         };
         let written = write_bug_reports(windows, &archive.bugs, &options.output)?;
+        let mut measures = archive.measures.clone();
+        // Guest time is the campaign's, not any one endpoint's: every admitted
+        // horizon ran the guest for `horizon_nanos`.
+        measures.guest_seconds = campaign_report
+            .campaign
+            .frames_emulated
+            .saturating_mul(archive.horizon_nanos)
+            / 1_000_000_000;
         let summary = json!({
             "mode": "faultlab_campaign",
             "image": game.image_identity(),
@@ -425,6 +433,7 @@ mod live {
             "bugs_found": campaign_report.bugs_found,
             "executions_to_first_bug": campaign_report.executions_to_first_bug,
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),
+            "measures": measures,
         });
         std::fs::write(
             options.output.join("campaign-summary.json"),

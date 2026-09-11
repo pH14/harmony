@@ -91,7 +91,13 @@ which the agent forwards to the SDK:
 @sometimes <u32>          assert_sometimes hit at that point
 @reachable <u32>          assert_reachable at that point
 @always <u32> <0|1>       assert_always(cond) at that point
+@verified <u64>           workload units this hook has verified so far
 ```
+
+`@verified` is a count, not an assertion. It is cumulative and monotonic, the
+agent keeps the greatest value any hook has reported, and it publishes it in a
+register rather than to the SDK. A check that emits only `@verified` reached no
+verdict.
 
 The `check` command reports through the same directives and the same exit code.
 It is not held behind the post-restart readiness wait that hooks are: a check is

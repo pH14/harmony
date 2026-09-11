@@ -104,6 +104,8 @@ pub struct Counters {
     /// Event parks that reached their site and held, read back from the
     /// instrumented runtime.
     pub event_parks_fired: u64,
+    /// Workload units a hook has verified, the greatest `@verified` seen.
+    pub verified: u64,
     /// Node starts after the initial one.
     pub restarts: u64,
     /// Bitmap of the `assert_sometimes` ids a hook has reported.
@@ -340,14 +342,22 @@ impl Supervisor {
         self.counters.workload_deaths += 1;
     }
 
-    /// Record that one run of the bundle's check finished.
     /// Record the runtime's running total of event parks that held. The
     /// runtime counts per process, so a restarted node starts from zero and the
     /// agent keeps the greatest total it has seen.
+    /// Record a hook's cumulative count of verified workload units. Hooks
+    /// report independently and a later one can be behind, so the agent keeps
+    /// the greatest count it has seen.
+    pub fn note_verified(&mut self, count: u64) {
+        self.counters.verified = self.counters.verified.max(count);
+    }
+
     pub fn note_event_park_fires(&mut self, fires: u64) {
         self.counters.event_parks_fired = self.counters.event_parks_fired.max(fires);
     }
 
+    /// Record that one run of the bundle's check finished, and whether it
+    /// reached a verdict.
     pub fn note_check_finished(&mut self, verdict: bool) {
         self.counters.checks_finished += 1;
         if verdict {
@@ -398,6 +408,7 @@ impl Supervisor {
             checks_finished: self.counters.checks_finished,
             checks_conclusive: self.counters.checks_conclusive,
             event_parks_fired: self.counters.event_parks_fired,
+            verified: self.counters.verified,
             restarts: self.counters.restarts,
             parked: self.counters.parked,
             workload_deaths: self.counters.workload_deaths,

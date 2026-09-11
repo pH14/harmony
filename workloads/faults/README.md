@@ -122,6 +122,15 @@ the stop was the only evidence. `bug_found` and `first_bug_execution` come from
 the confirmed bugs, so a hit that no replay reproduced is reported and does not
 count as a rediscovery.
 
+`campaign-summary.json` carries a `measures` block for the operator: guest
+seconds executed, the greatest acknowledged-write count a hook reported through
+`@verified`, kills fired and unfired, the median and greatest number of agent
+ticks a fired arm survived after its arm, conclusive and inconclusive check
+runs, and the symbol of the site where an arm fired. They say whether a
+campaign is buying guest time, whether its oracle is reaching verdicts, and
+whether its faults are landing, which a bug count alone cannot. None of them
+reaches a search decision, an archive key, or a recorded byte.
+
 Search also writes
 `campaign-summary.json`, `stream.jsonl`, `progress.jsonl`,
 `first-bug-input.json`, and one `bug-N.json` per recorded bug

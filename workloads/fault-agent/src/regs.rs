@@ -52,6 +52,8 @@ pub const REG_CHECKS_FINISHED: u32 = 12;
 pub const REG_CHECKS_CONCLUSIVE: u32 = 13;
 /// Event parks that reached their site and held.
 pub const REG_EVENT_PARKS_FIRED: u32 = 14;
+/// Workload units a hook has verified, as reported by `@verified`.
+pub const REG_VERIFIED: u32 = 15;
 
 /// The number of `assert_sometimes` ids [`REG_SOMETIMES`] can hold. A hit at a
 /// higher id still reaches the host as an assertion event; it just has no bit.
@@ -95,12 +97,14 @@ pub struct RegisterSnapshot {
     pub checks_conclusive: u64,
     /// Event parks that reached their site and held.
     pub event_parks_fired: u64,
+    /// Workload units a hook has verified.
+    pub verified: u64,
 }
 
 impl RegisterSnapshot {
     /// The `(register, value)` pairs in register order.
     #[must_use]
-    pub fn pairs(&self) -> [(u32, u64); 14] {
+    pub fn pairs(&self) -> [(u32, u64); 15] {
         [
             (REG_TICKS, self.ticks),
             (REG_ALIVE, self.alive),
@@ -116,6 +120,7 @@ impl RegisterSnapshot {
             (REG_CHECKS_FINISHED, self.checks_finished),
             (REG_CHECKS_CONCLUSIVE, self.checks_conclusive),
             (REG_EVENT_PARKS_FIRED, self.event_parks_fired),
+            (REG_VERIFIED, self.verified),
         ]
     }
 }
@@ -184,6 +189,7 @@ mod tests {
                 (REG_CHECKS_FINISHED, 0),
                 (REG_CHECKS_CONCLUSIVE, 0),
                 (REG_EVENT_PARKS_FIRED, 0),
+                (REG_VERIFIED, 0),
             ]
         );
     }

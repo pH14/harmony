@@ -79,3 +79,8 @@ past that offset, trimmed back to the last complete record so the next window st
 A check that re-read the whole journal would cost more on every run and would eventually take the
 processor the workload needs. `hooks.sh 3` compares the entire journal against every member's whole
 prefix; running it once at the end of a measurement reports a loss that no window covered.
+
+The watermark file also carries the running count of records the oracle has confirmed on every
+member, and a passing check reports it as `@verified`. It says how much of the load was actually
+validated, which the assertions do not carry: a run whose oracle agreed about nothing and one
+that agreed about fifty thousand keys report the same assertion evidence.

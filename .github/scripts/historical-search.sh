@@ -11,7 +11,7 @@ set -euo pipefail
 
 : "${CASE_ID:?}" "${ARM:?}" "${WORKLOAD_VERSION:?}" "${IMAGE_PREFIX:?}"
 : "${SOFTWARE_NAME:?}" "${HORIZON_MS:?}" "${RAM_MIB:?}"
-: "${SEED:?}" "${WORKERS:?}" "${ACTIONS:?}" "${EXECUTIONS:?}" "${WALL_MINUTES:?}"
+: "${SEED:?}" "${WORKERS:?}" "${ACTIONS:?}" "${WALL_MINUTES:?}"
 # An empty value is the locked no-knobs configuration. Keep it distinct from
 # an omitted required variable so the case can prove it needs no tuning.
 : "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
@@ -36,8 +36,8 @@ out="reports/${CASE_ID}.${ARM}.search"
 console="reports/${CASE_ID}.${ARM}.search.console.txt"
 rm -rf "${out}"
 
-# The campaign stops itself at --wall-minutes; the outer bound covers a run
-# that stops answering instead.
+# The wall budget is the campaign's only stopping rule, so no execution count
+# is passed. The outer bound covers a run that stops answering instead.
 status=0
 timeout -k 60 "$(( (WALL_MINUTES + 20) * 60 ))" \
     "${harmony}" search --package faults \
@@ -48,7 +48,6 @@ timeout -k 60 "$(( (WALL_MINUTES + 20) * 60 ))" \
     --fault-agent "${agent}" \
     --seed "${SEED}" \
     --workers "${WORKERS}" \
-    --executions "${EXECUTIONS}" \
     --actions "${ACTIONS}" \
     --horizon-ms "${HORIZON_MS}" \
     --ram-mib "${RAM_MIB}" \
@@ -95,6 +94,21 @@ outcome=$("${oracle}" search "${report}" "${ARM}") || verdict=1
         ["verdict", $outcome]
         | "| \(.[0]) | \(.[1]) |"
     ' "${report}"
+    echo
+    echo "| measure | value |"
+    echo "|---|---|"
+    jq -r '.measures |
+        ["guest seconds", (.guest_seconds | tostring)],
+        ["acknowledged writes", (.acknowledged_writes | tostring)],
+        ["kills fired", (.kills_fired | tostring)],
+        ["kills unfired", (.kills_unfired | tostring)],
+        ["median fired-kill age in ticks", (.kill_age_ticks_median | tostring)],
+        ["maximum fired-kill age in ticks", (.kill_age_ticks_max | tostring)],
+        ["conclusive checks", (.checks_conclusive | tostring)],
+        ["inconclusive checks", (.checks_inconclusive | tostring)],
+        ["fired site", (.fired_site // "none")]
+        | "| \(.[0]) | \(.[1]) |"
+    ' "${out}/campaign-summary.json"
 } >>"${summary}"
 
 exit "${verdict}"

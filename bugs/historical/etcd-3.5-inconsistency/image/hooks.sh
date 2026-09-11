@@ -136,9 +136,12 @@ case "$1" in
     trap 'rm -f "${expected}" "${window}" "${window_bounds}"' EXIT
 
     start=0
+    confirmed=0
     if [ -f "${verified}" ]; then
       start=$(awk 'NR == 1 && $0 ~ /^[0-9]+$/ { print $0 }' "${verified}")
       [ -n "${start}" ] || start=0
+      confirmed=$(awk 'NR == 2 && $0 ~ /^[0-9]+$/ { print $0 }' "${verified}")
+      [ -n "${confirmed}" ] || confirmed=0
     fi
     size=$(wc -c <"${journal}")
     [ "${size}" -gt "${start}" ] || exit 0
@@ -176,9 +179,13 @@ case "$1" in
     compare_against_members "${expected}" read_member_window
     verdict=$?
     set -e
-    # Advance the watermark only when every member was read and agreed.
+    # Advance the watermark only when every member was read and agreed. The
+    # record count travels with it so the host can see how much of the load the
+    # oracle has actually confirmed, which no assertion carries.
     if [ "${verdict}" -eq 1 ]; then
-      echo "$((start + consumed))" >"${verified}"
+      confirmed=$((confirmed + $(wc -l <"${expected}")))
+      printf '%s\n%s\n' "$((start + consumed))" "${confirmed}" >"${verified}"
+      echo "@verified ${confirmed}"
     fi
     exit 0
     ;;

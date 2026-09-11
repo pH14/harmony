@@ -42,6 +42,7 @@ use crate::{
     },
     bundle::{FaultVocabulary, MAX_NODES},
     consonance::{FaultConfig, FaultTarget, identity, snapshot_memory_charge},
+    report::{CampaignMeasures, KillAges},
     target::{FaultAction, FaultObservations, FaultSnapshot, MAX_FAULT_ACTIONS, WAIT_MAX_SCALE},
 };
 
@@ -210,6 +211,31 @@ pub struct FaultCampaignEvidence {
     coordinate_attempted: u64,
     coordinate_fired: u64,
     coordinate_refined: u64,
+    kill_ages: KillAges,
+    acknowledged: u64,
+    checks_conclusive: u64,
+    checks_inconclusive: u64,
+}
+
+impl FaultCampaignEvidence {
+    /// The operator-facing measures this campaign accumulated. `guest_seconds`
+    /// and `fired_site` are left for the run that knows them.
+    fn measures(&self) -> CampaignMeasures {
+        let (median, max) = self.kill_ages.summarize();
+        CampaignMeasures {
+            guest_seconds: 0,
+            acknowledged_writes: self.acknowledged,
+            kills_fired: self.coordinate_fired,
+            kills_unfired: self
+                .coordinate_attempted
+                .saturating_sub(self.coordinate_fired),
+            kill_age_ticks_median: median,
+            kill_age_ticks_max: max,
+            checks_conclusive: self.checks_conclusive,
+            checks_inconclusive: self.checks_inconclusive,
+            fired_site: None,
+        }
+    }
 }
 
 const EVENT_NODE_COUNT: usize = MAX_NODES as usize;
@@ -798,6 +824,7 @@ impl Reporting for FaultGame {
                 refined: evidence.coordinate_refined,
             },
             selector: state.selector,
+            measures: evidence.measures(),
         }
     }
 }
@@ -1174,7 +1201,21 @@ impl Evaluation for FaultGame {
             evidence.coordinate_attempted = evidence.coordinate_attempted.saturating_add(1);
             if fired {
                 evidence.coordinate_fired = evidence.coordinate_fired.saturating_add(1);
+                if let Some(last) = action.observations.last() {
+                    evidence.kill_ages.push(last.event_kill_age_ticks);
+                }
             }
+        }
+        for observation in &action.observations {
+            evidence.acknowledged = evidence.acknowledged.max(observation.verified);
+            evidence.checks_conclusive = evidence
+                .checks_conclusive
+                .max(observation.checks_conclusive);
+            evidence.checks_inconclusive = evidence.checks_inconclusive.max(
+                observation
+                    .checks_finished
+                    .saturating_sub(observation.checks_conclusive),
+            );
         }
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);

@@ -1126,7 +1126,9 @@ mod real {
         }
     }
 
-    /// Turn one hook output line into an SDK emission.
+    /// Turn one hook output line into an SDK emission. Returns whether the
+    /// line was an assertion, which is what makes a check's run a verdict; a
+    /// count directive reports progress and decides nothing.
     fn forward(
         line: &str,
         hook: u32,
@@ -1144,21 +1146,25 @@ mod real {
                 return Ok(false);
             }
         };
-        let result = match directive {
+        let (result, asserted) = match directive {
             Directive::Sometimes(point) => {
                 supervisor.note_sometimes(point);
-                sdk.assert_sometimes(true, point)
+                (sdk.assert_sometimes(true, point), true)
             }
-            Directive::Reachable(point) => sdk.assert_reachable(point),
+            Directive::Reachable(point) => (sdk.assert_reachable(point), true),
+            Directive::Verified(count) => {
+                supervisor.note_verified(count);
+                (Ok(()), false)
+            }
             Directive::Always { point, cond } => {
                 if !cond {
                     log(tick, &format!("hook {hook} assertion {point} failed"));
                 }
-                sdk.assert_always(cond, point)
+                (sdk.assert_always(cond, point), true)
             }
         };
         result
-            .map(|()| true)
+            .map(|()| asserted)
             .map_err(|error| format!("hook {hook} directive {line:?}: {error}"))
     }
 

@@ -41,16 +41,15 @@
     "fires_on": "an acknowledged key is missing or has a different value on any recovered member after restart",
     "silent_when": ["a member is down", "the journal is empty", "a local member read is inconclusive"]
   },
-  "actions": ["Wait", "EventKill", "Kill", "Pause", "Restart"],
+  "actions": ["Wait", "EventKill", "EventPark", "Kill", "Pause", "Restart"],
   "run": {
     "horizon_ms": 500,
-    "ram_mib": 512,
+    "ram_mib": 1024,
     "knobs": {}
   },
   "search": {
     "seed": 1,
     "workers": 4,
-    "executions": 4000,
     "actions": 48,
     "wall_minutes": 150
   },

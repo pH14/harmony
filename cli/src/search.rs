@@ -4,6 +4,10 @@ use clap::ValueEnum;
 use nes_workload::package::{SearchOptions, search_native};
 use std::{error::Error, path::PathBuf, process::ExitCode};
 
+/// Executions a campaign admits when neither an execution count nor a wall
+/// budget was asked for.
+const DEFAULT_EXECUTIONS: u64 = 1000;
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum Package {
     Nes,
@@ -27,9 +31,10 @@ pub struct Args {
     seed: u64,
     #[arg(long, default_value_t = 1)]
     workers: u32,
-    /// Number of search executions to admit.
-    #[arg(long, default_value_t = 1000)]
-    executions: u64,
+    /// Executions to admit. Omitting it with `--wall-minutes` set lets the
+    /// wall budget be the only stopping rule.
+    #[arg(long)]
+    executions: Option<u64>,
     /// Maximum actions in a candidate.
     #[arg(long, default_value_t = 128)]
     actions: usize,
@@ -89,7 +94,7 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
     let options = SearchOptions {
         seed: args.seed,
         workers: args.workers,
-        executions: args.executions,
+        executions: args.executions.unwrap_or(DEFAULT_EXECUTIONS),
         actions: args.actions,
         output: args.out.clone(),
     };
@@ -160,7 +165,11 @@ fn faults_options(args: &Args) -> Result<faults_workload::Options, Box<dyn Error
     Ok(faults_workload::Options {
         seed: args.seed,
         workers: args.workers,
-        executions: args.executions,
+        executions: match (args.executions, args.wall_minutes) {
+            (Some(executions), _) => executions,
+            (None, Some(_)) => u64::MAX,
+            (None, None) => DEFAULT_EXECUTIONS,
+        },
         actions: args.actions,
         horizon_ms: args.horizon_ms,
         ram_mib: args.ram_mib,
@@ -322,7 +331,7 @@ mod tests {
             backend: Some(backend),
             seed: 1,
             workers: 1,
-            executions: 1,
+            executions: Some(1),
             actions: 1,
             out: PathBuf::from("missing-output"),
             core: None,
