@@ -68,6 +68,10 @@ fn wall_limit(horizon_nanos: u64) -> Duration {
 /// action, so an unbounded cache grows without limit across a long run; an
 /// evicted prefix is rebuilt from its longest cached ancestor instead.
 const SNAPSHOT_CACHE_LIMIT: usize = 96;
+/// Newest cache entries kept out of eviction. A branch reads its parent and
+/// then seals a child, so both are live while the next eviction runs, and the
+/// searcher may restore an endpoint it reserved a few jobs earlier.
+const SNAPSHOT_PIN_RESERVE: usize = 16;
 /// Guest time run past a horizon deadline when the session refuses to seal the
 /// endpoint. The refusal is a point the virtual clock cannot seal, such as an
 /// exit still in flight, so a short step forward finds a sealable one.
@@ -652,14 +656,24 @@ impl Live {
         };
         self.snapshots.insert(actions, cached);
         while self.snapshots.len() > SNAPSHOT_CACHE_LIMIT.saturating_add(1) {
+            // Recently used endpoints are still referenced: the caller holds
+            // the snapshot it just sealed and the parent it branched from.
+            // Ordering victims by rebuild cost alone would pick one of those,
+            // because a fresh shallow prefix is the cheapest thing in the map,
+            // and the next branch would name a dropped snapshot. Reserve the
+            // newest entries, then among the rest drop the one cheapest to
+            // reach again: a prefix holding long waits costs its whole guest
+            // duration to rebuild.
+            let mut stamps: Vec<u64> = self.snapshots.values().map(|c| c.stamp).collect();
+            stamps.sort_unstable();
+            let floor = stamps
+                .len()
+                .checked_sub(SNAPSHOT_PIN_RESERVE)
+                .map_or(0, |index| stamps[index]);
             let Some(victim) = self
                 .snapshots
                 .iter()
-                .filter(|(prefix, _)| !prefix.is_empty())
-                // Evict the endpoint that is cheapest to reach again. A
-                // prefix holding long waits costs its whole guest duration to
-                // rebuild, so dropping it for a recently used shallow one
-                // spends minutes of guest time on the next branch from it.
+                .filter(|(prefix, cached)| !prefix.is_empty() && cached.stamp < floor)
                 .min_by_key(|(prefix, cached)| {
                     (
                         prefix
