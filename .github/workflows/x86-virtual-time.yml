@@ -543,6 +543,24 @@ jobs:
               -- --ignored --exact --test-threads=1 --nocapture \
               2>&1 | tee reports/xsave-continuation.log
           grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' reports/xsave-continuation.log
+      - name: Compare live x87 and SSE bytes across cold continuation
+        if: ${{ always() && inputs.amd_npt_observe }}
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          printf '%s\n' "$cpu" > reports/xsave-live-registers-affinity-cpu.txt
+          printf '%s\n' 'live_kvm::xsave_live_registers_survive_cold_continuation' > reports/xsave-live-registers-test-name.txt
+          XSAVE_LIVE_REGISTERS_REPORT_DIR="$PWD/reports/xsave-live-registers" \
+            taskset -c "$cpu" cargo test --locked -p vmm-core --test x86_cpu_snapshots \
+              live_kvm::xsave_live_registers_survive_cold_continuation \
+              -- --ignored --exact --test-threads=1 --nocapture \
+              2>&1 | tee reports/xsave-live-registers.log
+          grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' reports/xsave-live-registers.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

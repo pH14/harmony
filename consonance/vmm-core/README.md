@@ -82,7 +82,8 @@ CPU. Its retained observations isolate capture effects; they are not a passing
 snapshot qualification. A further observation has the guest change its own
 PDPT before the stop, ruling out fixes that affect only host memory writes.
 The observation workflow also compares a raw guest-written XSAVE area across
-original, saved, and cold execution on either x86 vendor.
+original, saved, and cold execution on either x86 vendor. Separate initialized
+and live-register cases retain x87 and SSE payloads in the guest output.
 
 ## Architecture boundary
 
