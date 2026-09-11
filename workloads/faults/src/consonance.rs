@@ -229,7 +229,7 @@ impl ActionRuntime for Session {
 
 impl ContinuationRuntime for Session {
     fn capture(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
-        self.snapshot()
+        self.snapshot_including_modified()
     }
 
     fn release(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {

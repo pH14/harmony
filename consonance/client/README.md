@@ -43,7 +43,9 @@ command completes while retaining the ordinary assertion stop.
 `Session::snapshot` captures that exact stopped state in one control
 exchange and returns the server's synchronized V-time. It never advances the
 guest or retries a refusal, so a capture failure is returned to the caller with
-the control diagnostic.
+the control diagnostic. Recording snapshots reject modified lineage. Investigation
+continuations use `Session::snapshot_including_modified` to retain off-record
+command state without clearing its taint or advancing execution.
 
 `SessionConfig::defer_virtual_time_checkpoint_hashes` moves sparse
 virtual-time checkpoint hashing out of the run that reaches a checkpoint. Each

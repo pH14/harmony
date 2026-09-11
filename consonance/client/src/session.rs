@@ -682,16 +682,21 @@ fn snapshot_handle<T: Transport>(
     client: &mut Client<T>,
     operation: &'static str,
 ) -> Result<SnapshotReceipt, Box<dyn Error>> {
+    snapshot_handle_with_policy(client, operation, false)
+}
+
+fn snapshot_handle_with_policy<T: Transport>(
+    client: &mut Client<T>,
+    operation: &'static str,
+    allow_modified: bool,
+) -> Result<SnapshotReceipt, Box<dyn Error>> {
     let reply = client
         .request(&control_proto::Request::Snapshot)
         .map_err(|error| SessionError::Control(error.to_string()))?;
     match reply {
         Reply::Snapshot {
-            id,
-            at,
-            tainted: false,
-            ..
-        } => Ok(SnapshotReceipt { id, at: at.0 }),
+            id, at, tainted, ..
+        } if !tainted || allow_modified => Ok(SnapshotReceipt { id, at: at.0 }),
         Reply::Snapshot {
             id, tainted: true, ..
         } => {
@@ -1086,6 +1091,27 @@ mod tests {
 
         assert!(error.to_string().contains("socket closed"));
         assert_one_snapshot_without_run(&client.transport().requests);
+    }
+
+    #[test]
+    fn modified_snapshot_capture_is_explicit_and_never_runs_or_drops_the_point() {
+        for tainted in [false, true] {
+            let mut client = snapshot_client([Ok(Ok(Reply::Snapshot {
+                id: SnapId(31),
+                at: control_proto::Moment(99),
+                sdk_events: 0,
+                tainted,
+            }))]);
+            let before = client.transport().requests.len();
+            let receipt = snapshot_handle_with_policy(&mut client, "continuation snapshot", true)
+                .expect("explicit continuation capture accepts this lineage");
+            assert_eq!(receipt.id, SnapId(31));
+            assert_eq!(receipt.at, 99);
+            assert_eq!(
+                &client.transport().requests[before..],
+                &[control_proto::Request::Snapshot]
+            );
+        }
     }
 
     #[test]

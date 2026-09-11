@@ -248,6 +248,15 @@ impl Session {
         Ok((receipt.id, receipt.at))
     }
 
+    /// Capture an investigation lineage, including off-record command state.
+    /// This explicit opt-in does not clear taint or advance the guest. Recording
+    /// callers should use `snapshot`, which rejects modified lineage.
+    pub fn snapshot_including_modified(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
+        let receipt = snapshot_handle_with_policy(&mut self.client, "continuation snapshot", true)?;
+        self.snapshot_times.insert(receipt.id, receipt.at);
+        Ok((receipt.id, receipt.at))
+    }
+
     /// Drop a held control-server snapshot.
     pub fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
         self.drop_handle(snapshot)?;
