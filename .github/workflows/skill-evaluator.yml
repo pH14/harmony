@@ -84,7 +84,7 @@ jobs:
       - name: Portable artifact boundary checks
         run: |
           set -euo pipefail
-          python3 -B -m unittest -v benchmarks/skills/test_build.py benchmarks/skills/test_guest_image.py benchmarks/skills/test_guest_evidence.py benchmarks/skills/test_guest_files.py benchmarks/skills/test_guest_limits.py benchmarks/skills/test_qualify_guest.py 2>&1 | tee reports/skill-build/portable-tests.log
+          python3 -B -m unittest -v benchmarks/skills/test_build.py benchmarks/skills/test_guest_image.py benchmarks/skills/test_guest_evidence.py benchmarks/skills/test_guest_files.py benchmarks/skills/test_guest_limits.py benchmarks/skills/test_qualify_guest.py benchmarks/skills/test_artifact_run.py benchmarks/skills/test_behavior.py benchmarks/skills/test_checker_guest.py benchmarks/skills/test_qualify_semantics.py 2>&1 | tee reports/skill-build/portable-tests.log
       - name: Build and retain trusted compiler image
         run: |
           set -euo pipefail
@@ -212,6 +212,16 @@ jobs:
             --agent workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent \
             --preparer workloads/faults/target/release/examples/prepared_image_digest \
             --output reports/skill-guest/bounded/cases > reports/skill-guest/result.json
+      - name: Private behavior and guest checker qualification without model calls
+        run: |
+          set -euo pipefail
+          qualification_image=$(cat compiler-image/image-id.txt)
+          TMPDIR="$PWD/reports/skill-guest/bounded/host-tmp" python3 -B -m benchmarks.skills.qualify_semantics --image "$qualification_image" \
+            --harmony target/release/harmony --kernel guest/bzImage-faultlab \
+            --base guest/initramfs.cpio.gz \
+            --agent workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent \
+            --preparer workloads/faults/target/release/examples/prepared_image_digest \
+            --output reports/skill-guest/bounded/semantics > reports/skill-guest/semantic-result.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

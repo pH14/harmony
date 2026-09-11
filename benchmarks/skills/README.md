@@ -39,7 +39,7 @@ it does not qualify guest boot or a semantic grader.
 Portable checks run from the repository root:
 
 ```sh
-python3 -B -m unittest benchmarks/skills/test_materials.py benchmarks/skills/test_sandbox.py benchmarks/skills/test_build.py benchmarks/skills/test_guest_image.py benchmarks/skills/test_guest_evidence.py benchmarks/skills/test_guest_files.py benchmarks/skills/test_guest_limits.py benchmarks/skills/test_qualify_guest.py
+python3 -B -m unittest benchmarks/skills/test_materials.py benchmarks/skills/test_sandbox.py benchmarks/skills/test_build.py benchmarks/skills/test_guest_image.py benchmarks/skills/test_guest_evidence.py benchmarks/skills/test_guest_files.py benchmarks/skills/test_guest_limits.py benchmarks/skills/test_qualify_guest.py benchmarks/skills/test_artifact_run.py benchmarks/skills/test_behavior.py benchmarks/skills/test_checker_guest.py benchmarks/skills/test_qualify_semantics.py
 ```
 
 The [qualification workflow](../../.github/workflows/skill-evaluator.yml) records
@@ -47,9 +47,8 @@ the exact code and image identities and retains the tool image with its results.
 
 Portable tests exercise material handling, process helpers, and artifact parsing.
 Actual Docker canaries separately qualify the Linux execution and compilation
-boundaries. Guest boot, meaningful checker controls, general built-source
-semantics, and private held-out grading require further trusted services outside
-the agent sandbox; passing these infrastructure checks does not qualify them.
+boundaries. Guest execution and semantic grading use separate controller services outside
+the agent sandbox; passing material and build checks alone does not qualify them.
 
 `guest_image.package_artifacts` writes a deterministic Docker-save archive from
 copied build artifacts and a controller-owned bundle. `qualify_guest` uses fixed
@@ -78,3 +77,24 @@ trusted run containing `guest-images-<run-id>`. The selected kernel/base hashes
 are recorded; an empty input skips KVM execution. Portable packaging and evidence
 checks still run on pull requests. Guest images must match the fault-agent kernel
 interface described in the guest build documentation.
+
+`qualify_semantics` freezes both development and held-out cohorts before grading.
+Each pair shares the original C source, short task, factual product docs, compiler
+recipe, and limits. Only treatment receives the generic skills, whose content,
+executable modes and directory structure are pinned to their pre-case revision.
+Private reference outcomes, control inputs and known qualification submissions
+remain controller-only. This qualifier uses hand-authored submissions and makes
+zero model calls; provider integration and model scoring remain separate work.
+
+`behavior.grade` compares numeric outputs over 25 bounded-counter inputs and 45
+transfer inputs. `artifact_run` executes the collected compiler artifact in a
+fresh sandbox for each input. `checker_guest` packages that same artifact and
+validates real KVM evidence for three valid and three invalid observations per
+case. Expected verdicts never enter the guest. The qualifier requires valid,
+always-pass, always-fail, silent and changed-application submissions to produce
+their distinct expected outcomes. Timeouts, compilation failures and malformed
+evidence cannot count as successful negative controls. Both domains and all
+controls are pinned; changing them requires an explicit qualification review.
+These finite checks do not prove general program equivalence or skill benefit.
+The manual guest workflow runs this gate after SDK transport qualification and
+retains each source manifest, artifact, observation and guest evidence cut.
