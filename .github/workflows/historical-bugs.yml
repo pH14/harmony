@@ -79,6 +79,7 @@ jobs:
           sudo chmod a+rw /dev/kvm
           sha256sum guest/* oci-images/* > reports/input-sha256.txt
           python3 ../diagnostics/.github/scripts/candidate-continuation.py --self-test
+          python3 ../diagnostics/.github/scripts/cli-journal-interruption.py --self-test
       - name: Install static guest toolchain
         working-directory: candidate
         run: |

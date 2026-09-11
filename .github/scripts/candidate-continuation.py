@@ -7,6 +7,7 @@ is a failure, never a reason to compare only assertion IDs.
 """
 import argparse
 import copy
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -520,14 +521,81 @@ def qualify(root):
 
     require(w("source-after-commands", "inspect", "bug-1") == source, "original finding changed during commands")
 
+    spec = importlib.util.spec_from_file_location(
+        "journal_interruption", Path(__file__).with_name("cli-journal-interruption.py"))
+    require(spec is not None and spec.loader is not None, "missing interruption diagnostic")
+    journal = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(journal)
+    interruption_env = dict(os.environ, HARMONY_CWD=str(root),
+                            HARMONY_KERNEL=str(root / "guest/bzImage-faultlab"),
+                            HARMONY_BASE_INITRAMFS=str(root / "guest/initramfs.cpio.gz"),
+                            HARMONY_FAULT_AGENT=str(root / "tools/fault-agent"))
+    source_bytes = journal._source_tree_snapshot(workspace)
+    interruption = journal.qualify(cli, workspace, "zero", output / "journal-interruption",
+                                   interruption_env)
+    phases = interruption["phases"]
+    recovered = {phase: data["pending_reply"] for phase, data in phases.items()}
+
+    def recovered_invoke(phase, label, *args):
+        return invoke(f"journal-{phase}-{label}",
+                      ["-w", phases[phase]["workspace"], "--json", *artifacts, *args])
+
+    def compare_recovered(label):
+        endpoints = []
+        for phase, point in recovered.items():
+            command = command_record(point)
+            summary = recovered_invoke(phase, f"{label}-summary", "inspect", point["moment"])
+            retained_identity(summary, point)
+            require(summary.get("command") == command, "recovered command differs from reply")
+            view = recovered_invoke(phase, f"{label}-command", "inspect", point["moment"],
+                                    "command", "--limit", "1000000")
+            lines = validate_command_evidence(summary, view, command)
+            evidence = next(item for item in summary["evidence"] if item.get("kind") == "command")
+            raw = journal._verified_blob(
+                Path(phases[phase]["workspace"]) / "blobs" / evidence["sha256"], evidence["sha256"])
+            require(evidence["bytes"] == len(raw), "recovered command byte count differs from blob")
+            require(lines == journal._rust_lossy_lines(raw),
+                    "recovered command view differs from raw blob")
+            events_view = recovered_invoke(phase, f"{label}-events", "inspect", point["moment"],
+                                           "events", "--limit", "1000000")
+            invocation = dict(command["invocation"])
+            # Each independent transaction has a different host request id.
+            # Engine command identity and every guest-visible field must agree.
+            invocation.pop("request_id")
+            endpoints.append((identity(point), invocation, command["completion"],
+                              inspected_events(events_view, point), lines,
+                              evidence["bytes"], evidence["sha256"]))
+        require(endpoints[0] == endpoints[1], f"recovered before/after states differ at {label}")
+
+    compare_recovered("pending")
+    interruption_steps = None
+    for step in range(1, 21):
+        for phase, point in recovered.items():
+            recovered[phase] = recovered_invoke(
+                phase, f"run-{step}", "run", point["branch"], "--for", "1s", "--extend",
+                "--wall-seconds", "600", "--request-id", f"journal-cold-step-{step}")
+        compare_recovered(f"step-{step}")
+        if command_record(recovered["before"])["completion"] == "pending":
+            continue
+        for point in recovered.values():
+            command_exited(point, 37)
+        interruption_steps = step
+        break
+    require(interruption_steps is not None, "recovered commands did not complete in 20 steps")
+    require(journal._source_tree_snapshot(workspace) == source_bytes,
+            "interruption or cold recovery changed the source workspace")
+
     summary = {"format": "harmony-cli-continuation-qualification-v1", "status": "passed",
                "virtual_time": original["virtual_time"], "state_hash": original["state_hash"],
                "events": len(events),
                "command_completion_steps": completed_step,
                "command_completion_status": 37,
+               "journal_interruption_completion_steps": interruption_steps,
+               "journal_interruption_phases": list(phases),
                "comparisons": ["fork-zero", "cold-clone", "whole", "split",
-                               "pending-exec/fork-pending-cold", "quick-probe/replacement"],
-               "scope": "exact continuation identity plus pending and completed exec/probe identity"}
+                               "pending-exec/fork-pending-cold", "quick-probe/replacement",
+                               "journal-before/after-cold-completion"],
+               "scope": "exact continuation, exec/probe identity and shipping process interruption recovery"}
     (output / "result.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))
     if os.environ.get("GITHUB_STEP_SUMMARY"):
