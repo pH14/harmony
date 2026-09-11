@@ -20,10 +20,15 @@ jobs:
         with:
           persist-credentials: false
       - name: Record qualification source and host
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           mkdir -p reports/skill-evaluator
-          git rev-parse HEAD > reports/skill-evaluator/candidate-head.txt
+          git rev-parse HEAD > reports/skill-evaluator/tested-checkout-head.txt
+          if [[ -n "$PR_HEAD_SHA" ]]; then
+            printf '%s\n' "$PR_HEAD_SHA" > reports/skill-evaluator/pr-head.txt
+          fi
           uname -a > reports/skill-evaluator/host.txt
       - name: Portable material and process checks
         run: |

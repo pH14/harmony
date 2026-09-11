@@ -38,7 +38,48 @@ _HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 _REPORT_FORMAT = "harmony-skill-sandbox-qualification-v1"
 _CLEANUP_ALLOWANCE = float(getattr(sandbox, "_CLEANUP_TIMEOUT", 5.0))
-_CANARY_SCRIPT = r'''
+_MOUNTINFO_CHECK = r'''def check_mountinfo(text, expected_work):
+    rows = {}
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 10:
+            fail("malformed mountinfo row")
+        try:
+            separator = fields.index("-", 6)
+        except ValueError:
+            fail("missing mountinfo separator")
+        if len(fields) != separator + 4:
+            fail("malformed mountinfo superblock fields")
+        destination = fields[4]
+        if destination in ("/", "/work", "/tmp"):
+            if destination in rows:
+                fail("duplicate mount: " + destination)
+            rows[destination] = (
+                set(fields[5].split(",")), fields[separator + 1],
+                set(fields[separator + 3].split(",")),
+            )
+    if set(rows) != {"/", "/work", "/tmp"}:
+        fail("required mount is absent")
+    if "ro" not in rows["/"][0] or "rw" in rows["/"][0]:
+        fail("root mount is writable")
+    for destination, executable in (("/work", True), ("/tmp", False)):
+        options, filesystem, super_options = rows[destination]
+        if filesystem != "tmpfs" or not {"rw", "nosuid", "nodev"} <= options or "ro" in options:
+            fail("tmpfs type or mount flags mismatch: " + destination)
+        # Linux reports noexec when disabled; exec is the default and omitted.
+        if ("noexec" not in options) != executable:
+            fail("tmpfs executable mode mismatch: " + destination)
+        sizes = [option[5:] for option in super_options if option.startswith("size=")]
+        if len(sizes) != 1 or not sizes[0]:
+            fail("tmpfs size is unavailable")
+        value = sizes[0]
+        multiplier = {"k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4}.get(value[-1].lower(), 1)
+        number = value[:-1] if multiplier != 1 else value
+        if not number.isascii() or not number.isdecimal() or int(number) * multiplier != expected_work:
+            fail("tmpfs size does not match the requested work limit")
+'''
+
+_CANARY_SCRIPT = _MOUNTINFO_CHECK + r'''
 import hashlib
 import os
 from pathlib import Path
@@ -95,46 +136,7 @@ if no_new_privs is None or no_new_privs.group(1) != "1":
 if cap_eff is None or int(cap_eff.group(1), 16) != 0:
     fail("effective capabilities are not empty")
 
-mountinfo = Path("/proc/self/mountinfo").read_text(encoding="ascii")
-
-
-def mount_options(destination):
-    for line in mountinfo.splitlines():
-        fields = line.split()
-        if len(fields) > 5 and fields[4] == destination:
-            return fields[5].split(",")
-    fail("mount is absent: " + destination)
-
-
-root_options = mount_options("/")
-if "ro" not in root_options:
-    fail("root mount is writable")
-work_options = mount_options("/work")
-tmp_options = mount_options("/tmp")
-if "rw" not in work_options or "exec" not in work_options:
-    fail("work tmpfs is not writable and executable")
-if "rw" not in tmp_options or "noexec" not in tmp_options:
-    fail("tmp tmpfs is executable or read-only")
-
-
-def option_size(options):
-    for option in options:
-        if option.startswith("size="):
-            value = option[5:]
-            if not value:
-                continue
-            units = {"k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4}
-            multiplier = units.get(value[-1].lower(), 1)
-            number = value[:-1] if multiplier != 1 else value
-            try:
-                return int(number) * multiplier
-            except ValueError:
-                break
-    fail("tmpfs size is unavailable")
-
-
-if option_size(work_options) != int(expected_work) or option_size(tmp_options) != int(expected_work):
-    fail("tmpfs size does not match the requested work limit")
+check_mountinfo(Path("/proc/self/mountinfo").read_text(encoding="ascii"), int(expected_work))
 probe = Path("/.harmony-skill-readonly-canary")
 try:
     probe.write_bytes(b"must fail")

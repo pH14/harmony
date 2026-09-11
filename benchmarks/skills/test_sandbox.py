@@ -14,9 +14,10 @@ from pathlib import Path
 from unittest import mock
 
 try:
-    from . import materials, sandbox
+    from . import materials, qualify_sandbox, sandbox
 except ImportError:  # unittest discovery loads this directory as top-level modules.
     import materials  # type: ignore[no-redef]
+    import qualify_sandbox  # type: ignore[no-redef]
     import sandbox  # type: ignore[no-redef]
 
 
@@ -237,6 +238,85 @@ class SandboxValidationTests(unittest.TestCase):
         self.assertEqual(environment["DOCKER_HOST"], "unix:///var/run/docker.sock")
         self.assertEqual(environment["DOCKER_CONTEXT"], "default")
         self.assertNotIn("HOME", environment)
+
+
+_MOUNTINFO_WORK_BYTES = 32 * 1024 * 1024
+
+
+def _mountinfo_fixture() -> str:
+    # These rows follow the kernel's mountinfo shape: optional fields precede
+    # the separator, while tmpfs size is a superblock option after it.
+    return "\n".join(
+        (
+            "25 20 0:20 / / ro,relatime - overlay overlay rw,lowerdir=/base",
+            "26 20 0:21 / /work rw,nosuid,nodev,relatime shared:5 - tmpfs tmpfs rw,size=32m,mode=700,uid=65534,gid=65534",
+            "27 20 0:22 / /tmp rw,nosuid,nodev,noexec,relatime master:5 - tmpfs tmpfs rw,size=32m,mode=700,uid=65534,gid=65534",
+        )
+    )
+
+
+class MountInfoCanaryTests(unittest.TestCase):
+    def check_mountinfo(self, text: str) -> dict[str, object]:
+        def fail(message: str) -> None:
+            raise AssertionError(message)
+
+        namespace: dict[str, object] = {"fail": fail}
+        # Run the exact helper prepended to the Linux canary.  The injected
+        # failure hook lets portable tests exercise rejection paths without
+        # pretending to have observed a Linux container.
+        exec(qualify_sandbox._MOUNTINFO_CHECK, namespace)
+        namespace["check_mountinfo"](text, _MOUNTINFO_WORK_BYTES)
+        return namespace
+
+    def assert_rejected(self, text: str) -> None:
+        with self.assertRaises(AssertionError):
+            self.check_mountinfo(text)
+
+    def test_actual_mountinfo_accepts_implicit_exec_and_superblock_size(self) -> None:
+        self.check_mountinfo(_mountinfo_fixture())
+
+    def test_missing_duplicate_and_malformed_rows_are_rejected(self) -> None:
+        rows = _mountinfo_fixture().splitlines()
+        self.assert_rejected("\n".join(rows[:2]))
+        self.assert_rejected("\n".join(rows + [rows[1]]))
+        self.assert_rejected("\n".join(rows + [rows[2]]))
+        self.assert_rejected(
+            _mountinfo_fixture().replace("shared:5 - tmpfs tmpfs", "shared:5 tmpfs tmpfs", 1)
+        )
+        self.assert_rejected(_mountinfo_fixture() + " trailing")
+
+    def test_type_flags_and_exec_modes_are_checked(self) -> None:
+        rows = _mountinfo_fixture().splitlines()
+        variants = (
+            (1, rows[1].replace("- tmpfs tmpfs", "- overlay overlay")),
+            (2, rows[2].replace("- tmpfs tmpfs", "- overlay overlay")),
+            (1, rows[1].replace("rw,nosuid,nodev,relatime", "nosuid,nodev,relatime")),
+            (1, rows[1].replace("rw,nosuid,nodev,relatime", "rw,nodev,relatime")),
+            (1, rows[1].replace("rw,nosuid,nodev,relatime", "rw,nosuid,relatime")),
+            (1, rows[1].replace("rw,nosuid,nodev,relatime", "rw,nosuid,nodev,noexec,relatime")),
+            (2, rows[2].replace("rw,nosuid,nodev,noexec,relatime", "rw,nosuid,nodev,relatime")),
+            (0, rows[0].replace("ro,relatime", "rw,relatime")),
+        )
+        for index, variant in variants:
+            with self.subTest(variant=variant):
+                altered = rows.copy()
+                altered[index] = variant
+                self.assert_rejected("\n".join(altered))
+
+    def test_size_must_be_one_matching_tmpfs_super_option(self) -> None:
+        rows = _mountinfo_fixture().splitlines()
+        mount_size_only = rows.copy()
+        mount_size_only[1] = mount_size_only[1].replace(
+            "rw,nosuid,nodev,relatime shared:5 - tmpfs tmpfs rw,size=32m,",
+            "rw,nosuid,nodev,size=32m,relatime shared:5 - tmpfs tmpfs rw,",
+        )
+        mount_size_only[2] = mount_size_only[2].replace(
+            "rw,nosuid,nodev,noexec,relatime master:5 - tmpfs tmpfs rw,size=32m,",
+            "rw,nosuid,nodev,noexec,size=32m,relatime master:5 - tmpfs tmpfs rw,",
+        )
+        self.assert_rejected("\n".join(mount_size_only))
+        self.assert_rejected(_mountinfo_fixture().replace("size=32m", "size=16m"))
+        self.assert_rejected(_mountinfo_fixture().replace("size=32m,", "size=32m,size=16m,"))
 
 
 class StagePayloadTests(unittest.TestCase):
