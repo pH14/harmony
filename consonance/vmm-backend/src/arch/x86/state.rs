@@ -304,24 +304,15 @@ const SSE_INIT_MXCSR: [u8; 4] = 0x1F80u32.to_le_bytes();
 /// the restore path reads none of it.
 const LEGACY_TAIL: std::ops::Range<usize> = 416..512;
 
-/// Canonicalize the x87 and SSE components of a standard-format XSAVE image to
-/// init-compressed form, in place.
+/// Normalize ignored payload and host-only metadata in a standard XSAVE image.
 ///
-/// XSAVE's init optimization gives one guest-visible state two encodings: a
-/// component can be recorded present (`XSTATE_BV` bit set, area holding the
-/// init values) or absent (bit clear, area architecturally ignored), and which
-/// one hardware writes varies with host scheduling rather than guest behavior
-/// (observed on Xeon Platinum 8573C: the x87 bit flips across same-seed boots
-/// while every state byte matches). Determinism rule #4 forbids host-derived
-/// bytes in `VcpuState`, so both encodings must collapse to one: a component
-/// whose area holds the init values gets its bit cleared, and a component
-/// whose bit is clear gets the init values written into its ignored area.
-/// `MXCSR_MASK` — a host capability constant the save instruction writes, which
-/// differs across vendors — is pinned to the contract value for the same
-/// reason: it is not guest state, and restore ignores it; the legacy tail —
-/// the exporting host kernel's own template — is zeroed likewise.
-/// Compacted-format images (nonzero `XCOMP_BV`) have a different layout and
-/// are left untouched.
+/// Preserve every `XSTATE_BV` bit, including components whose payload contains
+/// init values: a later guest XSAVE can expose component presence. Clearing a
+/// present bit before XRSTOR changes that future even when the register payload
+/// is unchanged. Payload for absent components is filled with init values.
+/// `MXCSR_MASK` is pinned because restore ignores this host capability field;
+/// the legacy software tail is zeroed because restore ignores it as well.
+/// Compacted-format images (nonzero `XCOMP_BV`) are left untouched.
 pub fn canonicalize_xsave(image: &mut [u8]) {
     if image.len() < XCOMP_BV + 8 || image[XCOMP_BV..XCOMP_BV + 8] != [0u8; 8] {
         return;
@@ -330,29 +321,16 @@ pub fn canonicalize_xsave(image: &mut [u8]) {
     image[MXCSR_MASK].copy_from_slice(&MXCSR_MASK_PINNED);
     image[LEGACY_TAIL].fill(0);
 
-    let is_zero = |r: std::ops::Range<usize>, image: &[u8]| image[r].iter().all(|&b| b == 0);
-    let x87_init = |image: &[u8]| {
-        image[X87_CONTROL.start..X87_CONTROL.start + 2] == X87_INIT_FCW
-            && is_zero(X87_CONTROL.start + 2..X87_CONTROL.end, image)
-            && is_zero(X87_ST, image)
-    };
-    let sse_init = |image: &[u8]| image[SSE_MXCSR] == SSE_INIT_MXCSR && is_zero(SSE_XMM, image);
-
-    let mut bv = u64::from_le_bytes(image[XSTATE_BV..XSTATE_BV + 8].try_into().expect("8 bytes"));
+    let bv = u64::from_le_bytes(image[XSTATE_BV..XSTATE_BV + 8].try_into().expect("8 bytes"));
     if bv & 1 == 0 {
         image[X87_CONTROL.start..X87_CONTROL.start + 2].copy_from_slice(&X87_INIT_FCW);
         image[X87_CONTROL.start + 2..X87_CONTROL.end].fill(0);
         image[X87_ST].fill(0);
-    } else if x87_init(image) {
-        bv &= !1;
     }
     if bv & 2 == 0 {
         image[SSE_MXCSR].copy_from_slice(&SSE_INIT_MXCSR);
         image[SSE_XMM].fill(0);
-    } else if sse_init(image) {
-        bv &= !2;
     }
-    image[XSTATE_BV..XSTATE_BV + 8].copy_from_slice(&bv.to_le_bytes());
 }
 
 #[cfg(test)]
@@ -371,14 +349,15 @@ mod tests {
     }
 
     #[test]
-    fn init_state_encodings_collapse_to_one_image() {
-        // The measured Xeon 8573C flip: same bytes, XSTATE_BV 0x3 vs 0x2.
-        let mut a = init_image(0x3);
-        let mut b = init_image(0x2);
-        canonicalize_xsave(&mut a);
-        canonicalize_xsave(&mut b);
-        assert_eq!(a, b);
-        assert_eq!(a[XSTATE_BV..XSTATE_BV + 8], 0u64.to_le_bytes());
+    fn initialized_components_retain_observable_presence() {
+        // A later guest XSAVE can expose these bits even when the component
+        // payload holds init values. Cold restore must retain that distinction.
+        for presence in [0u64, 1, 2, 3] {
+            let mut image = init_image(presence);
+            let before = image.clone();
+            canonicalize_xsave(&mut image);
+            assert_eq!(image, before, "component presence {presence:#x}");
+        }
     }
 
     #[test]
