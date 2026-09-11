@@ -21,6 +21,7 @@ jobs:
           set -euo pipefail
           mkdir reports
           git rev-parse HEAD > reports/checkout.txt
+          printf '%s\n' 'Nested guest boot and inner KVM execution have not been attempted.' > reports/scope.txt
           uname -a > reports/kernel.txt
           lscpu > reports/cpu.txt
           for vendor in intel amd; do
@@ -30,10 +31,8 @@ jobs:
             fi
           done
           { ls -l /boot/vmlinuz-*; ls -l "/lib/modules/$(uname -r)/kernel/arch/x86/kvm/"; } > reports/kernel-files.txt 2>&1 || true
-          sudo chmod a+rw /dev/kvm
           cc -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -O2 .github/scripts/nested-host-preflight.c -o /tmp/nested-host-preflight
-          timeout 10s /tmp/nested-host-preflight | tee reports/kvm.txt
-          printf '%s\n' 'Nested guest boot and inner KVM execution have not been attempted.' > reports/scope.txt
+          sudo timeout 10s /tmp/nested-host-preflight | tee reports/kvm.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

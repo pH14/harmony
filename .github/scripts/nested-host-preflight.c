@@ -12,6 +12,7 @@ int main(void) {
     int api = ioctl(fd, KVM_GET_API_VERSION, 0);
     int nested = ioctl(fd, KVM_CHECK_EXTENSION, KVM_CAP_NESTED_STATE);
     printf("KVM_API_VERSION=%d\nKVM_CAP_NESTED_STATE=%d\n", api, nested);
+    printf("NESTED_STATE_API_SUPPORTED=%s\n", nested > 0 ? "yes" : "no");
     close(fd);
     return api == KVM_API_VERSION && nested >= 0 ? 0 : 1;
 }
