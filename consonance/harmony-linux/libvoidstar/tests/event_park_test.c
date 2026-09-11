@@ -16,6 +16,7 @@ static uint64_t monotonic_nanos(void)
 }
 
 /// A rarity-0 arm holds the first callback at a site no callback has reached.
+/// The visit count comes from `site_visit`, which every callback takes once.
 static void holds_at_an_unvisited_site(void)
 {
     const uint64_t hold = UINT64_C(40000000);
@@ -24,7 +25,7 @@ static void holds_at_an_unvisited_site(void)
 
     park_arm(0, hold);
     started = monotonic_nanos();
-    assert(park_claim(1000, &held));
+    assert(park_claim(site_visit(1000), &held));
     assert(held == hold);
     park_hold(held);
     assert(monotonic_nanos() - started >= hold);
@@ -40,10 +41,10 @@ static void skips_a_site_visited_past_the_ceiling(void)
 
     park_disarm();
     for (index = 0; index < 8; ++index)
-        assert(!park_claim(common, &held));
+        assert(!park_claim(site_visit(common), &held));
     park_arm(1, UINT64_C(1000));
-    assert(!park_claim(common, &held));
-    assert(park_claim(2001, &held));
+    assert(!park_claim(site_visit(common), &held));
+    assert(park_claim(site_visit(2001), &held));
     assert(held == UINT64_C(1000));
 }
 
@@ -54,9 +55,9 @@ static void one_arm_holds_one_callback(void)
 
     park_disarm();
     park_arm(0, UINT64_C(1000));
-    assert(park_claim(3000, &held));
-    assert(!park_claim(3001, &held));
-    assert(!park_claim(3002, &held));
+    assert(park_claim(site_visit(3000), &held));
+    assert(!park_claim(site_visit(3001), &held));
+    assert(!park_claim(site_visit(3002), &held));
 }
 
 /// A zero hold is a disarm, so a closed window cannot leave a park behind.
@@ -66,7 +67,7 @@ static void a_zero_hold_disarms(void)
 
     park_arm(0, UINT64_C(1000));
     park_arm(0, 0);
-    assert(!park_claim(4000, &held));
+    assert(!park_claim(site_visit(4000), &held));
 }
 
 /// A hold is counted so the host can tell an arm that fired from one that
@@ -78,9 +79,9 @@ static void a_hold_is_counted(void)
 
     park_disarm();
     park_arm(0, UINT64_C(1000));
-    assert(park_claim(5000, &held));
+    assert(park_claim(site_visit(5000), &held));
     assert(atomic_load(&harmony_park_fires) == before + 1);
-    assert(!park_claim(5001, &held));
+    assert(!park_claim(site_visit(5001), &held));
     assert(atomic_load(&harmony_park_fires) == before + 1);
 }
 

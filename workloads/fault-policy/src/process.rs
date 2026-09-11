@@ -40,7 +40,7 @@ mod tests {
     fn round_trips_every_process_fault() {
         for f in [
             Fault::ProcKill,
-            Fault::ProcEventKill { ordinal: 123_456 },
+            Fault::ProcEventKill { rarity: 9 },
             Fault::ProcRestart,
             Fault::ProcPause(Span(1234)),
             Fault::RunHook(7),
@@ -64,10 +64,13 @@ mod tests {
         assert_eq!(decode_process_target(&extra), None);
     }
 
+    // Rarity 0 names a site never visited before, which is an ordinary
+    // coordinate and the rarest one the runtime can resolve.
     #[test]
-    fn rejects_zero_event_ordinal() {
-        let bytes = process_target(3, &Fault::ProcEventKill { ordinal: 0 });
-        assert_eq!(decode_process_target(&bytes), None);
+    fn a_zero_rarity_event_kill_round_trips() {
+        let fault = Fault::ProcEventKill { rarity: 0 };
+        let bytes = process_target(3, &fault);
+        assert_eq!(decode_process_target(&bytes), Some((3, fault)));
     }
 
     #[test]

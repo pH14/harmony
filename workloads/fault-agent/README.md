@@ -15,7 +15,7 @@ nothing else.
 | fault | window opens | window closes |
 |---|---|---|
 | `ProcKill` | `SIGKILL` the node's group | nothing: a kill is permanent |
-| `ProcEventKill` | arm the instrumented runtime to synchronously kill at an event ordinal | disarm the runtime arm |
+| `ProcEventKill` | arm the instrumented runtime to synchronously kill at a site of the named rarity | disarm the runtime arm |
 | `ProcPause` | `SIGSTOP` | `SIGCONT` |
 | `ProcRestart` | `SIGKILL` | start the node again |
 | `RunHook` | launch the hook once | nothing: hooks are not awaited |
@@ -127,7 +127,11 @@ threads, EventKill-fired deaths, and workload exits. The tick register is emitte
 liveness is always fresh; the others are emitted only when they change. The
 EventKill-fired register is monotonic and is separate from unexpected deaths so
 the host can identify the outcome of an EventKill action without inferring it
-from aggregate process exits.
+from aggregate process exits. An instrumented node writes the edge of the site
+that killed it to `HARMONY_EVENT_REPORT_FD` before the signal, and the agent
+reads that record as it reaps the node and publishes the edge in its own
+register, so the host learns where the kill landed rather than only that it
+did.
 
 ## Boundaries
 

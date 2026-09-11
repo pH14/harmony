@@ -51,8 +51,9 @@ const F_BLOCK_NOSPC: u8 = 8;
 const F_PROC_PAUSE: u8 = 9;
 const F_PROC_KILL: u8 = 10;
 const F_PROC_RESTART: u8 = 11;
-// Generic crash coordinate: an ordinal in the instrumented deterministic
-// event stream. This is deliberately past every historical process tag.
+// Generic crash coordinate: a visit-count scale in the instrumented
+// deterministic event stream. This is deliberately past every historical
+// process tag.
 const F_PROC_EVENT_KILL: u8 = 20;
 // Per-flow network policies (task 50): fresh tags 12..=15, disjoint from the
 // retired per-frame net tags 0..=4 (now undefined) so a stale net byte rejects.
@@ -129,9 +130,9 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
             put_u64(w, *d);
         }
         Fault::ProcKill => w.push(F_PROC_KILL),
-        Fault::ProcEventKill { ordinal } => {
+        Fault::ProcEventKill { rarity } => {
             w.push(F_PROC_EVENT_KILL);
-            put_u64(w, *ordinal);
+            w.push(*rarity);
         }
         Fault::ProcRestart => w.push(F_PROC_RESTART),
         Fault::BuggifyFire => w.push(F_BUGGIFY_FIRE),
@@ -169,13 +170,7 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
         F_BLOCK_NOSPC => Fault::BlockNospc,
         F_PROC_PAUSE => Fault::ProcPause(Span(r.u64()?)),
         F_PROC_KILL => Fault::ProcKill,
-        F_PROC_EVENT_KILL => {
-            let ordinal = r.u64()?;
-            if ordinal == 0 {
-                return Err(EnvError::Malformed);
-            }
-            Fault::ProcEventKill { ordinal }
-        }
+        F_PROC_EVENT_KILL => Fault::ProcEventKill { rarity: r.u8()? },
         F_PROC_RESTART => Fault::ProcRestart,
         F_BUGGIFY_FIRE => Fault::BuggifyFire,
         F_RUN_HOOK => Fault::RunHook(r.u32()?),

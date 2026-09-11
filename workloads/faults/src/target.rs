@@ -94,6 +94,8 @@ pub mod reg {
     pub const EVENT_PARKS_FIRED: u32 = 14;
     /// Workload units a hook reported verified.
     pub const VERIFIED: u32 = 15;
+    /// Instrumentation edge of the site the most recent EventKill fired at.
+    pub const EVENT_KILL_SITE: u32 = 16;
 }
 
 const NS_SHIFT: u32 = 24;
@@ -119,13 +121,14 @@ pub enum FaultAction {
     Wait(u8),
     /// SIGKILL one node for the whole horizon.
     Kill(u16),
-    /// Arm an instrumented node to SIGKILL itself after an ordinal number of
-    /// deterministic runtime events during this horizon.
+    /// Arm an instrumented node to SIGKILL itself at a rare place in its
+    /// deterministic event stream during this horizon.
     EventKill {
         /// The node.
         node: u16,
-        /// The number of future instrumented events after arming.
-        ordinal: u64,
+        /// Visit-count scale of the site that kills: the first callback after
+        /// the arm whose own site has at most `1 << rarity` earlier visits.
+        rarity: u8,
     },
     /// SIGSTOP one node for the given number of agent ticks, then SIGCONT.
     Pause(u16, u32),
@@ -280,9 +283,9 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
         // An arm stands until it fires or the input ends. A rare event is not
         // reached inside one horizon, so an arm that expired with its own
         // action could only ever name events the workload reaches early.
-        FaultAction::EventKill { node, ordinal } => ActionDelta {
+        FaultAction::EventKill { node, rarity } => ActionDelta {
             standing: Some(standing(
-                process_target(node, &Fault::ProcEventKill { ordinal }),
+                process_target(node, &Fault::ProcEventKill { rarity }),
                 (start, u64::MAX),
             )),
             perturb: None,
@@ -535,6 +538,11 @@ pub struct FaultObservations {
     /// workload; the search only compares the number across endpoints.
     #[serde(default)]
     pub verified: u64,
+    /// Instrumentation edge of the site the most recent EventKill fired at.
+    /// The edge is only meaningful against the symbol tables of the build that
+    /// produced it, so a report resolves it rather than carrying it forward.
+    #[serde(default)]
+    pub event_kill_site: u64,
     /// The `sometimes` bitmap the agent publishes for the first 48 sites.
     pub sometimes_register: u64,
     /// Every `sometimes` site hit, decoded from namespace-1 hits.
@@ -566,6 +574,7 @@ impl FaultObservations {
             checks_conclusive: value(reg::CHECKS_CONCLUSIVE),
             event_parks_fired: value(reg::EVENT_PARKS_FIRED),
             verified: value(reg::VERIFIED),
+            event_kill_site: value(reg::EVENT_KILL_SITE),
             sometimes_register: value(reg::SOMETIMES),
             sometimes: capture.sometimes.clone(),
             violations: capture.violations.clone(),
@@ -693,10 +702,7 @@ mod tests {
         };
         let actions = [
             FaultAction::Wait(5),
-            FaultAction::EventKill {
-                node: 0,
-                ordinal: 7,
-            },
+            FaultAction::EventKill { node: 0, rarity: 7 },
         ];
         let laid = windows.windows(&actions);
         assert_eq!(laid[0], (0, 16_000_000_000));
@@ -765,11 +771,11 @@ mod tests {
     }
 
     #[test]
-    fn event_kill_carries_only_the_instrumented_ordinal() {
+    fn event_kill_carries_only_the_instrumented_rarity() {
         let delta = action_delta(
             FaultAction::EventKill {
                 node: 2,
-                ordinal: 41,
+                rarity: 41,
             },
             window(WINDOWS, 1),
         );
@@ -778,7 +784,7 @@ mod tests {
             .expect("event kill installs a standing fault");
         assert_eq!(
             decode_process_target(&fault.target),
-            Some((2, Fault::ProcEventKill { ordinal: 41 }))
+            Some((2, Fault::ProcEventKill { rarity: 41 }))
         );
         assert!(delta.perturb.is_none());
     }

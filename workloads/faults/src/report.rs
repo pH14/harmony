@@ -133,8 +133,8 @@ pub fn write_bug_reports(
 ///
 /// Every field is a plain count. None of them reaches a search decision, an
 /// archive key, or a recorded byte. The archive fold fills every field it can
-/// see from endpoints; `guest_seconds` and `fired_site` come from the run that
-/// clocked the horizons and holds the image's symbol table.
+/// see from endpoints; `guest_seconds` comes from the run that clocked the
+/// horizons.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CampaignMeasures {
     /// Guest seconds executed across every admitted action.
@@ -153,9 +153,10 @@ pub struct CampaignMeasures {
     pub checks_conclusive: u64,
     /// Check runs that finished without one.
     pub checks_inconclusive: u64,
-    /// Symbol of the instrumented site where an arm fired, when the image
-    /// named one.
-    pub fired_site: Option<String>,
+    /// Instrumentation edge of the site where the last arm fired. The edge is
+    /// the identity the runtime reports; the symbol tables under `/symbols` in
+    /// the image that produced it are what turn it into a file and a line.
+    pub fired_site: Option<u64>,
 }
 
 /// The fired-arm ages a campaign saw, folded into their median and maximum.

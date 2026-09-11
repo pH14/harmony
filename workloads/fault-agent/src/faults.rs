@@ -39,9 +39,9 @@ pub struct EventPark {
 pub struct NodeFaults {
     /// `Fault::ProcKill` — the node is killed and stays down.
     pub kill: bool,
-    /// `Fault::ProcEventKill` — arm the instrumented runtime to kill the
-    /// node synchronously after the requested number of future deterministic
-    /// events.
+    /// `Fault::ProcEventKill` — arm the instrumented runtime to kill the node
+    /// synchronously at the first deterministic event after the arm whose own
+    /// site has been visited at most `1 << rarity` times.
     pub event_kill: Option<u64>,
     /// `Fault::ProcPause` — the node is stopped for the window's duration.
     pub pause: bool,
@@ -125,7 +125,7 @@ impl ActiveFaults {
         let flags = &mut self.nodes[index].1;
         match fault {
             Fault::ProcKill => flags.kill = true,
-            Fault::ProcEventKill { ordinal } => flags.event_kill = Some(*ordinal),
+            Fault::ProcEventKill { rarity } => flags.event_kill = Some(u64::from(*rarity)),
             Fault::ProcPause(_) => flags.pause = true,
             Fault::ProcRestart => flags.restart = true,
             Fault::ProcPark { addr, hits, hold } => {
@@ -239,11 +239,11 @@ mod tests {
     }
 
     #[test]
-    fn event_kill_decodes_as_an_instrumented_ordinal() {
+    fn event_kill_decodes_as_a_site_rarity() {
         let process = DecisionClass::Process.as_u16();
-        let target = target(2, &Fault::ProcEventKill { ordinal: 77 });
+        let target = target(2, &Fault::ProcEventKill { rarity: 7 });
         let active = ActiveFaults::from_entries([(process, target.as_slice(), 11)].into_iter());
-        assert_eq!(active.node(2).event_kill, Some(77));
+        assert_eq!(active.node(2).event_kill, Some(7));
         assert!(!active.node(2).kill);
         assert!(!active.node(2).any());
     }

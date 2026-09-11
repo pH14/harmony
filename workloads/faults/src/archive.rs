@@ -88,8 +88,8 @@ impl ArchiveKey for FaultArchiveKey {
     /// Depth 0 is the whole key, depth 1 drops node liveness so the same
     /// workload progress under different survivor sets pools, and depth 2
     /// keeps reached sites plus event-triggered deaths. Fired event
-    /// coordinates must not pool with arms that never reached their ordinal;
-    /// that distinction is the evidence used by coordinate refinement.
+    /// coordinates must not pool with arms that never reached a site of their
+    /// rarity; a kill that fired saw state a kill that did not never reached.
     fn group(self, depth: usize) -> Self::Group {
         let full = FaultArchiveGroup {
             sometimes: self.sometimes,
@@ -223,11 +223,11 @@ pub const PARK_HITS: [u32; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
 /// thread at the first system call of another task past the deadline, or at
 /// the periodic tick, so a short hold lands within a few milliseconds.
 pub const PARK_HOLD_US: [u32; 3] = [500, 2_000, 10_000];
-/// Visit-count scales an event park may name. A site's visit count spans
-/// orders of magnitude within one horizon, so the ladder is logarithmic: 0
-/// names a site no callback has reached, 16 one reached tens of thousands of
-/// times.
-pub const EVENT_PARK_RARITY: [u8; 5] = [0, 4, 8, 12, 16];
+/// Visit-count scales an event park or an event kill may name. A site's visit
+/// count spans orders of magnitude within one horizon, so the ladder is
+/// logarithmic: 0 names a site no callback has reached, 16 one reached tens of
+/// thousands of times.
+pub const EVENT_SITE_RARITY: [u8; 5] = [0, 4, 8, 12, 16];
 /// Lengths of an event park's hold, in microseconds. The runtime sleeps inside
 /// the callback, so the hold is exact and can be far longer than a breakpoint
 /// park's: a hold has to outlast a batch commit for another thread to overtake
@@ -253,7 +253,7 @@ pub fn sample_action(
         0 => Ok(FaultAction::Wait(sample_wait_scale(rand))),
         1 if vocabulary.instrumented_events() => Ok(FaultAction::EventKill {
             node,
-            ordinal: sample_event_ordinal(rand),
+            rarity: EVENT_SITE_RARITY[pick(rand, EVENT_SITE_RARITY.len())?],
         }),
         1 => Ok(FaultAction::Wait(sample_wait_scale(rand))),
         2 => Ok(FaultAction::Kill(node)),
@@ -275,7 +275,7 @@ pub fn sample_action(
         6 => Ok(FaultAction::Wait(sample_wait_scale(rand))),
         7 if vocabulary.instrumented_events() => Ok(FaultAction::EventPark {
             node,
-            rarity: EVENT_PARK_RARITY[pick(rand, EVENT_PARK_RARITY.len())?],
+            rarity: EVENT_SITE_RARITY[pick(rand, EVENT_SITE_RARITY.len())?],
             hold_us: EVENT_PARK_HOLD_US[pick(rand, EVENT_PARK_HOLD_US.len())?],
         }),
         7 => Ok(FaultAction::Wait(sample_wait_scale(rand))),
@@ -317,15 +317,6 @@ fn sample_wait_scale(rand: &mut RomuDuoJrRand) -> u8 {
 /// action executes. Choosing the binary scale uniformly gives short and long
 /// actions equal access to reachable coordinates while the low bits select a
 /// point within that scale.
-fn sample_event_ordinal(rand: &mut RomuDuoJrRand) -> u64 {
-    event_ordinal_from_word(rand.next_u64())
-}
-
-fn event_ordinal_from_word(word: u64) -> u64 {
-    let exponent = (word >> 58) as u32;
-    (1_u64 << exponent) | (word & ((1_u64 << exponent).wrapping_sub(1)))
-}
-
 /// Progress-curve point.
 pub type FaultProgressPoint = ProgressPoint<FaultMilestones, FaultProgressWatermark>;
 /// Archive entry report.
@@ -357,8 +348,6 @@ pub struct FaultCoordinateTelemetry {
     pub attempted: u64,
     /// EventKill observations whose arm fired.
     pub fired: u64,
-    /// Redraw requests actually dispatched by the coordinator.
-    pub refined: u64,
 }
 
 /// The campaign outcome a bug list implies: how many bugs were found and the
@@ -473,17 +462,6 @@ mod tests {
             archive_key(&fired).unexpected_deaths,
             HOOKS_FINISHED_KEY_CAP
         );
-    }
-
-    #[test]
-    fn event_coordinate_draw_is_uniform_over_binary_scales() {
-        assert_eq!(event_ordinal_from_word(0), 1);
-        assert_eq!(event_ordinal_from_word(10_u64 << 58), 1 << 10);
-        assert_eq!(
-            event_ordinal_from_word((10_u64 << 58) | 123),
-            (1 << 10) | 123
-        );
-        assert_eq!(event_ordinal_from_word(u64::MAX), u64::MAX);
     }
 
     #[test]
@@ -605,9 +583,9 @@ mod tests {
             kinds.insert(kind(&action));
             match action {
                 FaultAction::Wait(scale) => assert!(scale <= WAIT_DRAW_MAX_SCALE),
-                FaultAction::EventKill { node, ordinal } => {
+                FaultAction::EventKill { node, rarity } => {
                     assert!(node < vocabulary.nodes());
-                    assert!(ordinal > 0);
+                    assert!(EVENT_SITE_RARITY.contains(&rarity));
                 }
                 FaultAction::Kill(node) | FaultAction::Restart(node) => {
                     assert!(node < vocabulary.nodes());
@@ -622,7 +600,7 @@ mod tests {
                     hold_us,
                 } => {
                     assert!(node < vocabulary.nodes());
-                    assert!(EVENT_PARK_RARITY.contains(&rarity));
+                    assert!(EVENT_SITE_RARITY.contains(&rarity));
                     assert!(EVENT_PARK_HOLD_US.contains(&hold_us));
                 }
                 FaultAction::Hook(id) => assert!(vocabulary.hooks().contains(&id)),

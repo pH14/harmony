@@ -42,7 +42,7 @@ An input is a list of actions laid end to end over guest time
 |---|---|
 | `Wait(scale)` | nothing; the workload runs undisturbed for `1 << scale` horizons, scale 0 to 7 |
 | `Kill(node)` | the node stays down for the whole horizon |
-| `EventKill(node, ordinal)` | the instrumented runtime kills the node synchronously at a deterministic event ordinal; the arm stands until it fires or the input ends |
+| `EventKill(node, rarity)` | the instrumented runtime kills the node synchronously at the first callback after the arm whose own site has been visited at most `1 << rarity` times; the arm stands until it fires or the input ends |
 | `Pause(node, ticks)` | the node is stopped, then continued inside the horizon |
 | `Restart(node)` | the node is killed and comes back inside the horizon |
 | `Hook(id)` | the agent runs that hook once |
@@ -89,13 +89,14 @@ many horizons, so the draw shortens a wait that would push the whole input past
 one horizon per permitted action, and cuts the suffix where even a one-horizon
 action no longer fits. A workload's progress decays with guest history, so a
 session that runs far past what the workload sustains buys nothing and holds a
-worker for the whole of it. `EventKill` draws choose a binary scale before a coordinate,
-so finite event prefixes are searchable without a workload-specific upper
-bound. Each observed ordinal remains distinct as fired or unfired evidence; the
-coordinator keeps those bounds per action prefix and node, then probes the
-exact midpoint while retaining a fired endpoint as a branchable prefix. The
-selected parent prefix is materialized for both live and recorded draws, so the
-same observation fold and refinement state is rebuilt during stream replay.
+worker for the whole of it. `EventKill` and `EventPark` both draw a visit-count
+scale and leave the site to the runtime, which counts visits per site and
+resolves the coordinate itself. The host never names a site, so the coordinate
+survives a rebuild of the workload. A rare site is reached late and seldom,
+which is where a crash finds state a hot site has already passed through many
+times. The runtime reports the edge of the site that killed, and the campaign
+summary carries it as `fired_site`; the image's `/symbols` tables are what turn
+that edge into a file and a line.
 
 ## Running it
 

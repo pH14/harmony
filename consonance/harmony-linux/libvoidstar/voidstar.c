@@ -58,19 +58,19 @@ static uint32_t harmony_next_guard = 1;
 static _Atomic uint64_t harmony_next_edge_offset;
 
 /*
- * The event-kill coordinate is a positive ordinal in the callbacks emitted by
- * the Antithesis instrumentor. It counts future callbacks from the moment an
- * arm is acknowledged, so an action never misses merely because startup
- * events consumed the process-global counter. The callback performs the kill
- * synchronously.
+ * The event-kill coordinate names a place by how rarely its site has been
+ * reached rather than by an address, so it keeps its meaning across a rebuild
+ * of the workload. The kill lands on the first callback after the arm whose
+ * own site has been visited at most `1 << rarity` times, and it performs the
+ * kill synchronously.
  *
- * The remaining count is the linearization point for both sides of the
- * protocol. An arm or disarm replaces it with one atomic exchange; a callback
- * claims one future event with one compare-and-exchange. Their modification
- * order decides which arm a callback belongs to, so control never has to
- * drain callbacks that are doing unrelated device work.
+ * The arm flag is the linearization point for both sides of the protocol. An
+ * arm or disarm stores it; a callback claims the arm with one exchange. Their
+ * modification order decides which arm a callback belongs to, so control never
+ * has to drain callbacks that are doing unrelated device work.
  */
-static _Atomic uint64_t harmony_event_remaining;
+static _Atomic uint32_t harmony_event_ceiling;
+static _Atomic bool harmony_event_armed;
 static _Atomic uint64_t harmony_event_target;
 static _Atomic bool harmony_event_enabled;
 
@@ -166,9 +166,9 @@ static int read_event_command(int fd, uint64_t *words)
     return 0;
 }
 
-/* Fire the park at a site visited at most `1 << rarity` times before this
- * callback. A rarity wider than the counter means every site qualifies. */
-static uint32_t park_ceiling(uint64_t rarity)
+/* Fire at a site visited at most `1 << rarity` times before this callback. A
+ * rarity wider than the counter means every site qualifies. */
+static uint32_t site_ceiling(uint64_t rarity)
 {
     if (rarity >= 32)
         return UINT32_MAX;
@@ -188,7 +188,7 @@ static void park_arm(uint64_t rarity, uint64_t hold_nanos)
         return;
     }
     atomic_store_explicit(
-        &harmony_park_ceiling, park_ceiling(rarity), memory_order_release);
+        &harmony_park_ceiling, site_ceiling(rarity), memory_order_release);
     atomic_store_explicit(
         &harmony_park_hold_nanos, hold_nanos, memory_order_release);
     atomic_store_explicit(&harmony_park_armed, true, memory_order_release);
@@ -206,11 +206,11 @@ static void park_hold(uint64_t hold_nanos)
 }
 
 /*
- * Count this callback's site and report whether the park fires here. The
- * claim is one exchange, so exactly one thread takes an arm however many
- * callbacks race for it.
+ * Count this callback's site and return the visits it had before this one.
+ * The park and the kill share the count, so a callback is charged to its site
+ * exactly once however many arms are looking at it.
  */
-static bool park_claim(uint64_t edge, uint64_t *hold_nanos)
+static uint32_t site_visit(uint64_t edge)
 {
     uint64_t slot;
     uint32_t before;
@@ -221,6 +221,16 @@ static bool park_claim(uint64_t edge, uint64_t *hold_nanos)
     if (before == UINT32_MAX)
         atomic_store_explicit(
             &harmony_site_visits[slot], UINT32_MAX, memory_order_release);
+    return before;
+}
+
+/*
+ * Report whether the park fires at a site with `before` earlier visits. The
+ * claim is one exchange, so exactly one thread takes an arm however many
+ * callbacks race for it.
+ */
+static bool park_claim(uint32_t before, uint64_t *hold_nanos)
+{
     if (!atomic_load_explicit(&harmony_park_armed, memory_order_acquire))
         return false;
     if (before >= atomic_load_explicit(&harmony_park_ceiling, memory_order_acquire))
@@ -253,8 +263,7 @@ static void *event_control_main(void *unused)
     while (read_event_command(harmony_event_control_fd, command) == 0) {
         /* Disarm before the acknowledgement; callbacks skip publication. */
         if (command[0] == HARMONY_EVENT_CMD_KILL)
-            (void)atomic_exchange_explicit(
-                &harmony_event_remaining, 0, memory_order_acq_rel);
+            atomic_store_explicit(&harmony_event_armed, false, memory_order_release);
         else if (command[0] == HARMONY_EVENT_CMD_PARK)
             park_disarm();
         if (command[0] == HARMONY_EVENT_CMD_PARK_STATUS) {
@@ -266,22 +275,27 @@ static void *event_control_main(void *unused)
         for (index = 0; index < HARMONY_EVENT_CMD_WORDS; ++index)
             put_u64(acknowledgement + index * sizeof(uint64_t), command[index]);
         if (write_all(harmony_event_control_fd, acknowledgement, sizeof(acknowledgement)) != 0) {
+            atomic_store_explicit(&harmony_event_armed, false, memory_order_release);
             atomic_store_explicit(&harmony_event_target, 0, memory_order_release);
             atomic_store_explicit(&harmony_event_enabled, false, memory_order_release);
             park_disarm();
             break;
         }
-        /* The arm becomes visible only after its acknowledgement is sent. */
-        if (command[0] == HARMONY_EVENT_CMD_KILL) {
+        /* The arm becomes visible only after its acknowledgement is sent.
+           Rarity 0 is a real coordinate, so the second argument, and not the
+           rarity, is what tells an arm from a disarm. */
+        if (command[0] == HARMONY_EVENT_CMD_KILL && command[2] != 0) {
             atomic_store_explicit(
                 &harmony_event_target, command[1], memory_order_release);
-            (void)atomic_exchange_explicit(
-                &harmony_event_remaining, command[1], memory_order_acq_rel);
+            atomic_store_explicit(
+                &harmony_event_ceiling, site_ceiling(command[1]),
+                memory_order_release);
+            atomic_store_explicit(&harmony_event_armed, true, memory_order_release);
         } else if (command[0] == HARMONY_EVENT_CMD_PARK) {
             park_arm(command[1], command[2]);
         }
     }
-    (void)atomic_exchange_explicit(&harmony_event_remaining, 0, memory_order_acq_rel);
+    atomic_store_explicit(&harmony_event_armed, false, memory_order_release);
     atomic_store_explicit(&harmony_event_target, 0, memory_order_release);
     atomic_store_explicit(&harmony_event_enabled, false, memory_order_release);
     park_disarm();
@@ -577,39 +591,37 @@ uint64_t init_coverage_module(size_t num_edges, const char *symbols)
 }
 
 /*
- * Return the count that this callback claimed, or zero when no arm was
- * active. A return value of one identifies the synchronous kill event. The
- * successful compare-and-exchange is the callback's linearization point.
+ * Report whether the kill fires at a site with `before` earlier visits. The
+ * claim is one exchange, so exactly one thread takes the arm however many
+ * callbacks race for it, which is what makes the kill a single deterministic
+ * event rather than a race between them.
  */
-static uint64_t event_claim(uint64_t *target_out)
+static bool event_kill_claim(uint32_t before, uint64_t *target_out)
 {
-    uint64_t remaining;
-    remaining = atomic_load_explicit(&harmony_event_remaining, memory_order_acquire);
-    while (remaining != 0) {
-        if (atomic_compare_exchange_weak_explicit(
-                &harmony_event_remaining, &remaining, remaining - 1,
-                memory_order_acq_rel, memory_order_acquire)) {
-            if (remaining == 1 && target_out != NULL)
-                *target_out = atomic_load_explicit(
-                    &harmony_event_target, memory_order_acquire);
-            return remaining;
-        }
-    }
-    return 0;
+    if (!atomic_load_explicit(&harmony_event_armed, memory_order_acquire))
+        return false;
+    if (before >= atomic_load_explicit(&harmony_event_ceiling, memory_order_acquire))
+        return false;
+    if (!atomic_exchange_explicit(&harmony_event_armed, false, memory_order_acq_rel))
+        return false;
+    if (target_out != NULL)
+        *target_out = atomic_load_explicit(
+            &harmony_event_target, memory_order_acquire);
+    return true;
 }
 
 bool notify_coverage(uint64_t edge)
 {
-    uint64_t claimed;
     uint64_t target = 0;
     uint64_t hold_nanos = 0;
+    uint32_t before;
 
     event_control_activate();
     if (atomic_load_explicit(&harmony_event_enabled, memory_order_acquire)) {
-        if (park_claim(edge, &hold_nanos))
+        before = site_visit(edge);
+        if (park_claim(before, &hold_nanos))
             park_hold(hold_nanos);
-        claimed = event_claim(&target);
-        if (claimed == 1) {
+        if (event_kill_claim(before, &target)) {
             if (harmony_event_report_fd >= 0) {
                 unsigned char report[2 * sizeof(uint64_t)];
 

@@ -29,22 +29,26 @@ begins reading at the first instrumented module registration or callback, so
 the socket and a pending arm pass through an uninstrumented launcher without
 that launcher consuming it. A command is three little-endian `u64` words,
 `kind` then two arguments, and the library echoes the whole command back once
-the arm is in force. Kind 1 is the event kill: the second word is a count of
-future instrumented callbacks, after which the library kills its own process
-group. Kind 2 is the event park: the second word is a visit-count scale and
-the third a hold in nanoseconds, and the first callback after the arm whose own
-site has been visited at most `1 << scale` times sleeps in place for that long
+the arm is in force. Kind 1 is the event kill: the second word is a
+visit-count scale and the third is non-zero to arm, and the library kills its
+own process group at the first callback after the arm whose own site has been
+visited at most `1 << scale` times. Kind 2 is the event park: the second word
+is a visit-count scale and the third a hold in nanoseconds, and the first
+callback after the arm whose site is that rare sleeps in place for that long
 before continuing. Both are synchronous instrumented-event coordinates. A zero
-count and a zero hold each disarm their own kind. Each arm acts once; the
+third word and a zero hold each disarm their own kind. Each arm acts once; the
 library disarms itself as it fires. Arm publication is a bounded atomic
 replacement and never waits for an earlier callback to drain. Per-site visit
-counts live in a fixed open-addressed table indexed by the edge id, so a site
-seen far more often than the table is wide can alias with another; the park
-coordinate is an approximation of rarity, not an exact count.
-Gate harnesses may additionally pass `HARMONY_EVENT_REPORT_FD`; immediately
-before an armed event kill, the bridge writes the selected ordinal and the
-generated global edge id as two little-endian `u64` values. Production search
-does not set this diagnostic descriptor.
+counts live in a fixed open-addressed table indexed by the edge id and shared
+by both kinds, so a site seen far more often than the table is wide can alias
+with another; the coordinate is an approximation of rarity, not an exact count.
+A collision makes a rare site look common, which loses an arm rather than
+firing it somewhere else.
+
+A caller may additionally pass `HARMONY_EVENT_REPORT_FD`; immediately before an
+armed event kill, the bridge writes the armed rarity and the generated global
+edge id as two little-endian `u64` values. That edge names the site that
+killed, which a symbol table of the same build resolves.
 
 Build and test it with:
 

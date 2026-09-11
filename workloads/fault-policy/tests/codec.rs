@@ -151,10 +151,15 @@ fn action_from_plane_conversions() {
     assert_eq!(Action::from(ans.clone()), Action::Guest(ans));
 }
 
+// The kill's coordinate is a rarity scale, so every byte the wire can carry
+// names a site class. Nothing about it is out of range.
 #[test]
-fn event_kill_zero_ordinal_is_rejected_by_the_shared_codec() {
-    let bytes = Answer::Fault(Fault::ProcEventKill { ordinal: 0 }).encode();
-    assert_eq!(Answer::decode(&bytes), Err(EnvError::Malformed));
+fn every_event_kill_rarity_round_trips_through_the_shared_codec() {
+    for rarity in [0_u8, 1, 20, u8::MAX] {
+        let answer = Answer::Fault(Fault::ProcEventKill { rarity });
+        let bytes = answer.clone().encode();
+        assert_eq!(Answer::decode(&bytes), Ok(answer));
+    }
 }
 
 #[test]

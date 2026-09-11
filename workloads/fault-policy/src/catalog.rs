@@ -346,13 +346,18 @@ pub enum Fault {
     ProcPause(Span),
     /// Kill a node.
     ProcKill,
-    /// Kill a node synchronously at the ordinal instrumented deterministic
-    /// event. The ordinal counts future callbacks after the arm is received;
-    /// it is measured by the instrumented runtime, not by a timer, instruction
-    /// address, or host counter.
+    /// Kill a node synchronously at a rare place in its instrumented
+    /// deterministic event stream: the first callback after the arm whose own
+    /// site has been visited at most `1 << rarity` times. The instrumented
+    /// runtime counts the visits, so the host never names a site and the
+    /// coordinate survives a rebuild. A rare site is reached late and seldom,
+    /// which is where a crash finds state a hot site has already passed
+    /// through many times.
     ProcEventKill {
-        /// The number of future instrumented callbacks after arming.
-        ordinal: u64,
+        /// Visit-count scale of the site that kills: at most `1 << rarity`
+        /// earlier visits. Rarity 0 is a site never visited before, and a
+        /// rarity wider than the counter admits every site.
+        rarity: u8,
     },
     /// Restart a node.
     ProcRestart,

@@ -9,7 +9,7 @@
 //! | fault | window opens | window closes |
 //! |---|---|---|
 //! | `ProcKill` | `SIGKILL` the node's group | nothing: a kill is permanent |
-//! | `ProcEventKill` | arm the instrumented runtime at an event ordinal | disarm the arm |
+//! | `ProcEventKill` | arm the instrumented runtime at a site rarity | disarm the arm |
 //! | `ProcPause` | `SIGSTOP` | `SIGCONT` |
 //! | `ProcRestart` | `SIGKILL` | start the node again |
 //! | `RunHook` | launch the hook once | nothing: hooks are not awaited |
@@ -35,7 +35,8 @@ pub enum Action {
     /// Spawn the node's command in a fresh process group.
     Start(u16),
     /// Arm a running instrumented node to synchronously kill its process group
-    /// at an ordinal in the deterministic event stream.
+    /// at a rare site in the deterministic event stream.
+    /// Arm the node's instrumented runtime at a site rarity scale.
     ArmEventKill(u16, u64),
     /// Remove an event-kill arm from a running instrumented node.
     DisarmEventKill(u16),
@@ -62,8 +63,8 @@ impl Action {
             Action::Stop(node) => format!("pause node {node}"),
             Action::Cont(node) => format!("resume node {node}"),
             Action::Start(node) => format!("start node {node}"),
-            Action::ArmEventKill(node, ordinal) => {
-                format!("arm event kill node {node} ordinal {ordinal}")
+            Action::ArmEventKill(node, rarity) => {
+                format!("arm event kill node {node} rarity {rarity}")
             }
             Action::DisarmEventKill(node) => format!("disarm event kill node {node}"),
             Action::ArmEventPark(node, park) => format!(
@@ -96,6 +97,8 @@ pub struct Counters {
     pub event_kills_fired: u64,
     /// Agent ticks the most recent fired EventKill arm survived.
     pub event_kill_age_ticks: u64,
+    /// Instrumentation edge of the site the most recent EventKill fired at.
+    pub event_kill_site: u64,
     /// Runs of the bundle's `check` command that finished.
     pub checks_finished: u64,
     /// Runs of the bundle's `check` command that emitted an assertion
@@ -198,8 +201,8 @@ impl Supervisor {
             state.alive = false;
             state.paused = false;
             let armed = state.event_kill_armed.take();
-            if let Some(ordinal) = armed {
-                state.event_kill_fired = Some(ordinal);
+            if let Some(rarity) = armed {
+                state.event_kill_fired = Some(rarity);
             }
             if !state.expected_down {
                 self.counters.unexpected_deaths += 1;
@@ -241,12 +244,12 @@ impl Supervisor {
             }
             if now.event_kill != was.event_kill {
                 match now.event_kill {
-                    Some(ordinal) if state.alive => {
+                    Some(rarity) if state.alive => {
                         // A different arm is a new instruction, so an earlier
                         // fire no longer suppresses it.
                         state.event_kill_fired = None;
-                        actions.push(Action::ArmEventKill(node, ordinal));
-                        state.event_kill_armed = Some(ordinal);
+                        actions.push(Action::ArmEventKill(node, rarity));
+                        state.event_kill_armed = Some(rarity);
                         state.event_kill_armed_tick = self.counters.ticks;
                     }
                     None if was.event_kill.is_some() && state.alive => {
@@ -282,11 +285,11 @@ impl Supervisor {
                 // Event-kill is a one-shot arm owned by the process.  If the
                 // process died while its standing window remained open, the
                 // replacement needs the same arm after it starts.
-                if let Some(ordinal) = now.event_kill
-                    && state.event_kill_fired != Some(ordinal)
+                if let Some(rarity) = now.event_kill
+                    && state.event_kill_fired != Some(rarity)
                 {
-                    actions.push(Action::ArmEventKill(node, ordinal));
-                    state.event_kill_armed = Some(ordinal);
+                    actions.push(Action::ArmEventKill(node, rarity));
+                    state.event_kill_armed = Some(rarity);
                     state.event_kill_armed_tick = self.counters.ticks;
                 }
             }
@@ -313,11 +316,11 @@ impl Supervisor {
             // A standing event-kill window survives the crash, but its arm
             // does not: it lives in the old process.  Re-arm the replacement
             // in action order, immediately after its Start action.
-            if let Some(ordinal) = active.node(node).event_kill
-                && self.nodes[index].event_kill_fired != Some(ordinal)
+            if let Some(rarity) = active.node(node).event_kill
+                && self.nodes[index].event_kill_fired != Some(rarity)
             {
-                actions.push(Action::ArmEventKill(node, ordinal));
-                self.nodes[index].event_kill_armed = Some(ordinal);
+                actions.push(Action::ArmEventKill(node, rarity));
+                self.nodes[index].event_kill_armed = Some(rarity);
                 self.nodes[index].event_kill_armed_tick = self.counters.ticks;
             }
         }
@@ -350,6 +353,13 @@ impl Supervisor {
     /// the greatest count it has seen.
     pub fn note_verified(&mut self, count: u64) {
         self.counters.verified = self.counters.verified.max(count);
+    }
+
+    /// Record the site an instrumented node reported as it killed itself. The
+    /// edge only means anything against the symbol tables of the build that
+    /// produced it, so the agent forwards it without interpreting it.
+    pub fn note_event_kill_site(&mut self, edge: u64) {
+        self.counters.event_kill_site = edge;
     }
 
     pub fn note_event_park_fires(&mut self, fires: u64) {
@@ -411,6 +421,7 @@ impl Supervisor {
             unexpected_deaths: self.counters.unexpected_deaths,
             event_kills_fired: self.counters.event_kills_fired,
             event_kill_age_ticks: self.counters.event_kill_age_ticks,
+            event_kill_site: self.counters.event_kill_site,
             checks_finished: self.counters.checks_finished,
             checks_conclusive: self.counters.checks_conclusive,
             event_parks_fired: self.counters.event_parks_fired,
@@ -457,7 +468,7 @@ mod tests {
     #[test]
     fn an_event_kill_window_arms_and_disarms_without_signalling_at_the_boundary() {
         let mut sup = Supervisor::new(1);
-        let event = active(&[(0, Fault::ProcEventKill { ordinal: 19 })]);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 19 })]);
         assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 19)]);
         assert_eq!(sup.tick(&event, &[]), []);
         assert_eq!(
@@ -470,7 +481,7 @@ mod tests {
     #[test]
     fn an_event_kill_arm_fires_once_however_long_its_window_stands() {
         let mut sup = Supervisor::new(1);
-        let event = active(&[(0, Fault::ProcEventKill { ordinal: 19 })]);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 19 })]);
         assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 19)]);
 
         // The arm kills the process. Its window stands to the end of the
@@ -480,7 +491,7 @@ mod tests {
         assert_eq!(sup.tick(&event, &[]), []);
 
         // A different coordinate is a new instruction and arms normally.
-        let later = active(&[(0, Fault::ProcEventKill { ordinal: 23 })]);
+        let later = active(&[(0, Fault::ProcEventKill { rarity: 23 })]);
         assert_eq!(sup.tick(&later, &[]), [Action::ArmEventKill(0, 23)]);
     }
 
@@ -515,7 +526,7 @@ mod tests {
     #[test]
     fn an_event_kill_death_has_a_dedicated_fired_counter() {
         let mut sup = Supervisor::new(1);
-        let event = active(&[(0, Fault::ProcEventKill { ordinal: 19 })]);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 19 })]);
         assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 19)]);
         assert_eq!(sup.tick(&event, &[0]), [Action::Start(0)]);
         assert_eq!(sup.counters().event_kills_fired, 1);
@@ -527,7 +538,7 @@ mod tests {
     #[test]
     fn a_fired_event_kill_reports_how_many_ticks_its_arm_survived() {
         let mut sup = Supervisor::new(1);
-        let event = active(&[(0, Fault::ProcEventKill { ordinal: 19 })]);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 19 })]);
         assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 19)]);
         for _ in 0..5 {
             assert_eq!(sup.tick(&event, &[]), []);
@@ -539,7 +550,7 @@ mod tests {
     #[test]
     fn an_event_kill_death_is_counted_after_its_window_closes() {
         let mut sup = Supervisor::new(1);
-        let event = active(&[(0, Fault::ProcEventKill { ordinal: 19 })]);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 19 })]);
         assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 19)]);
         // The process exits before the next standing poll observes that the
         // EventKill window has closed. The installed arm is still evidence.
@@ -552,7 +563,7 @@ mod tests {
         let mut sup = Supervisor::new(1);
         let both = active(&[
             (0, Fault::ProcKill),
-            (0, Fault::ProcEventKill { ordinal: 19 }),
+            (0, Fault::ProcEventKill { rarity: 19 }),
         ]);
         assert_eq!(sup.tick(&both, &[]), [Action::Kill(0)]);
         assert_eq!(sup.tick(&both, &[0]), []);
@@ -564,7 +575,7 @@ mod tests {
     fn an_event_kill_rearms_after_restart_window_closes() {
         let mut sup = Supervisor::new(1);
         let both = active(&[
-            (0, Fault::ProcEventKill { ordinal: 23 }),
+            (0, Fault::ProcEventKill { rarity: 23 }),
             (0, Fault::ProcRestart),
         ]);
         // Restart takes the running process down, so there is no control
@@ -574,7 +585,7 @@ mod tests {
 
         // The restart closes while event-kill remains standing.  Start first,
         // then arm the new process.
-        let event = active(&[(0, Fault::ProcEventKill { ordinal: 23 })]);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 23 })]);
         assert_eq!(
             sup.tick(&event, &[]),
             [Action::Start(0), Action::ArmEventKill(0, 23)]

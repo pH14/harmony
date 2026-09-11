@@ -31,7 +31,7 @@ pub struct FaultVocabulary {
     nodes: u16,
     hooks: Vec<u32>,
     /// Whether the staged workload contains the Antithesis event metadata and
-    /// runtime bridge needed for synchronous event-ordinal crashes.
+    /// runtime bridge needed for synchronous crashes at instrumented sites.
     #[serde(default)]
     instrumented_events: bool,
     /// Whether the compiled Consonance backend can inject a generic host
@@ -115,7 +115,7 @@ impl FaultVocabulary {
         })
     }
 
-    /// Admit synchronous crashes at Antithesis instrumented event ordinals.
+    /// Admit synchronous crashes at Antithesis instrumented sites.
     #[must_use]
     pub fn with_instrumented_events(mut self, enabled: bool) -> Self {
         self.instrumented_events = enabled;
@@ -204,7 +204,7 @@ impl FaultVocabulary {
         &self.hooks
     }
 
-    /// Whether this workload exposes Antithesis instrumented event ordinals.
+    /// Whether this workload exposes Antithesis instrumented sites.
     #[must_use]
     pub fn instrumented_events(&self) -> bool {
         self.instrumented_events

@@ -54,6 +54,10 @@ pub const REG_CHECKS_CONCLUSIVE: u32 = 13;
 pub const REG_EVENT_PARKS_FIRED: u32 = 14;
 /// Workload units a hook has verified, as reported by `@verified`.
 pub const REG_VERIFIED: u32 = 15;
+/// Instrumentation edge of the site the most recent EventKill fired at. The
+/// edge names a place only against the symbol tables of the build that
+/// produced it, so the host resolves it rather than carrying it forward.
+pub const REG_EVENT_KILL_SITE: u32 = 16;
 
 /// The number of `assert_sometimes` ids [`REG_SOMETIMES`] can hold. A hit at a
 /// higher id still reaches the host as an assertion event; it just has no bit.
@@ -99,12 +103,14 @@ pub struct RegisterSnapshot {
     pub event_parks_fired: u64,
     /// Workload units a hook has verified.
     pub verified: u64,
+    /// [`REG_EVENT_KILL_SITE`].
+    pub event_kill_site: u64,
 }
 
 impl RegisterSnapshot {
     /// The `(register, value)` pairs in register order.
     #[must_use]
-    pub fn pairs(&self) -> [(u32, u64); 15] {
+    pub fn pairs(&self) -> [(u32, u64); 16] {
         [
             (REG_TICKS, self.ticks),
             (REG_ALIVE, self.alive),
@@ -121,6 +127,7 @@ impl RegisterSnapshot {
             (REG_CHECKS_CONCLUSIVE, self.checks_conclusive),
             (REG_EVENT_PARKS_FIRED, self.event_parks_fired),
             (REG_VERIFIED, self.verified),
+            (REG_EVENT_KILL_SITE, self.event_kill_site),
         ]
     }
 }
@@ -190,6 +197,7 @@ mod tests {
                 (REG_CHECKS_CONCLUSIVE, 0),
                 (REG_EVENT_PARKS_FIRED, 0),
                 (REG_VERIFIED, 0),
+                (REG_EVENT_KILL_SITE, 0),
             ]
         );
     }

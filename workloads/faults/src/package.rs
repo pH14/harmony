@@ -284,12 +284,6 @@ pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error
     if actions.is_empty() {
         return Err("the recorded input names no actions".into());
     }
-    if actions
-        .iter()
-        .any(|action| matches!(action, FaultAction::EventKill { ordinal: 0, .. }))
-    {
-        return Err("an instrumented event crash ordinal must be positive".into());
-    }
     Ok(RecordedActions {
         actions,
         horizon_nanos,
@@ -678,7 +672,6 @@ mod tests {
         );
         assert!(parse_recorded_input("[]").is_err());
         assert!(parse_recorded_input("{}").is_err());
-        assert!(parse_recorded_input(r#"[{"EventKill":{"node":0,"ordinal":0}}]"#).is_err());
     }
 
     fn replay_summary(bug: bool, stop: FaultStop, violations: &[u32]) -> ReplaySummary {

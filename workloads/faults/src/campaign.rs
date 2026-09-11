@@ -6,12 +6,8 @@ use std::{
     collections::BTreeMap,
     error::Error,
     io::Write,
-    num::NonZeroUsize,
     path::PathBuf,
-    sync::{
-        Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Mutex, OnceLock},
 };
 
 use searcher::{
@@ -22,8 +18,8 @@ use searcher::{
             CampaignExecutionOptions, CampaignJobResult, CampaignModeReport, CampaignOrigin,
             CampaignProgressRecord, CampaignStreamHeader, CampaignTypes,
             DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Evaluation, GamePolicies, InitialDrawState,
-            InputPolicy, RefinementRequest, Reporting, ResultBuffering, SnapshotCheckpoint,
-            TargetExecution, postcard_result_sha256, run_campaign_checkpointed_with_options,
+            InputPolicy, Reporting, ResultBuffering, SnapshotCheckpoint, TargetExecution,
+            postcard_result_sha256, run_campaign_checkpointed_with_options,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
     },
@@ -63,10 +59,6 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const IMAGE_FIELD: &str = "image";
 const HORIZON_FIELD: &str = "horizon_nanos";
-const COORDINATE_POLICY_FIELD: &str = "event_coordinate_policy";
-const COORDINATE_POLICY_IDENTIFIER: &str = "prefix_bisection_v2";
-const REFINEMENT_COORDINATE_POLICY_IDENTIFIER: &str = "prefix_bisection_v3";
-const LEGACY_COORDINATE_POLICY_IDENTIFIER: &str = "legacy_global_anchor";
 
 /// Header placeholder for a run with no adaptive draw table.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -77,13 +69,6 @@ pub struct FaultNoTableHeader;
 pub struct FaultCampaignRun {
     /// Nodes and hooks the bundle declares.
     pub vocabulary: FaultVocabulary,
-    /// Whether suffix draws receive their exact selected parent input. Old
-    /// streams omit this policy and retain their parent-independent draws.
-    coordinate_refinement: bool,
-    /// Whether admitted coordinate observations enqueue parent redraws. This
-    /// is versioned separately so streams from the prior parent-aware draw
-    /// remain replayable.
-    refinement_redraw: bool,
 }
 
 /// Image identity shared by fault-package workers.
@@ -96,17 +81,9 @@ pub struct FaultGame {
     /// worker boots. It is a deterministic property of the image, so every
     /// worker learns the same one.
     root_seal: OnceLock<u64>,
-    /// Admission-ordered observations used to update the coordinator's draw
-    /// brackets. Workers never mutate this state, so completion order cannot
-    /// affect the next selection.
-    coordinate_brackets: Mutex<FaultDrawState>,
     /// Event outcomes produced by workers and consumed at ordered admission.
     /// The full input key avoids making completion order observable.
     event_outcomes: Mutex<BTreeMap<[u8; 32], Vec<bool>>>,
-    /// Admission-thread marker consumed by the optional generic redraw hook.
-    event_observation: Mutex<Option<[u8; 32]>>,
-    /// Stream policy selected by the current live or replay run.
-    refinement_redraw: AtomicBool,
 }
 
 impl FaultGame {
@@ -119,10 +96,7 @@ impl FaultGame {
             config: config.clone(),
             identity: identity(kernel, initramfs, config),
             root_seal: OnceLock::new(),
-            coordinate_brackets: Mutex::new(FaultDrawState::default()),
             event_outcomes: Mutex::new(BTreeMap::new()),
-            event_observation: Mutex::new(None),
-            refinement_redraw: AtomicBool::new(false),
         }
     }
 
@@ -144,39 +118,11 @@ impl FaultGame {
         &self.identity
     }
 
-    fn reset_coordinate_brackets(&self) {
-        *self
-            .coordinate_brackets
-            .lock()
-            .expect("fault coordinate state mutex poisoned") = FaultDrawState::default();
+    fn reset_event_outcomes(&self) {
         self.event_outcomes
             .lock()
             .expect("fault event outcome mutex poisoned")
             .clear();
-        *self
-            .event_observation
-            .lock()
-            .expect("fault event observation mutex poisoned") = None;
-    }
-
-    fn coordinate_state(&self) -> FaultDrawState {
-        self.coordinate_brackets
-            .lock()
-            .expect("fault coordinate state mutex poisoned")
-            .clone()
-    }
-
-    fn observe_event_coordinate(
-        &self,
-        prefix: &[FaultAction],
-        node: u16,
-        ordinal: u64,
-        fired: bool,
-    ) {
-        self.coordinate_brackets
-            .lock()
-            .expect("fault coordinate state mutex poisoned")
-            .observe(prefix, node, ordinal, fired);
     }
 
     fn record_event_outcome(&self, input: Vec<FaultAction>, fired: bool) {
@@ -213,7 +159,7 @@ pub struct FaultCampaignEvidence {
     bugs: Vec<FaultBugRecord>,
     coordinate_attempted: u64,
     coordinate_fired: u64,
-    coordinate_refined: u64,
+    fired_site_edge: Option<u64>,
     kill_ages: KillAges,
     acknowledged: u64,
     checks_conclusive: u64,
@@ -236,208 +182,27 @@ impl FaultCampaignEvidence {
             kill_age_ticks_max: max,
             checks_conclusive: self.checks_conclusive,
             checks_inconclusive: self.checks_inconclusive,
-            fired_site: None,
+            fired_site: self.fired_site_edge,
         }
     }
 }
 
 const EVENT_NODE_COUNT: usize = MAX_NODES as usize;
-/// Keep each context's bisection history bounded. The cap is a state-size
-/// bound, not a workload coordinate or a timing assumption.
-const MAX_COORDINATE_OBSERVATIONS: usize = 32;
-/// A campaign can retain many prefixes, but coordinate refinement only needs
-/// a bounded set of their exact contexts. Eviction is deterministic.
-const MAX_COORDINATE_CONTEXTS: usize = EVENT_NODE_COUNT * 4;
-const MAX_LEGACY_COORDINATE_ANCHORS: usize = 256;
-const MAX_TRANSIENT_EVENT_OUTCOMES: usize = MAX_COORDINATE_CONTEXTS;
+/// A campaign can retain many prefixes, but only a bounded set of them can
+/// have an event outcome in flight. Eviction is deterministic.
+const MAX_TRANSIENT_EVENT_OUTCOMES: usize = EVENT_NODE_COUNT * 4;
 
 fn adaptive_state_memory_reserve() -> usize {
-    // One table is the policy draw state and one is the admission-ordered
-    // observation fold owned by FaultGame. Transient outcomes use fixed-size
-    // digests and are consumed as soon as their job is admitted.
-    std::mem::size_of::<EventCoordinateContext>() * MAX_COORDINATE_CONTEXTS * 2
-        + std::mem::size_of::<(u16, u64)>() * MAX_LEGACY_COORDINATE_ANCHORS * 2
-        + (std::mem::size_of::<[u8; 32]>() + std::mem::size_of::<bool>())
-            * MAX_TRANSIENT_EVENT_OUTCOMES
+    // Transient outcomes use fixed-size digests and are consumed as soon as
+    // their job is admitted.
+    (std::mem::size_of::<[u8; 32]>() + std::mem::size_of::<bool>()) * MAX_TRANSIENT_EVENT_OUTCOMES
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct EventCoordinateObservation {
-    ordinal: u64,
-    fired: bool,
-}
-
-/// The observed reachability interval for one node at one action prefix.
-///
-/// A fired ordinal is a reachable point and an unfired ordinal is an
-/// unreachable point. Both outcomes remain recorded separately. The sampled
-/// points then partition the reachable interval, so refinement continues
-/// through its interior instead of converging only on its largest endpoint.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct EventCoordinateBracket {
-    fired: Option<u64>,
-    unfired: Option<u64>,
-    observations_seen: u64,
-    observations: [Option<EventCoordinateObservation>; MAX_COORDINATE_OBSERVATIONS],
-}
-
-impl Default for EventCoordinateBracket {
-    fn default() -> Self {
-        Self {
-            fired: None,
-            unfired: None,
-            observations_seen: 0,
-            observations: [None; MAX_COORDINATE_OBSERVATIONS],
-        }
-    }
-}
-
-impl EventCoordinateBracket {
-    fn observe(&mut self, ordinal: u64, fired: bool) {
-        self.observations_seen = self.observations_seen.saturating_add(1);
-        if fired {
-            self.fired = Some(self.fired.map_or(ordinal, |current| current.max(ordinal)));
-        } else {
-            self.unfired = Some(self.unfired.map_or(ordinal, |current| current.min(ordinal)));
-        }
-        let observation = EventCoordinateObservation { ordinal, fired };
-        if self.observations.contains(&Some(observation)) {
-            return;
-        }
-        if let Some(slot) = self.observations.iter_mut().find(|slot| slot.is_none()) {
-            *slot = Some(observation);
-        }
-    }
-
-    /// Return the exact midpoint of the largest still-unobserved interval.
-    /// The lower endpoint is the protocol's positive coordinate origin; the
-    /// upper endpoint is the greatest currently reachable candidate, or one
-    /// below the first known unfired point. No workload timing enters here.
-    fn next_probe(self) -> Option<u64> {
-        let upper = self.unfired.map_or_else(
-            || self.fired.unwrap_or(0),
-            |ordinal| ordinal.saturating_sub(1),
-        );
-        if upper == 0 {
-            return None;
-        }
-
-        // Once the exact observation table is full, continue through the
-        // finite reachable interval instead of repeatedly returning a
-        // midpoint that can no longer be recorded. At most the table's 32
-        // remembered points can block consecutive candidates, so 33 probes
-        // are sufficient to find an unremembered coordinate whenever one
-        // exists.
-        if self.observations.iter().all(Option::is_some) {
-            for offset in 0..=MAX_COORDINATE_OBSERVATIONS {
-                let candidate = u64::try_from(
-                    (u128::from(self.observations_seen) + offset as u128) % u128::from(upper) + 1,
-                )
-                .expect("a coordinate reduced modulo a u64 bound fits u64");
-                if !self
-                    .observations
-                    .iter()
-                    .flatten()
-                    .any(|observation| observation.ordinal == candidate)
-                {
-                    return Some(candidate);
-                }
-            }
-            return None;
-        }
-
-        let mut points = Vec::with_capacity(MAX_COORDINATE_OBSERVATIONS + 2);
-        points.push(0_u128);
-        points.push(u128::from(upper) + 1);
-        for observation in self.observations.into_iter().flatten() {
-            if observation.ordinal >= 1 && observation.ordinal <= upper {
-                points.push(u128::from(observation.ordinal));
-            }
-        }
-        points.sort_unstable();
-        points.dedup();
-
-        points
-            .windows(2)
-            .filter_map(|window| {
-                let lower = window[0];
-                let exclusive_upper = window[1];
-                let width = exclusive_upper.saturating_sub(lower).saturating_sub(1);
-                if width == 0 {
-                    None
-                } else {
-                    Some((width, lower + 1 + (width - 1) / 2))
-                }
-            })
-            .max_by_key(|(width, lower)| (*width, std::cmp::Reverse(*lower)))
-            .and_then(|(_, midpoint)| u64::try_from(midpoint).ok())
-    }
-}
-
-/// One prefix-scoped node bracket. Prefixes are identified by a stable digest
-/// of the exact action input supplied during parent-aware suffix generation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct EventCoordinateContext {
-    prefix: [u8; 32],
-    node: u16,
-    bracket: EventCoordinateBracket,
-}
-
-/// Coordinator-side state for deterministic event-coordinate refinement.
-///
-/// Each bracket is scoped to the action prefix that produced its observation;
-/// observations from unrelated workload states therefore cannot widen or
-/// narrow one another. The state is copied from the game-owned admission fold
-/// after each record, so live selection and serial replay see the same bounded
-/// context table.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FaultDrawState {
-    contexts: Vec<EventCoordinateContext>,
-    /// Retained global anchors used only while replaying streams recorded
-    /// before parent-scoped bisection became part of the run policy.
-    legacy_anchors: Vec<(u16, u64)>,
-}
-
-impl Default for FaultDrawState {
-    fn default() -> Self {
-        Self {
-            contexts: Vec::with_capacity(MAX_COORDINATE_CONTEXTS),
-            legacy_anchors: Vec::with_capacity(MAX_LEGACY_COORDINATE_ANCHORS),
-        }
-    }
-}
-
-impl FaultDrawState {
-    fn observe(&mut self, prefix: &[FaultAction], node: u16, ordinal: u64, fired: bool) {
-        let prefix = event_context_digest(prefix);
-        if let Some(context) = self
-            .contexts
-            .iter_mut()
-            .find(|context| context.prefix == prefix && context.node == node)
-        {
-            context.bracket.observe(ordinal, fired);
-            return;
-        }
-        if self.contexts.len() == MAX_COORDINATE_CONTEXTS {
-            self.contexts.remove(0);
-        }
-        let mut bracket = EventCoordinateBracket::default();
-        bracket.observe(ordinal, fired);
-        self.contexts.push(EventCoordinateContext {
-            prefix,
-            node,
-            bracket,
-        });
-    }
-
-    fn next_probe(&self, prefix: &[FaultAction], node: u16) -> Option<u64> {
-        let prefix = event_context_digest(prefix);
-        self.contexts
-            .iter()
-            .find(|context| context.prefix == prefix && context.node == node)
-            .and_then(|context| context.bracket.next_probe())
-    }
-}
+/// Coordinator-side draw state. The event coordinate is a rarity the
+/// instrumented runtime resolves against its own visit counts, so the host
+/// carries nothing between draws.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FaultDrawState;
 
 /// Stable, input-only context identity. It is deliberately independent of
 /// workload configuration, timing, and host scheduling.
@@ -454,10 +219,10 @@ fn event_context_digest(actions: &[FaultAction]) -> [u8; 32] {
                 digest.update([1]);
                 digest.update(node.to_le_bytes());
             }
-            FaultAction::EventKill { node, ordinal } => {
+            FaultAction::EventKill { node, rarity } => {
                 digest.update([2]);
                 digest.update(node.to_le_bytes());
-                digest.update(ordinal.to_le_bytes());
+                digest.update([rarity]);
             }
             FaultAction::Pause(node, ticks) => {
                 digest.update([3]);
@@ -505,7 +270,6 @@ fn event_context_digest(actions: &[FaultAction]) -> [u8; 32] {
 
 fn draw_fault_suffix(
     run: &FaultCampaignRun,
-    state: &FaultDrawState,
     parent: Option<&[FaultAction]>,
     shape: SuffixShape,
     mixture: MixtureDraw,
@@ -526,63 +290,7 @@ fn draw_fault_suffix(
         .map(action_horizons)
         .sum();
     clamp_to_horizon_budget(spent, &mut suffix);
-    if !run.coordinate_refinement {
-        if !state.legacy_anchors.is_empty() {
-            let bound = NonZeroUsize::new(state.legacy_anchors.len())
-                .ok_or("legacy event-coordinate anchor state unexpectedly empty")?;
-            for (index, action) in suffix.iter_mut().enumerate() {
-                let FaultAction::EventKill { .. } = *action else {
-                    continue;
-                };
-                let coordinate_seed = mix_legacy_coordinate_seed(mutation_seed, index);
-                let anchor = state.legacy_anchors[legacy_rand_index(coordinate_seed, bound)];
-                *action = FaultAction::EventKill {
-                    node: anchor.0,
-                    ordinal: refine_legacy_event_coordinate(anchor.1, coordinate_seed),
-                };
-            }
-        }
-        return Ok(suffix);
-    }
-    let Some(parent) = parent else {
-        return Ok(suffix);
-    };
-    let mut prefix = parent.to_vec();
-    for action in &mut suffix {
-        if let FaultAction::EventKill { node, .. } = *action
-            && let Some(ordinal) = state.next_probe(&prefix, node)
-        {
-            *action = FaultAction::EventKill { node, ordinal };
-        }
-        prefix.push(*action);
-    }
     Ok(suffix)
-}
-
-fn legacy_rand_index(seed: u64, bound: NonZeroUsize) -> usize {
-    let mixed = seed ^ seed.rotate_left(29);
-    ((u128::from(mixed) * u128::from(bound.get() as u64)) >> 64) as usize
-}
-
-fn mix_legacy_coordinate_seed(seed: u64, index: usize) -> u64 {
-    let mut value = seed ^ (index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    value ^ (value >> 31)
-}
-
-fn refine_legacy_event_coordinate(anchor: u64, seed: u64) -> u64 {
-    if seed & 3 == 0 {
-        return anchor.max(1);
-    }
-    let highest = 63 - anchor.max(1).leading_zeros();
-    let level = ((seed >> 2) % u64::from(highest + 1)) as u32;
-    let radius = 1_u64 << level;
-    if seed & 3 == 1 {
-        anchor.saturating_sub(radius).max(1)
-    } else {
-        anchor.saturating_add(radius).max(1)
-    }
 }
 
 /// Fault-package campaign origin.
@@ -677,8 +385,6 @@ impl FaultCampaignConfig {
             materialize_final_artifacts: self.materialize_final_artifacts,
             run: FaultCampaignRun {
                 vocabulary: self.vocabulary.clone(),
-                coordinate_refinement: true,
-                refinement_redraw: true,
             },
             suffix: self.suffix,
             mixture: self.mixture,
@@ -786,7 +492,6 @@ impl Reporting for FaultGame {
         Some(serde_json::json!({
             "event_coordinate_attempted": evidence.coordinate_attempted,
             "event_coordinate_fired": evidence.coordinate_fired,
-            "event_coordinate_refined": evidence.coordinate_refined,
         }))
     }
 
@@ -831,7 +536,6 @@ impl Reporting for FaultGame {
             coordinate_telemetry: FaultCoordinateTelemetry {
                 attempted: evidence.coordinate_attempted,
                 fired: evidence.coordinate_fired,
-                refined: evidence.coordinate_refined,
             },
             selector: state.selector,
             measures: evidence.measures(),
@@ -864,17 +568,6 @@ impl InputPolicy for FaultGame {
                 self.config.horizon_nanos.to_string(),
             ),
             (VOCABULARY_FIELD.to_owned(), run.vocabulary.identifier()),
-            (
-                COORDINATE_POLICY_FIELD.to_owned(),
-                if run.refinement_redraw {
-                    REFINEMENT_COORDINATE_POLICY_IDENTIFIER
-                } else if run.coordinate_refinement {
-                    COORDINATE_POLICY_IDENTIFIER
-                } else {
-                    LEGACY_COORDINATE_POLICY_IDENTIFIER
-                }
-                .to_owned(),
-            ),
         ])
         .collect()
     }
@@ -883,27 +576,11 @@ impl InputPolicy for FaultGame {
         &self,
         policies: &GamePolicies,
     ) -> Result<FaultCampaignRun, Box<dyn Error>> {
-        let coordinate_policy = policies.get(COORDINATE_POLICY_FIELD).map(String::as_str);
-        let coordinate_refinement = coordinate_policy == Some(COORDINATE_POLICY_IDENTIFIER)
-            || coordinate_policy == Some(REFINEMENT_COORDINATE_POLICY_IDENTIFIER);
-        let refinement_redraw = coordinate_policy == Some(REFINEMENT_COORDINATE_POLICY_IDENTIFIER);
         let run = FaultCampaignRun {
             vocabulary: FaultVocabulary::from_identifier(recorded(policies, VOCABULARY_FIELD)?)?,
-            coordinate_refinement,
-            refinement_redraw,
         };
         let expected = self.policies(&run);
         if policies != &expected {
-            // Streams written before parent-aware refinement did not carry a
-            // coordinate policy. They remain replayable through their legacy
-            // parent-independent draw path.
-            if !policies.contains_key(COORDINATE_POLICY_FIELD) {
-                let mut legacy_expected = expected.clone();
-                legacy_expected.remove(COORDINATE_POLICY_FIELD);
-                if policies == &legacy_expected {
-                    return Ok(run);
-                }
-            }
             for (field, value) in &expected {
                 if recorded(policies, field)? != value {
                     return Err(
@@ -933,44 +610,38 @@ impl InputPolicy for FaultGame {
         run: &FaultCampaignRun,
         _origin: Option<(&str, &FaultArchiveReport)>,
     ) -> Result<InitialDrawState<Self>, Box<dyn Error>> {
-        self.refinement_redraw
-            .store(run.refinement_redraw, Ordering::Relaxed);
-        self.reset_coordinate_brackets();
-        Ok((self.coordinate_state(), None))
+        let _ = run;
+        self.reset_event_outcomes();
+        Ok((FaultDrawState, None))
     }
 
     fn expand_suffix(
         &self,
         run: &FaultCampaignRun,
-        state: &FaultDrawState,
+        _state: &FaultDrawState,
         shape: SuffixShape,
         mixture: MixtureDraw,
         mutation_seed: u64,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
-        draw_fault_suffix(run, state, None, shape, mixture, mutation_seed)
+        draw_fault_suffix(run, None, shape, mixture, mutation_seed)
     }
 
-    fn expand_suffix_needs_parent_input(&self, run: &FaultCampaignRun) -> bool {
-        run.coordinate_refinement
+    // The horizon budget a suffix is clamped to is the parent's, so every
+    // draw needs the selected parent's exact input.
+    fn expand_suffix_needs_parent_input(&self, _run: &FaultCampaignRun) -> bool {
+        true
     }
 
     fn expand_suffix_with_parent(
         &self,
         run: &FaultCampaignRun,
-        state: &FaultDrawState,
+        _state: &FaultDrawState,
         parent: &FaultInput,
         shape: SuffixShape,
         mixture: MixtureDraw,
         mutation_seed: u64,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
-        draw_fault_suffix(
-            run,
-            state,
-            Some(&parent.actions),
-            shape,
-            mixture,
-            mutation_seed,
-        )
+        draw_fault_suffix(run, Some(&parent.actions), shape, mixture, mutation_seed)
     }
 
     fn expand_suffix_recorded_with_parent(
@@ -987,30 +658,6 @@ impl InputPolicy for FaultGame {
             return Err("recorded stream carries an unsupported draw checkpoint".into());
         }
         self.expand_suffix_with_parent(run, state, parent, shape, mixture, mutation_seed)
-    }
-
-    fn finish_stream_record(
-        &self,
-        run: &FaultCampaignRun,
-        state: &mut FaultDrawState,
-        retained: &[(usize, &[FaultAction])],
-    ) -> Result<Option<()>, Box<dyn Error>> {
-        if run.coordinate_refinement {
-            *state = self.coordinate_state();
-        } else {
-            for (_, actions) in retained {
-                for action in *actions {
-                    if let FaultAction::EventKill { node, ordinal } = *action {
-                        state.legacy_anchors.push((node, ordinal));
-                        if state.legacy_anchors.len() > MAX_LEGACY_COORDINATE_ANCHORS {
-                            let drop = state.legacy_anchors.len() - MAX_LEGACY_COORDINATE_ANCHORS;
-                            state.legacy_anchors.drain(..drop);
-                        }
-                    }
-                }
-            }
-        }
-        Ok(None)
     }
 }
 
@@ -1199,20 +846,16 @@ impl Evaluation for FaultGame {
         };
         if let Some(input) = event_input.as_ref()
             && let Some(fired) = self.take_event_outcome(&input.actions)
-            && let FaultAction::EventKill { node, ordinal } = action.action
         {
-            let prefix_len = input.actions.len().saturating_sub(1);
-            self.observe_event_coordinate(&input.actions[..prefix_len], node, ordinal, fired);
-            *self
-                .event_observation
-                .lock()
-                .expect("fault event observation mutex poisoned") =
-                Some(event_context_digest(&input.actions));
             evidence.coordinate_attempted = evidence.coordinate_attempted.saturating_add(1);
             if fired {
                 evidence.coordinate_fired = evidence.coordinate_fired.saturating_add(1);
                 if let Some(last) = action.observations.last() {
                     evidence.kill_ages.push(last.event_kill_age_ticks);
+                    // Edge zero is the absence of a report, not a site.
+                    if last.event_kill_site != 0 {
+                        evidence.fired_site_edge = Some(last.event_kill_site);
+                    }
                 }
             }
         }
@@ -1258,52 +901,6 @@ impl Evaluation for FaultGame {
             }
         }
         Ok(())
-    }
-
-    fn refinement_request<F>(
-        &self,
-        parent_id: u64,
-        action: &FaultCampaignActionResult,
-        input: F,
-    ) -> Result<Option<RefinementRequest<Self::Action>>, Box<dyn Error>>
-    where
-        F: FnOnce() -> Result<FaultInput, Box<dyn Error>>,
-    {
-        if !self.refinement_redraw.load(Ordering::Relaxed) {
-            return Ok(None);
-        }
-        let FaultAction::EventKill { node, .. } = action.action else {
-            return Ok(None);
-        };
-        let input = input()?;
-        let observed = self
-            .event_observation
-            .lock()
-            .expect("fault event observation mutex poisoned")
-            .take();
-        if observed != Some(event_context_digest(&input.actions)) {
-            return Ok(None);
-        }
-        let prefix_len = input.actions.len().saturating_sub(1);
-        let Some(ordinal) = self
-            .coordinate_state()
-            .next_probe(&input.actions[..prefix_len], node)
-        else {
-            return Ok(None);
-        };
-        Ok(Some(RefinementRequest {
-            parent_id,
-            prefix: input.actions[..prefix_len].to_vec(),
-            action: FaultAction::EventKill { node, ordinal },
-        }))
-    }
-
-    fn refinement_dispatched(
-        &self,
-        evidence: &mut FaultCampaignEvidence,
-        _request: &RefinementRequest<Self::Action>,
-    ) {
-        evidence.coordinate_refined = evidence.coordinate_refined.saturating_add(1);
     }
 
     fn source_entries<'a>(
@@ -1382,8 +979,6 @@ mod tests {
     fn run(nodes: u16, hooks: Vec<u32>) -> FaultCampaignRun {
         FaultCampaignRun {
             vocabulary: FaultVocabulary::new(nodes, hooks).expect("vocabulary"),
-            coordinate_refinement: true,
-            refinement_redraw: true,
         }
     }
 
@@ -1449,140 +1044,41 @@ mod tests {
     }
 
     #[test]
-    fn event_coordinate_brackets_keep_fired_and_unfired_bounds() {
-        let mut bracket = EventCoordinateBracket::default();
-        assert_eq!(bracket.next_probe(), None);
-        bracket.observe(8, true);
-        bracket.observe(40, false);
-        assert_eq!(bracket.fired, Some(8));
-        assert_eq!(bracket.unfired, Some(40));
-        assert_eq!(bracket.next_probe(), Some(24));
-
-        // Repeated observations tighten the same two sides independently and
-        // keep selecting an interior point instead of repeating the boundary.
-        bracket.observe(12, true);
-        bracket.observe(32, false);
-        assert_eq!(bracket.fired, Some(12));
-        assert_eq!(bracket.unfired, Some(32));
-        assert_eq!(bracket.next_probe(), Some(22));
-
-        let mut interior = EventCoordinateBracket::default();
-        interior.observe(8, true);
-        assert_eq!(interior.next_probe(), Some(4));
-        interior.observe(4, true);
-        assert_eq!(interior.next_probe(), Some(2));
-
-        let mut one_event = EventCoordinateBracket::default();
-        one_event.observe(2, false);
-        assert_eq!(one_event.next_probe(), Some(1));
-        one_event.observe(1, true);
-        assert_eq!(one_event.next_probe(), None);
-
-        let mut bounded = EventCoordinateBracket::default();
-        bounded.observe(128, true);
-        for ordinal in 1..MAX_COORDINATE_OBSERVATIONS as u64 {
-            bounded.observe(ordinal, true);
-        }
-        let first = bounded.next_probe().expect("unobserved coordinate");
-        bounded.observe(first, true);
-        assert_ne!(bounded.next_probe(), Some(first));
-    }
-
-    #[test]
-    fn legacy_event_coordinate_refinement_remains_replayable() {
-        let anchor = 100_u64;
-        assert_eq!(refine_legacy_event_coordinate(anchor, 0), anchor);
-        assert_eq!(refine_legacy_event_coordinate(anchor, 2), anchor + 1);
-        assert_eq!(refine_legacy_event_coordinate(anchor, (5 << 2) | 1), 68);
-        assert_eq!(refine_legacy_event_coordinate(1, 1), 1);
-        assert_eq!(refine_legacy_event_coordinate(u64::MAX, 2), u64::MAX);
-        assert_ne!(
-            mix_legacy_coordinate_seed(7, 0),
-            mix_legacy_coordinate_seed(7, 1)
-        );
-    }
-
-    #[test]
-    fn event_coordinate_observations_are_folded_in_admission_order() {
+    fn event_outcomes_are_keyed_by_the_exact_input_and_consumed_once() {
         let game = game();
-        let first_prefix = [FaultAction::Wait(0)];
-        let second_prefix = [FaultAction::Kill(0)];
-        let fired = FaultAction::EventKill {
-            node: 2,
-            ordinal: 8,
-        };
+        let prefix = [FaultAction::Wait(0)];
+        let fired = FaultAction::EventKill { node: 2, rarity: 0 };
         let unfired = FaultAction::EventKill {
             node: 2,
-            ordinal: 40,
+            rarity: 12,
         };
-        let mut fired_input = first_prefix.to_vec();
+        let mut fired_input = prefix.to_vec();
         fired_input.push(fired);
-        let mut unfired_input = first_prefix.to_vec();
+        let mut unfired_input = prefix.to_vec();
         unfired_input.push(unfired);
         game.record_event_outcome(fired_input.clone(), true);
         game.record_event_outcome(unfired_input.clone(), false);
-        game.observe_event_coordinate(
-            &fired_input[..fired_input.len() - 1],
-            2,
-            8,
-            game.take_event_outcome(&fired_input).unwrap(),
-        );
-        game.observe_event_coordinate(
-            &unfired_input[..unfired_input.len() - 1],
-            2,
-            40,
-            game.take_event_outcome(&unfired_input).unwrap(),
-        );
 
-        let state = game.coordinate_state();
-        let bracket = state
-            .contexts
-            .iter()
-            .find(|context| {
-                context.prefix == event_context_digest(&first_prefix) && context.node == 2
-            })
-            .expect("first prefix bracket")
-            .bracket;
-        assert_eq!(bracket.fired, Some(8));
-        assert_eq!(bracket.unfired, Some(40));
-        assert_eq!(bracket.next_probe(), Some(24));
-
-        game.observe_event_coordinate(&second_prefix, 2, 64, true);
-        let second = state.contexts.iter().find(|context| {
-            context.prefix == event_context_digest(&second_prefix) && context.node == 2
-        });
-        assert!(
-            second.is_none(),
-            "the copied state must not observe later admissions"
-        );
-        let state = game.coordinate_state();
-        let second = state
-            .contexts
-            .iter()
-            .find(|context| {
-                context.prefix == event_context_digest(&second_prefix) && context.node == 2
-            })
-            .expect("second prefix bracket");
-        assert_eq!(second.bracket.fired, Some(64));
-        assert_eq!(second.bracket.unfired, None);
+        assert_eq!(game.take_event_outcome(&fired_input), Some(true));
+        assert_eq!(game.take_event_outcome(&unfired_input), Some(false));
+        assert_eq!(game.take_event_outcome(&fired_input), None);
     }
 
     #[test]
-    fn admitted_event_observation_requests_the_next_exact_prefix_probe() {
+    fn a_fired_arm_records_its_age_and_the_site_that_killed() {
         let game = game();
         let run = run(1, vec![]);
         game.initial_draw_state(&run, None).expect("draw state");
-        let prefix = vec![FaultAction::Wait(0), FaultAction::Kill(0)];
-        let observed = FaultAction::EventKill {
-            node: 0,
-            ordinal: 8,
-        };
-        let mut input = prefix.clone();
-        input.push(observed);
+        let observed = FaultAction::EventKill { node: 0, rarity: 0 };
+        let input = vec![FaultAction::Wait(0), FaultAction::Kill(0), observed];
         game.record_event_outcome(input.clone(), true);
         let action = FaultCampaignActionResult {
             action: observed,
-            observations: Vec::new(),
+            observations: vec![FaultObservations {
+                event_kill_age_ticks: 191,
+                event_kill_site: 4_211,
+                ..FaultObservations::default()
+            }],
             milestones: FaultMilestones::default(),
             dead: false,
             victory: false,
@@ -1596,81 +1092,39 @@ mod tests {
             })
         })
         .expect("merge event observation");
-        let request = game
-            .refinement_request(7, &action, || {
-                Ok(FaultInput {
-                    actions: input.clone(),
-                })
-            })
-            .expect("refinement hook")
-            .expect("fired event requests a redraw");
-        assert_eq!(request.parent_id, 7);
-        assert_eq!(request.prefix, prefix);
-        assert_eq!(
-            request.action,
-            FaultAction::EventKill {
-                node: 0,
-                ordinal: 4,
-            }
-        );
         assert_eq!(evidence.coordinate_attempted, 1);
         assert_eq!(evidence.coordinate_fired, 1);
-        game.refinement_dispatched(&mut evidence, &request);
-        assert_eq!(evidence.coordinate_refined, 1);
+        let measures = evidence.measures();
+        assert_eq!(measures.kills_fired, 1);
+        assert_eq!(measures.kills_unfired, 0);
+        assert_eq!(measures.kill_age_ticks_max, 191);
+        assert_eq!(measures.fired_site, Some(4_211));
     }
 
     #[test]
-    fn live_and_recorded_refinement_draws_replay_the_same_pending_suffix() {
+    fn an_unreported_site_leaves_the_fired_site_unnamed() {
         let game = game();
         let run = run(1, vec![]);
-        let state = FaultDrawState::default();
-        let parent = FaultInput {
-            actions: vec![FaultAction::Wait(0)],
+        game.initial_draw_state(&run, None).expect("draw state");
+        let observed = FaultAction::EventKill { node: 0, rarity: 4 };
+        let input = vec![FaultAction::Wait(0), observed];
+        game.record_event_outcome(input.clone(), true);
+        let action = FaultCampaignActionResult {
+            action: observed,
+            observations: vec![FaultObservations::default()],
+            milestones: FaultMilestones::default(),
+            dead: false,
+            victory: false,
+            failed: false,
+            candidate: None,
         };
-        let request = RefinementRequest {
-            parent_id: 7,
-            prefix: vec![FaultAction::Wait(0), FaultAction::Kill(0)],
-            action: FaultAction::EventKill {
-                node: 0,
-                ordinal: 4,
-            },
-        };
-        let mixture = MixtureDraw {
-            mixture: DrawMixture::AlphabetOnly,
-            weight: 0,
-            splice_weight: 0,
-        };
-        let live = game
-            .expand_suffix_for_refinement(
-                &run,
-                &state,
-                &parent,
-                &request,
-                SuffixShape::OneOrTwo,
-                mixture,
-                19,
-            )
-            .expect("live refinement draw");
-        let recorded = game
-            .expand_suffix_recorded_for_refinement(
-                &run,
-                &state,
-                &parent,
-                &request,
-                SuffixShape::OneOrTwo,
-                mixture,
-                None,
-                19,
-            )
-            .expect("recorded refinement draw");
-        assert_eq!(live, recorded);
-        assert_eq!(live.first(), Some(&FaultAction::Kill(0)));
-        assert_eq!(
-            live.get(1),
-            Some(&FaultAction::EventKill {
-                node: 0,
-                ordinal: 4,
+        let mut evidence = FaultCampaignEvidence::default();
+        game.merge_action_evidence(&mut evidence, &action, 1, || {
+            Ok(FaultInput {
+                actions: input.clone(),
             })
-        );
+        })
+        .expect("merge event observation");
+        assert_eq!(evidence.measures().fired_site, None);
     }
 }

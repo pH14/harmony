@@ -197,6 +197,11 @@ mod real {
         /// child inherits the peer as `HARMONY_EVENT_KILL_FD`; the instrumented
         /// runtime consumes commands from it directly.
         event_control: Option<OwnedFd>,
+        /// The parent end of the event-kill report channel. The child inherits
+        /// the peer as `HARMONY_EVENT_REPORT_FD` and writes the armed rarity
+        /// and the edge of the site that killed it immediately before the
+        /// signal, so the run can name where the kill landed.
+        event_report: Option<OwnedFd>,
         /// The park armed on the node's process group, while its window is
         /// open.
         park: Option<park::Handle>,
@@ -278,13 +283,15 @@ mod real {
                 spec: spec.clone(),
                 child: None,
                 event_control: None,
+                event_report: None,
                 park: None,
             })
             .collect();
         for (id, node) in nodes.iter_mut().enumerate() {
-            let (child, control) = spawn_node(&node.spec, &mut supervisor)?;
+            let (child, control, report) = spawn_node(&node.spec, &mut supervisor)?;
             node.child = Some(child);
             node.event_control = control;
+            node.event_report = report;
             log(0, &format!("start node {id}"));
         }
 
@@ -396,7 +403,7 @@ mod real {
         loop {
             clock.wait()?;
             let active = poll_standing(sdk, supervisor.counters().ticks, &mut buf)?;
-            let deaths = reap_nodes(nodes);
+            let deaths = reap_nodes(nodes, supervisor);
             let tick = supervisor.counters().ticks + 1;
             for action in supervisor.tick(&active, &deaths) {
                 log(tick, &action.describe());
@@ -461,7 +468,31 @@ mod real {
     }
 
     /// Collect the nodes that exited since the last tick, reaping them.
-    fn reap_nodes(nodes: &mut [Node]) -> Vec<u16> {
+    /// Read the runtime's kill report if the dying node left one. The record
+    /// is written before the signal, so it is already in the socket by the
+    /// time the agent reaps; a node that died some other way left nothing and
+    /// must not hold up the tick.
+    fn read_event_report(report: &OwnedFd) -> Option<u64> {
+        let mut bytes = [0_u8; 16];
+        // SAFETY: the buffer is writable for its whole length and the
+        // descriptor is owned by this agent for the call.
+        let count = unsafe {
+            libc::recv(
+                report.as_raw_fd(),
+                bytes.as_mut_ptr().cast(),
+                bytes.len(),
+                libc::MSG_DONTWAIT,
+            )
+        };
+        if count != bytes.len() as isize {
+            return None;
+        }
+        Some(u64::from_le_bytes(
+            bytes[8..].try_into().expect("eight bytes of an edge id"),
+        ))
+    }
+
+    fn reap_nodes(nodes: &mut [Node], supervisor: &mut Supervisor) -> Vec<u16> {
         let mut deaths = Vec::new();
         for (id, node) in nodes.iter_mut().enumerate() {
             let Some(child) = node.child.as_mut() else {
@@ -477,8 +508,12 @@ mod real {
                 Err(_) => true,
             };
             if exited {
+                if let Some(edge) = node.event_report.as_ref().and_then(read_event_report) {
+                    supervisor.note_event_kill_site(edge);
+                }
                 node.child = None;
                 node.event_control = None;
+                node.event_report = None;
                 deaths.push(id as u16);
             }
         }
@@ -513,19 +548,22 @@ mod real {
             Action::Start(node) => {
                 if let Some(entry) = nodes.get_mut(usize::from(node)) {
                     entry.park = None;
-                    let (child, control) = spawn_node(&entry.spec, supervisor)?;
+                    let (child, control, report) = spawn_node(&entry.spec, supervisor)?;
                     entry.child = Some(child);
                     entry.event_control = control;
+                    entry.event_report = report;
                     if let Some(probe) = runtime.recovery_probe.take() {
                         retire_probe(probe.child, &mut runtime.retired_probes);
                     }
                     runtime.recovery.restarted();
                 }
             }
-            Action::ArmEventKill(node, ordinal) => {
-                apply_event_command(nodes, node, [EVENT_CMD_KILL, ordinal, 0], tick)?;
+            Action::ArmEventKill(node, rarity) => {
+                apply_event_command(nodes, node, [EVENT_CMD_KILL, rarity, 1], tick)?;
             }
             Action::DisarmEventKill(node) => {
+                // Rarity 0 is a real coordinate, so the third word and not the
+                // rarity is what tells the runtime an arm from a disarm.
                 apply_event_command(nodes, node, [EVENT_CMD_KILL, 0, 0], tick)?;
             }
             Action::ArmEventPark(node, park) => {
@@ -756,13 +794,19 @@ mod real {
     fn spawn_node(
         spec: &NodeSpec,
         supervisor: &mut Supervisor,
-    ) -> Result<(Child, Option<OwnedFd>), String> {
+    ) -> Result<(Child, Option<OwnedFd>, Option<OwnedFd>), String> {
         let instrumented = instrumented_events_available();
-        let (agent_fd, child_fd) = if instrumented {
+        let (agent_fd, child_fd, report_agent_fd, report_child_fd) = if instrumented {
             let (agent, child) = event_channel()?;
-            (Some(agent), Some(child))
+            let (report_agent, report_child) = event_channel()?;
+            (
+                Some(agent),
+                Some(child),
+                Some(report_agent),
+                Some(report_child),
+            )
         } else {
-            (None, None)
+            (None, None, None, None)
         };
         let mut command = command(&spec.argv);
         // Its own group, so one fault reaches the node's whole process tree and
@@ -774,13 +818,20 @@ mod real {
                 .env("HARMONY_EVENT_KILL_FD", child_fd.as_raw_fd().to_string())
                 .env("HARMONY_INSTRUMENTED_PROCESS_ID", process_id.to_string());
         }
+        if let Some(report_child_fd) = &report_child_fd {
+            command.env(
+                "HARMONY_EVENT_REPORT_FD",
+                report_child_fd.as_raw_fd().to_string(),
+            );
+        }
         let child = command
             .spawn()
             .map_err(|error| format!("node {:?}: {error}", spec.name))?;
-        // `child_fd` is inherited across exec and is no longer needed by the
-        // agent once spawn has succeeded.
+        // The child ends are inherited across exec and are no longer needed by
+        // the agent once spawn has succeeded.
         drop(child_fd);
-        Ok((child, agent_fd))
+        drop(report_child_fd);
+        Ok((child, agent_fd, report_agent_fd))
     }
 
     /// Match the host-side vocabulary derivation: the action exists only when
