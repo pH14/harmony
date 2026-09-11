@@ -69,6 +69,22 @@ over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
 which pairs the sometimes-assertion set with the live-node bitmap and the
 hook-completion count.
 
+## Retained workspace state
+
+[`workspace`](src/workspace.rs) stores immutable facts, findings, moments,
+evidence, and request results in an ordered journal. A transaction publishes
+its records together under an exclusive final name after referenced blobs are
+verified and synchronized. The writer lock is held for the lifetime of the
+workspace and is released even when opening or preparing one fails. Callers
+can consult a committed request result before doing work that may be retried;
+the storage layer does not execute commands or freeze a guest.
+
+[`checkpoint`](src/checkpoint.rs) preserves the strict `HARMCKPT` version 1
+layout, while [`declarations`](src/declarations.rs) retains workload-authored
+descriptions and property meanings. Reopening folds journal files by their
+numeric contiguous sequence and verifies referenced blob contents before
+accepting the workspace.
+
 ## Running it
 
 ```
