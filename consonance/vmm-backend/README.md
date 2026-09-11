@@ -60,7 +60,8 @@ write sequence and error handling; the Nova restore oracle checks 200 restored
 continuations across a branching snapshot tree on KVM.
 
 This diagnostic branch invalidates cached translations at each ordinary entry
-through a private VM ioctl in its pinned Linux 6.17 kernel. The kernel holds the
+through a private VM ioctl in its pinned Linux 6.17 kernel. The ioctl refuses
+hardware paging (NPT/EPT or the TDP MMU) before changing any state. The kernel holds the
 memslot lock and calls `kvm_arch_flush_shadow_all`; it does not replace registers
 or memory slots. Capture, completion-only calls, and internal retries do not
 invoke it. An error or unexpected ABI reply poisons the backend. Stock kernels

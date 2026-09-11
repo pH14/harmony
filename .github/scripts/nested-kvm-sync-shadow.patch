@@ -12,11 +12,16 @@
 +		if (synchronizing || harmony_sync_shadow)
 --- a/arch/x86/kvm/x86.c
 +++ b/arch/x86/kvm/x86.c
-@@ -6939,0 +6940,11 @@
+@@ -6939,0 +6940,16 @@
 +	/* Private ABI for the isolated Harmony Linux 6.17 experiment only. */
 +	case _IO(KVMIO, 0xf0):
 +		if (arg) {
 +			r = -EINVAL;
++			break;
++		}
++		/* The TDP zap path is teardown-only; never resume it. */
++		if (tdp_enabled || tdp_mmu_enabled) {
++			r = -EOPNOTSUPP;
 +			break;
 +		}
 +		mutex_lock(&kvm->slots_lock);
