@@ -925,6 +925,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "MiB-scale codec size regression; small codec and truncated-length tests run under Miri"
+    )]
     fn version_six_round_trips_large_sections_with_optional_control() {
         let (memory, vm, sdk, _) = fixture();
         let policy = ServiceConfig {

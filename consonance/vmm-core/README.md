@@ -31,6 +31,10 @@ the command nonce. Whole-state hashes include this control state, including the
 recorded prefix used for duplicate-input rejection. Legacy v3/v4 artifacts remain
 readable with their historical empty control-state default; their recorded hash
 uses the old coverage. The codec retains v4 bytes when control state is absent.
+Portable format 6 carries sections that exceed the legacy envelope limits,
+including long SDK event histories; smaller records retain their v4/v5 bytes.
+Complete reads allocate incrementally from received bytes, and sparse section
+lengths are bounded by the supplied input. Readers retain v3–v5 compatibility.
 Whole-VM capture preserves pending SDK stops and is side-effect-free for a
 pending pvclock registration, carrying its GPA, `armed = false` state, and page
 bytes so the next handshake resumes from the same state.
