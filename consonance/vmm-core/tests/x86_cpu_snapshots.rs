@@ -70,6 +70,13 @@ const WARMUP_MARKER: u8 = 0xA5;
 const WARMUP_LEN: usize = 5 + 2 + 1;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const WARMUP_RIP: usize = CODE_GPA + WARMUP_LEN;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const GUEST_PDPT_WRITE_LEN: usize = 10;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const BASE_PROGRAM_LEN: usize = 21;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const GUEST_PDPT_WRITE: [u8; GUEST_PDPT_WRITE_LEN] =
+    [0xC7, 0x05, 0x00, 0x40, 0x00, 0x00, 0x01, 0x60, 0x00, 0x00];
 
 /// A short bound for this guest after the warmup: one UART exit followed by one
 /// HLT exit. The bound is test control only and never enters guest-visible state
@@ -174,6 +181,26 @@ fn guest_ram_image() -> GuestRam {
     put_u64(bytes, GDT_GPA, 0);
     put_u64(bytes, GDT_GPA + 8, 0x00CF_9B00_0000_FFFF);
     put_u64(bytes, GDT_GPA + 16, 0x00CF_9300_0000_FFFF);
+    ram
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+/// Prefix both physical copies of the guest program with a guest-authored
+/// PDPT write. The original 21-byte program remains unchanged after the
+/// prefix, so the only added behavior is the guest RAM mutation.
+fn guest_ram_image_with_guest_pdpt_write() -> GuestRam {
+    let mut ram = guest_ram_image();
+    let bytes = ram.as_mut_bytes();
+    bytes.copy_within(
+        CODE_GPA..CODE_GPA + BASE_PROGRAM_LEN,
+        CODE_GPA + GUEST_PDPT_WRITE_LEN,
+    );
+    bytes.copy_within(
+        REMAPPED_CODE_GPA..REMAPPED_CODE_GPA + BASE_PROGRAM_LEN,
+        REMAPPED_CODE_GPA + GUEST_PDPT_WRITE_LEN,
+    );
+    put_bytes(bytes, CODE_GPA, &GUEST_PDPT_WRITE);
+    put_bytes(bytes, REMAPPED_CODE_GPA, &GUEST_PDPT_WRITE);
     ram
 }
 
@@ -457,6 +484,16 @@ mod live_kvm {
         compose(guest_ram_image(), backend, configure)
     }
 
+    fn fresh_guest_pdpt_vmm(configure: bool) -> Vmm<KvmBackend> {
+        let backend = KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed: {e}"));
+        let configure: fn(&mut KvmBackend) = if configure {
+            install_pae_entry::<KvmBackend>
+        } else {
+            |_| {}
+        };
+        compose(guest_ram_image_with_guest_pdpt_write(), backend, configure)
+    }
+
     fn mmio_guest_ram() -> GuestRam {
         let mut ram = GuestRam::new(MMIO_RAM_LEN).expect("allocate MMIO guest RAM");
         ram.as_mut_bytes()[MMIO_CODE_GPA..MMIO_CODE_GPA + MMIO_PROGRAM.len()]
@@ -521,6 +558,63 @@ mod live_kvm {
             state_hash: vmm.state_hash().expect("hash full MMIO VM state"),
             moment: vmm.effective_vns(),
         }
+    }
+
+    fn report_root(variable: &str) -> Option<std::path::PathBuf> {
+        std::env::var_os(variable).map(std::path::PathBuf::from)
+    }
+
+    /// Retain raw phase bytes before a later cross-arm assertion can discard
+    /// the useful failure evidence. Reports are opt-in so the regression stays
+    /// portable; the hosted KVM workflow supplies the directory.
+    fn retain_capture(
+        root: Option<&std::path::Path>,
+        label: &str,
+        capture: &MmioCapture,
+        guest_bytes: &[u8],
+    ) {
+        let Some(root) = root else { return };
+        let directory = root.join(label);
+        std::fs::create_dir_all(&directory).expect("create snapshot report directory");
+        std::fs::write(directory.join("memory.bin"), &capture.memory)
+            .expect("write snapshot memory report");
+        std::fs::write(directory.join("vm-state.bin"), &capture.encoded_state)
+            .expect("write snapshot state report");
+        std::fs::write(directory.join("state-blob.bin"), &capture.state_blob)
+            .expect("write snapshot state-blob report");
+        std::fs::write(directory.join("guest-bytes.bin"), guest_bytes)
+            .expect("write guest-byte report");
+        let summary = format!(
+            "state_hash={:?}\nvirtual_time={:?}\nrip={}\nrbx={}\n",
+            capture.state_hash, capture.moment, capture.state.regs.rip, capture.state.regs.rbx,
+        );
+        std::fs::write(directory.join("summary.txt"), summary)
+            .expect("write snapshot summary report");
+    }
+
+    fn retain_endpoint(
+        root: Option<&std::path::Path>,
+        label: &str,
+        endpoint: &Endpoint,
+        guest_bytes: &[u8],
+    ) {
+        let Some(root) = root else { return };
+        let directory = root.join(label);
+        std::fs::create_dir_all(&directory).expect("create endpoint report directory");
+        std::fs::write(directory.join("memory.bin"), &endpoint.memory)
+            .expect("write endpoint memory report");
+        std::fs::write(directory.join("vm-state.bin"), &endpoint.encoded_state)
+            .expect("write endpoint state report");
+        std::fs::write(directory.join("state-blob.bin"), &endpoint.state_blob)
+            .expect("write endpoint state-blob report");
+        std::fs::write(directory.join("guest-bytes.bin"), guest_bytes)
+            .expect("write endpoint guest-byte report");
+        let summary = format!(
+            "serial={:?}\nstate_hash={:?}\nvirtual_time={:?}\n",
+            endpoint.serial, endpoint.state_hash, endpoint.effective_vns,
+        );
+        std::fs::write(directory.join("summary.txt"), summary)
+            .expect("write endpoint summary report");
     }
 
     /// Read the LAPIC TPR from the opaque x86 device record after the public
@@ -665,7 +759,10 @@ mod live_kvm {
             .regs
             .rbx;
         let repeated = capture_full_vmm(&save_and_continue);
-        assert_eq!(repeated, save_stop, "repeated full snapshot is unchanged");
+        assert!(
+            repeated == save_stop,
+            "repeated full snapshot is unchanged; retained MMIO stop evidence differs"
+        );
         assert_eq!(save_and_continue.exit_counts(), counts);
         assert_eq!(save_and_continue.effective_vns(), time);
         assert_eq!(
@@ -700,15 +797,21 @@ mod live_kvm {
         );
         let cold_endpoint = continue_to_hlt(&mut cold);
 
-        assert_eq!(uninterrupted_stop, save_stop);
-        assert_eq!(uninterrupted_stop, cold_stop);
-        assert_eq!(
-            uninterrupted_endpoint, save_and_continue_endpoint,
-            "uninterrupted and save-and-continue endpoints must match"
+        assert!(
+            uninterrupted_stop == save_stop,
+            "uninterrupted and saved MMIO stops differ; retained MMIO evidence is available"
         );
-        assert_eq!(
-            save_and_continue_endpoint, cold_endpoint,
-            "cold restore continuation must match the source endpoint"
+        assert!(
+            uninterrupted_stop == cold_stop,
+            "cold MMIO stop differs from the saved stop; retained MMIO evidence is available"
+        );
+        assert!(
+            uninterrupted_endpoint == save_and_continue_endpoint,
+            "uninterrupted and save-and-continue MMIO endpoints differ; retained evidence is available"
+        );
+        assert!(
+            save_and_continue_endpoint == cold_endpoint,
+            "cold restore MMIO endpoint differs from the source; retained evidence is available"
         );
 
         // The final instruction retired only after the stop was captured.
@@ -820,6 +923,458 @@ mod live_kvm {
         );
         println!(
             "PAE snapshot witness: all three continuations read 0x42; omitted PDPTR cache reads 0x99"
+        );
+    }
+
+    fn run_guest_pdpt_warmup(vmm: &mut Vmm<KvmBackend>) {
+        assert_eq!(
+            vmm.step().expect("run guest-authored PDPT warmup"),
+            Step::Continued
+        );
+        assert_eq!(vmm.serial(), &[WARMUP_MARKER]);
+        assert_eq!(vmm.exit_counts().io, 1);
+        assert_eq!(vmm.exit_counts().total(), 1);
+        assert!(
+            vmm.effective_vns().is_some(),
+            "guest-authored warmup must assign virtual time"
+        );
+    }
+
+    fn run_guest_pdpt_endpoint(vmm: &mut Vmm<KvmBackend>) -> Endpoint {
+        let mut steps = 0;
+        loop {
+            assert!(
+                steps < MAX_STEPS,
+                "guest-authored PDPT guest exceeded bound"
+            );
+            match vmm.step().expect("run guest-authored PDPT guest") {
+                Step::Continued => steps += 1,
+                Step::Terminal(reason) => {
+                    assert_eq!(reason, TerminalReason::Idle);
+                    break;
+                }
+                Step::SdkStop => panic!("unexpected SDK stop in guest-authored PDPT guest"),
+            }
+        }
+        let serial = vmm.serial().to_vec();
+        assert_eq!(serial.len(), 2);
+        assert_eq!(serial[0], WARMUP_MARKER);
+        assert!(matches!(serial[1], 0x42 | 0x99));
+        let state = vmm.save_vm_state().expect("save guest-authored endpoint");
+        assert_eq!(state.regs.rbx, 1);
+        let encoded_state = state.encode().expect("encode guest-authored endpoint");
+        Endpoint {
+            serial,
+            memory: vmm.guest_memory().to_vec(),
+            encoded_state,
+            state_blob: vmm
+                .state_blob()
+                .expect("encode guest-authored endpoint state blob"),
+            state_hash: vmm.state_hash().expect("hash guest-authored endpoint"),
+            effective_vns: vmm.effective_vns(),
+        }
+    }
+
+    #[test]
+    #[ignore = "live AMD KVM NPT observation; run with --ignored and NPT_REPORT_DIR"]
+    fn amd_default_npt_pae_guest_write_observations() {
+        require_kvm();
+        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").expect("read /proc/cpuinfo");
+        assert!(
+            cpuinfo.lines().any(|line| {
+                line.split_once(':').is_some_and(|(key, value)| {
+                    key.trim() == "vendor_id" && value.trim() == "AuthenticAMD"
+                })
+            }),
+            "guest-authored observation requires an AuthenticAMD host"
+        );
+        let npt = std::fs::read_to_string("/sys/module/kvm_amd/parameters/npt")
+            .expect("read kvm_amd NPT setting");
+        assert!(matches!(npt.trim(), "Y" | "1"), "NPT must be enabled");
+        let report = report_root("NPT_REPORT_DIR");
+
+        let mut uninterrupted = fresh_guest_pdpt_vmm(true);
+        wire_snapshot_path(&mut uninterrupted);
+        run_guest_pdpt_warmup(&mut uninterrupted);
+        let uninterrupted_endpoint = run_guest_pdpt_endpoint(&mut uninterrupted);
+        retain_endpoint(
+            report.as_deref(),
+            "original-endpoint",
+            &uninterrupted_endpoint,
+            &uninterrupted_endpoint.memory[PDPT_GPA..PDPT_GPA + PAGE_SIZE],
+        );
+
+        let mut save_and_continue = fresh_guest_pdpt_vmm(true);
+        wire_snapshot_path(&mut save_and_continue);
+        run_guest_pdpt_warmup(&mut save_and_continue);
+        let save_before_memory = save_and_continue.guest_memory().to_vec();
+        let save_before_serial = save_and_continue.serial().to_vec();
+        let save_before_counts = save_and_continue.exit_counts();
+        let save_before_vns = save_and_continue.effective_vns();
+        let save_stop = capture_full_vmm(&save_and_continue);
+        retain_capture(
+            report.as_deref(),
+            "save-and-continue-stop",
+            &save_stop,
+            &save_stop.memory[PDPT_GPA..PDPT_GPA + PAGE_SIZE],
+        );
+        assert_eq!(
+            save_and_continue.guest_memory(),
+            save_before_memory.as_slice()
+        );
+        assert_eq!(save_and_continue.serial(), save_before_serial.as_slice());
+        assert_eq!(save_and_continue.exit_counts(), save_before_counts);
+        assert_eq!(save_and_continue.effective_vns(), save_before_vns);
+        let save_repeated = capture_full_vmm(&save_and_continue);
+        retain_capture(
+            report.as_deref(),
+            "save-and-continue-stop-repeat",
+            &save_repeated,
+            &save_repeated.memory[PDPT_GPA..PDPT_GPA + PAGE_SIZE],
+        );
+        assert!(
+            save_stop == save_repeated,
+            "guest-authored saved stop differs on repeat; retained PAE evidence is available"
+        );
+        assert_eq!(save_stop.state.regs.rbx, 0);
+        assert_eq!(
+            save_stop.state.regs.rip,
+            (WARMUP_RIP + GUEST_PDPT_WRITE_LEN) as u64
+        );
+        assert_eq!(
+            save_stop.memory[PDPT_GPA..PDPT_GPA + 8],
+            PDPT_B_ENTRY.to_le_bytes()
+        );
+        let save_and_continue_endpoint = run_guest_pdpt_endpoint(&mut save_and_continue);
+        retain_endpoint(
+            report.as_deref(),
+            "save-and-continue-endpoint",
+            &save_and_continue_endpoint,
+            &save_and_continue_endpoint.memory[PDPT_GPA..PDPT_GPA + PAGE_SIZE],
+        );
+
+        let mut cold_unobserved = fresh_guest_pdpt_vmm(false);
+        wire_snapshot_path(&mut cold_unobserved);
+        cold_unobserved
+            .restore_snapshot(&save_stop.memory, &save_stop.state)
+            .expect("restore guest-authored stop");
+        let cold_unobserved_endpoint = run_guest_pdpt_endpoint(&mut cold_unobserved);
+        retain_endpoint(
+            report.as_deref(),
+            "cold-unobserved-endpoint",
+            &cold_unobserved_endpoint,
+            &cold_unobserved_endpoint.memory[PDPT_GPA..PDPT_GPA + PAGE_SIZE],
+        );
+
+        let mut cold_observed = fresh_guest_pdpt_vmm(false);
+        wire_snapshot_path(&mut cold_observed);
+        cold_observed
+            .restore_snapshot(&save_stop.memory, &save_stop.state)
+            .expect("restore observed guest-authored stop");
+        let cold_before_memory = cold_observed.guest_memory().to_vec();
+        let cold_before_serial = cold_observed.serial().to_vec();
+        let cold_before_counts = cold_observed.exit_counts();
+        let cold_before_vns = cold_observed.effective_vns();
+        let cold_stop = capture_full_vmm(&cold_observed);
+        retain_capture(
+            report.as_deref(),
+            "cold-observed-stop",
+            &cold_stop,
+            &cold_stop.memory[PDPT_GPA..PDPT_GPA + PAGE_SIZE],
+        );
+        assert_eq!(cold_observed.guest_memory(), cold_before_memory.as_slice());
+        assert_eq!(cold_observed.serial(), cold_before_serial.as_slice());
+        assert_eq!(cold_observed.exit_counts(), cold_before_counts);
+        assert_eq!(cold_observed.effective_vns(), cold_before_vns);
+        let cold_repeated = capture_full_vmm(&cold_observed);
+        retain_capture(
+            report.as_deref(),
+            "cold-observed-stop-repeat",
+            &cold_repeated,
+            &cold_repeated.memory[PDPT_GPA..PDPT_GPA + PAGE_SIZE],
+        );
+        assert!(
+            cold_stop == cold_repeated,
+            "guest-authored cold stop differs on repeat; retained PAE evidence is available"
+        );
+        assert!(
+            cold_stop == save_stop,
+            "guest-authored cold stop differs from saved stop; retained PAE evidence is available"
+        );
+        let cold_observed_endpoint = run_guest_pdpt_endpoint(&mut cold_observed);
+        retain_endpoint(
+            report.as_deref(),
+            "cold-observed-endpoint",
+            &cold_observed_endpoint,
+            &cold_observed_endpoint.memory[PDPT_GPA..PDPT_GPA + PAGE_SIZE],
+        );
+
+        assert!(
+            uninterrupted_endpoint == save_and_continue_endpoint,
+            "guest-authored original and save-and-continue futures differ; retained PAE evidence is available"
+        );
+        assert!(
+            save_and_continue_endpoint == cold_unobserved_endpoint,
+            "guest-authored cold continuation differs; retained PAE evidence is available"
+        );
+        assert!(
+            cold_unobserved_endpoint == cold_observed_endpoint,
+            "observing the cold stop changes its future; retained PAE evidence is available"
+        );
+        println!(
+            "AMD NPT guest-authored PAE observation: serial={:?} state_hash={:?}",
+            uninterrupted_endpoint.serial, uninterrupted_endpoint.state_hash
+        );
+    }
+
+    const XSAVE_GPA: usize = 0x9000;
+    const XSAVE_PAGE_LEN: usize = PAGE_SIZE;
+    const XSAVE_PROGRAM_LEN: usize = 34;
+    const XSAVE_ENDPOINT_RIP: usize = CODE_GPA + XSAVE_PROGRAM_LEN;
+    const XSAVE_MARKER: u8 = 0x42;
+    /// `FNINIT; UART A5; EAX=3, EDX=0; XSAVE [0x9000]; UART 42; INC EBX; HLT`.
+    const XSAVE_PROGRAM: [u8; XSAVE_PROGRAM_LEN] = [
+        0xDB,
+        0xE3, // FNINIT
+        0xBA,
+        0xF8,
+        0x03,
+        0x00,
+        0x00, // MOV EDX, 0x3f8
+        0xB0,
+        WARMUP_MARKER,
+        0xEE, // OUT DX, AL
+        0xB8,
+        0x03,
+        0x00,
+        0x00,
+        0x00, // MOV EAX, 3
+        0x31,
+        0xD2, // XOR EDX, EDX
+        0x0F,
+        0xAE,
+        0x25,
+        0x00,
+        0x90,
+        0x00,
+        0x00, // XSAVE [0x9000]
+        0xBA,
+        0xF8,
+        0x03,
+        0x00,
+        0x00, // MOV EDX, 0x3f8
+        0xB0,
+        XSAVE_MARKER,
+        0xEE,
+        0x43,
+        0xF4,
+    ];
+
+    fn xsave_guest_ram_image() -> GuestRam {
+        let mut ram = guest_ram_image();
+        let bytes = ram.as_mut_bytes();
+        bytes[XSAVE_GPA..XSAVE_GPA + XSAVE_PAGE_LEN].fill(0);
+        put_bytes(bytes, CODE_GPA, &XSAVE_PROGRAM);
+        put_bytes(bytes, REMAPPED_CODE_GPA, &XSAVE_PROGRAM);
+        ram
+    }
+
+    fn install_xsave_entry(backend: &mut KvmBackend) {
+        install_pae_entry(backend);
+        let mut state = backend.save().expect("save XSAVE entry template");
+        state.sregs.cr4 |= (1 << 9) | (1 << 18); // OSFXSR | OSXSAVE
+        state.sregs.cr0 &= !((1 << 2) | (1 << 3)); // EM | TS clear
+        state.xcr0 = 3; // x87 + SSE
+        backend
+            .restore(&state)
+            .expect("restore XSAVE-capable entry state");
+    }
+
+    fn fresh_xsave_vmm(configure: bool) -> Vmm<KvmBackend> {
+        let backend = KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed: {e}"));
+        let configure: fn(&mut KvmBackend) = if configure {
+            install_xsave_entry
+        } else {
+            |_| {}
+        };
+        compose(xsave_guest_ram_image(), backend, configure)
+    }
+
+    fn xsave_output_page(memory: &[u8]) -> &[u8] {
+        memory
+            .get(XSAVE_GPA..XSAVE_GPA + XSAVE_PAGE_LEN)
+            .expect("XSAVE output page is within guest RAM")
+    }
+
+    fn run_xsave_warmup(vmm: &mut Vmm<KvmBackend>) {
+        assert_eq!(vmm.step().expect("run XSAVE warmup"), Step::Continued);
+        assert_eq!(vmm.serial(), &[WARMUP_MARKER]);
+        assert_eq!(vmm.exit_counts().io, 1);
+        assert_eq!(vmm.exit_counts().total(), 1);
+        assert!(
+            vmm.effective_vns().is_some(),
+            "XSAVE warmup must assign virtual time"
+        );
+    }
+
+    fn run_xsave_endpoint(vmm: &mut Vmm<KvmBackend>) -> MmioCapture {
+        let mut steps = 0;
+        loop {
+            assert!(steps < MAX_STEPS, "XSAVE guest exceeded bound");
+            match vmm.step().expect("run XSAVE guest") {
+                Step::Continued => steps += 1,
+                Step::Terminal(reason) => {
+                    assert_eq!(reason, TerminalReason::Idle);
+                    break;
+                }
+                Step::SdkStop => panic!("unexpected SDK stop in XSAVE guest"),
+            }
+        }
+        assert_eq!(vmm.serial(), &[WARMUP_MARKER, XSAVE_MARKER]);
+        let capture = capture_full_vmm(vmm);
+        assert_eq!(capture.state.regs.rip, XSAVE_ENDPOINT_RIP as u64);
+        assert_eq!(capture.state.regs.rbx, 1);
+        assert_eq!(capture.state.xcrs.xcr0, 3);
+        assert!(
+            xsave_output_page(&capture.memory)
+                .iter()
+                .any(|&byte| byte != 0),
+            "guest XSAVE must write the zeroed output page"
+        );
+        capture
+    }
+
+    #[test]
+    #[ignore = "live KVM; run with --ignored and XSAVE_CONTINUATION_REPORT_DIR"]
+    fn xsave_guest_bytes_survive_cold_continuation() {
+        require_kvm();
+        let report = report_root("XSAVE_CONTINUATION_REPORT_DIR");
+
+        let mut uninterrupted = fresh_xsave_vmm(true);
+        wire_snapshot_path(&mut uninterrupted);
+        run_xsave_warmup(&mut uninterrupted);
+        let uninterrupted_endpoint = run_xsave_endpoint(&mut uninterrupted);
+        retain_capture(
+            report.as_deref(),
+            "original-endpoint",
+            &uninterrupted_endpoint,
+            xsave_output_page(&uninterrupted_endpoint.memory),
+        );
+
+        let mut save_and_continue = fresh_xsave_vmm(true);
+        wire_snapshot_path(&mut save_and_continue);
+        run_xsave_warmup(&mut save_and_continue);
+        let save_before_memory = save_and_continue.guest_memory().to_vec();
+        let save_before_serial = save_and_continue.serial().to_vec();
+        let save_before_counts = save_and_continue.exit_counts();
+        let save_before_vns = save_and_continue.effective_vns();
+        let save_stop = capture_full_vmm(&save_and_continue);
+        retain_capture(
+            report.as_deref(),
+            "save-and-continue-stop",
+            &save_stop,
+            xsave_output_page(&save_stop.memory),
+        );
+        assert_eq!(
+            save_and_continue.guest_memory(),
+            save_before_memory.as_slice()
+        );
+        assert_eq!(save_and_continue.serial(), save_before_serial.as_slice());
+        assert_eq!(save_and_continue.exit_counts(), save_before_counts);
+        assert_eq!(save_and_continue.effective_vns(), save_before_vns);
+        assert!(
+            xsave_output_page(&save_stop.memory)
+                .iter()
+                .all(|&byte| byte == 0),
+            "XSAVE output must be empty at the saved UART boundary"
+        );
+        let save_repeated = capture_full_vmm(&save_and_continue);
+        retain_capture(
+            report.as_deref(),
+            "save-and-continue-stop-repeat",
+            &save_repeated,
+            xsave_output_page(&save_repeated.memory),
+        );
+        assert!(
+            save_stop == save_repeated,
+            "XSAVE saved stop differs on repeat; retained XSAVE evidence is available"
+        );
+        assert_eq!(save_stop.state.xcrs.xcr0, 3);
+        let save_and_continue_endpoint = run_xsave_endpoint(&mut save_and_continue);
+        retain_capture(
+            report.as_deref(),
+            "save-and-continue-endpoint",
+            &save_and_continue_endpoint,
+            xsave_output_page(&save_and_continue_endpoint.memory),
+        );
+
+        let mut cold_unobserved = fresh_xsave_vmm(false);
+        wire_snapshot_path(&mut cold_unobserved);
+        cold_unobserved
+            .restore_snapshot(&save_stop.memory, &save_stop.state)
+            .expect("restore XSAVE continuation");
+        let cold_unobserved_endpoint = run_xsave_endpoint(&mut cold_unobserved);
+        retain_capture(
+            report.as_deref(),
+            "cold-unobserved-endpoint",
+            &cold_unobserved_endpoint,
+            xsave_output_page(&cold_unobserved_endpoint.memory),
+        );
+
+        let mut cold_observed = fresh_xsave_vmm(false);
+        wire_snapshot_path(&mut cold_observed);
+        cold_observed
+            .restore_snapshot(&save_stop.memory, &save_stop.state)
+            .expect("restore observed XSAVE continuation");
+        let cold_before_memory = cold_observed.guest_memory().to_vec();
+        let cold_before_serial = cold_observed.serial().to_vec();
+        let cold_before_counts = cold_observed.exit_counts();
+        let cold_before_vns = cold_observed.effective_vns();
+        let cold_stop = capture_full_vmm(&cold_observed);
+        retain_capture(
+            report.as_deref(),
+            "cold-observed-stop",
+            &cold_stop,
+            xsave_output_page(&cold_stop.memory),
+        );
+        assert_eq!(cold_observed.guest_memory(), cold_before_memory.as_slice());
+        assert_eq!(cold_observed.serial(), cold_before_serial.as_slice());
+        assert_eq!(cold_observed.exit_counts(), cold_before_counts);
+        assert_eq!(cold_observed.effective_vns(), cold_before_vns);
+        let cold_repeated = capture_full_vmm(&cold_observed);
+        retain_capture(
+            report.as_deref(),
+            "cold-observed-stop-repeat",
+            &cold_repeated,
+            xsave_output_page(&cold_repeated.memory),
+        );
+        assert!(
+            cold_stop == cold_repeated,
+            "XSAVE cold stop differs on repeat; retained XSAVE evidence is available"
+        );
+        assert!(
+            cold_stop == save_stop,
+            "XSAVE cold stop differs from saved stop; retained XSAVE evidence is available"
+        );
+        let cold_observed_endpoint = run_xsave_endpoint(&mut cold_observed);
+        retain_capture(
+            report.as_deref(),
+            "cold-observed-endpoint",
+            &cold_observed_endpoint,
+            xsave_output_page(&cold_observed_endpoint.memory),
+        );
+
+        assert!(
+            uninterrupted_endpoint == save_and_continue_endpoint,
+            "uninterrupted and save-and-continue XSAVE futures differ; retained XSAVE evidence is available"
+        );
+        assert!(
+            save_and_continue_endpoint == cold_unobserved_endpoint,
+            "cold XSAVE continuation differs; retained XSAVE evidence is available"
+        );
+        assert!(
+            cold_unobserved_endpoint == cold_observed_endpoint,
+            "observing cold XSAVE state changes its future; retained XSAVE evidence is available"
         );
     }
 }

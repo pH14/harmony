@@ -415,8 +415,13 @@ jobs:
   # failure. Its strict oracle and raw log remain retained as evidence; a
   # known AMD/NPT failure is never reported as universal qualification.
   snapshot-hardware:
+    name: snapshot-hardware replica ${{ matrix.replica }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2]
     steps:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
@@ -432,14 +437,18 @@ jobs:
           test -c /dev/kvm
           ls -l /dev/kvm
       - name: Record host vendor and paging mode
+        id: host
         run: |
           set -euo pipefail
           mkdir -p snapshot-report
+          printf '%s\n' 'replica=${{ matrix.replica }}' > snapshot-report/replica.txt
           git rev-parse HEAD > snapshot-report/source-revision.txt
-          uname -a > snapshot-report/host.txt
-          lscpu >> snapshot-report/host.txt
-          grep -m1 'model name' /proc/cpuinfo >> snapshot-report/host.txt
-          grep -m1 'vendor_id' /proc/cpuinfo >> snapshot-report/host.txt
+          {
+            uname -a
+            lscpu
+            grep -m1 'model name' /proc/cpuinfo
+            grep -m1 'vendor_id' /proc/cpuinfo
+          } > snapshot-report/host.txt
           vendor=$(awk -F: '/^vendor_id[[:space:]]*:/{gsub(/[[:space:]]/, "", $2); print $2; exit}' /proc/cpuinfo)
           npt=unavailable
           if test -r /sys/module/kvm_amd/parameters/npt; then
@@ -447,6 +456,11 @@ jobs:
           fi
           printf 'CPU_VENDOR=%s\nKVM_AMD_NPT=%s\n' "$vendor" "$npt" | tee snapshot-report/paging-mode.txt
           cat /proc/cpuinfo > snapshot-report/cpuinfo.txt
+          amd_npt=false
+          if [[ "$vendor" == AuthenticAMD && "$npt" =~ ^(Y|1)$ ]]; then
+            amd_npt=true
+          fi
+          printf 'vendor=%s\nnpt=%s\namd_npt=%s\n' "$vendor" "$npt" "$amd_npt" >> "$GITHUB_OUTPUT"
       - name: Run required KVM completion and full-VMM tests
         env:
           CARGO_TERM_COLOR: never
@@ -471,35 +485,118 @@ jobs:
           run_exact vmm-backend kvm_smoke serviced_exception_payload_round_trips_and_empty_restore_clears_it exception-payload
           run_exact vmm-backend kvm_smoke serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu mmio-backend
           run_exact vmm-core x86_cpu_snapshots live_kvm::mmio_rmw_finishes_before_full_vmm_snapshot mmio-full-vmm
-
-          vendor=$(awk -F= '/^CPU_VENDOR=/{print $2}' snapshot-report/paging-mode.txt)
-          npt=$(awk -F= '/^KVM_AMD_NPT=/{print $2}' snapshot-report/paging-mode.txt)
-          pae_log=snapshot-report/pae-full-vmm.log
+      - name: PAE full-VMM snapshot gate
+        if: ${{ steps.host.outputs.amd_npt != 'true' }}
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'PAE_STATUS=required-gate' | tee snapshot-report/pae-status.txt
           printf '%s\n' 'cargo test --locked --release -p vmm-core --test x86_cpu_snapshots live_kvm::pae_cached_pdptrs_survive_full_vmm_snapshot_restore -- --ignored --exact --test-threads=1 --nocapture' | tee snapshot-report/pae-full-vmm.command
-          if [[ "$vendor" == AuthenticAMD && "$npt" =~ ^(Y|1)$ ]]; then
-            printf '%s\n' 'PAE_STATUS=known-unresolved-amd-default-npt' | tee snapshot-report/pae-status.txt
-            set +e
-            cargo test --locked --release -p vmm-core --test x86_cpu_snapshots \
-              live_kvm::pae_cached_pdptrs_survive_full_vmm_snapshot_restore \
-              -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee "$pae_log"
-            rc=${PIPESTATUS[0]}
-            set -e
-            printf 'PAE_TEST_EXIT=%s\n' "$rc" | tee -a snapshot-report/pae-status.txt
-            if [[ "$rc" -eq 0 ]]; then
-              grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$pae_log"
-              printf '%s\n' 'PAE_OBSERVATION=passed-on-amd-default-npt' | tee -a snapshot-report/pae-status.txt
-            else
-              printf '%s\n' 'PAE_OBSERVATION=failed-known-amd-default-npt' | tee -a snapshot-report/pae-status.txt
-              printf '%s\n' 'The strict PAE oracle failed on the known AMD default-NPT case; retaining this run as evidence.'
-            fi
-          else
-            printf '%s\n' 'PAE_STATUS=required-gate' | tee snapshot-report/pae-status.txt
-            run_exact vmm-core x86_cpu_snapshots live_kvm::pae_cached_pdptrs_survive_full_vmm_snapshot_restore pae-full-vmm
+          cargo test --locked --release -p vmm-core --test x86_cpu_snapshots \
+            live_kvm::pae_cached_pdptrs_survive_full_vmm_snapshot_restore \
+            -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-report/pae-full-vmm.log
+          grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/pae-full-vmm.log
+      - name: AMD default-NPT guest-authored PAE observation (known unresolved)
+        if: ${{ steps.host.outputs.amd_npt == 'true' }}
+        continue-on-error: true
+        env:
+          CARGO_TERM_COLOR: never
+          NPT_REPORT_DIR: ${{ github.workspace }}/snapshot-report/npt-guest-write
+        run: |
+          set -euo pipefail
+          mkdir -p "$NPT_REPORT_DIR"
+          printf '%s\n' 'PAE_STATUS=known-unresolved-amd-default-npt-guest-authored-observation' | tee snapshot-report/pae-status.txt
+          printf '%s\n' 'cargo test --locked --release -p vmm-core --test x86_cpu_snapshots live_kvm::amd_default_npt_pae_guest_write_observations -- --ignored --exact --test-threads=1 --nocapture' | tee snapshot-report/pae-full-vmm.command
+          set +e
+          cargo test --locked --release -p vmm-core --test x86_cpu_snapshots \
+            live_kvm::amd_default_npt_pae_guest_write_observations \
+            -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-report/pae-full-vmm.log
+          pipeline_status=("${PIPESTATUS[@]}")
+          cargo_rc=${pipeline_status[0]}
+          tee_rc=${pipeline_status[1]}
+          set -e
+          printf 'PAE_TEST_EXIT=%s\nPAE_TEE_EXIT=%s\n' "$cargo_rc" "$tee_rc" | tee -a snapshot-report/pae-status.txt
+          if [[ "$tee_rc" -ne 0 ]]; then
+            printf '%s\n' 'The PAE observation log could not be retained.' >&2
+            exit "$tee_rc"
           fi
+          if grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/pae-full-vmm.log; then
+            [[ "$cargo_rc" -eq 0 ]] || exit "$cargo_rc"
+            printf '%s\n' 'PAE_OBSERVATION=guest-authored-test-passed-on-amd-default-npt' | tee -a snapshot-report/pae-status.txt
+          elif [[ "$cargo_rc" -ne 0 ]] && grep -Fq 'running 1 test' snapshot-report/pae-full-vmm.log && \
+              grep -Fq 'test result: FAILED. 0 passed; 1 failed; 0 ignored;' snapshot-report/pae-full-vmm.log; then
+            printf '%s\n' 'PAE_OBSERVATION=guest-authored-strict-test-failed-on-amd-default-npt' | tee -a snapshot-report/pae-status.txt
+            printf '%s\n' 'The strict guest-authored PAE oracle failed on AMD default NPT; retaining the raw diagnostic outcome without qualification.'
+            exit "$cargo_rc"
+          else
+            printf '%s\n' 'PAE_OBSERVATION=unexpected-harness-or-infrastructure-failure' | tee -a snapshot-report/pae-status.txt
+            exit 1
+          fi
+      - name: Validate AMD default-NPT PAE observation classification
+        if: ${{ always() && steps.host.outputs.amd_npt == 'true' }}
+        run: |
+          set -euo pipefail
+          status=snapshot-report/pae-status.txt
+          log=snapshot-report/pae-full-vmm.log
+          test -s "$status"
+          test -s "$log"
+          grep -Fq 'PAE_TEE_EXIT=0' "$status"
+          phase_files=(memory.bin vm-state.bin state-blob.bin guest-bytes.bin summary.txt)
+          phase_dirs=(
+            original-endpoint
+            save-and-continue-stop
+            save-and-continue-stop-repeat
+            save-and-continue-endpoint
+            cold-unobserved-endpoint
+            cold-observed-stop
+            cold-observed-stop-repeat
+            cold-observed-endpoint
+          )
+          require_phase_evidence() {
+            local phase file
+            for phase in "${phase_dirs[@]}"; do
+              for file in "${phase_files[@]}"; do
+                test -s "snapshot-report/npt-guest-write/${phase}/${file}"
+              done
+            done
+          }
+          if grep -Fq 'PAE_OBSERVATION=guest-authored-test-passed-on-amd-default-npt' "$status"; then
+            grep -Fq 'PAE_TEST_EXIT=0' "$status"
+            grep -Fq 'running 1 test' "$log"
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
+            require_phase_evidence
+            printf '%s\n' 'AMD default-NPT PAE observation passed; raw evidence retained and reported as observational.'
+          elif grep -Fq 'PAE_OBSERVATION=guest-authored-strict-test-failed-on-amd-default-npt' "$status"; then
+            grep -Eq '^PAE_TEST_EXIT=[1-9][0-9]*$' "$status"
+            grep -Fq 'running 1 test' "$log"
+            grep -Fq 'test result: FAILED. 0 passed; 1 failed; 0 ignored;' "$log"
+            grep -Fq 'guest-authored original and save-and-continue futures differ' "$log"
+            require_phase_evidence
+            printf '%s\n' 'AMD default-NPT PAE strict oracle failed as an expected diagnostic outcome; this is not qualification.'
+          else
+            printf '%s\n' 'AMD default-NPT PAE observation has no valid pass/fail classification.' >&2
+            cat "$status" >&2
+            exit 1
+          fi
+      - name: XSAVE guest-written bytes required gate
+        if: always()
+        env:
+          CARGO_TERM_COLOR: never
+          XSAVE_CONTINUATION_REPORT_DIR: ${{ github.workspace }}/snapshot-report/xsave
+        run: |
+          set -euo pipefail
+          mkdir -p "$XSAVE_CONTINUATION_REPORT_DIR"
+          printf '%s\n' 'XSAVE_STATUS=required-gate' | tee snapshot-report/xsave-status.txt
+          printf '%s\n' 'cargo test --locked --release -p vmm-core --test x86_cpu_snapshots live_kvm::xsave_guest_bytes_survive_cold_continuation -- --ignored --exact --test-threads=1 --nocapture' | tee snapshot-report/xsave.command
+          cargo test --locked --release -p vmm-core --test x86_cpu_snapshots \
+            live_kvm::xsave_guest_bytes_survive_cold_continuation \
+            -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-report/xsave.log
+          grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/xsave.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: x86-snapshot-hardware-${{ github.run_id }}
+          name: x86-snapshot-hardware-${{ github.run_id }}-replica-${{ matrix.replica }}
           path: snapshot-report
           if-no-files-found: error
           retention-days: 30
