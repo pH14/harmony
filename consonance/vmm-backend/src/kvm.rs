@@ -433,26 +433,27 @@ pub(crate) fn apply_complete_ok(page: RunPage, pending: Pending) -> Result<()> {
     }
 }
 
-/// Consume one already-staged userspace completion without entering the guest.
+/// Finish one already-staged userspace completion without entering guest code.
 ///
 /// The caller supplies the one raw-entry operation so this pure state/RunPage
 /// seam can be exercised with a synthetic page. KVM's contract for this path is
-/// deliberately strict: one entry is issued with `immediate_exit` set, and it
-/// must return `EINTR` after consuming the completion. Any other result fails
-/// closed. The one-shot flag is cleared on every return path; a failed entry
-/// leaves the staged marker and pending state untouched so the caller can
-/// retry or abandon the backend conservatively.
-pub(crate) fn retire_staged_completion<F>(
+/// deliberately strict: one entry is issued with `immediate_exit` set. An
+/// `EINTR` consumes the completion, while a successful entry may return another
+/// PIO or MMIO access belonging to the same emulated instruction. The one-shot
+/// flag is cleared after every attempted entry; an entry or decode error leaves
+/// the staged marker and pending state conservative so the caller cannot
+/// restore across an unresolved transaction and must abandon a failed backend.
+pub(crate) fn finish_staged_completion<F>(
     page: RunPage,
     pending: &mut Pending,
     staged: &mut bool,
     mut enter: F,
-) -> Result<()>
+) -> Result<Option<Exit<X86>>>
 where
     F: FnMut() -> std::result::Result<(), std::io::Error>,
 {
     if !*staged {
-        return Ok(());
+        return Ok(None);
     }
 
     page.set_immediate_exit(true);
@@ -465,12 +466,49 @@ where
         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
             *staged = false;
             *pending = Pending::None;
-            Ok(())
+            Ok(None)
         }
         Err(error) => Err(BackendError::Io(error)),
-        Ok(()) => Err(BackendError::Internal(
-            "completion-only KVM_RUN returned without EINTR",
-        )),
+        Ok(()) => {
+            let Some((exit, next_pending)) = decode_exit(page)? else {
+                return Err(BackendError::Internal(
+                    "completion-only KVM_RUN returned a control exit",
+                ));
+            };
+
+            if !matches!(
+                &exit,
+                Exit::Arch(X86Exit::Io { .. }) | Exit::Common(CommonExit::Mmio { .. })
+            ) {
+                return Err(BackendError::Internal(
+                    "completion-only KVM_RUN returned an unexpected exit",
+                ));
+            }
+
+            *pending = next_pending;
+            *staged = decoded_exit_stages_completion(&exit, next_pending);
+            Ok(Some(exit))
+        }
+    }
+}
+
+/// Retire one already-staged completion for callers that cannot service a
+/// continuation. A successful completion-only entry that returns another PIO
+/// or MMIO access remains staged and is reported as [`BackendError::PendingCompletion`];
+/// it must never be silently discarded during restore.
+#[cfg(test)]
+pub(crate) fn retire_staged_completion<F>(
+    page: RunPage,
+    pending: &mut Pending,
+    staged: &mut bool,
+    enter: F,
+) -> Result<()>
+where
+    F: FnMut() -> std::result::Result<(), std::io::Error>,
+{
+    match finish_staged_completion(page, pending, staged, enter)? {
+        None => Ok(()),
+        Some(_) => Err(BackendError::PendingCompletion),
     }
 }
 
@@ -782,6 +820,16 @@ pub(crate) fn from_kvm_events(e: &kvm_vcpu_events) -> VcpuEvents {
         smi_latched_init: e.smi.latched_init,
         triple_fault_pending: e.triple_fault.pending,
     }
+}
+
+/// Build a complete event replacement for the exception-payload ABI enabled
+/// by this backend. VALID_PAYLOAD also makes `exception.pending` authoritative;
+/// without it KVM clears pending even when the snapshot explicitly sets it.
+/// Always set it, including for an empty record, to clear displaced exceptions.
+pub(crate) fn to_kvm_restore_events(e: &VcpuEvents) -> kvm_vcpu_events {
+    let mut events = to_kvm_events(e);
+    events.flags |= kvm_bindings::KVM_VCPUEVENT_VALID_PAYLOAD;
+    events
 }
 
 pub(crate) fn to_kvm_events(e: &VcpuEvents) -> kvm_vcpu_events {

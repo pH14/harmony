@@ -36,7 +36,7 @@ use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
 
 use crate::arch::x86::Injection;
 use crate::arch::x86::VcpuState;
-use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Policy};
+use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Exit, X86Policy};
 use crate::arch::x86::{canonicalize_regs, canonicalize_sregs, canonicalize_xsave};
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
@@ -137,6 +137,10 @@ pub struct KvmBackend {
     /// completion value, while this marker keeps restore-in-place from carrying
     /// the old run-page transaction across a snapshot restore.
     completion_staged: bool,
+    /// A continuation discovered while eagerly completing PIO/MSR. Its device
+    /// operation still belongs to the current instruction and must be serviced
+    /// before another ordinary entry or a stopped snapshot is exposed.
+    completion_exit: Option<Exit<X86>>,
     /// The single pending maskable IRQ vector ([`Backend::set_pending_irq`]),
     /// `None` if none. Held (not issued eagerly) so [`Self::enter_guest`] runs the
     /// userspace-irqchip handshake against the *current* post-exit
@@ -180,6 +184,15 @@ impl KvmBackend {
             });
         }
         let vm = kvm.create_vm().map_err(kvm_err)?;
+        // The legacy event ABI conflates pending and injected exceptions, then
+        // clears `pending` on SET. Exact stopped-state restoration needs the
+        // complete event ABI even when an exception carries no payload.
+        vm.enable_cap(&kvm_enable_cap {
+            cap: kvm_bindings::KVM_CAP_EXCEPTION_PAYLOAD,
+            args: [1, 0, 0, 0],
+            ..Default::default()
+        })
+        .map_err(kvm_err)?;
         // KVM_IRQCHIP_NONE: we deliberately do NOT call create_irq_chip / split
         // irqchip. The guest LAPIC is the userspace xAPIC (R1).
         let vcpu = vm.create_vcpu(0).map_err(kvm_err)?;
@@ -215,6 +228,7 @@ impl KvmBackend {
             msr_filter_installed: false,
             pending: Pending::None,
             completion_staged: false,
+            completion_exit: None,
             pending_irq: None,
             readiness_current: true,
             accepted_irq: VecDeque::new(),
@@ -259,23 +273,48 @@ impl KvmBackend {
         unsafe { RunPage::new(self.run, self.mmap_size) }
     }
 
-    /// Retire a completion already staged in `kvm_run` without entering guest
-    /// code. The helper deliberately bypasses [`Self::enter_guest`]: that loop
-    /// injects pending IRQs and accepts ordinary exits, both of which are wrong
-    /// for restore-in-place.
-    fn retire_pending_completion(&mut self) -> Result<()> {
+    /// Complete only the current emulated instruction's pending callback.
+    /// Never inject an interrupt or enter the normal guest-run loop here.
+    fn finish_staged_exit(&mut self) -> Result<Option<Exit<X86>>> {
         let page = self.run_page();
         let fd = self.vcpu.as_raw_fd();
-        retire_staged_completion(page, &mut self.pending, &mut self.completion_staged, || {
-            // SAFETY (raw ioctl seam): this is the one completion-only
-            // `KVM_RUN` on the owned vCPU; `page` is its mapped run page.
-            let rc = unsafe { raw_kvm_run(fd) };
-            if rc < 0 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        })
+        let next =
+            finish_staged_completion(page, &mut self.pending, &mut self.completion_staged, || {
+                // SAFETY (raw ioctl seam): this is a completion-only KVM_RUN on
+                // the owned vCPU; page is its live mapped run page.
+                let rc = unsafe { raw_kvm_run(fd) };
+                if rc < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            })?;
+        if let Some(exit) = &next {
+            self.counts.bump(exit.reason());
+        }
+        Ok(next)
+    }
+
+    fn finish_or_queue_exit(&mut self) -> Result<()> {
+        if self.completion_exit.is_some() {
+            return Err(BackendError::PendingCompletion);
+        }
+        self.completion_exit = self.finish_staged_exit()?;
+        Ok(())
+    }
+
+    fn retire_pending_completion(&mut self) -> Result<()> {
+        // A restore cannot silently discard a device access whose response
+        // the emulated instruction still needs. The VMM services these before
+        // surfacing a stop; restore callers otherwise discard this backend.
+        if self.completion_exit.is_some() || self.pending != Pending::None {
+            return Err(BackendError::PendingCompletion);
+        }
+        self.finish_or_queue_exit()?;
+        if self.completion_exit.is_some() {
+            return Err(BackendError::PendingCompletion);
+        }
+        Ok(())
     }
 
     /// Issue `KVM_RUN`, then map the raw exit via the pure [`decode_exit`]. Retries
@@ -326,11 +365,12 @@ impl KvmBackend {
                 Some((exit, pending)) => {
                     self.counts.bump(exit.reason());
                     self.pending = pending;
-                    // Read exits become staged when complete_* writes their
-                    // result. Write exits have no trait-level pending value,
-                    // but KVM retains their fast-PIO/MMIO callback until the
-                    // next entry, so mark them here for restore retirement.
                     self.completion_staged = decoded_exit_stages_completion(&exit, pending);
+                    // PIO writes need no host response. Complete their callback;
+                    // any further device access remains queued for finish_exit.
+                    if matches!(exit, Exit::Arch(X86Exit::Io { write: Some(_), .. })) {
+                        self.finish_or_queue_exit()?;
+                    }
                     return Ok(exit);
                 }
                 None => continue, // run-loop control exit; re-enter
@@ -840,7 +880,8 @@ impl Backend for KvmBackend {
         if !self.configured() {
             return Err(BackendError::NotConfigured);
         }
-        if self.pending != Pending::None {
+        if self.pending != Pending::None || self.completion_exit.is_some() || self.completion_staged
+        {
             return Err(BackendError::PendingCompletion);
         }
         self.enter_guest()
@@ -876,24 +917,46 @@ impl Backend for KvmBackend {
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
+        // A queued continuation must be surfaced before its response is supplied.
+        if self.completion_exit.is_some() {
+            return Err(BackendError::PendingCompletion);
+        }
+        let scalar_completion = matches!(self.pending, Pending::IoIn { .. } | Pending::Rdmsr);
         apply_complete_read(self.run_page(), self.pending, value)?;
         self.pending = Pending::None;
         self.completion_staged = true;
+        if scalar_completion {
+            // Commit the supplied value without executing the next instruction.
+            // A count-one string IN may continue through a memory device access;
+            // retain that access for the VMM rather than dropping it.
+            self.finish_or_queue_exit()?;
+        }
         Ok(())
     }
 
     fn complete_fault(&mut self) -> Result<()> {
+        // A queued continuation must be surfaced before its response is supplied.
+        if self.completion_exit.is_some() {
+            return Err(BackendError::PendingCompletion);
+        }
         apply_complete_fault(self.run_page(), self.pending)?;
         self.pending = Pending::None;
         self.completion_staged = true;
-        Ok(())
+        // Queue the MSR exception before exposing the stop; delivering it
+        // and executing its handler belong to the next guest entry.
+        self.finish_or_queue_exit()
     }
 
     fn complete_ok(&mut self) -> Result<()> {
+        // A queued continuation must be surfaced before its response is supplied.
+        if self.completion_exit.is_some() {
+            return Err(BackendError::PendingCompletion);
+        }
         apply_complete_ok(self.run_page(), self.pending)?;
         self.pending = Pending::None;
         self.completion_staged = true;
-        Ok(())
+        // Retire the acknowledged WRMSR without executing its successor.
+        self.finish_or_queue_exit()
     }
 
     fn complete_hypercall(&mut self, _ret: u64) -> Result<()> {
@@ -910,6 +973,16 @@ impl Backend for KvmBackend {
 
     fn retire_pending_completion(&mut self) -> Result<()> {
         KvmBackend::retire_pending_completion(self)
+    }
+
+    fn finish_exit(&mut self) -> Result<Option<Exit<X86>>> {
+        if let Some(exit) = self.completion_exit.take() {
+            return Ok(Some(exit));
+        }
+        if self.pending != Pending::None {
+            return Err(BackendError::PendingCompletion);
+        }
+        self.finish_staged_exit()
     }
 
     fn save(&self) -> Result<VcpuState> {
@@ -967,7 +1040,7 @@ impl Backend for KvmBackend {
             .set_debug_regs(&to_kvm_debugregs(&state.debugregs))
             .map_err(kvm_err)?;
         self.vcpu
-            .set_vcpu_events(&to_kvm_events(&state.events))
+            .set_vcpu_events(&to_kvm_restore_events(&state.events))
             .map_err(kvm_err)?;
         let mp = kvm_mp_state {
             mp_state: mp_to_kvm(state.mp_state),

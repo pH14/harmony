@@ -15,9 +15,9 @@ pub enum VmStateError {
     /// The header magic was not [`VM_STATE_MAGIC`](crate::VM_STATE_MAGIC).
     #[error("bad magic: {0:#010x}")]
     BadMagic(u32),
-    /// The header version is not [`VM_STATE_VERSION`](crate::VM_STATE_VERSION).
-    /// Decoding refuses a version it does not understand rather than silently
-    /// misreading a future layout.
+    /// The header version is not a record version supported by the selected
+    /// architecture. Decoding refuses a version it does not understand rather
+    /// than silently misreading a future layout.
     #[error("unsupported version: {0}")]
     UnsupportedVersion(u16),
     /// The container's **arch tag** names a record set this build does not carry
@@ -43,9 +43,10 @@ pub enum VmStateError {
     /// must be emitted in ascending tag order).
     #[error("section tag out of order: {0}")]
     SectionOrder(u16),
-    /// A required v1 section tag was absent. Every v1 tag must be present
-    /// exactly once; a decoder that tolerated a missing section would silently
-    /// restore that machine state as the field's `Default` (zero).
+    /// A required section tag was absent. Every section required by the header's
+    /// format must be present exactly once; a decoder that tolerated a missing
+    /// section would silently restore that machine state as the field's
+    /// `Default` (zero).
     #[error("missing required section: {0}")]
     MissingSection(u16),
     /// A field held a value outside its valid range — e.g. a `MpState` byte that

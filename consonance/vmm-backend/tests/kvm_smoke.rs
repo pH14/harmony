@@ -11,12 +11,13 @@
 //! ssh <qualified-host> 'taskset -c 1 cargo test -p vmm-backend --test kvm_smoke -- --ignored --test-threads=1'
 //! ```
 //!
-//! **Fail-fast, never skip:** on a host without `/dev/kvm`/VMX/Intel these panic
+//! **Fail-fast, never skip:** on a host without a usable `/dev/kvm` these panic
 //! with what is missing and where to run them, rather than silently passing.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use vmm_backend::{
-    Backend, CommonExit, CpuidModel, Exit, Gpa, KvmBackend, MsrFilter, MsrRange, X86Exit, X86Policy,
+    Backend, CommonExit, CpuidModel, Exit, ExitCounts, Gpa, KvmBackend, MsrFilter, MsrRange,
+    VcpuState, X86Exit, X86Policy,
 };
 
 /// One identity-mapped guest RAM region, page-aligned (the `map_memory` host
@@ -53,7 +54,7 @@ impl Drop for GuestMem {
 fn new_backend_or_explain() -> KvmBackend {
     if !std::path::Path::new("/dev/kvm").exists() {
         panic!(
-            "/dev/kvm missing — these live tests need bare-metal Intel x86-64 with VMX. \
+            "/dev/kvm missing — these live tests need Linux x86-64 with KVM. \
              Run on the determinism box: ssh <qualified-host> 'taskset -c 1 cargo test -p vmm-backend \
              --test kvm_smoke -- --ignored --test-threads=1'"
         );
@@ -61,7 +62,7 @@ fn new_backend_or_explain() -> KvmBackend {
     KvmBackend::new().unwrap_or_else(|e| {
         panic!(
             "KvmBackend::new failed ({e}); these need /dev/kvm + VMX on the determinism box \
-             (taskset -c 1). Not runnable on macOS or under nested virt."
+             (taskset -c 1), or a GitHub x86 runner with KVM access. Not runnable on macOS."
         )
     })
 }
@@ -95,38 +96,822 @@ fn enter_real_mode_at(backend: &mut KvmBackend, entry: u64) {
     backend.restore(&st).expect("restore setup state");
 }
 
+/// Map one guest image, install the frozen policy, and place the vCPU at its
+/// real-mode entry point. The backing allocation remains owned by the caller
+/// until the backend is dropped, preserving the raw mapping's lifetime.
+fn setup_real_mode(backend: &mut KvmBackend, mem: &mut GuestMem, code: &[u8]) {
+    // SAFETY: mem is page-aligned, remains allocated until after backend is
+    // dropped, and no host slice aliases it while the guest runs.
+    unsafe { backend.map_memory(Gpa(0), mem.as_mut_slice()) }.expect("map_memory");
+    configure(backend);
+    backend.write_guest(Gpa(0x1000), code).expect("load stub");
+    enter_real_mode_at(backend, 0x1000);
+}
+
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
-fn bringup_smoke_out_then_hlt() {
-    // mov dx, 0x3f8 ; mov al, 0x42 ; out dx, al ; hlt
-    let code: &[u8] = &[0xBA, 0xF8, 0x03, 0xB0, 0x42, 0xEE, 0xF4];
+fn serviced_pio_is_exactly_snapshottable_without_guest_execution() {
+    // Each mode reaches the same I/O boundary. INC BX immediately after I/O
+    // witnesses any guest execution during completion retirement or capture.
+    for read in [false, true] {
+        let code = [
+            0xBA,
+            0xF8,
+            0x03,
+            0xB0,
+            0x42,
+            if read { 0xEC } else { 0xEE },
+            0x43,
+            0xF4,
+        ];
+        let mut snapshot = None;
+        let mut endpoints = Vec::new();
+        for mode in 0..3 {
+            // RAM outlives the backend mapping, including backend destruction.
+            let mut mem = GuestMem::new(0x10000);
+            let mut backend = new_backend_or_explain();
+            setup_real_mode(&mut backend, &mut mem, &code);
+            let mut initial = backend.save().expect("initialize instruction witness");
+            initial.regs.rbx = 0;
+            backend.restore(&initial).expect("reset BX witness");
+            if mode == 2 {
+                backend
+                    .restore(snapshot.as_ref().expect("retired snapshot"))
+                    .expect("cold restore");
+            } else {
+                match backend.run().expect("run to I/O") {
+                    Exit::Arch(X86Exit::Io {
+                        port: 0x3F8,
+                        size: 1,
+                        write,
+                    }) => {
+                        assert_eq!(write, if read { None } else { Some(0x42) });
+                    }
+                    other => panic!("expected PIO, got {other:?}"),
+                }
+                if read {
+                    backend.complete_read(0x77).expect("stage input");
+                }
+                if mode == 1 {
+                    let before = backend.save().expect("pre-retirement state");
+                    assert_eq!(before.regs.rbx, 0, "eager completion executes no INC");
+                    assert_eq!(
+                        before.regs.rip, 0x1006,
+                        "serviced PIO has already completed"
+                    );
+                    assert_eq!(before.regs.rax & 0xff, if read { 0x77 } else { 0x42 });
+                    let counts = backend.exit_counts();
+                    backend.retire_pending_completion().expect("retire PIO");
+                    let sealed = backend.save().expect("capture completed PIO");
+                    assert_eq!(sealed.regs.rip, 0x1006, "stopped before INC BX");
+                    assert_eq!(
+                        sealed.regs.rbx, before.regs.rbx,
+                        "retirement executes no INC"
+                    );
+                    assert_eq!(sealed.regs.rax & 0xff, if read { 0x77 } else { 0x42 });
+                    assert_eq!(
+                        backend.exit_counts(),
+                        counts,
+                        "retirement produces no guest exit"
+                    );
+                    backend
+                        .retire_pending_completion()
+                        .expect("repeat retirement is inert");
+                    assert_eq!(
+                        backend.save().unwrap(),
+                        sealed,
+                        "capture/retirement is a fixpoint"
+                    );
+                    assert_eq!(
+                        before, sealed,
+                        "explicit retirement cannot change a stopped boundary"
+                    );
+                    snapshot = Some(before);
+                }
+            }
+            assert_eq!(
+                backend.run().expect("continue to HLT"),
+                Exit::Common(CommonExit::Idle)
+            );
+            let endpoint = backend.save().expect("endpoint");
+            assert_eq!(
+                endpoint.regs.rbx, 1,
+                "INC executes exactly once on continuation"
+            );
+            endpoints.push(endpoint);
+        }
+        assert_eq!(
+            endpoints[0], endpoints[1],
+            "uninterrupted equals retire-save-continue"
+        );
+        assert_eq!(
+            endpoints[0], endpoints[2],
+            "uninterrupted equals retire-save-close-restore-continue"
+        );
+    }
+}
 
-    let mut backend = new_backend_or_explain();
-    let mut mem = GuestMem::new(0x10000);
-    // SAFETY: `mem` outlives `backend` (dropped after it), is page-aligned, and
-    // is not aliased while the guest runs.
-    unsafe { backend.map_memory(Gpa(0), mem.as_mut_slice()) }.expect("map_memory");
-    configure(&mut backend);
-    backend.write_guest(Gpa(0x1000), code).expect("load stub");
-    enter_real_mode_at(&mut backend, 0x1000);
+const MMIO_GPA: u64 = 0xFEE0_0000;
+const MMIO_SOURCE_GPA: u64 = 0x3000;
+const SCALAR_READ_VALUE: u32 = 0xA1B2_C3D4;
+const SCALAR_STORE_VALUE: u32 = 0xD4C3_B2A1;
+const ADD_READ_VALUE: u32 = 0x1020_3040;
+const ADD_IMMEDIATE: u8 = 5;
+const MOVDQU_READ_WORDS: [u64; 2] = [0x8877_6655_4433_2211, 0x1100_FFEE_DDCC_BBAA];
+const MOVDQU_STORE_WORDS: [u64; 2] = [0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210];
 
-    match backend.run().expect("run to OUT") {
-        Exit::Arch(X86Exit::Io {
-            port: 0x3F8,
-            size: 1,
-            write: Some(v),
-        }) => assert_eq!(v, 0x42),
-        other => panic!("expected OUT to 0x3f8, got {other:?}"),
+#[derive(Clone, Copy, Debug)]
+enum MmioOperation {
+    ScalarLoad,
+    ScalarStore,
+    AddDword,
+    MovdquLoad,
+    MovdquStore,
+}
+
+impl MmioOperation {
+    fn name(self) -> &'static str {
+        match self {
+            Self::ScalarLoad => "scalar-load",
+            Self::ScalarStore => "scalar-store",
+            Self::AddDword => "add-dword",
+            Self::MovdquLoad => "movdqu-load",
+            Self::MovdquStore => "movdqu-store",
+        }
+    }
+}
+
+/// Build a flat-real-mode instruction stream using 32-bit absolute addressing.
+/// The returned offset is the RIP immediately after the MMIO instruction; the
+/// two-byte `INC BX; HLT` witness follows it.
+fn mmio_guest_code(operation: MmioOperation) -> (Vec<u8>, u64) {
+    let mmio_addr = (MMIO_GPA as u32).to_le_bytes();
+    let source_addr = (MMIO_SOURCE_GPA as u32).to_le_bytes();
+    let mut code = Vec::new();
+    match operation {
+        // 67 66 A1 moffs32: MOV EAX, [0xFEE00000].
+        MmioOperation::ScalarLoad => {
+            code.extend_from_slice(&[0x67, 0x66, 0xA1]);
+            code.extend_from_slice(&mmio_addr);
+        }
+        // MOV EAX, imm32; 67 66 A3 moffs32: MOV [0xFEE00000], EAX.
+        MmioOperation::ScalarStore => {
+            code.extend_from_slice(&[0x66, 0xB8]);
+            code.extend_from_slice(&SCALAR_STORE_VALUE.to_le_bytes());
+            code.extend_from_slice(&[0x67, 0x66, 0xA3]);
+            code.extend_from_slice(&mmio_addr);
+        }
+        // 67 66 83 /0: ADD dword ptr [0xFEE00000], imm8. KVM must expose the
+        // instruction as a load followed by a store of the updated dword.
+        MmioOperation::AddDword => {
+            code.extend_from_slice(&[0x67, 0x66, 0x83, 0x05]);
+            code.extend_from_slice(&mmio_addr);
+            code.push(ADD_IMMEDIATE);
+        }
+        // 67 F3 0F 6F /r: MOVDQU XMM0, [0xFEE00000]. KVM's eight-byte MMIO
+        // payload is expected to expose this as two fragments.
+        MmioOperation::MovdquLoad => {
+            code.extend_from_slice(&[0x67, 0xF3, 0x0F, 0x6F, 0x05]);
+            code.extend_from_slice(&mmio_addr);
+        }
+        // Load XMM0 from RAM first, then 67 F3 0F 7F /r: MOVDQU
+        // [0xFEE00000], XMM0. The source at 0x3000 is also a RAM endpoint
+        // witness for cold restore.
+        MmioOperation::MovdquStore => {
+            code.extend_from_slice(&[0x67, 0xF3, 0x0F, 0x6F, 0x05]);
+            code.extend_from_slice(&source_addr);
+            code.extend_from_slice(&[0x67, 0xF3, 0x0F, 0x7F, 0x05]);
+            code.extend_from_slice(&mmio_addr);
+        }
+    }
+    let mmio_end = code.len() as u64;
+    code.extend_from_slice(&[0x43, 0xF4]); // INC BX; HLT
+    (code, mmio_end)
+}
+
+fn expected_mmio_accesses(operation: MmioOperation) -> Vec<CommonExit> {
+    let read = |gpa, size| CommonExit::Mmio {
+        gpa: Gpa(gpa),
+        size,
+        write: None,
+    };
+    let write = |gpa, size, value| CommonExit::Mmio {
+        gpa: Gpa(gpa),
+        size,
+        write: Some(value),
+    };
+    match operation {
+        MmioOperation::ScalarLoad => vec![read(MMIO_GPA, 4)],
+        MmioOperation::ScalarStore => vec![write(MMIO_GPA, 4, SCALAR_STORE_VALUE as u64)],
+        MmioOperation::AddDword => vec![
+            read(MMIO_GPA, 4),
+            write(
+                MMIO_GPA,
+                4,
+                u64::from(ADD_READ_VALUE.wrapping_add(u32::from(ADD_IMMEDIATE))),
+            ),
+        ],
+        MmioOperation::MovdquLoad => vec![read(MMIO_GPA, 8), read(MMIO_GPA + 8, 8)],
+        MmioOperation::MovdquStore => vec![
+            write(MMIO_GPA, 8, MOVDQU_STORE_WORDS[0]),
+            write(MMIO_GPA + 8, 8, MOVDQU_STORE_WORDS[1]),
+        ],
+    }
+}
+
+fn setup_mmio_guest(backend: &mut KvmBackend, mem: &mut GuestMem, operation: MmioOperation) -> u64 {
+    let (code, mmio_end) = mmio_guest_code(operation);
+    setup_real_mode(backend, mem, &code);
+
+    // Keep an ordinary RAM source/witness mapped beside the code. The MOVDQU
+    // store reads this source, and every mode compares the complete RAM image.
+    let source: Vec<u8> = MOVDQU_STORE_WORDS
+        .into_iter()
+        .flat_map(u64::to_le_bytes)
+        .collect();
+    backend
+        .write_guest(Gpa(MMIO_SOURCE_GPA), &source)
+        .expect("load MMIO RAM source");
+
+    // CR4.OSFXSR is required for MOVDQU in this real-mode guest. It is harmless
+    // for the scalar and integer operations and keeps all five cases on the
+    // same setup path.
+    let mut initial = backend.save().expect("save MMIO setup state");
+    initial.regs.rbx = 0;
+    // The address-size prefix selects a 32-bit offset but does not enlarge
+    // real mode's hidden segment limit. Model a flat unreal-mode data segment
+    // so the access reaches the MMIO page rather than faulting on DS.limit.
+    initial.sregs.ds.base = 0;
+    initial.sregs.ds.limit = u32::MAX;
+    // A 4 GiB effective limit requires page granularity in the hidden descriptor.
+    initial.sregs.ds.g = 1;
+    initial.sregs.cr4 |= 1 << 9; // OSFXSR
+    backend.restore(&initial).expect("restore MMIO setup state");
+    mmio_end
+}
+
+fn service_mmio(backend: &mut KvmBackend, operation: MmioOperation) -> Vec<CommonExit> {
+    let expected = expected_mmio_accesses(operation);
+    let mut observed = Vec::with_capacity(expected.len());
+    let mut next =
+        Some(backend.run().unwrap_or_else(|e| {
+            panic!("{}: run to first MMIO exit failed: {e}", operation.name())
+        }));
+
+    while let Some(exit) = next {
+        let access = match exit {
+            Exit::Common(access @ CommonExit::Mmio { .. }) => access,
+            other => panic!(
+                "{}: expected MMIO continuation, got {other:?}",
+                operation.name()
+            ),
+        };
+        let index = observed.len();
+        assert_eq!(access, expected[index], "{}: MMIO access", operation.name());
+        observed.push(access);
+
+        // A surfaced MMIO callback is still a transaction: `run` must not
+        // resume the guest before the load is completed or the write is
+        // retired. This also covers writes returned as queued continuations by
+        // `finish_exit`, not only the first exit from KVM.
+        let counts_before = backend.exit_counts();
+        assert!(matches!(
+            backend.run(),
+            Err(vmm_backend::BackendError::PendingCompletion)
+        ));
+        assert_eq!(
+            backend.exit_counts(),
+            counts_before,
+            "a rejected resume cannot add an MMIO exit"
+        );
+
+        if let CommonExit::Mmio { write: None, .. } = access {
+            let value = match operation {
+                MmioOperation::ScalarLoad => u64::from(SCALAR_READ_VALUE),
+                MmioOperation::AddDword => u64::from(ADD_READ_VALUE),
+                MmioOperation::MovdquLoad => MOVDQU_READ_WORDS[index],
+                MmioOperation::ScalarStore | MmioOperation::MovdquStore => {
+                    panic!("{}: unexpected read fragment", operation.name())
+                }
+            };
+            backend
+                .complete_read(value)
+                .unwrap_or_else(|e| panic!("{}: complete MMIO read failed: {e}", operation.name()));
+        }
+
+        // This is the only operation between device accesses. It retires the
+        // current callback with immediate-exit and may return the next fragment
+        // of this same guest instruction. It never runs the successor.
+        next = backend
+            .finish_exit()
+            .unwrap_or_else(|e| panic!("{}: finish MMIO exit failed: {e}", operation.name()));
+    }
+
+    assert_eq!(
+        observed,
+        expected,
+        "{}: each MMIO access exactly once",
+        operation.name()
+    );
+    observed
+}
+
+fn assert_mmio_completion_boundary(
+    backend: &mut KvmBackend,
+    operation: MmioOperation,
+    mmio_end: u64,
+    access_count: usize,
+) -> VcpuState {
+    let state = backend
+        .save()
+        .unwrap_or_else(|e| panic!("{}: save completion boundary failed: {e}", operation.name()));
+    assert_eq!(
+        state.regs.rip,
+        0x1000 + mmio_end,
+        "{}: RIP",
+        operation.name()
+    );
+    assert_eq!(
+        state.regs.rbx,
+        0,
+        "{}: INC BX ran too early",
+        operation.name()
+    );
+    assert_eq!(
+        backend.exit_counts().mmio,
+        access_count as u64,
+        "{}: MMIO exit count",
+        operation.name()
+    );
+    match operation {
+        MmioOperation::ScalarLoad => {
+            assert_eq!(state.regs.rax, u64::from(SCALAR_READ_VALUE));
+        }
+        MmioOperation::ScalarStore => {
+            assert_eq!(state.regs.rax, u64::from(SCALAR_STORE_VALUE));
+        }
+        MmioOperation::AddDword | MmioOperation::MovdquStore => {}
+        MmioOperation::MovdquLoad => {
+            let mut expected = [0u8; 16];
+            expected[..8].copy_from_slice(&MOVDQU_READ_WORDS[0].to_le_bytes());
+            expected[8..].copy_from_slice(&MOVDQU_READ_WORDS[1].to_le_bytes());
+            assert!(
+                state.xsave.len() >= 176,
+                "{}: XSAVE too short",
+                operation.name()
+            );
+            assert_eq!(
+                &state.xsave[160..176],
+                expected,
+                "{}: XMM0",
+                operation.name()
+            );
+        }
+    }
+    state
+}
+
+fn endpoint(
+    backend: &KvmBackend,
+    mem: &mut GuestMem,
+    operation: MmioOperation,
+) -> (VcpuState, Vec<u8>) {
+    let state = backend
+        .save()
+        .unwrap_or_else(|e| panic!("{}: save endpoint failed: {e}", operation.name()));
+    assert_eq!(
+        state.regs.rbx,
+        1,
+        "{}: INC BX did not run once",
+        operation.name()
+    );
+    (state, mem.as_mut_slice().to_vec())
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
+fn serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu() {
+    for operation in [
+        MmioOperation::ScalarLoad,
+        MmioOperation::ScalarStore,
+        MmioOperation::AddDword,
+        MmioOperation::MovdquLoad,
+        MmioOperation::MovdquStore,
+    ] {
+        let expected = expected_mmio_accesses(operation);
+        let mut snapshot = None;
+        let mut snapshot_ram: Option<Vec<u8>> = None;
+        let mut endpoints = Vec::new();
+
+        for mode in 0..3 {
+            let mut mem = GuestMem::new(0x10000);
+            let mut backend = new_backend_or_explain();
+            let mmio_end = setup_mmio_guest(&mut backend, &mut mem, operation);
+
+            if mode == 2 {
+                let state = snapshot.as_ref().expect("MMIO boundary snapshot");
+                let ram = snapshot_ram.as_ref().expect("MMIO boundary RAM snapshot");
+                backend
+                    .write_guest(Gpa(0), ram)
+                    .expect("restore MMIO RAM snapshot");
+                backend.restore(state).expect("cold restore MMIO boundary");
+                assert_eq!(
+                    backend.save().expect("save cold MMIO boundary"),
+                    *state,
+                    "{}: cold restore changes the completion boundary",
+                    operation.name()
+                );
+            } else {
+                let observed = service_mmio(&mut backend, operation);
+                assert_eq!(
+                    observed,
+                    expected,
+                    "{}: observed sequence",
+                    operation.name()
+                );
+                let boundary = assert_mmio_completion_boundary(
+                    &mut backend,
+                    operation,
+                    mmio_end,
+                    expected.len(),
+                );
+                let counts = backend.exit_counts();
+
+                // Repeated finish/capture at the stopped boundary is a fixpoint:
+                // it cannot enter the guest or add an exit count.
+                assert_eq!(backend.finish_exit().expect("repeat MMIO finish"), None);
+                assert_eq!(backend.exit_counts(), counts);
+                assert_eq!(backend.save().expect("repeat MMIO capture"), boundary);
+                assert_eq!(backend.exit_counts(), counts);
+
+                if mode == 1 {
+                    snapshot = Some(boundary);
+                    snapshot_ram = Some(mem.as_mut_slice().to_vec());
+                }
+            }
+
+            // The only ordinary run is the successor instruction after the full
+            // MMIO instruction has been completed and captured.
+            assert_eq!(
+                backend.run().expect("continue MMIO guest to HLT"),
+                Exit::Common(CommonExit::Idle),
+                "{}: successor run",
+                operation.name()
+            );
+            endpoints.push(endpoint(&backend, &mut mem, operation));
+        }
+
+        assert_eq!(
+            endpoints[0],
+            endpoints[1],
+            "{}: uninterrupted vs save/continue",
+            operation.name()
+        );
+        assert_eq!(
+            endpoints[0],
+            endpoints[2],
+            "{}: uninterrupted vs cold restore",
+            operation.name()
+        );
+    }
+}
+
+const MSR_INDEX: u32 = 0x10;
+const MSR_ENTRY: u64 = 0x1000;
+const GP_VECTOR: u64 = 13;
+const GP_HANDLER: u64 = 0x2000;
+const READ_EAX: u32 = 0x5566_7788;
+const READ_EDX: u32 = 0x1122_3344;
+const READ_VALUE: u64 = (READ_EDX as u64) << 32 | READ_EAX as u64;
+const WRITE_EAX: u32 = 0xDDEE_FF00;
+const WRITE_EDX: u32 = 0xAABB_CCDD;
+const WRITE_VALUE: u64 = (WRITE_EDX as u64) << 32 | WRITE_EAX as u64;
+
+#[derive(Clone, Copy, Debug)]
+enum MsrOperation {
+    Read,
+    Write,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MsrResponse {
+    Success,
+    Fault,
+}
+
+fn msr_guest_code(operation: MsrOperation) -> Vec<u8> {
+    let mut code = Vec::with_capacity(match operation {
+        MsrOperation::Read => 10,
+        MsrOperation::Write => 22,
+    });
+    // Real mode defaults to 16-bit operands, so each 32-bit immediate move
+    // needs the 0x66 operand-size override before its opcode.
+    // `mov ecx, MSR_INDEX` makes the userspace filter decision observable.
+    code.push(0x66);
+    code.push(0xB9);
+    code.extend_from_slice(&MSR_INDEX.to_le_bytes());
+    match operation {
+        MsrOperation::Read => code.extend_from_slice(&[0x0F, 0x32]), // RDMSR
+        MsrOperation::Write => {
+            // `mov eax, WRITE_EAX; mov edx, WRITE_EDX; wrmsr`.
+            code.push(0x66);
+            code.push(0xB8);
+            code.extend_from_slice(&WRITE_EAX.to_le_bytes());
+            code.push(0x66);
+            code.push(0xBA);
+            code.extend_from_slice(&WRITE_EDX.to_le_bytes());
+            code.extend_from_slice(&[0x0F, 0x30]); // WRMSR
+        }
+    }
+    // The witness immediately after the MSR instruction must not run during
+    // completion retirement. A fault instead vectors to the handler below.
+    code.extend_from_slice(&[0x43, 0xF4]); // INC BX; HLT
+    code
+}
+
+fn msr_rip(operation: MsrOperation) -> u64 {
+    MSR_ENTRY
+        + match operation {
+            MsrOperation::Read => 6,
+            MsrOperation::Write => 18,
+        }
+}
+
+fn setup_msr_guest(backend: &mut KvmBackend, mem: &mut GuestMem, operation: MsrOperation) {
+    let code = msr_guest_code(operation);
+    setup_real_mode(backend, mem, &code);
+
+    // #GP vector 13 points to a handler that increments SI then halts. The
+    // fault arm must reach this handler only after the completion boundary is
+    // captured and resumed.
+    backend
+        .write_guest(Gpa(4 * GP_VECTOR), &[0x00, 0x20, 0x00, 0x00])
+        .expect("load #GP IVT");
+    backend
+        .write_guest(Gpa(GP_HANDLER), &[0x46, 0xF4])
+        .expect("load #GP handler");
+
+    let mut initial = backend.save().expect("initialize instruction witnesses");
+    initial.regs.rbx = 0;
+    initial.regs.rsi = 0;
+    backend.restore(&initial).expect("reset BX/SI witnesses");
+}
+
+fn run_to_msr(backend: &mut KvmBackend, operation: MsrOperation) -> (VcpuState, ExitCounts) {
+    match (operation, backend.run().expect("run to MSR")) {
+        (MsrOperation::Read, Exit::Arch(X86Exit::Rdmsr { index })) => {
+            assert_eq!(
+                index, MSR_INDEX,
+                "RDMSR index must reach the userspace filter"
+            );
+        }
+        (MsrOperation::Write, Exit::Arch(X86Exit::Wrmsr { index, value })) => {
+            assert_eq!(
+                index, MSR_INDEX,
+                "WRMSR index must reach the userspace filter"
+            );
+            assert_eq!(value, WRITE_VALUE, "WRMSR must expose split EDX:EAX value");
+        }
+        (operation, other) => panic!("expected {operation:?} exit, got {other:?}"),
+    }
+
+    let before = backend.save().expect("save MSR boundary before completion");
+    assert_eq!(before.regs.rip, msr_rip(operation));
+    assert_eq!(before.regs.rcx, MSR_INDEX as u64);
+    assert_eq!(before.regs.rbx, 0, "MSR exit must precede INC BX");
+    assert_eq!(before.regs.rsi, 0, "MSR exit must precede #GP handler");
+    let counts = backend.exit_counts();
+    assert_eq!(counts.total(), 1, "the MSR exit is the first guest exit");
+    match operation {
+        MsrOperation::Read => assert_eq!(counts.rdmsr, 1),
+        MsrOperation::Write => assert_eq!(counts.wrmsr, 1),
+    }
+    (before, counts)
+}
+
+fn complete_msr(backend: &mut KvmBackend, operation: MsrOperation, response: MsrResponse) {
+    match (operation, response) {
+        (MsrOperation::Read, MsrResponse::Success) => backend
+            .complete_read(READ_VALUE)
+            .expect("complete RDMSR with host value"),
+        (MsrOperation::Write, MsrResponse::Success) => {
+            backend.complete_ok().expect("complete WRMSR successfully")
+        }
+        (_, MsrResponse::Fault) => backend.complete_fault().expect("complete MSR with #GP"),
+    }
+}
+
+fn assert_msr_completion_boundary(
+    backend: &KvmBackend,
+    operation: MsrOperation,
+    response: MsrResponse,
+    counts: ExitCounts,
+) -> VcpuState {
+    let state = backend.save().expect("save completed MSR boundary");
+    match response {
+        MsrResponse::Success => {
+            assert_eq!(state.regs.rip, msr_rip(operation) + 2);
+            assert_eq!(
+                state.regs.rbx, 0,
+                "success completion must stop before INC BX"
+            );
+            assert_eq!(
+                state.regs.rsi, 0,
+                "success completion must skip #GP handler"
+            );
+            match operation {
+                MsrOperation::Read => {
+                    assert_eq!(state.regs.rax, READ_EAX as u64);
+                    assert_eq!(state.regs.rdx, READ_EDX as u64);
+                }
+                MsrOperation::Write => {
+                    assert_eq!(state.regs.rax, WRITE_EAX as u64);
+                    assert_eq!(state.regs.rdx, WRITE_EDX as u64);
+                }
+            }
+        }
+        MsrResponse::Fault => {
+            assert_eq!(state.regs.rip, msr_rip(operation));
+            assert_eq!(
+                state.regs.rbx, 0,
+                "fault completion must stop before INC BX"
+            );
+            assert_eq!(
+                state.regs.rsi, 0,
+                "fault completion must stop before #GP handler"
+            );
+            assert_eq!(state.events.exception_pending, 1, "#GP must remain pending");
+            assert_eq!(state.events.exception_nr, GP_VECTOR as u8);
+        }
     }
     assert_eq!(
-        backend.run().expect("run to HLT"),
+        backend.exit_counts(),
+        counts,
+        "completion/capture must not add a guest exit"
+    );
+    state
+}
+
+fn capture_msr_boundary(
+    backend: &mut KvmBackend,
+    operation: MsrOperation,
+    response: MsrResponse,
+    counts: ExitCounts,
+) -> VcpuState {
+    let captured = assert_msr_completion_boundary(backend, operation, response, counts);
+    backend
+        .retire_pending_completion()
+        .expect("retire completed MSR boundary");
+    assert_eq!(
+        backend.exit_counts(),
+        counts,
+        "retirement adds no guest exit"
+    );
+    assert_eq!(
+        backend.save().expect("save after MSR retirement"),
+        captured,
+        "MSR retirement must preserve the captured boundary"
+    );
+    backend
+        .retire_pending_completion()
+        .expect("repeat MSR retirement is inert");
+    assert_eq!(
+        backend.exit_counts(),
+        counts,
+        "repeat retirement adds no exit"
+    );
+    assert_eq!(
+        backend.save().expect("save after repeated MSR retirement"),
+        captured,
+        "repeated retirement must be a fixpoint"
+    );
+    captured
+}
+
+fn continue_msr_guest(
+    backend: &mut KvmBackend,
+    response: MsrResponse,
+    counts_before_msr: ExitCounts,
+) -> VcpuState {
+    assert_eq!(
+        backend.run().expect("continue MSR guest to HLT"),
         Exit::Common(CommonExit::Idle)
     );
-
+    let endpoint = backend.save().expect("save MSR endpoint");
+    match response {
+        MsrResponse::Success => {
+            assert_eq!(endpoint.regs.rbx, 1, "successful MSR resumes at INC BX");
+            assert_eq!(endpoint.regs.rsi, 0, "successful MSR skips #GP handler");
+        }
+        MsrResponse::Fault => {
+            assert_eq!(endpoint.regs.rbx, 0, "faulting MSR must skip INC BX");
+            assert_eq!(endpoint.regs.rsi, 1, "faulting MSR must reach #GP handler");
+        }
+    }
     let counts = backend.exit_counts();
-    assert_eq!(counts.io, 1, "exactly one IO exit");
-    assert_eq!(counts.idle, 1, "exactly one HLT exit");
-    assert_eq!(counts.total(), 2);
+    assert_eq!(counts.total(), counts_before_msr.total() + 1);
+    assert_eq!(
+        counts.idle, 1,
+        "only HLT is observable after the MSR completion"
+    );
+    endpoint
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
+fn serviced_exception_payload_round_trips_and_empty_restore_clears_it() {
+    // Exercise the real GET/SET event ABI independently of the MSR #GP path,
+    // which has no payload. Neither loading nor clearing a pending page fault
+    // may enter guest code or apply its payload to CR2 ahead of delivery.
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0x43, 0xF4]); // INC BX; HLT
+    let initial = backend.save().expect("initial state");
+    let counts = backend.exit_counts();
+    let mut pending = initial.clone();
+    pending.events.exception_pending = 1;
+    pending.events.exception_nr = 14;
+    pending.events.exception_has_error_code = 1;
+    pending.events.exception_error_code = 4;
+    pending.events.exception_has_payload = 1;
+    pending.events.exception_payload = 0x1234_5000;
+    backend
+        .restore(&pending)
+        .expect("install pending page fault");
+    assert_eq!(backend.save().expect("capture pending payload"), pending);
+    assert_eq!(backend.exit_counts(), counts);
+
+    // A fresh backend must preserve the same pending payload, while restoring
+    // an empty record over it must replace (and clear) the displaced exception.
+    let mut cold_mem = GuestMem::new(0x10000);
+    let mut cold = new_backend_or_explain();
+    setup_real_mode(&mut cold, &mut cold_mem, &[0x43, 0xF4]);
+    let cold_counts = cold.exit_counts();
+    cold.restore(&pending)
+        .expect("cold restore pending payload");
+    assert_eq!(cold.save().expect("capture cold payload"), pending);
+    cold.restore(&initial).expect("clear pending payload");
+    assert_eq!(cold.save().expect("capture cleared exception"), initial);
+    assert_eq!(cold.exit_counts(), cold_counts);
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
+fn serviced_msr_is_exactly_snapshottable_without_guest_execution() {
+    // Each operation and response reaches one userspace MSR boundary. The
+    // three continuation modes are uninterrupted, save-and-continue, and cold
+    // restore; the same matrix covers RDMSR/WRMSR success and #GP responses.
+    for operation in [MsrOperation::Read, MsrOperation::Write] {
+        for response in [MsrResponse::Success, MsrResponse::Fault] {
+            let mut snapshot = None;
+            let mut endpoints = Vec::new();
+            for mode in 0..3 {
+                // RAM outlives the backend mapping, including backend
+                // destruction between save-and-continue and cold restore.
+                let mut mem = GuestMem::new(0x10000);
+                let mut backend = new_backend_or_explain();
+                setup_msr_guest(&mut backend, &mut mem, operation);
+                if mode == 2 {
+                    let captured = snapshot.as_ref().expect("captured MSR snapshot");
+                    backend
+                        .restore(captured)
+                        .expect("cold restore MSR boundary");
+                    assert_eq!(
+                        backend.save().expect("save cold-restored MSR boundary"),
+                        *captured,
+                        "cold restore must reproduce the exact MSR VcpuState"
+                    );
+                } else {
+                    let (_, counts) = run_to_msr(&mut backend, operation);
+                    complete_msr(&mut backend, operation, response);
+                    if mode == 1 {
+                        snapshot = Some(capture_msr_boundary(
+                            &mut backend,
+                            operation,
+                            response,
+                            counts,
+                        ));
+                    } else {
+                        assert_msr_completion_boundary(&backend, operation, response, counts);
+                    }
+                }
+                let counts_before_hlt = backend.exit_counts();
+                let endpoint = continue_msr_guest(&mut backend, response, counts_before_hlt);
+                // Exception delivery also writes the guest stack. Compare RAM
+                // after the vCPU is stopped so a restored fault cannot silently
+                // produce a different frame while matching its final registers.
+                endpoints.push((endpoint, mem.as_mut_slice().to_vec()));
+            }
+            assert_eq!(
+                endpoints[0], endpoints[1],
+                "{operation:?}/{response:?}: uninterrupted equals save-and-continue"
+            );
+            assert_eq!(
+                endpoints[0], endpoints[2],
+                "{operation:?}/{response:?}: uninterrupted equals cold restore"
+            );
+        }
+    }
 }
 
 #[test]

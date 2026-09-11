@@ -206,6 +206,18 @@ pub trait Backend {
         })
     }
 
+    /// Finish the serviced exit without executing its successor instruction.
+    /// Returns another device access when the same instruction needs a further
+    /// userspace response (for example, a fragmented MMIO load or read/modify/write).
+    /// The caller must service that access and call this again before exposing a
+    /// stopped execution. This is completion processing, never a normal guest run.
+    ///
+    /// The default is for backends whose completed exit state is already fully
+    /// represented by save and needs no further userspace device access.
+    fn finish_exit(&mut self) -> Result<Option<Exit<Self::A>>> {
+        Ok(None)
+    }
+
     // --- snapshot / restore ---------------------------------------------------
 
     /// Full guest-visible vCPU state for snapshot/restore. `[refinement]`:
@@ -314,6 +326,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
         (**self).retire_pending_completion()
     }
 
+    fn finish_exit(&mut self) -> Result<Option<Exit<Self::A>>> {
+        (**self).finish_exit()
+    }
+
     fn save(&self) -> Result<<Self::A as Arch>::VcpuState> {
         (**self).save()
     }
@@ -344,17 +360,23 @@ mod tests {
     use super::Backend;
     use crate::arch::x86::{Injection, VcpuState, X86, X86Caps, X86Completion, X86Policy};
     use crate::error::{BackendError, Result};
-    use crate::exit::{Capabilities, Exit, ExitCounts};
+    use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts};
     use crate::types::Gpa;
     use std::sync::Arc;
+    #[cfg(feature = "mock")]
     use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A deliberately minimal implementor that relies on the trait's default
     /// retirement behavior. Keeping this separate from the mocks makes the
     /// default fail-closed contract, and the boxed forward to that default,
     /// directly observable.
     #[derive(Default)]
-    struct DefaultRetireBackend;
+    struct DefaultRetireBackend {
+        finish_calls: Arc<AtomicUsize>,
+        finish_response: Option<Exit<X86>>,
+        finish_error: bool,
+    }
 
     impl Backend for DefaultRetireBackend {
         type A = X86;
@@ -407,6 +429,16 @@ mod tests {
             Err(BackendError::BadCompletion)
         }
 
+        fn finish_exit(&mut self) -> Result<Option<Exit<X86>>> {
+            self.finish_calls.fetch_add(1, Ordering::SeqCst);
+            if self.finish_error {
+                return Err(BackendError::Unsupported {
+                    what: "finish_exit-test",
+                });
+            }
+            Ok(self.finish_response.take())
+        }
+
         fn save(&self) -> Result<VcpuState> {
             Ok(VcpuState::default())
         }
@@ -431,7 +463,7 @@ mod tests {
 
     #[test]
     fn default_retirement_is_fail_closed_and_box_forwards_it() {
-        let mut plain = DefaultRetireBackend;
+        let mut plain = DefaultRetireBackend::default();
         assert!(matches!(
             plain.retire_pending_completion(),
             Err(BackendError::Unsupported {
@@ -439,7 +471,7 @@ mod tests {
             })
         ));
 
-        let mut boxed: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend);
+        let mut boxed: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend::default());
         assert!(matches!(
             boxed.retire_pending_completion(),
             Err(BackendError::Unsupported {
@@ -449,9 +481,49 @@ mod tests {
     }
 
     #[test]
+    fn box_forwards_finish_exit_response_calls_and_errors() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let continuation = Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(0xfee0_0000),
+            size: 4,
+            write: None,
+        });
+        let mut boxed: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend {
+            finish_calls: Arc::clone(&calls),
+            finish_response: Some(continuation.clone()),
+            finish_error: false,
+        });
+        assert_eq!(
+            boxed.finish_exit().expect("forwarded continuation"),
+            Some(continuation)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(boxed.finish_exit().expect("forwarded empty response"), None);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let error_calls = Arc::new(AtomicUsize::new(0));
+        let mut failing: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend {
+            finish_calls: Arc::clone(&error_calls),
+            finish_response: None,
+            finish_error: true,
+        });
+        assert!(matches!(
+            failing.finish_exit(),
+            Err(BackendError::Unsupported {
+                what: "finish_exit-test"
+            })
+        ));
+        assert_eq!(error_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn a_backend_without_a_latch_reports_none_through_a_box_too() {
-        assert!(DefaultRetireBackend.cancellation_flag().is_none());
-        let without: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend);
+        assert!(
+            DefaultRetireBackend::default()
+                .cancellation_flag()
+                .is_none()
+        );
+        let without: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend::default());
         assert!(without.cancellation_flag().is_none());
     }
 

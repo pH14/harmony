@@ -4,8 +4,9 @@
 //! A snapshot's **record set** (which registers a `REGS`-class section carries)
 //! is per-architecture, but everything the *engine* does with a snapshot is not:
 //! it seals the canonical bytes into the snapshot store, decodes them back on
-//! restore, and reads the arch-neutral engine blocks (the V-time clock, the
-//! timer queue, the entropy-stream position). This trait names exactly that
+//! restore, and reads or updates the arch-neutral engine blocks (the V-time
+//! clock, the timer queue, the entropy-stream position, and opaque engine
+//! lifecycle state). This trait names exactly that
 //! engine-facing surface, so vmm-core's snapshot glue can hold a vendor's
 //! associated snapshot type (`Vendor::Snapshot`) without ever naming a register
 //! record — the `docs/ARCHITECTURE.md` snapshot-state seam, ruled 2026-07-14
@@ -68,6 +69,15 @@ pub trait SnapshotRecords: Sized {
     /// vendor's device blob), and the engine fails closed on a non-empty one.
     fn timers(&self) -> &TimerQueueState;
 
+    /// The engine-owned opaque lifecycle state. Empty for a legacy-compatible
+    /// snapshot; nonempty bytes select the trailing engine-state section for
+    /// the record version selected by the architecture's codec.
+    fn engine_state(&self) -> &[u8];
+
+    /// Replace the engine-owned opaque lifecycle state before encoding. The
+    /// codec does not interpret these bytes.
+    fn set_engine_state(&mut self, state: Vec<u8>);
+
     /// The engine's entropy-stream / hypercall-dispatcher state bytes (the
     /// `hypercall` section: notably the seeded-PRNG position). Opaque here;
     /// the engine's entropy service validates them on restore.
@@ -92,6 +102,14 @@ impl SnapshotRecords for VmState {
 
     fn timers(&self) -> &TimerQueueState {
         &self.timers
+    }
+
+    fn engine_state(&self) -> &[u8] {
+        &self.engine_state
+    }
+
+    fn set_engine_state(&mut self, state: Vec<u8>) {
+        self.engine_state = state;
     }
 
     fn entropy_bytes(&self) -> &[u8] {
@@ -124,5 +142,10 @@ mod tests {
         assert_eq!(s.vtime(), &s.vtime);
         assert_eq!(s.timers(), &s.timers);
         assert_eq!(s.entropy_bytes(), &s.hypercall[..]);
+        assert!(s.engine_state().is_empty());
+
+        let mut state = s;
+        state.set_engine_state(vec![4, 5, 6]);
+        assert_eq!(state.engine_state(), &[4, 5, 6]);
     }
 }

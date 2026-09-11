@@ -20,8 +20,34 @@ clock is consulted.
 Guest RAM is owned by `Vmm` for the lifetime of the backend. The state hash and
 snapshot machinery include all observable guest memory, vCPU state, device
 state, timer state, virtual time, entropy, control state, and protocol state.
-Snapshots are taken at quiescent boundaries and can be restored into a
-copy-on-write memory mapping.
+Snapshots can be restored into a copy-on-write memory mapping. SDK state
+capture retains pending stops and unanswered service requests without consuming
+them, including the response sequence and request identity. Portable format 4
+carries this state; version 3 remains readable without pending stops. Portable
+format 5 adds pending host effects and reseeds, the recorded input prefix,
+schedule failure, and command nonce. Replay restores these without reseeding or
+reapplying consumed inputs; an explicit branch selects a new plan and retains
+the command nonce. Whole-state hashes include this control state, including the
+recorded prefix used for duplicate-input rejection. Legacy v3/v4 artifacts remain
+readable with their historical empty control-state default; their recorded hash
+uses the old coverage. The codec retains v4 bytes when control state is absent.
+Whole-VM capture preserves pending SDK stops and is side-effect-free for a
+pending pvclock registration, carrying its GPA, `armed = false` state, and page
+bytes so the next handshake resumes from the same state.
+Pvclock-bearing device records explicitly preserve the registered page GPA,
+registration capability, and pending-versus-armed handshake state. Pending
+registrations use x86 v5 and arm64 v9–12; already-representable states retain
+legacy x86 v4 and arm64 v5–8 bytes, where a GPA implies an armed registration.
+
+The architecture-neutral engine record preserves terminal reasons and deferred
+SDK reentry state. Nonempty records use VM-state container v4; ordinary runnable
+states retain v3 bytes. Legacy v3 records remain readable with the historical
+runnable lifecycle default. A terminal restore does not enter the guest again.
+
+X86 CPU capture retains SREGS2 flags and cached PAE PDPTRs, plus debug-register
+flags. Nonzero extended fields select VM-state v5; zero values retain v3/v4
+bytes. Cached PDPTRs are distinct from the current PDPT contents in guest RAM
+and must survive restore without reloading them from that memory.
 
 ## Architecture boundary
 
@@ -48,3 +74,11 @@ by platform and require the corresponding KVM or Hypervisor.framework host.
 cargo test -p vmm-core
 cargo clippy -p vmm-core --all-targets -- -D warnings
 ```
+
+The x86 exit dispatcher finishes the current instruction's device-access chain
+before returning a stopped endpoint. Continuation accesses retain their device,
+virtual-time, and trace accounting, but do not enter the next guest instruction
+or deliver new scheduled inputs between fragments. Snapshot capture performs no
+completion work. A periodic trace checkpoint crossed inside an instruction
+lands on its final access; deferred hash consumers use
+`virtual_time_checkpoint_due` to identify that exact capture position.

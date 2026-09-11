@@ -1016,3 +1016,14 @@ fn every_reply_variant_has_a_pinned_tag() {
         "every reply must occupy its own tag, and 0x02 must stay retired"
     );
 }
+
+#[test]
+fn err_snapshot_refused_preserves_diagnostic() {
+    check_reply(
+        80,
+        Err(ControlError::SnapshotRefused {
+            reason: "SDK".into(),
+        }),
+        &[0x01, 0x14, 0x03, 0x00, 0x00, 0x00, b'S', b'D', b'K'],
+    );
+}

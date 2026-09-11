@@ -13,7 +13,9 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::types::{DebugRegs, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VtimeState, Xcrs};
 
-/// The 10-byte container header: magic, version, arch tag, section count.
+/// The 10-byte container header: magic, version, arch tag, section count. The
+/// v4/v5 engine-state extensions are trailing TLVs and do not change this
+/// header. X86 v5 also selects extended fixed-layout CPU records.
 ///
 /// The **arch tag** (v2) names the architecture whose record set the sections
 /// carry — which registers a `REGS`/`SREGS` section holds is per-arch, so a blob
@@ -212,6 +214,93 @@ impl From<&SregsWire> for VcpuSregs {
             cr8: w.cr8.get(),
             efer: w.efer.get(),
             apic_base: w.apic_base.get(),
+            flags: 0,
+            pdptrs: [0; 4],
+        }
+    }
+}
+
+/// X86 v5 `KVM_GET_SREGS2` record. The legacy fields retain their exact order;
+/// the additional `flags` and `pdptrs` fields are appended so v3/v4 payloads
+/// remain byte-identical.
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+pub(crate) struct SregsWireV5 {
+    cs: SegmentWire,
+    ds: SegmentWire,
+    es: SegmentWire,
+    fs: SegmentWire,
+    gs: SegmentWire,
+    ss: SegmentWire,
+    tr: SegmentWire,
+    ldt: SegmentWire,
+    gdt_base: U64,
+    gdt_limit: U16,
+    idt_base: U64,
+    idt_limit: U16,
+    cr0: U64,
+    cr2: U64,
+    cr3: U64,
+    cr4: U64,
+    cr8: U64,
+    efer: U64,
+    apic_base: U64,
+    flags: U64,
+    pdptrs: [U64; 4],
+}
+
+impl From<&VcpuSregs> for SregsWireV5 {
+    fn from(s: &VcpuSregs) -> Self {
+        Self {
+            cs: (&s.cs).into(),
+            ds: (&s.ds).into(),
+            es: (&s.es).into(),
+            fs: (&s.fs).into(),
+            gs: (&s.gs).into(),
+            ss: (&s.ss).into(),
+            tr: (&s.tr).into(),
+            ldt: (&s.ldt).into(),
+            gdt_base: s.gdt_base.into(),
+            gdt_limit: s.gdt_limit.into(),
+            idt_base: s.idt_base.into(),
+            idt_limit: s.idt_limit.into(),
+            cr0: s.cr0.into(),
+            cr2: s.cr2.into(),
+            cr3: s.cr3.into(),
+            cr4: s.cr4.into(),
+            cr8: s.cr8.into(),
+            efer: s.efer.into(),
+            apic_base: s.apic_base.into(),
+            flags: s.flags.into(),
+            pdptrs: s.pdptrs.map(U64::from),
+        }
+    }
+}
+
+impl From<&SregsWireV5> for VcpuSregs {
+    fn from(w: &SregsWireV5) -> Self {
+        Self {
+            cs: (&w.cs).into(),
+            ds: (&w.ds).into(),
+            es: (&w.es).into(),
+            fs: (&w.fs).into(),
+            gs: (&w.gs).into(),
+            ss: (&w.ss).into(),
+            tr: (&w.tr).into(),
+            ldt: (&w.ldt).into(),
+            gdt_base: w.gdt_base.get(),
+            gdt_limit: w.gdt_limit.get(),
+            idt_base: w.idt_base.get(),
+            idt_limit: w.idt_limit.get(),
+            cr0: w.cr0.get(),
+            cr2: w.cr2.get(),
+            cr3: w.cr3.get(),
+            cr4: w.cr4.get(),
+            cr8: w.cr8.get(),
+            efer: w.efer.get(),
+            apic_base: w.apic_base.get(),
+            flags: w.flags.get(),
+            pdptrs: w.pdptrs.map(|value| value.get()),
         }
     }
 }
@@ -268,6 +357,46 @@ impl From<&DebugRegsWire> for DebugRegs {
             db: [w.db0.get(), w.db1.get(), w.db2.get(), w.db3.get()],
             dr6: w.dr6.get(),
             dr7: w.dr7.get(),
+            flags: 0,
+        }
+    }
+}
+
+/// X86 v5 `KVM_GET_DEBUGREGS` record. The new flags field is appended to keep
+/// the v3/v4 payload bytes unchanged.
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+pub(crate) struct DebugRegsWireV5 {
+    db0: U64,
+    db1: U64,
+    db2: U64,
+    db3: U64,
+    dr6: U64,
+    dr7: U64,
+    flags: U64,
+}
+
+impl From<&DebugRegs> for DebugRegsWireV5 {
+    fn from(d: &DebugRegs) -> Self {
+        Self {
+            db0: d.db[0].into(),
+            db1: d.db[1].into(),
+            db2: d.db[2].into(),
+            db3: d.db[3].into(),
+            dr6: d.dr6.into(),
+            dr7: d.dr7.into(),
+            flags: d.flags.into(),
+        }
+    }
+}
+
+impl From<&DebugRegsWireV5> for DebugRegs {
+    fn from(w: &DebugRegsWireV5) -> Self {
+        Self {
+            db: [w.db0.get(), w.db1.get(), w.db2.get(), w.db3.get()],
+            dr6: w.dr6.get(),
+            dr7: w.dr7.get(),
+            flags: w.flags.get(),
         }
     }
 }

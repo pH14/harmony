@@ -89,6 +89,13 @@ pub enum ControlError {
     /// `snapshot` was requested at a non-quiescent point.
     #[error("not at a quiescent point")]
     NotQuiescent,
+    /// The current snapshot representation cannot capture the stopped state.
+    /// The diagnostic describes the missing state; retrying must not advance it.
+    #[error("snapshot refused: {reason}")]
+    SnapshotRefused {
+        /// State-capture diagnostic from the owning layer.
+        reason: String,
+    },
     /// A `branch` env blob's `blob_version` is outside the negotiated range.
     #[error("unsupported environment blob version {0}")]
     BadEnvVersion(u16),

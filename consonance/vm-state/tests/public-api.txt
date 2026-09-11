@@ -53,6 +53,7 @@ pub struct vm_state::Arm64VmState
 pub vm_state::Arm64VmState::contract_hash: [u8; 32]
 pub vm_state::Arm64VmState::debug: vm_state::Arm64Debug
 pub vm_state::Arm64VmState::devices: vm_state::DeviceBlob
+pub vm_state::Arm64VmState::engine_state: alloc::vec::Vec<u8>
 pub vm_state::Arm64VmState::hypercall: alloc::vec::Vec<u8>
 pub vm_state::Arm64VmState::interrupts: vm_state::Arm64Interrupts
 pub vm_state::Arm64VmState::mp_state: vm_state::MpState
@@ -69,7 +70,9 @@ impl vm_state::SnapshotRecords for vm_state::Arm64VmState
 pub const vm_state::Arm64VmState::ARCH_TAG: u16
 pub fn vm_state::Arm64VmState::decode(&[u8]) -> core::result::Result<Self, vm_state::VmStateError>
 pub fn vm_state::Arm64VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
+pub fn vm_state::Arm64VmState::engine_state(&self) -> &[u8]
 pub fn vm_state::Arm64VmState::entropy_bytes(&self) -> &[u8]
+pub fn vm_state::Arm64VmState::set_engine_state(&mut self, alloc::vec::Vec<u8>)
 pub fn vm_state::Arm64VmState::timers(&self) -> &vm_state::TimerQueueState
 pub fn vm_state::Arm64VmState::vtime(&self) -> &vm_state::VtimeState
 pub struct vm_state::Arm64Vtimer
@@ -81,6 +84,7 @@ pub struct vm_state::DebugRegs
 pub vm_state::DebugRegs::db: [u64; 4]
 pub vm_state::DebugRegs::dr6: u64
 pub vm_state::DebugRegs::dr7: u64
+pub vm_state::DebugRegs::flags: u64
 pub struct vm_state::DeviceBlob(pub alloc::vec::Vec<u8>)
 pub struct vm_state::MsrBlock(pub alloc::collections::btree::map::BTreeMap<u32, u64>)
 pub struct vm_state::Segment
@@ -135,6 +139,7 @@ pub vm_state::VcpuSregs::cs: vm_state::Segment
 pub vm_state::VcpuSregs::ds: vm_state::Segment
 pub vm_state::VcpuSregs::efer: u64
 pub vm_state::VcpuSregs::es: vm_state::Segment
+pub vm_state::VcpuSregs::flags: u64
 pub vm_state::VcpuSregs::fs: vm_state::Segment
 pub vm_state::VcpuSregs::gdt_base: u64
 pub vm_state::VcpuSregs::gdt_limit: u16
@@ -142,12 +147,14 @@ pub vm_state::VcpuSregs::gs: vm_state::Segment
 pub vm_state::VcpuSregs::idt_base: u64
 pub vm_state::VcpuSregs::idt_limit: u16
 pub vm_state::VcpuSregs::ldt: vm_state::Segment
+pub vm_state::VcpuSregs::pdptrs: [u64; 4]
 pub vm_state::VcpuSregs::ss: vm_state::Segment
 pub vm_state::VcpuSregs::tr: vm_state::Segment
 pub struct vm_state::VmState
 pub vm_state::VmState::contract_hash: [u8; 32]
 pub vm_state::VmState::debugregs: vm_state::DebugRegs
 pub vm_state::VmState::devices: vm_state::DeviceBlob
+pub vm_state::VmState::engine_state: alloc::vec::Vec<u8>
 pub vm_state::VmState::events: vm_state::VcpuEvents
 pub vm_state::VmState::hypercall: alloc::vec::Vec<u8>
 pub vm_state::VmState::mp_state: vm_state::MpState
@@ -166,7 +173,9 @@ impl vm_state::SnapshotRecords for vm_state::VmState
 pub const vm_state::VmState::ARCH_TAG: u16
 pub fn vm_state::VmState::decode(&[u8]) -> core::result::Result<Self, vm_state::VmStateError>
 pub fn vm_state::VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
+pub fn vm_state::VmState::engine_state(&self) -> &[u8]
 pub fn vm_state::VmState::entropy_bytes(&self) -> &[u8]
+pub fn vm_state::VmState::set_engine_state(&mut self, alloc::vec::Vec<u8>)
 pub fn vm_state::VmState::timers(&self) -> &vm_state::TimerQueueState
 pub fn vm_state::VmState::vtime(&self) -> &vm_state::VtimeState
 pub struct vm_state::VtimeState
@@ -178,26 +187,33 @@ pub vm_state::Xcrs::xcr0: u64
 pub struct vm_state::XsaveImage(pub alloc::vec::Vec<u8>)
 pub const vm_state::ARCH_AARCH64: u16
 pub const vm_state::ARCH_X86_64: u16
+pub const vm_state::VM_STATE_LEGACY_VERSION: u16
 pub const vm_state::VM_STATE_MAGIC: u32
 pub const vm_state::VM_STATE_VERSION: u16
 pub trait vm_state::SnapshotRecords: core::marker::Sized
 pub const vm_state::SnapshotRecords::ARCH_TAG: u16
 pub fn vm_state::SnapshotRecords::decode(&[u8]) -> core::result::Result<Self, vm_state::VmStateError>
 pub fn vm_state::SnapshotRecords::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
+pub fn vm_state::SnapshotRecords::engine_state(&self) -> &[u8]
 pub fn vm_state::SnapshotRecords::entropy_bytes(&self) -> &[u8]
+pub fn vm_state::SnapshotRecords::set_engine_state(&mut self, alloc::vec::Vec<u8>)
 pub fn vm_state::SnapshotRecords::timers(&self) -> &vm_state::TimerQueueState
 pub fn vm_state::SnapshotRecords::vtime(&self) -> &vm_state::VtimeState
 impl vm_state::SnapshotRecords for vm_state::Arm64VmState
 pub const vm_state::Arm64VmState::ARCH_TAG: u16
 pub fn vm_state::Arm64VmState::decode(&[u8]) -> core::result::Result<Self, vm_state::VmStateError>
 pub fn vm_state::Arm64VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
+pub fn vm_state::Arm64VmState::engine_state(&self) -> &[u8]
 pub fn vm_state::Arm64VmState::entropy_bytes(&self) -> &[u8]
+pub fn vm_state::Arm64VmState::set_engine_state(&mut self, alloc::vec::Vec<u8>)
 pub fn vm_state::Arm64VmState::timers(&self) -> &vm_state::TimerQueueState
 pub fn vm_state::Arm64VmState::vtime(&self) -> &vm_state::VtimeState
 impl vm_state::SnapshotRecords for vm_state::VmState
 pub const vm_state::VmState::ARCH_TAG: u16
 pub fn vm_state::VmState::decode(&[u8]) -> core::result::Result<Self, vm_state::VmStateError>
 pub fn vm_state::VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
+pub fn vm_state::VmState::engine_state(&self) -> &[u8]
 pub fn vm_state::VmState::entropy_bytes(&self) -> &[u8]
+pub fn vm_state::VmState::set_engine_state(&mut self, alloc::vec::Vec<u8>)
 pub fn vm_state::VmState::timers(&self) -> &vm_state::TimerQueueState
 pub fn vm_state::VmState::vtime(&self) -> &vm_state::VtimeState

@@ -15,11 +15,12 @@ use hypercall_proto::{
     SeededEntropy, Service, ServiceId, Status, decode, encode_error, encode_response,
 };
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use vm_state::SnapshotRecords;
 use vmm_backend::{Arch, Backend, CommonExit, Exit};
 use vtime::{IdlePlanner, VClock, VClockConfig};
 
+use crate::snapshot::SnapshotError;
 use crate::vendor::Vendor;
 use crate::virtual_time::LiveVirtualTimeTrace;
 
@@ -176,7 +177,7 @@ impl VmmError {
     }
 }
 
-/// One serviced exit.
+/// A serviced instruction boundary, including any continuation device accesses.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Step {
     /// The exit was serviced; the run continues.
@@ -188,6 +189,12 @@ pub enum Step {
     /// stop detail lives in the Vmm's SDK channel — drain it with
     /// [`Vmm::take_sdk_stop`]. Only ever produced when an SDK channel is wired.
     SdkStop,
+}
+
+/// Result of servicing one access, before the instruction boundary is exposed.
+struct ExitProgress<A: Arch> {
+    step: Step,
+    continuation: Option<Exit<A>>,
 }
 
 /// What a completed run produced (and what the M2 hash is taken over).
@@ -521,8 +528,9 @@ pub(crate) struct PvclockChannel {
     /// host-noisy — clock. A guest that never performs
     /// the handshake is **out of contract**: its page stays at the pre-
     /// registration bytes (stale but deterministic).
-    /// Restore sets this `true` directly — a restored VM's anchor is exactly 0,
-    /// a synchronized boundary by construction, so it needs no handshake.
+    /// Restore sets this from the captured snapshot verbatim. An armed
+    /// registration needs no handshake after restore; a pending registration
+    /// remains pending until the source-equivalent handshake occurs.
     armed: bool,
     /// Diagnostic refresh log (**not** hashed): `(vns, guest_clock)` for
     /// every *value-publishing* stamp, **read back from the page bytes** after
@@ -552,6 +560,9 @@ pub struct SdkSnapshot {
     /// differently (the deferred point silently lost), breaking replay's
     /// round-trip hash equality.
     pub(crate) pending_snapshot: bool,
+    /// Undelivered stop or unanswered service request, including the response
+    /// sequence. Capturing it does not consume or resolve it.
+    pub(crate) pending_stop: Option<SdkStop>,
     /// Per-logical-thread next coverage thresholds. The guest's counters live
     /// in RAM; these host-side expectations govern whether its next callback is
     /// accepted, so both sides are replay-relevant.
@@ -567,7 +578,7 @@ impl SdkSnapshot {
 
 /// The task-110 pvclock channel's **replay-relevant** state, captured with a
 /// snapshot ([`Vmm::pvclock_snapshot`], `Some` iff the page is offered): the
-/// guest's registration and availability. A restore carries and
+/// guest's registration, pending-vs-armed state, and availability. A restore carries and
 /// cross-validates them; the page bytes themselves ride the RAM
 /// image. Held by the control server keyed by snapshot handle, like
 /// [`SdkSnapshot`].
@@ -585,6 +596,9 @@ pub struct PvclockSnapshot {
     /// reverse (a child that can register where its parent could not) fails
     /// loud too.
     pub(crate) registrable: bool,
+    /// Whether the registered page has completed the post-registration
+    /// handshake. A pending registration has a GPA but is not yet armed.
+    pub(crate) armed: bool,
 }
 
 pub struct Vmm<B: Backend>
@@ -669,6 +683,9 @@ where
     /// [`Vmm::state_blob`] on a worker. Default-off preserves synchronous trace
     /// semantics for every existing composition.
     pub(crate) deferred_virtual_time_checkpoints: bool,
+    /// Host-only checkpoint positions. An interval crossed inside a fragmented
+    /// instruction lands on its final access, where the complete state exists.
+    virtual_time_checkpoint_events: BTreeSet<u64>,
     /// `true` when the **last serviced exit staged *any* backend completion** (an
     /// IO/MMIO read or write, an `Rdmsr`/`Wrmsr`, or a `Cpuid`) whose register-write/RIP-advance is only
     /// committed on the **next** `KVM_RUN`. A snapshot must not be restored into
@@ -756,6 +773,7 @@ where
             virtual_time_trace: None,
             doorbell_exits: 0,
             deferred_virtual_time_checkpoints: false,
+            virtual_time_checkpoint_events: BTreeSet::new(),
             completion_staged: false,
             sdk_snapshot_reentry_required: false,
             snapshot_hashing: false,
@@ -768,6 +786,7 @@ where
     /// Wire the assigned virtual-time clock and deterministic entropy stream.
     pub fn wire_vtime(&mut self, wiring: VtimeWiring) -> &mut Self {
         self.virtual_time_trace = Some(LiveVirtualTimeTrace::default());
+        self.virtual_time_checkpoint_events.clear();
         self.vtime = Some(wiring);
         self
     }
@@ -781,6 +800,7 @@ where
     /// on this same VM. Restore-in-place uses this to preserve the existing
     /// per-branch session segmentation without replacing the VMM.
     pub(crate) fn take_virtual_time_trace(&mut self) -> Option<LiveVirtualTimeTrace> {
+        self.virtual_time_checkpoint_events.clear();
         self.virtual_time_trace.as_mut().map(std::mem::take)
     }
 
@@ -812,11 +832,19 @@ where
         Ok(())
     }
 
+    /// Whether a completed trace event owns a periodic full-state checkpoint.
+    /// An interval crossed inside an instruction lands on its final device
+    /// access; callers must use this predicate rather than event-index modulo.
+    #[must_use]
+    pub fn virtual_time_checkpoint_due(&self, event_index: u64) -> bool {
+        self.virtual_time_checkpoint_events.contains(&event_index)
+    }
+
     /// Install one deferred sparse checkpoint hash at its exact portable event.
     ///
     /// # Errors
     /// Returns [`VmmError::ContractViolation`] unless deferred mode is enabled,
-    /// the event is a due 256-event checkpoint, the event exists, and its hash
+    /// the event owns a completed-instruction checkpoint, exists, and its hash
     /// slot is still empty.
     pub fn checkpoint_virtual_time_trace_at(
         &mut self,
@@ -828,9 +856,9 @@ where
                 "deferred checkpoint installed while synchronous hashing is active".to_string(),
             ));
         }
-        if !event_index.saturating_add(1).is_multiple_of(256) {
+        if !self.virtual_time_checkpoint_due(event_index) {
             return Err(VmmError::ContractViolation(format!(
-                "deferred checkpoint event {event_index} is not a 256-event boundary"
+                "deferred checkpoint event {event_index} is not a completed checkpoint boundary"
             )));
         }
         self.virtual_time_trace
@@ -1252,15 +1280,6 @@ where
         self.vtime.as_ref().map(|vt| vt.clock.vns())
     }
 
-    /// Whether the SDK has finished handling its current stop. Backend completion
-    /// retirement and vCPU-state representability are checked by their owning paths.
-    pub(crate) fn can_snapshot(&self) -> bool {
-        !self
-            .sdk
-            .as_ref()
-            .is_some_and(|sdk| sdk.pending_stop.is_some())
-    }
-
     /// Restore the V-time + entropy state captured by [`Vmm::save_vtime`]: rebuild
     /// the clock at `snap.vns`, re-apply the guest clock offset, and restore the
     /// entropy stream position.
@@ -1358,6 +1377,9 @@ where
     ///
     /// Capture requires no pending SDK stop. Assigned virtual time is exact at
     /// every serviced exit; backend completions are retired before restoring.
+    /// A pending pvclock registration is captured with its GPA and
+    /// `armed = false`; saving does not run the handshake, advance V-time, or
+    /// re-stamp the page.
     ///
     /// **The pvclock page is sealed VERBATIM (task 110 §1.1, amended at r4).** A
     /// seal does not touch guest RAM at all: the clock page rides the memory
@@ -1377,21 +1399,12 @@ where
     /// inherits the parent's epoch and continues in lockstep with it.
     ///
     /// # Errors
-    /// [`VmmError::ContractViolation`] while an SDK stop is pending,
-    /// or if the live vCPU carries the PAE-only `kvm_sregs2` flags/pdptrs or
-    /// `debugregs.flags` (all zero for the 64-bit determinism guest — see
-    /// [`crate::snapshot::unrepresentable_state`]); [`VmmError::Backend`] if reading the
-    /// live vCPU state fails (a snapshot **fails closed** rather than sealing a zeroed or
-    /// lossy vCPU).
+    /// [`VmmError::ContractViolation`] for a state requiring backend capabilities
+    /// absent from this composition; [`VmmError::Backend`] if reading the live
+    /// vCPU fails. Capture never substitutes a default or incomplete CPU record.
     pub fn save_vm_state(&self) -> Result<<B::A as Vendor>::Snapshot, VmmError> {
-        // The boundary gate is the shared `can_snapshot()` predicate (so the SDK
-        // snapshot-point surface can never advertise a point this rejects); when
-        // it fails, report WHICH precondition failed for a precise diagnostic.
-        if !self.can_snapshot() {
-            return Err(VmmError::ContractViolation(
-                "save_vm_state while an SDK stop is pending".to_string(),
-            ));
-        }
+        // SDK stops and outstanding requests are captured independently by
+        // sdk_snapshot; their presence does not require guest execution here.
         // Read the vCPU **fallibly**: a `Backend::save` failure must abort the
         // snapshot, not seal a `VcpuState::default()` (the swallowing `current_vcpu`
         // does for the best-effort hash). Use the terminal-captured state if present.
@@ -1399,48 +1412,40 @@ where
             Some(s) => s.clone(),
             None => self.backend.save()?,
         };
-        // Fail closed on machine state the representable `vm_state` subset would
-        // silently zero on restore (`kvm_sregs2` flags/pdptrs, or pending-event
-        // injection/SMM/triple-fault bookkeeping) — sealing a lossy blob is worse
-        // than refusing it. Zero at a real quiescent snapshot point (64-bit guest, no
-        // armed injection); a non-zero value is a misuse / a non-quiescent snapshot.
+        // Validate capability-dependent state before encoding. CPU register
+        // fields themselves are retained by the vendor's versioned records.
         <B::A as Vendor>::check_sealable_vcpu(&vcpu)?;
-        // Task 110 (r13 P1). A PENDING pvclock registration is UNSEALABLE. Between
-        // the doorbell `OUT` (which records the GPA) and the handshake intercept
-        // (the guest's post-doorbell RDTSC, which arms the page and lays the first,
-        // canonical stamp), `armed` is false — but the v4 device record carries the
-        // GPA and NOT the pending-vs-armed bit, so `pvclock_commit_restore` would
-        // bring a restored child up ARMED. That child would then perform a normal
-        // ordinary refresh where the source still owes the canonical handshake
-        // stamp — different page bytes, different future. This
-        // is a property of the captured *state* the representable subset cannot
-        // hold, so it fails closed here alongside `check_sealable_vcpu` rather than
-        // in the boundary predicate. In normal operation a pending registration is
-        // never at a synchronized boundary (the `OUT` is a PIO; the first
-        // synchronized point after it is the arming handshake); the one path that
-        // can pair pending with a synchronized seal is `restore_vtime`.
-        if self
-            .pvclock
-            .as_ref()
-            .is_some_and(|pv| pv.gpa.is_some() && !pv.armed)
-        {
-            return Err(VmmError::ContractViolation(
-                "save_vm_state with a PENDING pvclock registration: the page GPA is \
-                 recorded but the registration handshake (the guest's post-doorbell \
-                 RDTSC) has not completed, so `armed` is false — a state the v4 device \
-                 record cannot represent (a restore would come up armed and skip the \
-                 canonical handshake stamp the source still owes). Snapshot after the \
-                 handshake intercept (step once more first)."
-                    .to_string(),
-            ));
-        }
+        // Task 110: a pending pvclock registration is representable in the
+        // versioned device record. Carry its GPA and `armed = false` alongside
+        // the verbatim RAM image so the restored guest owes the same handshake.
+        // Saving itself does not run that handshake, advance V-time, or stamp
+        // the page. In normal operation a pending registration is not at a
+        // synchronized boundary (the `OUT` is a PIO); `restore_vtime` remains
+        // the explicit test/control path that can pair one with a synchronized
+        // seal.
         // Task 110 (r4): NO pvclock re-stamp here. The page is sealed exactly as
         // the guest sees it — see this method's doc comment for why
         // canonicalizing a live page is an ABA on a straddling reader, and why
         // value-keyed stamping already makes the epoch reproducible. A seal
         // mutates nothing, so the `NotQuiescent` retry loops and sealability
         // probes stay side-effect-free for free rather than by careful ordering.
-        Ok(<B::A as Vendor>::build_vm_state(self, &vcpu))
+        self.build_snapshot_state(&vcpu)
+    }
+
+    fn engine_state(&self) -> crate::engine_state::EngineState {
+        crate::engine_state::EngineState {
+            terminal: self.terminal,
+            sdk_snapshot_reentry_required: self.sdk_snapshot_reentry_required,
+        }
+    }
+
+    fn build_snapshot_state(
+        &self,
+        vcpu: &VcpuOf<B>,
+    ) -> Result<<B::A as Vendor>::Snapshot, VmmError> {
+        let mut state = <B::A as Vendor>::build_vm_state(self, vcpu);
+        state.set_engine_state(self.engine_state().encode()?);
+        Ok(state)
     }
 
     /// Restore the **non-memory** machine state from a [`vm_state::VmState`] (pair
@@ -1479,6 +1484,7 @@ where
                     .to_string(),
             ));
         }
+        let engine_state = crate::engine_state::EngineState::decode(s.engine_state())?;
         // 1. Validate, committing nothing. The engine reads only the arch-neutral
         //    blocks of the snapshot — the V-time clock, the timer queue, and the
         //    entropy bytes — through the `SnapshotRecords` accessors; the vendor
@@ -1576,21 +1582,14 @@ where
                     VmmError::Backend(vmm_backend::BackendError::Internal(message))
                 })?;
         }
-        // A restored VM is runnable again from the snapshot point: clear the latched
-        // terminal + cached vCPU so `step`/`run` resume and `state_blob` re-reads the
-        // restored backend state.
-        self.terminal = None;
+        // A terminal snapshot remains terminal. The restored backend carries
+        // its exact registers, so discard only the displaced timeline's cache.
+        self.terminal = engine_state.terminal;
         self.saved_state = None;
-        // The restored backend is fresh (the next run re-executes from the restored
-        // RIP) — no completion is pending.
         self.completion_staged = false;
-        // A deferred SDK snapshot re-entry belongs to the displaced timeline.
-        // The restored SDK channel's own `pending_snapshot` bit is applied by
-        // the control server after this call; no old doorbell completion may
-        // suppress or synthesize that restored point.
-        self.sdk_snapshot_reentry_required = false;
+        self.sdk_snapshot_reentry_required = engine_state.sdk_snapshot_reentry_required;
         // (Task 110: the pvclock channel needs no reset here — the blob's own
-        // v4 record was validated in the vendor's `validate_restore` and
+        // v4/v5 record was validated in the vendor's `validate_restore` and
         // committed in `commit_restore` above, replacing any stale-timeline
         // registration with the sealed one — including clearing it when the
         // sealed VM had none. The same-state ⇒ same-future contract holds for
@@ -1673,14 +1672,36 @@ where
         // service below is itself an RNG draw. (Cleared after `run()`, since a failed
         // re-entry did not commit the staged completion.)
         //
-        let exit = self.backend.run()?;
+        let mut exit = self.backend.run()?;
+        // Only an ordinary guest entry clears the deferred SDK delivery latch.
+        // Completion-only entries below cannot deliver that point early.
+        self.sdk_snapshot_reentry_required = false;
+        let mut stop = Step::Continued;
+        let mut checkpoint_due = false;
+        loop {
+            let ExitProgress { step, continuation } =
+                self.service_exit(exit, &mut checkpoint_due)?;
+            if step != Step::Continued {
+                stop = step;
+            }
+            match continuation {
+                Some(next) => exit = next,
+                None => return Ok(stop),
+            }
+        }
+    }
+
+    /// Service one access of the current instruction. Continuations never pass
+    /// through the guest-entry preparation above: no next instruction, IRQ
+    /// injection, deadline check, or scheduled-input delivery can interleave.
+    fn service_exit(
+        &mut self,
+        exit: Exit<B::A>,
+        checkpoint_due: &mut bool,
+    ) -> Result<ExitProgress<B::A>, VmmError> {
         if <B::A as Vendor>::is_doorbell_exit(&exit) {
             self.doorbell_exits = self.doorbell_exits.saturating_add(1);
         }
-        // A successful entry commits the prior exit's userspace-I/O completion.
-        // If `setup_complete` armed the deferred snapshot latch on that prior
-        // exit, the point may now surface after this exit is serviced.
-        self.sdk_snapshot_reentry_required = false;
         let trace_started = if let Some(trace) = self.virtual_time_trace.as_mut() {
             if let Some((class, payload)) = <B::A as Vendor>::normalize_virtual_time_exit(&exit) {
                 let reason = exit.reason();
@@ -1737,6 +1758,7 @@ where
         // unless a page is registered.
         self.pvclock_refresh()?;
         <B::A as Vendor>::post_exit(self)?;
+        let next = <B::A as Vendor>::finish_exit(self)?;
         if trace_started {
             let event_index = self
                 .virtual_time_trace
@@ -1744,11 +1766,19 @@ where
                 .expect("trace was started")
                 .current_event_index()
                 .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
-            let checkpoint = (event_index + 1).is_multiple_of(256);
-            let state_hash =
-                synchronous_checkpoint_due(checkpoint, self.deferred_virtual_time_checkpoints)
-                    .then(|| self.state_hash())
-                    .transpose()?;
+            *checkpoint_due |= (event_index + 1).is_multiple_of(256);
+            if *checkpoint_due && next.is_none() {
+                self.virtual_time_checkpoint_events.insert(event_index);
+            }
+            // A fragment is not yet a complete architectural state. Keep a due
+            // checkpoint pending until this same instruction finishes; the hash
+            // still covers the complete machine and no guest successor executes.
+            let state_hash = synchronous_checkpoint_due(
+                *checkpoint_due && next.is_none(),
+                self.deferred_virtual_time_checkpoints,
+            )
+            .then(|| self.state_hash())
+            .transpose()?;
             let vns_after = self
                 .vtime
                 .as_ref()
@@ -1764,7 +1794,10 @@ where
                 .finish(vns_after, state_hash)
                 .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
         }
-        Ok(step)
+        Ok(ExitProgress {
+            step,
+            continuation: next,
+        })
     }
 
     /// `step()` to a `Terminal`. Returns the serial capture, terminal reason, and
@@ -1838,7 +1871,10 @@ where
     /// the suffix contains only fixed-size machine/channel state.
     pub(crate) fn state_blob_suffix(&self) -> Result<Vec<u8>, VmmError> {
         let mut out = Vec::new();
-        let vcpu = self.current_vcpu();
+        let vcpu = match &self.saved_state {
+            Some(state) => state.clone(),
+            None => self.backend.save()?,
+        };
         // The dedicated hypercall-transport ABI pages are guest-visible memory
         // (arm64: a separate low-GPA memslot; x86 keeps them inside `MEM`). Fold
         // them into the hash so two states differing only in the request/response
@@ -1912,10 +1948,9 @@ where
             // intercept) and an *armed* one have DIFFERENT futures — the pending
             // one's next synchronized step lays the canonical page stamp,
             // the armed one refreshes normally — so pending-vs-armed belongs in
-            // state identity. (This bit is only ever observed mid-run: a snapshot
-            // is taken only at a synchronized point, and a pending registration
-            // exists only at non-synchronized points, so a sealed state is always
-            // armed — restore derives it. It is folded here for the mid-run hash.)
+            // state identity. Whole-VM save carries a pending registration's
+            // state and verbatim page image; `restore_vtime` can also leave one
+            // at a synchronized boundary, so the representation must retain it.
             bytes.push(u8::from(pv.armed));
             put_chunk(&mut out, b"PVCK", &bytes);
         }
@@ -1924,16 +1959,18 @@ where
         // M1/M2/corpus/Linux-boot blobs byte-for-byte unchanged (their goldens do
         // not move — task 39 "gate the swap"); when on, two states whose canonical
         // blob differs hash differently, so a snapshot's integrity is in the hash.
-        // The only `encode` failure is `FractionalRatio`, which `build_vm_state`
-        // can never produce (`ratio_den` is the invariant `1`), so the fallback is
-        // unreachable; it is deterministic regardless.
+        // Capture errors propagate: omitting a failed register or codec read
+        // would weaken the whole-state identity being compared.
+        if self.sdk_snapshot_reentry_required {
+            // The deferred point's delivery differs until a guest entry has
+            // occurred; include that lifecycle distinction even without VMST.
+            put_chunk(&mut out, b"SDRE", &[1]);
+        }
         if self.snapshot_hashing {
-            // Best-effort like the other hash chunks: `current_vcpu` uses the
-            // terminal-captured state or a swallowing live `save` (the snapshot path,
-            // `save_vm_state`, reads the vCPU fallibly instead).
-            let bytes = <B::A as Vendor>::build_vm_state(self, &self.current_vcpu())
+            let bytes = self
+                .build_snapshot_state(&vcpu)?
                 .encode()
-                .unwrap_or_default();
+                .map_err(SnapshotError::from)?;
             put_chunk(&mut out, b"VMST", &bytes);
         }
         Ok(out)
@@ -2257,8 +2294,9 @@ where
 
     /// Capture the pvclock channel's **complete replay-relevant configuration**
     /// for a snapshot: `Some` iff the page is offered, carrying the registration
-    /// (if any). The page *bytes* ride the RAM image; the offer shapes a future registration,
-    /// so the control server carries it across snapshot/branch like the SDK
+    /// (if any), capability, and pending-vs-armed handshake state. The page
+    /// *bytes* ride the RAM image; the offer shapes a future registration, so
+    /// the control server carries it across snapshot/branch like the SDK
     /// channel's, restoring (and cross-validating) via
     /// [`pvclock_restore`](Self::pvclock_restore).
     pub fn pvclock_snapshot(&self) -> Option<PvclockSnapshot> {
@@ -2266,6 +2304,7 @@ where
         self.pvclock.as_ref().map(|pv| PvclockSnapshot {
             gpa: pv.gpa,
             registrable,
+            armed: pv.armed,
         })
     }
 
@@ -2281,11 +2320,12 @@ where
     ///
     /// # Errors
     /// [`VmmError::ContractViolation`] on any offer mismatch, a GPA that no
-    /// longer validates, or a registration restored onto a backend with no
-    /// deterministic virtual-time clock.
+    /// longer validates, a malformed pending/registration combination, or a
+    /// registration restored onto a backend with no deterministic virtual-time
+    /// clock.
     pub(crate) fn pvclock_validate_restore(
         &self,
-        rec: Option<&(Option<u64>, bool)>,
+        rec: Option<&PvclockSnapshot>,
     ) -> Result<(), VmmError> {
         match (rec, self.pvclock.as_ref()) {
             (None, None) => Ok(()),
@@ -2295,12 +2335,25 @@ where
                  restore into a VM composed like the snapshot source."
                     .to_string(),
             )),
-            (Some((gpa, _)), None) => Err(VmmError::ContractViolation(format!(
+            (Some(snapshot), None) => Err(VmmError::ContractViolation(format!(
                 "restore_vm_state: snapshot carries a pvclock channel (registration \
-                 {gpa:#x?}) but this VM was composed without enable_pvclock — \
-                 restore into a VM composed like the snapshot source."
+                 {:#x?}) but this VM was composed without enable_pvclock — \
+                 restore into a VM composed like the snapshot source.",
+                snapshot.gpa
             ))),
-            (Some((gpa, registrable)), Some(_pv)) => {
+            (Some(snapshot), Some(_pv)) => {
+                if snapshot.armed && snapshot.gpa.is_none() {
+                    return Err(VmmError::ContractViolation(
+                        "restore_vm_state: pvclock record is armed without a registered page"
+                            .to_string(),
+                    ));
+                }
+                if snapshot.gpa.is_some() && !snapshot.registrable {
+                    return Err(VmmError::ContractViolation(
+                        "restore_vm_state: pvclock record has a registration but is marked non-registrable"
+                            .to_string(),
+                    ));
+                }
                 // REGISTRATION CAPABILITY, independent of whether a GPA is
                 // present (cross-model r5 P1). A snapshot taken BEFORE the guest
                 // registered carries no GPA — so the GPA check below never runs —
@@ -2311,14 +2364,18 @@ where
                 // "this VM can too") because the converse — a child that CAN
                 // register where its parent never could — forks the timeline just
                 // as hard.
-                if *registrable != self.pvclock_available() {
+                if snapshot.registrable != self.pvclock_available() {
                     return Err(VmmError::ContractViolation(format!(
                         "restore_vm_state: pvclock registration capability mismatch (the \
                          snapshot's VM {} register a clock page; this VM {}) — the restored \
                          guest's next registration would take a different branch than the \
                          sealed timeline's. Restore into a VM composed like the snapshot \
                          source (V-time wired, deterministic virtual-time clock).",
-                        if *registrable { "could" } else { "could NOT" },
+                        if snapshot.registrable {
+                            "could"
+                        } else {
+                            "could NOT"
+                        },
                         if self.pvclock_available() {
                             "can"
                         } else {
@@ -2326,8 +2383,8 @@ where
                         }
                     )));
                 }
-                if let Some(gpa) = gpa {
-                    self.pvclock_validate_gpa(*gpa).map_err(|reason| {
+                if let Some(gpa) = snapshot.gpa {
+                    self.pvclock_validate_gpa(gpa).map_err(|reason| {
                         VmmError::ContractViolation(format!(
                             "restore_vm_state: snapshot pvclock page GPA {gpa:#x} does not \
                              validate on this VM ({reason}) — restore into a VM composed like \
@@ -2347,19 +2404,14 @@ where
     /// and an unregistered record clears any stale-timeline registration
     /// this VM held. Infallible, per
     /// the restore commit phase's contract.
-    pub(crate) fn pvclock_commit_restore(&mut self, rec: Option<&(Option<u64>, bool)>) {
+    pub(crate) fn pvclock_commit_restore(&mut self, rec: Option<&PvclockSnapshot>) {
         if let Some(pv) = self.pvclock.as_mut() {
-            // A restored VM's anchor is exactly 0 (the virtual-time clock restarts and
-            // `restore_vm_state` anchors there — a synchronized boundary by
-            // construction), so a restored registration is **already armed**: it
-            // needs no live handshake. Only a *registered* record is armed; an
-            // unregistered one clears any stale-timeline registration.
-            // Arming every carried GPA is faithful because `save_vm_state` refuses
-            // to seal a PENDING (un-armed) registration (r13 P1): a sealed
-            // `Some(gpa)` was therefore armed on the source, so the source owed no
-            // handshake stamp and the restored child owes none either.
-            let gpa = rec.and_then(|(g, _)| *g);
-            pv.armed = gpa.is_some();
+            // Restore the channel record verbatim. In particular, a GPA with
+            // `armed = false` remains pending until the same guest handshake
+            // that the source still owed. The full save path carries this
+            // state; restore must not synthesize its first stamp.
+            let (gpa, armed) = rec.map_or((None, false), |snapshot| (snapshot.gpa, snapshot.armed));
+            pv.armed = armed;
             pv.gpa = gpa;
             pv.refreshes.clear();
         }
@@ -2647,20 +2699,12 @@ where
 
     /// Capture the SDK channel's **replay-relevant** state for a snapshot (task
     /// 73): the seeded generic service stream position and the
-    /// emitted event log. A fork from a mid-run snapshot restores this so its
+    /// emitted event log, undelivered stop, and outstanding service request.
+    /// Capturing a request neither resolves it nor consumes its response sequence.
+    /// A fork from a mid-run snapshot restores this so its
     /// seeded streams continue from the right position and it keeps the catalog
     /// the never-fired report needs. `None` when no SDK channel is wired.
     pub fn sdk_snapshot(&self) -> Result<Option<SdkSnapshot>, channel::ChannelError> {
-        if self
-            .sdk
-            .as_ref()
-            .is_some_and(|sdk| sdk.pending_stop.is_some())
-        {
-            return Err(channel::ChannelError::Handler(
-                "consume the pending SDK stop before snapshotting".into(),
-            ));
-        }
-
         self.sdk
             .as_ref()
             .map(|s| {
@@ -2668,6 +2712,7 @@ where
                     recorded: s.env.snapshot_state()?,
                     events: s.events.clone(),
                     pending_snapshot: s.pending_snapshot,
+                    pending_stop: s.pending_stop.clone(),
                     coverage_thresholds: s.coverage_thresholds.clone(),
                 })
             })
@@ -2681,25 +2726,23 @@ where
         if let Some(s) = self.sdk.as_mut() {
             snap.recorded.restore_into(&mut s.env)?;
             s.events = snap.events.clone();
-            // Restore the deferred snapshot-point flag: it is hash-folded
-            // (round-8), so a verbatim replay must reproduce it exactly. The
-            // branch path (`sdk_restore_events`) deliberately leaves it at the
-            // fresh `false` from `enable_sdk` — a reseeded fork re-runs from the
-            // restored image (where `setup_complete` is already past) and must not
-            // re-surface an already-sealed deferred point.
+            // Stops and deferred points remain owed at the captured boundary.
             s.pending_snapshot = snap.pending_snapshot;
+            s.pending_stop = snap.pending_stop.clone();
             s.coverage_thresholds = snap.coverage_thresholds.clone();
         }
         Ok(())
     }
 
-    /// Restore only the **event prefix** of a captured [`SdkSnapshot`] (the branch
-    /// path): a branch reseeds, so the seeded streams start fresh from the new
-    /// seed (`enable_sdk`), but the shared prefix events — the declared catalog —
-    /// carry over so the fork's never-fired report is complete.
+    /// Restore the shared event prefix and pending protocol work for an
+    /// explicitly reseeded branch. The new environment is already installed;
+    /// a new seed does not consume a captured stop or answer an outstanding
+    /// request. Verbatim continuation uses `sdk_restore` instead.
     pub fn sdk_restore_events(&mut self, snap: &SdkSnapshot) {
         if let Some(s) = self.sdk.as_mut() {
             s.events = snap.events.clone();
+            s.pending_snapshot = snap.pending_snapshot;
+            s.pending_stop = snap.pending_stop.clone();
             s.coverage_thresholds = snap.coverage_thresholds.clone();
         }
     }
@@ -3450,24 +3493,13 @@ where
         }
     }
 
-    /// Take the deferred `setup_complete` snapshot point **iff** the VM is now at a
-    /// **sealable** boundary — the FULL `save_vm_state` precondition
-    /// ([`Vmm::can_snapshot`]: synchronized AND no staged RNG completion), plus an
-    /// exact exit-count V-time to stamp the point. The control loop
-    /// calls this after a `Continued` step; `true` means surface
-    /// `StopReason::SnapshotPoint` here — a point where the explorer's eager
-    /// `save_vm_state` seal succeeds, not `NotQuiescent`.
-    ///
-    /// **Round-4 P1:** gating on exact time alone surfaced a point at the
-    /// first synchronized exit after `setup_complete` even when that exit was an
-    /// RDRAND/RDSEED (a staged RNG completion), which `save_vm_state` rejects — and
-    /// clearing `pending_snapshot` on that unsealable surface LOST the point. Now
-    /// `pending_snapshot` is cleared ONLY when the point is actually surfaced (a
-    /// sealable boundary), so an RNG boundary defers it to the next clean one.
+    /// Surface a deferred SDK snapshot point once its doorbell completion has
+    /// retired and no other SDK stop is awaiting delivery. This controls stop
+    /// ordering only: saving can preserve either pending stop verbatim.
     pub fn take_snapshot_point(&mut self) -> bool {
         if !self.sdk_snapshot_reentry_required
-            && self.can_snapshot()
             && let Some(sdk) = self.sdk.as_mut()
+            && sdk.pending_stop.is_none()
             && sdk.pending_snapshot
         {
             sdk.pending_snapshot = false;
@@ -3985,6 +4017,8 @@ fn service_answer_bytes(answer: &channel::Answer) -> Option<Vec<u8>> {
 mod tests {
     //! Engine tests, driven over the x86 vendor (`MockBackend`'s `Arch` is `X86`) —
     //! the engine is generic, but a test needs *a* vendor to run against.
+
+    use std::collections::VecDeque;
 
     use super::*;
     use crate::virtual_time::NormalizedEventClass;
@@ -5254,7 +5288,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_require_consuming_all_sdk_stops() {
+    fn sdk_snapshot_preserves_unconsumed_stops() {
         for stop in [
             SdkStop::Quiescent,
             SdkStop::Assertion {
@@ -5265,12 +5299,76 @@ mod tests {
             let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
             enable_nominal(&mut vmm, 7);
             vmm.sdk.as_mut().unwrap().pending_stop = Some(stop);
-            assert!(!vmm.can_snapshot());
-            assert!(vmm.sdk_snapshot().is_err());
-            assert!(vmm.take_sdk_stop().is_some());
-            assert!(vmm.can_snapshot());
+            assert!(vmm.save_vm_state().is_ok());
+            let snapshot = vmm.sdk_snapshot().unwrap().unwrap();
+            let pending = vmm.take_sdk_stop().unwrap();
+            vmm.sdk_restore(&snapshot).unwrap();
+            assert_eq!(vmm.take_sdk_stop(), Some(pending.clone()));
+            vmm.sdk_restore_events(&snapshot);
+            assert_eq!(vmm.take_sdk_stop(), Some(pending));
+            assert!(vmm.save_vm_state().is_ok());
             assert!(vmm.sdk_snapshot().is_ok());
         }
+    }
+
+    #[test]
+    fn sdk_restore_keeps_the_pending_response_sequence_and_future() {
+        let build = || {
+            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+            enable_nominal(&mut vmm, 7);
+            vmm
+        };
+        let mut source = build();
+        let question = channel::Question::with_request_id(77, 19, b"choose".to_vec()).unwrap();
+        let stop = SdkStop::Decision {
+            moment: 31,
+            seq: 42,
+            question: question.clone(),
+        };
+        source.sdk.as_mut().unwrap().pending_stop = Some(stop.clone());
+        let before = source.state_hash().unwrap();
+        let snapshot = source.sdk_snapshot().unwrap().unwrap();
+        assert_eq!(source.state_hash().unwrap(), before);
+        assert_eq!(source.take_sdk_stop(), Some(stop.clone()));
+        assert_eq!(source.take_sdk_stop(), Some(stop.clone()));
+        let mut restored = build();
+        assert_ne!(restored.state_hash().unwrap(), before);
+        restored.sdk_restore(&snapshot).unwrap();
+        assert_eq!(restored.state_hash().unwrap(), before);
+        assert_eq!(restored.take_sdk_stop(), Some(stop.clone()));
+        let mut branched = build();
+        branched.sdk_restore_events(&snapshot);
+        assert_eq!(branched.take_sdk_stop(), Some(stop));
+        let answer = channel::Answer::Data(vec![4, 5, 6]);
+        branched.resolve_service_answer(answer.clone()).unwrap();
+        assert_eq!(
+            source.resolve_service_answer(answer.clone()).unwrap(),
+            (31, question.clone())
+        );
+        assert_eq!(
+            restored.resolve_service_answer(answer).unwrap(),
+            (31, question)
+        );
+        let source_response = source.guest_slice(RESP_GPA as u64, HC_PAGE).unwrap();
+        let restored_response = restored.guest_slice(RESP_GPA as u64, HC_PAGE).unwrap();
+        assert_eq!(restored_response, source_response);
+        assert_eq!(
+            branched.guest_slice(RESP_GPA as u64, HC_PAGE).unwrap(),
+            source_response
+        );
+        assert_eq!(restored.state_hash().unwrap(), source.state_hash().unwrap());
+        assert_eq!(restored.sdk_events(), source.sdk_events());
+        assert!(
+            restored
+                .resolve_service_answer(channel::Answer::Nominal)
+                .is_err()
+        );
+        // A later restore must also clear a stale unanswered request.
+        let completed = source.sdk_snapshot().unwrap().unwrap();
+        restored.sdk_restore(&snapshot).unwrap();
+        restored.sdk_restore(&completed).unwrap();
+        assert!(restored.pending_service_question().is_none());
+        assert_eq!(restored.state_hash().unwrap(), source.state_hash().unwrap());
     }
 
     /// `pending_snapshot` (the deferred `setup_complete` point) is folded into the
@@ -5303,7 +5401,9 @@ mod tests {
         assert_eq!(fork.state_hash().unwrap(), h_true);
         let mut events_only = mk();
         events_only.sdk_restore_events(&snap);
-        assert_eq!(events_only.state_hash().unwrap(), h_false);
+        assert_eq!(events_only.state_hash().unwrap(), h_true);
+        assert!(events_only.take_snapshot_point());
+        assert!(!events_only.take_snapshot_point());
     }
 
     /// `Vmm::run()` STOPS at a cooperating-SDK assertion — it does not swallow it by
@@ -7048,9 +7148,7 @@ mod tests {
         v
     }
 
-    /// A non-trivial but quiescent-point-representable `VcpuState` (the dropped
-    /// `kvm_vcpu_events` injection bookkeeping and `kvm_sregs2` flags/pdptrs are
-    /// zero, as they are after an exit is fully serviced).
+    /// A non-trivial CPU fixture with no pending event injection.
     fn nonzero_state() -> VcpuState {
         let mut msrs = std::collections::BTreeMap::new();
         msrs.insert(0xC000_0080u32, 0x501);
@@ -7439,6 +7537,381 @@ mod tests {
         }
     }
 
+    /// Test-only backend that separates ordinary guest entries from completion
+    /// entries. Each ordinary `run` loads its own continuation script; a
+    /// `finish_exit` fragment is obtained by calling the inner mock's `run`, so
+    /// the VMM must drain the fragment without issuing another outer entry.
+    struct ContinuationBackend {
+        inner: MockBackend,
+        ordinary: VecDeque<Exit<X86>>,
+        continuation_scripts: VecDeque<VecDeque<Exit<X86>>>,
+        current_continuations: VecDeque<Exit<X86>>,
+        ordinary_runs: usize,
+        finish_runs: usize,
+        mapped: Vec<(Gpa, usize)>,
+    }
+
+    impl ContinuationBackend {
+        fn new(ordinary: Vec<Exit<X86>>, continuations: Vec<Vec<Exit<X86>>>) -> Self {
+            assert_eq!(
+                ordinary.len(),
+                continuations.len(),
+                "each ordinary entry needs one continuation script"
+            );
+            Self {
+                inner: configured_mock(Vec::new()),
+                ordinary: ordinary.into(),
+                continuation_scripts: continuations.into_iter().map(VecDeque::from).collect(),
+                current_continuations: VecDeque::new(),
+                ordinary_runs: 0,
+                finish_runs: 0,
+                mapped: Vec::new(),
+            }
+        }
+    }
+
+    impl Backend for ContinuationBackend {
+        type A = X86;
+
+        fn set_policy(&mut self, policy: &X86Policy) -> vmm_backend::Result<()> {
+            self.inner.set_policy(policy)
+        }
+
+        unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> vmm_backend::Result<()> {
+            // Record-only fixture: it neither retains nor dereferences `host`.
+            self.mapped.push((gpa, host.len()));
+            Ok(())
+        }
+
+        fn run(&mut self) -> vmm_backend::Result<Exit<X86>> {
+            if !self.current_continuations.is_empty() {
+                return Err(vmm_backend::BackendError::PendingCompletion);
+            }
+            let exit = self
+                .ordinary
+                .pop_front()
+                .ok_or(vmm_backend::BackendError::Internal(
+                    "continuation test ordinary run queue empty",
+                ))?;
+            let continuations = self.continuation_scripts.pop_front().ok_or(
+                vmm_backend::BackendError::Internal("continuation test script queue empty"),
+            )?;
+            self.current_continuations = continuations;
+            self.ordinary_runs += 1;
+            self.inner.push_exit(exit);
+            self.inner.run()
+        }
+
+        fn inject(&mut self, event: vmm_backend::Injection) -> vmm_backend::Result<()> {
+            self.inner.inject(event)
+        }
+
+        fn set_pending_irq(&mut self, id: Option<u8>) -> vmm_backend::Result<()> {
+            self.inner.set_pending_irq(id)
+        }
+
+        fn take_accepted_interrupt(&mut self) -> Option<u8> {
+            self.inner.take_accepted_interrupt()
+        }
+
+        fn complete_read(&mut self, value: u64) -> vmm_backend::Result<()> {
+            self.inner.complete_read(value)
+        }
+
+        fn complete_fault(&mut self) -> vmm_backend::Result<()> {
+            self.inner.complete_fault()
+        }
+
+        fn complete_ok(&mut self) -> vmm_backend::Result<()> {
+            self.inner.complete_ok()
+        }
+
+        fn complete_hypercall(&mut self, ret: u64) -> vmm_backend::Result<()> {
+            self.inner.complete_hypercall(ret)
+        }
+
+        fn complete_arch(
+            &mut self,
+            completion: vmm_backend::X86Completion,
+        ) -> vmm_backend::Result<()> {
+            self.inner.complete_arch(completion)
+        }
+
+        fn finish_exit(&mut self) -> vmm_backend::Result<Option<Exit<X86>>> {
+            let Some(exit) = self.current_continuations.pop_front() else {
+                return Ok(None);
+            };
+            self.finish_runs += 1;
+            self.inner.push_exit(exit);
+            Ok(Some(self.inner.run()?))
+        }
+
+        fn retire_pending_completion(&mut self) -> vmm_backend::Result<()> {
+            if !self.current_continuations.is_empty() {
+                return Err(vmm_backend::BackendError::PendingCompletion);
+            }
+            self.inner.retire_pending_completion()
+        }
+
+        fn save(&self) -> vmm_backend::Result<VcpuState> {
+            if !self.current_continuations.is_empty() || self.inner.has_pending() {
+                return Err(vmm_backend::BackendError::PendingCompletion);
+            }
+            self.inner.save()
+        }
+
+        fn restore(&mut self, state: &VcpuState) -> vmm_backend::Result<()> {
+            if !self.current_continuations.is_empty() || self.inner.has_pending() {
+                return Err(vmm_backend::BackendError::PendingCompletion);
+            }
+            self.inner.restore(state)
+        }
+
+        fn exit_counts(&self) -> vmm_backend::ExitCounts {
+            self.inner.exit_counts()
+        }
+
+        fn reset_exit_counts(&mut self) {
+            self.inner.reset_exit_counts()
+        }
+
+        fn capabilities(&self) -> vmm_backend::Capabilities<X86Caps> {
+            self.inner.capabilities()
+        }
+    }
+
+    fn continuation_vmm(
+        ordinary: Vec<Exit<X86>>,
+        continuations: Vec<Vec<Exit<X86>>>,
+        seed: u64,
+    ) -> Vmm<ContinuationBackend> {
+        let mut vmm = Vmm::new(
+            ContinuationBackend::new(ordinary, continuations),
+            GuestRam::new(0x2000).unwrap(),
+        );
+        vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), seed).unwrap());
+        vmm.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .unwrap(),
+        );
+        vmm
+    }
+
+    fn boxed_continuation_vmm(
+        ordinary: Vec<Exit<X86>>,
+        continuations: Vec<Vec<Exit<X86>>>,
+        seed: u64,
+    ) -> Vmm<Box<ContinuationBackend>> {
+        let mut vmm = Vmm::new(
+            Box::new(ContinuationBackend::new(ordinary, continuations)),
+            GuestRam::new(0x2000).unwrap(),
+        );
+        vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), seed).unwrap());
+        vmm.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .unwrap(),
+        );
+        vmm
+    }
+
+    fn apic_read(offset: u32) -> Exit<X86> {
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(APIC_MMIO_BASE + u64::from(offset)),
+            size: 4,
+            write: None,
+        })
+    }
+
+    fn apic_write(offset: u32, value: u64) -> Exit<X86> {
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(APIC_MMIO_BASE + u64::from(offset)),
+            size: 4,
+            write: Some(value),
+        })
+    }
+
+    #[test]
+    fn fragmented_lapic_mmio_is_drained_without_an_extra_outer_run() {
+        // The first APIC access returns a read completion. The backend's
+        // finish_exit supplies the write fragment from the same instruction;
+        // using Box here also exercises the trait's boxed continuation forward.
+        let mut source = boxed_continuation_vmm(
+            vec![apic_read(lapic::APIC_VERSION)],
+            vec![vec![apic_write(lapic::APIC_TPR, 0x20)]],
+            7,
+        );
+        source.wire_snapshot_hashing();
+
+        assert_eq!(source.step().unwrap(), Step::Continued);
+        assert_eq!(source.backend.as_ref().ordinary_runs, 1);
+        assert_eq!(source.backend.as_ref().finish_runs, 1);
+        assert!(source.backend.as_ref().ordinary.is_empty());
+        assert_eq!(source.exit_counts().mmio, 2);
+        assert_eq!(
+            source.backend.as_ref().inner.completions(),
+            &[Completion::Read(u64::from(lapic::APIC_VERSION_VALUE))],
+            "the read fragment receives the APIC version response"
+        );
+        assert_eq!(
+            source.devices.lapic.as_ref().unwrap().snapshot().tpr,
+            0x20,
+            "the write fragment updates the LAPIC"
+        );
+
+        let per_mmio =
+            crate::vendor::x86::contract::virtual_time_timing().interrupt_controller_mmio_vns;
+        assert_eq!(source.effective_vns(), Some(per_mmio * 2));
+        let counts = source.exit_counts();
+        let vns = source.effective_vns();
+        let outer_runs = source.backend.as_ref().ordinary_runs;
+        let finish_runs = source.backend.as_ref().finish_runs;
+        let hash = source.state_hash().unwrap();
+        let bytes = source.save_vm_state().unwrap().encode().unwrap();
+        assert_eq!(source.state_hash().unwrap(), hash);
+        assert_eq!(source.save_vm_state().unwrap().encode().unwrap(), bytes);
+        assert_eq!(source.exit_counts(), counts);
+        assert_eq!(source.effective_vns(), vns);
+        assert_eq!(source.backend.as_ref().ordinary_runs, outer_runs);
+        assert_eq!(source.backend.as_ref().finish_runs, finish_runs);
+
+        let decoded = vm_state::VmState::decode(&bytes).unwrap();
+        let memory = source.guest_memory().to_vec();
+        let mut cold = boxed_continuation_vmm(vec![], vec![], 7);
+        cold.wire_snapshot_hashing();
+        cold.restore_snapshot(&memory, &decoded).unwrap();
+        assert_eq!(cold.state_hash().unwrap(), hash);
+        assert_eq!(cold.save_vm_state().unwrap().encode().unwrap(), bytes);
+        assert_eq!(cold.backend.as_ref().ordinary_runs, 0);
+        assert_eq!(cold.backend.as_ref().finish_runs, 0);
+        assert_eq!(cold.exit_counts(), vmm_backend::ExitCounts::default());
+        assert_eq!(cold.effective_vns(), vns);
+        assert_eq!(
+            cold.devices.lapic.as_ref().unwrap().snapshot(),
+            source.devices.lapic.as_ref().unwrap().snapshot()
+        );
+    }
+
+    #[test]
+    fn snapshot_fails_while_a_continuation_remains_queued() {
+        // A stale continuation is not a safe snapshot boundary. This direct
+        // backend entry plants the condition that the production step loop must
+        // drain before exposing a stop or asking for a hash.
+        let mut vmm = continuation_vmm(
+            vec![apic_read(lapic::APIC_VERSION)],
+            vec![vec![apic_write(lapic::APIC_TPR, 0x20)]],
+            7,
+        );
+        vmm.backend.run().unwrap();
+        assert!(matches!(
+            vmm.save_vm_state(),
+            Err(VmmError::Backend(
+                vmm_backend::BackendError::PendingCompletion
+            ))
+        ));
+        assert!(matches!(
+            vmm.state_hash(),
+            Err(VmmError::Backend(
+                vmm_backend::BackendError::PendingCompletion
+            ))
+        ));
+    }
+
+    fn fragmented_checkpoint_script() -> (Vec<Exit<X86>>, Vec<Vec<Exit<X86>>>) {
+        let mut ordinary = Vec::with_capacity(256);
+        let mut continuations = Vec::with_capacity(256);
+        for value in 0..255u32 {
+            ordinary.push(Exit::Arch(X86Exit::Io {
+                port: REPORT_PORT,
+                size: 4,
+                write: Some(value),
+            }));
+            continuations.push(Vec::new());
+        }
+        ordinary.push(apic_read(lapic::APIC_VERSION));
+        continuations.push(vec![apic_write(lapic::APIC_TPR, 0x20)]);
+        (ordinary, continuations)
+    }
+
+    #[test]
+    fn deferred_checkpoint_lands_on_the_final_fragment_and_resets_with_trace_segments() {
+        let (ordinary, continuations) = fragmented_checkpoint_script();
+        let mut synchronous = boxed_continuation_vmm(ordinary.clone(), continuations.clone(), 7);
+        synchronous.wire_snapshot_hashing();
+        for _ in 0..255 {
+            assert_eq!(synchronous.step().unwrap(), Step::Continued);
+        }
+        assert_eq!(synchronous.step().unwrap(), Step::Continued);
+        let synchronous_trace = synchronous.virtual_time_trace().unwrap();
+        assert_eq!(synchronous_trace.normalized_log().events.len(), 257);
+        assert_eq!(
+            synchronous_trace.normalized_log().events[255].state_hash,
+            None,
+            "the first fragment is not a complete checkpoint boundary"
+        );
+        let expected = synchronous
+            .virtual_time_trace()
+            .unwrap()
+            .normalized_log()
+            .events[256]
+            .state_hash
+            .expect("the final fragment owns the synchronous checkpoint");
+
+        let mut deferred = boxed_continuation_vmm(ordinary, continuations, 7);
+        deferred.wire_snapshot_hashing();
+        deferred.defer_virtual_time_checkpoint_hashes().unwrap();
+        for _ in 0..255 {
+            assert_eq!(deferred.step().unwrap(), Step::Continued);
+        }
+        assert_eq!(deferred.step().unwrap(), Step::Continued);
+        let trace = deferred.virtual_time_trace().unwrap();
+        assert_eq!(trace.normalized_log().events.len(), 257);
+        assert_eq!(trace.normalized_log().events[255].state_hash, None);
+        assert_eq!(trace.normalized_log().events[256].state_hash, None);
+        assert!(!deferred.virtual_time_checkpoint_due(255));
+        assert!(deferred.virtual_time_checkpoint_due(256));
+        assert_eq!(deferred.state_hash().unwrap(), expected);
+        deferred
+            .checkpoint_virtual_time_trace_at(256, expected)
+            .unwrap();
+        assert_eq!(
+            deferred
+                .virtual_time_trace()
+                .unwrap()
+                .normalized_log()
+                .events[256]
+                .state_hash,
+            Some(expected)
+        );
+        assert!(
+            deferred
+                .checkpoint_virtual_time_trace_at(255, expected)
+                .is_err()
+        );
+
+        let completed_segment = deferred.take_virtual_time_trace().unwrap();
+        assert_eq!(completed_segment.normalized_log().events.len(), 257);
+        assert!(!deferred.virtual_time_checkpoint_due(256));
+        assert!(
+            deferred
+                .checkpoint_virtual_time_trace_at(256, expected)
+                .is_err()
+        );
+        assert!(
+            deferred
+                .virtual_time_trace()
+                .unwrap()
+                .normalized_log()
+                .events
+                .is_empty()
+        );
+    }
+
     #[test]
     fn save_vm_state_fails_closed_on_backend_save_error() {
         // A backend `save()` failure must abort the snapshot (fail closed), never
@@ -7452,6 +7925,122 @@ mod tests {
             matches!(v.save_vm_state(), Err(VmmError::Backend(_))),
             "a failing Backend::save must make save_vm_state fail closed"
         );
+        assert!(
+            matches!(v.state_hash(), Err(VmmError::Backend(_))),
+            "a failing register read must not produce a hash of default CPU state"
+        );
+    }
+
+    #[test]
+    fn terminal_snapshots_preserve_the_stop_without_guest_reentry() {
+        for (exit, reason) in [
+            (
+                Exit::Arch(X86Exit::Io {
+                    port: 0xf4,
+                    size: 1,
+                    write: Some(7),
+                }),
+                TerminalReason::DebugExit { code: 7 },
+            ),
+            (Exit::Common(CommonExit::Idle), TerminalReason::Idle),
+            (Exit::Common(CommonExit::Shutdown), TerminalReason::Shutdown),
+        ] {
+            let mut cpu = nonzero_state();
+            cpu.regs.rflags = 2; // CLI/HLT is terminal, with no interrupt wakeup.
+            let mut source = full_vmm(cpu.clone(), vec![exit], 0, 7);
+            source.wire_snapshot_hashing();
+            assert_eq!(source.step().unwrap(), Step::Terminal(reason));
+            let hash = source.state_hash().unwrap();
+            let at = source.effective_vns();
+            let counts = source.exit_counts();
+            let memory = source.guest_memory().to_vec();
+            let encoded = source.save_vm_state().unwrap().encode().unwrap();
+            assert_eq!(source.state_hash().unwrap(), hash);
+            assert_eq!(source.effective_vns(), at);
+            assert_eq!(source.exit_counts(), counts);
+            assert_eq!(source.save_vm_state().unwrap().encode().unwrap(), encoded);
+            let snapshot = vm_state::VmState::decode(&encoded).unwrap();
+
+            let next_exit = Exit::Arch(X86Exit::Io {
+                port: 0x3f8,
+                size: 1,
+                write: Some(b'X'.into()),
+            });
+            let mut cold = full_vmm(cpu, vec![next_exit], 0, 7);
+            cold.wire_snapshot_hashing();
+            let runnable = cold.save_vm_state().unwrap();
+            cold.restore_snapshot(&memory, &snapshot).unwrap();
+            assert_eq!(cold.state_hash().unwrap(), hash);
+            let cold_counts = cold.exit_counts();
+            for _ in 0..3 {
+                assert_eq!(source.step().unwrap(), Step::Terminal(reason));
+                assert_eq!(cold.step().unwrap(), Step::Terminal(reason));
+                assert_eq!(cold.exit_counts(), cold_counts);
+                assert_eq!(cold.effective_vns(), at);
+                assert_eq!(cold.state_hash().unwrap(), hash);
+                assert_eq!(source.state_hash().unwrap(), hash);
+            }
+            // Replacing the stopped timeline with a runnable snapshot clears
+            // the latch, and the previously untouched next exit can execute.
+            cold.restore_vm_state(&runnable).unwrap();
+            assert_eq!(cold.step().unwrap(), Step::Continued);
+            assert_eq!(cold.serial_output(), b"X");
+        }
+    }
+
+    #[test]
+    fn lifecycle_restore_rejects_malformed_state_before_mutation() {
+        let source = full_vmm(nonzero_state(), vec![], 0, 7);
+        let mut snapshot = source.save_vm_state().unwrap();
+        snapshot.set_engine_state(vec![b'V', b'M', b'E', 1, 4, 0, 0]);
+        let mut destination = full_vmm(VcpuState::default(), vec![], 0, 9);
+        let before = destination.state_hash().unwrap();
+        assert!(matches!(
+            destination.restore_vm_state(&snapshot),
+            Err(VmmError::Snapshot(
+                crate::snapshot::SnapshotError::EngineState(_)
+            ))
+        ));
+        assert_eq!(destination.state_hash().unwrap(), before);
+    }
+
+    #[test]
+    fn deferred_sdk_reentry_is_part_of_snapshot_and_hash_identity() {
+        let build = || {
+            let mut vmm = Vmm::new(
+                configured_mock(vec![Exit::Arch(X86Exit::Io {
+                    port: 0x3f8,
+                    size: 1,
+                    write: Some(b'X'.into()),
+                })]),
+                GuestRam::new(TEST_RAM).unwrap(),
+            );
+            enable_nominal(&mut vmm, 7);
+            vmm
+        };
+        let mut source = build();
+        source.sdk.as_mut().unwrap().pending_snapshot = true;
+        let ready_hash = source.state_hash().unwrap();
+        source.sdk_snapshot_reentry_required = true;
+        let deferred_hash = source.state_hash().unwrap();
+        assert_ne!(ready_hash, deferred_hash);
+        let sdk = source.sdk_snapshot().unwrap().unwrap();
+        let snapshot = source.save_vm_state().unwrap();
+        let snapshot = vm_state::VmState::decode(&snapshot.encode().unwrap()).unwrap();
+        let mut cold = build();
+        cold.restore_snapshot(source.guest_memory(), &snapshot)
+            .unwrap();
+        cold.sdk_restore(&sdk).unwrap();
+        assert_eq!(cold.state_hash().unwrap(), deferred_hash);
+        assert!(!source.take_snapshot_point());
+        assert!(!cold.take_snapshot_point());
+        assert_eq!(source.step().unwrap(), Step::Continued);
+        assert_eq!(cold.step().unwrap(), Step::Continued);
+        assert_eq!(cold.state_hash().unwrap(), source.state_hash().unwrap());
+        assert!(source.take_snapshot_point());
+        assert!(cold.take_snapshot_point());
+        assert!(!cold.take_snapshot_point());
+        assert_eq!(cold.state_hash().unwrap(), source.state_hash().unwrap());
     }
 
     #[test]
@@ -7572,34 +8161,57 @@ mod tests {
     }
 
     #[test]
-    fn save_vm_state_fails_closed_on_unrepresentable_sregs() {
-        // `kvm_sregs2` flags/pdptrs are not carried; the determinism guest is 64-bit /
-        // paging-off (they are 0). A non-zero value would be silently zeroed on
-        // restore, so the snapshot fails closed instead of sealing a lossy blob.
-        let mut flags = nonzero_state();
-        flags.sregs.flags = 1; // e.g. PDPTRS_VALID
-        let v = full_vmm(flags, vec![], 0, 1);
-        assert!(matches!(
-            v.save_vm_state(),
-            Err(VmmError::ContractViolation(_))
-        ));
+    fn cpu_snapshot_preserves_pae_and_debug_flags_without_guest_execution() {
+        for fields in 1..8 {
+            let mut cpu = nonzero_state();
+            if fields & 1 != 0 {
+                cpu.sregs.flags = 1;
+            }
+            if fields & 2 != 0 {
+                cpu.sregs.pdptrs = [0x1001, 0x2001, 0x3001, 0x4001];
+            }
+            if fields & 4 != 0 {
+                cpu.debugregs.flags = 1;
+            }
+            let exits = vec![
+                Exit::Arch(X86Exit::Io {
+                    port: 0x3f8,
+                    size: 1,
+                    write: Some(0x58),
+                }),
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+            ];
+            let mut source = full_vmm(cpu.clone(), exits.clone(), 0, 7);
+            source.wire_snapshot_hashing();
+            let before_hash = source.state_hash().unwrap();
+            let before_counts = source.exit_counts();
+            let saved = source.save_vm_state().unwrap();
+            let bytes = saved.encode().unwrap();
+            let decoded = vm_state::VmState::decode(&bytes).unwrap();
+            assert_eq!(source.state_hash().unwrap(), before_hash);
+            assert_eq!(source.exit_counts(), before_counts);
+            assert_eq!(source.effective_vns(), Some(0));
+            assert_eq!(decoded.sregs.flags, cpu.sregs.flags);
+            assert_eq!(decoded.sregs.pdptrs, cpu.sregs.pdptrs);
+            assert_eq!(decoded.debugregs.flags, cpu.debugregs.flags);
 
-        let mut pdptr = nonzero_state();
-        pdptr.sregs.pdptrs[2] = 0xDEAD_BEEF;
-        let v2 = full_vmm(pdptr, vec![], 0, 1);
-        assert!(matches!(
-            v2.save_vm_state(),
-            Err(VmmError::ContractViolation(_))
-        ));
-
-        // `kvm_debugregs.flags` (not carried) — DR0..3/DR6/DR7 ARE carried.
-        let mut dbg = nonzero_state();
-        dbg.debugregs.flags = 1;
-        let v3 = full_vmm(dbg, vec![], 0, 1);
-        assert!(matches!(
-            v3.save_vm_state(),
-            Err(VmmError::ContractViolation(_))
-        ));
+            let mut cold = full_vmm(VcpuState::default(), exits, 0, 7);
+            cold.wire_snapshot_hashing();
+            cold.restore_snapshot(source.guest_memory(), &decoded)
+                .unwrap();
+            assert_eq!(cold.state_hash().unwrap(), before_hash);
+            assert_eq!(cold.save_vm_state().unwrap().encode().unwrap(), bytes);
+            for _ in 0..2 {
+                assert_eq!(source.step().unwrap(), cold.step().unwrap());
+                assert_eq!(source.state_hash().unwrap(), cold.state_hash().unwrap());
+                assert_eq!(source.effective_vns(), cold.effective_vns());
+            }
+            assert_eq!(source.serial_output(), cold.serial_output());
+            assert_eq!(
+                source.save_vm_state().unwrap().encode().unwrap(),
+                cold.save_vm_state().unwrap().encode().unwrap()
+            );
+        }
     }
 
     #[test]
@@ -7666,10 +8278,10 @@ mod tests {
             },
             "exception_error_code",
         );
-        // Two cap-gated event fields are fail-closed-REJECTED at save (PR #12 round 7): their
-        // `KVM_SET_VCPU_EVENTS` validity bits need `KVM_CAP_X86_TRIPLE_FAULT_EVENT` /
-        // `KVM_CAP_EXCEPTION_PAYLOAD`, which this backend does not enable — a captured value
-        // could not be restored, so save fails closed rather than seal an unrestorable snapshot.
+        // Triple fault remains fail-closed-REJECTED at save (PR #12 round 7): its
+        // `KVM_SET_VCPU_EVENTS` validity bit needs `KVM_CAP_X86_TRIPLE_FAULT_EVENT`, which this
+        // backend does not enable. Exception payload support is enabled, so a payload-bearing
+        // exception is captured and restored by the focused whole-VMM test below.
         let rejects = |events: vmm_backend::VcpuEvents, needle: &str| {
             let mut st = nonzero_state();
             st.events = events;
@@ -7679,7 +8291,9 @@ mod tests {
                     msg.contains(needle),
                     "reject reason should name {needle:?}, got: {msg}"
                 ),
-                other => panic!("a cap-gated event field must fail closed at save, got {other:?}"),
+                other => {
+                    panic!("a triple-fault event field must fail closed at save, got {other:?}")
+                }
             }
         };
         rejects(
@@ -7689,14 +8303,6 @@ mod tests {
             },
             "triple_fault_pending",
         );
-        rejects(
-            vmm_backend::VcpuEvents {
-                exception_has_payload: 1,
-                exception_payload: 0xCAFE,
-                ..Default::default()
-            },
-            "exception_has_payload",
-        );
         // A clean quiescent point still snapshots (no regression), and the validity-mask
         // `flags` is carried like any other field now.
         let v_ok = full_vmm(nonzero_state(), vec![], 0, 1);
@@ -7704,6 +8310,209 @@ mod tests {
             v_ok.save_vm_state().is_ok(),
             "a quiescent point still snapshots"
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+    )]
+    fn save_vm_state_preserves_pending_exception_payload_through_fresh_restore() {
+        // Exception payload is part of the full device event record. Exercise the public VMM
+        // save/encode/decode/restore interfaces with a pending page fault carrying both an
+        // error code and opaque payload, including the no-execution/no-time-advance capture
+        // boundary and the exact bytes/hash produced by a fresh restore.
+        let events = vmm_backend::VcpuEvents {
+            exception_pending: 1,
+            exception_nr: 14,
+            exception_has_error_code: 1,
+            exception_error_code: 0xCAFE,
+            exception_has_payload: 1,
+            exception_payload: 0x1234_5678_9ABC_DEF0,
+            ..Default::default()
+        };
+        let mut source_state = nonzero_state();
+        source_state.events = events;
+        let mut source = full_vmm(source_state, vec![], 0, 1);
+        source.wire_snapshot_hashing();
+
+        let before_counts = source.exit_counts();
+        let before_vns = source.effective_vns();
+        let before_hash = source.state_hash().unwrap();
+        let saved = source
+            .save_vm_state()
+            .expect("a payload-bearing pending exception is restorable");
+        let bytes = <vm_state::VmState as SnapshotRecords>::encode(&saved)
+            .expect("the payload snapshot encodes");
+        let decoded = <vm_state::VmState as SnapshotRecords>::decode(&bytes)
+            .expect("the payload snapshot decodes");
+        assert_eq!(decoded, saved, "trait codec preserves the full snapshot");
+        let dev = snapshot::decode_device_blob(&decoded.devices.0)
+            .expect("the decoded device blob carries events");
+        assert_eq!(
+            dev.events,
+            snapshot::canonical_events(&events),
+            "the pending exception vector/error code/payload are serialized canonically"
+        );
+
+        // Capture is observational: it must not run a guest step, advance V-time, or alter the
+        // backend's exit counters. Repeated capture must retain byte identity too.
+        assert_eq!(source.exit_counts(), before_counts);
+        assert_eq!(source.effective_vns(), before_vns);
+        assert_eq!(source.state_hash().unwrap(), before_hash);
+        assert_eq!(
+            <vm_state::VmState as SnapshotRecords>::encode(&source.save_vm_state().unwrap())
+                .unwrap(),
+            bytes,
+            "repeated capture has stable VM bytes"
+        );
+        assert_eq!(source.state_hash().unwrap(), before_hash);
+
+        // Restore through the full snapshot interface into a fresh VM. The backend receives the
+        // restore form, which adds validity bits needed to clear stale target state while keeping
+        // the active exception, error code, and opaque payload intact.
+        let mut cold = full_vmm(VcpuState::default(), vec![], 9999, 1);
+        cold.wire_snapshot_hashing();
+        cold.restore_snapshot(source.guest_memory(), &decoded)
+            .expect("fresh restore accepts the payload-bearing exception");
+        assert_eq!(
+            cold.backend.save().unwrap().events,
+            snapshot::events_for_restore(&events),
+            "fresh restore re-establishes the pending exception payload"
+        );
+        assert_eq!(cold.state_hash().unwrap(), before_hash);
+        assert_eq!(
+            <vm_state::VmState as SnapshotRecords>::encode(&cold.save_vm_state().unwrap()).unwrap(),
+            bytes,
+            "fresh restore re-encodes to the saved VM bytes"
+        );
+        assert_eq!(cold.exit_counts(), before_counts);
+        assert_eq!(cold.effective_vns(), before_vns);
+    }
+
+    #[test]
+    fn public_snapshot_path_accepts_boundary_exception_vector31() {
+        // Vector 31 is the highest valid active exception vector. Exercise both
+        // KVM shapes through save, the public trait codec, and fresh restore so
+        // an over-strict >= 31 guard cannot pass by only rejecting vector 32.
+        let cases = [
+            (
+                "pending",
+                vmm_backend::VcpuEvents {
+                    exception_pending: 1,
+                    exception_nr: 31,
+                    exception_has_error_code: 1,
+                    exception_error_code: 0xCAFE,
+                    ..Default::default()
+                },
+            ),
+            (
+                "injected",
+                vmm_backend::VcpuEvents {
+                    exception_injected: 1,
+                    exception_nr: 31,
+                    exception_has_error_code: 1,
+                    exception_error_code: 0xBEEF,
+                    ..Default::default()
+                },
+            ),
+        ];
+
+        for (name, events) in cases {
+            let mut state = nonzero_state();
+            state.events = events;
+            let source = full_vmm(state, vec![], 0, 1);
+            let saved = source
+                .save_vm_state()
+                .unwrap_or_else(|error| panic!("{name} vector 31 must save: {error:?}"));
+            let bytes = <vm_state::VmState as SnapshotRecords>::encode(&saved)
+                .unwrap_or_else(|error| panic!("{name} vector 31 must encode: {error:?}"));
+            let decoded = <vm_state::VmState as SnapshotRecords>::decode(&bytes)
+                .unwrap_or_else(|error| panic!("{name} vector 31 must decode: {error:?}"));
+            let device = snapshot::decode_device_blob(&decoded.devices.0)
+                .unwrap_or_else(|error| panic!("{name} device blob must decode: {error:?}"));
+            assert_eq!(
+                device.events.exception_nr, 31,
+                "{name} vector survives codec"
+            );
+            assert_eq!(
+                device.events.exception_pending, events.exception_pending,
+                "{name} pending shape survives codec"
+            );
+            assert_eq!(
+                device.events.exception_injected, events.exception_injected,
+                "{name} injected shape survives codec"
+            );
+
+            let mut cold = full_vmm(VcpuState::default(), vec![], 0, 1);
+            cold.restore_snapshot(source.guest_memory(), &decoded)
+                .unwrap_or_else(|error| panic!("{name} vector 31 must restore: {error:?}"));
+            assert_eq!(
+                cold.backend.save().unwrap().events,
+                snapshot::events_for_restore(&events),
+                "{name} vector 31 survives fresh import"
+            );
+            assert_eq!(
+                cold.save_vm_state().unwrap().encode().unwrap(),
+                bytes,
+                "{name} vector 31 re-encodes identically"
+            );
+        }
+    }
+
+    #[test]
+    fn save_vm_state_rejects_invalid_active_exception_shapes() {
+        let invalid = [
+            (
+                vmm_backend::VcpuEvents {
+                    exception_injected: 1,
+                    exception_pending: 1,
+                    exception_nr: 14,
+                    ..Default::default()
+                },
+                "exception_injected",
+            ),
+            (
+                vmm_backend::VcpuEvents {
+                    exception_pending: 1,
+                    exception_nr: 2,
+                    ..Default::default()
+                },
+                "vector 2",
+            ),
+            (
+                vmm_backend::VcpuEvents {
+                    exception_pending: 1,
+                    exception_nr: 32,
+                    ..Default::default()
+                },
+                "above 31",
+            ),
+            (
+                vmm_backend::VcpuEvents {
+                    exception_injected: 1,
+                    exception_nr: 13,
+                    exception_has_payload: 1,
+                    exception_payload: 0xCAFE,
+                    ..Default::default()
+                },
+                "exception_has_payload",
+            ),
+        ];
+        for (events, needle) in invalid {
+            let mut state = nonzero_state();
+            state.events = events;
+            let vmm = full_vmm(state, vec![], 0, 1);
+            match vmm.save_vm_state() {
+                Err(VmmError::ContractViolation(message)) => assert!(
+                    message.contains(needle),
+                    "save rejection should identify {needle:?}, got: {message}"
+                ),
+                other => panic!(
+                    "save must reject invalid active exception shape {events:?}, got {other:?}"
+                ),
+            }
+        }
     }
 
     #[test]
@@ -7759,11 +8568,11 @@ mod tests {
         miri,
         ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
     )]
-    fn restore_vm_state_rejects_a_cap_gated_event_blob_before_mutation() {
+    fn restore_vm_state_rejects_invalid_event_blobs_before_mutation() {
         // PR #12 round 8 — restore's reject-before-mutation (atomic) contract. A foreign /
-        // malformed v3 blob whose `kvm_vcpu_events` would set a cap-disabled validity bit
-        // (`VALID_TRIPLE_FAULT` / `VALID_PAYLOAD`) makes `KVM_SET_VCPU_EVENTS` return `-EINVAL`
-        // only AFTER earlier `KVM_SET_*` ioctls inside `Backend::restore` already mutated the
+        // malformed v3 blob whose `kvm_vcpu_events` has an invalid active exception shape or
+        // would set the cap-disabled `VALID_TRIPLE_FAULT` bit makes `KVM_SET_VCPU_EVENTS` reject
+        // it only AFTER earlier `KVM_SET_*` ioctls inside `Backend::restore` already mutated the
         // target vCPU. `restore_vm_state` must reject the blob up front (mirroring the
         // `save_vm_state` guard) so it never half-mutates the target.
         let reject = |bad: vmm_backend::VcpuEvents, needle: &str| {
@@ -7773,7 +8582,7 @@ mod tests {
             marked.events.interrupt_nr = 0x99;
             let mut b = full_vmm(marked, vec![], 0, 1);
             let before = b.backend.save().unwrap();
-            // Forge an external blob (valid except for the cap-gated event field).
+            // Forge an external blob (valid except for the selected invalid event shape).
             let a = full_vmm(nonzero_state(), vec![], 0, 1);
             let mut s = a.save_vm_state().unwrap();
             let mut dev = snapshot::decode_device_blob(&s.devices.0).unwrap();
@@ -7785,7 +8594,7 @@ mod tests {
                     msg.contains(needle),
                     "reject reason should name {needle:?}, got: {msg}"
                 ),
-                other => panic!("restore must reject a cap-gated event blob, got {other:?}"),
+                other => panic!("restore must reject an invalid event blob, got {other:?}"),
             }
             // ...and must NOT have mutated the target vCPU (reject before mutation).
             assert_eq!(
@@ -7804,7 +8613,32 @@ mod tests {
         reject(
             vmm_backend::VcpuEvents {
                 exception_injected: 1,
+                exception_pending: 1,
                 exception_nr: 14,
+                ..Default::default()
+            },
+            "exception_injected",
+        );
+        reject(
+            vmm_backend::VcpuEvents {
+                exception_pending: 1,
+                exception_nr: 2,
+                ..Default::default()
+            },
+            "vector 2",
+        );
+        reject(
+            vmm_backend::VcpuEvents {
+                exception_pending: 1,
+                exception_nr: 32,
+                ..Default::default()
+            },
+            "above 31",
+        );
+        reject(
+            vmm_backend::VcpuEvents {
+                exception_injected: 1,
+                exception_nr: 13,
                 exception_has_payload: 1,
                 exception_payload: 0xCAFE,
                 ..Default::default()
@@ -8284,7 +9118,39 @@ mod tests {
         );
     }
 
-    /// A crafted v4 device blob with the impossible tuple `(Some(gpa),
+    /// Pending registration state crosses the same capture/serialization and
+    /// restore boundary used by production x86 snapshots. This direct vendor
+    /// construction test keeps the codec's pending representation visible; the
+    /// whole-VM continuation test below exercises the public save/restore path.
+    #[test]
+    fn pvclock_snapshot_and_restore_preserve_pending_registration_state() {
+        let mut source = pvclock_vmm(vec![], 7);
+        assert_eq!(
+            ring_pvclock_register(&mut source, PV_GPA).0,
+            Status::Ok as u16
+        );
+        let expected = PvclockSnapshot {
+            gpa: Some(PV_GPA),
+            registrable: true,
+            armed: false,
+        };
+        assert_eq!(source.pvclock_snapshot(), Some(expected));
+
+        // This is the production vendor construction/codec boundary that
+        // save_vm_state calls for the device record.
+        let state = <X86 as crate::vendor::Vendor>::build_vm_state(&source, &VcpuState::default());
+        let decoded = snapshot::decode_device_blob(&state.devices.0).unwrap();
+        assert_eq!(decoded.pvclock, Some(expected));
+
+        let mut target = pvclock_vmm(vec![], 7);
+        target
+            .pvclock_validate_restore(decoded.pvclock.as_ref())
+            .unwrap();
+        target.pvclock_commit_restore(decoded.pvclock.as_ref());
+        assert_eq!(target.pvclock_snapshot(), Some(expected));
+    }
+
+    /// A crafted v5 device blob with the impossible tuple `(Some(gpa),
     /// registrable=false)` is rejected at decode (cross-model r6 P1) — a
     /// registered page can only exist on a VM that could register, so this cannot
     /// come from a valid seal. Accepting it would commit an active registration
@@ -8295,17 +9161,27 @@ mod tests {
         use crate::vendor::x86::records::{DeviceState, encode_device_blob};
         // A well-formed source: registered AND registrable.
         let good = DeviceState {
-            pvclock: Some((Some(PV_GPA), true)),
+            pvclock: Some(crate::vmm::PvclockSnapshot {
+                gpa: Some(PV_GPA),
+                registrable: true,
+                armed: false,
+            }),
             ..DeviceState::default()
         };
         let mut blob = encode_device_blob(&good).0;
-        // The registrable flag is the LAST byte of the blob (trailing pvclock
-        // record). Flip it to the impossible `false` and re-decode.
-        assert_eq!(*blob.last().unwrap(), 1, "the registrable byte is the tail");
-        *blob.last_mut().unwrap() = 0;
+        // The registrable flag is immediately before the v5 armed byte in the
+        // trailing pvclock record. Flip it to the impossible `false` and
+        // re-decode.
+        assert_eq!(
+            blob[blob.len() - 2],
+            1,
+            "the registrable byte precedes armed"
+        );
+        let registrable_index = blob.len() - 2;
+        blob[registrable_index] = 0;
         assert!(
             crate::vendor::x86::records::decode_device_blob(&blob).is_err(),
-            "a registered-but-non-registrable v4 record must be rejected at the wire"
+            "a registered-but-non-registrable v5 record must be rejected at the wire"
         );
     }
 
@@ -8382,10 +9258,10 @@ mod tests {
         // Both serviced exits staged backend completions. A live backend cannot
         // restore over either until the completion-only entry has retired it.
         vmm.retire_pending_completion().unwrap();
-        // Make the vCPU unsealable (PAE-only sregs flags — the same lever the
-        // existing fail-closed seal tests use).
+        // A synthetic event requiring a capability this backend does not enable
+        // must still reject before touching the page. PAE state is now supported.
         let mut bad = vmm.backend.save().unwrap();
-        bad.sregs.flags = 1;
+        bad.events.triple_fault_pending = 1;
         vmm.backend.restore(&bad).unwrap();
         vmm.saved_state = None;
         assert!(
@@ -8404,7 +9280,7 @@ mod tests {
         );
         // And a SUCCESSFUL seal at the same point leaves the page equally
         // untouched — the epoch keeps its mid-run value (r4: sealed verbatim).
-        bad.sregs.flags = 0;
+        bad.events.triple_fault_pending = 0;
         vmm.backend.restore(&bad).unwrap();
         vmm.save_vm_state().unwrap();
         assert_eq!(
@@ -8522,7 +9398,7 @@ mod tests {
     /// page keeps tracking the oracle, and the first-arm state is undisturbed.
     /// The r2 P1 fix (restore side) + the r3 direct-carry P1 in one: a plain
     /// `restore_snapshot` — no control server, no side channel — reinstates
-    /// the sealed registration from the vm_state device blob (v4), and the
+    /// the sealed registration from the vm_state device blob (v4/v5), and the
     /// restored registration arms the Δ refresh immediately (the restored
     /// anchor is exactly 0 against a re-baselined counter, so `0 + Δ` is
     /// strictly ahead; no stale-anchor window to wait out).
@@ -8611,36 +9487,109 @@ mod tests {
         );
     }
 
-    /// r13 P1: a PENDING pvclock registration is UNSEALABLE. `restore_vtime` can
-    /// leave a registration pending yet mark V-time synchronized (a would-be
-    /// sealable boundary), but the v4 device record carries only the GPA, not the
-    /// pending-vs-armed bit — so `save_vm_state` fails closed rather than seal a
-    /// state that would restore as ARMED and skip the canonical handshake stamp
-    /// the source still owes. Once the handshake arms the page, the same VM seals.
+    /// A pending registration is a valid whole-VM snapshot point. The save must
+    /// preserve the pending GPA, page bytes, and synchronized V-time without
+    /// performing the handshake or otherwise changing the live VM. The source,
+    /// a save-and-continue copy, and a cold restore must therefore converge when
+    /// each services the same post-doorbell time read.
     #[test]
-    fn save_vm_state_rejects_a_pending_pvclock_registration() {
-        let mut v = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], 7);
-        ring_pvclock_register(&mut v, PV_GPA); // pending: OUT recorded, no handshake
-        // Reach a synchronized boundary while STILL pending — the restore_vtime
-        // path the reviewer identified (the doorbell OUT alone never synchronizes).
-        let snap = VtimeSnapshot {
-            vns: 42,
-            guest_clock_offset: 0,
-            entropy: SeededEntropy::new(7).save_state(),
+    fn save_vm_state_preserves_pending_pvclock_for_the_next_handshake() {
+        const SEED: u64 = 7;
+        let expected = PvclockSnapshot {
+            gpa: Some(PV_GPA),
+            registrable: true,
+            armed: false,
         };
-        v.restore_vtime(&snap).unwrap();
-        assert!(
-            v.pvclock_registration().is_some(),
-            "the registration is present but pending"
+        let pending = || {
+            let mut v = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], SEED);
+            assert_eq!(ring_pvclock_register(&mut v, PV_GPA).0, Status::Ok as u16);
+            v.restore_vtime(&VtimeSnapshot {
+                vns: 42,
+                guest_clock_offset: 0,
+                entropy: SeededEntropy::new(SEED).save_state(),
+            })
+            .unwrap();
+            assert_eq!(v.effective_vns(), Some(42));
+            assert_eq!(v.pvclock_snapshot(), Some(expected));
+            assert!(
+                vtime::pvclock::read(v.pvclock_page().unwrap()).is_none(),
+                "the pending page is still unstamped"
+            );
+            v
+        };
+
+        let mut uninterrupted = pending();
+        let mut save_continue = pending();
+        let before_counts = save_continue.exit_counts();
+        let before_time = save_continue.effective_vns();
+        let before_page = save_continue.pvclock_page().unwrap().to_vec();
+        let before_memory = save_continue.guest_memory().to_vec();
+        let before_refreshes = save_continue.pvclock_refreshes().to_vec();
+
+        let saved = save_continue
+            .save_vm_state()
+            .expect("a pending pvclock registration is representable");
+        // Exercise the outer production serialization boundary, rather than
+        // validating only the in-memory vendor record.
+        let saved = vm_state::VmState::decode(&saved.encode().unwrap()).unwrap();
+        assert_eq!(save_continue.exit_counts(), before_counts);
+        assert_eq!(save_continue.effective_vns(), before_time);
+        assert_eq!(
+            save_continue.pvclock_page().unwrap(),
+            before_page.as_slice()
         );
-        assert!(
-            matches!(v.save_vm_state(), Err(VmmError::ContractViolation(_))),
-            "a pending (un-armed) pvclock registration must fail closed at the seal"
+        assert_eq!(save_continue.guest_memory(), before_memory.as_slice());
+        assert_eq!(
+            save_continue.pvclock_refreshes(),
+            before_refreshes.as_slice()
         );
-        // The handshake (the queued RDTSC) arms the page; the seal then succeeds.
-        v.step().unwrap();
-        v.save_vm_state()
-            .expect("an armed registration seals cleanly");
+        assert_eq!(save_continue.pvclock_snapshot(), Some(expected));
+
+        let decoded = snapshot::decode_device_blob(&saved.devices.0).unwrap();
+        assert_eq!(decoded.pvclock, Some(expected));
+
+        let mut cold = pvclock_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], SEED);
+        cold.restore_snapshot(&before_memory, &saved)
+            .expect("cold restore preserves the pending registration");
+        assert_eq!(cold.effective_vns(), before_time);
+        assert_eq!(cold.pvclock_snapshot(), Some(expected));
+        assert_eq!(cold.pvclock_page().unwrap(), before_page.as_slice());
+        assert!(
+            vtime::pvclock::read(cold.pvclock_page().unwrap()).is_none(),
+            "restore must not stamp a pending page"
+        );
+
+        let handshake = |v: &mut Vmm<MockBackend>| {
+            assert_eq!(v.step().unwrap(), Step::Continued);
+            assert_eq!(
+                v.pvclock_snapshot().map(|snapshot| snapshot.armed),
+                Some(true)
+            );
+            let page = v.pvclock_page().unwrap().to_vec();
+            assert!(
+                vtime::pvclock::read(&page).is_some(),
+                "the post-doorbell time read must arm and stamp the page"
+            );
+            let completions = v.backend.completions().to_vec();
+            assert!(
+                matches!(completions.as_slice(), [Completion::Read(_)]),
+                "the handshake must service one read completion"
+            );
+            (
+                v.effective_vns(),
+                v.exit_counts(),
+                completions,
+                v.pvclock_snapshot(),
+                page,
+                v.guest_memory().to_vec(),
+                v.save_vm_state().unwrap().encode().unwrap(),
+                v.state_hash().unwrap(),
+            )
+        };
+
+        let expected_after = handshake(&mut uninterrupted);
+        assert_eq!(handshake(&mut save_continue), expected_after);
+        assert_eq!(handshake(&mut cold), expected_after);
     }
 
     /// §1.1 as amended at r4: a seal captures the page **verbatim**, so the
@@ -8649,7 +9598,7 @@ mod tests {
     /// `seal_derives_from_tracked_parent_and_reproduces_the_image`) and a
     /// restored sibling inherits the parent's epoch — the two stay in lockstep
     /// instead of diverging by a canonicalized-away `seq`. The sealed
-    /// registration riding the vm_state device blob (v4) authoritatively
+    /// registration riding the vm_state device blob (v4/v5) authoritatively
     /// replaces whatever registration the target VM held (r3: the direct restore
     /// path carries the channel with the state).
     #[test]
@@ -8716,7 +9665,7 @@ mod tests {
     }
 
     /// Composition mismatches fail loud, **symmetrically**, through the real
-    /// restore path (`restore_vm_state` validates the blob's v4 pvclock
+    /// restore path (`restore_vm_state` validates the blob's v4/v5 pvclock
     /// record before mutating anything): an offered snapshot into an
     /// unoffered target (registered or not), an unoffered snapshot into an
     /// offered target, a Δ mismatch, a GPA that no longer validates, and a

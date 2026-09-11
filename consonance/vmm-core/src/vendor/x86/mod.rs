@@ -81,6 +81,16 @@ impl Vendor for X86 {
         vmm.dispatch_mmio(gpa, size, write)
     }
 
+    fn finish_exit<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<Option<Exit<Self>>, VmmError> {
+        if !vmm.completion_staged {
+            return Ok(None);
+        }
+        // Keep the conservative in-place-restore latch: finish_exit need not
+        // retire a backend's host-only bookkeeping when save already captures
+        // the completed state. Restore owns clearing that displaced latch.
+        Ok(vmm.backend.finish_exit()?)
+    }
+
     fn is_doorbell_exit(exit: &Exit<Self>) -> bool {
         matches!(
             exit,

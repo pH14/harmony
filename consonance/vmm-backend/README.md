@@ -17,13 +17,18 @@ an ISA-specific exit enum.
   Hypervisor.framework paths where their platform APIs are available.
 
 Backends install a guest-visible CPU policy before the first run. Read-style
-exits remain pending until the matching completion method is called; resuming
-with an unserviced completion is an error. PIO/MMIO stores have no value to
-complete, but KVM retains their fast-path callback until the next entry, so the
-backend marks them staged and retires them with an immediate-exit entry before
-an in-place restore. Exit counters and capability flags are exposed for the
-VMM's reports. Virtual-time policy, device models, snapshot formats, and
-entropy live above this crate.
+exits require the matching completion response. The x86 KVM backend completes
+PIO and MSR callbacks eagerly with an immediate-exit entry. `finish_exit` also
+completes MMIO callbacks and returns any further device access required by the
+same instruction. Callers service these continuations until `finish_exit`
+returns `None` before exposing a stopped execution. No completion entry executes
+the successor instruction or injects an interrupt; snapshot capture performs no
+entry at all. An MSR fault queues its exception without executing the handler.
+
+KVM construction enables the exception-payload API so pending exceptions remain
+distinct from injected ones and restores replace the complete exception record.
+Exit counters include continuation accesses exactly once. Virtual-time policy,
+device models, snapshot formats, and entropy live above this crate.
 
 The `contract-tests` feature exposes the shared backend contract exam, and the
 `mock` feature enables portable fixtures:

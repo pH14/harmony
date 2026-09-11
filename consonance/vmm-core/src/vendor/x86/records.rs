@@ -18,23 +18,17 @@ use vm_state::{
     VcpuSregs, VmState, Xcrs, XsaveImage,
 };
 
+use crate::vmm::PvclockSnapshot;
+
 use crate::snapshot::SnapshotError;
 
 // ===========================================================================
 // vm_state adapter — pure, bidirectional conversions between the live machine's
 // `vmm_backend` value types and `vm-state`'s plain-data records.
 //
-// The live `VcpuState` carries a superset of `vm-state`'s `VcpuEvents` /
-// `VcpuSregs` (KVM exposes more pending-event and SREGS2 detail than the
-// determinism model's typed records carry). The typed `vm-state::VcpuEvents` is a
-// reduced 6-field subset; task 41 captures the **full** `kvm_vcpu_events` in the
-// vmm-core-owned device blob (see `DeviceState::events`) and makes it authoritative
-// on restore, so an **in-flight interrupt/exception injection** — a non-quiescent
-// point — now round-trips bit-identically rather than being fail-closed-rejected.
-// The still-dropped `kvm_sregs2` `flags`/`pdptrs` (PAE-only; the long-mode /
-// paging-off determinism guest never uses the PAE PDPTRs) and `debugregs.flags` are
-// zero at any V-time point, so refusing a (non-existent) non-zero value there only
-// guards misuse.
+// The typed records carry the full SREGS2 and debug-register state. The legacy
+// typed VcpuEvents subset is supplemented by DeviceState::events, which carries
+// the full pending-event state and is authoritative on restore.
 // ===========================================================================
 
 /// `VcpuState.regs` → `vm_state::VcpuRegs` (identical field set, flat copy).
@@ -134,8 +128,7 @@ fn unpack_segment(s: &Segment) -> vmm_backend::Segment {
 }
 
 /// `VcpuState.sregs` → `vm_state::VcpuSregs` (segments packed, descriptor tables
-/// flattened to base/limit pairs; `kvm_sregs2` `flags`/`pdptrs` are not carried —
-/// zero at the quiescent snapshot point, see the module note).
+/// flattened to base/limit pairs, with SREGS2 flags and PAE PDPTRs preserved).
 pub(crate) fn to_vm_sregs(s: &vmm_backend::VcpuSregs) -> VcpuSregs {
     VcpuSregs {
         cs: pack_segment(&s.cs),
@@ -157,12 +150,12 @@ pub(crate) fn to_vm_sregs(s: &vmm_backend::VcpuSregs) -> VcpuSregs {
         cr8: s.cr8,
         efer: s.efer,
         apic_base: s.apic_base,
+        flags: s.flags,
+        pdptrs: s.pdptrs,
     }
 }
 
-/// `vm_state::VcpuSregs` → `VcpuState.sregs` (reverse of [`to_vm_sregs`];
-/// `flags`/`pdptrs` restore to zero — valid for the long-mode / paging-off guests
-/// the determinism model snapshots).
+/// `vm_state::VcpuSregs` → `VcpuState.sregs` (reverse of [`to_vm_sregs`]).
 pub(crate) fn from_vm_sregs(s: &VcpuSregs) -> vmm_backend::VcpuSregs {
     vmm_backend::VcpuSregs {
         cs: unpack_segment(&s.cs),
@@ -188,18 +181,18 @@ pub(crate) fn from_vm_sregs(s: &VcpuSregs) -> vmm_backend::VcpuSregs {
         cr8: s.cr8,
         efer: s.efer,
         apic_base: s.apic_base,
-        flags: 0,
-        pdptrs: [0; 4],
+        flags: s.flags,
+        pdptrs: s.pdptrs,
     }
 }
 
-/// `VcpuState.debugregs` → `vm_state::DebugRegs` (the always-zero KVM `flags` is
-/// dropped).
+/// `VcpuState.debugregs` → `vm_state::DebugRegs`, including backend flags.
 pub(crate) fn to_vm_debugregs(d: &vmm_backend::DebugRegs) -> DebugRegs {
     DebugRegs {
         db: d.db,
         dr6: d.dr6,
         dr7: d.dr7,
+        flags: d.flags,
     }
 }
 
@@ -209,7 +202,7 @@ pub(crate) fn from_vm_debugregs(d: &DebugRegs) -> vmm_backend::DebugRegs {
         db: d.db,
         dr6: d.dr6,
         dr7: d.dr7,
-        flags: 0,
+        flags: d.flags,
     }
 }
 
@@ -397,7 +390,7 @@ pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vcpu
     // [`events_for_restore`]. KVM treats a *clear* validity bit on `KVM_SET_VCPU_EVENTS` as
     // "leave that sub-record UNCHANGED", not "clear it", so restoring this active-only mask
     // onto a non-fresh vCPU would retain the prior occupant's stale state. `events_for_restore`
-    // forces the gated clear-on-restore bits on; this function stays active-only for the hash.
+    // forces the cap-free clear-on-restore bits on; this function stays active-only for the hash.
     let smm_active =
         c.smi_smm != 0 || c.smi_pending != 0 || c.smi_inside_nmi != 0 || c.smi_latched_init != 0;
     c.flags = if c.nmi_injected != 0 || c.nmi_pending != 0 || c.nmi_masked != 0 {
@@ -450,8 +443,9 @@ pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vcpu
 ///   backend does not enable, so setting the bit is `-EINVAL` (the round-6 box run proved this).
 ///   With the cap off there is **no** triple-fault sub-record to leak, so leaving it gated on
 ///   active (via [`canonical_events`]) is both safe and complete here.
-/// - `PAYLOAD` — stays gated on `exception_has_payload` (its cap is likewise not enabled); the
-///   exception sub-record (injected/nr/error_code) is applied by KVM unconditionally anyway.
+/// - `PAYLOAD` — remains active-only via [`canonical_events`]. The backend enables
+///   `KVM_CAP_EXCEPTION_PAYLOAD` and adds the SET-side validity bit when applying the restore
+///   record; the exception payload is therefore restored whenever `exception_has_payload` is set.
 /// - `SIPI_VECTOR` — stays gated (SET-only; round-2 handling).
 ///
 /// The **`state_hash`** uses [`canonical_events`] (active-only flags), not this — so forcing the
@@ -463,100 +457,77 @@ pub(crate) fn events_for_restore(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vc
     c
 }
 
-/// Return `Some(reason)` if `vcpu` carries machine state the snapshot would
-/// **silently zero** on restore — so [`crate::vmm::Vmm::save_vm_state`] can **fail
-/// closed** instead of sealing a lossy blob (rather than the restore side silently
-/// dropping it).
-///
-/// **This is the class-closing audit of `VcpuState`.** Every field is either captured
-/// by the typed records / device blob, or asserted zero here, so a saved blob is
-/// **provably lossless-or-rejected**:
-/// - *Captured:* `regs` (all), `sregs` segments + descriptor tables + CRs + EFER +
-///   APIC_BASE, `xcr0`, `debugregs.db`/`dr6`/`dr7`, **the full `events` record**
-///   (every `kvm_vcpu_events` field — task 41, captured verbatim in the device blob,
-///   no longer a reduced subset), `mp_state`, `msrs`, `xsave`.
-/// - *Asserted zero here (not carried):* `sregs.flags`/`sregs.pdptrs` (PAE-only;
-///   64-bit guest), `debugregs.flags` (KVM "currently always 0").
-///
-/// **Events are no longer rejected wholesale.** Task 41 captures the *entire* `kvm_vcpu_events`
-/// (in-flight interrupt/exception injection, SMM, etc.) in the device blob and re-establishes it
-/// on restore via `KVM_SET_VCPU_EVENTS`, so a **non-quiescent** point — an interrupt in flight —
-/// is now snapshottable rather than fail-closed-rejected. That is the whole point of this task.
-/// **Two cap-gated event fields are the exception** (PR #12 round 7): `triple_fault_pending` and
-/// `exception_has_payload` are rejected here, because their `KVM_SET_VCPU_EVENTS` validity bits
-/// need per-VM capabilities (`KVM_CAP_X86_TRIPLE_FAULT_EVENT` / `KVM_CAP_EXCEPTION_PAYLOAD`) this
-/// backend does not enable — so a captured value could not be restored. Rejecting at *save* keeps
-/// the codec **provably lossless-or-rejected** and save/restore symmetric (see below). The other
-/// remaining fail-closed fields are the PAE-only `sregs.flags`/`pdptrs` and `debugregs.flags`,
-/// all zero for the 64-bit / paging-off determinism guest at any V-time point.
-///
-/// (Two further non-`VcpuState` gaps are handled at *restore*, not here: a non-empty
-/// `timers` section is rejected, and a staged backend completion is **defined out** —
-/// a snapshot is taken only at a clean, V-time-synchronized boundary with no staged
-/// RNG completion; see [`crate::vmm::Vmm::save_vm_state`] / [`crate::vmm::Vmm::restore_vm_state`].)
-///
-/// Returns `None` for any representable point (quiescent **or** with an interrupt in
-/// flight). Pure.
+/// The configured backend does not enable the optional triple-fault event capability checked
+/// below. Exception payload support is enabled by the backend. The active exception fields must
+/// also satisfy KVM's shape rules before canonicalization. All SREGS2 and debug-register fields
+/// are carried by the versioned CPU records, including nonzero PAE PDPTRs.
 pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'static str> {
-    let s = &vcpu.sregs;
-    if s.flags != 0 {
+    unrestorable_events(&vcpu.events)
+}
+
+/// Purely validate the active exception fields in a `kvm_vcpu_events` record.
+///
+/// Inactive exception fields may contain KVM's stale GET-side residuals and remain accepted;
+/// [`canonical_events`] removes those values before they reach the snapshot or hash. Active
+/// fields must match the KVM exception ABI: injection and pending are mutually exclusive, the
+/// vector is a valid exception vector other than the reserved vector 2, and an injected-only
+/// exception cannot carry a payload because KVM clears it.
+fn exception_shape_error(e: &vmm_backend::VcpuEvents) -> Option<&'static str> {
+    let injected = e.exception_injected != 0;
+    let pending = e.exception_pending != 0;
+    if injected && pending {
         return Some(
-            "kvm_sregs2 flags is set (e.g. PDPTRS_VALID) — the vm_state subset does not carry it; \
-             the determinism guest is 64-bit / paging-off, so a snapshot here is unrepresentable",
+            "kvm_vcpu_events.exception_injected and exception_pending are both set; KVM requires \
+             an exception to be injected or pending, not both",
         );
     }
-    if s.pdptrs.iter().any(|&p| p != 0) {
+    if (injected || pending) && e.exception_nr == 2 {
         return Some(
-            "PAE PDPTRs are non-zero — not carried by the vm_state subset (the determinism guest \
-             is 64-bit / paging-off, where PDPTRs are unused)",
+            "kvm_vcpu_events.exception_nr is vector 2, which is not a valid active exception \
+             vector for KVM",
         );
     }
-    if vcpu.debugregs.flags != 0 {
+    if (injected || pending) && e.exception_nr > 31 {
         return Some(
-            "kvm_debugregs flags is set — the vm_state DebugRegs record carries DR0..3/DR6/DR7 but \
-             not the flags field (KVM defines it as currently always 0)",
+            "kvm_vcpu_events.exception_nr is above 31, which is not a valid active exception \
+             vector for KVM",
         );
     }
-    // The full `kvm_vcpu_events` record IS captured now (device blob, task 41), so an in-flight
-    // injection round-trips — except the two cap-gated fields KVM cannot restore here; see
-    // [`cap_unrestorable_events`] (applied symmetrically at save and at restore-before-mutation).
-    if let Some(reason) = cap_unrestorable_events(&vcpu.events) {
-        return Some(reason);
+    if injected && e.exception_has_payload != 0 {
+        return Some(
+            "kvm_vcpu_events.exception_has_payload is set for an injected-only exception; KVM \
+             clears payload state for injected exceptions",
+        );
     }
     None
 }
 
-/// Reason a `kvm_vcpu_events` record **cannot be restored on this backend** — it would set a
-/// `KVM_SET_VCPU_EVENTS` validity bit gated behind a per-VM capability this backend does not
-/// enable, so the SET ioctl returns `-EINVAL`. `None` if every set bit is restorable.
+/// Reason a `kvm_vcpu_events` record **cannot be restored on this backend**. This includes an
+/// active exception shape that KVM would reject or normalize, and a validity bit gated behind a
+/// per-VM capability this backend does not enable. `None` if the record is restorable.
 ///
-/// KVM rejects `VALID_TRIPLE_FAULT` / `VALID_PAYLOAD` on SET unless
-/// `KVM_CAP_X86_TRIPLE_FAULT_EVENT` / `KVM_CAP_EXCEPTION_PAYLOAD` is enabled — **even with a
-/// zero payload**. This backend enables neither (only `DETERMINISTIC_INTERCEPTS` +
-/// `USER_SPACE_MSR`), and vmm-core cannot query per-cap state through the `Backend` trait, so
-/// these fields are unrestorable. The check is on the **fields** that drive the rebuilt mask
-/// (`triple_fault_pending → VALID_TRIPLE_FAULT`, `exception_has_payload → VALID_PAYLOAD`), so it
-/// catches exactly the records whose [`events_for_restore`] would carry a cap-disabled bit.
+/// KVM rejects `VALID_TRIPLE_FAULT` on SET unless `KVM_CAP_X86_TRIPLE_FAULT_EVENT` is enabled —
+/// **even with a zero payload**. This backend leaves that capability disabled, while it enables
+/// `KVM_CAP_EXCEPTION_PAYLOAD`; vmm-core cannot query per-cap state through the `Backend` trait,
+/// so only the triple-fault field is unrestorable. The check is on the field that drives the
+/// rebuilt mask (`triple_fault_pending → VALID_TRIPLE_FAULT`), so it catches exactly the records
+/// whose [`events_for_restore`] would carry the cap-disabled bit.
 ///
 /// Applied **symmetrically**: [`unrepresentable_state`] uses it so `save_vm_state` never seals an
 /// unrestorable snapshot (save/restore symmetry, PR #12 round 7), and
 /// [`crate::vmm::Vmm::restore_vm_state`] uses it to reject an untrusted/foreign `dev.events` blob
 /// **before** any `Backend::restore` ioctl mutates the target vCPU — preserving restore's
 /// reject-before-mutation (atomic) contract (PR #12 round 8). A real `KVM_GET` on this backend
-/// never reports either field (a triple fault is a `KVM_EXIT_SHUTDOWN`; with the payload cap off
-/// KVM folds the payload via the legacy path, leaving `has_payload = 0`), so this never rejects a
-/// genuine captured point — it closes the contract for a synthetic / relayed / forward-compat blob.
-pub(crate) fn cap_unrestorable_events(e: &vmm_backend::VcpuEvents) -> Option<&'static str> {
+/// never reports the triple-fault field (a triple fault is a `KVM_EXIT_SHUTDOWN`), so this never
+/// rejects a genuine captured point — it closes the contract for a synthetic / relayed /
+/// forward-compat blob.
+pub(crate) fn unrestorable_events(e: &vmm_backend::VcpuEvents) -> Option<&'static str> {
+    if let Some(reason) = exception_shape_error(e) {
+        return Some(reason);
+    }
     if e.triple_fault_pending != 0 {
         return Some(
             "kvm_vcpu_events.triple_fault_pending is set, but KVM_CAP_X86_TRIPLE_FAULT_EVENT is not \
-             enabled on this backend — KVM_SET_VCPU_EVENTS would reject it (-EINVAL); fail closed \
-             rather than seal/restore an unrestorable snapshot",
-        );
-    }
-    if e.exception_has_payload != 0 {
-        return Some(
-            "kvm_vcpu_events.exception_has_payload is set, but KVM_CAP_EXCEPTION_PAYLOAD is not \
              enabled on this backend — KVM_SET_VCPU_EVENTS would reject it (-EINVAL); fail closed \
              rather than seal/restore an unrestorable snapshot",
         );
@@ -647,18 +618,24 @@ const DEVICE_BLOB_MAGIC: u32 = 0x3156_4544;
 const DEVICE_BLOB_VERSION_BASE: u16 = 3;
 
 /// Device-blob layout version for a VM that **offers the task-110 pvclock
-/// channel**: v3 plus a trailing channel record (Δ + the one-shot registration),
-/// so the direct `save_vm_state`/`restore_snapshot` path carries the stamping
-/// obligation with the state it governs — a restored guest whose RAM contains an
-/// active clock page gets a VMM that keeps refreshing it (same-state ⇒
-/// same-future), with no control-server side channel required.
+/// channel** and carries the legacy channel record (GPA + registrability).
+/// Version 4 remains the writer shape for already-representable states; a
+/// legacy GPA implies `armed = true` because the old writer refused to seal
+/// pending registrations.
 ///
 /// **The version IS the offer flag** (cross-model r4 P1): an unoffered VM
 /// encodes [`DEVICE_BLOB_VERSION_BASE`] with no trailing record at all, so
 /// page-off blobs — and the `VMST` hashes over them — are byte-identical to
 /// main's, and a v3 blob written by main still decodes here. The decoder accepts
-/// exactly these two versions; v4 with no channel is not a representable state.
-const DEVICE_BLOB_VERSION_PVCLOCK: u16 = 4;
+/// the base v3 shape plus the legacy v4 and current v5 channel shapes; a
+/// pvclock-bearing version with no channel is not a representable state.
+const DEVICE_BLOB_VERSION_PVCLOCK_LEGACY: u16 = 4;
+/// Current pvclock-bearing device-blob version for a registered, pending page.
+/// It extends the legacy trailing record with an explicit pending-vs-armed flag,
+/// preserving that engine state through capture and restore. Armed and
+/// unregistered states retain the v4 bytes so their existing snapshot hashes
+/// remain stable.
+const DEVICE_BLOB_VERSION_PVCLOCK: u16 = 5;
 
 /// The 8250 UART residual state a snapshot carries: the serial capture buffer (so a
 /// restored continuation reproduces byte-identical console output), the eight
@@ -706,10 +683,14 @@ pub(crate) struct DeviceState {
     /// authoritative events on restore — it supersedes the reduced typed record, which
     /// `vm-state` still carries unchanged for task-39 codec compatibility.
     pub events: vmm_backend::VcpuEvents,
-    /// The pvclock channel configuration (v4): `None` = the page was
-    /// not offered on the sealing VM; `Some((gpa, registrable))` = offered
+    /// The pvclock channel configuration (v4/v5): `None` = the page was
+    /// not offered on the sealing VM; `Some(PvclockSnapshot)` = offered
     /// with the guest's one-shot registration when
-    /// `gpa` is `Some`, and whether the sealing VM could register a page at all
+    /// `gpa` is `Some`, whether the sealing VM could register a page at all,
+    /// and whether the registration has completed its handshake. Version 4
+    /// remains the writer shape for unregistered and armed states; its readers
+    /// derive `armed` from the legacy GPA because the old writer refused to
+    /// seal pending registrations.
     /// (`Vmm::pvclock_available` — V-time wired and a deterministic work
     /// counter). `registrable` is carried because a snapshot sealed BEFORE
     /// registration has no GPA to re-validate yet still promises a future
@@ -717,7 +698,7 @@ pub(crate) struct DeviceState {
     /// restore target's own composition (offer / capability / GPA) before any
     /// mutation and committed with the rest of the restore — the engine's
     /// `pvclock_validate_restore`/`pvclock_commit_restore` pair.
-    pub pvclock: Option<(Option<u64>, bool)>,
+    pub pvclock: Option<PvclockSnapshot>,
 }
 
 fn put_u16(out: &mut Vec<u8>, v: u16) {
@@ -796,11 +777,15 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
     let mut out = Vec::new();
     put_u32(&mut out, DEVICE_BLOB_MAGIC);
     // The version records whether a pvclock channel follows — an unoffered VM
-    // encodes the v3 shape exactly as before task 110.
+    // encodes the v3 shape exactly as before task 110. Keep the legacy v4
+    // bytes for states it already represented; only a registered pending page
+    // needs the v5 armed flag.
+    let pending_pvclock = d.pvclock.is_some_and(|pv| pv.gpa.is_some() && !pv.armed);
     put_u16(
         &mut out,
         match d.pvclock {
-            Some(_) => DEVICE_BLOB_VERSION_PVCLOCK,
+            Some(_) if pending_pvclock => DEVICE_BLOB_VERSION_PVCLOCK,
+            Some(_) => DEVICE_BLOB_VERSION_PVCLOCK_LEGACY,
             None => DEVICE_BLOB_VERSION_BASE,
         },
     );
@@ -833,18 +818,22 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
     // The full kvm_vcpu_events (task 41) — a fixed-width record so the
     // earlier field offsets are unchanged from v2.
     put_events(&mut out, &d.events);
-    // The pvclock channel record (task 110, v4 only) — trailing, so every
-    // earlier offset is unchanged from v3, and ABSENT entirely at v3, so an
-    // unoffered VM's bytes are identical to main's.
-    if let Some((gpa, registrable)) = &d.pvclock {
-        match gpa {
+    // The pvclock channel record — trailing, so every earlier offset is
+    // unchanged from v3, and ABSENT entirely at v3, so an unoffered VM's bytes
+    // are identical to main's. The v5 pending shape appends its armed flag;
+    // v4 retains its historical two-field tail.
+    if let Some(pv) = &d.pvclock {
+        match pv.gpa {
             Some(g) => {
                 out.push(1);
-                put_u64(&mut out, *g);
+                put_u64(&mut out, g);
             }
             None => out.push(0),
         }
-        out.push(u8::from(*registrable));
+        out.push(u8::from(pv.registrable));
+        if pending_pvclock {
+            out.push(u8::from(pv.armed));
+        }
     }
     DeviceBlob(out)
 }
@@ -964,11 +953,15 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
     if r.u32().ok_or(bad("truncated header"))? != DEVICE_BLOB_MAGIC {
         return Err(bad("bad magic"));
     }
-    // v3 (no pvclock channel) and v4 (channel record trailing) are both current
-    // shapes — the version is the offer flag, so a page-off blob from main
-    // decodes unchanged and a page-on one carries its channel.
+    // v3 (no pvclock channel), v4 (legacy channel record), and v5 (current
+    // channel record) are readable shapes. The version is the offer flag, so a
+    // page-off blob from main decodes unchanged and a page-on one carries its
+    // channel.
     let version = r.u16().ok_or(bad("truncated version"))?;
-    if version != DEVICE_BLOB_VERSION_BASE && version != DEVICE_BLOB_VERSION_PVCLOCK {
+    if !matches!(
+        version,
+        DEVICE_BLOB_VERSION_BASE | DEVICE_BLOB_VERSION_PVCLOCK_LEGACY | DEVICE_BLOB_VERSION_PVCLOCK
+    ) {
         return Err(bad("unsupported version"));
     }
     let tsc_adjust = r.u64().ok_or(bad("truncated tsc_adjust"))?;
@@ -1001,7 +994,10 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
         _ => return Err(bad("bad legacy flag")),
     };
     let events = r.events().ok_or(bad("truncated vcpu events"))?;
-    let pvclock = if version == DEVICE_BLOB_VERSION_PVCLOCK {
+    let pvclock = if matches!(
+        version,
+        DEVICE_BLOB_VERSION_PVCLOCK_LEGACY | DEVICE_BLOB_VERSION_PVCLOCK
+    ) {
         let gpa = match r.u8().ok_or(bad("truncated pvclock gpa flag"))? {
             0 => None,
             1 => Some(r.u64().ok_or(bad("truncated pvclock gpa"))?),
@@ -1021,7 +1017,31 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
                 "pvclock record marks a registered page non-registrable (impossible tuple)",
             ));
         }
-        Some((gpa, registrable))
+        let armed = if version == DEVICE_BLOB_VERSION_PVCLOCK {
+            if gpa.is_none() {
+                return Err(bad("current pvclock record is missing its registered GPA"));
+            }
+            let armed = r.bool().ok_or(bad("bad pvclock armed flag"))?;
+            if armed {
+                return Err(bad(
+                    "current pvclock record must represent a pending registration",
+                ));
+            }
+            armed
+        } else {
+            // Version 4 could only contain a sealed GPA after save_vm_state's
+            // pending-registration refusal, so a legacy GPA is armed. An absent
+            // GPA denotes the unregistered state and therefore remains unarmed.
+            gpa.is_some()
+        };
+        if armed && gpa.is_none() {
+            return Err(bad("pvclock record is armed without a registered page"));
+        }
+        Some(PvclockSnapshot {
+            gpa,
+            registrable,
+            armed,
+        })
     } else {
         None
     };
@@ -1332,8 +1352,13 @@ mod tests {
                 slave_imr: 0xFF,
             }),
             events: full_events(),
-            // A registered pvclock channel (task 110, v4).
-            pvclock: Some((Some(0x4000), true)),
+            // A registered and armed pvclock channel retains the legacy v4
+            // shape because it was already representable there.
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: true,
+            }),
         };
         let blob = encode_device_blob(&d);
         let decoded = decode_device_blob(&blob.0).unwrap();
@@ -1720,8 +1745,9 @@ mod tests {
             force,
             "events_for_restore sets NMI_PENDING|SHADOW|SMM unconditionally"
         );
-        // TRIPLE_FAULT / PAYLOAD / SIPI stay gated — forcing TRIPLE_FAULT/PAYLOAD is -EINVAL
-        // without their caps, SIPI is SET-only. For a quiescent snapshot all three are clear.
+        // TRIPLE_FAULT / SIPI stay gated — forcing TRIPLE_FAULT is -EINVAL without its cap,
+        // while SIPI is SET-only. For a quiescent snapshot both are clear. PAYLOAD is active-only
+        // here; the backend supplies its SET-side validity bit for every restore.
         assert_eq!(
             setv.flags & KVM_VCPUEVENT_VALID_TRIPLE_FAULT,
             0,
@@ -1735,7 +1761,7 @@ mod tests {
         assert_eq!(
             setv.flags & KVM_VCPUEVENT_VALID_PAYLOAD,
             0,
-            "PAYLOAD stays gated on exception_has_payload"
+            "PAYLOAD is active-only for a quiescent snapshot"
         );
 
         // Restoring the clean snapshot onto the STALE vCPU clears every (cap-free) stale
@@ -1793,12 +1819,13 @@ mod tests {
     }
 
     #[test]
-    fn unrepresentable_state_fails_closed_on_cap_gated_event_fields() {
-        // PR #12 round 7 — save/restore symmetry. `triple_fault_pending` and
-        // `exception_has_payload` are the two `kvm_vcpu_events` fields whose
-        // `KVM_SET_VCPU_EVENTS` validity bit needs a per-VM capability this backend does not
-        // enable, so a captured value could NOT be restored (restore would be `-EINVAL`). Save
-        // must fail closed on them — but NOT over-reject any restorable in-flight state.
+    fn unrepresentable_state_only_rejects_triple_fault() {
+        // PR #12 round 7 — save/restore symmetry. `triple_fault_pending` is the
+        // `kvm_vcpu_events` field whose `KVM_SET_VCPU_EVENTS` validity bit needs a per-VM
+        // capability this backend does not enable, so a captured value could NOT be restored
+        // (restore would be `-EINVAL`). Exception payload support is enabled and must remain
+        // representable. Save must fail closed on triple fault — but NOT over-reject any other
+        // restorable in-flight state.
         let representable = |events: vmm_backend::VcpuEvents| vmm_backend::VcpuState {
             events,
             ..Default::default()
@@ -1821,6 +1848,15 @@ mod tests {
                 ..Default::default()
             },
             vmm_backend::VcpuEvents {
+                exception_pending: 1,
+                exception_nr: 14,
+                exception_has_error_code: 1,
+                exception_error_code: 0x18,
+                exception_has_payload: 1,
+                exception_payload: 0xCAFE,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
                 nmi_injected: 1,
                 nmi_pending: 1,
                 ..Default::default()
@@ -1839,7 +1875,7 @@ mod tests {
                 "a restorable in-flight field must NOT be rejected: {ok:?}"
             );
         }
-        // The two cap-gated fields fail closed, each naming the offending field.
+        // The remaining cap-gated field fails closed, naming the offending field.
         let tf = unrepresentable_state(&representable(vmm_backend::VcpuEvents {
             triple_fault_pending: 1,
             ..Default::default()
@@ -1849,16 +1885,92 @@ mod tests {
             tf.contains("triple_fault_pending"),
             "reject reason names the field: {tf}"
         );
-        let pl = unrepresentable_state(&representable(vmm_backend::VcpuEvents {
-            exception_has_payload: 1,
-            exception_payload: 0xCAFE,
-            ..Default::default()
-        }))
-        .expect("exception_has_payload must fail closed at save");
-        assert!(
-            pl.contains("exception_has_payload"),
-            "reject reason names the field: {pl}"
-        );
+    }
+
+    #[test]
+    fn exception_shape_validation_is_active_only_and_strict() {
+        let invalid = [
+            (
+                vmm_backend::VcpuEvents {
+                    exception_injected: 1,
+                    exception_pending: 1,
+                    exception_nr: 14,
+                    ..Default::default()
+                },
+                "exception_injected",
+            ),
+            (
+                vmm_backend::VcpuEvents {
+                    exception_pending: 1,
+                    exception_nr: 2,
+                    ..Default::default()
+                },
+                "exception_nr",
+            ),
+            (
+                vmm_backend::VcpuEvents {
+                    exception_pending: 1,
+                    exception_nr: 32,
+                    ..Default::default()
+                },
+                "exception_nr",
+            ),
+            (
+                vmm_backend::VcpuEvents {
+                    exception_injected: 1,
+                    exception_nr: 13,
+                    exception_has_payload: 1,
+                    exception_payload: 0xCAFE,
+                    ..Default::default()
+                },
+                "exception_has_payload",
+            ),
+        ];
+        for (events, field) in invalid {
+            let reason = exception_shape_error(&events)
+                .unwrap_or_else(|| panic!("invalid active exception must be rejected: {events:?}"));
+            assert!(
+                reason.contains(field),
+                "shape rejection should identify {field:?}, got: {reason}"
+            );
+            assert!(
+                unrestorable_events(&events).is_some(),
+                "the save/restore guard must use the same active-shape validation: {events:?}"
+            );
+        }
+
+        for accepted in [
+            vmm_backend::VcpuEvents {
+                exception_injected: 1,
+                exception_nr: 13,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                exception_pending: 1,
+                exception_nr: 14,
+                exception_has_error_code: 1,
+                exception_error_code: 0x18,
+                exception_has_payload: 1,
+                exception_payload: 0x1234,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                // Inactive residuals are accepted and canonicalized away later.
+                exception_nr: 0xFF,
+                exception_has_payload: 1,
+                exception_payload: 0xCAFE,
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                exception_shape_error(&accepted).is_none(),
+                "valid or inactive exception shape was rejected: {accepted:?}"
+            );
+            assert!(
+                unrestorable_events(&accepted).is_none(),
+                "valid or inactive exception must remain restorable: {accepted:?}"
+            );
+        }
     }
 
     #[test]
@@ -1894,8 +2006,8 @@ mod tests {
             "a VALID error_code (has_error_code=1) is preserved"
         );
 
-        // exception_payload is gated on exception_has_payload (a payload-bearing exception is
-        // ALSO fail-closed-rejected at save/restore — this gates the canonical form / hash):
+        // exception_payload is gated on exception_has_payload (this gates the canonical form /
+        // hash):
         let stale_pl = canonical_events(&vmm_backend::VcpuEvents {
             exception_injected: 1,
             exception_nr: 14,
@@ -1984,7 +2096,11 @@ mod tests {
         // Offering the channel is the ONLY thing that appends bytes, and it
         // bumps the version — so the v3 prefix is untouched.
         let on = encode_device_blob(&DeviceState {
-            pvclock: Some((Some(0x4000), true)),
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: false,
+            }),
             ..d.clone()
         })
         .0;
@@ -1995,32 +2111,202 @@ mod tests {
         assert_eq!(
             &on[6..off.len()],
             &off[6..],
-            "the v4 encoding must extend the v3 body, not reshuffle it"
+            "the v5 encoding must extend the v3 body, not reshuffle it"
         );
         assert_eq!(
             on.len(),
-            off.len() + 1 + 8 + 1,
-            "v4 appends exactly the GPA-present flag + the GPA (u64) + the registrable flag"
+            off.len() + 1 + 8 + 1 + 1,
+            "v5 appends the GPA-present flag + GPA + registrable + armed flags"
         );
         // Both decode back to what they encoded, and the v3 blob (what main
         // writes) decodes here as "no channel" rather than being rejected.
         assert_eq!(decode_device_blob(&off).unwrap(), d);
         assert_eq!(
             decode_device_blob(&on).unwrap().pvclock,
-            Some((Some(0x4000), true))
+            Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: false,
+            })
         );
         // The registrable bit round-trips independently of the GPA — it is the
         // whole point of carrying it (a snapshot with NO registration still
         // records whether the source COULD register). r5 P1.
         let unreg = encode_device_blob(&DeviceState {
-            pvclock: Some((None, false)),
+            pvclock: Some(PvclockSnapshot {
+                gpa: None,
+                registrable: false,
+                armed: false,
+            }),
             ..d.clone()
         })
         .0;
         assert_eq!(
             decode_device_blob(&unreg).unwrap().pvclock,
-            Some((None, false))
+            Some(PvclockSnapshot {
+                gpa: None,
+                registrable: false,
+                armed: false,
+            })
         );
+
+        // The old writer's bytes remain unchanged for an armed registration.
+        let armed = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: true,
+            }),
+            ..d.clone()
+        })
+        .0;
+        assert_eq!(
+            u16::from_le_bytes([armed[4], armed[5]]),
+            DEVICE_BLOB_VERSION_PVCLOCK_LEGACY
+        );
+        assert_eq!(armed.len(), off.len() + 1 + 8 + 1);
+        let mut expected_legacy = on.clone();
+        expected_legacy.pop();
+        expected_legacy[4..6].copy_from_slice(&DEVICE_BLOB_VERSION_PVCLOCK_LEGACY.to_le_bytes());
+        assert_eq!(armed, expected_legacy);
+        assert_eq!(
+            u16::from_le_bytes([unreg[4], unreg[5]]),
+            DEVICE_BLOB_VERSION_PVCLOCK_LEGACY
+        );
+        assert_eq!(unreg.len(), off.len() + 1 + 1);
+    }
+
+    #[test]
+    fn legacy_pvclock_blob_derives_armed_from_the_gpa() {
+        let current = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: false,
+            }),
+            ..DeviceState::default()
+        })
+        .0;
+        // Remove the v5-only armed byte and relabel the otherwise identical
+        // trailing record as v4. Legacy writers could not seal a pending GPA,
+        // so the reader must recover `armed = true` from the legacy shape.
+        let mut legacy = current[..current.len() - 1].to_vec();
+        legacy[4..6].copy_from_slice(&DEVICE_BLOB_VERSION_PVCLOCK_LEGACY.to_le_bytes());
+        assert_eq!(
+            decode_device_blob(&legacy).unwrap().pvclock,
+            Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: true,
+            })
+        );
+
+        let legacy_unregistered = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: None,
+                registrable: false,
+                armed: false,
+            }),
+            ..DeviceState::default()
+        })
+        .0;
+        assert_eq!(
+            decode_device_blob(&legacy_unregistered).unwrap().pvclock,
+            Some(PvclockSnapshot {
+                gpa: None,
+                registrable: false,
+                armed: false,
+            })
+        );
+    }
+
+    #[test]
+    fn archived_legacy_pvclock_fixtures_round_trip_byte_exactly() {
+        for (blob, expected) in [
+            (
+                include_bytes!("../../../tests/fixtures/harmony-x86-v4-armed.bin").as_slice(),
+                PvclockSnapshot {
+                    gpa: Some(0x4000),
+                    registrable: true,
+                    armed: true,
+                },
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/harmony-x86-v4-unregistered.bin")
+                    .as_slice(),
+                PvclockSnapshot {
+                    gpa: None,
+                    registrable: true,
+                    armed: false,
+                },
+            ),
+        ] {
+            assert_eq!(
+                u16::from_le_bytes([blob[4], blob[5]]),
+                DEVICE_BLOB_VERSION_PVCLOCK_LEGACY
+            );
+            let decoded = decode_device_blob(blob).unwrap();
+            assert_eq!(decoded.pvclock, Some(expected));
+            assert_eq!(encode_device_blob(&decoded).0, blob);
+        }
+    }
+
+    #[test]
+    fn new_pvclock_blob_rejects_impossible_registration_flags() {
+        // Start with the canonical pending v5 shape, then make its armed byte
+        // non-canonical. The new version is reserved for pending registrations.
+        let mut bad_armed = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: false,
+            }),
+            ..DeviceState::default()
+        })
+        .0;
+        *bad_armed.last_mut().unwrap() = 1;
+        assert!(matches!(
+            decode_device_blob(&bad_armed),
+            Err(SnapshotError::DeviceBlob(
+                "current pvclock record must represent a pending registration"
+            ))
+        ));
+
+        // A current version without a GPA is also non-canonical. Remove the
+        // pending record's GPA bytes while retaining its version and flags.
+        let mut missing_gpa = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: false,
+            }),
+            ..DeviceState::default()
+        })
+        .0;
+        let gpa_flag = missing_gpa.len() - 11;
+        missing_gpa.drain(gpa_flag + 1..gpa_flag + 9);
+        missing_gpa[gpa_flag] = 0;
+        assert!(matches!(
+            decode_device_blob(&missing_gpa),
+            Err(SnapshotError::DeviceBlob(
+                "current pvclock record is missing its registered GPA"
+            ))
+        ));
+
+        // A registration requires a composition that can accept it. This is
+        // still rejected in the legacy shape before armed-state derivation.
+        let blob = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: false,
+                armed: true,
+            }),
+            ..DeviceState::default()
+        });
+        assert!(matches!(
+            decode_device_blob(&blob.0),
+            Err(SnapshotError::DeviceBlob(_))
+        ));
     }
 
     #[test]

@@ -59,6 +59,9 @@ pub enum SnapshotError {
     /// panic (Convention rule #4).
     #[error("device blob malformed: {0}")]
     DeviceBlob(&'static str),
+    /// The architecture-neutral engine lifecycle record was malformed.
+    #[error("engine state malformed: {0}")]
+    EngineState(&'static str),
     /// A drained dirty-page gfn lies outside the configured guest image.
     #[error("dirty gfn {gfn} out of range: guest image is {pages} pages")]
     DirtyGfnOutOfRange {
