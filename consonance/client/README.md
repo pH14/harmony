@@ -36,11 +36,10 @@ exact-count arrival all fail the branch with the session untouched. One moment
 carries one effect, so a duplicate is reported rather than overwritten.
 
 `Session::run_until` runs to an absolute virtual-time deadline or an earlier
-stop. `Session::seal` snapshots the current stopped state, running the guest a
-further settle step whenever the control server cannot seal that point yet, and
-gives up once the caller's total settle allowance is spent. A guest that has
-crashed or gone quiescent advances no further, so its endpoint is offered one
-last seal and then reported rather than settled again.
+stop. `Session::snapshot` captures that exact stopped state in one control
+exchange and returns the server's synchronized V-time. It never advances the
+guest or retries a refusal, so a capture failure is returned to the caller with
+the control diagnostic.
 
 `SessionConfig::defer_virtual_time_checkpoint_hashes` moves sparse
 virtual-time checkpoint hashing out of the run that reaches a checkpoint. Each

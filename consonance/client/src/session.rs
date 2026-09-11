@@ -9,6 +9,7 @@
 
 use std::{error::Error, fmt, sync::Arc, time::Duration};
 
+use crate::{Client, Transport};
 use control_proto::{Reply, SnapId, StopReason};
 use environment::{
     channel::Effect,
@@ -554,15 +555,6 @@ pub enum SessionError {
     /// interrupted mid-run, so no run on it can be bounded.
     #[error("backend cannot be interrupted mid-run, so its runs cannot be wall-clock bounded")]
     Unboundable,
-    /// The guest never reached a snapshot-eligible point within the caller's
-    /// settle allowance.
-    #[error("guest reached no snapshot-eligible point within a settle allowance of {allowance} ns")]
-    Settle {
-        /// Settle allowance spent before the attempt was abandoned. Settling
-        /// asks for one step at a time and a step can stop early, so this
-        /// bounds the virtual time the guest consumed rather than reporting it.
-        allowance: u64,
-    },
 }
 
 /// The backend's host-only latch: set to take a run away from a guest that has
@@ -637,9 +629,6 @@ fn service_branch_spec(
     Ok(spec)
 }
 
-/// Whether running the guest further can move it off a point the control
-/// server refuses to seal. A crashed or quiescent guest advances no further,
-/// so a retried seal would only repeat the refusal.
 #[cfg_attr(
     not(all(
         target_os = "linux",
@@ -648,25 +637,49 @@ fn service_branch_spec(
     )),
     allow(dead_code)
 )]
-fn settling_can_advance(stop: &StopReason) -> bool {
-    match stop {
-        StopReason::Deadline { .. }
-        | StopReason::Decision { .. }
-        | StopReason::SnapshotPoint { .. }
-        | StopReason::Assertion { .. } => true,
-        StopReason::Crash { .. } | StopReason::Quiescent { .. } => false,
+#[derive(Debug, Eq, PartialEq)]
+struct SnapshotReceipt {
+    id: SnapId,
+    at: u64,
+}
+
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )),
+    allow(dead_code)
+)]
+fn snapshot_handle<T: Transport>(
+    client: &mut Client<T>,
+    operation: &'static str,
+) -> Result<SnapshotReceipt, Box<dyn Error>> {
+    let reply = client
+        .request(&control_proto::Request::Snapshot)
+        .map_err(|error| SessionError::Control(error.to_string()))?;
+    match reply {
+        Reply::Snapshot {
+            id,
+            at,
+            tainted: false,
+            ..
+        } => Ok(SnapshotReceipt { id, at: at.0 }),
+        Reply::Snapshot {
+            id, tainted: true, ..
+        } => {
+            let error: Box<dyn Error> =
+                SessionError::Control(format!("{operation} was tainted")).into();
+            // A tainted snapshot is still minted by the control server. The
+            // session rejects it, so release the handle before returning the
+            // caller-facing error.
+            let _ = drop_control_handle(client, id);
+            Err(error)
+        }
+        reply => Err(SessionError::Reply { operation, reply }.into()),
     }
 }
 
-/// Seal the current point, running the guest a little further whenever the
-/// control server refuses it.
-///
-/// `seal` answers `None` for a point that is not snapshot-eligible yet, and
-/// `advance` runs one settle step and reports where the guest stopped. Both
-/// take `context` so one caller can lend the same session to each. This pure
-/// retry policy stays here so it is testable without a VM or Linux linker; the
-/// third result field is the last settle run's stop reason, absent when the
-/// point sealed with no settling at all.
 #[cfg_attr(
     not(all(
         target_os = "linux",
@@ -675,45 +688,28 @@ fn settling_can_advance(stop: &StopReason) -> bool {
     )),
     allow(dead_code)
 )]
-fn seal_after_settling<C, Seal, Advance>(
-    context: &mut C,
-    settle_step: u64,
-    max_settle: u64,
-    mut seal: Seal,
-    mut advance: Advance,
-) -> Result<(SnapId, u64, Option<StopReason>), Box<dyn Error>>
-where
-    Seal: FnMut(&mut C) -> Result<Option<(SnapId, u64)>, Box<dyn Error>>,
-    Advance: FnMut(&mut C, u64) -> Result<StopReason, Box<dyn Error>>,
-{
-    if settle_step == 0 {
-        return Err(SessionError::Control("settle step is zero".into()).into());
-    }
-    let mut settled = 0_u64;
-    let mut last: Option<StopReason> = None;
-    loop {
-        if let Some((snapshot, at)) = seal(context)? {
-            return Ok((snapshot, at, last));
-        }
-        // Every stop is offered a seal before it is judged, so a guest that ran
-        // to quiescence or crashed during the last step still gets its endpoint
-        // sealed; only a second step is refused.
-        if let Some(stop) = &last
-            && !settling_can_advance(stop)
-        {
-            return Err(SessionError::Stop(stop.clone()).into());
-        }
-        if settled >= max_settle {
-            return Err(SessionError::Settle { allowance: settled }.into());
-        }
-        // A zero step would loop without moving the guest, so it ends the
-        // settling as an exhausted allowance instead.
-        let step = settle_step.min(max_settle - settled);
-        if step == 0 {
-            return Err(SessionError::Settle { allowance: settled }.into());
-        }
-        last = Some(advance(context, step)?);
-        settled += step;
+fn drop_control_handle<T: Transport>(
+    client: &mut Client<T>,
+    handle: SnapId,
+) -> Result<(), Box<dyn Error>> {
+    let reply = client
+        .request(&control_proto::Request::Drop(handle))
+        .map_err(|error| SessionError::Control(error.to_string()))?;
+    expect_unit(reply, "drop snapshot")
+}
+
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )),
+    allow(dead_code)
+)]
+fn expect_unit(reply: Reply, operation: &'static str) -> Result<(), Box<dyn Error>> {
+    match reply {
+        Reply::Unit => Ok(()),
+        reply => Err(SessionError::Reply { operation, reply }.into()),
     }
 }
 
@@ -865,6 +861,191 @@ fn bytes_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{collections::VecDeque, io};
+
+    #[derive(Debug)]
+    struct SnapshotTransport {
+        requests: Vec<control_proto::Request>,
+        replies: VecDeque<Result<Result<Reply, control_proto::ControlError>, io::Error>>,
+    }
+
+    impl Transport for SnapshotTransport {
+        type Error = io::Error;
+
+        fn exchange(
+            &mut self,
+            request: &control_proto::Request,
+        ) -> Result<Result<Reply, control_proto::ControlError>, Self::Error> {
+            self.requests.push(request.clone());
+            self.replies
+                .pop_front()
+                .unwrap_or_else(|| Err(io::Error::other("connection closed")))
+        }
+    }
+
+    fn test_caps() -> control_proto::Caps {
+        control_proto::Caps {
+            protocol_version: control_proto::APP_PROTOCOL_VERSION,
+            env_version_min: 5,
+            env_version_max: 5,
+            coverage: Default::default(),
+            flags: Default::default(),
+        }
+    }
+
+    fn snapshot_client(
+        replies: impl IntoIterator<Item = Result<Result<Reply, control_proto::ControlError>, io::Error>>,
+    ) -> Client<SnapshotTransport> {
+        let mut replies = VecDeque::from_iter(replies);
+        replies.push_front(Ok(Ok(Reply::Hello(test_caps()))));
+        Client::connect(
+            SnapshotTransport {
+                requests: Vec::new(),
+                replies,
+            },
+            test_caps(),
+        )
+        .expect("test transport handshake")
+    }
+
+    fn assert_one_snapshot_without_run(requests: &[control_proto::Request]) {
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| matches!(request, control_proto::Request::Snapshot))
+                .count(),
+            1,
+            "snapshot request sequence: {requests:?}"
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| !matches!(request, control_proto::Request::Run { .. })),
+            "exact snapshot must not retry through Run: {requests:?}"
+        );
+    }
+
+    #[test]
+    fn expect_unit_accepts_unit_reply() {
+        expect_unit(Reply::Unit, "drop snapshot").expect("unit reply should be accepted");
+    }
+
+    #[test]
+    fn expect_unit_rejects_unexpected_reply_with_operation_context() {
+        let error = expect_unit(Reply::Hash([0; 32]), "drop snapshot")
+            .expect_err("non-unit reply should be rejected");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("drop snapshot"),
+            "operation context was lost: {message}"
+        );
+        assert!(
+            message.contains("unexpected reply"),
+            "reply mismatch was lost: {message}"
+        );
+        assert!(
+            message.contains("Hash"),
+            "reply variant was lost: {message}"
+        );
+    }
+
+    #[test]
+    fn drop_control_handle_preserves_control_error_context() {
+        let mut client = snapshot_client([Ok(Err(control_proto::ControlError::Unsupported))]);
+
+        let error = drop_control_handle(&mut client, SnapId(7))
+            .expect_err("control error should reject dropping the handle");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("control request rejected"),
+            "control error context was lost: {message}"
+        );
+        assert!(
+            message.contains("Unsupported"),
+            "control error variant was lost: {message}"
+        );
+    }
+
+    #[test]
+    fn snapshot_handle_preserves_the_control_receipt() {
+        let mut client = snapshot_client([Ok(Ok(Reply::Snapshot {
+            id: SnapId(7),
+            at: control_proto::Moment(42),
+            sdk_events: 3,
+            tainted: false,
+        }))]);
+
+        let receipt = snapshot_handle(&mut client, "snapshot").expect("snapshot receipt");
+
+        assert_eq!(
+            receipt,
+            SnapshotReceipt {
+                id: SnapId(7),
+                at: 42
+            }
+        );
+        assert_one_snapshot_without_run(&client.transport().requests);
+    }
+
+    #[test]
+    fn snapshot_handle_reports_not_quiescent_without_retrying() {
+        let mut client = snapshot_client([Ok(Err(control_proto::ControlError::NotQuiescent))]);
+
+        let error =
+            snapshot_handle(&mut client, "snapshot").expect_err("not-quiescent snapshot must fail");
+
+        assert!(error.to_string().contains("NotQuiescent"));
+        assert_one_snapshot_without_run(&client.transport().requests);
+    }
+
+    #[test]
+    fn snapshot_handle_preserves_snapshot_refusal_diagnostics() {
+        let mut client = snapshot_client([Ok(Err(control_proto::ControlError::SnapshotRefused {
+            reason: "pvclock record unavailable".into(),
+        }))]);
+
+        let error =
+            snapshot_handle(&mut client, "snapshot").expect_err("refused snapshot must fail");
+
+        assert!(error.to_string().contains("pvclock record unavailable"));
+        assert_one_snapshot_without_run(&client.transport().requests);
+    }
+
+    #[test]
+    fn snapshot_handle_reports_transport_failures_without_retrying() {
+        let mut client = snapshot_client([Err(io::Error::other("socket closed"))]);
+
+        let error = snapshot_handle(&mut client, "snapshot")
+            .expect_err("transport failure must fail the snapshot");
+
+        assert!(error.to_string().contains("socket closed"));
+        assert_one_snapshot_without_run(&client.transport().requests);
+    }
+
+    #[test]
+    fn tainted_snapshot_drops_its_minted_handle() {
+        let mut client = snapshot_client([
+            Ok(Ok(Reply::Snapshot {
+                id: SnapId(31),
+                at: control_proto::Moment(99),
+                sdk_events: 0,
+                tainted: true,
+            })),
+            Ok(Ok(Reply::Unit)),
+        ]);
+
+        let error = snapshot_handle(&mut client, "snapshot")
+            .expect_err("tainted snapshot must be rejected");
+
+        assert!(error.to_string().contains("snapshot was tainted"));
+        assert_eq!(
+            client.transport().requests.last(),
+            Some(&control_proto::Request::Drop(SnapId(31)))
+        );
+        assert_one_snapshot_without_run(&client.transport().requests);
+    }
 
     #[test]
     fn deferred_checkpoint_hashing_is_opt_in_and_off_by_default() {
@@ -1221,119 +1402,6 @@ mod tests {
         let decoded: SparseSnapshot =
             serde_json::from_value(encoded).expect("deserialize sparse snapshot");
         assert_eq!(equal, decoded);
-    }
-
-    /// A caller-scripted stand-in for the control server's seal/run pair.
-    struct SettleFixture {
-        /// Virtual time at which the guest becomes snapshot-eligible.
-        eligible_at: u64,
-        now: u64,
-        stop: StopReason,
-        seals: usize,
-        runs: Vec<u64>,
-    }
-
-    impl SettleFixture {
-        fn new(eligible_at: u64) -> Self {
-            Self {
-                eligible_at,
-                now: 0,
-                stop: StopReason::Deadline {
-                    vtime: control_proto::Moment(0),
-                },
-                seals: 0,
-                runs: Vec::new(),
-            }
-        }
-
-        fn seal(&mut self) -> Result<Option<(SnapId, u64)>, Box<dyn Error>> {
-            self.seals += 1;
-            Ok((self.now >= self.eligible_at).then_some((SnapId(7), self.now)))
-        }
-
-        fn advance(&mut self, step: u64) -> Result<StopReason, Box<dyn Error>> {
-            self.runs.push(step);
-            self.now += step;
-            Ok(self.stop.clone())
-        }
-    }
-
-    fn settle(fixture: &mut SettleFixture, step: u64, max: u64) -> Result<u64, Box<dyn Error>> {
-        seal_after_settling(
-            fixture,
-            step,
-            max,
-            SettleFixture::seal,
-            SettleFixture::advance,
-        )
-        .map(|(_, at, _)| at)
-    }
-
-    #[test]
-    fn an_eligible_point_seals_without_running_the_guest() {
-        let mut fixture = SettleFixture::new(0);
-        let (snapshot, at, stop) = seal_after_settling(
-            &mut fixture,
-            10,
-            100,
-            SettleFixture::seal,
-            SettleFixture::advance,
-        )
-        .expect("an eligible point seals");
-        assert_eq!((snapshot, at), (SnapId(7), 0));
-        assert_eq!(stop, None, "no settle run happened, so there is no stop");
-        assert!(fixture.runs.is_empty());
-    }
-
-    #[test]
-    fn settling_advances_in_steps_and_stops_at_the_allowance() {
-        let mut fixture = SettleFixture::new(25);
-        assert_eq!(settle(&mut fixture, 10, 100).unwrap(), 30);
-        assert_eq!(fixture.runs, [10, 10, 10]);
-        // The final step is clipped so settling never runs past the allowance,
-        // and the point is still offered one last seal at the boundary.
-        let mut clipped = SettleFixture::new(25);
-        assert_eq!(settle(&mut clipped, 10, 25).unwrap(), 25);
-        assert_eq!(clipped.runs, [10, 10, 5]);
-        let mut exhausted = SettleFixture::new(31);
-        let error = settle(&mut exhausted, 10, 30).unwrap_err().to_string();
-        assert!(error.contains("settle allowance of 30 ns"), "{error}");
-        assert_eq!(exhausted.runs, [10, 10, 10]);
-        assert_eq!(exhausted.seals, 4, "the allowance boundary is sealed too");
-    }
-
-    #[test]
-    fn a_guest_that_cannot_advance_is_sealed_once_more_then_reported() {
-        for stop in [
-            StopReason::Quiescent {
-                vtime: control_proto::Moment(1),
-            },
-            StopReason::Crash {
-                vtime: control_proto::Moment(1),
-                info: control_proto::CrashInfo {
-                    kind: control_proto::CrashKind::Panic,
-                    detail: Vec::new(),
-                },
-            },
-        ] {
-            let mut fixture = SettleFixture::new(u64::MAX);
-            fixture.stop = stop.clone();
-            assert!(!settling_can_advance(&stop));
-            let error = settle(&mut fixture, 10, 100).unwrap_err().to_string();
-            assert!(
-                error.contains("stopped before the expected snapshot point"),
-                "{error}"
-            );
-            assert_eq!(fixture.runs, [10], "settling stopped after the first run");
-            assert_eq!(fixture.seals, 2, "the endpoint was offered a final seal");
-        }
-    }
-
-    #[test]
-    fn a_zero_settle_step_is_rejected_before_any_control_request() {
-        let mut fixture = SettleFixture::new(u64::MAX);
-        assert!(settle(&mut fixture, 0, 100).is_err());
-        assert_eq!(fixture.seals, 0);
     }
 
     fn service_config(identity: &[u8]) -> ServiceConfig {
