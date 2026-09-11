@@ -49,6 +49,12 @@ flags. Nonzero extended fields select VM-state v5; zero values retain v3/v4
 bytes. Cached PDPTRs are distinct from the current PDPT contents in guest RAM
 and must survive restore without reloading them from that memory.
 
+Hardware continuation coverage depends on the backend and paging mode. AMD
+default NPT has an unresolved PAE capture divergence
+([#314](https://github.com/pH14/harmony/issues/314)); unchanged stopped records
+alone do not prove an unchanged guest future. The separate same-seed XSAVE
+divergence remains tracked in [#307](https://github.com/pH14/harmony/issues/307).
+
 ## Architecture boundary
 
 The engine uses only common exits, guest-physical addresses, bytes, and typed

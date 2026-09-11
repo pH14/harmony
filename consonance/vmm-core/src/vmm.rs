@@ -1375,8 +1375,9 @@ where
     /// slot is re-derived from the restored LAPIC / UART on the restored VM's first
     /// service — so there is no separate injection plan to serialize.
     ///
-    /// Capture requires no pending SDK stop. Assigned virtual time is exact at
-    /// every serviced exit; backend completions are retired before restoring.
+    /// Pending SDK stops are retained separately by `sdk_snapshot`. Capture
+    /// does not consume them. Assigned virtual time is exact at each serviced
+    /// instruction boundary; backend completions are retired before restoring.
     /// A pending pvclock registration is captured with its GPA and
     /// `armed = false`; saving does not run the handshake, advance V-time, or
     /// re-stamp the page.
@@ -1406,8 +1407,8 @@ where
         // SDK stops and outstanding requests are captured independently by
         // sdk_snapshot; their presence does not require guest execution here.
         // Read the vCPU **fallibly**: a `Backend::save` failure must abort the
-        // snapshot, not seal a `VcpuState::default()` (the swallowing `current_vcpu`
-        // does for the best-effort hash). Use the terminal-captured state if present.
+        // snapshot, not seal a `VcpuState::default()`. Use the terminal-captured
+        // state if present.
         let vcpu = match &self.saved_state {
             Some(s) => s.clone(),
             None => self.backend.save()?,
@@ -1419,16 +1420,12 @@ where
         // versioned device record. Carry its GPA and `armed = false` alongside
         // the verbatim RAM image so the restored guest owes the same handshake.
         // Saving itself does not run that handshake, advance V-time, or stamp
-        // the page. In normal operation a pending registration is not at a
-        // synchronized boundary (the `OUT` is a PIO); `restore_vtime` remains
-        // the explicit test/control path that can pair one with a synchronized
-        // seal.
+        // the page, including at a serviced PIO registration boundary.
         // Task 110 (r4): NO pvclock re-stamp here. The page is sealed exactly as
         // the guest sees it — see this method's doc comment for why
         // canonicalizing a live page is an ABA on a straddling reader, and why
-        // value-keyed stamping already makes the epoch reproducible. A seal
-        // mutates nothing, so the `NotQuiescent` retry loops and sealability
-        // probes stay side-effect-free for free rather than by careful ordering.
+        // value-keyed stamping already makes the epoch reproducible. Capture
+        // leaves the page untouched, including when capture is repeated.
         self.build_snapshot_state(&vcpu)
     }
 
@@ -1648,9 +1645,10 @@ where
         Ok(())
     }
 
-    /// Drive the vCPU for exactly one exit and dispatch it. Data-returning exits
-    /// (port read, `Rdmsr`, `Cpuid`) are resolved back to the backend; any
-    /// unmodeled exit is a loud [`VmmError::ContractViolation`].
+    /// Drive the vCPU to an exit and finish its instruction's device accesses.
+    /// Data-returning exits (port read, `Rdmsr`, `Cpuid`) are resolved back to
+    /// the backend. Completion accesses do not execute the successor instruction;
+    /// any unmodeled exit is a loud [`VmmError::ContractViolation`].
     pub fn step(&mut self) -> Result<Step, VmmError> {
         if self.pending_service_question().is_some() {
             return Ok(Step::SdkStop);
