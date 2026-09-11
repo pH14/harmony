@@ -86,12 +86,39 @@ therefore cannot reach this window by killing members alone. Reaching it require
 applying thread long enough for the periodic commit to run while the consistent index is ahead
 of the data it claims to cover.
 
+## What plain kills reach
+
+Before any search ran, the cluster was driven by a loop that killed a random member and restarted
+it, with no deterministic execution underneath. Each run counted its kill iterations and whether
+any acknowledged key went missing from a recovered member. The arms were run both on all of the
+host's cores and pinned to one, because the window needs a commit to overtake the applying thread
+and a single processor removes the parallelism that lets it.
+
+| arm | processors | runs | kill iterations | runs that lost a key |
+|---|---|---|---|---|
+| 3.5.2 | all | 5 | 120 | 4 |
+| 3.5.2 | pinned to one | 3 | 152 | 0 |
+| 3.5.3 | all | 2 | 158 | 0 |
+| 3.5.3 | pinned to one | 1 | 59 | 0 |
+
+Killing members reaches the window on 3.5.2 and never on 3.5.3, which is the case's premise. It
+reaches it only with more than one processor. Consonance runs one processor, so the search has to
+recreate on one processor what parallelism produced on many: holding a thread at an instrumented
+site long enough for the periodic commit to run while the consistent index is ahead of the data
+it covers. Repeating the loop on one processor with such a hold reproduced it:
+
+| arm | runs | kill iterations | runs that lost a key |
+|---|---|---|---|
+| 3.5.2 | 5 | 202 | 3 |
+| 3.5.3 | 5 | 272 | 0 |
+
 ## Discovery contract
 
-The case has one locked execution profile. CI will run the same bounded search campaign on both
-instrumented arms on demand or on schedule. The vulnerable arm must find and replay assertion 1
-with evidence point 11; the v3.5.3 control must reach point 11 and stay clean under the identical
-campaign. A search miss is a regression in the test machinery, not a request to tune the workload.
+The case has one locked execution profile. CI will run the same search campaign on both
+instrumented arms on demand or on schedule, bounded by wall time alone. The vulnerable arm must
+find and replay assertion 1 with evidence point 11; the v3.5.3 control must reach point 11 and
+stay clean under the identical campaign. A search miss is a regression in the test machinery, not
+a request to tune the workload.
 
 The only expected difference between the arms is the upstream etcd fix. Performance experiments
 may add separate profiles later, but they cannot alter the correctness or portability contract
