@@ -426,8 +426,8 @@ impl KvmBackend {
     /// Read the host-sized XSAVE image: `KVM_GET_XSAVE2` (the
     /// `KVM_CAP_XSAVE2`-reported size) where available, else the fixed 4 KiB
     /// `KVM_GET_XSAVE`. The returned bytes are the canonical `VcpuState.xsave`
-    /// plus optional raw `XSTATE_BV` provenance for init-optimization bits that
-    /// canonicalization cleared.
+    /// plus raw `XSTATE_BV` provenance for every standard-format image; short
+    /// or compacted images retain the legacy no-provenance path.
     fn save_xsave(&self) -> Result<(Vec<u8>, Option<u64>)> {
         let mut bytes = match self.xsave2_size {
             // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_xsave2` allocates and

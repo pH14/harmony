@@ -31,8 +31,10 @@
 //! v3 writer shape is retained when the engine-owned state and extended x86 CPU
 //! fields are empty; a nonempty engine state selects v4 unless those CPU fields
 //! require the v5 records. An `xsave_restore_bv` value selects v6, whose tag 15
-//! preserves the original XSAVE `XSTATE_BV` when backend normalization changes
-//! the image. Every required tag is present exactly once; a
+//! preserves the raw XSAVE `XSTATE_BV` for a standard-format capture, including
+//! when normalization leaves the header unchanged. Legacy and nonstandard
+//! captures may omit that provenance and retain the v3/v4/v5 shape. Every
+//! required tag is present exactly once; a
 //! missing, unknown, duplicate, or out-of-order section is a decode error,
 //! never a best-effort zero-filled restore.
 //!
@@ -99,7 +101,9 @@ pub const VM_STATE_VERSION: u16 = 6;
 
 /// The explicit x86 v5 CPU-record version. This remains separate from the
 /// latest x86 version so states without `xsave_restore_bv` retain their v5
-/// bytes exactly.
+/// bytes exactly. New standard-format captures carry this field even when the
+/// raw and canonical headers are equal; legacy and nonstandard captures may
+/// still omit it.
 pub(crate) const VM_STATE_CPU_VERSION: u16 = 5;
 
 /// The v4 record version used for the engine-state extension. This remains
@@ -150,9 +154,10 @@ pub struct VmState {
     pub msrs: MsrBlock,
     /// `KVM_GET_XSAVE2` — the FPU/XSAVE state image.
     pub xsave: XsaveImage,
-    /// Original XSAVE `XSTATE_BV` to use when restoring an image whose x87/SSE
-    /// present bits were cleared by backend normalization. `None` retains the
-    /// v3-v5 wire shapes; a value selects the x86 v6 tag-15 section.
+    /// Original raw XSAVE `XSTATE_BV` to use when restoring a standard-format
+    /// image. It is retained even when backend normalization leaves the header
+    /// unchanged. `None` retains the v3-v5 wire shapes for legacy or
+    /// nonstandard images; a value selects the x86 v6 tag-15 section.
     pub xsave_restore_bv: Option<u64>,
     /// V-time clock snapshot (`snapshot_vns` + ratio config), mirrored from
     /// `vtime`.
