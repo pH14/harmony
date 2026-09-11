@@ -127,6 +127,7 @@ expect fail 'a control campaign with another bug' \
 # filter used to turn a successful, confirmed discovery into a failed CI step
 # after the report had already been written.
 search_root=${work}/search-root
+search_summary=${work}/search-summary.md
 mkdir -p "${search_root}/tools" "${search_root}/guest" "${search_root}/oci-images"
 cat >"${search_root}/tools/harmony" <<'FAKE_HARMONY'
 #!/usr/bin/env bash
@@ -144,11 +145,31 @@ done
 mkdir -p "${out}"
 cp "${FAKE_SEARCH_REPORT}" "${out}/report.json"
 echo "bug_found   true  executions 12  horizons 24"
+if [[ -n "${FAKE_SEARCH_CUTOFF:-}" ]]; then
+    echo "fault action Restart(1) failed: run: guest ran for more than 1024s of host time without exiting"
+fi
+exit "${FAKE_SEARCH_EXIT:-0}"
 FAKE_HARMONY
 : >"${search_root}/tools/fault-agent"
 : >"${search_root}/guest/bzImage-faultlab"
 : >"${search_root}/guest/initramfs.cpio.gz"
 : >"${search_root}/oci-images/fake-1.0.oci"
+
+# One wrapper run against that fake CLI, which exits with the given status and
+# optionally prints the line a cut-off guest leaves in the console.
+run_search_wrapper() {
+    : >"${search_summary}"
+    (
+        cd "${search_root}"
+        export CASE_ID=fake ARM=vulnerable SOFTWARE_NAME=fake WORKLOAD_VERSION=1.0
+        export IMAGE_PREFIX=fake HORIZON_MS=500 RAM_MIB=128 SEED=1 WORKERS=1
+        export ACTIONS=1 EXECUTIONS=12 WALL_MINUTES=1 KNOBS=
+        export FAKE_SEARCH_REPORT="$1" FAKE_SEARCH_EXIT="$2" FAKE_SEARCH_CUTOFF="${3:-}"
+        export GITHUB_STEP_SUMMARY="${search_summary}"
+        "${here}/historical-search.sh"
+    )
+}
+
 search_fixture=${work}/search-fixture.json
 jq -cn --argjson bug "${confirmed}" '
     {
@@ -157,15 +178,7 @@ jq -cn --argjson bug "${confirmed}" '
         first_bug_execution: 12, bugs: [$bug],
         campaign_milestones: { sometimes: 16777216, hooks_finished: 1, bug: true }
     }' >"${search_fixture}"
-search_summary=${work}/search-summary.md
-if ! (
-    cd "${search_root}"
-    export CASE_ID=fake ARM=vulnerable SOFTWARE_NAME=fake WORKLOAD_VERSION=1.0
-    export IMAGE_PREFIX=fake HORIZON_MS=500 RAM_MIB=128 SEED=1 WORKERS=1
-    export ACTIONS=1 EXECUTIONS=12 WALL_MINUTES=1 KNOBS=
-    export FAKE_SEARCH_REPORT="${search_fixture}" GITHUB_STEP_SUMMARY="${search_summary}"
-    "${here}/historical-search.sh"
-); then
+if ! run_search_wrapper "${search_fixture}" 0; then
     printf 'FAIL search wrapper rejected a confirmed discovery\n'
     failures=$((failures + 1))
 elif ! grep -qF '| oracle verdict reached | true |' "${search_summary}" \
@@ -175,6 +188,29 @@ elif ! grep -qF '| oracle verdict reached | true |' "${search_summary}" \
     failures=$((failures + 1))
 else
     printf 'ok   search wrapper renders a confirmed discovery\n'
+fi
+
+# A guest cut off by the watchdog ends its own execution and makes the CLI exit
+# non-zero, while the campaign around it runs on and still writes its report.
+# The report decides, and the cut-off guest is reported as a measure.
+if ! run_search_wrapper "${search_fixture}" 1 cutoff; then
+    printf 'FAIL search wrapper failed a confirmed discovery over a non-zero exit\n'
+    failures=$((failures + 1))
+elif ! grep -qF '| verdict | pass |' "${search_summary}" \
+    || ! grep -qF '| guests cut off by the watchdog | 1 |' "${search_summary}" \
+    || ! grep -qF '| CLI exit status | 1 |' "${search_summary}"; then
+    printf 'FAIL search wrapper omitted the cut-off guest or the exit status\n'
+    failures=$((failures + 1))
+else
+    printf 'ok   search wrapper judges a campaign whose guest was cut off\n'
+fi
+
+# A run that wrote no report at all has nothing for the oracle to judge.
+if run_search_wrapper /dev/null 1 2>/dev/null; then
+    printf 'FAIL search wrapper passed a campaign that wrote no report\n'
+    failures=$((failures + 1))
+else
+    printf 'ok   search wrapper fails a campaign that wrote no report\n'
 fi
 
 if ((failures > 0)); then

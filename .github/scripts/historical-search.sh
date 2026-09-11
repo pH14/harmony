@@ -65,7 +65,12 @@ summary=${GITHUB_STEP_SUMMARY:-/dev/null}
 report="${out}/report.json"
 verdict=0
 
-if [[ "${status}" -ne 0 ]] || [[ ! -s "${report}" ]]; then
+# A guest that stops answering ends its own execution and makes the CLI exit
+# non-zero, while the campaign around it keeps running and still writes its
+# report. The oracle reads that report and is the only thing that knows
+# whether the arm behaved correctly, so a non-zero exit is recorded as a
+# measure below and a missing report is the one failure decided here.
+if [[ ! -s "${report}" ]]; then
     {
         echo "## Search campaign — ${ARM} (${SOFTWARE_NAME} ${WORKLOAD_VERSION})"
         echo
@@ -73,6 +78,10 @@ if [[ "${status}" -ne 0 ]] || [[ ! -s "${report}" ]]; then
     } >>"${summary}"
     exit 1
 fi
+
+# A guest the watchdog cut off leaves nothing in the report, so its count comes
+# from the console the campaign wrote.
+cutoff=$(grep -c 'without exiting' "${console}" || true)
 
 outcome=$("${oracle}" search "${report}" "${ARM}") || verdict=1
 
@@ -82,6 +91,7 @@ outcome=$("${oracle}" search "${report}" "${ARM}") || verdict=1
     echo "| field | value |"
     echo "|---|---|"
     jq -r --arg want "${want}" --arg outcome "${outcome}" \
+        --arg status "${status}" --arg cutoff "${cutoff}" \
         --arg assertion "${ORACLE_ASSERTION}" --arg evidence "${ORACLE_EVIDENCE}" '
         ["seed", (.seed | tostring)],
         ["workers", (.workers | tostring)],
@@ -96,24 +106,28 @@ outcome=$("${oracle}" search "${report}" "${ARM}") || verdict=1
          ((.campaign_milestones.sometimes // 0) / pow(2; ($evidence | tonumber))
           | floor | . % 2 == 1 | tostring)],
         ["executions to first hit", (.first_bug_execution | tostring)],
+        ["guests cut off by the watchdog", $cutoff],
+        ["CLI exit status", $status],
         ["verdict", $outcome]
         | "| \(.[0]) | \(.[1]) |"
     ' "${report}"
     echo
-    echo "| measure | value |"
-    echo "|---|---|"
-    jq -r '.measures |
-        ["guest seconds", (.guest_seconds | tostring)],
-        ["acknowledged writes", (.acknowledged_writes | tostring)],
-        ["kills fired", (.kills_fired | tostring)],
-        ["kills unfired", (.kills_unfired | tostring)],
-        ["median fired-kill age in ticks", (.kill_age_ticks_median | tostring)],
-        ["maximum fired-kill age in ticks", (.kill_age_ticks_max | tostring)],
-        ["conclusive checks", (.checks_conclusive | tostring)],
-        ["inconclusive checks", (.checks_inconclusive | tostring)],
-        ["fired site", (.fired_site // "none")]
-        | "| \(.[0]) | \(.[1]) |"
-    ' "${out}/campaign-summary.json"
+    if [[ -s "${out}/campaign-summary.json" ]]; then
+        echo "| measure | value |"
+        echo "|---|---|"
+        jq -r '.measures |
+            ["guest seconds", (.guest_seconds | tostring)],
+            ["acknowledged writes", (.acknowledged_writes | tostring)],
+            ["kills fired", (.kills_fired | tostring)],
+            ["kills unfired", (.kills_unfired | tostring)],
+            ["median fired-kill age in ticks", (.kill_age_ticks_median | tostring)],
+            ["maximum fired-kill age in ticks", (.kill_age_ticks_max | tostring)],
+            ["conclusive checks", (.checks_conclusive | tostring)],
+            ["inconclusive checks", (.checks_inconclusive | tostring)],
+            ["fired site", (.fired_site // "none")]
+            | "| \(.[0]) | \(.[1]) |"
+        ' "${out}/campaign-summary.json"
+    fi
 } >>"${summary}"
 
 exit "${verdict}"
