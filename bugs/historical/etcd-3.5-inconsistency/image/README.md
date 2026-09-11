@@ -56,8 +56,14 @@ ports are `2379/2380`, `2381/2382`, and `2383/2384`, with independent data direc
 `/tmp/etcd/data`. The readiness probe requires all three client endpoints to be healthy. Hook 1
 starts one detached writer helper. The helper owns exactly four persistent etcd clients; each
 client puts uniquely keyed values through the cluster endpoint set as fast as requests complete
-and appends only acknowledged puts to `/tmp/etcd/journal/acked`. Failed puts retry their current
-unique key, so a later hook cannot overwrite a key that an earlier hook had recorded. There are
-no timeout, wait, rate, batch-size, or write-count settings. Hook 2 keeps the `ETCDCTL_API=3`
-serializable local reads through every member and only emits a verdict after all three
-comparisons succeed, so a member that is still down cannot count as data loss.
+and appends only acknowledged puts to `/tmp/etcd/journal/acked`. A failed put retries its own
+key, and a restarted helper resumes each worker's sequence from the journal, so no incarnation
+can rewrite a key an earlier one recorded. Sequence numbers are zero padded, so a key's byte
+order matches its numeric order.
+
+Two hooks read the members back with `ETCDCTL_API=3` serializable local reads, and both emit a
+verdict only after all three comparisons succeed, so a member that is still down cannot count as
+data loss. Hook 2 compares the keys acknowledged since the last passing check, reading one range
+per worker, and its cost follows that window rather than the whole history. Hook 3 compares the
+entire journal against every member's whole prefix; running it once at the end of a measurement
+reports a loss that no window covered.

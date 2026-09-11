@@ -7,6 +7,6 @@ mkdir -p \
   /tmp/etcd/data/member-3 \
   /tmp/etcd/journal
 rm -f /tmp/etcd/journal/acked
-rm -rf /tmp/etcd/journal/writers-started
+rm -f /tmp/etcd/journal/verified
 EOF_MARKER=/tmp/etcd/journal/ready
 printf 'ready\n' >"${EOF_MARKER}"

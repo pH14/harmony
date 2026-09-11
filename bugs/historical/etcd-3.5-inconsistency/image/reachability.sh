@@ -105,4 +105,18 @@ while [ "${iteration}" -lt "${iterations}" ]; do
       ;;
   esac
 done
+
+# Each iteration only checked the keys acknowledged since the previous one. One
+# full comparison of the whole journal closes the measurement, so a loss no
+# window covered is still reported.
+sweep=$("${harmony}/hooks.sh" 3 | tr '\n' ' ')
+elapsed=$(($(date +%s) - started))
+acked=$(wc -l <"${journal}" 2>/dev/null || echo 0)
+printf 'sweep\t%d\t0\t%d\t%s\n' "${elapsed}" "${acked}" "${sweep}" >>"${log}"
+case "${sweep}" in
+  *'@always 1 0'*)
+    echo "full sweep found a lost acknowledged key after ${elapsed}s" >&2
+    exit 1
+    ;;
+esac
 exit 0

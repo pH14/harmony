@@ -3,16 +3,11 @@
 set -eu
 
 journal=/tmp/etcd/journal/acked
-writers_started=/tmp/etcd/journal/writers-started
+verified=/tmp/etcd/journal/verified
 writer=/opt/harmony/etcd-writer
-cluster_endpoints='http://127.0.0.1:2379,http://127.0.0.1:2381,http://127.0.0.1:2383'
 member_endpoint_1=http://127.0.0.1:2379
 member_endpoint_2=http://127.0.0.1:2381
 member_endpoint_3=http://127.0.0.1:2383
-
-ctl() {
-  ETCDCTL_API=3 /opt/etcd/etcdctl --endpoints="${cluster_endpoints}" "$@"
-}
 
 ctl_member() {
   endpoint=$1
@@ -20,69 +15,161 @@ ctl_member() {
   ETCDCTL_API=3 /opt/etcd/etcdctl --endpoints="${endpoint}" "$@"
 }
 
+# etcdctl prints a range as alternating key and value lines. Exits non-zero on
+# a truncated response so a half-read range cannot pass as a member's contents.
+pair_range_output() {
+  awk '
+    NR % 2 == 1 { key = $0; next }
+    { print key "\t" $0 }
+    END { if (NR % 2 != 0) exit 1 }
+  '
+}
+
+# Write one member's whole `museum/` prefix as raw alternating lines.
+read_member_prefix() {
+  ctl_member "$1" get museum/ --prefix --consistency=s
+}
+
+# Write only the sequence span each worker contributed to the current window.
+# `window_bounds` holds one `worker low high` line per worker. Keys are zero
+# padded, so one range request per worker isolates exactly that span. Returns
+# non-zero when any of those requests failed.
+read_member_window() {
+  endpoint=$1
+  status=0
+  while read -r worker low high; do
+    [ -n "${worker}" ] || continue
+    from=$(printf 'museum/%s/key-%012d' "${worker}" "${low}")
+    # An etcdctl range end is exclusive.
+    to=$(printf 'museum/%s/key-%012d' "${worker}" "$((high + 1))")
+    ctl_member "${endpoint}" get "${from}" "${to}" --consistency=s || status=1
+  done <"${window_bounds}"
+  return "${status}"
+}
+
+# Compare an expectation file against every member's local bbolt view and emit
+# the case's verdict. `reader` names a function called with one endpoint that
+# writes that member's raw range output to standard output.
+#
+# A failed read or a malformed response leaves the oracle inconclusive and
+# silent: a member that is still recovering is not evidence of data loss.
+# Returns 1 when every member agreed, 2 on a loss, and 0 when inconclusive.
+compare_against_members() {
+  expected=$1
+  reader=$2
+  work=${expected}.cmp
+  conclusive=1
+  failed=0
+  for endpoint in "${member_endpoint_1}" "${member_endpoint_2}" "${member_endpoint_3}"; do
+    if ! "${reader}" "${endpoint}" >"${work}.raw" 2>/dev/null; then
+      conclusive=0
+    elif pair_range_output <"${work}.raw" >"${work}.paired" \
+      && LC_ALL=C sort "${work}.paired" >"${work}.sorted"; then
+      missing=$(LC_ALL=C comm -23 "${expected}" "${work}.sorted")
+      [ -z "${missing}" ] || failed=1
+    else
+      conclusive=0
+    fi
+  done
+  rm -f "${work}.raw" "${work}.paired" "${work}.sorted"
+  if [ "${conclusive}" -ne 1 ]; then
+    return 0
+  fi
+  echo '@reachable 11'
+  if [ "${failed}" -eq 0 ]; then
+    echo '@always 1 1'
+    return 1
+  fi
+  echo '@always 1 0'
+  return 2
+}
+
+# Keep only complete, workload-shaped records: workers append concurrently, so
+# the journal's final line can be a partial write.
+select_entries() {
+  awk -F '	' '
+    $1 ~ /^museum\/[1-9][0-9]*\/key-[0-9]+$/ &&
+    $2 ~ /^value-[1-9][0-9]*-[0-9]+$/ { print $1 "\t" $2 }
+  '
+}
+
 case "$1" in
   1)
     # Keep four independent persistent clients applying entries while Harmony
     # is free to kill the node. The helper journals every acknowledged put
-    # outside etcd; hook 2 compares this client record with recovered bbolt
-    # contents. `setsid -f` double-forks the helper so this one-shot hook
-    # returns while its four client loops keep the apply path busy.
-    # Search may draw this hook more than once. Only its first invocation owns
-    # the helper: starting it again from key 1 could repair a lost key and
-    # would append duplicate expectations to the external journal. The helper
-    # itself is built from the same pinned client module in both etcd arms.
-    if mkdir "${writers_started}" 2>/dev/null; then
-      setsid -f "${writer}" >/dev/null 2>&1
-    fi
+    # outside etcd; the checks below compare that client record with recovered
+    # bbolt contents. `setsid -f` double-forks the helper so this one-shot hook
+    # returns while its four client loops keep the apply path busy. The helper
+    # resumes its sequence numbers from the journal, so starting it again
+    # cannot rewrite a key an earlier incarnation already recorded.
+    setsid -f "${writer}" >/dev/null 2>&1
     echo '@reachable 10'
     ;;
   2)
+    # The window check: verify what has been acknowledged since the last
+    # passing check. Its cost follows the window rather than the whole
+    # history, so a long run stays linear. Hook 3 catches what a window
+    # stepped over.
     [ -s "${journal}" ] || exit 0
     snapshot=${journal}.$$
     expected=${snapshot}.expected
-    actual_raw_prefix=${snapshot}.actual.
-    trap 'rm -f "${snapshot}" "${expected}" "${actual_raw_prefix}"*' EXIT
+    window_bounds=${snapshot}.bounds
+    trap 'rm -f "${snapshot}" "${expected}" "${window_bounds}"' EXIT
     cp "${journal}" "${snapshot}" 2>/dev/null || exit 0
-    # Keep only complete, workload-shaped records. The journal is appended by
-    # detached workers, so its final line can be a partial write.
-    awk -F '	' '
-      $1 ~ /^museum\/[1-4]\/key-[0-9]+$/ &&
-      $2 ~ /^value-[1-4]-[0-9]+$/ { print $1 "\t" $2 }
-    ' "${snapshot}" | LC_ALL=C sort -u >"${expected}"
+
+    total=$(wc -l <"${snapshot}")
+    start=0
+    if [ -f "${verified}" ]; then
+      start=$(awk 'NR == 1 && $0 ~ /^[0-9]+$/ { print $0 }' "${verified}")
+      [ -n "${start}" ] || start=0
+    fi
+    [ "${total}" -gt "${start}" ] || exit 0
+
+    tail -n "+$((start + 1))" "${snapshot}" | select_entries \
+      | LC_ALL=C sort -u >"${expected}"
     [ -s "${expected}" ] || exit 0
 
-    # Read each member's local bbolt view with a serializable range. A failed
-    # read or malformed response leaves the oracle inconclusive: a member that
-    # is still recovering is not evidence of data loss.
-    conclusive=1
-    failed=0
-    member=1
-    for endpoint in "${member_endpoint_1}" "${member_endpoint_2}" "${member_endpoint_3}"; do
-      actual_raw=${actual_raw_prefix}${member}.raw
-      actual_unsorted=${actual_raw_prefix}${member}.unsorted
-      actual=${actual_raw_prefix}${member}
-      if ! ctl_member "${endpoint}" get museum/ --prefix --consistency=s >"${actual_raw}" 2>/dev/null; then
-        conclusive=0
-      elif awk '
-        NR % 2 == 1 { key = $0; next }
-        { print key "\t" $0 }
-        END { if (NR % 2 != 0) exit 1 }
-      ' "${actual_raw}" >"${actual_unsorted}" \
-        && LC_ALL=C sort "${actual_unsorted}" >"${actual}"; then
-        missing=$(LC_ALL=C comm -23 "${expected}" "${actual}")
-        [ -z "${missing}" ] || failed=1
-      else
-        conclusive=0
-      fi
-      member=$((member + 1))
-    done
-    [ "${conclusive}" -eq 1 ] || exit 0
-    echo '@reachable 11'
-    if [ "$failed" -eq 0 ]; then
-      echo '@always 1 1'
-    else
-      echo '@always 1 0'
+    awk -F '	' '
+      {
+        split($1, path, "/")
+        worker = path[2]
+        sequence = path[3]
+        sub(/^key-/, "", sequence)
+        sequence += 0
+        if (!(worker in low) || sequence < low[worker]) low[worker] = sequence
+        if (!(worker in high) || sequence > high[worker]) high[worker] = sequence
+      }
+      END {
+        for (worker in low) printf "%s %d %d\n", worker, low[worker], high[worker]
+      }
+    ' "${expected}" >"${window_bounds}"
+
+    set +e
+    compare_against_members "${expected}" read_member_window
+    verdict=$?
+    set -e
+    # Advance the watermark only when every member was read and agreed.
+    if [ "${verdict}" -eq 1 ]; then
+      echo "${total}" >"${verified}"
     fi
+    exit 0
+    ;;
+  3)
+    # The full sweep: compare the entire journal against every member. Run once
+    # at the end of a measurement, so a loss no window covered is still
+    # reported.
+    [ -s "${journal}" ] || exit 0
+    snapshot=${journal}.$$
+    expected=${snapshot}.expected
+    trap 'rm -f "${snapshot}" "${expected}"' EXIT
+    cp "${journal}" "${snapshot}" 2>/dev/null || exit 0
+    select_entries <"${snapshot}" | LC_ALL=C sort -u >"${expected}"
+    [ -s "${expected}" ] || exit 0
+
+    set +e
+    compare_against_members "${expected}" read_member_prefix
+    set -e
+    exit 0
     ;;
   *)
     echo "unknown hook $1" >&2
