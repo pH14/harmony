@@ -1,0 +1,48 @@
+name: Skill evaluator qualification
+
+on:
+  pull_request:
+    paths:
+      - benchmarks/skills/**
+      - skills/**
+      - .github/workflows/skill-evaluator.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sandbox:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Portable material and process checks
+        run: python3 -B -m unittest -v benchmarks/skills/test_materials.py benchmarks/skills/test_sandbox.py
+      - name: Build and freeze the qualification tool image
+        run: |
+          set -euo pipefail
+          mkdir -p reports/skill-evaluator
+          git rev-parse HEAD > reports/skill-evaluator/candidate-head.txt
+          uname -a > reports/skill-evaluator/host.txt
+          docker version > reports/skill-evaluator/docker-version.txt
+          docker build --file benchmarks/skills/Dockerfile.qualify --tag harmony-skill-qualification:local benchmarks/skills
+          docker image inspect --format '{{.Id}}' harmony-skill-qualification:local > reports/skill-evaluator/image-id.txt
+          docker image inspect harmony-skill-qualification:local > reports/skill-evaluator/image-inspect.json
+          docker run --rm --network none --entrypoint dpkg-query harmony-skill-qualification:local -W > reports/skill-evaluator/image-packages.txt
+          docker image save harmony-skill-qualification:local -o reports/skill-evaluator/tool-image.tar
+          sha256sum reports/skill-evaluator/tool-image.tar > reports/skill-evaluator/tool-image-sha256.txt
+      - name: Actual Linux sandbox canaries without model calls
+        run: |
+          set -euo pipefail
+          qualification_image=$(cat reports/skill-evaluator/image-id.txt)
+          python3 -B -m benchmarks.skills.qualify_sandbox --image "$qualification_image" > reports/skill-evaluator/result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: skill-evaluator-${{ github.run_id }}
+          path: reports/skill-evaluator
+          if-no-files-found: error
+          retention-days: 7
