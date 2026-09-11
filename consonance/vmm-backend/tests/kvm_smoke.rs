@@ -1026,7 +1026,7 @@ const RF_PROGRAM: [u8; 8] = [0x43, 0xBA, 0xF8, 0x03, 0xB0, RF_WARM_MARKER, 0xEE,
 /// keeping the diagnostic bounded even when the restored snapshot loses RF.
 const RF_HANDLER: [u8; 7] = [0xBA, 0xF8, 0x03, 0xB0, RF_DEBUG_MARKER, 0xEE, 0xF4];
 
-fn setup_resume_flag_guest(backend: &mut KvmBackend, mem: &mut GuestMem) {
+fn setup_resume_flag_guest(backend: &mut KvmBackend, mem: &mut GuestMem, rflags: u64) {
     setup_real_mode(backend, mem, &RF_PROGRAM);
     // Vector 1 points to the flat real-mode handler at 0x2000.
     backend
@@ -1043,7 +1043,7 @@ fn setup_resume_flag_guest(backend: &mut KvmBackend, mem: &mut GuestMem) {
     state.regs.rip = RF_CODE_GPA;
     state.regs.rbx = 0;
     state.regs.rsp = RF_STACK_TOP;
-    state.regs.rflags = RF_RFLAGS;
+    state.regs.rflags = rflags;
     state.sregs.ss.base = 0;
     state.sregs.ss.limit = 0xFFFF;
     state.sregs.ss.selector = 0;
@@ -1118,7 +1118,7 @@ fn resume_flag_preserves_instruction_breakpoint_continuation() {
     let original = {
         let mut mem = GuestMem::new(0x10000);
         let mut backend = new_backend_or_explain();
-        setup_resume_flag_guest(&mut backend, &mut mem);
+        setup_resume_flag_guest(&mut backend, &mut mem, RF_RFLAGS);
         let endpoint = run_resume_flag_guest(&mut backend, &mut mem);
         log_resume_flag_endpoint("original", &endpoint);
         endpoint
@@ -1130,11 +1130,26 @@ fn resume_flag_preserves_instruction_breakpoint_continuation() {
     let (saved_state, saved_ram, saved_endpoint) = {
         let mut mem = GuestMem::new(0x10000);
         let mut backend = new_backend_or_explain();
-        setup_resume_flag_guest(&mut backend, &mut mem);
+        setup_resume_flag_guest(&mut backend, &mut mem, RF_RFLAGS);
         let before_ram = mem.as_mut_slice().to_vec();
         let before_counts = backend.exit_counts();
         let saved_state = backend.save().expect("save RF entry state");
         let repeated_state = backend.save().expect("repeat RF entry state");
+        println!(
+            "resume-flag saved-entry: rflags={:#x} rip={:#x} rbx={} dr0={:#x} dr7={:#x}",
+            saved_state.regs.rflags,
+            saved_state.regs.rip,
+            saved_state.regs.rbx,
+            saved_state.debugregs.db[0],
+            saved_state.debugregs.dr7,
+        );
+
+        assert_eq!(saved_state.debugregs.db[0], RF_CODE_GPA, "saved DR0");
+        assert_eq!(
+            saved_state.debugregs.dr7 & 0xf0003,
+            1,
+            "DR0 must be enabled as a one-byte execution breakpoint"
+        );
         assert_eq!(saved_state, repeated_state, "repeated RF saves differ");
         assert_eq!(
             backend.exit_counts(),
@@ -1148,12 +1163,23 @@ fn resume_flag_preserves_instruction_breakpoint_continuation() {
         (saved_state, saved_ram, saved_endpoint)
     };
 
+    // An independent RF-cleared control must actually trigger the breakpoint.
+    // This prevents an inert debug-register setup from making every arm pass.
+    let rf_clear_control = {
+        let mut mem = GuestMem::new(0x10000);
+        let mut backend = new_backend_or_explain();
+        setup_resume_flag_guest(&mut backend, &mut mem, RF_RFLAGS & !(1 << 16));
+        let endpoint = run_resume_flag_guest(&mut backend, &mut mem);
+        log_resume_flag_endpoint("rf-cleared-control", &endpoint);
+        endpoint
+    };
+
     // Cold restore: the source backend and its mapped memory have been dropped
     // by the preceding scope before this fresh backend is created.
     let cold = {
         let mut mem = GuestMem::new(0x10000);
         let mut backend = new_backend_or_explain();
-        setup_resume_flag_guest(&mut backend, &mut mem);
+        setup_resume_flag_guest(&mut backend, &mut mem, RF_RFLAGS);
         backend
             .write_guest(Gpa(0), &saved_ram)
             .expect("restore RF guest RAM");
@@ -1165,17 +1191,18 @@ fn resume_flag_preserves_instruction_breakpoint_continuation() {
         endpoint
     };
 
-    // Emit every observed arm before asserting the marker, RF, or cross-arm
-    // identities. If save() canonicalizes RF, the resulting cold #DB marker 99
-    // remains in the diagnostic output instead of being hidden by an early
-    // assertion.
-    println!(
-        "resume-flag saved-entry: rflags={:#x} rip={:#x} rbx={} dr0={:#x} dr7={:#x}",
-        saved_state.regs.rflags,
-        saved_state.regs.rip,
-        saved_state.regs.rbx,
-        saved_state.debugregs.db[0],
-        saved_state.debugregs.dr7,
+    assert_eq!(
+        rf_clear_control.markers,
+        vec![RF_DEBUG_MARKER],
+        "RF-cleared control must take the armed instruction breakpoint"
+    );
+    assert_eq!(
+        rf_clear_control.state.regs.rbx, 0,
+        "the breakpoint must fault before INC BX"
+    );
+    assert_eq!(
+        rf_clear_control.state.regs.rip,
+        RF_HANDLER_GPA + RF_HANDLER.len() as u64
     );
 
     for (label, endpoint) in [
