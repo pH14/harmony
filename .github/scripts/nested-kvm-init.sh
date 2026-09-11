@@ -29,10 +29,14 @@ if [ -f /expected-snapshot-tests ] && [ "$status" -eq 0 ]; then
     mkdir -p /reports || status=1
     export XSAVE_CONTINUATION_REPORT_DIR=/reports/xsave-continuation
     export XSAVE_LIVE_REGISTERS_REPORT_DIR=/reports/xsave-live-registers
+    export LEAF_EXPECT_SYNC_SHADOW=Y
     for case in pae_cached_pdptrs_survive_full_vmm_snapshot_restore \
         mmio_rmw_finishes_before_full_vmm_snapshot \
         xsave_guest_bytes_survive_cold_continuation \
-        xsave_live_registers_survive_cold_continuation; do
+        xsave_live_registers_survive_cold_continuation \
+        shadow_leaf_host_write_snapshot_observations \
+        shadow_leaf_guest_write_snapshot_observations; do
+        export LEAF_REPORT_DIR="/reports/$case"
         /bin/x86_cpu_snapshots "live_kvm::$case" --exact --ignored \
             --test-threads=1 --nocapture > "/reports/$case.log" 2>&1 || status=1
         cat "/reports/$case.log" || status=1

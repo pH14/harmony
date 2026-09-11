@@ -7,7 +7,7 @@ on:
         type: boolean
         default: false
       snapshot_tests:
-        description: Run the four existing full-VMM snapshot tests inside the custom kernel
+        description: Run full-VMM snapshot and leaf-PTE mutation tests inside the custom kernel
         type: boolean
         default: false
 permissions:
@@ -64,7 +64,7 @@ jobs:
         run: |
           if test "$CUSTOM_KERNEL" = true; then
             if test "$NESTED_SNAPSHOT_TESTS" = true; then
-              printf '%s\n' 'Isolated custom-kernel PAE, MMIO, and XSAVE tests; general snapshot correctness unproven.' > reports/scope.txt
+              printf '%s\n' 'Isolated custom-kernel PAE, leaf-PTE, MMIO, and XSAVE tests; general snapshot correctness unproven.' > reports/scope.txt
             else
               printf '%s\n' 'Isolated custom-kernel inner KVM HLT probe; no snapshot qualification.' > reports/scope.txt
             fi

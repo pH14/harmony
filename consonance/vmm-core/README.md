@@ -85,6 +85,13 @@ The observation workflow also compares a raw guest-written XSAVE area across
 original, saved, and cold execution on either x86 vendor. Separate initialized
 and live-register cases retain x87 and SSE payloads in the guest output.
 
+The diagnostic shadow leaf-PTE tests touch a mapping before a host or guest
+changes its leaf entry, then reuse the full stopped-state and continuation
+comparisons. They require hardware paging disabled, `LEAF_REPORT_DIR`, and
+`LEAF_EXPECT_SYNC_SHADOW=Y` or `N` matching the isolated diagnostic kernel.
+They preserve evidence before asserting identity; a passing PDPT test alone
+does not establish leaf-translation identity.
+
 ## Architecture boundary
 
 The engine uses only common exits, guest-physical addresses, bytes, and typed

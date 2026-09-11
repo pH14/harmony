@@ -486,19 +486,79 @@ mod live_kvm {
         compose(guest_ram_image(), backend, configure)
     }
 
-    fn fresh_npt_vmm(configure: bool, guest_writes_pdpt: bool) -> Vmm<KvmBackend> {
-        let backend = KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed: {e}"));
-        let configure: fn(&mut KvmBackend) = if configure {
-            install_pae_entry::<KvmBackend>
-        } else {
-            |_| {}
-        };
-        let guest_ram = if guest_writes_pdpt {
-            guest_ram_image_with_guest_pdpt_write()
-        } else {
-            guest_ram_image()
-        };
-        compose(guest_ram, backend, configure)
+    #[derive(Clone, Copy)]
+    struct PagingObservation {
+        image: fn() -> GuestRam,
+        host_write: fn(&mut Vmm<KvmBackend>),
+        guest_write: bool,
+        entry_gpa: usize,
+        entry_value: u64,
+        warmup_rip: usize,
+        expected_read: Option<u8>,
+        negative_read: Option<u8>,
+    }
+
+    impl PagingObservation {
+        fn fresh(self, configure: bool) -> Vmm<KvmBackend> {
+            let backend =
+                KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed: {e}"));
+            let configure: fn(&mut KvmBackend) = if configure {
+                install_pae_entry::<KvmBackend>
+            } else {
+                |_| {}
+            };
+            compose((self.image)(), backend, configure)
+        }
+    }
+
+    const LEAF_PT_GPA: usize = 0x6000;
+    const LEAF_ENTRY_GPA: usize = LEAF_PT_GPA + (DATA_GPA / PAGE_SIZE) * 8;
+    const LEAF_B_ENTRY: u64 = 0x9063;
+    const LEAF_READ: [u8; 5] = [0xA0, 0x00, 0x80, 0x00, 0x00];
+    const LEAF_WRITE: [u8; 10] = [0xC7, 0x05, 0x40, 0x60, 0x00, 0x00, 0x63, 0x90, 0x00, 0x00];
+
+    fn leaf_image(guest_write: bool) -> GuestRam {
+        let mut ram = guest_ram_image();
+        let bytes = ram.as_mut_bytes();
+        // One ordinary PAE page table identity-maps the low 2 MiB. Pre-set A/D
+        // bits keep this fixture focused on translation identity after a PTE
+        // write, rather than attributing unrelated accessed/dirty changes.
+        put_u64(bytes, PD_A_GPA, LEAF_PT_GPA as u64 | 0x23);
+        for index in 0..512 {
+            put_u64(
+                bytes,
+                LEAF_PT_GPA + index * 8,
+                (index * PAGE_SIZE) as u64 | 0x63,
+            );
+        }
+        bytes[0x9000] = 0x99;
+        let prefix_len = LEAF_READ.len() + if guest_write { LEAF_WRITE.len() } else { 0 };
+        bytes.copy_within(CODE_GPA..CODE_GPA + BASE_PROGRAM_LEN, CODE_GPA + prefix_len);
+        // Touch VA 0x8000 before changing its PTE. The warmup UART remains the
+        // first exit; no save or vCPU read occurs between this access and it.
+        put_bytes(bytes, CODE_GPA, &LEAF_READ);
+        if guest_write {
+            put_bytes(bytes, CODE_GPA + LEAF_READ.len(), &LEAF_WRITE);
+        }
+        ram
+    }
+
+    fn leaf_host_image() -> GuestRam {
+        leaf_image(false)
+    }
+
+    fn leaf_guest_image() -> GuestRam {
+        leaf_image(true)
+    }
+
+    fn switch_leaf_to_b(vmm: &mut Vmm<KvmBackend>) {
+        let mut page: [u8; PAGE_SIZE] = vmm.guest_memory()[LEAF_PT_GPA..LEAF_PT_GPA + PAGE_SIZE]
+            .try_into()
+            .expect("read leaf table page");
+        let offset = LEAF_ENTRY_GPA - LEAF_PT_GPA;
+        page[offset..offset + 8].copy_from_slice(&LEAF_B_ENTRY.to_le_bytes());
+        vmm.write_guest_pages(&[(u64::try_from(LEAF_PT_GPA / PAGE_SIZE).unwrap(), page)])
+            .expect("replace leaf PTE in guest RAM");
     }
 
     fn read_guest_u64(vmm: &Vmm<KvmBackend>, gpa: usize) -> u64 {
@@ -1190,10 +1250,35 @@ mod live_kvm {
             "this diagnostic requires kvm_amd NPT to be enabled, got {:?}",
             npt.trim()
         );
-        let report_root = std::path::PathBuf::from(
-            std::env::var_os("NPT_REPORT_DIR")
-                .expect("NPT_REPORT_DIR must identify the diagnostic output directory"),
+        paging_observations(
+            PagingObservation {
+                image: if guest_writes_pdpt {
+                    guest_ram_image_with_guest_pdpt_write
+                } else {
+                    guest_ram_image
+                },
+                host_write: switch_guest_pdpt_to_b::<KvmBackend>,
+                guest_write: guest_writes_pdpt,
+                entry_gpa: PDPT_GPA,
+                entry_value: PDPT_B_ENTRY,
+                expected_read: None,
+                negative_read: None,
+                warmup_rip: WARMUP_RIP
+                    + if guest_writes_pdpt {
+                        GUEST_PDPT_WRITE_LEN
+                    } else {
+                        0
+                    },
+            },
+            "NPT_REPORT_DIR",
         );
+    }
+
+    fn paging_observations(case: PagingObservation, report_env: &str) {
+        let report_root =
+            std::path::PathBuf::from(std::env::var_os(report_env).unwrap_or_else(|| {
+                panic!("{report_env} must identify the diagnostic output directory")
+            }));
         std::fs::create_dir_all(&report_root).expect("create NPT diagnostic output directory");
 
         // Keep the warmup observationally minimal. No vCPU read or save/hash is
@@ -1211,58 +1296,62 @@ mod live_kvm {
 
         // The guest-authored variant performs the PDPT mutation before the
         // warmup UART; the original variant retains the host-write transition.
-        let mut uninterrupted = fresh_npt_vmm(true, guest_writes_pdpt);
+        let mut uninterrupted = case.fresh(true);
         wire_snapshot_path(&mut uninterrupted);
         warmup(&mut uninterrupted);
-        if guest_writes_pdpt {
+        if case.guest_write {
             assert_eq!(
-                read_guest_u64(&uninterrupted, PDPT_GPA),
-                PDPT_B_ENTRY,
+                read_guest_u64(&uninterrupted, case.entry_gpa),
+                case.entry_value,
                 "guest-authored PDPT write must be visible in guest RAM"
             );
         } else {
-            switch_guest_pdpt_to_b(&mut uninterrupted);
+            (case.host_write)(&mut uninterrupted);
         }
         let uninterrupted_endpoint = run_npt_observed(&mut uninterrupted);
         write_npt_endpoint(&report_root, "original", &uninterrupted_endpoint);
+        drop(uninterrupted);
 
-        let mut save_and_continue = fresh_npt_vmm(true, guest_writes_pdpt);
+        let mut save_and_continue = case.fresh(true);
         wire_snapshot_path(&mut save_and_continue);
         warmup(&mut save_and_continue);
-        if guest_writes_pdpt {
+        if case.guest_write {
             assert_eq!(
-                read_guest_u64(&save_and_continue, PDPT_GPA),
-                PDPT_B_ENTRY,
+                read_guest_u64(&save_and_continue, case.entry_gpa),
+                case.entry_value,
                 "guest-authored PDPT write must be visible in guest RAM"
             );
         } else {
-            switch_guest_pdpt_to_b(&mut save_and_continue);
+            (case.host_write)(&mut save_and_continue);
         }
         let save_before_memory = save_and_continue.guest_memory().to_vec();
         let save_before_serial = save_and_continue.serial().to_vec();
         let save_before_counts = save_and_continue.exit_counts();
         let save_before_vns = save_and_continue.effective_vns();
         let save_stop = capture_npt_stop(&save_and_continue);
-        let save_repeated = capture_npt_stop(&save_and_continue);
-        let save_after_memory = save_and_continue.guest_memory().to_vec();
-        let save_after_serial = save_and_continue.serial().to_vec();
-        let save_after_counts = save_and_continue.exit_counts();
-        let save_after_vns = save_and_continue.effective_vns();
-        let save_and_continue_endpoint = run_npt_observed(&mut save_and_continue);
         write_npt_stop(&report_root, "save-and-continue", "stop", &save_stop);
+        let save_repeated = capture_npt_stop(&save_and_continue);
         write_npt_stop(
             &report_root,
             "save-and-continue",
             "stop-repeat",
             &save_repeated,
         );
+        let save_after_memory = save_and_continue.guest_memory().to_vec();
+        let save_after_serial = save_and_continue.serial().to_vec();
+        let save_after_counts = save_and_continue.exit_counts();
+        let save_after_vns = save_and_continue.effective_vns();
+        let save_and_continue_endpoint = run_npt_observed(&mut save_and_continue);
         write_npt_endpoint(
             &report_root,
             "save-and-continue",
             &save_and_continue_endpoint,
         );
+        // Cold targets must reconstruct owned snapshot bytes after the source
+        // KVM instance is gone, without relying on its live translation state.
+        drop(save_and_continue);
 
-        let mut cold_unobserved = fresh_npt_vmm(false, guest_writes_pdpt);
+        let mut cold_unobserved = case.fresh(false);
         wire_snapshot_path(&mut cold_unobserved);
         cold_unobserved
             .restore_snapshot(&save_stop.capture.memory, &save_stop.capture.state)
@@ -1272,7 +1361,7 @@ mod live_kvm {
         let cold_unobserved_endpoint = run_npt_observed(&mut cold_unobserved);
         write_npt_endpoint(&report_root, "cold-unobserved", &cold_unobserved_endpoint);
 
-        let mut cold_observed = fresh_npt_vmm(false, guest_writes_pdpt);
+        let mut cold_observed = case.fresh(false);
         wire_snapshot_path(&mut cold_observed);
         cold_observed
             .restore_snapshot(&save_stop.capture.memory, &save_stop.capture.state)
@@ -1282,29 +1371,23 @@ mod live_kvm {
         let cold_before_counts = cold_observed.exit_counts();
         let cold_before_vns = cold_observed.effective_vns();
         let cold_observed_stop = capture_npt_stop(&cold_observed);
-        let cold_observed_repeated = capture_npt_stop(&cold_observed);
-        let cold_after_memory = cold_observed.guest_memory().to_vec();
-        let cold_after_serial = cold_observed.serial().to_vec();
-        let cold_after_counts = cold_observed.exit_counts();
-        let cold_after_vns = cold_observed.effective_vns();
-        let cold_observed_endpoint = run_npt_observed(&mut cold_observed);
         write_npt_stop(&report_root, "cold-observed", "stop", &cold_observed_stop);
+        let cold_observed_repeated = capture_npt_stop(&cold_observed);
         write_npt_stop(
             &report_root,
             "cold-observed",
             "stop-repeat",
             &cold_observed_repeated,
         );
+        let cold_after_memory = cold_observed.guest_memory().to_vec();
+        let cold_after_serial = cold_observed.serial().to_vec();
+        let cold_after_counts = cold_observed.exit_counts();
+        let cold_after_vns = cold_observed.effective_vns();
+        let cold_observed_endpoint = run_npt_observed(&mut cold_observed);
         write_npt_endpoint(&report_root, "cold-observed", &cold_observed_endpoint);
 
-        let original_memory = if guest_writes_pdpt {
-            guest_ram_image_with_guest_pdpt_write()
-        } else {
-            guest_ram_image()
-        }
-        .as_bytes()
-        .to_vec();
-        let mut wrong_original_ram = fresh_npt_vmm(false, guest_writes_pdpt);
+        let original_memory = (case.image)().as_bytes().to_vec();
+        let mut wrong_original_ram = case.fresh(false);
         wire_snapshot_path(&mut wrong_original_ram);
         wrong_original_ram
             .restore_snapshot(&original_memory, &save_stop.capture.state)
@@ -1316,13 +1399,39 @@ mod live_kvm {
             &wrong_original_ram_endpoint,
         );
 
-        let expected_warmup_rip = if guest_writes_pdpt {
-            WARMUP_RIP + GUEST_PDPT_WRITE_LEN
-        } else {
-            WARMUP_RIP
-        };
+        println!(
+            "Paging read bytes: original={:?} save={:?} cold-unobserved={:?} cold-observed={:?} wrong-RAM={:?}; expected={:?} negative={:?}",
+            uninterrupted_endpoint.endpoint.serial,
+            save_and_continue_endpoint.endpoint.serial,
+            cold_unobserved_endpoint.endpoint.serial,
+            cold_observed_endpoint.endpoint.serial,
+            wrong_original_ram_endpoint.endpoint.serial,
+            case.expected_read,
+            case.negative_read,
+        );
+        if let Some(expected) = case.expected_read {
+            for observed in [
+                &uninterrupted_endpoint,
+                &save_and_continue_endpoint,
+                &cold_unobserved_endpoint,
+                &cold_observed_endpoint,
+            ] {
+                assert_eq!(
+                    observed.endpoint.serial,
+                    [WARMUP_MARKER, expected],
+                    "synchronized leaf mapping must expose the new data byte"
+                );
+            }
+        }
+        if let Some(expected) = case.negative_read {
+            assert_eq!(
+                wrong_original_ram_endpoint.endpoint.serial,
+                [WARMUP_MARKER, expected],
+                "original-RAM control must expose the old data byte"
+            );
+        }
         assert!(
-            save_stop.rip == expected_warmup_rip as u64,
+            save_stop.rip == case.warmup_rip as u64,
             "saved stop RIP must be the warmup boundary"
         );
         assert!(save_stop.rbx == 0, "saved stop RBX must precede INC EBX");
@@ -1406,6 +1515,69 @@ mod live_kvm {
     #[ignore = "diagnostic live AMD KVM NPT; run with --ignored and NPT_REPORT_DIR"]
     fn amd_default_npt_pae_guest_write_observations() {
         npt_observations(true);
+    }
+
+    fn shadow_leaf_observations(guest_write: bool) {
+        require_kvm();
+        let expected_sync = std::env::var("LEAF_EXPECT_SYNC_SHADOW")
+            .expect("LEAF_EXPECT_SYNC_SHADOW must explicitly select Y or N");
+        assert!(matches!(expected_sync.as_str(), "Y" | "N"));
+        let actual_sync = std::fs::read_to_string("/sys/module/kvm/parameters/harmony_sync_shadow")
+            .expect("read diagnostic shadow synchronization mode");
+        assert_eq!(actual_sync.trim(), expected_sync);
+        let mut found_paging_mode = false;
+        for path in [
+            "/sys/module/kvm_amd/parameters/npt",
+            "/sys/module/kvm_intel/parameters/ept",
+        ] {
+            match std::fs::read_to_string(path) {
+                Ok(value) => {
+                    assert!(
+                        matches!(value.trim(), "N" | "0"),
+                        "hardware paging is enabled"
+                    );
+                    found_paging_mode = true;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("cannot read {path}: {error}"),
+            }
+        }
+        assert!(
+            found_paging_mode,
+            "no hardware paging parameter was readable"
+        );
+        println!("Leaf snapshot synchronization mode: {expected_sync}");
+        paging_observations(
+            PagingObservation {
+                image: if guest_write {
+                    leaf_guest_image
+                } else {
+                    leaf_host_image
+                },
+                host_write: switch_leaf_to_b,
+                guest_write,
+                entry_gpa: LEAF_ENTRY_GPA,
+                entry_value: LEAF_B_ENTRY,
+                expected_read: (expected_sync == "Y").then_some(0x99),
+                negative_read: Some(0x42),
+                warmup_rip: WARMUP_RIP
+                    + LEAF_READ.len()
+                    + if guest_write { LEAF_WRITE.len() } else { 0 },
+            },
+            "LEAF_REPORT_DIR",
+        );
+    }
+
+    #[test]
+    #[ignore = "diagnostic shadow KVM; LEAF_REPORT_DIR and LEAF_EXPECT_SYNC_SHADOW required"]
+    fn shadow_leaf_host_write_snapshot_observations() {
+        shadow_leaf_observations(false);
+    }
+
+    #[test]
+    #[ignore = "diagnostic shadow KVM; LEAF_REPORT_DIR and LEAF_EXPECT_SYNC_SHADOW required"]
+    fn shadow_leaf_guest_write_snapshot_observations() {
+        shadow_leaf_observations(true);
     }
 
     const XSAVE_GPA: usize = 0x8000;

@@ -8,7 +8,8 @@ root=$(mktemp -d)
 trap 'rm -rf -- "$root"' EXIT
 mkdir -p "$root"/{bin,dev,proc,sys,tmp,modules}
 cp "$(command -v busybox)" "$root/bin/busybox"
-for applet in sh mount insmod uname cat poweroff sleep mkdir grep tar base64 wc; do
+for applet in sh mount insmod uname cat poweroff sleep mkdir grep tar gzip base64 wc; do
+  "$root/bin/busybox" --list | grep -Fx "$applet" > /dev/null
   ln -s busybox "$root/bin/$applet"
 done
 cc -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -O2 -static \
