@@ -47,7 +47,8 @@ if [ -f /expected-snapshot-tests ] && [ "$status" -eq 0 ]; then
         serviced_msr_is_exactly_snapshottable_without_guest_execution \
         serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu \
         serviced_exception_payload_round_trips_and_empty_restore_clears_it \
-        resume_flag_preserves_instruction_breakpoint_continuation; do
+        resume_flag_preserves_instruction_breakpoint_continuation \
+        shadow_invalidation_preserves_dirty_log_history; do
         /bin/kvm_smoke "$case" --exact --ignored \
             --test-threads=1 --nocapture > "/reports/backend-$case.log" 2>&1 || status=1
         cat "/reports/backend-$case.log" || status=1

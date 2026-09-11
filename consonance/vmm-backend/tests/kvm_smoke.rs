@@ -1241,3 +1241,169 @@ fn resume_flag_preserves_instruction_breakpoint_continuation() {
         "original and cold endpoint RAM differ"
     );
 }
+
+const SHADOW_DIRTY_FIRST_GPA: u64 = 0x2000;
+const SHADOW_DIRTY_SECOND_GPA: u64 = 0x3000;
+const SHADOW_DIRTY_FIRST_VALUE: u8 = 0xA1;
+const SHADOW_DIRTY_SECOND_VALUE: u8 = 0xB2;
+const SHADOW_DIRTY_FIRST_MARKER: u8 = 0xA5;
+const SHADOW_DIRTY_SECOND_MARKER: u8 = 0x5A;
+
+/// Write two distinct RAM pages across two ordinary guest entries, with a
+/// serviced UART exit between each write and before HLT. The dirty log is
+/// drained only before the first entry and after the second UART stop: the
+/// second drain therefore tests that entry-shadow invalidation did not erase
+/// the first entry's history.
+const SHADOW_DIRTY_PROGRAM: [u8; 23] = [
+    // mov byte [0x2000], 0xa1
+    0xC6,
+    0x06,
+    0x00,
+    0x20,
+    SHADOW_DIRTY_FIRST_VALUE,
+    // mov dx, 0x3f8; mov al, 0xa5; out dx, al
+    0xBA,
+    0xF8,
+    0x03,
+    0xB0,
+    SHADOW_DIRTY_FIRST_MARKER,
+    0xEE,
+    // mov byte [0x3000], 0xb2
+    0xC6,
+    0x06,
+    0x00,
+    0x30,
+    SHADOW_DIRTY_SECOND_VALUE,
+    // mov dx, 0x3f8; mov al, 0x5a; out dx, al
+    0xBA,
+    0xF8,
+    0x03,
+    0xB0,
+    SHADOW_DIRTY_SECOND_MARKER,
+    0xEE,
+    0xF4, // HLT
+];
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
+fn shadow_invalidation_preserves_dirty_log_history() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &SHADOW_DIRTY_PROGRAM);
+
+    // Registration and setup may leave implementation-defined dirty bits. Two
+    // drains establish an empty baseline before any guest instruction runs;
+    // host writes through `write_guest` are not supposed to enter this log.
+    let _ = backend
+        .drain_dirty_pages()
+        .expect("clear initial dirty log");
+    assert!(
+        backend
+            .drain_dirty_pages()
+            .expect("verify initial dirty log cleared")
+            .is_empty(),
+        "dirty log was not empty after its initial drain"
+    );
+
+    let mut markers = Vec::new();
+    let mut uart_stop = |backend: &mut KvmBackend, marker: u8, rip: u64| {
+        match backend.run().expect("run to dirty-log UART stop") {
+            Exit::Arch(X86Exit::Io {
+                port: 0x3F8,
+                size: 1,
+                write: Some(value),
+            }) => assert_eq!(value, u32::from(marker), "unexpected UART marker"),
+            other => panic!("expected UART stop, got {other:?}"),
+        }
+        markers.push(marker);
+
+        // A write-style PIO callback must be fully retired before this stopped
+        // boundary is inspected. `finish_exit` performs no ordinary guest run;
+        // a non-empty result would be an unexpected same-instruction access.
+        assert!(
+            backend
+                .finish_exit()
+                .expect("retire dirty-log UART callback")
+                .is_none(),
+            "UART retirement produced an unexpected continuation"
+        );
+        let state = backend.save().expect("save dirty-log UART boundary");
+        assert_eq!(state.regs.rip, rip, "UART boundary RIP");
+        state
+    };
+
+    // The first ordinary entry writes only the first page, then stops at the
+    // first UART callback. The second page must still contain its zero value.
+    let first_stop = uart_stop(&mut backend, SHADOW_DIRTY_FIRST_MARKER, 0x100B);
+    let mut first_value = [0u8; 1];
+    let mut second_value = [0u8; 1];
+    backend
+        .read_guest(Gpa(SHADOW_DIRTY_FIRST_GPA), &mut first_value)
+        .expect("read first guest write");
+    backend
+        .read_guest(Gpa(SHADOW_DIRTY_SECOND_GPA), &mut second_value)
+        .expect("read second page before its write");
+    assert_eq!(first_value[0], SHADOW_DIRTY_FIRST_VALUE);
+    assert_eq!(second_value[0], 0, "second page changed before its entry");
+    assert_eq!(backend.exit_counts().io, 1, "first UART stop count");
+    assert_eq!(backend.exit_counts().idle, 0, "first stop ran past UART");
+    assert_eq!(first_stop.regs.rip, 0x100B);
+
+    // This is a separate ordinary entry. It writes the second page and stops
+    // again at UART, before the HLT instruction is entered.
+    let second_stop = uart_stop(&mut backend, SHADOW_DIRTY_SECOND_MARKER, 0x1016);
+    backend
+        .read_guest(Gpa(SHADOW_DIRTY_FIRST_GPA), &mut first_value)
+        .expect("read first guest write after second entry");
+    backend
+        .read_guest(Gpa(SHADOW_DIRTY_SECOND_GPA), &mut second_value)
+        .expect("read second guest write");
+    assert_eq!(first_value[0], SHADOW_DIRTY_FIRST_VALUE);
+    assert_eq!(second_value[0], SHADOW_DIRTY_SECOND_VALUE);
+    assert_eq!(backend.exit_counts().io, 2, "two serviced UART stops");
+    assert_eq!(backend.exit_counts().idle, 0, "second stop ran past UART");
+    assert_eq!(second_stop.regs.rip, 0x1016);
+
+    // Do not drain between the writes. Both pages must be represented after
+    // the second ordinary-entry invalidation, including the page from the
+    // first entry. Over-reporting is allowed by the Backend contract, so this
+    // checks the required members without depending on unrelated KVM bits.
+    let dirty = backend
+        .drain_dirty_pages()
+        .expect("drain dirty pages after both guest writes");
+    assert!(
+        dirty.contains(&(SHADOW_DIRTY_FIRST_GPA / 4096)),
+        "first guest write missing from dirty log: {dirty:?}"
+    );
+    assert!(
+        dirty.contains(&(SHADOW_DIRTY_SECOND_GPA / 4096)),
+        "second guest write missing from dirty log: {dirty:?}"
+    );
+    assert!(
+        backend
+            .drain_dirty_pages()
+            .expect("drain dirty log after reset")
+            .is_empty(),
+        "dirty log retained pages after its post-write drain"
+    );
+
+    // One final ordinary entry reaches HLT without another guest write. The
+    // entry-shadow invalidation itself must not manufacture dirty pages.
+    assert_eq!(
+        backend.run().expect("run from second UART stop to HLT"),
+        Exit::Common(CommonExit::Idle)
+    );
+    assert_eq!(backend.exit_counts().io, 2, "HLT added a UART exit");
+    assert_eq!(backend.exit_counts().idle, 1, "HLT exit missing");
+    assert!(
+        backend
+            .drain_dirty_pages()
+            .expect("drain dirty log after write-free HLT entry")
+            .is_empty(),
+        "entry invalidation created dirty pages without guest writes"
+    );
+    assert_eq!(
+        markers,
+        vec![SHADOW_DIRTY_FIRST_MARKER, SHADOW_DIRTY_SECOND_MARKER]
+    );
+}
