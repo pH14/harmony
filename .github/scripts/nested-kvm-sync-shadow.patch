@@ -1,0 +1,12 @@
+--- a/arch/x86/kvm/mmu/mmu.c
++++ b/arch/x86/kvm/mmu/mmu.c
+@@ -94,0 +95,6 @@
++
++/* Diagnostic-only: keep shadowed guest page tables write-protected. */
++static bool __read_mostly harmony_sync_shadow;
++module_param_named(harmony_sync_shadow, harmony_sync_shadow, bool, 0444);
++MODULE_PARM_DESC(harmony_sync_shadow,
++                "Disallow unsynchronized shadow page tables (diagnostic)");
+@@ -2946 +2952 @@
+-		if (synchronizing)
++		if (synchronizing || harmony_sync_shadow)

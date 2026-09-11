@@ -1,12 +1,17 @@
 name: Diagnostic / nested host preflight
 on:
   workflow_dispatch:
+    inputs:
+      custom_kernel:
+        description: Boot the isolated diagnostic synchronized-shadow kernel
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
   preflight:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -36,11 +41,21 @@ jobs:
       - name: Install isolated boot tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends busybox-static qemu-system-x86 zstd
+          sudo apt-get install -y --no-install-recommends busybox-static qemu-system-x86 zstd build-essential flex bison libelf-dev libssl-dev bc
+      - name: Build the isolated diagnostic kernel
+        if: inputs.custom_kernel
+        run: bash .github/scripts/nested-kvm-build-kernel.sh
       - name: Execute HLT through KVM inside a disposable kernel VM
+        env:
+          CUSTOM_KERNEL: ${{ inputs.custom_kernel }}
         run: |
-          printf '%s\n' 'Isolated stock-kernel inner KVM HLT probe; no snapshot qualification.' > reports/scope.txt
-          bash .github/scripts/nested-kvm-boot.sh
+          if test "$CUSTOM_KERNEL" = true; then
+            printf '%s\n' 'Isolated custom-kernel inner KVM HLT probe; no snapshot qualification.' > reports/scope.txt
+            bash .github/scripts/nested-kvm-boot.sh reports/nested-custom-bzImage
+          else
+            printf '%s\n' 'Isolated stock-kernel inner KVM HLT probe; no snapshot qualification.' > reports/scope.txt
+            bash .github/scripts/nested-kvm-boot.sh
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

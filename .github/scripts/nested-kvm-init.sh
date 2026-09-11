@@ -10,6 +10,18 @@ uname -r
 while read -r module; do
     insmod "$module" || status=1
 done < /modules.txt
+if [ -f /expected-sync-shadow ]; then
+    sync=$(cat /sys/module/kvm/parameters/harmony_sync_shadow) || status=1
+    printf 'INNER_SYNC_SHADOW=%s\n' "$sync"
+    [ "$sync" = Y ] || status=1
+    if [ -r /sys/module/kvm_amd/parameters/npt ]; then
+        paging=$(cat /sys/module/kvm_amd/parameters/npt) || status=1
+    else
+        paging=$(cat /sys/module/kvm_intel/parameters/ept) || status=1
+    fi
+    printf 'INNER_HARDWARE_PAGING=%s\n' "$paging"
+    [ "$paging" = N ] || status=1
+fi
 if [ "$status" -eq 0 ]; then
     /bin/nested-kvm-hlt || status=$?
 fi
