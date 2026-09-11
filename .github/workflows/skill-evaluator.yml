@@ -56,3 +56,48 @@ jobs:
           path: reports/skill-evaluator
           if-no-files-found: error
           retention-days: 7
+
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record build qualification source
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p reports/skill-build
+          git rev-parse HEAD > reports/skill-build/tested-checkout-head.txt
+          if [[ -n "$PR_HEAD_SHA" ]]; then
+            printf '%s\n' "$PR_HEAD_SHA" > reports/skill-build/pr-head.txt
+          fi
+          uname -a > reports/skill-build/host.txt
+      - name: Portable artifact boundary checks
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest -v benchmarks/skills/test_build.py 2>&1 | tee reports/skill-build/portable-tests.log
+      - name: Build and retain trusted compiler image
+        run: |
+          set -euo pipefail
+          docker version > reports/skill-build/docker-version.txt
+          docker build --file benchmarks/skills/Dockerfile.build-qualify --tag harmony-skill-build:local benchmarks/skills
+          docker image inspect --format '{{.Id}}' harmony-skill-build:local > reports/skill-build/image-id.txt
+          docker image inspect harmony-skill-build:local > reports/skill-build/image-inspect.json
+          docker run --rm --network none --entrypoint dpkg-query harmony-skill-build:local -W > reports/skill-build/image-packages.txt
+          docker image save harmony-skill-build:local -o reports/skill-build/tool-image.tar
+          sha256sum reports/skill-build/tool-image.tar > reports/skill-build/tool-image-sha256.txt
+      - name: Actual isolated compilation without model calls
+        run: |
+          set -euo pipefail
+          qualification_image=$(cat reports/skill-build/image-id.txt)
+          python3 -B -m benchmarks.skills.qualify_build --image "$qualification_image" > reports/skill-build/result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: skill-build-${{ github.run_id }}
+          path: reports/skill-build
+          if-no-files-found: error
+          retention-days: 7

@@ -22,17 +22,31 @@ case data, and grader code must not be baked into it. The sandbox stages only
 the selected arm and dispatches explicit command argument arrays with resource
 limits and a fresh environment. Docker remains a controller capability.
 
+`build.build_frozen` compiles a controller-selected frozen submission in a
+fresh sandbox, then collects an explicit artifact allowlist through a bounded
+reader. Compiler commands and collected files never execute on the host. Its
+receipt records supplied source identity, tool image, command, copied artifact
+bytes and hashes, and bounded compiler output. These identities do not prove
+that arbitrary build scripts honestly compiled the submitted source; independent
+semantic checks must establish that relationship.
+
+`python3 -B -m benchmarks.skills.qualify_build --image sha256:...` qualifies this
+path using an actual compiler in an immutable Linux image. The CI build job
+retains that image and exercises benign source changes, compiler failures, and
+rejected artifact types and sizes. This is compilation and collection evidence;
+it does not qualify guest boot or a semantic grader.
+
 Portable checks run from the repository root:
 
 ```sh
-python3 -B -m unittest benchmarks/skills/test_materials.py benchmarks/skills/test_sandbox.py
+python3 -B -m unittest benchmarks/skills/test_materials.py benchmarks/skills/test_sandbox.py benchmarks/skills/test_build.py
 ```
 
 The [qualification workflow](../../.github/workflows/skill-evaluator.yml) records
 the exact code and image identities and retains the tool image with its results.
 
-These tests qualify material handling and local process helpers. Actual Docker
-canaries must separately qualify the Linux execution boundary. Building and
-booting submissions, checking meaningful oracle controls, and grading private
-held-out behavior require trusted services outside the agent sandbox; passing
-these infrastructure tests does not qualify those services.
+Portable tests exercise material handling, process helpers, and artifact parsing.
+Actual Docker canaries separately qualify the Linux execution and compilation
+boundaries. Guest boot, meaningful checker controls, general built-source
+semantics, and private held-out grading require further trusted services outside
+the agent sandbox; passing these infrastructure checks does not qualify them.
