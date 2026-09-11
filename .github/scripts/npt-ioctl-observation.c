@@ -49,6 +49,7 @@ enum {
     UART_PORT = 0x3f8,
     WARMUP_MARKER = 0xa5,
     MAX_KVM_RUNS = 8,
+    OBSERVATION_ROUNDS = 8,
 };
 
 static const uint64_t PDPT_A_ENTRY = 0x5001;
@@ -95,6 +96,20 @@ struct endpoint {
     uint8_t second_serial;
     uint64_t pd_a;
     uint64_t pd_b;
+};
+
+struct selected_observation {
+    int regs_valid;
+    uint64_t regs_rip;
+    uint64_t regs_rbx;
+    int sregs2_valid;
+    uint64_t sregs2_flags;
+    uint64_t sregs2_pdptrs[4];
+};
+
+struct case_result {
+    struct endpoint endpoint;
+    struct selected_observation selected;
 };
 
 static void die_text(const char *message)
@@ -467,50 +482,64 @@ static void retire_first_pio(const struct case_vm *vm)
                  "completion-only KVM_RUN must return EINTR");
 }
 
-static void selected_read(const struct case_vm *vm, enum read_case kind)
+static struct selected_observation selected_read(const struct case_vm *vm,
+                                                 enum read_case kind)
 {
+    struct selected_observation observation;
+
+    memset(&observation, 0, sizeof(observation));
     switch (kind) {
     case READ_NONE:
-        return;
+        return observation;
     case READ_REGS: {
         struct kvm_regs regs;
 
         memset(&regs, 0, sizeof(regs));
         ioctl_result(vm->vcpu_fd, KVM_GET_REGS, &regs, "KVM_GET_REGS");
-        return;
+        observation.regs_valid = 1;
+        observation.regs_rip = (uint64_t)regs.rip;
+        observation.regs_rbx = (uint64_t)regs.rbx;
+        return observation;
     }
     case READ_SREGS: {
         struct kvm_sregs sregs;
 
         memset(&sregs, 0, sizeof(sregs));
         ioctl_result(vm->vcpu_fd, KVM_GET_SREGS, &sregs, "KVM_GET_SREGS");
-        return;
+        return observation;
     }
     case READ_SREGS2: {
         struct kvm_sregs2 sregs2;
 
         memset(&sregs2, 0, sizeof(sregs2));
         ioctl_result(vm->vcpu_fd, KVM_GET_SREGS2, &sregs2, "KVM_GET_SREGS2");
-        return;
+        observation.sregs2_valid = 1;
+        observation.sregs2_flags = (uint64_t)sregs2.flags;
+        observation.sregs2_pdptrs[0] = (uint64_t)sregs2.pdptrs[0];
+        observation.sregs2_pdptrs[1] = (uint64_t)sregs2.pdptrs[1];
+        observation.sregs2_pdptrs[2] = (uint64_t)sregs2.pdptrs[2];
+        observation.sregs2_pdptrs[3] = (uint64_t)sregs2.pdptrs[3];
+        return observation;
     }
     case READ_XSAVE: {
         _Alignas(8) uint8_t xsave[4096];
 
         memset(xsave, 0, sizeof(xsave));
         ioctl_result(vm->vcpu_fd, KVM_GET_XSAVE, xsave, "KVM_GET_XSAVE");
-        return;
+        return observation;
     }
     }
     die_text("unknown selected ioctl case");
+    return observation;
 }
 
-static struct endpoint run_case(struct case_vm *vm, enum read_case kind)
+static struct case_result run_case(struct case_vm *vm, enum read_case kind)
 {
-    struct endpoint endpoint;
+    struct case_result result;
     uint8_t first_serial;
     unsigned int run_count = 0;
 
-    memset(&endpoint, 0, sizeof(endpoint));
+    memset(&result, 0, sizeof(result));
     run_once(vm, "warmup PIO");
     ++run_count;
     first_serial = pio_byte(vm, KVM_EXIT_IO_OUT, "warmup");
@@ -521,37 +550,68 @@ static struct endpoint run_case(struct case_vm *vm, enum read_case kind)
     store_u64(vm->ram, PDPT_GPA, PDPT_B_ENTRY);
 
     /* This call is the sole selected read between the mutation and next run. */
-    selected_read(vm, kind);
+    result.selected = selected_read(vm, kind);
 
     run_once(vm, "second PIO");
     ++run_count;
-    endpoint.second_serial = pio_byte(vm, KVM_EXIT_IO_OUT, "second");
+    result.endpoint.second_serial = pio_byte(vm, KVM_EXIT_IO_OUT, "second");
     run_once(vm, "HLT");
     ++run_count;
     require_true(vm->run->exit_reason == KVM_EXIT_HLT,
                  "the bounded guest must terminate at HLT");
     require_true(run_count <= MAX_KVM_RUNS, "guest exceeded bounded KVM_RUN count");
 
-    ioctl_result(vm->vcpu_fd, KVM_GET_REGS, &endpoint.regs, "KVM_GET_REGS endpoint");
-    ioctl_result(vm->vcpu_fd, KVM_GET_SREGS2, &endpoint.sregs2,
+    ioctl_result(vm->vcpu_fd, KVM_GET_REGS, &result.endpoint.regs,
+                 "KVM_GET_REGS endpoint");
+    ioctl_result(vm->vcpu_fd, KVM_GET_SREGS2, &result.endpoint.sregs2,
                  "KVM_GET_SREGS2 endpoint");
-    endpoint.pd_a = load_u64(vm->ram, PD_A_GPA);
-    endpoint.pd_b = load_u64(vm->ram, PD_B_GPA);
-    require_true(endpoint.regs.rbx == 1,
+    result.endpoint.pd_a = load_u64(vm->ram, PD_A_GPA);
+    result.endpoint.pd_b = load_u64(vm->ram, PD_B_GPA);
+    require_true(result.endpoint.regs.rbx == 1,
                  "the endpoint must retire exactly one INC EBX");
-    return endpoint;
+    return result;
+}
+
+static void print_selected_observation(
+    const struct selected_observation *observation)
+{
+    if (observation->regs_valid) {
+        printf("{\"valid\":true,\"rip\":%" PRIu64 ",\"rbx\":%" PRIu64 "}",
+               observation->regs_rip, observation->regs_rbx);
+    } else {
+        printf("{\"valid\":false,\"rip\":null,\"rbx\":null}");
+    }
+}
+
+static void print_selected_sregs2(
+    const struct selected_observation *observation)
+{
+    if (observation->sregs2_valid) {
+        printf("{\"valid\":true,\"flags\":%" PRIu64
+               ",\"pdptrs\":[%" PRIu64 ",%" PRIu64 ",%" PRIu64
+               ",%" PRIu64 "]}",
+               observation->sregs2_flags, observation->sregs2_pdptrs[0],
+               observation->sregs2_pdptrs[1], observation->sregs2_pdptrs[2],
+               observation->sregs2_pdptrs[3]);
+    } else {
+        printf("{\"valid\":false,\"flags\":null,\"pdptrs\":null}");
+    }
 }
 
 static void print_endpoint(const struct selected_case *selected, int cpu,
-                           const struct endpoint *endpoint)
+                           size_t round, size_t slot,
+                           const struct case_result *result)
 {
-    printf("{\"case\":\"%s\",\"cpu\":%d,\"serial_bytes\":[%u,%u],"
+    const struct endpoint *endpoint = &result->endpoint;
+
+    printf("{\"round\":%zu,\"slot\":%zu,\"case\":\"%s\",\"cpu\":%d,"
+           "\"serial_bytes\":[%u,%u],"
            "\"rip\":%" PRIu64 ",\"rbx\":%" PRIu64
            ",\"reported_pdptr_flags\":%" PRIu64
            ",\"reported_pdptrs\":[%" PRIu64 ",%" PRIu64 ",%" PRIu64
            ",%" PRIu64 "],\"pd_a\":%" PRIu64 ",\"pd_b\":%" PRIu64
-           ",\"pio_count\":2,\"hlt\":true}\n",
-           selected->name, cpu, (unsigned int)WARMUP_MARKER,
+           ",\"pio_count\":2,\"hlt\":true,\"selected_get_regs\":",
+           round, slot, selected->name, cpu, (unsigned int)WARMUP_MARKER,
            (unsigned int)endpoint->second_serial,
            (uint64_t)endpoint->regs.rip, (uint64_t)endpoint->regs.rbx,
            (uint64_t)endpoint->sregs2.flags,
@@ -560,6 +620,10 @@ static void print_endpoint(const struct selected_case *selected, int cpu,
            (uint64_t)endpoint->sregs2.pdptrs[2],
            (uint64_t)endpoint->sregs2.pdptrs[3],
            endpoint->pd_a, endpoint->pd_b);
+    print_selected_observation(&result->selected);
+    printf(",\"selected_get_sregs2\":");
+    print_selected_sregs2(&result->selected);
+    printf("}\n");
     if (fflush(stdout) == EOF)
         die_errno("flush observation JSON");
 }
@@ -567,15 +631,22 @@ static void print_endpoint(const struct selected_case *selected, int cpu,
 int main(void)
 {
     int cpu = pin_to_first_allowed_cpu();
-    size_t index;
+    size_t round;
+    size_t slot;
+    const size_t case_count =
+        sizeof(SELECTED_CASES) / sizeof(SELECTED_CASES[0]);
 
-    for (index = 0; index < sizeof(SELECTED_CASES) / sizeof(SELECTED_CASES[0]);
-         ++index) {
-        struct case_vm vm = create_case_vm();
-        struct endpoint endpoint = run_case(&vm, SELECTED_CASES[index].kind);
+    for (round = 0; round < OBSERVATION_ROUNDS; ++round) {
+        for (slot = 0; slot < case_count; ++slot) {
+            size_t selected_index = (round + slot) % case_count;
+            struct case_vm vm = create_case_vm();
+            struct case_result result =
+                run_case(&vm, SELECTED_CASES[selected_index].kind);
 
-        print_endpoint(&SELECTED_CASES[index], cpu, &endpoint);
-        destroy_case_vm(&vm);
+            print_endpoint(&SELECTED_CASES[selected_index], cpu, round, slot,
+                           &result);
+            destroy_case_vm(&vm);
+        }
     }
     return EXIT_SUCCESS;
 }

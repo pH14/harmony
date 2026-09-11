@@ -464,7 +464,13 @@ jobs:
           fi
           export NPT_REPORT_DIR="$PWD/reports/observations"
           printf '%s\n' "$test_name" > reports/test-name.txt
-          cargo test --locked -p vmm-core --test x86_cpu_snapshots \
+          runner=()
+          if [[ "$OBSERVE" == true ]]; then
+            cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+            printf '%s\n' "$cpu" > reports/rust-affinity-cpu.txt
+            runner=(taskset --cpu-list "$cpu")
+          fi
+          "${runner[@]}" cargo test --locked -p vmm-core --test x86_cpu_snapshots \
             "$test_name" \
             -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee reports/amd-npt-snapshot.log
