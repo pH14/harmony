@@ -24,7 +24,12 @@ on:
       - .github/workflows/x86-virtual-time.yml
   schedule:
     - cron: "13 3 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      amd_npt_snapshot:
+        description: Run the focused AMD default-NPT snapshot identity gate
+        type: boolean
+        default: false
 
 concurrency:
   group: x86-virtual-time-${{ github.event_name }}-${{ github.ref }}
@@ -47,6 +52,7 @@ jobs:
   # X0: CPU identity, /dev/kvm, the KVM capability table, and one minimal
   # real-mode guest through the public KvmBackend.
   probe:
+    if: ${{ !inputs.amd_npt_snapshot }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -99,6 +105,7 @@ jobs:
   # comparator and placement-checker negatives standing against the same
   # workload's log. Two replicas so most pushes also sample two hardware draws.
   x1-minimal-guest:
+    if: ${{ !inputs.amd_npt_snapshot }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -133,6 +140,7 @@ jobs:
   # immutable artifact, never a cross-run cache, so N5 can distinguish an
   # actual rebuild from a restored image.
   guest-image:
+    if: ${{ !inputs.amd_npt_snapshot }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -167,6 +175,7 @@ jobs:
   # rejected first; only then may both production profiles' two same-seed
   # traps-on boots receive credit.
   n6-instruction-sweep:
+    if: ${{ !inputs.amd_npt_snapshot }}
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -215,6 +224,7 @@ jobs:
   # execution trace must repeat on both production kernel profiles while the
   # corresponding traps-off boot demonstrably diverges.
   go-runtime:
+    if: ${{ !inputs.amd_npt_snapshot }}
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -265,6 +275,7 @@ jobs:
   # an unoptimized sha2 makes wall-clock-prohibitive. Two replicas so most
   # pushes sample two hardware draws.
   x2-linux-virtual_time:
+    if: ${{ !inputs.amd_npt_snapshot }}
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -346,6 +357,7 @@ jobs:
   # (sub-second boots), so a wide matrix is cheap. Report-only: an AMD draw
   # finding no divergent pair is the expected common case.
   x2-intel-hunt:
+    if: ${{ !inputs.amd_npt_snapshot }}
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -392,6 +404,7 @@ jobs:
   # Linux compile/lint/test truth for the crates the x86 work touches; the
   # macOS development host cannot check cfg(linux) code.
   check:
+    if: ${{ !inputs.amd_npt_snapshot }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -407,3 +420,46 @@ jobs:
         run: cargo clippy -p vmm-backend -p vmm-core --all-features --all-targets -- -D warnings
       - name: tests (portable)
         run: cargo test -p vmm-backend --all-features
+
+  amd-npt-snapshot:
+    if: ${{ inputs.amd_npt_snapshot }}
+    name: AMD default-NPT snapshot identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record unchanged host paging mode and source
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          git rev-parse HEAD > reports/head.txt
+          uname -a > reports/host.txt
+          lscpu >> reports/host.txt
+          cat /proc/cpuinfo > reports/cpuinfo.txt
+          cat /sys/module/kvm_amd/parameters/npt > reports/amd-npt.txt
+          grep -Eq '^(Y|1)$' reports/amd-npt.txt
+          grep -Eq 'vendor_id[[:space:]]*:[[:space:]]*AuthenticAMD' reports/cpuinfo.txt
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          rustup show active-toolchain > reports/toolchain.txt
+          rustc --version --verbose >> reports/toolchain.txt
+      - uses: Swatinem/rust-cache@v2
+      - name: Compare original, save-and-continue, and cold PAE execution
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          cargo test --locked -p vmm-core --test x86_cpu_snapshots \
+            live_kvm::amd_default_npt_pae_snapshot_identity \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee reports/amd-npt-snapshot.log
+          grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' reports/amd-npt-snapshot.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: amd-npt-snapshot-${{ github.run_id }}
+          path: reports
+          if-no-files-found: error
+          retention-days: 30

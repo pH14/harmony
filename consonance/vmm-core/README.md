@@ -67,6 +67,13 @@ flags. Nonzero extended fields select VM-state v5; zero values retain v3/v4
 bytes. Cached PDPTRs are distinct from the current PDPT contents in guest RAM
 and must survive restore without reloading them from that memory.
 
+The live cached-PDPTR witness covers Intel paging and AMD shadow paging. A
+separate `amd_default_npt_pae_snapshot_identity` gate exercises AMD with NPT
+left enabled: it compares complete original, save-and-continue, and cold
+endpoints after a guest page-table RAM change. Its uninterrupted arm does not
+inspect CPU state at the stop. The x86 workflow's manual `amd_npt_snapshot`
+input runs this focused gate and records the host mode without changing it.
+
 ## Architecture boundary
 
 The engine uses only common exits, guest-physical addresses, bytes, and typed

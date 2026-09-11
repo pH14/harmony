@@ -822,4 +822,125 @@ mod live_kvm {
             "PAE snapshot witness: all three continuations read 0x42; omitted PDPTR cache reads 0x99"
         );
     }
+
+    #[test]
+    #[ignore = "live AMD KVM NPT; run with --ignored on an AuthenticAMD /dev/kvm host"]
+    fn amd_default_npt_pae_snapshot_identity() {
+        require_kvm();
+
+        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo")
+            .expect("read /proc/cpuinfo for the AMD NPT gate");
+        assert!(
+            cpuinfo.lines().any(|line| {
+                line.split_once(':').is_some_and(|(key, value)| {
+                    key.trim() == "vendor_id" && value.trim() == "AuthenticAMD"
+                })
+            }),
+            "this diagnostic requires an AuthenticAMD host"
+        );
+        let npt = std::fs::read_to_string("/sys/module/kvm_amd/parameters/npt")
+            .expect("read kvm_amd NPT setting");
+        assert!(
+            matches!(npt.trim(), "Y" | "1"),
+            "this diagnostic requires kvm_amd NPT to be enabled, got {:?}",
+            npt.trim()
+        );
+
+        // Keep this warmup deliberately observationally minimal. In particular,
+        // do not read vCPU state or save/hash before the first continuation: the
+        // NPT transition itself is what the first endpoint must expose.
+        let warmup = |vmm: &mut Vmm<KvmBackend>| {
+            assert_eq!(
+                vmm.step().expect("run AMD NPT scalar UART warmup"),
+                Step::Continued,
+                "the warmup UART OUT is a serviced, non-terminal PIO exit"
+            );
+            assert_eq!(vmm.serial(), &[WARMUP_MARKER]);
+            assert_eq!(vmm.exit_counts().io, 1);
+            assert_eq!(vmm.exit_counts().total(), 1);
+        };
+
+        // The uninterrupted arm establishes the NPT endpoint after RAM changes
+        // the PDPT. The expected B mapping is intentional: a disagreement is
+        // hardware evidence, not a reason to derive the expectation from output.
+        let mut uninterrupted = fresh_vmm(true);
+        wire_snapshot_path(&mut uninterrupted);
+        warmup(&mut uninterrupted);
+        switch_guest_pdpt_to_b(&mut uninterrupted);
+        let uninterrupted_endpoint = run_bounded(&mut uninterrupted, 0x99, PDPT_B_ENTRY);
+
+        // Capture the same boundary without making an earlier CPU save. The
+        // direct observations below establish that capture itself does not
+        // change RAM, UART, exit accounting, or virtual time.
+        let mut save_and_continue = fresh_vmm(true);
+        wire_snapshot_path(&mut save_and_continue);
+        warmup(&mut save_and_continue);
+        switch_guest_pdpt_to_b(&mut save_and_continue);
+        let before_memory = save_and_continue.guest_memory().to_vec();
+        let before_serial = save_and_continue.serial().to_vec();
+        let before_counts = save_and_continue.exit_counts();
+        let before_vns = save_and_continue.effective_vns();
+        let capture = capture_full_vmm(&save_and_continue);
+        assert_eq!(capture.state.regs.rip, WARMUP_RIP as u64);
+        assert_eq!(capture.state.regs.rbx, 0);
+        assert_eq!(capture.state.sregs.pdptrs[0], PDPT_B_ENTRY);
+        assert_eq!(
+            capture.memory[PDPT_GPA..PDPT_GPA + 8],
+            PDPT_B_ENTRY.to_le_bytes(),
+            "the captured RAM must retain the NPT-selected PDPT B entry"
+        );
+        assert_eq!(save_and_continue.guest_memory(), before_memory.as_slice());
+        assert_eq!(save_and_continue.serial(), before_serial.as_slice());
+        assert_eq!(save_and_continue.exit_counts(), before_counts);
+        assert_eq!(save_and_continue.effective_vns(), before_vns);
+        let repeated = capture_full_vmm(&save_and_continue);
+        assert_eq!(repeated, capture, "repeated capture is byte-identical");
+        let save_and_continue_endpoint = run_bounded(&mut save_and_continue, 0x99, PDPT_B_ENTRY);
+
+        // Restore the complete source into a fresh production-composed VMM.
+        let mut cold = fresh_vmm(false);
+        wire_snapshot_path(&mut cold);
+        cold.restore_snapshot(&capture.memory, &capture.state)
+            .expect("restore AMD NPT full VMM snapshot");
+        let cold_stop = capture_full_vmm(&cold);
+        assert_eq!(
+            cold_stop, capture,
+            "cold restore reproduces the saved boundary"
+        );
+        let cold_endpoint = run_bounded(&mut cold, 0x99, PDPT_B_ENTRY);
+
+        assert_eq!(
+            uninterrupted_endpoint, save_and_continue_endpoint,
+            "uninterrupted and save-and-continue NPT endpoints must match"
+        );
+        assert_eq!(
+            save_and_continue_endpoint, cold_endpoint,
+            "cold restore must reproduce the NPT endpoint"
+        );
+
+        // Negative control: retain the saved CPU state but restore the original
+        // RAM image, whose PDPT still points at A. This tests that the accepted
+        // endpoint's guest RAM is necessary under NPT; it does not clear the
+        // saved PDPTR validity bit or test the cached-PDPTR behavior.
+        let original_memory = guest_ram_image().as_bytes().to_vec();
+        let mut negative = fresh_vmm(false);
+        wire_snapshot_path(&mut negative);
+        negative
+            .restore_snapshot(&original_memory, &capture.state)
+            .expect("restore NPT negative-control RAM image");
+        let negative_endpoint = run_bounded(&mut negative, 0x42, PDPT_A_ENTRY);
+        assert_ne!(
+            negative_endpoint, uninterrupted_endpoint,
+            "changing only the restored NPT guest RAM must change the endpoint"
+        );
+        println!(
+            "AMD NPT snapshot witness: positive serial={:?} vtime={:?} hash={:?}; negative serial={:?} vtime={:?} hash={:?}",
+            uninterrupted_endpoint.serial,
+            uninterrupted_endpoint.effective_vns,
+            uninterrupted_endpoint.state_hash,
+            negative_endpoint.serial,
+            negative_endpoint.effective_vns,
+            negative_endpoint.state_hash
+        );
+    }
 }
