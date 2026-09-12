@@ -118,11 +118,7 @@ pub struct VcpuEvents {
     pub triple_fault_pending: u8,
 }
 
-const RFLAGS_RF: u64 = 1 << 16;
-
-pub fn canonicalize_regs(regs: &mut VcpuRegs) {
-    regs.rflags &= !RFLAGS_RF;
-}
+pub fn canonicalize_regs(_regs: &mut VcpuRegs) {}
 
 pub fn canonicalize_sregs(sregs: &mut VcpuSregs) {
     for seg in [
@@ -241,11 +237,6 @@ mod tests {
         image[28..32].copy_from_slice(&0xFFFFu32.to_le_bytes());
         image[XSTATE_BV..XSTATE_BV + 8].copy_from_slice(&xstate_bv.to_le_bytes());
         image
-    }
-
-    #[test]
-    fn rflags_rf_is_bit_16() {
-        assert_eq!(RFLAGS_RF, 0x1_0000);
     }
 
     #[test]
@@ -387,23 +378,24 @@ mod tests {
     }
 
     #[test]
-    fn rf_exit_residue_collapses_across_vendors() {
-        let mut intel = VcpuRegs {
+    fn resume_flag_distinguishes_debug_restart_states() {
+        let mut resume = VcpuRegs {
             rflags: 0x10282,
             ..VcpuRegs::default()
         };
-        let mut amd = VcpuRegs {
+        let mut ordinary = VcpuRegs {
             rflags: 0x282,
             ..VcpuRegs::default()
         };
-        canonicalize_regs(&mut intel);
-        canonicalize_regs(&mut amd);
-        assert_eq!(intel, amd);
-        assert_eq!(intel.rflags, 0x282);
+        canonicalize_regs(&mut resume);
+        canonicalize_regs(&mut ordinary);
+        assert_ne!(resume, ordinary);
+        assert_eq!(resume.rflags, 0x10282);
+        assert_eq!(ordinary.rflags, 0x282);
     }
 
     #[test]
-    fn regs_other_than_rf_are_untouched() {
+    fn general_registers_are_untouched() {
         let mut regs = VcpuRegs {
             rax: 0x1234,
             rsp: 0xffff_ffff_8260_3e98,
@@ -415,7 +407,7 @@ mod tests {
         assert_eq!(regs.rax, 0x1234);
         assert_eq!(regs.rsp, 0xffff_ffff_8260_3e98);
         assert_eq!(regs.rip, 0xffff_ffff_8125_6a62);
-        assert_eq!(regs.rflags, 0xac6);
+        assert_eq!(regs.rflags, 0x10ac6);
     }
 
     #[test]
