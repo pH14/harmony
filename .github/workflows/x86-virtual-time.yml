@@ -593,7 +593,8 @@ jobs:
           run_exact vmm-backend kvm_smoke serviced_msr_is_exactly_snapshottable_without_guest_execution msr || failed=1
           run_exact vmm-backend kvm_smoke serviced_exception_payload_round_trips_and_empty_restore_clears_it exception-payload || failed=1
           run_exact vmm-backend kvm_smoke serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu mmio-backend || failed=1
-          run_exact vmm-core x86_cpu_snapshots live_kvm::mmio_rmw_finishes_before_full_vmm_snapshot mmio-full-vmm || failed=1
+          run_exact vmm-core x86_cpu_snapshots live_kvm::mmio_rmw_finishes_before_full_vmm_snapshot mmio-full-vmm \
+            "MMIO_CONTINUATION_REPORT_DIR=$PWD/snapshot-report/mmio-full-vmm" || failed=1
           run_exact vmm-core x86_cpu_snapshots live_kvm::pae_cached_pdptrs_survive_full_vmm_snapshot_restore pae-full-vmm || failed=1
           run_exact vmm-backend kvm_smoke resume_flag_preserves_instruction_breakpoint_continuation resume-flag || failed=1
           run_exact vmm-core x86_cpu_snapshots live_kvm::xsave_guest_bytes_survive_cold_continuation xsave \

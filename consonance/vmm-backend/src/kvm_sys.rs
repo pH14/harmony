@@ -940,7 +940,7 @@ mod xsave_diagnostic {
         [entry.eax, entry.ebx, entry.ecx, entry.edx]
     }
 
-    fn backend_xcr0(backend: &KvmBackend) -> u64 {
+    fn backend_xcr0_value(backend: &KvmBackend) -> u64 {
         let xcrs = backend
             .vcpu
             .get_xcrs()
@@ -957,7 +957,7 @@ mod xsave_diagnostic {
             .unwrap_or_else(|e| panic!("write {} failed: {e}", dir.join(name).display()));
     }
 
-    fn assert_xmm0(image: &[u8], expected: &[u8; 16], phase: &str, label: &str) {
+    fn assert_xmm0_bytes(image: &[u8], expected: &[u8; 16], phase: &str, label: &str) {
         assert_eq!(
             &image[SSE_XMM0], expected,
             "{label} XMM0 changed during {phase}"
@@ -1039,7 +1039,7 @@ mod xsave_diagnostic {
 
         let cpuid1 = cpuid_words(&backend, 1, 0);
         let cpuid_d0 = cpuid_words(&backend, 0xD, 0);
-        let xcr0_before_run = backend_xcr0(&backend);
+        let xcr0_before_run = backend_xcr0_value(&backend);
         assert_eq!(
             xcr0_before_run, 3,
             "configured guest XCR0 was not retained for {label}"
@@ -1124,10 +1124,10 @@ mod xsave_diagnostic {
         write_image(&report_dir, "canonical-endpoint.bin", &canonical_endpoint);
 
         let expected_xmm0 = if active_sse { &ACTIVE_XMM0 } else { &ZERO_XMM0 };
-        assert_xmm0(&raw_before_1, expected_xmm0, "first boundary read", label);
-        assert_xmm0(&raw_before_2, expected_xmm0, "second boundary read", label);
-        assert_xmm0(&raw_after_set, expected_xmm0, "raw SET round trip", label);
-        assert_xmm0(
+        assert_xmm0_bytes(&raw_before_1, expected_xmm0, "first boundary read", label);
+        assert_xmm0_bytes(&raw_before_2, expected_xmm0, "second boundary read", label);
+        assert_xmm0_bytes(&raw_after_set, expected_xmm0, "raw SET round trip", label);
+        assert_xmm0_bytes(
             &raw_endpoint,
             expected_xmm0,
             "one guest continuation",
@@ -1142,7 +1142,7 @@ mod xsave_diagnostic {
             2,
             "{label} executed more than the boundary and one continuation"
         );
-        let xcr0_endpoint = backend_xcr0(&backend);
+        let xcr0_endpoint = backend_xcr0_value(&backend);
 
         let (before_bv_1, before_xcomp_1) = header(&raw_before_1);
         let (before_bv_2, before_xcomp_2) = header(&raw_before_2);

@@ -384,6 +384,7 @@ fn compose_maps_guest_ram_and_keeps_it_alive_for_mock_backend() {
 #[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
 mod live_kvm {
     use super::*;
+    use std::fmt::Write as _;
     use vmm_backend::KvmBackend;
     use vmm_core::virtual_time::{DeviceClass, NormalizedEventClass};
 
@@ -547,6 +548,74 @@ mod live_kvm {
             .expect("write endpoint summary report");
     }
 
+    fn first_byte_difference(a: &[u8], b: &[u8]) -> Option<(usize, Option<u8>, Option<u8>)> {
+        let len = a.len().max(b.len());
+        (0..len).find_map(|offset| {
+            let left = a.get(offset).copied();
+            let right = b.get(offset).copied();
+            (left != right).then_some((offset, left, right))
+        })
+    }
+
+    fn byte_text(byte: Option<u8>) -> String {
+        byte.map_or_else(|| "missing".to_owned(), |value| format!("{value:02x}"))
+    }
+
+    fn record_capture_mismatch(
+        root: Option<&std::path::Path>,
+        label: &str,
+        left: &MmioCapture,
+        right: &MmioCapture,
+    ) {
+        let Some(root) = root else { return };
+        let mut summary = String::new();
+        for (component, a, b) in [
+            ("memory", left.memory.as_slice(), right.memory.as_slice()),
+            (
+                "vm-state",
+                left.encoded_state.as_slice(),
+                right.encoded_state.as_slice(),
+            ),
+            (
+                "state-blob",
+                left.state_blob.as_slice(),
+                right.state_blob.as_slice(),
+            ),
+            (
+                "state-hash",
+                left.state_hash.as_slice(),
+                right.state_hash.as_slice(),
+            ),
+        ] {
+            match first_byte_difference(a, b) {
+                Some((offset, left, right)) => {
+                    writeln!(
+                        summary,
+                        "{component}: offset={offset} left={} right={}",
+                        byte_text(left),
+                        byte_text(right)
+                    )
+                    .expect("write mismatch summary");
+                }
+                None => {
+                    writeln!(summary, "{component}: equal").expect("write mismatch summary");
+                }
+            }
+        }
+        if left.moment != right.moment {
+            writeln!(
+                summary,
+                "virtual-time: left={:?} right={:?}",
+                left.moment, right.moment
+            )
+            .expect("write mismatch summary");
+        } else {
+            writeln!(summary, "virtual-time: equal").expect("write mismatch summary");
+        }
+        std::fs::write(root.join(format!("mismatch-{label}.txt")), summary)
+            .expect("write capture mismatch summary");
+    }
+
     fn lapic_tpr(state: &vm_state::VmState) -> u32 {
         let bytes = &state.devices.0;
         let read_u32 = |offset: usize| {
@@ -649,6 +718,7 @@ mod live_kvm {
     #[ignore = "live KVM; run with --ignored on a Linux x86-64 /dev/kvm host"]
     fn mmio_rmw_finishes_before_full_vmm_snapshot() {
         require_kvm();
+        let report = report_root("MMIO_CONTINUATION_REPORT_DIR");
 
         let mut uninterrupted = fresh_mmio_vmm();
         let before_vns = uninterrupted
@@ -659,6 +729,12 @@ mod live_kvm {
             Step::Continued
         );
         let uninterrupted_endpoint = continue_to_hlt(&mut uninterrupted);
+        retain_capture(
+            report.as_deref(),
+            "original-endpoint",
+            &uninterrupted_endpoint,
+            &uninterrupted_endpoint.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + MMIO_PROGRAM.len()],
+        );
 
         let mut save_and_continue = fresh_mmio_vmm();
         let save_before_vns = save_and_continue
@@ -670,6 +746,12 @@ mod live_kvm {
             Step::Continued
         );
         let save_stop = capture_mmio_boundary(&save_and_continue, save_before_vns);
+        retain_capture(
+            report.as_deref(),
+            "save-and-continue-stop",
+            &save_stop,
+            &save_stop.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + MMIO_PROGRAM.len()],
+        );
         let counts = save_and_continue.exit_counts();
         let time = save_and_continue.effective_vns();
         let bx = save_and_continue
@@ -678,6 +760,18 @@ mod live_kvm {
             .regs
             .rbx;
         let repeated = capture_full_vmm(&save_and_continue);
+        retain_capture(
+            report.as_deref(),
+            "save-and-continue-stop-repeat",
+            &repeated,
+            &repeated.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + MMIO_PROGRAM.len()],
+        );
+        record_capture_mismatch(
+            report.as_deref(),
+            "save-stop-vs-repeat",
+            &save_stop,
+            &repeated,
+        );
         assert!(
             repeated == save_stop,
             "repeated full snapshot is unchanged; retained MMIO stop evidence differs"
@@ -694,11 +788,23 @@ mod live_kvm {
         );
         assert_eq!(bx, 0, "repeated capture must not retire INC BX");
         let save_and_continue_endpoint = continue_to_hlt(&mut save_and_continue);
+        retain_capture(
+            report.as_deref(),
+            "save-and-continue-endpoint",
+            &save_and_continue_endpoint,
+            &save_and_continue_endpoint.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + MMIO_PROGRAM.len()],
+        );
 
         let mut cold = fresh_mmio_vmm();
         cold.restore_snapshot(&save_stop.memory, &save_stop.state)
             .expect("restore full MMIO VM snapshot");
         let cold_stop = capture_full_vmm(&cold);
+        retain_capture(
+            report.as_deref(),
+            "cold-stop",
+            &cold_stop,
+            &cold_stop.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + MMIO_PROGRAM.len()],
+        );
         let cold_live = cold.vcpu_record().expect("read cold MMIO boundary vCPU");
         assert_eq!(cold_live.regs.rip, (MMIO_CODE_GPA + 9) as u64);
         assert_eq!(cold_live.regs.rbx, 0);
@@ -707,15 +813,39 @@ mod live_kvm {
             MMIO_TPR_VALUE,
             "cold restore must retain LAPIC TPR = 5"
         );
+        record_capture_mismatch(
+            report.as_deref(),
+            "save-stop-vs-cold-stop",
+            &save_stop,
+            &cold_stop,
+        );
         assert_eq!(
             cold_stop, save_stop,
             "cold restore reproduces the MMIO stop"
         );
         let cold_endpoint = continue_to_hlt(&mut cold);
+        retain_capture(
+            report.as_deref(),
+            "cold-endpoint",
+            &cold_endpoint,
+            &cold_endpoint.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + MMIO_PROGRAM.len()],
+        );
 
+        record_capture_mismatch(
+            report.as_deref(),
+            "uninterrupted-vs-save-and-continue-endpoint",
+            &uninterrupted_endpoint,
+            &save_and_continue_endpoint,
+        );
         assert!(
             uninterrupted_endpoint == save_and_continue_endpoint,
             "uninterrupted and save-and-continue MMIO endpoints differ; retained evidence is available"
+        );
+        record_capture_mismatch(
+            report.as_deref(),
+            "save-and-continue-vs-cold-endpoint",
+            &save_and_continue_endpoint,
+            &cold_endpoint,
         );
         assert!(
             save_and_continue_endpoint == cold_endpoint,
