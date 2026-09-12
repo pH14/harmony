@@ -53,17 +53,12 @@ fn complete_correctly(m: &mut MockBackend, exit: &Exit<X86>) -> Result<(), Backe
             ecx: 0,
             edx: 0,
         }),
-        // Write-style / terminal exits need no completion.
         Exit::Arch(X86Exit::Io { write: Some(_), .. })
         | Exit::Common(CommonExit::Mmio { write: Some(_), .. })
         | Exit::Common(CommonExit::Idle)
         | Exit::Common(CommonExit::Shutdown) => Ok(()),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Gate 1 — unit tests covering the contract corners.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn run_before_configured_fails_closed() {
@@ -99,9 +94,7 @@ fn missed_completion_is_pending_completion() {
         })
     );
     assert!(m.has_pending());
-    // Resuming with the read un-serviced fails closed.
     assert!(matches!(m.run(), Err(BackendError::PendingCompletion)));
-    // Service it, then resume.
     m.complete_read(0x55).unwrap();
     assert!(!m.has_pending());
     assert_eq!(m.run().unwrap(), Exit::Common(CommonExit::Idle));
@@ -141,12 +134,10 @@ fn out_exit_needs_no_completion() {
 fn complete_read_without_pending_errors() {
     let mut m = configured();
     m.push_exit(Exit::Common(CommonExit::Idle));
-    // Nothing pending yet.
     assert!(matches!(
         m.complete_read(0),
         Err(BackendError::NoPendingRead)
     ));
-    // After a no-completion exit, still nothing read-style pending.
     assert_eq!(m.run().unwrap(), Exit::Common(CommonExit::Idle));
     assert!(matches!(
         m.complete_read(0),
@@ -182,14 +173,12 @@ fn retire_pending_completion_does_not_consume_the_next_mock_exit() {
 
 #[test]
 fn rdmsr_accepts_read_or_fault() {
-    // value path
     let mut m = configured();
     m.push_exit(Exit::Arch(X86Exit::Rdmsr { index: 0x1B }));
     m.run().unwrap();
     m.complete_read(0xDEAD).unwrap();
     assert_eq!(m.completions(), &[Completion::Read(0xDEAD)]);
 
-    // deny-gp path
     let mut m = configured();
     m.push_exit(Exit::Arch(X86Exit::Rdmsr { index: 0x1B }));
     m.run().unwrap();
@@ -199,7 +188,6 @@ fn rdmsr_accepts_read_or_fault() {
 
 #[test]
 fn wrmsr_accepts_ok_or_fault_but_not_read() {
-    // A Wrmsr is not read-style: complete_read must be rejected.
     let mut m = configured();
     m.push_exit(Exit::Arch(X86Exit::Wrmsr {
         index: 0x6E0,
@@ -222,7 +210,6 @@ fn wrmsr_accepts_ok_or_fault_but_not_read() {
     m.complete_ok().unwrap();
     assert_eq!(m.completions(), &[Completion::Ok]);
 
-    // deny-gp on a write.
     let mut m = configured();
     m.push_exit(Exit::Arch(X86Exit::Wrmsr {
         index: 0x6E0,
@@ -244,8 +231,6 @@ fn hypercall_and_cpuid_completions_are_typed() {
     m.complete_hypercall(48).unwrap();
     assert_eq!(m.completions(), &[Completion::Hypercall(48)]);
 
-    // `complete_hypercall` distinguishes nothing-pending (NoPendingRead) from a
-    // different pending exit (BadCompletion) — both arms are load-bearing.
     let mut m = configured();
     assert!(matches!(
         m.complete_hypercall(0),
@@ -327,25 +312,18 @@ fn inject_records_events() {
 
 #[test]
 fn set_pending_irq_overwrites_single_slot() {
-    // The VMM re-arbitrates from the LAPIC each entry and overwrites the single
-    // pending slot: the LATEST `set_pending_irq` wins (the multi-IRQ "queue" is the
-    // LAPIC IRR, above the trait). So a re-arbitrated higher-priority vector replaces
-    // the earlier one, and `None` retracts a now-stale vector.
     let mut m = configured();
     m.set_pending_irq(Some(0x40)).unwrap();
-    m.set_pending_irq(Some(0x50)).unwrap(); // re-arbitration: 0x50 replaces 0x40
+    m.set_pending_irq(Some(0x50)).unwrap();
     assert_eq!(m.pending_irq(), Some(0x50));
     m.push_exit(Exit::Common(CommonExit::Idle));
     assert_eq!(m.run().expect("run"), Exit::Common(CommonExit::Idle));
-    // Only the last-set vector is accepted; 0x40 was never injected.
     assert_eq!(m.take_accepted_interrupt(), Some(0x50));
     assert_eq!(m.take_accepted_interrupt(), None);
 
-    // Re-arbitrating to `None` retracts a stale vector (the P2 fix): it is not
-    // accepted, even though the backend would otherwise be injectable.
     let mut m = configured();
     m.set_pending_irq(Some(0x40)).unwrap();
-    m.set_pending_irq(None).unwrap(); // TPR raised / vector no longer deliverable
+    m.set_pending_irq(None).unwrap();
     assert_eq!(m.pending_irq(), None);
     m.push_exit(Exit::Common(CommonExit::Idle));
     assert_eq!(m.run().expect("run"), Exit::Common(CommonExit::Idle));
@@ -358,8 +336,6 @@ fn set_pending_irq_overwrites_single_slot() {
 
 #[test]
 fn deferred_accept_holds_irq_pending() {
-    // With acceptance deferred (the interrupt-window wait), the pending IRQ is held —
-    // not reported accepted — until acceptance is re-enabled.
     let mut m = configured();
     m.set_defer_accept(true);
     m.set_pending_irq(Some(0x40)).unwrap();
@@ -371,7 +347,6 @@ fn deferred_accept_holds_irq_pending() {
         "held pending while deferred"
     );
     assert_eq!(m.pending_irq(), Some(0x40), "still pending (un-accepted)");
-    // Re-enable acceptance; the next entry accepts it.
     m.set_defer_accept(false);
     m.push_exit(Exit::Common(CommonExit::Idle));
     assert_eq!(m.run().expect("run"), Exit::Common(CommonExit::Idle));
@@ -397,8 +372,6 @@ fn restore_requires_completion_retirement_then_discards_interrupt_bookkeeping() 
         Err(BackendError::PendingCompletion)
     ));
     m.complete_read(0xA5).unwrap();
-    // Keep both an already-accepted report and a newly pending identity in the
-    // host-only queues; neither belongs to the state being restored.
     m.set_pending_irq(Some(0x50)).unwrap();
 
     assert!(matches!(
@@ -415,7 +388,6 @@ fn restore_requires_completion_retirement_then_discards_interrupt_bookkeeping() 
 
 #[test]
 fn mock_observability_and_config_getters() {
-    // with_capabilities overrides the reported caps.
     let caps = Capabilities {
         name: "test-mock",
         arch: X86Caps,
@@ -436,7 +408,6 @@ fn mock_observability_and_config_getters() {
     assert_eq!(m.installed_msr_filter(), Some(&policy.msr_filter));
     assert!(m.is_configured());
 
-    // map_memory records (gpa, len); set_state feeds save().
     let mut mem = [0u8; 8192];
     // SAFETY: the mock does not dereference `mem`; it only records the region.
     unsafe { m.map_memory(Gpa(0x1000), &mut mem) }.unwrap();
@@ -451,13 +422,11 @@ fn mock_observability_and_config_getters() {
 #[test]
 fn mock_map_memory_validation_errors() {
     let mut m = MockBackend::new();
-    // zero-length / mis-aligned gpa / mis-aligned length all reject.
     // SAFETY: the mock never dereferences the slice; these all error before use.
     assert!(unsafe { m.map_memory(Gpa(0), &mut []) }.is_err());
     assert!(unsafe { m.map_memory(Gpa(1), &mut [0u8; 4096]) }.is_err());
     assert!(unsafe { m.map_memory(Gpa(0), &mut [0u8; 100]) }.is_err());
 
-    // overlapping maps reject.
     let mut a = [0u8; 4096];
     let mut b = [0u8; 4096];
     unsafe { m.map_memory(Gpa(0), &mut a) }.unwrap();
@@ -483,13 +452,8 @@ fn drain_default_declines_and_box_forwards_to_the_inner_impl() {
     m.push_dirty_gfns(vec![9, 2, 2]);
     let mut boxed: Box<dyn Backend<A = X86>> = Box::new(m);
     assert_eq!(boxed.drain_dirty_pages().unwrap(), vec![2, 9]);
-    // Drained: the next drain window is empty, not a replay of the last.
     assert_eq!(boxed.drain_dirty_pages().unwrap(), Vec::<u64>::new());
 }
-
-// ---------------------------------------------------------------------------
-// Gate 2 — the core run-loop / completion proptest (≥256 cases).
-// ---------------------------------------------------------------------------
 
 /// An arbitrary `Exit<X86>` spanning every variant.
 fn arb_exit() -> impl Strategy<Value = Exit<X86>> {
@@ -529,7 +493,6 @@ proptest! {
         let mut expected: BTreeMap<ExitReason, u64> = BTreeMap::new();
         for scripted in &script {
             let got = m.run().expect("run");
-            // A scripted `Deadline.reached` is preserved verbatim by `run`.
             prop_assert_eq!(&got, scripted);
             complete_correctly(&mut m, &got).expect("complete");
             *expected.entry(got.reason()).or_default() += 1;
@@ -542,7 +505,6 @@ proptest! {
         prop_assert_eq!(counts.total(), script.len() as u64);
     }
 
-
     /// Completion discipline is enforced exactly: skipping a needed completion
     /// makes the next `run` fail closed with `PendingCompletion`; a no-completion
     /// exit lets the next `run` proceed. Nothing in any branch panics.
@@ -550,13 +512,11 @@ proptest! {
     fn discipline_is_enforced(script in proptest::collection::vec(arb_exit(), 1..40)) {
         let mut m = configured();
         m.extend_exits(script.clone());
-        // One extra exit so there is always a "next" run to probe.
         m.push_exit(Exit::Common(CommonExit::Shutdown));
 
         for scripted in &script {
             let got = m.run().expect("run");
             let needs_completion = m.has_pending();
-            // The pending flag is exactly "this exit needs a completion".
             let is_read_style = matches!(scripted,
                 Exit::Arch(X86Exit::Io { write: None, .. }) | Exit::Common(CommonExit::Mmio { write: None, .. })
                 | Exit::Arch(X86Exit::Rdmsr { .. }) | Exit::Arch(X86Exit::Wrmsr { .. }) | Exit::Common(CommonExit::Hypercall(_))
@@ -564,9 +524,7 @@ proptest! {
             prop_assert_eq!(needs_completion, is_read_style);
 
             if needs_completion {
-                // Resuming without completing fails closed...
                 prop_assert!(matches!(m.run(), Err(BackendError::PendingCompletion)));
-                // ...and a correct completion clears it.
                 complete_correctly(&mut m, &got).expect("complete");
                 prop_assert!(!m.has_pending());
             }

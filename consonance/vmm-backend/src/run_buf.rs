@@ -122,7 +122,6 @@ mod tests {
         buf.read_bytes(16, &mut mid).unwrap();
         assert_eq!(mid, [1, 2, 3, 4, 5]);
 
-        // empty copy is a no-op success regardless of offset.
         buf.read_bytes(64, &mut []).unwrap();
         buf.write_bytes(64, &[]).unwrap();
     }
@@ -133,15 +132,12 @@ mod tests {
         // SAFETY: 16 live, owned, page-aligned bytes reached only via this ptr.
         let mut buf = unsafe { RunBuf::new(page.ptr, 16) };
 
-        // Reads/writes that would cross the end are rejected — not UB. Under Miri
-        // a missed bound check here would be flagged as an out-of-bounds access.
         let mut big = [0u8; 17];
         assert!(buf.read_bytes(0, &mut big).is_err());
         assert!(buf.write_bytes(1, &[0u8; 16]).is_err());
-        assert!(buf.read_bytes(13, &mut [0u8; 4]).is_err()); // 13 + 4 > 16
-        assert!(buf.write_bytes(usize::MAX - 1, &[0u8; 4]).is_err()); // overflow path
+        assert!(buf.read_bytes(13, &mut [0u8; 4]).is_err());
+        assert!(buf.write_bytes(usize::MAX - 1, &[0u8; 4]).is_err());
 
-        // Exact-fit accesses at the boundary succeed.
         assert!(buf.read_bytes(12, &mut [0u8; 4]).is_ok());
         assert!(buf.write_bytes(0, &[0u8; 16]).is_ok());
     }

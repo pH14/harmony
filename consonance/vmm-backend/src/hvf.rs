@@ -82,7 +82,6 @@ const ESR_IL: u64 = 1 << 25;
 
 const ICC_IAR1_EL1_CANONICAL: u32 = 0x0030_3018;
 
-// PSCI 0.2+ function IDs used by a uniprocessor Linux boot.
 const PSCI_VERSION: u64 = 0x8400_0000;
 const PSCI_CPU_SUSPEND32: u64 = 0x8400_0001;
 const PSCI_CPU_SUSPEND64: u64 = 0xc400_0001;
@@ -141,9 +140,6 @@ struct HvVcpuExit {
     exception: HvExitException,
 }
 
-// Stable Rust rejects a platform SIMD value in a foreign signature. This
-// AAPCS64 thunk accepts a byte pointer in X2, loads Q0, and tail-calls the
-// framework's by-value setter.
 core::arch::global_asm!(
     ".globl _harmony_backend_hv_vcpu_set_simd_fp_reg",
     "_harmony_backend_hv_vcpu_set_simd_fp_reg:",
@@ -253,7 +249,6 @@ fn undefined_exception(
         pstate,
         elr_el1: fault_pc,
         spsr_el1: old_pstate,
-        // EC=UNKNOWN is zero. AArch64 instructions are 32 bits, so IL=1.
         esr_el1: ESR_IL,
     })
 }
@@ -292,7 +287,6 @@ fn decode_data_abort(exit: HvVcpuExit) -> Result<DataAbort> {
 }
 
 fn canonical_sysreg(iss: u64) -> u32 {
-    // Keep the architectural op fields, clear Rt[9:5] and direction[0].
     ((iss & 0x003f_ffff) & !(0x1f << 5) & !1) as u32
 }
 
@@ -367,8 +361,6 @@ impl HvfBackend {
                 "hv_vcpu_create returned a null exit page",
             ));
         };
-        // The framework timer is tied to mach_absolute_time. Keep its automatic
-        // activation exit disabled; the userspace GIC timer is V-time-derived.
         // SAFETY: `vcpu` is live and owned by this thread.
         if let Err(error) = hv("hv_vcpu_set_vtimer_mask", unsafe {
             hv_vcpu_set_vtimer_mask(vcpu, true)
@@ -379,8 +371,6 @@ impl HvfBackend {
             let _ = unsafe { hv_vm_destroy() };
             return Err(error);
         }
-        // KVM has no portable counterpart to HVF's host-counter offset. Fix
-        // the private substrate state at zero before first entry.
         // SAFETY: `vcpu` is live and owned by this thread.
         if let Err(error) = hv("hv_vcpu_set_vtimer_offset", unsafe {
             hv_vcpu_set_vtimer_offset(vcpu, 0)
@@ -475,9 +465,9 @@ impl HvfBackend {
             PSCI_VERSION => PSCI_VERSION_1_0,
             SMCCC_VERSION => SMCCC_VERSION_1_1,
             SMCCC_ARCH_FEATURES => match self.reg(1)? {
-                SMCCC_ARCH_WORKAROUND_1 => 1,              // unaffected
-                SMCCC_ARCH_WORKAROUND_2 => (-2i64) as u64, // not required
-                SMCCC_ARCH_WORKAROUND_3 => 0,              // available
+                SMCCC_ARCH_WORKAROUND_1 => 1,
+                SMCCC_ARCH_WORKAROUND_2 => (-2i64) as u64,
+                SMCCC_ARCH_WORKAROUND_3 => 0,
                 _ => PSCI_NOT_SUPPORTED,
             },
             SMCCC_TRNG_VERSION => PSCI_NOT_SUPPORTED,
@@ -571,9 +561,6 @@ impl HvfBackend {
                     {
                         self.accepted_irq = Some(accepted);
                     }
-                    // Rt=31 is XZR for MSR/MRS, not an index into HVF's
-                    // register enum (where numeric 31 names PC). Linux uses
-                    // `msr ICC_BPR1_EL1, xzr` during GIC CPU-interface init.
                     let write = if read {
                         None
                     } else if reg == 31 {
@@ -803,8 +790,6 @@ impl Backend for HvfBackend {
     }
 
     fn retire_pending_completion(&mut self) -> Result<()> {
-        // HVF applies its arm64 register completions synchronously; there is no
-        // userspace run-page completion left to retire at this boundary.
         Ok(())
     }
 
@@ -812,15 +797,6 @@ impl Backend for HvfBackend {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
-        // Exclusive-monitor canonicalization (virtual-time model). HVF has
-        // no public monitor get/set/clear API. The cooperative image is scanned
-        // at build time by `consonance/harmony-linux/scripts/aa4-exclusive-scan.py`, whose
-        // planted LDXR/STXR negative must fail before the real kernel, vDSO, and
-        // init are accepted. Therefore no instruction in the admitted image can
-        // create a reservation: the monitor starts empty at vCPU creation and
-        // is canonically empty at every sealable boundary. It is deliberately
-        // absent from `Arm64VcpuState` rather than represented by a fabricated
-        // bit that the backend could not enforce.
         let mut state = Arm64VcpuState::default();
         for (reg, slot) in state.core.x.iter_mut().enumerate() {
             *slot = self.reg(reg as u32)?;
@@ -872,9 +848,6 @@ impl Backend for HvfBackend {
         hv("hv_vcpu_get_trap_debug_reg_accesses", unsafe {
             hv_vcpu_get_trap_debug_reg_accesses(self.vcpu, &mut state.debug.trap_debug_reg_accesses)
         })?;
-        // ISTATUS is a read-only, host-counter-derived observation and differs
-        // across substrates even while the timer is disabled. Only the two
-        // writable control bits belong in a portable snapshot.
         state.vtimer.cntv_ctl_el0 = self.sysreg(HV_SYS_REG_CNTV_CTL_EL0)? & 0b11;
         state.vtimer.cntv_cval_el0 = self.sysreg(HV_SYS_REG_CNTV_CVAL_EL0)?;
         // SAFETY: outputs are live and this is the owning thread.
@@ -909,8 +882,6 @@ impl Backend for HvfBackend {
     }
 
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
-        // HVF register writes cannot cancel an outstanding decoded exception.
-        // Keep the old exit from being applied to the restored state.
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
@@ -922,10 +893,6 @@ impl Backend for HvfBackend {
         {
             return Err(BackendError::InvalidState);
         }
-        // The exclusive monitor remains the canonical empty value described in
-        // `save`: restore is admitted only for the LL/SC-free cooperative image,
-        // and that image cannot have changed the reset-empty monitor before or
-        // after this boundary.
         for (reg, value) in state.core.x.iter().copied().enumerate() {
             self.set_reg(reg as u32, value)?;
         }
@@ -984,8 +951,6 @@ impl Backend for HvfBackend {
             hv_vcpu_set_trap_debug_reg_accesses(self.vcpu, state.debug.trap_debug_reg_accesses)
         })?;
         self.set_sysreg(HV_SYS_REG_CNTV_CVAL_EL0, state.vtimer.cntv_cval_el0)?;
-        // Arm only after restoring CVAL; CTL-first can transiently assert the
-        // host virtual-timer output against the old compare value.
         self.set_sysreg(HV_SYS_REG_CNTV_CTL_EL0, state.vtimer.cntv_ctl_el0)?;
         // SAFETY: the vCPU is live and this is the owning thread.
         hv("hv_vcpu_set_vtimer_mask", unsafe {
@@ -1003,9 +968,6 @@ impl Backend for HvfBackend {
         hv("hv_vcpu_set_pending_interrupt(FIQ)", unsafe {
             hv_vcpu_set_pending_interrupt(self.vcpu, HV_INTERRUPT_TYPE_FIQ, state.interrupts.fiq)
         })?;
-        // The restored architectural IRQ/FIQ state above is authoritative;
-        // these userspace arbitration/report slots belong to the displaced
-        // timeline and must be re-derived by the VMM before the next entry.
         self.pending_irq = None;
         self.accepted_irq = None;
         Ok(())

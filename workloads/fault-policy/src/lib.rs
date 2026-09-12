@@ -97,7 +97,7 @@ pub const CATALOG_VERSION: u16 = 5;
 /// MAX_SUPPLY_LEN` holds at the seam and a [`Answer::Supply`] can never force an
 /// unbounded allocation from an untrusted guest-supplied count (conventions
 /// rule 4). The seeded backing also clamps defensively.
-pub const MAX_SUPPLY_LEN: u32 = 1 << 20; // 1 MiB
+pub const MAX_SUPPLY_LEN: u32 = 1 << 20;
 
 /// What [`Environment::decide`] yields for a **guest** decision. A pure backing
 /// ([`SeededEnv`], [`RecordedEnv`]) always returns [`Outcome::Resolved`]; the

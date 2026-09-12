@@ -254,7 +254,6 @@ fn detect_nested() -> Detected {
 fn cpuinfo_nesting(cpuinfo: &str) -> Detected {
     let mut flags = cpuinfo.lines().filter(|l| l.starts_with("flags"));
     let Some(line) = flags.next() else {
-        // No flags line: this is not the x86 cpuinfo format the check reads.
         return Detected::Unknown;
     };
     line.contains(" hypervisor").into()
@@ -314,8 +313,6 @@ fn detect_container() -> Detected {
 fn detect_container_for(os: &str, linux: impl FnOnce() -> Detected) -> Detected {
     match os {
         "linux" => linux(),
-        // Hypervisor.framework is not reachable from a Linux container, so
-        // the HVF rows have no container variant.
         "macos" => Detected::No,
         _ => Detected::Unknown,
     }
@@ -326,12 +323,9 @@ fn detect_container_linux() -> Detected {
 }
 
 fn detect_container_linux_at(root: &Path) -> Detected {
-    // Marker files written by the docker and podman runtimes.
     if root.join(".dockerenv").exists() || root.join("run/.containerenv").exists() {
         return Detected::Yes;
     }
-    // PID 1's cgroup names the engine under cgroup v1, and under cgroup v2
-    // whenever the container did not get its own cgroup namespace.
     let Ok(cgroup) = std::fs::read_to_string(root.join("proc/1/cgroup")) else {
         return Detected::Unknown;
     };
@@ -341,8 +335,6 @@ fn detect_container_linux_at(root: &Path) -> Detected {
     {
         return Detected::Yes;
     }
-    // PID 1's name: `comm` on any kernel that exposes it, `sched` (whose
-    // first line starts with the same name) as the fallback.
     match std::fs::read_to_string(root.join("proc/1/comm"))
         .or_else(|_| std::fs::read_to_string(root.join("proc/1/sched")))
     {
@@ -371,21 +363,13 @@ fn classify(isa: Isa, os: &str, nested: Detected, container: Detected) -> Matrix
         ("linux", Isa::X86_64 | Isa::Arm64) | ("macos", Isa::Arm64) => {}
         _ => return MatrixCell::Unsupported,
     }
-    // "Inside a container with /dev/kvm" is its own row, expected on every
-    // ISA. An unresolved container answer takes the same untested row rather
-    // than inheriting the bare-metal or nested one.
     if container != Detected::No {
         return MatrixCell::Expected;
     }
     match (os, isa, nested) {
-        // Linux KVM nested-in-a-VM: proven on x86 (Intel and AMD, X2/X3).
         ("linux", Isa::X86_64, Detected::Yes) => MatrixCell::Proven,
-        // Linux KVM bare metal arm64: proven (M4–M5 on metal).
         ("linux", Isa::Arm64, Detected::No) => MatrixCell::Proven,
-        // macOS HVF on Apple silicon: proven bare metal (M0–M6).
         ("macos", Isa::Arm64, Detected::No) => MatrixCell::Proven,
-        // Linux bare-metal x86, nested arm64, nested macOS, and every host
-        // whose nesting could not be established: expected, untested.
         _ => MatrixCell::Expected,
     }
 }
@@ -488,7 +472,6 @@ mod tests {
                 classify(Isa::Arm64, "linux", Detected::No, container),
                 MatrixCell::Expected
             );
-            // Still outside the matrix, container or not.
             assert_eq!(
                 classify(Isa::X86_64, "macos", Detected::No, container),
                 MatrixCell::Unsupported
@@ -525,7 +508,6 @@ mod tests {
                 "{vendor}"
             );
         }
-        // No device tree node and no readable DMI: still unknown.
         assert_eq!(arm64_nesting(false, None), Detected::Unknown);
     }
 
@@ -541,7 +523,6 @@ mod tests {
             cpuinfo_nesting("processor\t: 0\nflags\t\t: fpu vme lm\n"),
             Detected::No
         );
-        // An arm64 cpuinfo has Features, not flags: the check does not apply.
         assert_eq!(
             cpuinfo_nesting("processor\t: 0\nFeatures\t: fp asimd\n"),
             Detected::Unknown

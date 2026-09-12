@@ -203,14 +203,6 @@ pub(crate) fn fill_vcpu_state(out: &mut Arm64VmState, s: &Arm64VcpuState) {
     out.mp_state = to_vm_mp_state(s.mp_state);
 }
 
-// ---------------------------------------------------------------------------
-// The vmm-core arm64 device blob: the bytes carried in `vm_state::DeviceBlob`.
-//
-// The arm64 sibling of the x86 `DEV1` blob: a small, versioned, little-endian
-// record vmm-core owns end to end (the vm-state codec never interprets it).
-// Total decode, no panic (rule #4).
-// ---------------------------------------------------------------------------
-
 /// Device-blob magic: `"ADV1"` read little-endian (distinct from x86's
 /// `"DEV1"`, so a cross-wired blob fails on magic even before the container's
 /// arch tag would have caught it).
@@ -397,8 +389,6 @@ fn decode_gic_state(c: &mut Cursor<'_>) -> Result<gicv3::GicState, SnapshotError
 pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
     let mut v = Vec::new();
     put_u32(&mut v, DEVICE_BLOB_MAGIC);
-    // The version IS the wiring flag (the x86 pvclock-blob pattern), now over two
-    // independent optional records: the GIC and the doorbell pages.
     let version = match (d.gic.is_some(), !d.doorbell.is_empty(), d.pvclock.is_some()) {
         (false, false, false) => DEVICE_BLOB_VERSION_BASE,
         (true, false, false) => DEVICE_BLOB_VERSION_GIC,
@@ -423,8 +413,6 @@ pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
     if let Some(gic) = &d.gic {
         encode_gic_state(&mut v, gic);
     }
-    // The doorbell record trails the GIC (length-prefixed), present exactly on
-    // the doorbell-bearing versions.
     if !d.doorbell.is_empty() {
         put_u32(&mut v, d.doorbell.len() as u32);
         v.extend_from_slice(&d.doorbell);
@@ -523,11 +511,6 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
         None
     };
     let doorbell = if has_doorbell {
-        // The version flag asserts the doorbell pages are wired, so the record
-        // MUST carry the full 16-KiB arm64 transport region. A crafted blob declaring v3/v4
-        // with a zero (or short/long) length would otherwise decode to an empty
-        // vector that restore validation reads back as *doorbell-less* — a
-        // contradiction with the version. Fail closed (review r16).
         let len = c.u32()? as usize;
         if len != DOORBELL_BLOB_LEN {
             return Err(SnapshotError::DeviceBlob(
@@ -687,8 +670,6 @@ mod tests {
 
     #[test]
     fn device_blob_round_trips() {
-        // All eight version shapes: the existing GIC/doorbell combinations and
-        // each corresponding shape with the ARM pvclock record appended.
         let gic_and_doorbell = Arm64DeviceState {
             doorbell: sample_with_doorbell().doorbell,
             ..sample_with_gic()
@@ -726,15 +707,12 @@ mod tests {
     #[test]
     fn device_blob_decode_is_strict_and_total() {
         let blob = encode_device_blob(&sample()).0;
-        // Every truncation point errors, never panics.
         for n in 0..blob.len() {
             assert!(decode_device_blob(&blob[..n]).is_err());
         }
-        // Trailing bytes are rejected.
         let mut trailing = blob.clone();
         trailing.push(0);
         assert!(decode_device_blob(&trailing).is_err());
-        // A foreign (x86 "DEV1") magic is rejected.
         let mut foreign = blob;
         foreign[..4].copy_from_slice(&0x3156_4544u32.to_le_bytes());
         assert!(decode_device_blob(&foreign).is_err());
@@ -746,18 +724,15 @@ mod tests {
     /// contradicting the version's wiring flag.
     #[test]
     fn decode_rejects_a_doorbell_version_with_the_wrong_doorbell_length() {
-        // For both doorbell-bearing shapes (v3 = doorbell-only, v4 = gic+doorbell),
-        // rewrite the trailing doorbell record to a zero length with no bytes.
         for base in [sample_with_doorbell(), {
             let mut d = sample_with_gic();
             d.doorbell = sample_with_doorbell().doorbell;
             d
         }] {
             let good = encode_device_blob(&base).0;
-            // The doorbell record trails the blob: a 4-byte length + the pages.
             let len_field = good.len() - DOORBELL_BLOB_LEN - 4;
             let mut crafted = good[..len_field].to_vec();
-            crafted.extend_from_slice(&0u32.to_le_bytes()); // doorbell_len = 0, no bytes
+            crafted.extend_from_slice(&0u32.to_le_bytes());
             assert!(
                 matches!(
                     decode_device_blob(&crafted),
@@ -771,15 +746,12 @@ mod tests {
     #[test]
     fn decode_rejects_impossible_clockevent_and_pvclock_flags() {
         let good = encode_device_blob(&sample_with_pvclock()).0;
-        // The trailing record ends with deadline flag, line flag, and two u64
-        // counters. Rebuild a sample with both mutually exclusive states set.
         let mut impossible = sample_with_pvclock();
         let pv = impossible.pvclock.as_mut().unwrap();
         pv.clockevent.deadline = Some(9);
         let impossible = encode_device_blob(&impossible).0;
         assert!(decode_device_blob(&impossible).is_err());
 
-        // Boolean fields are canonical 0/1, never truthy bytes.
         let mut bad_bool = good;
         let line_flag = bad_bool.len() - 17;
         bad_bool[line_flag] = 2;

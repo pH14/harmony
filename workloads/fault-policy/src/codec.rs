@@ -14,36 +14,18 @@ use crate::error::EnvError;
 use crate::host::{Action, BitMask, HostFault, Ratio};
 use crate::{MAX_SUPPLY_LEN, Span};
 
-// Answer tags.
 const ANS_NOMINAL: u8 = 0;
 const ANS_SUPPLY: u8 = 1;
 const ANS_FAULT: u8 = 2;
 
-// Action plane tags — which control plane an override belongs to.
 const ACT_HOST: u8 = 0;
 const ACT_GUEST: u8 = 1;
 
-// HostFault tags — stable discriminants; a recorded reproducer's replay depends
-// on them, exactly like the guest `Fault` tags above.
 const HF_SKEW_TIME: u8 = 0;
 const HF_SET_CLOCK_RATE: u8 = 1;
 const HF_CORRUPT_MEMORY: u8 = 2;
 const HF_INJECT_INTERRUPT: u8 = 3;
 
-// Fault tags — stable discriminants; a recorded EnvSpec replay depends on them.
-//
-// **Task 50 root-cause fix: the reshaped network faults use FRESH tags.** The
-// retired per-frame net vocabulary used tags 0..=4 (`NetDrop`/`NetDelay`/
-// `NetReorder`/`NetDup`/`NetCorrupt`); those tags are now **undefined**, so any
-// stale byte carrying one hard-fails in `read_fault` (→ `EnvError::Malformed`) on
-// *every* decode path at once — `Answer::decode`, `FaultPolicy::from_bytes`,
-// `Action::decode`/`EnvSpec::decode`, and the control-proto `Run{resolve}` path
-// that funnels through `Answer::decode`. No per-path version guard is needed (the
-// `BLOB_VERSION`/policy-version bumps stay as defense-in-depth + a clean rejection
-// message). Reusing a low tag — old `NetDup` (3, payload-free) ≡ a new payload-free
-// variant — would otherwise let a stale byte *silently reinterpret*, which is the
-// hazard this avoids. The block/process tags 5..=11 are unchanged from task 24
-// (their vocabulary did not change); the new per-flow net tags take 12..=15.
 const F_BLOCK_EIO: u8 = 5;
 const F_BLOCK_LATENCY: u8 = 6;
 const F_BLOCK_TORN: u8 = 7;
@@ -51,18 +33,11 @@ const F_BLOCK_NOSPC: u8 = 8;
 const F_PROC_PAUSE: u8 = 9;
 const F_PROC_KILL: u8 = 10;
 const F_PROC_RESTART: u8 = 11;
-// Per-flow network policies (task 50): fresh tags 12..=15, disjoint from the
-// retired per-frame net tags 0..=4 (now undefined) so a stale net byte rejects.
 const F_NET_LATENCY: u8 = 12;
 const F_NET_LOSS: u8 = 13;
 const F_NET_THROTTLE: u8 = 14;
 const F_NET_RESET: u8 = 15;
-// Buggify (task 73): a fresh tag past the per-flow net tags, additive.
 const F_BUGGIFY_FIRE: u8 = 16;
-// Process-class faults the in-guest fault agent enforces, additive past
-// buggify. Tag 18 is permanently unassigned: it named a seeded control-flow
-// jitter fault that no enforcement path implements, and leaving the number
-// undefined keeps a blob carrying it from decoding into anything.
 const F_RUN_HOOK: u8 = 17;
 const F_PROC_PARK: u8 = 19;
 

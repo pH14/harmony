@@ -70,12 +70,8 @@ impl Pl011 {
     /// range-checked the frame.
     pub(crate) fn read(&mut self, offset: u64) -> u32 {
         match offset {
-            // A DR read pops the next injected `exec` input byte, the way real
-            // hardware pops the receive FIFO. Inert on every non-`exec` run.
             reg::DR => u32::from(self.rx.pop_front().unwrap_or(0)),
             reg::FR => {
-                // Transmit never stalls (TXFE always set); receive-empty
-                // reflects the injected-input queue.
                 let mut fr = FR_TXFE;
                 if self.rx.is_empty() {
                     fr |= FR_RXFE;
@@ -87,8 +83,6 @@ impl Pl011 {
             reg::LCR_H => self.regs[2],
             reg::CR => self.regs[3],
             reg::IMSC => self.regs[4],
-            // No interrupt is ever raised by the skeleton model (delivery is
-            // AA-6-gated), so both statuses read clear.
             reg::RIS | reg::MIS => 0,
             _ => 0,
         }
@@ -105,7 +99,7 @@ impl Pl011 {
             reg::LCR_H => self.regs[2] = value,
             reg::CR => self.regs[3] = value,
             reg::IMSC => self.regs[4] = value,
-            reg::ICR => {} // w1c with no latched state to clear
+            reg::ICR => {}
             _ => {}
         }
     }
@@ -178,7 +172,7 @@ mod tests {
     #[test]
     fn unmodeled_offsets_read_absent_and_drop_writes() {
         let mut u = Pl011::new();
-        u.write(0xFE0, 0xDEAD); // PrimeCell ID region: dropped
+        u.write(0xFE0, 0xDEAD);
         assert_eq!(u.read(0xFE0), 0);
         assert_eq!(u.read(reg::RIS), 0);
         assert_eq!(u.read(reg::MIS), 0);
@@ -191,7 +185,6 @@ mod tests {
         u.restore(b"prior".to_vec(), [1, 2, 3, 4, 5]);
         assert_eq!(u.capture(), b"prior");
         assert_eq!(u.shadow_regs(), &[1, 2, 3, 4, 5]);
-        // Input never survives a restore.
         assert_eq!(u.read(reg::DR), 0);
     }
 }

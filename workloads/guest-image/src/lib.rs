@@ -53,9 +53,6 @@ impl Writer {
     fn header(&mut self, name: &str, mode: u32, owner: Owner, filesize: usize) {
         let ino = self.ino;
         self.ino += 1;
-        // 070701 magic + 13 fields of 8 hex digits: ino, mode, uid, gid,
-        // nlink, mtime, filesize, devmajor, devminor, rdevmajor, rdevminor,
-        // namesize, check. mtime is pinned to 0 for byte stability.
         let namesize = name.len() + 1;
         let Owner { uid, gid } = owner;
         let _ = write!(
@@ -148,8 +145,6 @@ impl Writer {
                 let data = std::fs::read(&path)?;
                 self.file_owned(&archive_name, meta.permissions().mode(), owner, &data);
             } else if ftype.is_fifo() || ftype.is_socket() || meta.rdev() != 0 {
-                // Images occasionally carry stray sockets/devices; the guest
-                // gets fresh /dev and /run mounts, so skipping is safe.
                 continue;
             } else {
                 return Err(CpioError::Unsupported(path));
@@ -224,8 +219,6 @@ mod tests {
     #[test]
     fn header_fields_parse_back_exactly() {
         let mut w = Writer::new();
-        // High bits beyond 0o7777 must be masked off (tree() passes the raw
-        // st_mode, which carries the file-type bits).
         w.dir("d", 0o040755);
         w.file("d/f", 0o100640, b"12345");
         w.symlink("d/l", b"f");
@@ -360,9 +353,6 @@ mod tests {
                 .unwrap()
                 .success()
         );
-        // Some restricted test sandboxes disallow AF_UNIX bind even inside a
-        // private temporary directory. The FIFO still exercises the other
-        // skipped-file branch; when sockets are available, keep covering it.
         let _listener = match std::os::unix::net::UnixListener::bind(dir.path().join("sock")) {
             Ok(listener) => Some(listener),
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => None,

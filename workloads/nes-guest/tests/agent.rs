@@ -65,9 +65,6 @@ fn fixed_entropy_stream_reproduces_the_fixed_input_tape() {
         ..AgentConfig::default()
     };
     let mut agent = Agent::new(MockCore::in_gameplay(), cfg).unwrap();
-    // Hand-decoded against the default alphabet's cumulative weights
-    // (RIGHT 0..=55, RIGHT+B 56..=111, RIGHT+A 112..=159, RIGHT+A+B 160..=207,
-    // A 208..=223, LEFT 224..=235, DOWN 236..=247, neutral 248..=255).
     let mut h = FakeHarness::scripted(vec![0, 112, 240, 255, 208]);
     let mut buf = vec![0u8; agent.layout().total_len()];
     let mut tape = Vec::new();
@@ -123,13 +120,13 @@ fn registers_flow_from_planted_ram_to_emissions() {
     };
     let mut core = MockCore::new();
     core.ram_mut()[addr::OPER_MODE] = ram::OPER_MODE_GAMEPLAY;
-    core.ram_mut()[addr::WORLD_NUMBER] = 2; // World 3
-    core.ram_mut()[addr::LEVEL_NUMBER] = 3; // 3-4
+    core.ram_mut()[addr::WORLD_NUMBER] = 2;
+    core.ram_mut()[addr::LEVEL_NUMBER] = 3;
     core.ram_mut()[addr::PLAYER_PAGE_LOC] = 4;
     core.ram_mut()[addr::PLAYER_X_POSITION] = 200;
     core.ram_mut()[addr::PLAYER_STATUS] = 1;
     let mut agent = Agent::new(core, cfg).unwrap();
-    let mut h = FakeHarness::scripted(vec![255]); // neutral chord: no movement
+    let mut h = FakeHarness::scripted(vec![255]);
     let mut buf = vec![0u8; agent.layout().total_len()];
     agent.step(&mut h, &mut buf).unwrap();
 
@@ -190,8 +187,6 @@ fn parse_billboard(buf: &[u8]) -> Result<ParsedBillboard, String> {
     let ss_len = u32::from_le_bytes(buf[20..24].try_into().unwrap()) as usize;
     let wr_off = u32::from_le_bytes(buf[24..28].try_into().unwrap()) as usize;
     let wr_len = u32::from_le_bytes(buf[28..32].try_into().unwrap()) as usize;
-    // Film's region validations: regions past the header, inside the buffer,
-    // non-overlapping, contiguous as this producer lays them out.
     if ss_off < HEADER_LEN || ss_off + ss_len > buf.len() {
         return Err("savestate out of bounds".into());
     }
@@ -205,9 +200,6 @@ fn parse_billboard(buf: &[u8]) -> Result<ParsedBillboard, String> {
 }
 
 proptest! {
-    // Under Miri: fewer cases (interpretation is 10–100× slower) and no
-    // failure-persistence files (proptest's getcwd is unsupported under
-    // Miri's isolation).
     #![proptest_config(if cfg!(miri) {
         ProptestConfig { cases: 8, failure_persistence: None, ..ProptestConfig::default() }
     } else {
@@ -233,7 +225,6 @@ proptest! {
             prop_assert!(legal.contains(&report.joypad));
             prop_assert!(parse_billboard(&buf).is_ok());
         }
-        // One draw per window, exactly.
         let stepped = frames.min(200);
         prop_assert_eq!(h.cursor as u64, stepped.div_ceil(u64::from(window)));
     }
@@ -248,7 +239,7 @@ proptest! {
         core.ram_mut()[addr::PLAYER_PAGE_LOC] = page;
         core.ram_mut()[addr::PLAYER_X_POSITION] = x;
         let mut agent = Agent::new(core, cfg).unwrap();
-        let mut h = FakeHarness::scripted(vec![255]); // neutral: no movement
+        let mut h = FakeHarness::scripted(vec![255]);
         let mut buf = vec![0u8; agent.layout().total_len()];
         agent.step(&mut h, &mut buf).unwrap();
         let expected = u64::from((u32::from(page) * 256 + u32::from(x)) / bucket);
@@ -262,8 +253,6 @@ proptest! {
     fn alphabet_decode_frequencies_match_weights(
         weights in prop::collection::vec(1u16..=64, 2..8),
     ) {
-        // Normalize the last weight so the sum is exactly 256 (reject if
-        // impossible for this draw).
         let partial: u16 = weights[..weights.len() - 1].iter().sum();
         prop_assume!(partial < 256 && (256 - partial) >= 1);
         let mut entries: Vec<harmony_play_agent::chord::Chord> = weights
@@ -277,7 +266,6 @@ proptest! {
         let mut counts = vec![0u32; entries.len()];
         for byte in 0..=255u8 {
             let chord = alphabet.decode(byte);
-            // `buttons` is the entry index here, so the position is unique.
             let idx = entries.iter().position(|c| c.buttons == chord).unwrap();
             counts[idx] += 1;
         }

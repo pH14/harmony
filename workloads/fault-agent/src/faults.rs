@@ -85,8 +85,6 @@ impl ActiveFaults {
             }
             Fault::ProcKill | Fault::ProcPause(_) | Fault::ProcRestart | Fault::ProcPark { .. } => {
             }
-            // Every other fault belongs to a class the guest does not apply;
-            // the host enforces those itself.
             _ => return,
         }
         let index = match self.nodes.binary_search_by_key(&node, |entry| entry.0) {
@@ -198,8 +196,6 @@ mod tests {
         );
         assert_eq!(active.node(2), NodeFaults::default());
         assert!(!active.node(2).any());
-        // Hooks are ascending regardless of answer order, and hook faults do
-        // not mark their node as faulted.
         assert_eq!(hook_ids(&active), [2, 9]);
     }
 
@@ -208,10 +204,7 @@ mod tests {
         let process = DecisionClass::Process.as_u16();
         let good = target(3, &Fault::ProcKill);
         let entries: Vec<(u16, &[u8], u64)> = vec![
-            // A class the guest does not apply, carrying bytes that would
-            // decode as a kill if the class were ignored.
             (DecisionClass::BlockIo.as_u16(), good.as_slice(), 0),
-            // Truncated, empty, and trailing-byte targets.
             (process, &good[..1], 0),
             (process, &[], 0),
             (process, b"\x00\x00\x0b\xff\xff", 0),
@@ -241,8 +234,6 @@ mod tests {
                 hold_nanos: 2_000_000,
             })
         );
-        // A park names the node without marking it faulted: the node keeps
-        // running, so a death under it is still unexpected.
         assert!(!active.node(1).any());
     }
 

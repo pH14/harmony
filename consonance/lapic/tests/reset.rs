@@ -65,7 +65,6 @@ fn counts_and_priorities_zero_at_reset() {
     assert_eq!(l.mmio_read(APIC_PPR, 0), Ok(0));
     assert_eq!(l.mmio_read(APIC_TMICT, 0), Ok(0));
     assert_eq!(l.mmio_read(APIC_TMCCT, 12_345), Ok(0));
-    // ISR / IRR / TMR all clear (sweep the 8 words of each).
     for base in [APIC_ISR, APIC_IRR, APIC_TMR] {
         for word in 0..8u32 {
             assert_eq!(l.mmio_read(base + word * 0x10, 0), Ok(0));
@@ -82,24 +81,20 @@ fn id_and_version_at_reset() {
     .unwrap();
     assert_eq!(l.mmio_read(APIC_ID, 0), Ok(0));
     assert_eq!(l.mmio_read(APIC_VERSION, 0), Ok(APIC_VERSION_VALUE));
-    // DFR resets to the flat-model all-ones value.
     assert_eq!(l.mmio_read(APIC_DFR, 0), Ok(0xFFFF_FFFF));
 }
 
 #[test]
 fn nothing_deliverable_until_enabled() {
     let mut l = reset_lapic();
-    // A raised interrupt is held but not deliverable while software-disabled.
     l.raise(0x40).unwrap();
     assert!(!l.has_deliverable(), "disabled APIC delivers nothing");
     assert_eq!(l.take_interrupt(), None);
 
-    // The timer cannot fire while disabled, either.
-    l.mmio_write(APIC_LVT_TIMER, 0x40, 0).unwrap(); // unmasked one-shot, vector 0x40
+    l.mmio_write(APIC_LVT_TIMER, 0x40, 0).unwrap();
     l.mmio_write(lapic::APIC_TMICT, 100, 0).unwrap();
     assert_eq!(l.next_timer_deadline(), None);
 
-    // Software-enable the APIC: the already-pending vector becomes deliverable.
     l.mmio_write(APIC_SVR, 0xFF | SVR_ENABLE, 0).unwrap();
     assert!(l.has_deliverable());
     assert_eq!(l.take_interrupt(), Some(0x40));

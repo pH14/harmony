@@ -19,8 +19,6 @@ use lapic::{
 };
 use proptest::prelude::*;
 
-// --- Independent (SDM-literal) legal-bit masks, NOT imported from the crate ---
-
 const ID_BITS: u32 = 0xFF00_0000;
 const TPR_BITS: u32 = 0x0000_00FF;
 const SVR_BITS: u32 = 0x0000_13FF;
@@ -30,8 +28,6 @@ const DFR_RESERVED_ONES: u32 = 0x0FFF_FFFF;
 const ESR_BITS: u32 = 0x0000_0020;
 const ICR_LOW_BITS: u32 = 0x000C_CFFF;
 const ICR_HIGH_BITS: u32 = 0xFF00_0000;
-// Divide-Config: only bits [3,1,0] are stored. Bit 2 is decode-ignored and
-// masked off at write time, so a reachable state never holds it.
 const TDCR_BITS: u32 = 0x0000_000B;
 const SVR_ENABLE: u32 = 1 << 8;
 const LVT_MASK_BIT: u32 = 1 << 16;
@@ -40,10 +36,10 @@ const LVT_MASK_BIT: u32 = 1 << 16;
 /// Error 5). Error has NO delivery-mode field — only vector + mask.
 fn lvt_bits(i: usize) -> u32 {
     match i {
-        0 => 0x0007_00FF,     // Timer: vector | mask | timer-mode
-        1 | 2 => 0x0001_07FF, // Thermal, PerfMon: vector | delivery-mode | mask
-        3 | 4 => 0x0001_A7FF, // LINT0, LINT1: + polarity | trigger
-        _ => 0x0001_00FF,     // Error: vector | mask only
+        0 => 0x0007_00FF,
+        1 | 2 => 0x0001_07FF,
+        3 | 4 => 0x0001_A7FF,
+        _ => 0x0001_00FF,
     }
 }
 
@@ -80,7 +76,6 @@ fn expected_valid(s: &LapicState) -> bool {
     if s.timer_running != armable {
         return false;
     }
-    // A running timer's anchor count never exceeds the loaded initial count.
     !(s.timer_running && s.count_at_arm > s.initial_count)
 }
 
@@ -101,8 +96,6 @@ fn check_restore(s: &LapicState) -> Result<(), TestCaseError> {
     }
     Ok(())
 }
-
-// --- Strategies -------------------------------------------------------------
 
 /// A `u32` that is either masked to `valid` bits or fully random.
 fn biased(valid: u32) -> impl Strategy<Value = u32> {
@@ -214,7 +207,7 @@ fn write_offset() -> impl Strategy<Value = u32> {
         Just(APIC_LVT_LINT0),
         Just(APIC_LVT_LINT1),
         Just(APIC_LVT_ERROR),
-        (0u32..=0xFF).prop_map(|x| x << 4), // any aligned in-range offset
+        (0u32..=0xFF).prop_map(|x| x << 4),
     ]
 }
 
@@ -230,10 +223,9 @@ proptest! {
             (write_offset(), any::<u32>(), 0u64..=2_000_000_000u64), 0..40),
     ) {
         let mut l = Lapic::new(LapicConfig { apic_id: 0, timer_hz }).unwrap();
-        // The fresh state is already canonical.
         prop_assert!(reserved_bits_clear(&l.snapshot()));
         for (offset, value, now) in writes {
-            l.mmio_write(offset, value, now).unwrap(); // aligned & in range
+            l.mmio_write(offset, value, now).unwrap();
             prop_assert!(
                 reserved_bits_clear(&l.snapshot()),
                 "reserved bit set after write {:#x} = {:#010x}",
@@ -255,7 +247,6 @@ proptest! {
 /// snapshot, are individually rejected by `restore`.
 #[test]
 fn restore_rejects_each_reserved_bit() {
-    // A reachable, valid base snapshot (enabled, divide set, LVTs written).
     let mut l = Lapic::new(LapicConfig {
         apic_id: 0,
         timer_hz: 25_000_000,
@@ -265,7 +256,6 @@ fn restore_rejects_each_reserved_bit() {
     let base = l.snapshot();
     assert!(Lapic::restore(&base).is_ok());
 
-    // For each register, OR in a reserved bit and expect rejection.
     let corrupt = |mutate: &dyn Fn(&mut LapicState)| {
         let mut s = base.clone();
         mutate(&mut s);
@@ -274,16 +264,16 @@ fn restore_rejects_each_reserved_bit() {
             "restore accepted a state with a reserved bit set"
         );
     };
-    corrupt(&|s| s.id |= 0x0000_0001); // ID low bits reserved
-    corrupt(&|s| s.tpr |= 0x0000_0100); // TPR > 8 bits
-    corrupt(&|s| s.svr |= 0x0000_0400); // SVR bit 10 reserved
-    corrupt(&|s| s.ldr |= 0x0000_0001); // LDR low bits reserved
-    corrupt(&|s| s.dfr &= 0xFFFF_FFFE); // clear a DFR reserved-one bit
-    corrupt(&|s| s.esr |= 0x0000_0001); // ESR bit 0 not modeled
-    corrupt(&|s| s.icr_low |= 0x0000_1000); // ICR delivery-status (RO)
-    corrupt(&|s| s.icr_high |= 0x0000_0001); // ICR-high low bits reserved
-    corrupt(&|s| s.divide_config |= 0x0000_0010); // TDCR bit 4 reserved
-    corrupt(&|s| s.divide_config |= 0x0000_0004); // TDCR bit 2 decode-ignored, not stored
-    corrupt(&|s| s.lvt[5] |= 0x0000_0100); // Error LVT delivery-mode bit 8 reserved
-    corrupt(&|s| s.lvt[0] |= 0x0000_1000); // Timer LVT delivery-status (RO)
+    corrupt(&|s| s.id |= 0x0000_0001);
+    corrupt(&|s| s.tpr |= 0x0000_0100);
+    corrupt(&|s| s.svr |= 0x0000_0400);
+    corrupt(&|s| s.ldr |= 0x0000_0001);
+    corrupt(&|s| s.dfr &= 0xFFFF_FFFE);
+    corrupt(&|s| s.esr |= 0x0000_0001);
+    corrupt(&|s| s.icr_low |= 0x0000_1000);
+    corrupt(&|s| s.icr_high |= 0x0000_0001);
+    corrupt(&|s| s.divide_config |= 0x0000_0010);
+    corrupt(&|s| s.divide_config |= 0x0000_0004);
+    corrupt(&|s| s.lvt[5] |= 0x0000_0100);
+    corrupt(&|s| s.lvt[0] |= 0x0000_1000);
 }

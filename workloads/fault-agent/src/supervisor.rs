@@ -137,8 +137,6 @@ impl Supervisor {
 
         let mut actions = Vec::new();
         for index in 0..self.nodes.len() {
-            // The node count is capped at `bundle::MAX_NODES`, so the index
-            // always fits a u16 node id.
             let node = index as u16;
             let was = self.previous.node(node);
             let now = active.node(node);
@@ -167,8 +165,6 @@ impl Supervisor {
             } else if was.park.is_some() {
                 actions.push(Action::Unpark(node));
             }
-            // A restart window closing brings the node back unless a kill still
-            // names it.
             if !now.restart && was.restart && !now.kill && !state.alive {
                 actions.push(Action::Start(node));
                 state.alive = true;
@@ -274,11 +270,8 @@ mod tests {
         let killed = active(&[(0, Fault::ProcKill)]);
         assert_eq!(sup.tick(&killed, &[]), [Action::Kill(0)]);
         assert_eq!(sup.alive_bitmap(), 0b10);
-        // The window persists: no repeat signal.
         assert_eq!(sup.tick(&killed, &[]), []);
-        // The kill's exit is reaped; it is not an unexpected death.
         assert_eq!(sup.tick(&killed, &[0]), []);
-        // The window closes: a kill is permanent, so nothing restarts it.
         assert_eq!(sup.tick(&ActiveFaults::new(), &[]), []);
         assert_eq!(sup.tick(&ActiveFaults::new(), &[]), []);
         assert_eq!(sup.alive_bitmap(), 0b10);
@@ -295,7 +288,6 @@ mod tests {
         assert_eq!(sup.tick(&paused, &[]), []);
         assert_eq!(sup.tick(&ActiveFaults::new(), &[]), [Action::Cont(0)]);
         assert_eq!(sup.tick(&ActiveFaults::new(), &[]), []);
-        // A paused node is still alive, and pausing never counts a restart.
         assert_eq!(sup.alive_bitmap(), 1);
         assert_eq!(sup.counters().restarts, 0);
     }
@@ -306,7 +298,6 @@ mod tests {
         let restart = active(&[(0, Fault::ProcRestart)]);
         assert_eq!(sup.tick(&restart, &[]), [Action::Kill(0)]);
         assert_eq!(sup.alive_bitmap(), 0);
-        // The exit arrives while the window is open: expected, not counted.
         assert_eq!(sup.tick(&restart, &[0]), []);
         assert_eq!(sup.tick(&ActiveFaults::new(), &[]), [Action::Start(0)]);
         assert_eq!(sup.alive_bitmap(), 1);
@@ -319,7 +310,6 @@ mod tests {
         let mut sup = Supervisor::new(1);
         let both = active(&[(0, Fault::ProcRestart), (0, Fault::ProcKill)]);
         assert_eq!(sup.tick(&both, &[]), [Action::Kill(0)]);
-        // Only the restart window closes.
         let kill = active(&[(0, Fault::ProcKill)]);
         assert_eq!(sup.tick(&kill, &[]), []);
         assert_eq!(sup.alive_bitmap(), 0);
@@ -331,8 +321,6 @@ mod tests {
         let mut sup = Supervisor::new(1);
         let paused = active(&[(0, Fault::ProcPause(Span(1)))]);
         assert_eq!(sup.tick(&paused, &[]), [Action::Stop(0)]);
-        // The node dies while stopped: no SIGCONT to a corpse, and the death
-        // is unexpected because no kill named it.
         assert_eq!(sup.tick(&paused, &[0]), []);
         assert_eq!(sup.tick(&ActiveFaults::new(), &[]), [Action::Start(0)]);
         assert_eq!(sup.counters().unexpected_deaths, 1);
@@ -346,8 +334,6 @@ mod tests {
         assert_eq!(sup.alive_bitmap(), 0b11);
         assert_eq!(sup.counters().unexpected_deaths, 1);
         assert_eq!(sup.counters().restarts, 1);
-        // A repeated death report for a node already restarted is not counted
-        // twice unless the node really exited again.
         assert_eq!(sup.tick(&ActiveFaults::new(), &[1, 1]), [Action::Start(1)]);
         assert_eq!(sup.counters().unexpected_deaths, 2);
     }
@@ -357,7 +343,6 @@ mod tests {
         let mut sup = Supervisor::new(1);
         let paused = active(&[(0, Fault::ProcPause(Span(1)))]);
         sup.tick(&paused, &[]);
-        // While any fault names the node the agent leaves it alone.
         assert_eq!(sup.tick(&paused, &[0]), []);
         assert_eq!(sup.tick(&paused, &[]), []);
         assert_eq!(sup.tick(&ActiveFaults::new(), &[]), [Action::Start(0)]);
@@ -397,10 +382,8 @@ mod tests {
             [Action::RunHook(1), Action::RunHook(4)]
         );
         assert_eq!(sup.tick(&two, &[]), []);
-        // One window closes and a new one opens in the same tick.
         let next = active(&[(0, Fault::RunHook(4)), (0, Fault::RunHook(7))]);
         assert_eq!(sup.tick(&next, &[]), [Action::RunHook(7)]);
-        // Reopening a closed window launches it again.
         assert_eq!(sup.tick(&two, &[]), [Action::RunHook(1)]);
         assert_eq!(sup.counters().hooks_started, 4);
     }
@@ -411,8 +394,6 @@ mod tests {
         let mut first = ActiveFaults::new();
         first.insert(0, &Fault::RunHook(2), 0);
         assert_eq!(sup.tick(&first, &[]), [Action::RunHook(2)]);
-        // No poll saw the gap between the windows: the first closed and the
-        // next opened between two ticks.
         let mut second = ActiveFaults::new();
         second.insert(0, &Fault::RunHook(2), 500);
         assert_eq!(sup.tick(&second, &[]), [Action::RunHook(2)]);
@@ -428,7 +409,6 @@ mod tests {
             (1, Fault::ProcKill),
             (0, Fault::RunHook(3)),
         ]);
-        // Node 2 died with nothing naming it, so its restart trails the rest.
         assert_eq!(
             sup.tick(&set, &[2]),
             [

@@ -40,7 +40,6 @@ pub struct NullObserver;
 impl Observer for NullObserver {
     #[inline]
     fn emit(&mut self, _ev: &Event) {
-        // Intentionally empty: the default tap observes nothing.
     }
 }
 
@@ -96,8 +95,6 @@ impl<W: Write> NdjsonRecorder<W> {
     /// Writes one framed NDJSON line, recording the first error and then going
     /// quiet. Factored out so `emit` stays panic-free.
     fn write_line(&mut self, ev: &Event) -> io::Result<()> {
-        // `to_ndjson` is infallible for a well-formed Event; map a wire error to
-        // io so a single early-return covers both failure modes.
         let line = to_ndjson(ev).map_err(io::Error::other)?;
         self.writer.write_all(line.as_bytes())?;
         self.writer.write_all(b"\n")
@@ -107,7 +104,6 @@ impl<W: Write> NdjsonRecorder<W> {
 impl<W: Write> Observer for NdjsonRecorder<W> {
     fn emit(&mut self, ev: &Event) {
         if self.first_error.is_some() {
-            // Already failed once; stay quiet rather than spam a dead writer.
             return;
         }
         if let Err(e) = self.write_line(ev) {
@@ -136,7 +132,6 @@ mod tests {
     fn null_observer_is_a_zero_sized_no_op() {
         assert_eq!(std::mem::size_of::<NullObserver>(), 0);
         let mut obs = NullObserver;
-        // Emitting many events changes nothing observable and never panics.
         for i in 0..1000 {
             obs.emit(&sample(i));
         }
@@ -180,8 +175,8 @@ mod tests {
     #[test]
     fn recorder_records_first_error_and_does_not_panic() {
         let mut rec = NdjsonRecorder::new(Failing { budget: 5 });
-        rec.emit(&sample(0)); // first line exceeds the 5-byte budget → error
-        rec.emit(&sample(1)); // stays quiet
+        rec.emit(&sample(0));
+        rec.emit(&sample(1));
         assert!(rec.error().is_some());
         assert!(rec.take_error().is_some());
         assert!(rec.error().is_none());
@@ -214,14 +209,13 @@ mod tests {
         };
         let mut rec = NdjsonRecorder::new(writer);
 
-        rec.emit(&sample(0)); // emit writes but does not flush…
+        rec.emit(&sample(0));
         assert!(
             committed.borrow().is_empty(),
             "emit must not flush on its own"
         );
 
         rec.flush().expect("flush");
-        // …so the bytes only become visible if `flush` actually forwards.
         assert!(
             !committed.borrow().is_empty(),
             "flush must push staged bytes through the writer"

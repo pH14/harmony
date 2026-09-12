@@ -66,7 +66,6 @@ const GAME_STATE_GAMEOVER: u8 = 0x02;
 const GAME_MODE_LOCAL: u8 = 0x00;
 const PLAYER_STATE_INNEXISTANT: u8 = 0x02;
 
-// Labels from game/mem_labels.asm at the pinned upstream revision.
 const PLAYER_A_STATE: usize = 0x00;
 const PLAYER_B_STATE: usize = 0x01;
 const PLAYER_A_HITSTUN: usize = 0x02;
@@ -636,10 +635,6 @@ impl<M: Machine> StbTarget<M> {
                     self.failed = true;
                     return;
                 };
-                // Keep the last valid live payload while the source clears
-                // fighter RAM for one or more frames before setting the
-                // global game-over state. A live zero-stock frame is valid;
-                // the terminal underflow is the next loss event.
                 let (player_a_ko, player_b_ko) = if let Some(gameplay) = state.gameplay {
                     let player_a_ko = last_valid_gameplay
                         .is_some_and(|prior| gameplay.player_a_stocks < prior.player_a_stocks);
@@ -737,10 +732,6 @@ impl<M: Machine> StbTarget<M> {
         self.last_valid_gameplay = last_valid_gameplay;
         self.player_a_ko_count = player_a_ko_count;
         self.player_b_ko_count = player_b_ko_count;
-        // A terminal frame can occur before a held action's requested end.
-        // Re-run only the exact prefix through that frame before taking the
-        // current snapshot. This keeps the emulator handle, decoded endpoint,
-        // and recorded action prefix on one executed frame.
         let next = if let Some(terminal_index) = terminal_index {
             let terminal_hold = match u8::try_from(terminal_index.saturating_add(1)) {
                 Ok(hold) => hold,
@@ -967,23 +958,11 @@ pub fn setup_tape_with_ai(ai: StbAi) -> Vec<ButtonChord> {
     let wait = |tape: &mut Vec<ButtonChord>, frames: usize| {
         tape.extend((0..frames).map(|_| ButtonChord::new(0, 1)));
     };
-    // The title animation and each screen transition can consume frames while
-    // rendering is disabled. Keep a generous fixed settle interval so an A
-    // edge is never delivered to a transition initializer rather than the
-    // intended menu. Local is the default mode and the following screens keep
-    // four stocks unchanged and select the requested AI below.
     wait(&mut tape, 180);
-    // Title -> mode selection.
-    // ButtonChord uses the NES serial/input layout consumed by QuickNES:
-    // A=0x01, B=0x02, Select=0x04, Start=0x08, Up=0x10, Down=0x20,
-    // Left=0x40, Right=0x80. STB's fetched RAM byte is bit-reversed, so
-    // this A input appears as source CONTROLLER_BTN_A ($80) in RAM.
     press_release(&mut tape, 0x01);
     wait(&mut tape, 180);
-    // Mode selection -> config.
     press_release(&mut tape, 0x01);
     wait(&mut tape, 180);
-    // Config options are music, stocks, then AI. Changes trigger on release.
     if ai != StbAi::Easy {
         press_release(&mut tape, 0x20);
         press_release(&mut tape, 0x20);
@@ -991,19 +970,13 @@ pub fn setup_tape_with_ai(ai: StbAi) -> Vec<ButtonChord> {
             press_release(&mut tape, 0x80);
         }
     }
-    // Config -> character selection.
     press_release(&mut tape, 0x01);
     wait(&mut tape, 180);
-    // One-player character selection: P1 ready, then P2 ready through the
-    // game's own one-controller flow. Touching controller B would disable AI.
     press_release(&mut tape, 0x01);
     wait(&mut tape, 180);
     press_release(&mut tape, 0x01);
     wait(&mut tape, 240);
-    // Stage selection -> local match.
     press_release(&mut tape, 0x01);
-    // Let the spawn/countdown settle, then seal before the autonomous match
-    // can consume a stock while waiting in the menu setup.
     wait(&mut tape, 90);
     tape
 }
@@ -1211,7 +1184,6 @@ mod tests {
             invalid[PLAYER_A_STOCKS] = 103;
             invalid[PLAYER_B_STOCKS] = 89;
             timeline.push(invalid.clone());
-            // A post-terminal frame must not become the saved endpoint.
             invalid[GAME_WINNER] = 1;
             timeline.push(invalid);
             Self {

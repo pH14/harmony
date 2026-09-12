@@ -27,7 +27,6 @@ fn caps_acceptable(c: &Caps) -> bool {
 }
 
 fn hello_caps(caps: Caps) -> Caps {
-    // round-trip a Hello and return the decoded Caps.
     let mut buf = Vec::new();
     encode_request(0, &Request::Hello(caps), &mut buf).unwrap();
     match decode_request(&buf).unwrap().unwrap().1 {
@@ -65,10 +64,8 @@ fn wrong_protocol_version_is_detectable_from_caps() {
         },
         flags: CapFlags::NONE,
     };
-    // The frame itself decodes fine (wire framing is unaffected)...
     let decoded = hello_caps(caps);
     assert_eq!(decoded.protocol_version, OUR_PROTOCOL + 7);
-    // ...and the mismatch is detectable from the Caps alone.
     assert!(!caps_acceptable(&decoded));
 }
 
@@ -77,7 +74,7 @@ fn disjoint_env_range_is_detectable_from_caps() {
     let caps = Caps {
         protocol_version: OUR_PROTOCOL,
         env_version_min: 9,
-        env_version_max: 12, // entirely above our 1..=3
+        env_version_max: 12,
         coverage: CoverageGeometry {
             map_bytes: 0,
             producer: 0,
@@ -104,13 +101,11 @@ fn off_version_env_blob_decodes_and_carries_the_version() {
         let mut buf = Vec::new();
         encode_request(0, &req, &mut buf).unwrap();
 
-        // Decodes cleanly (NOT an error) regardless of the env blob version...
         let (_, got, _) = decode_request(&buf)
             .expect("clean decode")
             .expect("complete");
         match got {
             Request::Branch { env, .. } => {
-                // ...and carries the exact version for the backend to judge.
                 assert_eq!(env.blob_version, blob_version);
                 assert_eq!(env.bytes, vec![0xDE, 0xAD, 0xBE, 0xEF]);
             }

@@ -262,9 +262,6 @@ fn merge_action_milestones(
     target: &StbTarget,
 ) -> Result<(), Box<dyn Error>> {
     if target.exit_kind() != ExitKind::Ok {
-        // A target failure is an ordinary terminal search result. Its action
-        // may not have produced a complete observation, so retain the
-        // parent's milestones and let the generic campaign record `failed`.
         return Ok(());
     }
     for observation in target.last_action_observations() {
@@ -273,11 +270,6 @@ fn merge_action_milestones(
     Ok(())
 }
 
-// The shared rollout currently records the full requested action and requires
-// a candidate for every nonterminal endpoint. STB must shorten an action at an
-// interior ending and preserve phase-invalid observations without admitting
-// those endpoints. Keep this existing execution override until the shared
-// contract can represent both behaviors; the coordinator remains generic.
 fn execute_suffix(
     target: &mut StbTarget,
     parent_actions: usize,
@@ -316,9 +308,6 @@ fn execute_suffix(
             *action
         };
         let candidate = if dead || victory || failed || !gameplay_valid {
-            // The source clears fighter RAM during the short transition into
-            // game over. Keep the exact emulator endpoint and observations,
-            // but never admit that phase-invalid frame into the live archive.
             None
         } else {
             let snapshot = target.snapshot().ok_or("failed to snapshot Stb suffix")?;

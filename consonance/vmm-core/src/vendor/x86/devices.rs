@@ -158,18 +158,12 @@ impl Uart8250 {
                 self.regs[OFF_LCR as usize] = value;
             }
             OFF_BASE if !self.dlab => {
-                // THR transmit — the only bytes that are serial output.
                 self.capture.push(value);
             }
             OFF_IER if self.dlab => {
-                // DLAB set ⇒ offset 1 is the divisor-latch high byte (DLM), **not**
-                // the IER. Shadow it separately so the IER (`regs[1]`) survives the
-                // divisor-programming window intact.
                 self.dlm = value;
             }
             _ => {
-                // Divisor latch low (DLAB set), IER/FCR/MCR, or any other benign
-                // init register: shadow it, never capture.
                 self.regs[off as usize] = value;
             }
         }
@@ -187,20 +181,9 @@ impl Uart8250 {
         }
         let off = port - UART_PORT_BASE;
         let value = match off {
-            // THR always empty; the **data-ready** bit reflects a queued input byte
-            // (task 81). With no `exec` input queued this is exactly the old value.
             OFF_LSR => UART_LSR_THR_EMPTY | self.rx_status_bits(),
-            // IIR is a distinct read-only register from the FCR written at the same
-            // port: report the live interrupt status, not the FCR shadow (a stale
-            // `NO_INT`-clear FCR byte would make the kernel believe an interrupt is
-            // always pending and mis-detect the TX path).
             OFF_IIR => self.iir_value(),
-            // RBR: **peek** the next queued input byte (non-consuming — a consuming
-            // read for the guest I/O path is [`Self::read_in`]); `0` when the input
-            // queue is empty (the pre-task-81 behavior — "we never feed input").
             OFF_BASE if !self.dlab => self.rx.front().copied().unwrap_or(0),
-            // DLAB set ⇒ offset 1 reads back the divisor-latch high byte (DLM), the
-            // companion of the offset-1 write split above — never the IER shadow.
             OFF_IER if self.dlab => self.dlm,
             _ => self.regs[off as usize],
         };
@@ -219,8 +202,6 @@ impl Uart8250 {
         }
         let off = port - UART_PORT_BASE;
         if off == OFF_BASE && !self.dlab {
-            // RBR consume: pop the next injected byte, or 0 when the queue is empty
-            // (inert on every non-`exec` run).
             return Some(self.rx.pop_front().unwrap_or(0));
         }
         self.read(port)
@@ -333,8 +314,6 @@ impl Uart8250 {
         self.regs = regs;
         self.dlab = dlab;
         self.dlm = dlm;
-        // The injected-input queue is off-record, live-only state (task 81): a
-        // restored timeline never inherits mid-`exec` input — it starts empty.
         self.rx.clear();
     }
 }
@@ -415,9 +394,6 @@ const I8042_STATUS_PORT: u16 = 0x0064;
 const I8042_STATUS_FAST_CLEAR: u8 = 0x01;
 
 impl LegacyPlatform {
-    // No `Default` impl: the architectural reset (IMRs all-masked, `0xFF`) is not
-    // the zero value a derived `Default` would give (all-*unmasked*), and a manual
-    // `Default` would widen the frozen public API. Construct via `new`.
     #[allow(clippy::new_without_default)]
     /// A fresh platform: PCI address latch cleared, both PIC IMRs all-masked.
     ///
@@ -435,16 +411,16 @@ impl LegacyPlatform {
     /// Whether `port` is one of the curated legacy ports this stub services.
     pub fn owns(port: u16) -> bool {
         matches!(port,
-            0x0020 | 0x0021 | 0x00A0 | 0x00A1            // 8259 PIC (master/slave)
-            | 0x0040..=0x0043                            // 8254 PIT
-            | 0x0060 | 0x0064                            // i8042 keyboard controller (data/status)
-            | 0x0061                                     // NMI status / port B
-            | 0x0070 | 0x0071                            // CMOS/RTC index+data
-            | 0x0080..=0x008F                            // POST code + DMA page regs
-            | 0x04D0 | 0x04D1                            // ELCR (PIC edge/level)
-            | PCI_CONFIG_ADDRESS..=0x0CFB                 // PCI CONFIG_ADDRESS (4 bytes)
-            | PCI_CONFIG_DATA_LO..=PCI_CONFIG_DATA_HI     // PCI CONFIG_DATA
-            | 0x02F8..=0x02FF | 0x03E8..=0x03EF | 0x02E8..=0x02EF // COM2/COM4/COM3
+            0x0020 | 0x0021 | 0x00A0 | 0x00A1
+            | 0x0040..=0x0043
+            | 0x0060 | 0x0064
+            | 0x0061
+            | 0x0070 | 0x0071
+            | 0x0080..=0x008F
+            | 0x04D0 | 0x04D1
+            | PCI_CONFIG_ADDRESS..=0x0CFB
+            | PCI_CONFIG_DATA_LO..=PCI_CONFIG_DATA_HI
+            | 0x02F8..=0x02FF | 0x03E8..=0x03EF | 0x02E8..=0x02EF
         )
     }
 
@@ -452,19 +428,14 @@ impl LegacyPlatform {
     /// everything else.
     pub fn write(&mut self, port: u16, size: u8, value: u32) {
         if (PCI_CONFIG_ADDRESS..=0x0CFB).contains(&port) {
-            // Mechanism-1 address register; a dword write replaces it. (Sub-dword
-            // writes are rare and harmless to ignore — no device is populated.)
             if size == 4 && port == PCI_CONFIG_ADDRESS {
                 self.config_address = value;
             }
         } else if port == PIC_MASTER_DATA {
-            // 8259 master IMR (probed + per-IRQ (un)masked by the kernel).
             self.master_imr = value as u8;
         } else if port == PIC_SLAVE_DATA {
             self.slave_imr = value as u8;
         }
-        // All other ports (incl. the PIC command ports 0x20/0xA0 and their EOIs):
-        // accepted and dropped (no-op).
     }
 
     /// Service a read: return the architectural absent/idle value for `port`, or
@@ -477,19 +448,11 @@ impl LegacyPlatform {
         };
         match port {
             PCI_CONFIG_ADDRESS..=0x0CFB => u64::from(self.config_address),
-            PCI_CONFIG_DATA_LO..=PCI_CONFIG_DATA_HI => all_ones, // no PCI device
-            // PIC data ports read back the latched IMR — so `probe_8259A`'s
-            // write-then-read sees the real PIC (not all-ones ⇒ "NULL legacy PIC").
+            PCI_CONFIG_DATA_LO..=PCI_CONFIG_DATA_HI => all_ones,
             PIC_MASTER_DATA => u64::from(self.master_imr),
             PIC_SLAVE_DATA => u64::from(self.slave_imr),
-            // An unpopulated COM port reads all-ones so the 8250 scratch test fails
-            // and it is skipped.
             0x02F8..=0x02FF | 0x03E8..=0x03EF | 0x02E8..=0x02EF => all_ones,
-            // i8042 status (0x64): OBF-set so the controller-presence check fails
-            // fast ("No controller found") instead of spinning a 10000×udelay
-            // wait-for-OBF under patched V-time. See `I8042_STATUS_FAST_CLEAR`.
             I8042_STATUS_PORT => u64::from(I8042_STATUS_FAST_CLEAR),
-            // PIT, CMOS, POST, ELCR, PIC command, port B, i8042 data (0x60): idle.
             _ => 0,
         }
     }
@@ -552,30 +515,26 @@ mod tests {
 
     #[test]
     fn task04_init_order_does_not_capture_divisor() {
-        // Replay uart::init(): IER=0, LCR DLAB=1, divisor 0x01 to 0x3F8, DLM=0,
-        // LCR 8N1 (DLAB=0), FCR, MCR — then the data bytes.
         let mut u = Uart8250::new();
-        u.write(UART_PORT_BASE + 1, 0x00); // IER
-        u.write(UART_PORT_LCR, 0x80); // DLAB=1
-        u.write(UART_PORT_BASE, 0x01); // divisor low — MUST NOT be captured
-        u.write(UART_PORT_BASE + 1, 0x00); // divisor high
-        u.write(UART_PORT_LCR, 0x03); // 8N1, DLAB=0
-        u.write(UART_PORT_BASE + 2, 0xC7); // FCR
-        u.write(UART_PORT_BASE + 4, 0x03); // MCR
+        u.write(UART_PORT_BASE + 1, 0x00);
+        u.write(UART_PORT_LCR, 0x80);
+        u.write(UART_PORT_BASE, 0x01);
+        u.write(UART_PORT_BASE + 1, 0x00);
+        u.write(UART_PORT_LCR, 0x03);
+        u.write(UART_PORT_BASE + 2, 0xC7);
+        u.write(UART_PORT_BASE + 4, 0x03);
         for &b in b"PAYLOAD" {
             u.write(UART_PORT_BASE, b);
         }
-        // No leading \x01: only the data bytes are captured.
         assert_eq!(u.capture(), b"PAYLOAD");
     }
 
     #[test]
     fn divisor_latch_read_back_with_dlab_set() {
         let mut u = Uart8250::new();
-        u.write(UART_PORT_LCR, 0x80); // DLAB=1
-        u.write(UART_PORT_BASE, 0x01); // DLL = 1
+        u.write(UART_PORT_LCR, 0x80);
+        u.write(UART_PORT_BASE, 0x01);
         assert_eq!(u.read(UART_PORT_BASE), Some(0x01));
-        // With DLAB clear, the same port is RBR (no input → 0), capture untouched.
         u.write(UART_PORT_LCR, 0x00);
         assert_eq!(u.read(UART_PORT_BASE), Some(0));
         assert!(u.capture().is_empty());
@@ -583,26 +542,21 @@ mod tests {
 
     #[test]
     fn owns_is_the_com1_block_only() {
-        assert!(Uart8250::owns(UART_PORT_BASE)); // 0x3F8
-        assert!(Uart8250::owns(UART_PORT_BASE + 7)); // 0x3FF, top of the block
-        // Just past the block: kills the `UART_PORT_BASE + 7` → `* 7` mutant
-        // (which would stretch the range to 0x3F8*7).
-        assert!(!Uart8250::owns(UART_PORT_BASE + 8)); // 0x400
-        assert!(!Uart8250::owns(UART_PORT_BASE - 1)); // 0x3F7
+        assert!(Uart8250::owns(UART_PORT_BASE));
+        assert!(Uart8250::owns(UART_PORT_BASE + 7));
+        assert!(!Uart8250::owns(UART_PORT_BASE + 8));
+        assert!(!Uart8250::owns(UART_PORT_BASE - 1));
     }
 
     #[test]
     fn shadow_regs_and_dlab_reflect_writes() {
         let mut u = Uart8250::new();
         assert!(!u.dlab(), "DLAB clear at reset");
-        // A benign register write (IER at offset 1) lands in the shadow array.
         u.write(UART_PORT_BASE + 1, 0xAB);
         assert_eq!(u.shadow_regs()[1], 0xAB);
-        // Setting LCR bit 7 latches DLAB; the LCR shadow records the byte.
         u.write(UART_PORT_LCR, UART_LCR_DLAB);
         assert!(u.dlab());
         assert_eq!(u.shadow_regs()[3] & UART_LCR_DLAB, UART_LCR_DLAB);
-        // Clearing it un-latches DLAB.
         u.write(UART_PORT_LCR, 0x03);
         assert!(!u.dlab());
     }
@@ -615,18 +569,13 @@ mod tests {
         assert_eq!(u.read(ISA_DEBUG_EXIT_PORT), None);
     }
 
-    // --- THRE interrupt (the COM1 IRQ-4 line) ------------------------------
-
     /// Port +2 read (IIR): no interrupt pending until the guest enables `IER.THRI`,
     /// then the THRE id — and never the FCR shadow written at the same port.
     #[test]
     fn iir_reports_thre_interrupt_only_when_thri_enabled() {
         let mut u = Uart8250::new();
-        // Fresh: no interrupt enabled ⇒ IIR = NO_INT (0x01), line de-asserted.
         assert_eq!(u.read(UART_PORT_BASE + 2), Some(0x01));
         assert!(!u.thre_irq_asserted());
-        // A write to +2 is the FCR (FIFO control); it must NOT leak into the IIR
-        // read (which would falsely clear NO_INT and is the original bug).
         u.write(UART_PORT_BASE + 2, 0xC7);
         assert_eq!(
             u.read(UART_PORT_BASE + 2),
@@ -634,23 +583,17 @@ mod tests {
             "IIR is the interrupt status, not the FCR shadow"
         );
         assert!(!u.thre_irq_asserted());
-        // Enable IER.THRI (DLAB clear): THRE is pending ⇒ IIR = 0x02, line asserts.
         u.write(UART_PORT_BASE + 1, UART_IER_THRI);
         assert_eq!(u.read(UART_PORT_BASE + 2), Some(0x02));
         assert!(u.thre_irq_asserted());
-        // A non-THRI IER bit (e.g. RDI 0x01, receive-data) does not assert TX: we
-        // never feed input, so only THRE can be pending.
         u.write(UART_PORT_BASE + 1, 0x01);
         assert_eq!(u.read(UART_PORT_BASE + 2), Some(0x01));
         assert!(!u.thre_irq_asserted());
-        // Clearing THRI de-asserts (the kernel does this when the TX buffer drains).
         u.write(UART_PORT_BASE + 1, UART_IER_THRI);
         assert!(u.thre_irq_asserted());
         u.write(UART_PORT_BASE + 1, 0x00);
         assert!(!u.thre_irq_asserted());
     }
-
-    // --- injected serial input (task 81's `exec` channel) ------------------
 
     /// The input path is fully inert until [`Uart8250::inject_input`]: LSR reports
     /// no data-ready, RBR reads `0`, and no receive interrupt asserts — so every
@@ -673,20 +616,16 @@ mod tests {
         let mut u = Uart8250::new();
         u.inject_input(b"hi");
         assert!(u.rx_has_input());
-        // LSR now reports data-ready (bit 0) on top of THR-empty.
         assert_eq!(
             u.read(UART_PORT_LSR),
             Some(UART_LSR_THR_EMPTY | UART_LSR_DATA_READY)
         );
-        // A non-consuming peek returns the front byte without popping.
         assert_eq!(u.read(UART_PORT_BASE), Some(b'h'));
         assert_eq!(u.read(UART_PORT_BASE), Some(b'h'), "peek does not consume");
-        // The I/O path consumes: 'h' then 'i', then the queue drains to 0.
         assert_eq!(u.read_in(UART_PORT_BASE), Some(b'h'));
         assert_eq!(u.read_in(UART_PORT_BASE), Some(b'i'));
         assert!(!u.rx_has_input());
         assert_eq!(u.read_in(UART_PORT_BASE), Some(0), "empty queue reads 0");
-        // Data-ready clears once drained.
         assert_eq!(u.read(UART_PORT_LSR), Some(UART_LSR_THR_EMPTY));
     }
 
@@ -695,21 +634,17 @@ mod tests {
     #[test]
     fn receive_interrupt_asserts_only_when_enabled_and_queued() {
         let mut u = Uart8250::new();
-        // Enable both RDI (0x01) and THRI (0x02); no input yet ⇒ only THRE asserts.
         u.write(UART_PORT_BASE + 1, UART_IER_RDI | UART_IER_THRI);
         assert!(!u.rx_irq_asserted(), "no input ⇒ no receive IRQ");
         assert!(u.thre_irq_asserted());
         assert_eq!(u.read(UART_PORT_BASE + 2), Some(UART_IIR_THRI));
-        // Inject input ⇒ receive IRQ asserts and takes IIR priority.
         u.inject_input(b"x");
         assert!(u.rx_irq_asserted());
         assert!(u.serial_irq_asserted());
         assert_eq!(u.read(UART_PORT_BASE + 2), Some(UART_IIR_RDI));
-        // Consume it ⇒ receive IRQ de-asserts, THRE resumes.
         assert_eq!(u.read_in(UART_PORT_BASE), Some(b'x'));
         assert!(!u.rx_irq_asserted());
         assert_eq!(u.read(UART_PORT_BASE + 2), Some(UART_IIR_THRI));
-        // With RDI disabled, queued input does NOT raise the interrupt (still readable).
         u.write(UART_PORT_BASE + 1, UART_IER_THRI);
         u.inject_input(b"y");
         assert!(!u.rx_irq_asserted(), "RDI disabled ⇒ no receive IRQ");
@@ -736,24 +671,20 @@ mod tests {
     #[test]
     fn thri_ignored_while_dlab_selects_the_divisor_latch() {
         let mut u = Uart8250::new();
-        u.write(UART_PORT_LCR, UART_LCR_DLAB); // DLAB = 1
-        u.write(UART_PORT_BASE + 1, 0x02); // divisor-latch high (DLM) = 2
+        u.write(UART_PORT_LCR, UART_LCR_DLAB);
+        u.write(UART_PORT_BASE + 1, 0x02);
         assert!(
             !u.thre_irq_asserted(),
             "offset+1 is DLM here, not IER — no THRE assert"
         );
-        // Offset +1 reads back the DLM (the byte just written), not the IER.
         assert_eq!(u.read(UART_PORT_BASE + 1), Some(0x02));
         assert_eq!(u.read(UART_PORT_BASE + 2), Some(0x01));
-        // Clearing DLAB re-exposes the IER, which was never written — so the DLM's
-        // `0x02` does NOT leak into it and the line stays de-asserted.
-        u.write(UART_PORT_LCR, 0x03); // DLAB = 0, 8N1
+        u.write(UART_PORT_LCR, 0x03);
         assert!(
             !u.thre_irq_asserted(),
             "DLM must not leak into IER: a divisor write is not a THRI enable"
         );
         assert_eq!(u.read(UART_PORT_BASE + 1), Some(0x00), "IER unset, reads 0");
-        // Now an actual IER.THRI write (DLAB clear) does assert.
         u.write(UART_PORT_BASE + 1, UART_IER_THRI);
         assert!(u.thre_irq_asserted());
         assert_eq!(u.read(UART_PORT_BASE + 2), Some(0x02));
@@ -767,15 +698,13 @@ mod tests {
     #[test]
     fn ier_preserved_across_divisor_latch_window() {
         let mut u = Uart8250::new();
-        u.write(UART_PORT_BASE + 1, UART_IER_THRI); // IER = THRI (DLAB clear)
+        u.write(UART_PORT_BASE + 1, UART_IER_THRI);
         assert!(u.thre_irq_asserted());
-        // Program a non-trivial divisor in the DLAB window.
-        u.write(UART_PORT_LCR, UART_LCR_DLAB); // DLAB = 1
-        u.write(UART_PORT_BASE, 0x03); // DLL = 3
-        u.write(UART_PORT_BASE + 1, 0x09); // DLM = 9 — must NOT touch the IER
+        u.write(UART_PORT_LCR, UART_LCR_DLAB);
+        u.write(UART_PORT_BASE, 0x03);
+        u.write(UART_PORT_BASE + 1, 0x09);
         assert_eq!(u.read(UART_PORT_BASE + 1), Some(0x09), "DLM reads back");
-        u.write(UART_PORT_LCR, 0x03); // DLAB = 0, 8N1
-        // The IER survived the window intact: THRI still enabled, line still asserts.
+        u.write(UART_PORT_LCR, 0x03);
         assert!(
             u.thre_irq_asserted(),
             "IER.THRI must survive a divisor-latch write"
@@ -789,27 +718,21 @@ mod tests {
     #[test]
     fn thr_capture_independent_of_thri() {
         let mut u = Uart8250::new();
-        u.write(UART_PORT_BASE + 1, UART_IER_THRI); // enable THRE interrupt
+        u.write(UART_PORT_BASE + 1, UART_IER_THRI);
         for &b in b"GUEST_READY" {
             assert!(u.write(UART_PORT_BASE, b));
         }
         assert_eq!(u.capture(), b"GUEST_READY");
     }
 
-    // --- LegacyPlatform ----------------------------------------------------
-
     #[test]
     fn legacy_owns_the_curated_ports_only() {
-        // PCI, PIC, PIT, i8042, CMOS, POST, ELCR, extra-COM are owned.
         for p in [
             0x0020, 0x0021, 0x00A0, 0x00A1, 0x0040, 0x0043, 0x0060, 0x0064, 0x0061, 0x0070, 0x0071,
             0x0080, 0x008F, 0x04D0, 0x04D1, 0x0CF8, 0x0CFB, 0x0CFC, 0x0CFF, 0x02F8, 0x03E8, 0x02E8,
         ] {
             assert!(LegacyPlatform::owns(p), "{p:#06x} should be owned");
         }
-        // COM1 (the modeled UART), isa-debug-exit, report port, and random ports
-        // are NOT the legacy stub's (COM1 is the real Uart8250; the others are
-        // handled before the legacy fallback).
         for p in [0x03F8, 0x00F4, 0x0CA2, 0x0000, 0x1234, 0x0CF7, 0x0090] {
             assert!(!LegacyPlatform::owns(p), "{p:#06x} should not be owned");
         }
@@ -818,11 +741,9 @@ mod tests {
     #[test]
     fn legacy_pci_config_address_round_trips_and_data_reads_no_device() {
         let mut p = LegacyPlatform::new();
-        // A dword write to CONFIG_ADDRESS latches; a read returns it.
         p.write(0x0CF8, 4, 0x8000_1000);
         assert_eq!(p.config_address(), 0x8000_1000);
         assert_eq!(p.read(0x0CF8, 4), 0x8000_1000);
-        // CONFIG_DATA reads "no device" (all-ones), masked to the access width.
         assert_eq!(p.read(0x0CFC, 4), 0xFFFF_FFFF);
         assert_eq!(p.read(0x0CFC, 2), 0x0000_FFFF);
         assert_eq!(p.read(0x0CFE, 1), 0x0000_00FF);
@@ -830,42 +751,32 @@ mod tests {
 
     #[test]
     fn legacy_only_dword_write_to_cf8_latches() {
-        // The latch fires ONLY for a 4-byte write to PCI_CONFIG_ADDRESS (0xCF8).
-        // These pin the `size == 4 && port == 0xCF8` guard (kill `&&`→`||` and the
-        // two `==`→`!=` mutants): neither a dword write to a *different* port nor a
-        // non-dword write to 0xCF8 may touch the latch.
         let mut p = LegacyPlatform::new();
-        p.write(0x0CFC, 4, 0xDEAD_BEEF); // dword, wrong port
+        p.write(0x0CFC, 4, 0xDEAD_BEEF);
         assert_eq!(
             p.config_address(),
             0,
             "dword write to non-CF8 must not latch"
         );
-        p.write(0x0CF8, 1, 0xDEAD_BEEF); // right port, wrong size
+        p.write(0x0CF8, 1, 0xDEAD_BEEF);
         assert_eq!(p.config_address(), 0, "byte write to CF8 must not latch");
-        p.write(0x0CF8, 2, 0xDEAD_BEEF); // right port, wrong size
+        p.write(0x0CF8, 2, 0xDEAD_BEEF);
         assert_eq!(p.config_address(), 0, "word write to CF8 must not latch");
-        p.write(0x0CF8, 4, 0xCAFE_F00D); // the one combination that latches
+        p.write(0x0CF8, 4, 0xCAFE_F00D);
         assert_eq!(p.config_address(), 0xCAFE_F00D);
     }
 
     #[test]
     fn legacy_reads_give_absent_idle_values() {
         let p = LegacyPlatform::new();
-        // PIC IMRs reset all-masked (0xFF); an unpopulated COM port reads all-ones
-        // (no UART).
         assert_eq!(p.read(0x0021, 1), 0xFF);
         assert_eq!(p.read(0x00A1, 1), 0xFF);
         assert_eq!(p.read(0x02F8, 1), 0xFF);
-        // PIT, CMOS, POST, ELCR, PIC command, port B, i8042 data (0x60) read idle
-        // (0). The i8042 *status* port (0x64) is the one exception — see
-        // `i8042_status_reports_obf_set_so_the_probe_fails_fast`.
         for port in [0x0040, 0x0071, 0x0080, 0x04D0, 0x0020, 0x0061, 0x0060] {
             assert_eq!(p.read(port, 1), 0, "{port:#06x} should read idle");
         }
-        // Non-PIC/PCI writes are accepted and dropped (no panic, no latched state).
         let mut p = p;
-        p.write(0x0043, 1, 0x36); // program the PIT
+        p.write(0x0043, 1, 0x36);
         assert_eq!(
             p.config_address(),
             0,
@@ -888,32 +799,19 @@ mod tests {
         let p = LegacyPlatform::new();
         let status = p.read(0x0064, 1);
         assert_eq!(status, 0x01, "0x64 status must read OBF-set, IBF-clear");
-        // OBF (bit 0) set: makes i8042_flush drain its bounded buffer and report
-        // "No controller found" — the controller probe never reaches the spinning
-        // read-CTR command.
         assert_eq!(status & 0x01, 0x01, "OBF (bit 0) must be set");
-        // IBF (bit 1) clear: any i8042_wait_write also completes immediately.
         assert_eq!(status & 0x02, 0x00, "IBF (bit 1) must be clear");
-        // The data port (0x60) is unchanged — idle 0 (the drained bytes are
-        // discarded by the flush).
         assert_eq!(p.read(0x0060, 1), 0, "0x60 data port stays idle");
-        // The status is a constant (no state): it never latches and is unaffected
-        // by writes, so two boots read it identically (determinism).
         let mut p = p;
-        p.write(0x0064, 1, 0xFF); // a command-port write is accepted + dropped
+        p.write(0x0064, 1, 0xFF);
         assert_eq!(p.read(0x0064, 1), 0x01, "status is stateless / constant");
     }
 
     #[test]
     fn pic_imr_latches_so_probe_8259a_sees_a_real_pic() {
-        // The kernel's `probe_8259A` masks all of the slave, writes ~(1<<cascade)
-        // (= 0xFB) to the master, and reads it back: a verbatim read-back means a
-        // real PIC; an all-ones read means "Using NULL legacy PIC" (which strands
-        // IRQ 4). The IMR is a latch, so the master read-back is exactly 0xFB
-        // (not the old all-ones), and the slave read-back is the 0xFF it wrote.
         let mut p = LegacyPlatform::new();
-        p.write(0x00A1, 1, 0xFF); // mask all of the slave
-        p.write(0x0021, 1, 0xFB); // probe value (cascade IRQ 2 unmasked)
+        p.write(0x00A1, 1, 0xFF);
+        p.write(0x0021, 1, 0xFB);
         assert_eq!(
             p.read(0x0021, 1),
             0xFB,
@@ -921,7 +819,6 @@ mod tests {
         );
         assert_eq!(p.read(0x00A1, 1), 0xFF, "slave IMR must read back verbatim");
         assert_eq!(p.pic_imr(), [0xFB, 0xFF]);
-        // Distinct latches: a master write does not touch the slave and vice versa.
         p.write(0x0021, 1, 0x12);
         assert_eq!(p.pic_imr(), [0x12, 0xFF]);
         p.write(0x00A1, 1, 0x34);
@@ -931,12 +828,9 @@ mod tests {
     #[test]
     fn irq_masked_reads_the_right_imr_bit() {
         let mut p = LegacyPlatform::new();
-        // Fresh: every line masked.
         assert!(p.irq_masked(4), "IRQ 4 masked at reset");
         assert!(p.irq_masked(0));
         assert!(p.irq_masked(8));
-        // Unmask only IRQ 4 (master bit 4 clear, the rest set) — the state after
-        // the kernel `request_irq(4)`s the serial port.
         p.write(0x0021, 1, 0xFF & !(1 << 4));
         assert!(!p.irq_masked(4), "IRQ 4 now unmasked");
         assert!(
@@ -945,7 +839,6 @@ mod tests {
         );
         assert!(p.irq_masked(5), "IRQ 5 still masked");
         assert!(p.irq_masked(0), "master line 0 untouched");
-        // Slave lines come from the slave IMR (IRQ 8 = slave bit 0).
         p.write(0x00A1, 1, 0xFF & !(1 << 0));
         assert!(!p.irq_masked(8), "IRQ 8 = slave bit 0 unmasked");
         assert!(p.irq_masked(9), "IRQ 9 = slave bit 1 still masked");
@@ -957,7 +850,6 @@ mod tests {
             p.irq_masked(3),
             "unmasking a slave line leaves master bit 3 masked"
         );
-        // Out-of-range lines are treated as masked.
         assert!(p.irq_masked(16));
     }
 }

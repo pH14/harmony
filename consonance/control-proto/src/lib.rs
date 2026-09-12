@@ -110,7 +110,7 @@ pub const APP_PROTOCOL_VERSION: u16 = 11;
 /// below [`MAX_FRAME_LEN`], so a full `Bytes` reply always frames. Both peers
 /// agree on this number; a server picking a smaller effective cap still rejects
 /// loudly, never truncates.
-pub const READ_CAP: u32 = 1 << 18; // 256 KiB
+pub const READ_CAP: u32 = 1 << 18;
 
 /// Maximum on-wire frame *body* length. Generous for [`Reproducer`] blobs and
 /// hashes, but bounded so untrusted transport can never force unbounded
@@ -118,7 +118,7 @@ pub const READ_CAP: u32 = 1 << 18; // 256 KiB
 /// [`ProtocolError::BadLength`] the moment a header's length field exceeds this —
 /// before the body is buffered — and [`encode_request`] / [`encode_reply`] refuse
 /// to emit a body larger than this.
-pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024; // 16 MiB
+pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 
 #[cfg(test)]
 mod tests {
@@ -129,9 +129,9 @@ mod tests {
     /// arithmetic to mutate), so the values can never drift silently.
     #[test]
     fn wire_constants_are_pinned() {
-        assert_eq!(MAX_FRAME_LEN, 16_777_216); // == 16 * 1024 * 1024 (16 MiB)
+        assert_eq!(MAX_FRAME_LEN, 16_777_216);
         assert_eq!(PROTO_VERSION, 1);
-        assert_eq!(APP_PROTOCOL_VERSION, 11); // version numbers are never reused
-        assert_eq!(READ_CAP, 262_144); // == 1 << 18 (256 KiB)
+        assert_eq!(APP_PROTOCOL_VERSION, 11);
+        assert_eq!(READ_CAP, 262_144);
     }
 }

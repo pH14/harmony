@@ -37,7 +37,6 @@ proptest! {
             }
         }
 
-        // Run both to their natural halt: final state must also be identical.
         let f1 = m1.run_to(prog.work_to_halt + 10).unwrap();
         let f2 = m2.run_to(prog.work_to_halt + 10).unwrap();
         prop_assert_eq!(f1, RunOutcome::Halted);
@@ -58,7 +57,6 @@ proptest! {
         let b = ToyFactory { program: prog.instrs };
         let report = compare_runs(&a, &b, seed, checkpoint_every, limit).unwrap();
         prop_assert_eq!(report.verdict, Verdict::Identical);
-        // limit < work_to_halt, so the comparison must have hit the limit.
         prop_assert!(report.limit_reached);
         prop_assert_eq!(report.halted_at, None);
     }

@@ -485,8 +485,6 @@ fn main() -> std::process::ExitCode {
         }
     });
 
-    // not order-observable: M3 reports host throughput and uses wall time only
-    // as a fail-loud watchdog. Neither value advances V-time or enters guest state.
     #[allow(clippy::disallowed_methods)]
     let start = Instant::now();
     let mut printed = 0usize;
@@ -558,9 +556,6 @@ fn main() -> std::process::ExitCode {
         }
         ready_seen |= contains(serial, READY);
 
-        // One cumulative observation per exit keeps phase accounting intrinsic
-        // to this ARM run. Wall time is diagnostic only and never enters guest
-        // state, scheduling, hashes, or the deterministic exit policy.
         #[allow(clippy::disallowed_methods)]
         let observed_wall_ns = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let observed = PerformanceMark {
@@ -580,9 +575,6 @@ fn main() -> std::process::ExitCode {
             }
         }
 
-        // One calibration row per portable event: the same wall-clock reading
-        // that feeds the phase marks, joined to the event's class and V-time.
-        // Diagnostic output only; nothing reads it back into the run.
         if let Some(log) = calibration_log.as_mut()
             && let Some(trace) = vmm.virtual_time_trace()
         {
@@ -650,11 +642,6 @@ fn main() -> std::process::ExitCode {
             }
         }
 
-        // The guest emits READY only after the 20-row oracle, clean PostgreSQL
-        // shutdown, and its dmesg liveness scan. `halt -f` follows immediately,
-        // but HVF may keep that halted vCPU inside a non-returning entry. The
-        // explicit guest-authored marker is therefore the workload terminal;
-        // stop before entering the architectural halt loop.
         if ready_seen {
             terminal_event = Some(event);
             break;

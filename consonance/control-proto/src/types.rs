@@ -589,7 +589,6 @@ mod tests {
 
     #[test]
     fn stop_mask_arm_sets_one_shifted_bit() {
-        // The integrator-pinned mapping: armed bit == 1 << class_bit.
         for cb in [
             class_bit::ENTROPY,
             class_bit::PAYLOAD,
@@ -601,7 +600,6 @@ mod tests {
             let m = StopMask::NONE.arm(cb);
             assert_eq!(m.0, 1u32 << cb);
             assert!(m.armed(cb));
-            // No other class is armed.
             for other in 0u16..32 {
                 if other != cb {
                     assert!(!m.armed(other));
@@ -627,8 +625,6 @@ mod tests {
 
     #[test]
     fn stop_mask_out_of_range_class_is_a_total_noop() {
-        // class_bit >= 32 cannot be represented; arm is a no-op and armed is
-        // false — never a shift-overflow panic.
         for cb in [32u16, 33, 100, u16::MAX] {
             assert_eq!(StopMask::NONE.arm(cb), StopMask::NONE);
             assert!(!StopMask::NONE.arm(class_bit::BLOCK_IO).armed(cb));
@@ -645,8 +641,6 @@ mod tests {
         assert!(both.contains(CapFlags::GUEST_HAS_SDK));
         assert!(both.contains(CapFlags(0b10)));
         assert_eq!(both.0, 0b11);
-        // Overlapping bits distinguish set-union (`|`) from XOR: `with` is
-        // idempotent (re-adding a set bit keeps it; XOR would clear it).
         assert_eq!(
             CapFlags::GUEST_HAS_SDK.with(CapFlags::GUEST_HAS_SDK),
             CapFlags::GUEST_HAS_SDK,

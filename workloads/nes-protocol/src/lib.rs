@@ -83,8 +83,6 @@ impl std::error::Error for BillboardError {}
 impl BillboardLayout {
     /// Freeze the layout for a run from the core's serialize size.
     pub fn new(savestate_len: usize) -> Result<Self, BillboardError> {
-        // The total length must also stay addressable in the u32 length
-        // registers; a savestate anywhere near this bound is a broken core.
         let len32 = u32::try_from(savestate_len)
             .ok()
             .filter(|l| (*l as u64) + (HEADER_LEN + WORK_RAM_LEN) as u64 <= u64::from(u32::MAX))
@@ -122,10 +120,10 @@ impl BillboardLayout {
         let workram_off = savestate_off + self.savestate_len;
         buf[0..4].copy_from_slice(&BILLBOARD_MAGIC);
         buf[4..6].copy_from_slice(&BILLBOARD_LAYOUT_VERSION.to_le_bytes());
-        buf[6..8].copy_from_slice(&0u16.to_le_bytes()); // flags
+        buf[6..8].copy_from_slice(&0u16.to_le_bytes());
         buf[8..12].copy_from_slice(&frame.to_le_bytes());
         buf[12] = joypad;
-        buf[13..16].copy_from_slice(&[0u8; 3]); // reserved padding
+        buf[13..16].copy_from_slice(&[0u8; 3]);
         buf[16..20].copy_from_slice(&savestate_off.to_le_bytes());
         buf[20..24].copy_from_slice(&self.savestate_len.to_le_bytes());
         buf[24..28].copy_from_slice(&workram_off.to_le_bytes());
@@ -394,16 +392,16 @@ mod tests {
         layout.write_header(&mut buf, 0x0102_0304, 0xA5).unwrap();
         #[rustfmt::skip]
         let expected: [u8; HEADER_LEN] = [
-            b'H', b'B', b'B', b'D', // magic
-            0x01, 0x00,             // version 1 LE
-            0x00, 0x00,             // flags
-            0x04, 0x03, 0x02, 0x01, // frame LE
-            0xA5,                   // joypad
-            0x00, 0x00, 0x00,       // reserved
-            0x20, 0x00, 0x00, 0x00, // savestate_off = 32
-            0x40, 0x00, 0x00, 0x00, // savestate_len = 0x40
-            0x60, 0x00, 0x00, 0x00, // workram_off = 32 + 0x40
-            0x00, 0x08, 0x00, 0x00, // workram_len = 2048
+            b'H', b'B', b'B', b'D',
+            0x01, 0x00,
+            0x00, 0x00,
+            0x04, 0x03, 0x02, 0x01,
+            0xA5,
+            0x00, 0x00, 0x00,
+            0x20, 0x00, 0x00, 0x00,
+            0x40, 0x00, 0x00, 0x00,
+            0x60, 0x00, 0x00, 0x00,
+            0x00, 0x08, 0x00, 0x00,
         ];
         assert_eq!(&buf[..HEADER_LEN], &expected);
     }

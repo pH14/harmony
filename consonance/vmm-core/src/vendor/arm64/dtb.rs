@@ -35,13 +35,11 @@ const FDT_VERSION: u32 = 17;
 /// The last version this layout is backward-compatible with.
 const FDT_LAST_COMP_VERSION: u32 = 16;
 
-// Structure-block tokens (big-endian u32).
 const FDT_BEGIN_NODE: u32 = 0x0000_0001;
 const FDT_END_NODE: u32 = 0x0000_0002;
 const FDT_PROP: u32 = 0x0000_0003;
 const FDT_END: u32 = 0x0000_0009;
 
-// GIC / interrupt encodings (the 3-cell `#interrupt-cells` form).
 /// Interrupt-type cell value for an SPI (shared peripheral interrupt).
 const GIC_SPI: u32 = 0;
 /// Interrupt-type cell value for a PPI (private peripheral interrupt).
@@ -87,7 +85,6 @@ impl Fdt {
 
     /// Intern a property name, returning its offset in the strings block.
     fn intern(&mut self, name: &str) -> u32 {
-        // Linear scan for an existing exact match (small, fixed name set).
         let bytes = name.as_bytes();
         let mut i = 0;
         while i < self.strings.len() {
@@ -192,14 +189,12 @@ fn build_inner(
 ) -> Vec<u8> {
     let mut f = Fdt::new();
 
-    // --- root ---------------------------------------------------------------
-    f.begin_node(""); // the root node has an empty name
+    f.begin_node("");
     f.prop_u32("#address-cells", 2);
     f.prop_u32("#size-cells", 2);
     f.prop_str("compatible", "linux,dummy-virt");
     f.prop_str("model", "harmony-arm64-virt");
 
-    // /chosen — the console and command line.
     f.begin_node("chosen");
     f.prop_str("stdout-path", "/pl011@9000000");
     f.prop_str("bootargs", bootargs);
@@ -210,13 +205,11 @@ fn build_inner(
     }
     f.end_node();
 
-    // /psci — power state coordination (HVC method; the arm64 doorbell/PSCI seam).
     f.begin_node("psci");
     f.prop_str("compatible", "arm,psci-1.0");
     f.prop_str("method", "hvc");
     f.end_node();
 
-    // /cpus — a single vCPU whose enable-method is PSCI.
     f.begin_node("cpus");
     f.prop_u32("#address-cells", 1);
     f.prop_u32("#size-cells", 0);
@@ -228,7 +221,6 @@ fn build_inner(
     f.end_node();
     f.end_node();
 
-    // /memory — the one RAM bank.
     f.begin_node("memory@40000000");
     f.prop_str("device_type", "memory");
     {
@@ -239,20 +231,10 @@ fn build_inner(
     }
     f.end_node();
 
-    // /reserved-memory — the paravirt clock page. It is excluded from the
-    // allocator but deliberately retained in arm64's normal linear map: the
-    // host writes ordinary RAM while the sole vCPU is stopped, so the guest
-    // must not create a second device-memory alias for the same physical page.
     f.begin_node("reserved-memory");
     f.prop_u32("#address-cells", 2);
     f.prop_u32("#size-cells", 2);
-    // An **empty `ranges`** is required by the /reserved-memory binding: it
-    // signals a 1:1 child↔parent address mapping, without which OF consumers
-    // (Linux `of_reserved_mem`) do not honor a child's `reg` reservation.
     f.prop_empty("ranges");
-    // The child's **unit-address MUST equal its first `reg` address** (FDT node
-    // naming rule) — `pvclock@<hex(pvclock_gpa)>`, not `@0`, or FDT validators
-    // and OF consumers reject it as structurally inconsistent.
     f.begin_node(&format!("pvclock@{pvclock_gpa:x}"));
     f.prop_str("compatible", "harmony,pvclock-page");
     {
@@ -264,7 +246,6 @@ fn build_inner(
     f.end_node();
     f.end_node();
 
-    // /intc — the GICv3 (distributor reg[0] + redistributor reg[1]).
     f.begin_node("intc@8000000");
     f.prop_str("compatible", "arm,gic-v3");
     f.prop_u32("#interrupt-cells", 3);
@@ -283,8 +264,6 @@ fn build_inner(
     }
     f.end_node();
 
-    // /timer — the generic timer's four PPIs (sec-phys 13, phys 14, virt 11,
-    // hyp 10 in DT PPI numbering); the virtual timer is the fabric's INTID.
     f.begin_node("timer");
     f.prop_str("compatible", "arm,armv8-timer");
     f.prop_u32("interrupt-parent", GIC_PHANDLE);
@@ -293,22 +272,21 @@ fn build_inner(
         &[
             GIC_PPI,
             13,
-            IRQ_LEVEL_HIGH, // secure physical
+            IRQ_LEVEL_HIGH,
             GIC_PPI,
             14,
-            IRQ_LEVEL_HIGH, // non-secure physical
+            IRQ_LEVEL_HIGH,
             GIC_PPI,
             ppi_dt_number(VIRT_TIMER_INTID),
-            IRQ_LEVEL_HIGH, // virtual
+            IRQ_LEVEL_HIGH,
             GIC_PPI,
             10,
-            IRQ_LEVEL_HIGH, // hypervisor
+            IRQ_LEVEL_HIGH,
         ],
     );
     f.prop_u32("clock-frequency", CNTFRQ_HZ as u32);
     f.end_node();
 
-    // /pl011 — the serial console (an SPI line on the GIC).
     f.begin_node("pl011@9000000");
     f.prop_str("compatible", "arm,pl011");
     f.prop_u32("interrupt-parent", GIC_PHANDLE);
@@ -322,7 +300,7 @@ fn build_inner(
     }
     f.end_node();
 
-    f.end_node(); // root
+    f.end_node();
     debug_assert_eq!(f.open_nodes, 0, "every node closed");
     Fdt::be32(&mut f.structure, FDT_END);
 
@@ -335,9 +313,8 @@ fn build_inner(
 /// strings block.
 fn assemble(structure: &[u8], strings: &[u8]) -> Vec<u8> {
     const HEADER_LEN: usize = 40;
-    // 8-byte-aligned reservation block right after the header.
     let off_mem_rsvmap = HEADER_LEN;
-    let rsvmap = [0u8; 16]; // a single {address:0, size:0} terminator
+    let rsvmap = [0u8; 16];
     let off_dt_struct = off_mem_rsvmap + rsvmap.len();
     let off_dt_strings = off_dt_struct + structure.len();
     let totalsize = off_dt_strings + strings.len();
@@ -351,7 +328,7 @@ fn assemble(structure: &[u8], strings: &[u8]) -> Vec<u8> {
     be(&mut out, off_mem_rsvmap as u32);
     be(&mut out, FDT_VERSION);
     be(&mut out, FDT_LAST_COMP_VERSION);
-    be(&mut out, 0); // boot_cpuid_phys
+    be(&mut out, 0);
     be(&mut out, strings.len() as u32);
     be(&mut out, structure.len() as u32);
     debug_assert_eq!(out.len(), HEADER_LEN);
@@ -360,11 +337,6 @@ fn assemble(structure: &[u8], strings: &[u8]) -> Vec<u8> {
     out.extend_from_slice(strings);
     out
 }
-
-// ---------------------------------------------------------------------------
-// A minimal reader — used only to prove the writer round-trips (the M3 gate).
-// Total over arbitrary bytes (never panics); it is NOT a general FDT parser.
-// ---------------------------------------------------------------------------
 
 /// Errors from [`parse`] — a malformed FDT is a value, never a panic (rule #4).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
@@ -428,21 +400,12 @@ pub fn parse(fdt: &[u8]) -> Result<ParsedFdt, FdtError> {
     }
     let strings = &fdt[off_dt_strings..];
 
-    // Token decoding is bounded by the header's **declared** structure block
-    // `[off_dt_struct, struct_end)` — never the whole `fdt` slice (rule #4:
-    // total over untrusted bytes). Walking to `fdt.len()` would let a
-    // `size_dt_struct` *short of* the real terminator be accepted (the loop
-    // reads on until it stumbles onto an `FDT_END` past the boundary) and would
-    // let bytes **outside** the block — the gap, the strings block, trailing
-    // padding — decode as tokens and properties. `be32_s` fails closed at
-    // `struct_end`; node names and property values are bounded to it too.
     let node_block = &fdt[..struct_end];
     let be32_s = |off: usize| -> Result<u32, FdtError> {
         let end = off.checked_add(4).ok_or(FdtError::Truncated)?;
         if end > struct_end {
             return Err(FdtError::Truncated);
         }
-        // `end <= struct_end <= fdt.len()`, so the slice is in-bounds.
         let b = fdt.get(off..end).ok_or(FdtError::Truncated)?;
         Ok(u32::from_be_bytes(b.try_into().expect("4-byte slice")))
     };
@@ -462,10 +425,6 @@ pub fn parse(fdt: &[u8]) -> Result<ParsedFdt, FdtError> {
     let mut pos = off_dt_struct;
     let mut stack: Vec<String> = Vec::new();
     loop {
-        // Reached the end of the declared structure block without an `FDT_END`
-        // terminator (a missing terminator, or a `size_dt_struct` short of the
-        // real one). Fail closed rather than decode the strings block / trailing
-        // bytes as more of the tree.
         if pos >= struct_end {
             return Err(FdtError::Malformed);
         }
@@ -473,10 +432,8 @@ pub fn parse(fdt: &[u8]) -> Result<ParsedFdt, FdtError> {
         pos += 4;
         match token {
             FDT_BEGIN_NODE => {
-                // Node names live in the structure block: scan for the NUL only
-                // within `[.., struct_end)` so a name can't run past the block.
                 let (name, next) = read_cstr(node_block, pos)?;
-                pos = (next + 3) & !3; // pad to 4
+                pos = (next + 3) & !3;
                 out.nodes.push(name.clone());
                 stack.push(name);
             }
@@ -488,9 +445,6 @@ pub fn parse(fdt: &[u8]) -> Result<ParsedFdt, FdtError> {
                 let nameoff = be32_s(pos + 4)? as usize;
                 pos += 8;
                 let vend = pos.checked_add(len).ok_or(FdtError::Truncated)?;
-                // The value bytes must lie inside the structure block too, or a
-                // property could claim bytes past `struct_end` (the strings
-                // block, trailing data) as its value.
                 if vend > struct_end {
                     return Err(FdtError::Truncated);
                 }
@@ -500,7 +454,7 @@ pub fn parse(fdt: &[u8]) -> Result<ParsedFdt, FdtError> {
                 let node = stack.last().cloned().unwrap_or_default();
                 out.props.push((node, pname, value));
             }
-            0x0000_0004 => {} // FDT_NOP
+            0x0000_0004 => {}
             FDT_END => {
                 if !stack.is_empty() {
                     return Err(FdtError::Malformed);
@@ -524,7 +478,7 @@ mod tests {
     fn header_is_well_formed() {
         let dtb = sample();
         assert_eq!(be32_at(&dtb, 0).unwrap(), FDT_MAGIC);
-        assert_eq!(be32_at(&dtb, 4).unwrap() as usize, dtb.len()); // totalsize
+        assert_eq!(be32_at(&dtb, 4).unwrap() as usize, dtb.len());
         assert_eq!(be32_at(&dtb, 20).unwrap(), FDT_VERSION);
         assert_eq!(be32_at(&dtb, 24).unwrap(), FDT_LAST_COMP_VERSION);
     }
@@ -536,10 +490,7 @@ mod tests {
     fn round_trips_structure_and_properties() {
         let dtb = sample();
         let p = parse(&dtb).unwrap();
-        // The reserved-memory child's node name is its first `reg` address as
-        // the unit-address (FDT naming rule; review r4): `pvclock@<hex(gpa)>`.
         let pvclock_node = format!("pvclock@{SAMPLE_PVCLOCK_GPA:x}");
-        // The expected node set is present, root first.
         assert_eq!(p.nodes.first().map(String::as_str), Some(""));
         for n in [
             "chosen",
@@ -555,7 +506,6 @@ mod tests {
         ] {
             assert!(p.nodes.iter().any(|x| x == n), "missing node {n}");
         }
-        // Spot-check load-bearing properties.
         assert_eq!(
             p.prop("chosen", "stdout-path").unwrap(),
             b"/pl011@9000000\0"
@@ -574,25 +524,16 @@ mod tests {
             p.prop("pl011@9000000", "compatible").unwrap(),
             b"arm,pl011\0"
         );
-        // The GIC reg carries both frames (dist + redist), 4 cells each × 2.
         assert_eq!(p.prop("intc@8000000", "reg").unwrap().len(), 2 * 4 * 4);
-        // The page is reserved from the allocator but stays in the normal
-        // linear map. `no-map` would force an incoherent device-memory alias.
         assert!(p.prop(&pvclock_node, "no-map").is_none());
         assert_eq!(
             p.prop(&pvclock_node, "compatible").unwrap(),
             b"harmony,pvclock-page\0"
         );
-        // The unit-address in the node name equals the first `reg` address
-        // (the r4 FDT-consistency requirement).
         let reg = p.prop(&pvclock_node, "reg").unwrap();
         let reg_addr = u64::from_be_bytes(reg[0..8].try_into().unwrap());
         assert_eq!(reg_addr, SAMPLE_PVCLOCK_GPA);
         assert_eq!(pvclock_node, format!("pvclock@{reg_addr:x}"));
-        // Finding 4 (review r1): the /reserved-memory node MUST carry an empty
-        // `ranges` (plus #address-cells/#size-cells) or OF consumers
-        // (`of_reserved_mem`) ignore the child's `reg`. Assert the
-        // full trio, `ranges` empty.
         assert_eq!(p.prop("reserved-memory", "ranges").unwrap(), b"");
         assert_eq!(
             p.prop("reserved-memory", "#address-cells").unwrap().len(),
@@ -632,9 +573,8 @@ mod tests {
     fn parse_never_panics_on_arbitrary_prefixes() {
         let dtb = sample();
         for n in 0..dtb.len() {
-            let _ = parse(&dtb[..n]); // truncations must error, never panic
+            let _ = parse(&dtb[..n]);
         }
-        // A flipped magic byte is a clean BadMagic.
         let mut bad = dtb.clone();
         bad[0] ^= 0xFF;
         assert_eq!(parse(&bad).unwrap_err(), FdtError::BadMagic);
@@ -648,8 +588,8 @@ mod tests {
     #[test]
     fn parse_rejects_size_dt_struct_short_of_fdt_end() {
         let mut dtb = sample();
-        let full = be32_at(&dtb, 36).unwrap(); // size_dt_struct
-        dtb[36..40].copy_from_slice(&(full - 4).to_be_bytes()); // drop the FDT_END
+        let full = be32_at(&dtb, 36).unwrap();
+        dtb[36..40].copy_from_slice(&(full - 4).to_be_bytes());
         let err = parse(&dtb).unwrap_err();
         assert!(
             matches!(err, FdtError::Malformed | FdtError::Truncated),
@@ -669,25 +609,22 @@ mod tests {
         let tok = |v: u32| v.to_be_bytes();
         let mut block = Vec::new();
         block.extend_from_slice(&tok(FDT_BEGIN_NODE));
-        block.extend_from_slice(&[0, 0, 0, 0]); // "" (root) name, padded to 4
+        block.extend_from_slice(&[0, 0, 0, 0]);
         block.extend_from_slice(&tok(FDT_PROP));
-        block.extend_from_slice(&tok(4)); // value len
-        block.extend_from_slice(&tok(0)); // nameoff -> "p" in the strings block
-        block.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]); // value bytes
-        // The terminators are deliberately OUTSIDE the declared block.
+        block.extend_from_slice(&tok(4));
+        block.extend_from_slice(&tok(0));
+        block.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
         let mut trailing = Vec::new();
         trailing.extend_from_slice(&tok(FDT_END_NODE));
         trailing.extend_from_slice(&tok(FDT_END));
         let strings = b"p\0";
 
-        // size_dt_struct covers only `block` — the terminators are out of bounds.
         let bounded = raw_fdt(&block, &trailing, strings, block.len() as u32);
         assert!(
             parse(&bounded).is_err(),
             "tokens past the declared struct block must not complete the tree"
         );
 
-        // Honest declaration (size_dt_struct includes the terminators): parses.
         let honest = raw_fdt(
             &block,
             &trailing,
@@ -715,16 +652,16 @@ mod tests {
         let totalsize = off_dt_strings + strings.len() as u32;
         let mut out = Vec::new();
         let be = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_be_bytes());
-        be(&mut out, FDT_MAGIC); // 0
-        be(&mut out, totalsize); // 4
-        be(&mut out, off_dt_struct); // 8
-        be(&mut out, off_dt_strings); // 12
-        be(&mut out, HEADER_LEN); // 16 off_mem_rsvmap
-        be(&mut out, FDT_VERSION); // 20
-        be(&mut out, FDT_LAST_COMP_VERSION); // 24
-        be(&mut out, 0); // 28 boot_cpuid_phys
-        be(&mut out, strings.len() as u32); // 32 size_dt_strings
-        be(&mut out, size_dt_struct); // 36 (may disagree with struct_block.len())
+        be(&mut out, FDT_MAGIC);
+        be(&mut out, totalsize);
+        be(&mut out, off_dt_struct);
+        be(&mut out, off_dt_strings);
+        be(&mut out, HEADER_LEN);
+        be(&mut out, FDT_VERSION);
+        be(&mut out, FDT_LAST_COMP_VERSION);
+        be(&mut out, 0);
+        be(&mut out, strings.len() as u32);
+        be(&mut out, size_dt_struct);
         out.extend_from_slice(&rsvmap);
         out.extend_from_slice(struct_block);
         out.extend_from_slice(trailing);

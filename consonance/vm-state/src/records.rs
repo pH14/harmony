@@ -78,7 +78,6 @@ impl SnapshotRecords for VmState {
     const ARCH_TAG: u16 = ARCH_X86_64;
 
     fn encode(&self) -> Result<Vec<u8>, VmStateError> {
-        // The inherent codec (`codec.rs`) — the trait only names it.
         VmState::encode(self)
     }
 

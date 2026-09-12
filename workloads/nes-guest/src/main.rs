@@ -109,7 +109,6 @@ fn smoke(args: &Args) -> Result<(), String> {
     impl Harness for SmokeHarness {
         type Error = String;
         fn entropy_byte(&mut self) -> Result<u8, String> {
-            // xorshift64: deterministic from the caller-provided seed.
             self.state ^= self.state << 13;
             self.state ^= self.state >> 7;
             self.state ^= self.state << 17;
@@ -132,8 +131,6 @@ fn smoke(args: &Args) -> Result<(), String> {
     }
 
     let cfg = agent_config(args)?;
-    // The smoke exercises the real startup shape: power-on title screen →
-    // the scripted start → the frame loop (not a pre-warmed gameplay core).
     let mut core = harmony_play_agent::MockCore::new();
     let start = harmony_play_agent::start::run_start_script(
         &mut core,
@@ -146,7 +143,6 @@ fn smoke(args: &Args) -> Result<(), String> {
     );
     let mut agent = Agent::new(core, cfg).map_err(|e| e.to_string())?;
     let mut billboard = vec![0u8; agent.layout().total_len()];
-    // The real path's seal-point prime + vacuity check, mirrored.
     let sealed = agent
         .prime_billboard(&mut billboard)
         .map_err(|e| e.to_string())?;
@@ -154,7 +150,7 @@ fn smoke(args: &Args) -> Result<(), String> {
         return Err(format!("smoke vacuity check: mode {}", sealed.game_mode));
     }
     let mut harness = SmokeHarness {
-        state: args.smoke_seed.max(1), // xorshift must not start at 0
+        state: args.smoke_seed.max(1),
     };
     let frames = if args.frames == 0 { 600 } else { args.frames };
     for _ in 0..frames {
@@ -286,22 +282,12 @@ mod real {
             .or_else(|| std::env::var("HARMONY_SMB_ROM").ok())
             .unwrap_or_else(|| DEFAULT_ROM.to_string());
 
-        // The ROM is user-supplied and never fetched: absent ⇒ loud failure
-        // (the init script gates the launch on its presence, so reaching this
-        // without one is a provisioning bug, not a skip).
         let rom = std::fs::read(&rom_path).map_err(|e| format!("ROM {rom_path}: {e}"))?;
         println!("play-agent: rom {rom_path} ({} bytes)", rom.len());
 
         let mut core = retro::LibretroCore::load(&core_path, &rom_path, &rom)?;
         println!("play-agent: core {core_path} loaded");
 
-        // The deterministic scripted start (round-4 P1): press START through
-        // the title until the RAM shows gameplay, BEFORE the billboard is
-        // published and setup_complete seals the base — else every branch
-        // would explore the title screen (the campaign alphabet rightly
-        // excludes START) and the exploration data would be vacuous. Draws no
-        // entropy; a pure function of power-on, so it is part of the
-        // deterministic setup prefix.
         let start = harmony_play_agent::start::run_start_script(
             &mut core,
             &harmony_play_agent::start::StartScript::default(),
@@ -320,20 +306,12 @@ mod real {
         let mut agent = Agent::new(core, cfg).map_err(|e| e.to_string())?;
         let layout = agent.layout();
 
-        // The pinned billboard: one hugetlb mapping = one contiguous
-        // guest-physical range, published once below.
         let (gpa, billboard) = pinned::alloc(layout.total_len())?;
         println!(
             "play-agent: billboard gpa={gpa:#x} len={}",
             layout.total_len()
         );
 
-        // Prime the billboard BEFORE sealing (round-8 P1): the base snapshot
-        // must carry a real header + savestate + work RAM — a zero billboard
-        // at the seal would make every seal-point sanity check vacuous, and
-        // setup could "succeed" without retro_serialize ever working. The
-        // decode doubles as the in-guest vacuity check: the seal point must
-        // be gameplay (the scripted start's whole point).
         let sealed = agent
             .prime_billboard(billboard)
             .map_err(|e| e.to_string())?;
@@ -354,9 +332,6 @@ mod real {
             .map_err(|e| format!("sdk init: {e:?}"))?;
         let mut harness = SdkHarness { sdk };
 
-        // Publish the billboard window once at init, then seal the setup
-        // prefix — the campaign snapshots at the setup boundary, so every
-        // branch inherits the published window over the primed billboard.
         Harness::state_set(&mut harness, regs::REG_BILLBOARD_GPA, gpa)?;
         Harness::state_set(
             &mut harness,
@@ -556,8 +531,6 @@ mod real {
         static JOYPAD: AtomicU8 = AtomicU8::new(0);
 
         extern "C" fn env_cb(cmd: c_uint, data: *mut c_void) -> bool {
-            // The decision lives in (Miri-covered) glue::env_response; this
-            // edge only performs the one pointer write it prescribes.
             match glue::env_response(cmd) {
                 EnvResponse::AcceptPixelFormat => true,
                 EnvResponse::CanDupe => {
@@ -565,8 +538,6 @@ mod real {
                         return false;
                     }
                     // SAFETY: the libretro contract passes a valid `bool*` for
-                    // GET_CAN_DUPE (glue::env_response maps only that command
-                    // here); non-null checked above.
                     unsafe { *data.cast::<bool>() = true };
                     true
                 }
@@ -582,8 +553,6 @@ mod real {
             _index: c_uint,
             id: c_uint,
         ) -> i16 {
-            // The whole port/device/id → bit decision is glue::input_state_response
-            // (Miri-covered, checked against the chord masks); no unsafe here.
             glue::input_state_response(JOYPAD.load(Ordering::Relaxed), port, device, id)
         }
         extern "C" fn audio_sample_cb(_l: i16, _r: i16) {}
@@ -723,11 +692,6 @@ mod real {
                 }
 
                 #[cfg(not(feature = "static-quicknes"))]
-                // SAFETY (all resolutions + calls below): `handle` is live;
-                // each `T` matches the libretro ABI signature of its symbol;
-                // the callbacks are `extern "C"` fns of the exact registered
-                // types; set_* before retro_init before retro_load_game is the
-                // documented libretro init order.
                 unsafe {
                     sym::<EnvSetFn>(handle, "retro_set_environment")?(env_cb);
                     sym::<VideoSetFn>(handle, "retro_set_video_refresh")?(video_cb);
@@ -832,12 +796,6 @@ mod real {
             }
 
             fn read_work_ram(&mut self, out: &mut [u8]) -> bool {
-                // SAFETY (the module's one borrow of core memory): resolved fn
-                // pointers on the loaded core; the libretro contract makes the
-                // returned pointer (checked non-null, with the returned
-                // non-zero size) the core's live system-RAM block, valid until
-                // the next retro_* call — no such call happens while `src`
-                // lives, and the copy below finishes before this fn returns.
                 let src: &[u8] = unsafe {
                     let ptr = (self.get_memory_data)(RETRO_MEMORY_SYSTEM_RAM);
                     let len = (self.get_memory_size)(RETRO_MEMORY_SYSTEM_RAM);
@@ -846,8 +804,6 @@ mod real {
                     }
                     std::slice::from_raw_parts(ptr.cast::<u8>(), len)
                 };
-                // The copy/clamp/zero-fill bounds logic is glue::copy_work_ram
-                // (Miri-covered).
                 glue::copy_work_ram(src, out)
             }
 
@@ -897,15 +853,12 @@ mod real {
                     RETRO_ENVIRONMENT_GET_CAN_DUPE,
                     std::ptr::null_mut()
                 ));
-                // An unsupported command touches no pointer at all.
                 assert!(!env_cb(0xdead, std::ptr::null_mut()));
             }
 
             #[test]
             fn input_state_cb_reads_the_held_joypad_byte() {
                 JOYPAD.store(0b1000_0001, Ordering::Relaxed);
-                // Bit 0 = A (id 8 in libretro's joypad map is handled by
-                // glue; here we only assert the callback threads the byte).
                 let a = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, 8);
                 let l = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, 6);
                 JOYPAD.store(0, Ordering::Relaxed);
@@ -939,8 +892,6 @@ mod real {
         /// address and the (leaked, process-lifetime) byte slice of exactly
         /// `len` bytes.
         pub fn alloc(len: usize) -> Result<(u64, &'static mut [u8]), String> {
-            // The bound from_raw_parts_mut relies on, proven in glue
-            // (Miri-covered): 1 <= len <= HUGE_PAGE.
             glue::validate_billboard_len(len)?;
             // SAFETY: anonymous private hugetlb mapping of one huge page; the
             // result is checked against MAP_FAILED before use.
@@ -961,9 +912,6 @@ mod real {
                     std::io::Error::last_os_error()
                 ));
             }
-            // Fault the page in (hugetlb pages are physically allocated at
-            // first touch) so the pagemap read below sees it present, then
-            // pin it so the translation can never go stale.
             // SAFETY: `ptr` is a valid writable mapping of HUGE_PAGE bytes.
             unsafe { std::ptr::write_bytes(ptr.cast::<u8>(), 0, HUGE_PAGE) };
             // SAFETY: mlock over the mapping just created; result checked.
@@ -988,9 +936,6 @@ mod real {
         /// init provides). Inside the deterministic VM, "physical" *is* the
         /// guest-physical address the host reads the billboard at.
         fn translate(vaddr: u64) -> Result<u64, String> {
-            // Safe std file IO; the offset math and entry decode (present
-            // bit, PFN mask, gpa composition) are glue::pagemap_offset /
-            // glue::decode_pagemap_entry (Miri-covered).
             let mut f = std::fs::File::open("/proc/self/pagemap")
                 .map_err(|e| format!("/proc/self/pagemap: {e}"))?;
             f.seek(SeekFrom::Start(glue::pagemap_offset(vaddr)))

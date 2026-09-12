@@ -271,8 +271,6 @@ impl Backend for MockArm64Backend {
     }
 
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()> {
-        // The mock performs no registration; it only records the region (no
-        // `unsafe` block — the host pointer is not retained or dereferenced).
         if host.is_empty() {
             return Err(BackendError::Memory("zero-length memory region"));
         }
@@ -362,15 +360,10 @@ impl Backend for MockArm64Backend {
     }
 
     fn complete_arch(&mut self, completion: Arm64Completion) -> Result<()> {
-        // `Arm64Completion` is uninhabited (no arch-payload completions in the
-        // skeleton), so this is statically unreachable — spelled as the empty
-        // match so adding a variant forces a decision here.
         match completion {}
     }
 
     fn retire_pending_completion(&mut self) -> Result<()> {
-        // Match the live arm64 backend: its only staged subtype is a patched
-        // sysreg completion, for which no completion-only entry exists.
         if !self.completion_staged {
             return Ok(());
         }
@@ -387,9 +380,6 @@ impl Backend for MockArm64Backend {
         if self.pending != Pending::None || self.completion_staged {
             return Err(BackendError::PendingCompletion);
         }
-        // The mock has no host to reject the blob; it accepts any well-typed
-        // `Arm64VcpuState`. `restore` then `save` reproduces an identical
-        // state by construction.
         self.state = *state;
         self.pending_irq = None;
         self.accepted_irq.clear();

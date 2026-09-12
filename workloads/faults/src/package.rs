@@ -367,9 +367,6 @@ mod live {
             mixture: DrawMixture::AlphabetOnly,
             victory_input_path: Some(options.output.join("first-bug-input.json")),
         };
-        // not order-observable: the elapsed wall time is reported to the
-        // operator and never reaches a search decision, an archive key, or a
-        // recorded byte.
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         let mut stream =
@@ -414,10 +411,6 @@ mod live {
         report.executions = campaign_report.campaign.executions_completed;
         report.horizons_clocked = campaign_report.campaign.frames_emulated;
         for bug in &written {
-            // A campaign hit is a claim about an action list, so each one is
-            // replayed from a fresh session: the replay both supplies the
-            // guest state hash the campaign never recorded and decides whether
-            // the hit is a rediscovery.
             let violations: Vec<u32> = bug.observations.violations.iter().copied().collect();
             let witness = match replay_once(artifacts, &config, &bug.actions) {
                 Ok(summary) => Some(summary),
@@ -449,8 +442,6 @@ mod live {
                 replay: witness,
             });
         }
-        // A campaign hit no replay reproduced is not a rediscovery, so the
-        // run's verdict and its first hit both come from the confirmed bugs.
         report.first_bug_execution = first_confirmed_bug(&report.bugs);
         report.bug_found = report.first_bug_execution.is_some();
         report.wall_seconds = started.elapsed().as_secs();
@@ -475,8 +466,6 @@ mod live {
         let config = config(options);
         let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
         let mut report = Report::new("replay", artifacts, identity, options);
-        // not order-observable: the elapsed wall time is reported to the
-        // operator and never reaches a replay's inputs or its state hash.
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         for run in 1..=repeat {
@@ -509,8 +498,6 @@ mod live {
         for action in actions {
             target.apply(*action);
         }
-        // A host-side failure leaves the rest of the list unapplied, so the
-        // endpoint is no verdict on the recorded actions.
         if target.failed() {
             return Err(format!(
                 "the replay failed after {} of {} actions",

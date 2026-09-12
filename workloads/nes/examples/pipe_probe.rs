@@ -29,7 +29,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|entry| entry.id);
-    // Newest states dominate the recency window; sample those.
     let sample = candidates
         .iter()
         .rev()

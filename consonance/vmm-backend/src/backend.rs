@@ -31,8 +31,6 @@ pub trait Backend {
     /// The ISA this backend traps ([`Arch`]); the vendor is a zero-sized type.
     type A: Arch;
 
-    // --- configuration (installed once, before the first run) ----------------
-
     /// Install the frozen guest-visible CPU-contract policy — on x86 the CPUID
     /// model (`KVM_SET_CPUID2`) **then** the default-deny MSR filter
     /// (`KVM_CAP_X86_USER_SPACE_MSR` with the full mask
@@ -42,8 +40,6 @@ pub trait Backend {
     /// `run`; otherwise the guest would see the host-derived
     /// defaults (boot- and determinism-breaking).
     fn set_policy(&mut self, policy: &<Self::A as Arch>::Policy) -> Result<()>;
-
-    // --- memory ---------------------------------------------------------------
 
     /// Map a guest-physical region to host-owned, pinned, pre-populated backing
     /// store (no demand paging — a determinism choice). `gpa` and `host.len()`
@@ -92,8 +88,6 @@ pub trait Backend {
             what: "drain_dirty_pages",
         })
     }
-
-    // --- run loop -------------------------------------------------------------
 
     /// Run the vCPU until an exit needs the VMM. Blocking. The returned `Exit` is
     /// the ONLY channel by which the guest becomes observable. Before resuming a
@@ -150,8 +144,6 @@ pub trait Backend {
     /// Backends that never accept a maskable IRQ return `None`.
     fn take_accepted_interrupt(&mut self) -> Option<<Self::A as Arch>::IntId>;
 
-    // --- exit completion (the read/write/hypercall round-trip) ----------------
-
     /// Supply the value for a pending **read-style** exit: an MMIO load, or an
     /// arch read-style exit (x86: `Io` IN, `Rdmsr`, `Rdtsc`, `Rdtscp`,
     /// `Rdrand`, `Rdseed`). The low `size`/`width` bytes are delivered to the
@@ -206,8 +198,6 @@ pub trait Backend {
         })
     }
 
-    // --- snapshot / restore ---------------------------------------------------
-
     /// Full guest-visible vCPU state for snapshot/restore. `[refinement]`:
     /// fallible here — the underlying `KVM_GET_*` ioctls can fail and library
     /// code must not `unwrap` (rule #4).
@@ -223,8 +213,6 @@ pub trait Backend {
     /// [`InvalidState`](crate::BackendError::InvalidState) on a
     /// malformed/incompatible blob (never a panic).
     fn restore(&mut self, state: &<Self::A as Arch>::VcpuState) -> Result<()>;
-
-    // --- observability (R-Backend normative) ----------------------------------
 
     /// Per-exit-reason trap counts since the last reset. **Recorded every run**
     /// and surfaced in the unison report; the empirical input that gates the
@@ -269,8 +257,6 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
     }
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
-        // Explicit forward: without this the default (Unsupported) body would
-        // shadow the boxed backend's real dirty log.
         (**self).drain_dirty_pages()
     }
 

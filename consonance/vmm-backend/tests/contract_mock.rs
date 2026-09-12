@@ -73,8 +73,6 @@ impl BackendFixture for MockFixture {
     }
 
     fn spawn(&mut self, scenario: Scenario) -> Option<MockBackend> {
-        // The mock can produce every scenario — it is a controlled in-process
-        // model, and its advertised capabilities say so.
         Some(MockBackend::with_exits(script(scenario)))
     }
 
@@ -86,8 +84,6 @@ impl BackendFixture for MockFixture {
     }
 
     fn dirty_pages(&mut self, backend: &mut MockBackend) -> Option<Vec<u64>> {
-        // Deliberately unsorted and duplicated: the trait requires the backend
-        // to answer sorted-and-deduplicated whatever the writes looked like.
         backend.push_dirty_gfns(vec![9, 2, 4, 2, 9]);
         Some(vec![2, 4, 9])
     }
@@ -115,9 +111,6 @@ fn mock_backend_passes_the_full_contract_exam() {
             "{exam} did not run against the mock: {report:?}"
         );
     }
-    // The mock is the one backend with no honest excuse: it models every
-    // scenario and advertises every determinism capability, so a decline here
-    // means an exam quietly stopped examining.
     assert!(
         report.declined.is_empty(),
         "the mock must decline nothing: {:?}",
@@ -152,10 +145,6 @@ impl BackendFixture for BrokenFixture {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The declining backend — the honest-"no" half of the exam.
-// ---------------------------------------------------------------------------
-
 /// A limited backend that forwards the common surface but has no dirty log.
 struct NoDeadlineBackend(MockBackend);
 
@@ -170,10 +159,6 @@ impl Backend for NoDeadlineBackend {
         // forwards, adding no obligation.
         unsafe { self.0.map_memory(gpa, host) }
     }
-    // `drain_dirty_pages` is deliberately NOT forwarded: this newtype models a
-    // backend with no dirty log, so it inherits the trait's default body — and
-    // the contract exam's decline check is what pins that default to
-    // `Unsupported`.
     fn run(&mut self) -> Result<Exit<X86>> {
         self.0.run()
     }
@@ -237,7 +222,6 @@ impl BackendFixture for LimitedFixture {
 
     fn spawn(&mut self, scenario: Scenario) -> Option<NoDeadlineBackend> {
         match scenario {
-            // Stock KVM handles CPUID and VMCALL in-kernel.
             Scenario::Cpuid | Scenario::Hypercall => None,
             _ => {
                 let mut b = MockBackend::with_capabilities(LIMITED_CAPS);
@@ -254,8 +238,6 @@ impl BackendFixture for LimitedFixture {
         }
     }
 
-    // `dirty_pages` deliberately left at its default `None`: this backend has no
-    // dirty log, which must show up as a recorded decline.
 }
 
 #[test]
@@ -264,7 +246,6 @@ fn a_limited_backend_declines_honestly_and_the_declines_are_recorded() {
     let report = run_all(&mut fx);
 
     assert_eq!(report.backend, "mock-limited");
-    // What it CAN do, it still has to do.
     for exam in [
         "ordering/not_configured",
         "ordering/completion_grid",
@@ -273,13 +254,8 @@ fn a_limited_backend_declines_honestly_and_the_declines_are_recorded() {
     ] {
         assert!(report.did_run(exam), "{exam} must still run: {report:?}");
     }
-    // A backend that cannot do something must say so with the documented error.
-    // The exam checks the decline itself, for both capabilities this fixture
-    // lacks.
     assert!(report.did_run("exactness/dirty_log_declines_loudly"));
 
-    // Every decline is named, with its reason. This is the assertion that stops
-    // a shrinking exam from reading as a passing one.
     let expect_declined = [
         Decline {
             exam: "exactness/dirty_log",
@@ -310,8 +286,6 @@ fn a_limited_backend_declines_honestly_and_the_declines_are_recorded() {
 
 #[test]
 fn the_exam_actually_fails_a_backend_that_breaks_the_contract() {
-    // Silence the expected panic's default report so the passing run stays
-    // readable; restore the hook so a later genuine panic still prints.
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let caught = std::panic::catch_unwind(|| {

@@ -358,7 +358,6 @@ impl LiveVirtualTimeTrace {
     /// domain-separated little-endian encoding.
     pub fn normalized_digest(&self) -> [u8; 32] {
         let mut h = Sha256::new();
-        // Frozen v1 log-domain identifier: changing it would invalidate N1 byte fixtures.
         h.update(b"consonance.live-prescriptive-log.v1\0");
         h.update(
             u64::try_from(self.normalized.events.len())
@@ -530,8 +529,6 @@ impl LiveVirtualTimeTrace {
     /// that delivery was not legal at this boundary, without changing the
     /// frozen normalized-event surface.
     pub(crate) fn defer_clockevent(&mut self) -> Result<(), &'static str> {
-        // Substrate-private raw exits do not consume a portable event ordinal,
-        // so they cannot create an eligibility epoch in the normalized schedule.
         if self.pending.is_none() {
             return Ok(());
         }
@@ -914,7 +911,6 @@ impl<B: Backend> VirtualTimeRunLoop<B> {
 
 pub(crate) fn digest_payload(class: NormalizedEventClass, payload: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    // Frozen v1 event-domain identifier: N1 fixtures bind these digest bytes.
     hasher.update(b"consonance.prescriptive-event.v1\0");
     hasher.update([class.tag()]);
     hasher.update(
@@ -1095,11 +1091,6 @@ pub fn check_delivery_placement(
         }
     }
 
-    // A milestone log is a finite prefix ending at its observation marker
-    // (`/init` for M1), not necessarily a terminal VM state. A still-armed
-    // deadline strictly beyond the prefix's final V-time is not late and must
-    // remain in the schedule so the state/checkpoint is honest. Reject only a
-    // live deadline that had become eligible within the observed prefix.
     if let Some(last) = log.events.last()
         && let Some((_, missing)) = ordered.iter().enumerate().find(|(index, scheduled)| {
             !delivered[*index]
@@ -1286,9 +1277,6 @@ mod live_trace_tests {
         trace.schedule_clockevent(4, 27).unwrap();
         trace.finish(1, None).unwrap();
 
-        // Deadline reached, but the architectural IRQ mask is set. Production
-        // records this eligibility-epoch boundary before returning without a
-        // delivery.
         trace
             .begin(
                 ExitReason::Mmio,
@@ -1376,8 +1364,6 @@ mod live_trace_tests {
             Err(PlacementViolation::WrongDelivery { event_index: 0, .. })
         ));
 
-        // A schedule whose eligibility epoch begins after this finite prefix
-        // is not missing, even when its deadline value is already small.
         let future_epoch = [ScheduledInterrupt {
             deadline_vns: 0,
             armed_for_event: 1,

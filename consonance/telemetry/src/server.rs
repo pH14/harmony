@@ -102,7 +102,7 @@ impl Subscriber {
     fn push(&self, ev: &Event) {
         let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         if q.len() >= SSE_CLIENT_BACKLOG {
-            q.pop_front(); // drop this client's oldest; keep it tailing the live edge
+            q.pop_front();
         }
         q.push_back(ev.clone());
     }
@@ -202,7 +202,6 @@ pub fn serve(addr: SocketAddr, live: LiveSink, opts: ServerOptions) -> io::Resul
     let hub = Arc::new(EventHub::default());
     let opts = Arc::new(opts);
 
-    // Pump: drain the lossy live lane and fan it out to SSE clients.
     let pump = {
         let running = Arc::clone(&running);
         let hub = Arc::clone(&hub);
@@ -220,7 +219,6 @@ pub fn serve(addr: SocketAddr, live: LiveSink, opts: ServerOptions) -> io::Resul
         })
     };
 
-    // Accept: one detached thread per connection.
     let accept = {
         let running = Arc::clone(&running);
         thread::spawn(move || {
@@ -234,10 +232,6 @@ pub fn serve(addr: SocketAddr, live: LiveSink, opts: ServerOptions) -> io::Resul
                             let _ = handle_conn(stream, &running, &hub, &opts);
                         });
                     }
-                    // `WouldBlock` (no pending connection on the non-blocking
-                    // listener) and any transient accept error are handled the
-                    // same way — back off one poll interval and try again — so
-                    // there is no behavioral distinction to draw between them.
                     Err(_) => {
                         thread::sleep(POLL);
                     }
@@ -262,12 +256,7 @@ struct Request {
 
 /// Reads and parses the request line, then drains the remaining headers.
 fn read_request(stream: &TcpStream) -> io::Result<Request> {
-    // The listener is non-blocking; some platforms (macOS/BSD) let an accepted
-    // socket inherit that, which would make a read racing ahead of the client's
-    // request bytes return `WouldBlock` and abort the connection. Force blocking
-    // mode so reads honor the timeout below uniformly on Linux and macOS.
     stream.set_nonblocking(false)?;
-    // A header read should not hang a thread forever on a stalled client.
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     let mut reader = BufReader::new(stream);
     parse_request(&mut reader)
@@ -298,19 +287,13 @@ fn parse_request<R: BufRead>(reader: &mut R) -> io::Result<Request> {
     let mut parts = line.split_whitespace();
     let method = parts.next().unwrap_or_default().to_string();
     let raw_path = parts.next().unwrap_or("/").to_string();
-    // Strip any query string; this server routes on the path only.
     let path = raw_path.split('?').next().unwrap_or("/").to_string();
 
-    // Drain headers up to the blank line (we need none of them, but a server that
-    // closes with the request unread can trigger an RST that truncates the
-    // response, so the bytes must be consumed).
     let mut header = String::new();
     loop {
         header.clear();
         let n = limited.read_line(&mut header)?;
         if n == 0 {
-            // EOF or the byte bound reached before the blank line: the request is
-            // unterminated or oversized. Fail closed instead of looping.
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "request headers unterminated or exceed the size bound",
@@ -404,8 +387,6 @@ fn serve_recording(stream: &mut TcpStream, opts: &Arc<ServerOptions>) -> io::Res
          \r\n"
     );
     stream.write_all(header.as_bytes())?;
-    // Stream the body straight through; `io::copy` uses a fixed internal buffer,
-    // so a large box recording never balloons memory.
     io::copy(&mut file, stream)?;
     stream.flush()
 }
@@ -430,11 +411,7 @@ fn serve_events(
     running: &Arc<AtomicBool>,
     hub: &Arc<EventHub>,
 ) -> io::Result<()> {
-    // Register with the hub before a single response byte is written, so the
-    // subscription is live the instant the client can observe the stream.
     let sub = hub.subscribe();
-    // Bracket the whole streaming lifetime — including the header write — so
-    // the unsubscribe runs on every exit path, even a header-write error.
     let result = (|| -> io::Result<()> {
         let header = "HTTP/1.1 200 OK\r\n\
              Content-Type: text/event-stream\r\n\
@@ -443,7 +420,6 @@ fn serve_events(
              \r\n";
         stream.write_all(header.as_bytes())?;
         stream.flush()?;
-        // Writes should fail fast (not hang) once a client goes away.
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
         pump_events_to(&mut stream, running, &sub)
     })();
@@ -458,8 +434,6 @@ fn serve_events(
 fn advance_idle(idle: u32) -> (u32, Option<&'static [u8]>) {
     let next = idle + 1;
     if next >= KEEPALIVE_EVERY {
-        // An SSE comment line: ignored by EventSource, but writing it detects a
-        // vanished client and keeps proxies from timing out.
         (0, Some(b": keepalive\n\n"))
     } else {
         (next, None)
@@ -486,8 +460,6 @@ fn pump_events_to(
         }
         idle = 0;
         for ev in &batch {
-            // `to_ndjson` is infallible for a well-formed Event; treat a wire
-            // error as a broken connection rather than panicking.
             let line = to_ndjson(ev).map_err(io::Error::other)?;
             stream.write_all(b"data: ")?;
             stream.write_all(line.as_bytes())?;
@@ -606,8 +578,6 @@ mod tests {
 
     #[test]
     fn extract_data_frame_skips_a_leading_keepalive() {
-        // F2: deterministically exercises the skip-a-comment-frame path — no
-        // real server, no keepalive cadence, no wall-clock wait.
         assert_eq!(
             extract_data_frame(b": keepalive\n\ndata: hello\n\n").as_deref(),
             Some("data: hello\n\n")
@@ -625,7 +595,6 @@ mod tests {
 
     #[test]
     fn extract_data_frame_waits_on_an_unterminated_marker() {
-        // F1c: the `data: ` marker alone must not read as a complete frame.
         assert_eq!(extract_data_frame(b"data: "), None);
         assert_eq!(extract_data_frame(b"data: partial"), None);
     }
@@ -637,11 +606,6 @@ mod tests {
 
     #[test]
     fn extract_data_frame_recombines_a_marker_split_across_reads() {
-        // F1b: a read boundary lands as `: keepalive\n\ndat` — the marker is
-        // split mid-word. The first accumulation has no complete data frame
-        // yet (must return None, not silently drop the `dat` tail); once the
-        // rest arrives and is appended (never replacing prior bytes) the full
-        // frame is found.
         let mut acc = b": keepalive\n\ndat".to_vec();
         assert_eq!(extract_data_frame(&acc), None);
         acc.extend_from_slice(b"a: hello\n\n");
@@ -665,14 +629,6 @@ mod tests {
 
     #[test]
     fn read_sse_data_frame_retains_bytes_across_reads() {
-        // Cross-read retention (hm-b5km): a first read returns
-        // ": keepalive\n\ndat" — a complete keepalive frame plus the start of
-        // the *next* frame's "data: " marker, split mid-word — and a second
-        // read supplies the rest, "a: hello\n\n". If `acc` were cleared
-        // between reads (the mutation this test is meant to catch) the "dat"
-        // prefix would be lost and the loop would hang/panic on the
-        // now-unrecognizable "a: hello\n\n" remainder instead of finding the
-        // complete data frame.
         let mut r = (b": keepalive\n\ndat" as &[u8]).chain(b"a: hello\n\n" as &[u8]);
         assert_eq!(read_sse_data_frame(&mut r), "data: hello\n\n");
     }
@@ -680,10 +636,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "keepalive")]
     fn read_sse_data_frame_panics_with_accumulated_bytes_on_budget_exhaustion() {
-        // Budget exhaustion (hm-b5km): a stream that never emits a `data: `
-        // frame exhausts the fixed attempt budget (never hits the `Ok(0)`
-        // break) and must panic — not hang or hot-spin — with the bytes it
-        // accumulated along the way visible in the panic message.
         let mut r = NeverDataReader;
         read_sse_data_frame(&mut r);
     }
@@ -694,20 +646,12 @@ mod tests {
 
     #[test]
     fn parse_request_drains_exactly_through_the_blank_line() {
-        // Request line + two headers + blank line + a body. `parse_request` must
-        // consume up to and including the blank line and leave the body intact.
         let raw = b"GET /foo?x=1 HTTP/1.1\r\nHost: x\r\nAccept: */*\r\n\r\nBODYBYTES";
         let mut cur = std::io::Cursor::new(&raw[..]);
         let req = parse_request(&mut cur).expect("parse");
         assert_eq!(req.method, "GET");
         assert_eq!(req.path, "/foo", "query string is stripped from the path");
 
-        // The drain loop must stop exactly on the blank line. If the EOF check
-        // `n == 0` flips to `!=`, or either `header == "…"` flips to `!=`, the
-        // loop breaks one line early and leaves the headers in the body. If the
-        // terminator `||` flips to `&&` (the CI timeout mutant), the loop never
-        // accepts the blank line, runs to the EOF guard, and returns `Err` — so
-        // `.expect("parse")` panics here. Every one of those is caught fast.
         let mut rest = Vec::new();
         cur.read_to_end(&mut rest).expect("read remainder");
         assert_eq!(
@@ -718,16 +662,12 @@ mod tests {
 
     #[test]
     fn parse_request_rejects_an_empty_stream() {
-        // No request line at all → the `read_line == 0` guard must fail closed.
         let mut cur = std::io::Cursor::new(&b""[..]);
         assert!(parse_request(&mut cur).is_err());
     }
 
     #[test]
     fn parse_request_rejects_unterminated_oversized_headers() {
-        // A request whose headers never end with a blank line must be rejected
-        // after the size bound — never read unboundedly, and never looped on. The
-        // `take(MAX_REQUEST_BYTES)` bound turns this into a fast `Err`.
         let mut raw = b"GET / HTTP/1.1\r\n".to_vec();
         while (raw.len() as u64) <= MAX_REQUEST_BYTES {
             raw.extend_from_slice(b"X-Pad: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n");
@@ -741,17 +681,12 @@ mod tests {
 
     #[test]
     fn advance_idle_increments_then_fires_on_cadence() {
-        // Below the threshold: count up by exactly one, no keepalive.
         assert_eq!(advance_idle(0), (1, None));
         assert_eq!(advance_idle(5), (6, None));
-        // At the cadence (next == KEEPALIVE_EVERY): reset to 0 and a keepalive is
-        // due. Pins both the `+ 1` step and the `>=` comparison.
         assert_eq!(
             advance_idle(KEEPALIVE_EVERY - 1),
             (0, Some(b": keepalive\n\n" as &[u8]))
         );
-        // Past the cadence (next > KEEPALIVE_EVERY): still due — distinguishes
-        // `>=` from `==`.
         assert_eq!(
             advance_idle(KEEPALIVE_EVERY),
             (0, Some(b": keepalive\n\n" as &[u8]))
@@ -764,7 +699,6 @@ mod tests {
         let s1 = hub.subscribe();
         let s2 = hub.subscribe();
 
-        // publish must push the event onto every subscriber's queue.
         hub.publish(&ev(1));
         assert_eq!(
             s1.drain().len(),
@@ -772,12 +706,8 @@ mod tests {
             "subscriber 1 receives the published event"
         );
         assert_eq!(s2.drain().len(), 1, "subscriber 2 receives it too");
-        // drain emptied the queues.
         assert_eq!(s1.drain().len(), 0);
 
-        // After unsubscribe, s1 must stop receiving while s2 keeps receiving —
-        // this pins both `unsubscribe` doing something and the `!Arc::ptr_eq`
-        // (remove the matched one, keep the rest, not the inverse).
         hub.unsubscribe(&s1);
         hub.publish(&ev(2));
         assert_eq!(
@@ -798,13 +728,10 @@ mod tests {
             let live = LiveSink::new(8);
             let server = serve(loopback(), live, ServerOptions::default()).expect("serve");
             let a = server.local_addr();
-            // While alive, the port accepts connections.
             assert!(TcpStream::connect(a).is_ok(), "an alive server accepts");
             a
-        }; // server dropped here → Drop → stop() → accept thread joined, port closed.
+        };
 
-        // A dropped/stopped server must stop accepting — `stop`/`drop` becoming a
-        // no-op would leave the accept thread (and the listener) alive.
         assert!(
             TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_err(),
             "a dropped server stops accepting connections"
@@ -833,23 +760,11 @@ mod tests {
         let mut c = TcpStream::connect(server.local_addr()).expect("connect");
         c.write_all(b"GET /events HTTP/1.1\r\nHost: x\r\n\r\n")
             .expect("req");
-        // Read past the SSE response header first. Anchored on the full header
-        // terminator ("\r\n\r\n"), not a substring of the header body: waiting on
-        // "text/event-stream" alone is satisfied the instant that token lands,
-        // which can be before the blank line — leaving a residual header tail
-        // (e.g. "Cache-Control: ...\r\n\r\n") unconsumed ahead of the data-frame
-        // scanner. Anchoring on the terminator itself guarantees the whole header
-        // is drained before phase 2 starts scanning for the data frame.
         let head = read_until(&mut c, "\r\n\r\n");
-        // `read_until` returns whatever it accumulated even if the needle was
-        // never found (its budget just exhausts) — so the anchor is only
-        // fail-closed if the terminator's presence is itself asserted, not
-        // merely relied on implicitly.
         assert!(head.contains("\r\n\r\n"), "full header terminator drained");
         assert!(head.contains("text/event-stream"));
         assert!(head.contains("no-cache"));
 
-        // Now drive a scripted event through the LiveSink; the pump forwards it.
         live.emit(&Event::new(
             1,
             10,
@@ -858,13 +773,6 @@ mod tests {
                 text: "hello".to_string(),
             },
         ));
-        // Anchor phase 2 on the real event payload marker: a periodic
-        // `: keepalive\n\n` comment frame also satisfies a bare "\n\n" wait, so
-        // this is one bounded, cumulative wait for a complete `data: …\n\n`
-        // frame — skipping any keepalive frames along the way — rather than a
-        // retry that discards bytes between attempts (hm-3r2k, hm-38kv).
-        // `read_sse_data_frame` is generic over `io::Read` and sets no timeout
-        // of its own (hm-b5km), so the concrete `TcpStream` timeout is set here.
         c.set_read_timeout(Some(Duration::from_millis(200)))
             .expect("set timeout");
         let frame = read_sse_data_frame(&mut c);

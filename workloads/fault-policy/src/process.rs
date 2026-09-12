@@ -65,8 +65,6 @@ mod tests {
 
     #[test]
     fn a_retired_tag_does_not_decode() {
-        // Tag 18 is unassigned; a target naming it is refused rather than
-        // reinterpreted as a neighbouring process fault.
         assert_eq!(decode_process_target(&[0, 0, 18]), None);
     }
 }

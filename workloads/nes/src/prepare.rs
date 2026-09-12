@@ -187,9 +187,6 @@ mod tests {
 
     #[test]
     fn aligns_raw_overlay_after_each_gzip_prefix_length() {
-        // A valid empty gzip member keeps this fixture independent of host
-        // compression tools. The suffixes exercise all four possible prefix
-        // alignment classes while leaving the gzip member itself unchanged.
         const EMPTY_GZIP_MEMBER: &[u8] = &[
             0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x03, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

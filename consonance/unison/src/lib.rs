@@ -249,9 +249,6 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                     limit_reached: false,
                 });
             }
-            // One machine halted while the other ran past that halt point
-            // without halting — it can never halt there anymore, so the
-            // mismatch is already established.
             (RunOutcome::Halted, RunOutcome::ReachedTarget) => {
                 return Ok(CompareReport {
                     verdict: Verdict::HaltMismatch {
@@ -342,7 +339,6 @@ pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
         }
     }
     let (mut lo, mut hi) = (lo, hi);
-    // Invariant: hashes match at lo (or lo == 0), differ at hi.
     while hi - lo > 1 {
         let mid = lo + (hi - lo) / 2;
         let (ha, hb) = probe(mid)?;
@@ -433,9 +429,6 @@ mod tests {
             Ok(self.hash)
         }
         fn observable_digest(&self) -> [u8; 32] {
-            // This machine has no latent device or PRNG state, so its whole
-            // state IS its observable output. Written out rather than inherited:
-            // the claim is deliberate, not an oversight.
             self.hash
         }
     }
@@ -531,7 +524,6 @@ mod tests {
             diverge_at: 5,
             perturb: Perturbation::XorPrng { mask: 0xABCD },
         };
-        // Hashes already differ at lo = 10 > 5.
         assert_eq!(
             bisect_divergence(&f, &flaky, 3, 10, 20),
             Err(SubjectError::DivergesAtLo { lo: 10 })

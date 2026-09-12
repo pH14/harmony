@@ -596,8 +596,6 @@ fn guarded_run_plan(
     let Some(limit) = wall_limit else {
         return Ok(None);
     };
-    // Reported rather than ignored: a caller that asked for the bound would
-    // otherwise wait forever on the first guest that stops taking exits.
     let cancel = cancel.ok_or(SessionError::Unboundable)?;
     Ok(Some((limit, cancel)))
 }
@@ -695,9 +693,6 @@ where
         if let Some((snapshot, at)) = seal(context)? {
             return Ok((snapshot, at, last));
         }
-        // Every stop is offered a seal before it is judged, so a guest that ran
-        // to quiescence or crashed during the last step still gets its endpoint
-        // sealed; only a second step is refused.
         if let Some(stop) = &last
             && !settling_can_advance(stop)
         {
@@ -706,8 +701,6 @@ where
         if settled >= max_settle {
             return Err(SessionError::Settle { allowance: settled }.into());
         }
-        // A zero step would loop without moving the guest, so it ends the
-        // settling as an exhausted allowance instead.
         let step = settle_step.min(max_settle - settled);
         if step == 0 {
             return Err(SessionError::Settle { allowance: settled }.into());
@@ -761,8 +754,6 @@ where
         if console.len() == MAX_CONSOLE_DIAGNOSTIC {
             break;
         }
-        // The control server bounds every page below the u32 console offset
-        // range, so the accumulated buffer length is the next page offset.
         offset = console.len() as u32;
         if offset >= total {
             break;
@@ -887,8 +878,6 @@ mod tests {
     fn deferred_checkpoint_hashing_stays_out_of_execution_identity() {
         let plain = SessionConfig::new(PAGE_SIZE, 1, 2, "cmdline");
         let deferred = plain.clone().with_deferred_virtual_time_checkpoint_hashes();
-        // Host-side evidence plumbing, so two runs that differ only in when
-        // the checkpoint hashes are taken share one execution identity.
         assert_eq!(
             identity_with_config(b"kernel", b"initramfs", &deferred),
             identity_with_config(b"kernel", b"initramfs", &plain)
@@ -1290,8 +1279,6 @@ mod tests {
         let mut fixture = SettleFixture::new(25);
         assert_eq!(settle(&mut fixture, 10, 100).unwrap(), 30);
         assert_eq!(fixture.runs, [10, 10, 10]);
-        // The final step is clipped so settling never runs past the allowance,
-        // and the point is still offered one last seal at the boundary.
         let mut clipped = SettleFixture::new(25);
         assert_eq!(settle(&mut clipped, 10, 25).unwrap(), 25);
         assert_eq!(clipped.runs, [10, 10, 5]);

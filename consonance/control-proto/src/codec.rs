@@ -30,7 +30,6 @@ const MAGIC: u32 = u32::from_le_bytes(*b"CTL1");
 /// The fixed frame header: magic(4) + version(2) + seq(4) + len(4).
 const HEADER_LEN: usize = 14;
 
-// ---- Request body discriminants. Stable; the wire format depends on them. ----
 const REQ_HELLO: u8 = 1;
 const REQ_SNAPSHOT: u8 = 2;
 const REQ_DROP: u8 = 3;
@@ -44,18 +43,12 @@ const REQ_READ: u8 = 10;
 const REQ_REGS: u8 = 11;
 const REQ_EXEC: u8 = 12;
 const REQ_RECORDED_ENV: u8 = 13;
-// task 69 M2 Console scrape verb — assigned 14 (10–13 taken by tasks 80/81 read/
-// regs/exec/recorded_env on the merge) so the wire tags stay collision-free.
 const REQ_CONSOLE: u8 = 14;
 
-// ---- Reply-body top-level result discriminants. ----
 const RESULT_OK: u8 = 0;
 const RESULT_ERR: u8 = 1;
 
-// ---- Reply variant discriminants. ----
 const REPLY_HELLO: u8 = 1;
-// 2 was REPLY_SNAPID, the bare-handle snapshot reply — RETIRED by task 127 (the
-// cut-carrying REPLY_SNAPSHOT is the one snapshot reply); never reuse the tag.
 const REPLY_UNIT: u8 = 3;
 const REPLY_STOP: u8 = 4;
 const REPLY_HASH: u8 = 5;
@@ -65,11 +58,8 @@ const REPLY_REGS: u8 = 8;
 const REPLY_EXEC_RESULT: u8 = 9;
 const REPLY_SNAPSHOT: u8 = 10;
 const REPLY_RECORDED: u8 = 11;
-// task 69 M2 Console scrape reply — assigned 12 (7–11 taken by tasks 80/81) so the
-// wire tags stay collision-free.
 const REPLY_CONSOLE: u8 = 12;
 
-// ---- StopReason variant discriminants. ----
 const SR_DEADLINE: u8 = 1;
 const SR_QUIESCENT: u8 = 2;
 const SR_CRASH: u8 = 3;
@@ -77,17 +67,14 @@ const SR_DECISION: u8 = 4;
 const SR_SNAPSHOT_POINT: u8 = 5;
 const SR_ASSERTION: u8 = 6;
 
-// ---- CrashKind discriminants. ----
 const CK_PANIC: u8 = 0;
 const CK_UNRECOVERABLE_FAULT: u8 = 1;
 const CK_SHUTDOWN: u8 = 2;
 
-// ---- HashScope discriminants. ----
 const HS_WHOLE: u8 = 0;
 const HS_DISK: u8 = 1;
 const HS_REGION: u8 = 2;
 
-// ---- ControlError discriminants. ----
 const CE_UNKNOWN_SNAPSHOT: u8 = 1;
 const CE_RESTORE_FAILED: u8 = 2;
 const CE_SNAPSHOT_WHILE_ARMED: u8 = 3;
@@ -102,24 +89,18 @@ const CE_PERTURB_OUT_OF_RANGE: u8 = 11;
 const CE_PERTURB_PAST_MOMENT: u8 = 12;
 const CE_PERTURB_MOMENT_TAKEN: u8 = 13;
 const CE_SCHEDULE_UNSATISFIABLE: u8 = 14;
-// Discriminant 15 retired with the instruction-count clock. Never reuse it.
 const CE_PERTURB_RESERVED_VECTOR: u8 = 16;
 const CE_READ_OUT_OF_RANGE: u8 = 17;
 const CE_READ_TOO_LARGE: u8 = 18;
 const CE_TAINTED: u8 = 19;
-// Discriminant 20 retired with exact-stop branch-clock scheduling. Never reuse it.
 
-// ---- ProtocolError discriminants (carried inside CE_PROTOCOL). ----
 const PE_SHORT_FRAME: u8 = 0;
 const PE_BAD_MAGIC: u8 = 1;
 const PE_BAD_VERSION: u8 = 2;
 const PE_BAD_LENGTH: u8 = 3;
 
-// ---- Option present-flag. ----
 const ABSENT: u8 = 0;
 const PRESENT: u8 = 1;
-
-// ========================= public codec entry points =========================
 
 /// Encode a [`Request`] into a length-delimited frame appended to `buf`.
 ///
@@ -162,8 +143,6 @@ pub fn decode_request(buf: &[u8]) -> Result<Option<(u32, Request, usize)>, Proto
 /// `(seq, Result<Reply, ControlError>, bytes_consumed)`.
 ///
 /// A partial frame yields `Ok(None)` ("need more"). Never panics on any input.
-// The nested-`Result` return type is the spec's pinned public signature
-// (conventions rule 3), not a candidate for factoring.
 #[allow(clippy::type_complexity)]
 pub fn decode_reply(
     buf: &[u8],
@@ -177,8 +156,6 @@ pub fn decode_reply(
     Ok(Some((seq, reply, consumed)))
 }
 
-// ============================== framing layer ===============================
-
 /// Append a complete frame (header + body) to `buf`, or fail with
 /// [`ProtocolError::BadLength`] leaving `buf` untouched.
 fn finish_frame(seq: u32, body: &[u8], buf: &mut Vec<u8>) -> Result<(), ProtocolError> {
@@ -188,7 +165,6 @@ fn finish_frame(seq: u32, body: &[u8], buf: &mut Vec<u8>) -> Result<(), Protocol
     buf.extend_from_slice(&MAGIC.to_le_bytes());
     buf.extend_from_slice(&PROTO_VERSION.to_le_bytes());
     buf.extend_from_slice(&seq.to_le_bytes());
-    // body.len() <= MAX_FRAME_LEN (16 MiB) always fits in u32.
     buf.extend_from_slice(&(body.len() as u32).to_le_bytes());
     buf.extend_from_slice(body);
     Ok(())
@@ -204,7 +180,6 @@ fn decode_frame(buf: &[u8]) -> Result<Option<Framed<'_>>, ProtocolError> {
     if buf.len() < HEADER_LEN {
         return Ok(None);
     }
-    // Indexing is in bounds: we have at least HEADER_LEN bytes.
     if u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) != MAGIC {
         return Err(ProtocolError::BadMagic);
     }
@@ -214,19 +189,14 @@ fn decode_frame(buf: &[u8]) -> Result<Option<Framed<'_>>, ProtocolError> {
     let seq = u32::from_le_bytes([buf[6], buf[7], buf[8], buf[9]]);
     let len = u32::from_le_bytes([buf[10], buf[11], buf[12], buf[13]]) as usize;
     if len > MAX_FRAME_LEN {
-        // Rejected before reading/allocating the body: an untrusted length can
-        // never force unbounded buffering.
         return Err(ProtocolError::BadLength);
     }
-    // No overflow: len <= MAX_FRAME_LEN (16 MiB) and HEADER_LEN == 14.
     let end = HEADER_LEN + len;
     if buf.len() < end {
         return Ok(None);
     }
     Ok(Some((seq, &buf[HEADER_LEN..end], end)))
 }
-
-// ============================== request body ================================
 
 fn write_request(w: &mut Vec<u8>, req: &Request) {
     match req {
@@ -317,8 +287,6 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
         },
         REQ_REGS => Request::Regs,
         REQ_EXEC => Request::Exec {
-            // A non-UTF-8 command is a malformed frame body, not a panic
-            // (conventions rule 4): the codec is a Tier-1 fuzz target.
             cmd: String::from_utf8(r.bytes()?.to_vec()).map_err(|_| ProtocolError::ShortFrame)?,
             deadline: Moment(r.u64()?),
         },
@@ -326,8 +294,6 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
         _ => return Err(ProtocolError::ShortFrame),
     })
 }
-
-// =============================== reply body =================================
 
 fn write_reply_result(w: &mut Vec<u8>, reply: &Result<Reply, crate::error::ControlError>) {
     match reply {
@@ -394,9 +360,6 @@ fn write_reply(w: &mut Vec<u8>, reply: &Reply) {
             put_bytes(w, output);
             w.push(u8::from(*ok));
         }
-        // The seal-bound reply (task 127): handle · cut (Moment + included
-        // SDK-event count) · taint, in that fixed order — the cut fields sit
-        // between the handle and the task-81 taint byte.
         Reply::Snapshot {
             id,
             at,
@@ -424,9 +387,6 @@ fn read_reply(r: &mut Reader) -> Result<Reply, ProtocolError> {
         REPLY_HASH => Reply::Hash(read_array32(r)?),
         REPLY_SDK_EVENTS => {
             let count = r.u32()?;
-            // Do NOT pre-allocate on the untrusted `count` (conventions rule 4):
-            // the per-element reads are bounds-checked and simply run out of
-            // buffer (→ `ShortFrame`) if `count` over-claims.
             let mut events = Vec::new();
             for _ in 0..count {
                 let moment = r.u64()?;
@@ -505,8 +465,6 @@ fn read_regs_view(r: &mut Reader) -> Result<RegsView, ProtocolError> {
         vtime: r.u64()?,
     })
 }
-
-// ============================ component encoders =============================
 
 fn write_caps(w: &mut Vec<u8>, c: &Caps) {
     put_u16(w, c.protocol_version);
@@ -787,8 +745,6 @@ fn read_control_error(r: &mut Reader) -> Result<crate::error::ControlError, Prot
     })
 }
 
-// =============================== option helpers =============================
-
 fn write_opt_vtime(w: &mut Vec<u8>, v: &Option<Moment>) {
     match v {
         Some(Moment(t)) => {
@@ -837,8 +793,6 @@ fn read_opt_resolution(r: &mut Reader) -> Result<Option<Resolution>, ProtocolErr
         _ => return Err(ProtocolError::ShortFrame),
     })
 }
-
-// =============================== byte helpers ===============================
 
 fn put_u16(w: &mut Vec<u8>, v: u16) {
     w.extend_from_slice(&v.to_le_bytes());

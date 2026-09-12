@@ -130,8 +130,6 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             min_work,
         } => {
             let (toy, flaky) = factories(program_seed, min_work, diverge_at);
-            // Bracket first; a moderately coarse checkpoint interval keeps
-            // the total probe count low.
             let checkpoint_every = (limit / 16).max(1);
             let compare = compare_runs(&toy, &flaky, seed, checkpoint_every, limit)?;
             let point = match compare.verdict {

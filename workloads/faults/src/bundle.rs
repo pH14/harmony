@@ -306,7 +306,6 @@ ready /usr/local/pgsql/bin/pg_isready
         let resolved = FaultVocabulary::from_identifier(&identifier).expect("resolve");
         assert_eq!(resolved.identifier(), identifier);
         assert!(resolved.places().is_empty());
-        // The same list is accepted again, a different one is refused.
         let again = resolved
             .clone()
             .with_places(vec![0x47eca0, 0x4b0e86])

@@ -39,13 +39,13 @@ fn plant_bzimage(setup_sects: u8, pref_address: u32, init_size: u32, tail_len: u
     let real_sects = if setup_sects == 0 { 4 } else { setup_sects };
     let pm_off = (usize::from(real_sects) + 1) * 512;
     let mut img = vec![0u8; pm_off + tail_len];
-    img[0x1fe..0x200].copy_from_slice(&0xAA55u16.to_le_bytes()); // boot_flag
-    img[0x202..0x206].copy_from_slice(&0x5372_6448u32.to_le_bytes()); // "HdrS"
-    img[0x206..0x208].copy_from_slice(&0x020fu16.to_le_bytes()); // version 2.15
-    img[SETUP_HEADER_OFFSET] = setup_sects; // 0x1f1
-    img[0x236..0x238].copy_from_slice(&1u16.to_le_bytes()); // xloadflags = XLF_KERNEL_64
-    img[0x258..0x260].copy_from_slice(&u64::from(pref_address).to_le_bytes()); // pref_address
-    img[0x260..0x264].copy_from_slice(&init_size.to_le_bytes()); // init_size
+    img[0x1fe..0x200].copy_from_slice(&0xAA55u16.to_le_bytes());
+    img[0x202..0x206].copy_from_slice(&0x5372_6448u32.to_le_bytes());
+    img[0x206..0x208].copy_from_slice(&0x020fu16.to_le_bytes());
+    img[SETUP_HEADER_OFFSET] = setup_sects;
+    img[0x236..0x238].copy_from_slice(&1u16.to_le_bytes());
+    img[0x258..0x260].copy_from_slice(&u64::from(pref_address).to_le_bytes());
+    img[0x260..0x264].copy_from_slice(&init_size.to_le_bytes());
     img
 }
 
@@ -87,7 +87,6 @@ proptest! {
         ram_len in 0u64..MAX_RAM,
     ) {
         let img = plant_bzimage(setup_sects, pref_address, init_size, tail_len);
-        // The header must parse (the magics/version/xloadflags are valid).
         prop_assert!(linux_loader::parse_setup_header(&img).is_ok());
         let mut ram = vec![0u8; ram_len as usize];
         prop_assert!(matches!(

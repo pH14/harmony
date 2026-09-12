@@ -75,10 +75,6 @@ mod arm64 {
         0xd520_0000 | (op0 << 19) | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5) | rt
     }
 
-    // Stable Rust deliberately rejects the platform SIMD type in an FFI
-    // signature (`simd_ffi` is nightly-only). This AAPCS64 thunk accepts the
-    // bytes by pointer in X2, loads the required by-value vector argument into
-    // Q0, and tail-calls Hypervisor.framework's public setter.
     core::arch::global_asm!(
         ".globl _harmony_hv_vcpu_set_simd_fp_reg",
         "_harmony_hv_vcpu_set_simd_fp_reg:",
@@ -204,7 +200,6 @@ mod arm64 {
         fn sync_instruction_cache(&mut self) {
             // SAFETY: the mapped allocation is live for PAGE_SIZE bytes. This
             // is required after rewriting code at a reused IPA on Apple
-            // Silicon; without it, later probe cases may execute stale lines.
             unsafe { sys_icache_invalidate(self.ptr.as_ptr().cast(), PAGE_SIZE) };
         }
     }
@@ -715,7 +710,6 @@ mod arm64 {
         println!("host: {}-{}", std::env::consts::OS, std::env::consts::ARCH);
         println!("sdk-assumption: macOS 26.4.1 SDK headers");
 
-        // Declaration order is reverse drop order: vCPU, then mapping, then VM.
         let _vm = Vm::new()?;
         let mut page = GuestPage::new()?;
         page.map()?;

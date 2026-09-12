@@ -35,13 +35,13 @@ fn io_out(port: u16, value: u8) -> Exit<X86> {
 /// LCR 8N1, FCR, MCR.
 fn uart_init() -> Vec<Exit<X86>> {
     vec![
-        io_out(0x3F9, 0x00), // IER
-        io_out(0x3FB, 0x80), // LCR DLAB=1
-        io_out(0x3F8, 0x01), // divisor low — divisor latch, NOT serial output
-        io_out(0x3F9, 0x00), // divisor high
-        io_out(0x3FB, 0x03), // LCR 8N1, DLAB=0
-        io_out(0x3FA, 0xC7), // FCR
-        io_out(0x3FC, 0x03), // MCR
+        io_out(0x3F9, 0x00),
+        io_out(0x3FB, 0x80),
+        io_out(0x3F8, 0x01),
+        io_out(0x3F9, 0x00),
+        io_out(0x3FB, 0x03),
+        io_out(0x3FA, 0xC7),
+        io_out(0x3FC, 0x03),
     ]
 }
 
@@ -50,10 +50,10 @@ fn uart_init() -> Vec<Exit<X86>> {
 fn hello_script() -> Vec<Exit<X86>> {
     let mut s = uart_init();
     for &b in HELLO {
-        s.push(io_in(0x3FD)); // poll LSR for THR-empty
-        s.push(io_out(0x3F8, b)); // THR transmit
+        s.push(io_in(0x3FD));
+        s.push(io_out(0x3F8, b));
     }
-    s.push(io_out(0xF4, 0)); // isa-debug-exit PASS
+    s.push(io_out(0xF4, 0));
     s
 }
 
@@ -73,10 +73,8 @@ fn vmm_with(script: Vec<Exit<X86>>) -> Vmm<MockBackend> {
 fn hello_serial_and_clean_exit() {
     let mut vmm = vmm_with(hello_script());
     let result = vmm.run().unwrap();
-    // The divisor 0x01 was NOT captured; only the THR data bytes are serial.
     assert_eq!(result.serial, HELLO);
     assert_eq!(result.reason, TerminalReason::DebugExit { code: 0 });
-    // The LSR-poll IN exits were each resolved with THR-empty (0x60).
     assert!(result.exit_counts.io > 0);
 }
 
@@ -104,11 +102,9 @@ fn hlt_and_shutdown_are_terminal() {
 
 #[test]
 fn unmodeled_exits_fail_closed() {
-    // An unmodeled OUT port (PIC) — default-deny, not a silent drop.
     let mut pic = vmm_with(vec![io_out(0x20, 0x11)]);
     assert!(matches!(pic.run(), Err(VmmError::ContractViolation(_))));
 
-    // Unmodeled MMIO.
     let mut mmio = vmm_with(vec![Exit::Common(CommonExit::Mmio {
         gpa: Gpa(0xFEE0_0000),
         size: 4,
@@ -116,11 +112,9 @@ fn unmodeled_exits_fail_closed() {
     })]);
     assert!(matches!(mmio.run(), Err(VmmError::ContractViolation(_))));
 
-    // A backend-dependent RDTSC (must never be laundered).
     let mut tsc = vmm_with(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })]);
     assert!(matches!(tsc.run(), Err(VmmError::ContractViolation(_))));
 
-    // A hypercall (host handler deferred).
     let mut hc = vmm_with(vec![Exit::Common(
         CommonExit::Hypercall(Default::default()),
     )]);
@@ -129,14 +123,12 @@ fn unmodeled_exits_fail_closed() {
 
 #[test]
 fn unmodeled_in_port_fails_closed() {
-    let mut vmm = vmm_with(vec![io_in(0x71)]); // CMOS data port — not modeled
+    let mut vmm = vmm_with(vec![io_in(0x71)]);
     assert!(matches!(vmm.run(), Err(VmmError::ContractViolation(_))));
 }
 
 #[test]
 fn non_byte_io_to_modeled_ports_fails_closed() {
-    // A wide write/read to a modeled BYTE port is a ContractViolation, never a
-    // `value as u8` truncation. `outl $0, $0xF4` must NOT become a fake PASS.
     let wide_out = |port: u16, size: u8, value: u32| {
         Exit::Arch(X86Exit::Io {
             port,
@@ -152,22 +144,18 @@ fn non_byte_io_to_modeled_ports_fails_closed() {
         })
     };
 
-    // `outl 0x00000000, $0xF4` (size 4): must fail closed, NOT terminate PASS.
     let mut dbg = vmm_with(vec![wide_out(0xF4, 4, 0x0000_0000)]);
     assert!(matches!(dbg.run(), Err(VmmError::ContractViolation(_))));
 
-    // A 2-byte write to the UART THR is unmodeled (the 8250 is byte-addressed).
     let mut uart_w = vmm_with(vec![wide_out(0x3F8, 2, 0x4142)]);
     assert!(matches!(uart_w.run(), Err(VmmError::ContractViolation(_))));
 
-    // A 4-byte read of the LSR is likewise unmodeled.
     let mut uart_r = vmm_with(vec![wide_in(0x3FD, 4)]);
     assert!(matches!(uart_r.run(), Err(VmmError::ContractViolation(_))));
 }
 
 #[test]
 fn deny_gp_msr_injects_fault() {
-    // An unlisted MSR read defaults to deny-gp → complete_fault, then PASS.
     let mut vmm = vmm_with(vec![
         Exit::Arch(X86Exit::Rdmsr { index: 0xDEAD_BEEF }),
         io_out(0xF4, 0),
@@ -178,7 +166,6 @@ fn deny_gp_msr_injects_fault() {
 
 #[test]
 fn allow_fixed_msr_returns_constant() {
-    // IA32_APICBASE (0x1b) read is allow-fixed 0xFEE00900.
     let mut mock = MockBackend::with_exits(vec![
         Exit::Arch(X86Exit::Rdmsr { index: 0x1B }),
         io_out(0xF4, 0),
@@ -195,8 +182,6 @@ fn allow_fixed_msr_returns_constant() {
     );
 }
 
-// --- state_hash purity & coverage (gate 8) --------------------------------
-
 #[test]
 fn state_hash_is_pure_and_covers_every_component() {
     let baseline = {
@@ -205,10 +190,8 @@ fn state_hash_is_pure_and_covers_every_component() {
         v
     };
     let h0 = baseline.state_hash().unwrap();
-    // Pure: two calls agree.
     assert_eq!(h0, baseline.state_hash().unwrap());
 
-    // An identical run reproduces the hash.
     let same = {
         let mut v = vmm_with(hello_script());
         v.run().unwrap();
@@ -216,7 +199,6 @@ fn state_hash_is_pure_and_covers_every_component() {
     };
     assert_eq!(h0, same.state_hash().unwrap());
 
-    // Flip the serial output (drop the last byte's write) ⇒ different hash.
     let diff_serial = {
         let mut script = uart_init();
         for &b in &HELLO[..HELLO.len() - 1] {
@@ -234,14 +216,13 @@ fn state_hash_is_pure_and_covers_every_component() {
         "serial divergence breaks the hash"
     );
 
-    // Flip the debug-exit code ⇒ different hash (output-only/terminal divergence).
     let diff_code = {
         let mut script = uart_init();
         for &b in HELLO {
             script.push(io_in(0x3FD));
             script.push(io_out(0x3F8, b));
         }
-        script.push(io_out(0xF4, 1)); // FAIL instead of PASS
+        script.push(io_out(0xF4, 1));
         let mut v = vmm_with(script);
         v.run().unwrap();
         v
@@ -252,7 +233,6 @@ fn state_hash_is_pure_and_covers_every_component() {
         "terminal code divergence breaks the hash"
     );
 
-    // Flip a guest-RAM byte ⇒ different hash.
     let diff_mem = {
         let mut mock = MockBackend::with_exits(hello_script());
         mock.set_policy(&X86Policy {
@@ -272,7 +252,6 @@ fn state_hash_is_pure_and_covers_every_component() {
         "memory divergence breaks the hash"
     );
 
-    // Flip a VcpuState register ⇒ different hash.
     let diff_reg = {
         let mut mock = MockBackend::with_exits(hello_script());
         mock.set_policy(&X86Policy {
@@ -294,11 +273,8 @@ fn state_hash_is_pure_and_covers_every_component() {
     );
 }
 
-// --- WRMSR dispositions + the MSR error branches (coverage) ----------------
-
 #[test]
 fn wrmsr_dispositions_serviced() {
-    // deny-ignore-write (0x1B IA32_APICBASE write) → complete_ok, run continues.
     let mut drop_write = vmm_with(vec![
         Exit::Arch(X86Exit::Wrmsr {
             index: 0x1B,
@@ -311,7 +287,6 @@ fn wrmsr_dispositions_serviced() {
         TerminalReason::DebugExit { code: 0 }
     );
 
-    // deny-gp (unlisted index) → complete_fault, run continues.
     let mut gp = vmm_with(vec![
         Exit::Arch(X86Exit::Wrmsr {
             index: 0xDEAD_BEEF,
@@ -324,7 +299,6 @@ fn wrmsr_dispositions_serviced() {
         TerminalReason::DebugExit { code: 0 }
     );
 
-    // A write to a read-only allow-fixed row (0x17 PLATFORM_ID) → #GP fault.
     let mut fixed = vmm_with(vec![
         Exit::Arch(X86Exit::Wrmsr {
             index: 0x17,
@@ -340,8 +314,6 @@ fn wrmsr_dispositions_serviced() {
 
 #[test]
 fn emulate_vtime_msr_fails_closed_both_directions() {
-    // 0x10 / 0x3b are emulate-vtime; with no V-time wired, an actual access is a
-    // loud ContractViolation in BOTH directions (never a laundered host value).
     for idx in [0x10u32, 0x3b] {
         let mut rd = vmm_with(vec![Exit::Arch(X86Exit::Rdmsr { index: idx })]);
         assert!(matches!(rd.run(), Err(VmmError::ContractViolation(_))));
@@ -355,8 +327,6 @@ fn emulate_vtime_msr_fails_closed_both_directions() {
 
 #[test]
 fn allow_stateful_msr_surfacing_fails_closed() {
-    // EFER (0xC000_0080) is allow-stateful → serviced in-kernel; if it ever
-    // surfaces to userspace it is a loud ContractViolation (both directions).
     let mut rd = vmm_with(vec![Exit::Arch(X86Exit::Rdmsr { index: 0xC000_0080 })]);
     assert!(matches!(rd.run(), Err(VmmError::ContractViolation(_))));
     let mut wr = vmm_with(vec![Exit::Arch(X86Exit::Wrmsr {
@@ -366,13 +336,8 @@ fn allow_stateful_msr_surfacing_fails_closed() {
     assert!(matches!(wr.run(), Err(VmmError::ContractViolation(_))));
 }
 
-// --- Cpuid dispatch (frozen model + dynamic overlay + default) -------------
-
 #[test]
 fn cpuid_exit_serviced_from_frozen_model() {
-    // A userspace Cpuid exit (a patched/direct backend) is answered from the frozen
-    // model: leaf 1 exists (and `resolve_cpuid` overlays the dynamic cells from the
-    // saved CR4/XCR0), while a bogus leaf falls through to the zeroed default rule.
     let mut vmm = vmm_with(vec![
         Exit::Arch(X86Exit::Cpuid {
             leaf: 1,
@@ -390,19 +355,15 @@ fn cpuid_exit_serviced_from_frozen_model() {
     );
 }
 
-// --- step() after terminal, Deadline, GuestRam, and rich-state encoding ----
-
 #[test]
 fn step_after_terminal_is_idempotent() {
     let mut vmm = vmm_with(vec![Exit::Common(CommonExit::Idle)]);
     assert_eq!(vmm.run().unwrap().reason, TerminalReason::Idle);
-    // A further step() returns the latched terminal without re-running the backend.
     assert_eq!(vmm.step().unwrap(), Step::Terminal(TerminalReason::Idle));
 }
 
 #[test]
 fn guest_ram_validation_and_accessors() {
-    // Length must be a non-zero multiple of 4 KiB.
     assert!(matches!(GuestRam::new(0), Err(VmmError::Backend(_))));
     assert!(matches!(GuestRam::new(4097), Err(VmmError::Backend(_))));
     let mut ram = GuestRam::new(8192).unwrap();
@@ -420,16 +381,13 @@ fn state_hash_covers_msrs_xsave_and_mp_state() {
         msr_filter: msr_filter_allow(),
     })
     .unwrap();
-    // A rich terminal VcpuState — Halted, with MSRs and an XSAVE blob — so
-    // `encode_vcpu_state`'s MSR key/value loop, the XSAVE bytes, and the `Halted`
-    // mp_state arm all execute (and the hash stays a pure function of them).
     let mut st = VcpuState {
         mp_state: MpState::Halted,
         xsave: vec![1u8, 2, 3, 4, 5, 6, 7, 8],
         ..Default::default()
     };
-    st.msrs.insert(0xC000_0080, 0x500); // EFER
-    st.msrs.insert(0x277, 0x0007_0406); // IA32_PAT
+    st.msrs.insert(0xC000_0080, 0x500);
+    st.msrs.insert(0x277, 0x0007_0406);
     mock.set_state(st);
     let mut vmm = Vmm::new(mock, GuestRam::new(4096).unwrap());
     assert_eq!(vmm.run().unwrap().reason, TerminalReason::Idle);
@@ -439,10 +397,6 @@ fn state_hash_covers_msrs_xsave_and_mp_state() {
 
 #[test]
 fn state_hash_distinguishes_segment_and_event_fields() {
-    // Build a Vmm that terminates immediately on Hlt, with a mutated terminal
-    // VcpuState, and return its state_hash. Two states differing only in a segment
-    // or event field must hash differently — which kills `encode_segment with ()`
-    // and `encode_events with ()` (those would drop the field from the blob).
     let hash_with = |mutate: &dyn Fn(&mut VcpuState)| {
         let mut mock = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
         mock.set_policy(&X86Policy {
@@ -472,15 +426,6 @@ fn state_hash_distinguishes_segment_and_event_fields() {
 
 #[test]
 fn state_hash_masks_only_an_unusable_segments_type() {
-    // `encode_segment` canonicalizes the `type` of an **unusable** segment to 0: it is
-    // architecturally don't-care (SDM Vol. 3 §24.4.1 — an unusable segment is treated as
-    // absent, its hidden type/attr never consulted) and KVM perturbs it across a GET/SET
-    // round-trip, so hashing it raw would break restore-transparency. The mask is
-    // `if seg.unusable != 0 { 0 } else { seg.type_ }`. This pins **both halves**, killing
-    // the `!= -> ==` mutant (which inverts the predicate — masking *usable* types while
-    // leaking *unusable* ones) from either direction:
-    //   * a **usable** segment's `type` MUST reach the hash (live architectural state);
-    //   * an **unusable** segment's `type` must NOT (the masked don't-care field).
     let hash_with = |mutate: &dyn Fn(&mut VcpuState)| {
         let mut mock = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
         mock.set_policy(&X86Policy {
@@ -495,8 +440,6 @@ fn state_hash_masks_only_an_unusable_segments_type() {
         v.run().unwrap();
         v.state_hash().unwrap()
     };
-    // Usable (unusable = 0): the type is live state → it MUST move the hash.
-    // Original keeps `seg.type_` (0 vs 5 differ); the `==` mutant masks both to 0 (equal).
     assert_ne!(
         hash_with(&|s| {
             s.sregs.cs.unusable = 0;
@@ -508,8 +451,6 @@ fn state_hash_masks_only_an_unusable_segments_type() {
         }),
         "a usable segment's type reaches the hash (== mutant masks it to 0 -> equal)"
     );
-    // Unusable (unusable = 1): the type is don't-care → it must NOT move the hash.
-    // Original masks both to 0 (equal); the `==` mutant leaks `seg.type_` (0 vs 5 differ).
     assert_eq!(
         hash_with(&|s| {
             s.sregs.cs.unusable = 1;

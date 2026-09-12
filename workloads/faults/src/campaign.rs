@@ -197,7 +197,6 @@ impl FaultCampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
-            // The fault campaign stops at its first bug and replays it.
             continue_after_victory: false,
             archive_entry_limit: self.archive_entry_limit,
             reservations_per_worker: DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
@@ -224,9 +223,6 @@ fn recorded<'a>(policies: &'a GamePolicies, field: &str) -> Result<&'a str, Box<
 
 fn merge_action_milestones(aggregate: &mut FaultMilestones, target: &FaultTarget) {
     if target.exit_kind() != ExitKind::Ok {
-        // A failed evaluator may not have produced a complete observation, so
-        // the parent's milestones stand and the generic campaign records the
-        // action as failed.
         return;
     }
     for observation in target.last_action_observations() {
@@ -234,7 +230,7 @@ fn merge_action_milestones(aggregate: &mut FaultMilestones, target: &FaultTarget
     }
 }
 
-#[allow(clippy::too_many_arguments)] // Mirrors the game-neutral `Game::execute_job` signature.
+#[allow(clippy::too_many_arguments)]
 fn execute_job(
     target: &mut FaultTarget,
     origin_snapshot: &FaultSnapshot,
@@ -264,8 +260,6 @@ fn execute_job(
         let observations = target.last_action_observations().to_vec();
         let failed = target.exit_kind() != ExitKind::Ok;
         let victory = !failed && target.found_bug();
-        // An endpoint that stopped anywhere but its horizon deadline has no
-        // successor, so the search records it without a parent snapshot.
         let candidate = match target.snapshot() {
             Some(snapshot) if !victory && !failed => Some(CampaignCandidate {
                 key: archive_key(target.observation()),

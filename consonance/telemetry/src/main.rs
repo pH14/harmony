@@ -141,7 +141,6 @@ fn read_ndjson<R: BufRead>(reader: R, mut live: LiveSink) {
 /// Binds a Unix socket and feeds every connection's NDJSON into the live sink.
 /// One VMM writer at a time; connections are served sequentially.
 fn accept_unix(path: &Path, live: LiveSink) -> io::Result<()> {
-    // A stale socket file would make bind fail with EADDRINUSE.
     let _ = std::fs::remove_file(path);
     let listener = UnixListener::bind(path)?;
     for stream in listener.incoming() {

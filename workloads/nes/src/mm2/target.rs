@@ -654,10 +654,6 @@ impl Mm2Target {
             run_chords(&mut machine, &chords)?;
             genesis_prefix.extend(chords);
         }
-        // Castle stages after the first begin on their own once the prior
-        // castle boss dies, so only a stage picked from the select screen
-        // needs Start; the first castle stage also opens with a long
-        // fortress scene before play.
         if stage.number() <= MM2_FIRST_WILY_STAGE {
             run_chords(&mut machine, &[ButtonChord::new(JOYPAD_START, 4)])?;
             genesis_prefix.push(ButtonChord::new(JOYPAD_START, 4));
@@ -992,10 +988,6 @@ impl Target for Mm2Target {
             self.failed = true;
             return;
         };
-        // Once the boss is dead the weapon award only needs the player to
-        // stand still for several hundred frames, longer than any drawn
-        // input; the wait is part of the kill, so the action runs idle
-        // until the award lands or the wait runs out.
         let mut waited = 0;
         while waited < AWARD_SETTLE_FRAMES
             && frames.last().is_some_and(|wram| {
@@ -1019,9 +1011,6 @@ impl Target for Mm2Target {
         let mut prior_state = self.observation.decoded;
         let mut emitted = false;
         let mut observations = Vec::new();
-        // A death is final for the whole action even when the hold outlasts
-        // the respawn: a life lost or the stage left ends the input, or a
-        // long hold would carry a respawned player past the death unseen.
         let genesis = self.genesis_observation.decoded;
         let mut died = self.observation.dead;
         let mut dying_frames = 0_u32;
@@ -1037,12 +1026,6 @@ impl Target for Mm2Target {
                 self.failed = true;
                 return;
             };
-            // A player who climbs past the top of a screen that has no
-            // screen above it falls through open sky forever while the game
-            // still reports standing. The position byte is only the low
-            // byte of the stage position and wraps inside tall rooms, so a
-            // fall is measured by unbroken downward movement, and only one
-            // longer than any screen means the player left the stage.
             let steady = state.camera_state != CAMERA_STATE_SCROLLING
                 && previous.camera_state != CAMERA_STATE_SCROLLING
                 && state.screen == previous.screen;
@@ -1062,9 +1045,6 @@ impl Target for Mm2Target {
                 .min(ENEMY_DAMAGE_CAP);
             state.enemy_damage = enemy_damage;
             prior_frame = *wram;
-            // A boss room is sealed until the boss dies, so leaving it
-            // mid-fight means the player was pushed through a wall into
-            // screens the stage never defined, where death follows.
             let escaped = prior_state.boss_phase >= BOSS_PHASE_FIGHTING
                 && prior_state.boss_phase < BOSS_PHASE_DEFEATED
                 && state.screen != prior_state.screen;

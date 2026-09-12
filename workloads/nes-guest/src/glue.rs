@@ -10,8 +10,6 @@
 
 use crate::ram::WORK_RAM_LEN;
 
-// --- libretro callback decisions -------------------------------------------
-
 /// `RETRO_DEVICE_JOYPAD` (libretro.h, stable ABI).
 pub const RETRO_DEVICE_JOYPAD: u32 = 1;
 /// `RETRO_MEMORY_SYSTEM_RAM` (libretro.h).
@@ -53,14 +51,14 @@ pub fn env_response(cmd: u32) -> EnvResponse {
 /// order. `None` for ids outside the NES pad.
 pub fn joypad_bit(id: u32) -> Option<u8> {
     Some(match id {
-        8 => 0, // RETRO_DEVICE_ID_JOYPAD_A
-        0 => 1, // ..._B
-        2 => 2, // ..._SELECT
-        3 => 3, // ..._START
-        4 => 4, // ..._UP
-        5 => 5, // ..._DOWN
-        6 => 6, // ..._LEFT
-        7 => 7, // ..._RIGHT
+        8 => 0,
+        0 => 1,
+        2 => 2,
+        3 => 3,
+        4 => 4,
+        5 => 5,
+        6 => 6,
+        7 => 7,
         _ => return None,
     })
 }
@@ -90,8 +88,6 @@ pub fn copy_work_ram(core_ram: &[u8], out: &mut [u8]) -> bool {
     out[n..WORK_RAM_LEN].fill(0);
     true
 }
-
-// --- billboard pinning: hugetlb length + pagemap decode ---------------------
 
 /// One hugetlb page: 2 MiB on both supported guest architectures (the guest
 /// kernel's default hugepage size; the image init reserves it via
@@ -165,24 +161,23 @@ mod tests {
             let bit = joypad_bit(id).unwrap();
             assert_eq!(1u8 << bit, mask, "libretro id {id}");
         }
-        assert_eq!(joypad_bit(1), None); // Y — not on an NES pad
+        assert_eq!(joypad_bit(1), None);
         assert_eq!(joypad_bit(9), None);
     }
 
     #[test]
     fn input_state_reports_only_port_zero_joypad() {
         let byte = joypad::RIGHT | joypad::A;
-        assert_eq!(input_state_response(byte, 0, RETRO_DEVICE_JOYPAD, 7), 1); // RIGHT
-        assert_eq!(input_state_response(byte, 0, RETRO_DEVICE_JOYPAD, 8), 1); // A
-        assert_eq!(input_state_response(byte, 0, RETRO_DEVICE_JOYPAD, 0), 0); // B not held
-        assert_eq!(input_state_response(byte, 1, RETRO_DEVICE_JOYPAD, 7), 0); // port 1
-        assert_eq!(input_state_response(byte, 0, 2, 7), 0); // wrong device
-        assert_eq!(input_state_response(byte, 0, RETRO_DEVICE_JOYPAD, 42), 0); // bad id
+        assert_eq!(input_state_response(byte, 0, RETRO_DEVICE_JOYPAD, 7), 1);
+        assert_eq!(input_state_response(byte, 0, RETRO_DEVICE_JOYPAD, 8), 1);
+        assert_eq!(input_state_response(byte, 0, RETRO_DEVICE_JOYPAD, 0), 0);
+        assert_eq!(input_state_response(byte, 1, RETRO_DEVICE_JOYPAD, 7), 0);
+        assert_eq!(input_state_response(byte, 0, 2, 7), 0);
+        assert_eq!(input_state_response(byte, 0, RETRO_DEVICE_JOYPAD, 42), 0);
     }
 
     #[test]
     fn copy_work_ram_clamps_and_zero_fills() {
-        // A short core RAM: copied, tail zeroed.
         let src = vec![0xABu8; 100];
         let mut out = vec![0xFFu8; WORK_RAM_LEN + 4];
         assert!(copy_work_ram(&src, &mut out));
@@ -193,12 +188,10 @@ mod tests {
             "past the region untouched"
         );
 
-        // An oversized core RAM: clamped to the region.
         let src = vec![0x11u8; WORK_RAM_LEN + 999];
         assert!(copy_work_ram(&src, &mut out));
         assert!(out[..WORK_RAM_LEN].iter().all(|&b| b == 0x11));
 
-        // Failure modes: short destination, empty source.
         assert!(!copy_work_ram(&src, &mut vec![0u8; WORK_RAM_LEN - 1]));
         assert!(!copy_work_ram(&[], &mut out));
     }
@@ -223,21 +216,16 @@ mod tests {
     #[test]
     fn pagemap_entries_decode_present_pfn_and_offset() {
         let present = 1u64 << 63;
-        // Present, PFN 0x1234, page-aligned vaddr.
         assert_eq!(
             decode_pagemap_entry(present | 0x1234, 0x7000_0000),
             Ok(0x1234 * 4096)
         );
-        // The within-page offset rides along.
         assert_eq!(
             decode_pagemap_entry(present | 0x1234, 0x7000_0123),
             Ok(0x1234 * 4096 + 0x123)
         );
-        // Not present.
         assert!(decode_pagemap_entry(0x1234, 0x7000_0000).is_err());
-        // Present but PFN hidden (no CAP_SYS_ADMIN).
         assert!(decode_pagemap_entry(present, 0x7000_0000).is_err());
-        // Bits 55..63 (soft-dirty/exclusive/etc flags) must not leak into the PFN.
         assert_eq!(
             decode_pagemap_entry(present | (1 << 61) | (1 << 55) | 7, 0),
             Ok(7 * 4096)
@@ -253,7 +241,6 @@ mod tests {
         let max_pfn = (1u64 << 55) - 1;
         let err = decode_pagemap_entry(present | max_pfn, 0x123).unwrap_err();
         assert!(err.contains("overflows"), "got: {err}");
-        // The largest PFN that still fits ×4096 decodes fine (the boundary).
         let largest_ok = u64::MAX / 4096;
         assert_eq!(
             decode_pagemap_entry(present | largest_ok, 0),

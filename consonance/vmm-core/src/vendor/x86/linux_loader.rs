@@ -41,11 +41,6 @@
 
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
-// ---------------------------------------------------------------------------
-// Fixed low-RAM layout (all below 1 MiB, so it never collides with the
-// protected-mode kernel, which loads at `pref_address >= 0x10_0000`).
-// ---------------------------------------------------------------------------
-
 /// GPA of the top-level identity page table (PML4) — also the `CR3` value.
 pub const PML4_GPA: u64 = 0x1000;
 /// GPA of the single page-directory-pointer table (PDPT).
@@ -79,10 +74,6 @@ const PD_ENTRIES: u64 = IDENTITY_MAP_BYTES / LARGE_PAGE;
 const PTE_P_RW: u64 = 0b11;
 /// Large-page PDE flags: Present | Writable | Page-Size (2 MiB).
 const PDE_P_RW_PS: u64 = 0b1000_0011;
-
-// ---------------------------------------------------------------------------
-// x86/Linux boot-protocol constants.
-// ---------------------------------------------------------------------------
 
 /// File offset of [`SetupHeader`] within a bzImage (and its offset within
 /// [`BootParams`]).
@@ -153,10 +144,6 @@ const ACPI_LAPIC_BASE: u32 = LAPIC_MMIO_PAGE as u32;
 const ACPI_BOOT_APIC_ID: u8 = 0;
 /// `boot_params.e820_table` capacity (`E820_MAX_ENTRIES_ZEROPAGE`).
 const E820_MAX_ENTRIES: usize = 128;
-
-// ---------------------------------------------------------------------------
-// `#[repr(C)]` boot-protocol structures (offsets pinned by the layout test).
-// ---------------------------------------------------------------------------
 
 /// The bzImage `setup_header` (Documentation/arch/x86/boot.rst, "THE REAL-MODE
 /// KERNEL HEADER"). `#[repr(C, packed)]`: the kernel declares it `packed`, so
@@ -293,10 +280,6 @@ pub struct BootParams {
     _tail: [u8; 0x1000 - (0x2d0 + E820_MAX_ENTRIES * core::mem::size_of::<BootE820Entry>())],
 }
 
-// ---------------------------------------------------------------------------
-// Result + error types.
-// ---------------------------------------------------------------------------
-
 /// A loaded guest-physical byte range `[start, start + len)`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GpaRange {
@@ -406,10 +389,6 @@ pub enum LinuxLoadError {
     },
 }
 
-// ---------------------------------------------------------------------------
-// Bounds-checked little-endian readers (the totality primitives).
-// ---------------------------------------------------------------------------
-
 /// Read a little-endian `u16` at `off`, or `None` if `image` is too short.
 fn read_u16(image: &[u8], off: usize) -> Option<u16> {
     let end = off.checked_add(2)?;
@@ -455,13 +434,8 @@ pub(crate) fn write_rng_seed(mem: &mut [u8], seed: &[u8; 64]) -> Result<(), Linu
     record[12..16].copy_from_slice(&64u32.to_le_bytes());
     record[16..].copy_from_slice(seed);
     write_at(mem, RNG_GPA, &record, error)?;
-    // load() owns and zero-initializes this list: it has no previous records.
     write_at(mem, BOOT_PARAMS_GPA + 0x250, &RNG_GPA.to_le_bytes(), error)
 }
-
-// ---------------------------------------------------------------------------
-// Header parsing.
-// ---------------------------------------------------------------------------
 
 /// Parse and validate the bzImage [`SetupHeader`] out of `image`. Pure; never
 /// panics on arbitrary bytes.
@@ -472,9 +446,6 @@ pub(crate) fn write_rng_seed(mem: &mut [u8], seed: &[u8; 64]) -> Result<(), Linu
 /// for a pre-2.12 kernel; [`LinuxLoadError::No64BitEntry`] if `XLF_KERNEL_64` is
 /// clear.
 pub fn parse_setup_header(image: &[u8]) -> Result<SetupHeader, LinuxLoadError> {
-    // The two magics gate everything else; check them with bounds-safe readers
-    // before the (also bounds-safe) struct read, so a non-bzImage is the clean
-    // `NotBzImage` rather than a too-short error.
     if read_u16(image, 0x1fe) != Some(BOOT_FLAG_MAGIC) || read_u32(image, 0x202) != Some(HDRS_MAGIC)
     {
         return Err(LinuxLoadError::NotBzImage);
@@ -484,8 +455,6 @@ pub fn parse_setup_header(image: &[u8]) -> Result<SetupHeader, LinuxLoadError> {
         .ok_or(LinuxLoadError::NotBzImage)?;
     let (hdr, _) = SetupHeader::read_from_prefix(tail).map_err(|_| LinuxLoadError::NotBzImage)?;
 
-    // `version`/`xloadflags` are packed fields; copy to locals before comparing
-    // (no references into a packed struct).
     let version = hdr.version;
     if version < MIN_PROTOCOL_VERSION {
         return Err(LinuxLoadError::UnsupportedProtocol {
@@ -499,10 +468,6 @@ pub fn parse_setup_header(image: &[u8]) -> Result<SetupHeader, LinuxLoadError> {
     }
     Ok(hdr)
 }
-
-// ---------------------------------------------------------------------------
-// The loader.
-// ---------------------------------------------------------------------------
 
 /// Flat-load a bzImage `image` + `initramfs` into `mem` (the host backing for GPA
 /// `0`) for a direct 64-bit boot, build the `boot_params`/page-table/GDT, and
@@ -519,12 +484,6 @@ pub fn load(
     cmdline: &str,
     mem: &mut [u8],
 ) -> Result<LinuxImage, LinuxLoadError> {
-    // The guest RAM must have a non-empty high-memory region. Clamp `ram` to the
-    // actual backing so a caller passing a mismatched `ram_bytes` can never make us
-    // write past `mem`. `ram > HIGH_RAM_START` (1 MiB) is the binding minimum: every
-    // fixed low structure (page tables, GDT, zero page, cmdline) ends below `0x9000`
-    // — far under 1 MiB — so this single check guarantees they all fit, and the
-    // kernel (`load_addr >= 1 MiB`) gets a non-empty `[1 MiB, ram)` E820 region.
     let ram = ram_bytes.min(mem.len() as u64);
     if ram <= HIGH_RAM_START {
         return Err(LinuxLoadError::RamTooSmall { ram });
@@ -532,13 +491,11 @@ pub fn load(
 
     let hdr = parse_setup_header(image)?;
 
-    // 1. Locate the protected-mode kernel: it follows the setup sectors.
     let setup_sects = if hdr.setup_sects == 0 {
         DEFAULT_SETUP_SECTS
     } else {
         hdr.setup_sects
     };
-    // (setup_sects + 1) * 512, checked.
     let pm_offset = (usize::from(setup_sects))
         .checked_add(1)
         .and_then(|s| s.checked_mul(SECTOR))
@@ -549,19 +506,12 @@ pub fn load(
             setup_bytes: pm_offset,
             image_len: image.len(),
         })?;
-    // The 64-bit entry is at `load_addr + ENTRY_64_OFFSET`, so the copied kernel
-    // must have at least `ENTRY_64_OFFSET + 1` bytes — else the entry points at RAM
-    // no kernel byte was written to (a jump into stale/zero memory). This also
-    // subsumes the empty-tail case.
     if (pm_kernel.len() as u64) <= ENTRY_64_OFFSET {
         return Err(LinuxLoadError::KernelTooSmall {
             len: pm_kernel.len() as u64,
         });
     }
 
-    // 2. Choose the load address: the kernel's preferred address. The protocol
-    //    guarantees `pref_address >= 0x10_0000`, so the low structures never
-    //    collide; a kernel that asks for less is rejected as not-fitting.
     let load_addr = hdr.pref_address;
     if load_addr < HIGH_RAM_START {
         return Err(LinuxLoadError::KernelDoesNotFit {
@@ -570,7 +520,6 @@ pub fn load(
             ram,
         });
     }
-    // The kernel needs `max(image bytes, init_size)` of room from `load_addr`.
     let kernel_len = pm_kernel.len() as u64;
     let run_room = kernel_len.max(u64::from(hdr.init_size));
     let kernel_end = load_addr
@@ -587,13 +536,6 @@ pub fn load(
             ram,
         });
     }
-    // The reserved xAPIC MMIO page (`build_boot_params` marks it `E820_RESERVED`;
-    // the backend leaves a matching memslot hole) is UNMAPPED in the guest. The
-    // kernel image must not land in it — those bytes would be written to host
-    // backing the guest cannot read back (the page faults to the userspace LAPIC).
-    // The kernel loads at the header's `pref_address` and cannot be relocated, so a
-    // load region that would straddle the page is rejected. (Real kernels load near
-    // 1 MiB, far below the ~4 GiB page; this guards an oversized header.)
     if overlaps_lapic_mmio_page(load_addr, kernel_end) {
         return Err(LinuxLoadError::KernelDoesNotFit {
             load: load_addr,
@@ -612,8 +554,6 @@ pub fn load(
         },
     )?;
 
-    // 3. Place the initramfs as high as possible (page-aligned), above the
-    //    kernel's run region and at or below the header's `initrd_addr_max`.
     let initramfs_range =
         place_initramfs(initramfs, ram, kernel_end, u64::from(hdr.initrd_addr_max))?;
     write_at(
@@ -625,9 +565,6 @@ pub fn load(
         },
     )?;
 
-    // 4. Command line (string + NUL). The effective limit is the smaller of our
-    //    buffer (CMDLINE_MAX-1) and the kernel's declared `cmdline_size` — never
-    //    advertise or write past what this kernel says it accepts.
     let cmdline_limit = cmdline_max(&hdr);
     if cmdline.len() > cmdline_limit {
         return Err(LinuxLoadError::CmdlineTooLong {
@@ -641,7 +578,6 @@ pub fn load(
         cmdline.as_bytes(),
         LinuxLoadError::RamTooSmall { ram },
     )?;
-    // The NUL terminator (the page is otherwise pre-zeroed, but be explicit).
     write_at(
         mem,
         CMDLINE_GPA + cmdline.len() as u64,
@@ -649,7 +585,6 @@ pub fn load(
         LinuxLoadError::RamTooSmall { ram },
     )?;
 
-    // 5. boot_params (the zero page).
     let boot_params = build_boot_params(&hdr, &initramfs_range, cmdline.len(), ram);
     write_at(
         mem,
@@ -658,7 +593,6 @@ pub fn load(
         LinuxLoadError::RamTooSmall { ram },
     )?;
 
-    // 6. Identity page table + boot GDT.
     write_page_tables(mem, ram)?;
     write_acpi_tables(mem)?;
     write_gdt(mem)?;
@@ -700,25 +634,15 @@ fn place_initramfs(
 ) -> Result<GpaRange, LinuxLoadError> {
     let len = initramfs.len() as u64;
     let too_big = LinuxLoadError::InitramfsDoesNotFit { len };
-    // Highest address the initramfs end may reach: min(RAM top, 4 GiB), further
-    // capped to `initrd_addr_max + 1` when the kernel declares one (the ramdisk
-    // must occupy `[start, start+len) ⊆ [0, initrd_addr_max]`).
     let mut ceiling = ram.min(1u64 << 32);
     if initrd_addr_max != 0 {
         ceiling = ceiling.min(initrd_addr_max.saturating_add(1));
     }
-    // The highest page-aligned `start` so `[start, start+len)` fits below `cap` and
-    // above `kernel_end`; `None` if it does not fit.
     let place = |cap: u64| -> Option<u64> {
         let start = cap.checked_sub(len)? & !0xFFF;
         (start >= kernel_end).then_some(start)
     };
     let mut start = place(ceiling).ok_or(too_big)?;
-    // Keep the initramfs out of the reserved xAPIC MMIO hole. The highest placement
-    // is preferred (and the region just ABOVE the page — `[page+0x1000, ceiling)` —
-    // is valid RAM, so a ramdisk that fits there is left there); only one that would
-    // straddle the page is relocated to sit ENTIRELY BELOW it (cap the ceiling at the
-    // page). If it then does not fit above `kernel_end`, it does not fit at all.
     if overlaps_lapic_mmio_page(start, start.saturating_add(len)) {
         start = place(LAPIC_MMIO_PAGE).ok_or(too_big)?;
     }
@@ -747,26 +671,17 @@ fn build_boot_params(
     bp.hdr.type_of_loader = TYPE_OF_LOADER_UNDEFINED;
     bp.hdr.code32_start = hdr.pref_address as u32;
     bp.hdr.cmd_line_ptr = CMDLINE_GPA as u32;
-    // Advertise the effective buffer — never more than the kernel's declared
-    // `cmdline_size` (left as the copied header value when smaller).
     bp.hdr.cmdline_size = cmdline_max(hdr) as u32;
-    let _ = cmdline_len; // cmdline_size advertises the buffer, not the string len
+    let _ = cmdline_len;
     bp.hdr.ramdisk_image = initramfs.start as u32;
     bp.hdr.ramdisk_size = initramfs.len as u32;
 
-    // A running index into `e820_table`, so the doorbell-reservation split (below)
-    // and the xAPIC split compose without hand-tracking entry numbers.
     let mut n = 0usize;
     let push = |bp: &mut BootParams, n: &mut usize, addr: u64, size: u64, type_: u32| {
         bp.e820_table[*n] = BootE820Entry { addr, size, type_ };
         *n += 1;
     };
 
-    // E820 low RAM `[0, 640 KiB)`, SPLIT to **reserve** the two hypercall-doorbell
-    // pages `[0xE000, 0x10000)` (task 73) so a Linux SDK guest never allocates over
-    // REQ_GPA/RESP_GPA. The `0xA0000..0x100000` legacy hole stays omitted. The
-    // doorbell span sits strictly inside `(0, LOW_RAM_TOP)`, so all three parts are
-    // non-empty. (Mirrors the xAPIC carve-out pattern below.)
     push(&mut bp, &mut n, 0, DOORBELL_PAGES_START, E820_RAM);
     push(
         &mut bp,
@@ -783,22 +698,6 @@ fn build_boot_params(
         E820_RAM,
     );
 
-    // High RAM `[1 MiB, ram)` with the 4 KiB xAPIC MMIO page (`LAPIC_MMIO_PAGE`)
-    // carved out as **reserved**: that page must NOT be usable RAM, or the kernel
-    // zeroes it on init (its content is then dead RAM and the backend's matching
-    // memslot hole — which routes LAPIC accesses to the userspace xAPIC model — would
-    // have nothing behind it). `load` guarantees `ram > HIGH_RAM_START`, so the first
-    // high-RAM chunk is non-empty. Three shapes, by how far RAM reaches:
-    //
-    //   * `ram <= page`        → one high-RAM entry `[1 MiB, ram)` (page never RAM).
-    //   * `page < ram <= page+0x1000` → `[1 MiB, page) RAM` + `[page, +0x1000) RESERVED`
-    //     (the tail past the page is empty, so it is omitted).
-    //   * `ram > page+0x1000`  → the full split with a `[page+0x1000, ram) RAM`
-    //     tail (the 8 GiB Postgres-guest shape).
-    //
-    // For any page-aligned `ram` only the first and last shapes occur (no page
-    // multiple lies strictly inside the page); the middle shape keeps the
-    // never-typed-RAM invariant exact for the pathological boundary too.
     if ram > LAPIC_MMIO_PAGE {
         push(
             &mut bp,
@@ -854,27 +753,24 @@ fn write_acpi_tables(mem: &mut [u8]) -> Result<(), LinuxLoadError> {
     const OEM_TABLE_ID: &[u8; 8] = b"HARMONYT";
     const CREATOR_ID: &[u8; 4] = b"HARM";
 
-    // --- MADT (signature "APIC"): 36-byte SDT header + 8-byte flags/addr + one
-    //     8-byte Processor-Local-APIC structure = 52 bytes. ---
     let mut madt = [0u8; 52];
     madt[0..4].copy_from_slice(b"APIC");
     madt[4..8].copy_from_slice(&52u32.to_le_bytes());
-    madt[8] = 5; // revision (ACPI 4.0+)
+    madt[8] = 5;
     madt[10..16].copy_from_slice(OEMID);
     madt[16..24].copy_from_slice(OEM_TABLE_ID);
     madt[24..28].copy_from_slice(&1u32.to_le_bytes());
     madt[28..32].copy_from_slice(CREATOR_ID);
     madt[32..36].copy_from_slice(&1u32.to_le_bytes());
-    madt[36..40].copy_from_slice(&ACPI_LAPIC_BASE.to_le_bytes()); // Local APIC address
-    madt[40..44].copy_from_slice(&1u32.to_le_bytes()); // flags: PCAT_COMPAT (8259 present)
-    madt[44] = 0; // structure type: Processor Local APIC
-    madt[45] = 8; // structure length
-    madt[46] = 0; // ACPI processor UID
-    madt[47] = ACPI_BOOT_APIC_ID; // APIC ID
-    madt[48..52].copy_from_slice(&1u32.to_le_bytes()); // local-APIC flags: Enabled
+    madt[36..40].copy_from_slice(&ACPI_LAPIC_BASE.to_le_bytes());
+    madt[40..44].copy_from_slice(&1u32.to_le_bytes());
+    madt[44] = 0;
+    madt[45] = 8;
+    madt[46] = 0;
+    madt[47] = ACPI_BOOT_APIC_ID;
+    madt[48..52].copy_from_slice(&1u32.to_le_bytes());
     madt[9] = acpi_checksum(&madt);
 
-    // --- XSDT (signature "XSDT"): 36-byte header + one 8-byte entry -> MADT. ---
     let mut xsdt = [0u8; 44];
     xsdt[0..4].copy_from_slice(b"XSDT");
     xsdt[4..8].copy_from_slice(&44u32.to_le_bytes());
@@ -887,16 +783,14 @@ fn write_acpi_tables(mem: &mut [u8]) -> Result<(), LinuxLoadError> {
     xsdt[36..44].copy_from_slice(&ACPI_MADT_GPA.to_le_bytes());
     xsdt[9] = acpi_checksum(&xsdt);
 
-    // --- RSDP (ACPI 2.0, 36 bytes): two checksums (first 20 bytes, then all 36). ---
     let mut rsdp = [0u8; 36];
     rsdp[0..8].copy_from_slice(b"RSD PTR ");
     rsdp[9..15].copy_from_slice(OEMID);
-    rsdp[15] = 2; // revision (ACPI 2.0+ => XSDT present)
-    // rsdp[16..20] RsdtAddress = 0 (the 64-bit XSDT is authoritative)
-    rsdp[20..24].copy_from_slice(&36u32.to_le_bytes()); // length
+    rsdp[15] = 2;
+    rsdp[20..24].copy_from_slice(&36u32.to_le_bytes());
     rsdp[24..32].copy_from_slice(&ACPI_XSDT_GPA.to_le_bytes());
-    rsdp[8] = acpi_checksum(&rsdp[0..20]); // legacy checksum (first 20 bytes)
-    rsdp[32] = acpi_checksum(&rsdp); // extended checksum (all 36 bytes)
+    rsdp[8] = acpi_checksum(&rsdp[0..20]);
+    rsdp[32] = acpi_checksum(&rsdp);
 
     write_at(mem, ACPI_MADT_GPA, &madt, oob)?;
     write_at(mem, ACPI_XSDT_GPA, &xsdt, oob)?;
@@ -910,10 +804,8 @@ fn write_acpi_tables(mem: &mut [u8]) -> Result<(), LinuxLoadError> {
 /// [`write_at`]; if the tables do not fit, [`LinuxLoadError::RamTooSmall`].
 fn write_page_tables(mem: &mut [u8], ram: u64) -> Result<(), LinuxLoadError> {
     let oob = LinuxLoadError::RamTooSmall { ram };
-    // PML4[0] -> PDPT, PDPT[0] -> the single PD (one PD covers the whole map).
     write_at(mem, PML4_GPA, &(PDPT_GPA | PTE_P_RW).to_le_bytes(), oob)?;
     write_at(mem, PDPT_GPA, &(PD_GPA | PTE_P_RW).to_le_bytes(), oob)?;
-    // PD[j] -> the j-th 2 MiB large page.
     for j in 0..PD_ENTRIES {
         let phys = j * LARGE_PAGE;
         write_at(
@@ -933,7 +825,6 @@ fn write_gdt(mem: &mut [u8]) -> Result<(), LinuxLoadError> {
     let oob = LinuxLoadError::RamTooSmall {
         ram: mem.len() as u64,
     };
-    // [null, unused, code64 @ 0x10, data @ 0x18].
     let gdt: [u64; 4] = [0, 0, GDT_CODE64, GDT_DATA];
     for (i, e) in gdt.iter().enumerate() {
         write_at(mem, GDT_GPA + (i as u64) * 8, &e.to_le_bytes(), oob)?;
@@ -966,7 +857,6 @@ mod tests {
         let base = ACPI_RSDP_GPA as usize;
         let mut mem = vec![0u8; base + 0x1000];
         write_acpi_tables(&mut mem).expect("write_acpi_tables into a large-enough buffer");
-        // RSDP @ +0x00 (36 B), XSDT @ +0x40 (44 B), MADT @ +0x80 (52 B); zeros in the gaps.
         const GOLDEN: [u8; 0xC0] = [
             0x52, 0x53, 0x44, 0x20, 0x50, 0x54, 0x52, 0x20, 0x10, 0x48, 0x41, 0x52, 0x4d, 0x4e,
             0x59, 0x02, 0x00, 0x00, 0x00, 0x00, 0x24, 0x00, 0x00, 0x00, 0x40, 0x00, 0x0e, 0x00,
@@ -1005,7 +895,6 @@ mod tests {
         let real_setup_sects = if setup_sects == 0 { 4 } else { setup_sects };
         let pm_off = (usize::from(real_setup_sects) + 1) * 512;
         let mut img = vec![0u8; pm_off + pm_len];
-        // Build the setup header via the struct, then splice at 0x1f1.
         let mut hdr = SetupHeader::new_zeroed();
         hdr.setup_sects = setup_sects;
         hdr.boot_flag = BOOT_FLAG_MAGIC;
@@ -1014,16 +903,10 @@ mod tests {
         hdr.xloadflags = xloadflags;
         hdr.pref_address = pref_address;
         hdr.init_size = init_size;
-        // Header maxima a modern bzImage advertises, so the cmdline / initramfs
-        // caps don't artificially reject a valid synthetic load. `cmdline_size`
-        // (0x1000) is set ABOVE our buffer `CMDLINE_MAX - 1` (0x7FF) so the
-        // loader's `cmdline_max = (CMDLINE_MAX-1).min(hdr.cmdline_size)` is bound by
-        // the `CMDLINE_MAX - 1` term — pinned exactly by `load_pins_every_computed_value`.
         hdr.cmdline_size = 0x1000;
         hdr.initrd_addr_max = 0x7FFF_FFFF;
         let hb = hdr.as_bytes();
         img[SETUP_HEADER_OFFSET..SETUP_HEADER_OFFSET + hb.len()].copy_from_slice(hb);
-        // Mark the protected-mode kernel region so we can assert the copy.
         for (i, b) in img[pm_off..].iter_mut().enumerate() {
             *b = (0x40 + (i % 0x30)) as u8;
         }
@@ -1034,11 +917,8 @@ mod tests {
         synth_bzimage(1, 0x020f, XLF_KERNEL_64, 0x10_0000, 0x40_0000, 0x2000)
     }
 
-    // --- Gate 1: layout pinned --------------------------------------------
-
     #[test]
     fn setup_header_field_offsets() {
-        // Pin the setup_header field offsets against the x86 boot protocol.
         assert_eq!(offset_of!(SetupHeader, setup_sects), 0x1f1 - 0x1f1);
         assert_eq!(offset_of!(SetupHeader, boot_flag), 0x1fe - 0x1f1);
         assert_eq!(offset_of!(SetupHeader, header), 0x202 - 0x1f1);
@@ -1054,19 +934,15 @@ mod tests {
         assert_eq!(offset_of!(SetupHeader, pref_address), 0x258 - 0x1f1);
         assert_eq!(offset_of!(SetupHeader, init_size), 0x260 - 0x1f1);
         assert_eq!(offset_of!(SetupHeader, kernel_info_offset), 0x268 - 0x1f1);
-        // The whole header spans 0x1f1..0x26c.
         assert_eq!(size_of::<SetupHeader>(), 0x26c - 0x1f1);
     }
 
     #[test]
     fn boot_params_field_offsets() {
-        // The gate-1 absolute offsets within boot_params (the x86 boot protocol).
         assert_eq!(offset_of!(BootParams, acpi_rsdp_addr), 0x070);
         assert_eq!(offset_of!(BootParams, e820_entries), 0x1e8);
         assert_eq!(offset_of!(BootParams, hdr), 0x1f1);
         assert_eq!(offset_of!(BootParams, e820_table), 0x2d0);
-        // The composed setup-header fields land at their absolute boot_params
-        // offsets too (hdr base + intra-header offset).
         assert_eq!(
             offset_of!(BootParams, hdr) + offset_of!(SetupHeader, ramdisk_image),
             0x218
@@ -1075,13 +951,9 @@ mod tests {
             offset_of!(BootParams, hdr) + offset_of!(SetupHeader, cmd_line_ptr),
             0x228
         );
-        // boot_params is exactly one page.
         assert_eq!(size_of::<BootParams>(), 0x1000);
-        // Each E820 entry is 20 bytes.
         assert_eq!(size_of::<BootE820Entry>(), 20);
     }
-
-    // --- Header parsing ----------------------------------------------------
 
     #[test]
     fn parses_a_valid_bzimage() {
@@ -1099,7 +971,6 @@ mod tests {
             parse_setup_header(&[0u8; 4096]),
             Err(LinuxLoadError::NotBzImage)
         );
-        // boot_flag present but HdrS absent.
         let mut img = vec![0u8; 4096];
         img[0x1fe..0x200].copy_from_slice(&BOOT_FLAG_MAGIC.to_le_bytes());
         assert_eq!(parse_setup_header(&img), Err(LinuxLoadError::NotBzImage));
@@ -1123,8 +994,6 @@ mod tests {
         assert_eq!(parse_setup_header(&img), Err(LinuxLoadError::No64BitEntry));
     }
 
-    // --- Loading -----------------------------------------------------------
-
     /// Read a little-endian `u32`/`u64` out of guest memory at an absolute offset.
     fn rd32(mem: &[u8], off: usize) -> u32 {
         u32::from_le_bytes(mem[off..off + 4].try_into().unwrap())
@@ -1143,24 +1012,15 @@ mod tests {
         ignore = "allocates guest RAM; totality is covered by the miri-bounded loader proptest"
     )]
     fn load_pins_every_computed_value() {
-        // setup_sects=2 ⇒ pm_offset = (2+1)*512 = 0x600 (distinct from 0x200/0x400
-        // so a +/-/* mutant on it shifts the copied bytes). init_size 0x40_0000.
         let img = synth_bzimage(2, 0x020f, XLF_KERNEL_64, 0x10_0000, 0x40_0000, 0x800);
         let pm_off = (2 + 1) * 512usize;
         let kernel_len = 0x800u64;
-        // initramfs length 0x2345 is NOT a page multiple, so the `& !0xFFF` align is
-        // observable, and `ceiling - len` lands mid-page.
         let initramfs: Vec<u8> = (0..0x2345u32).map(|i| (i & 0xFF) as u8).collect();
-        let ram = 8u64 << 20; // 0x80_0000
-        // Pre-fill 0xFF (not 0): the loader only writes the bytes it computes, so an
-        // off-by-N NUL terminator or a mis-placed field lands on `0xFF` and is
-        // distinguishable from the deliberate zeros (kills the cmdline-NUL `+`→`-`/`*`
-        // mutant, which would otherwise be masked by a zeroed buffer).
+        let ram = 8u64 << 20;
         let mut mem = vec![0xFFu8; ram as usize];
-        let cmd = "console=ttyS0 panic=-1"; // 22 bytes
+        let cmd = "console=ttyS0 panic=-1";
         let li = load(&img, &initramfs, ram, cmd, &mut mem).expect("load");
 
-        // --- returned LinuxImage: every field exact -----------------------
         assert_eq!(li.kernel.start, 0x10_0000, "load_addr = pref_address");
         assert_eq!(li.kernel.len, kernel_len, "kernel_len = pm_kernel.len()");
         assert_eq!(li.entry_point, 0x10_0200, "entry = load_addr + 0x200");
@@ -1168,22 +1028,17 @@ mod tests {
         assert_eq!(li.page_table_root, 0x1000);
         assert_eq!(li.gdt_gpa, 0x6000);
         assert_eq!(li.cmdline_gpa, 0x8000);
-        // place_initramfs: top = min(ram,4G,initrd_max+1) - len = 0x80_0000-0x2345
-        // = 0x7FDCBB; start = 0x7FDCBB & !0xFFF = 0x7FD000.
         assert_eq!(li.initramfs.start, 0x7F_D000, "page-aligned high placement");
         assert_eq!(li.initramfs.len, 0x2345);
 
-        // --- the protected-mode kernel was copied from EXACTLY pm_off -----
         assert_eq!(
             &mem[0x10_0000..0x10_0000 + kernel_len as usize],
             &img[pm_off..pm_off + kernel_len as usize],
             "kernel copied from (setup_sects+1)*512"
         );
-        // --- the initramfs landed at its exact GPA, byte-for-byte ----------
         let istart = li.initramfs.start as usize;
         assert_eq!(&mem[istart..istart + initramfs.len()], &initramfs[..]);
 
-        // --- boot_params fields at their absolute offsets ------------------
         let bp = BOOT_PARAMS_GPA as usize;
         assert_eq!(
             mem[bp + 0x1e8],
@@ -1195,45 +1050,39 @@ mod tests {
         assert_eq!(rd32(&mem, bp + 0x218), 0x7F_D000, "ramdisk_image");
         assert_eq!(rd32(&mem, bp + 0x21c), 0x2345, "ramdisk_size");
         assert_eq!(rd32(&mem, bp + 0x228), 0x8000, "cmd_line_ptr");
-        // hdr.cmdline_size is 0x1000 (> our buffer) so the CMDLINE_MAX-1 = 0x7FF term
-        // binds — pins `(CMDLINE_MAX - 1).min(hdr.cmdline_size)`.
         assert_eq!(
             rd32(&mem, bp + 0x238),
             0x7FF,
             "cmdline_size = CMDLINE_MAX - 1"
         );
 
-        // --- command line, NUL-terminated, at CMDLINE_GPA -----------------
         let c = CMDLINE_GPA as usize;
         assert_eq!(&mem[c..c + cmd.len()], cmd.as_bytes());
         assert_eq!(mem[c + cmd.len()], 0);
 
-        // --- E820: the 3-entry low split (doorbell pages reserved) then
-        //     [1M, ram) usable (task 73) ----------------------------------
         let e0 = bp + 0x2d0;
         assert_eq!(rd64(&mem, e0), 0);
-        assert_eq!(rd64(&mem, e0 + 8), DOORBELL_PAGES_START); // 0xE000
+        assert_eq!(rd64(&mem, e0 + 8), DOORBELL_PAGES_START);
         assert_eq!(rd32(&mem, e0 + 16), E820_RAM);
         let e1 = e0 + 20;
-        assert_eq!(rd64(&mem, e1), DOORBELL_PAGES_START); // 0xE000
+        assert_eq!(rd64(&mem, e1), DOORBELL_PAGES_START);
         assert_eq!(
             rd64(&mem, e1 + 8),
             DOORBELL_PAGES_END - DOORBELL_PAGES_START
-        ); // 0x2000
+        );
         assert_eq!(
             rd32(&mem, e1 + 16),
             E820_RESERVED,
             "doorbell pages reserved"
         );
         let e2 = e1 + 20;
-        assert_eq!(rd64(&mem, e2), DOORBELL_PAGES_END); // 0x10000
-        assert_eq!(rd64(&mem, e2 + 8), LOW_RAM_TOP - DOORBELL_PAGES_END); // 0x90000
+        assert_eq!(rd64(&mem, e2), DOORBELL_PAGES_END);
+        assert_eq!(rd64(&mem, e2 + 8), LOW_RAM_TOP - DOORBELL_PAGES_END);
         assert_eq!(rd32(&mem, e2 + 16), E820_RAM);
         let e3 = e2 + 20;
-        assert_eq!(rd64(&mem, e3), HIGH_RAM_START); // 0x100000
-        assert_eq!(rd64(&mem, e3 + 8), ram - HIGH_RAM_START); // 0x70_0000
+        assert_eq!(rd64(&mem, e3), HIGH_RAM_START);
+        assert_eq!(rd64(&mem, e3 + 8), ram - HIGH_RAM_START);
         assert_eq!(rd32(&mem, e3 + 16), E820_RAM);
-        // The fifth entry slot is untouched (exactly four entries written).
         assert_eq!(rd64(&mem, e3 + 20), 0);
     }
 
@@ -1248,13 +1097,10 @@ mod tests {
         let mut mem = vec![0u8; ram as usize];
         load(&img, &[], ram, "x", &mut mem).expect("load");
 
-        // PML4[0] -> PDPT (present+rw).
         let pml4_0 = u64::from_le_bytes(mem[0x1000..0x1008].try_into().unwrap());
         assert_eq!(pml4_0, PDPT_GPA | PTE_P_RW);
-        // PDPT[0] -> PD (present+rw).
         let pdpt_0 = u64::from_le_bytes(mem[0x2000..0x2008].try_into().unwrap());
         assert_eq!(pdpt_0, PD_GPA | PTE_P_RW);
-        // PD[0] = 0 | present+rw+PS; PD[1] = 2 MiB | ...; PD[511] = 1022 MiB | ...
         let pd_0 = u64::from_le_bytes(mem[0x3000..0x3008].try_into().unwrap());
         assert_eq!(pd_0, PDE_P_RW_PS);
         let pd_1 = u64::from_le_bytes(mem[0x3008..0x3010].try_into().unwrap());
@@ -1265,9 +1111,6 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(pd_511, (511 * LARGE_PAGE) | PDE_P_RW_PS);
-        // Exactly PD_ENTRIES (512) entries: the last is written, the one past it is
-        // not — pinning the `0..PD_ENTRIES` bound (kills the ±1 / `IDENTITY_MAP_BYTES
-        // / LARGE_PAGE` mutants, which would write one fewer/extra PDE).
         assert_eq!(PD_ENTRIES, 512);
         let pd_512 = u64::from_le_bytes(
             mem[0x3000 + 512 * 8..0x3000 + 512 * 8 + 8]
@@ -1289,7 +1132,6 @@ mod tests {
         load(&img, &[], ram, "x", &mut mem).expect("load");
         let g = GDT_GPA as usize;
         assert_eq!(u64::from_le_bytes(mem[g..g + 8].try_into().unwrap()), 0);
-        // __BOOT_CS at selector 0x10 (index 2), __BOOT_DS at 0x18 (index 3).
         assert_eq!(
             u64::from_le_bytes(mem[g + 0x10..g + 0x18].try_into().unwrap()),
             GDT_CODE64
@@ -1306,11 +1148,9 @@ mod tests {
         ignore = "allocates guest RAM; totality is covered by the miri-bounded loader proptest"
     )]
     fn rejects_kernel_that_does_not_fit() {
-        // init_size larger than RAM.
         let img = synth_bzimage(1, 0x020f, XLF_KERNEL_64, 0x10_0000, 0, 0x1000);
-        let ram = 4u64 << 20; // 4 MiB
+        let ram = 4u64 << 20;
         let mut mem = vec![0u8; ram as usize];
-        // pref_address 1 MiB + a 1 MiB image fits, but make init_size huge:
         let img2 = synth_bzimage(1, 0x020f, XLF_KERNEL_64, 0x10_0000, 0x8000_0000, 0x1000);
         assert!(matches!(
             load(&img2, &[], ram, "x", &mut mem),
@@ -1325,7 +1165,6 @@ mod tests {
         ignore = "allocates guest RAM; totality is covered by the miri-bounded loader proptest"
     )]
     fn rejects_initramfs_overlap() {
-        // A kernel that nearly fills RAM leaves no room for the initramfs.
         let img = synth_bzimage(1, 0x020f, XLF_KERNEL_64, 0x10_0000, 0, 0x1000);
         let ram = 8u64 << 20;
         let mut mem = vec![0u8; ram as usize];
@@ -1362,13 +1201,9 @@ mod tests {
         ));
     }
 
-    // --- robustness (codex P2) --------------------------------------------
-
     #[test]
     #[cfg_attr(miri, ignore = "allocates guest RAM")]
     fn rejects_kernel_too_small_for_64bit_entry() {
-        // A protected-mode kernel of exactly ENTRY_64_OFFSET bytes has no byte at
-        // the entry `load_addr + 0x200`; one more byte is the minimum.
         let ram = 8u64 << 20;
         let mut mem = vec![0u8; ram as usize];
         let too_small = synth_bzimage(
@@ -1385,7 +1220,6 @@ mod tests {
                 len: ENTRY_64_OFFSET
             })
         );
-        // Exactly one more byte is accepted (boundary: `<=` not `<`).
         let just_enough = synth_bzimage(
             1,
             0x020f,
@@ -1400,23 +1234,18 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "allocates guest RAM")]
     fn honors_initrd_addr_max() {
-        // Patch the header's initrd_addr_max (offset 0x22c) below RAM top so the
-        // initramfs must be placed under it, not near the RAM ceiling.
         let mut img = synth_bzimage(1, 0x020f, XLF_KERNEL_64, 0x10_0000, 0x10_0000, 0x800);
-        let addr_max: u32 = 0x0060_0000; // 6 MiB
+        let addr_max: u32 = 0x0060_0000;
         img[0x22c..0x230].copy_from_slice(&addr_max.to_le_bytes());
-        let ram = 8u64 << 20; // 8 MiB
+        let ram = 8u64 << 20;
         let mut mem = vec![0u8; ram as usize];
         let initramfs = vec![0u8; 0x1000];
         let li = load(&img, &initramfs, ram, "x", &mut mem).expect("load");
-        // end = start + len must be <= initrd_addr_max + 1; placed just under it
-        // (page-aligned): (0x60_0000 + 1 - 0x1000) & !0xFFF = 0x5FF000.
         assert_eq!(li.initramfs.start, 0x5F_F000);
         assert!(li.initramfs.start + li.initramfs.len <= u64::from(addr_max) + 1);
 
-        // An initrd_addr_max below the kernel's run region rejects (no legal spot).
         let mut low = synth_bzimage(1, 0x020f, XLF_KERNEL_64, 0x10_0000, 0x10_0000, 0x800);
-        low[0x22c..0x230].copy_from_slice(&0x0010_0000u32.to_le_bytes()); // 1 MiB
+        low[0x22c..0x230].copy_from_slice(&0x0010_0000u32.to_le_bytes());
         assert!(matches!(
             load(&low, &initramfs, ram, "x", &mut mem),
             Err(LinuxLoadError::InitramfsDoesNotFit { .. })
@@ -1426,28 +1255,21 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "allocates guest RAM")]
     fn caps_cmdline_against_header_cmdline_size() {
-        // A kernel advertising a small cmdline_size (offset 0x238) rejects a longer
-        // command line, even though it is under CMDLINE_MAX.
         let mut img = valid_bzimage();
-        img[0x238..0x23c].copy_from_slice(&8u32.to_le_bytes()); // cmdline_size = 8
+        img[0x238..0x23c].copy_from_slice(&8u32.to_le_bytes());
         let ram = 8u64 << 20;
         let mut mem = vec![0u8; ram as usize];
         assert_eq!(
-            load(&img, &[], ram, "012345678", &mut mem), // 9 bytes > 8
+            load(&img, &[], ram, "012345678", &mut mem),
             Err(LinuxLoadError::CmdlineTooLong { len: 9, limit: 8 })
         );
-        // Exactly cmdline_size bytes is accepted, and boot_params advertises 8.
         let li = load(&img, &[], ram, "01234567", &mut mem).expect("8 bytes fits");
         let _ = li;
         assert_eq!(rd32(&mem, BOOT_PARAMS_GPA as usize + 0x238), 8);
     }
 
-    // --- exact boundary tests (mutation hardening of the `<`/`>`/`<=`/`>=`) ---
-
     #[test]
     fn protocol_version_boundary_is_inclusive() {
-        // Exactly MIN_PROTOCOL_VERSION (2.12) is ACCEPTED (kills `<`→`<=`); one
-        // below is rejected (kills `<`→`>`/`==`).
         let ok = synth_bzimage(1, MIN_PROTOCOL_VERSION, XLF_KERNEL_64, 0x10_0000, 0, 0x400);
         assert!(
             parse_setup_header(&ok).is_ok(),
@@ -1473,8 +1295,6 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "allocates guest RAM")]
     fn rejects_pref_address_below_high_ram() {
-        // A pref_address just below 1 MiB is rejected (the entry/load region must be
-        // in high RAM) — kills `load_addr < HIGH_RAM_START` → `>`/`==`.
         let img = synth_bzimage(1, 0x020f, XLF_KERNEL_64, 0x000F_0000, 0, 0x400);
         let ram = 8u64 << 20;
         let mut mem = vec![0u8; ram as usize];
@@ -1490,9 +1310,6 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "allocates guest RAM")]
     fn ram_exactly_high_ram_start_is_too_small() {
-        // ram == HIGH_RAM_START has an empty high region → RamTooSmall (kills the
-        // `ram <= HIGH_RAM_START` → `<` boundary mutant; one byte more is not
-        // RamTooSmall).
         let img = valid_bzimage();
         let n = HIGH_RAM_START as usize;
         let mut mem = vec![0u8; n];
@@ -1507,17 +1324,12 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "allocates guest RAM")]
     fn kernel_end_equal_to_ram_fits() {
-        // pref=1 MiB, init_size=1 MiB ⇒ kernel_end = 2 MiB; ram = 2 MiB (page
-        // aligned) ⇒ kernel_end == ram (kills `kernel_end > ram` → `>=`), and an
-        // empty initramfs is placed at start == kernel_end == ram (kills
-        // `start < kernel_end` in place_initramfs → `<=`).
         let img = synth_bzimage(1, 0x020f, XLF_KERNEL_64, 0x10_0000, 0x10_0000, 0x400);
         let ram = 0x20_0000u64;
         let mut mem = vec![0u8; ram as usize];
         let li = load(&img, &[], ram, "x", &mut mem).expect("kernel_end == ram fits");
         assert_eq!(li.initramfs.start, ram, "empty initramfs at start == ram");
         assert_eq!(li.initramfs.len, 0);
-        // One byte less of RAM (still page-multiple boundary moot) no longer fits.
         let mut tight = vec![0u8; (ram - 0x1000) as usize];
         assert!(matches!(
             load(&img, &[], ram - 0x1000, "x", &mut tight),
@@ -1532,7 +1344,7 @@ mod tests {
     /// doorbell pages stay intact for the guest SDK transport. The doorbell split
     /// makes low RAM **three** entries (indices 0–2); high RAM starts at index 3.
     mod e820_lapic_reservation {
-        use super::super::*; // crate items, incl. the private `build_boot_params`
+        use super::super::*;
         use proptest::prelude::*;
 
         /// E820 table for a guest of `ram` bytes. Only `ram` drives the map, so a
@@ -1609,7 +1421,6 @@ mod tests {
                     E820_RAM
                 )
             );
-            // The 7th slot is untouched (exactly six entries written).
             assert_eq!(entry(&bp, 6), (0, 0, 0));
         }
 
@@ -1625,7 +1436,6 @@ mod tests {
                 entry(&bp, 3),
                 (HIGH_RAM_START, ram - HIGH_RAM_START, E820_RAM)
             );
-            // No fifth entry written.
             assert_eq!(entry(&bp, 4), (0, 0, 0));
         }
 
@@ -1667,7 +1477,7 @@ mod tests {
                 8u64 << 30,
             ] {
                 let bp = table_for(ram);
-                assert_low_split(&bp); // the reserved doorbell entry, exactly
+                assert_low_split(&bp);
                 for i in 0..bp.e820_entries as usize {
                     let (addr, size, type_) = entry(&bp, i);
                     if type_ == E820_RAM {
@@ -1690,9 +1500,9 @@ mod tests {
             /// unmapped (RAM stops short). Also pins the per-case shape.
             #[test]
             fn reserved_page_is_never_typed_ram(ram in prop_oneof![
-                (HIGH_RAM_START + 1)..=LAPIC_MMIO_PAGE,             // 2-entry
-                (LAPIC_MMIO_PAGE + 1)..=(LAPIC_MMIO_PAGE + 0x1000), // 3-entry band
-                (LAPIC_MMIO_PAGE + 0x1001)..=(64u64 << 30),        // 4-entry
+                (HIGH_RAM_START + 1)..=LAPIC_MMIO_PAGE,
+                (LAPIC_MMIO_PAGE + 1)..=(LAPIC_MMIO_PAGE + 0x1000),
+                (LAPIC_MMIO_PAGE + 0x1001)..=(64u64 << 30),
             ]) {
                 let bp = table_for(ram);
                 let n = bp.e820_entries as usize;
@@ -1707,9 +1517,6 @@ mod tests {
                         );
                     }
                 }
-                // The LAPIC page is reserved exactly when RAM reaches it — now at
-                // index 4 (the 3-entry doorbell low split precedes it). When RAM
-                // stops short, only the low split + one high-RAM entry (4 total).
                 if ram > LAPIC_MMIO_PAGE {
                     prop_assert_eq!(entry(&bp, 4), (LAPIC_MMIO_PAGE, 0x1000, E820_RESERVED));
                 } else {
@@ -1723,22 +1530,20 @@ mod tests {
     /// review): a guest-visible image placed in the unmapped page would be written to
     /// host backing the guest cannot read back.
     mod lapic_hole_placement {
-        use super::super::*; // crate items, incl. private place_initramfs / the guard
+        use super::super::*;
 
         /// The overlap predicate the kernel guard and the initramfs relocation share
         /// (testing it covers the kernel-guard decision without a multi-GiB `load`).
         #[test]
         fn overlaps_lapic_mmio_page_detects_straddle() {
             let p = LAPIC_MMIO_PAGE;
-            // Disjoint (touching the exclusive edges) → no overlap.
             assert!(!overlaps_lapic_mmio_page(0x10_0000, p));
             assert!(!overlaps_lapic_mmio_page(p + 0x1000, p + 0x2000));
             assert!(!overlaps_lapic_mmio_page(0, 0x1000));
-            // Overlapping the page in every way → overlap.
-            assert!(overlaps_lapic_mmio_page(p, p + 0x1000)); // exactly the page
-            assert!(overlaps_lapic_mmio_page(p - 0x1000, p + 1)); // straddles low edge
-            assert!(overlaps_lapic_mmio_page(p + 0xFFF, p + 0x2000)); // last byte of page
-            assert!(overlaps_lapic_mmio_page(0, u64::MAX)); // contains it
+            assert!(overlaps_lapic_mmio_page(p, p + 0x1000));
+            assert!(overlaps_lapic_mmio_page(p - 0x1000, p + 1));
+            assert!(overlaps_lapic_mmio_page(p + 0xFFF, p + 0x2000));
+            assert!(overlaps_lapic_mmio_page(0, u64::MAX));
         }
 
         /// An initramfs whose highest placement would land in the hole is relocated to
@@ -1749,8 +1554,6 @@ mod tests {
         fn initramfs_straddling_the_hole_is_relocated_below() {
             let ram = 8u64 << 30;
             let initramfs = vec![0u8; 0x500];
-            // ceiling = initrd_addr_max + 1 = 0xFEE00800 — INSIDE the page, so the
-            // high placement (start 0xFEE00000) overlaps the hole.
             let r = place_initramfs(&initramfs, ram, 0x20_0000, LAPIC_MMIO_PAGE + 0x7FF)
                 .expect("relocates below the hole");
             assert!(
@@ -1770,7 +1573,7 @@ mod tests {
         /// is left at its high placement — the hole is only avoided, not a hard cap.
         #[test]
         fn initramfs_above_the_hole_is_kept_high() {
-            let ram = 8u64 << 30; // ceiling clamps to 4 GiB, well above the page
+            let ram = 8u64 << 30;
             let initramfs = vec![0u8; 0x1000];
             let r = place_initramfs(&initramfs, ram, 0x20_0000, 0).expect("fits high");
             assert!(
@@ -1787,8 +1590,6 @@ mod tests {
         fn initramfs_that_cannot_fit_below_the_hole_is_rejected() {
             let ram = 8u64 << 30;
             let initramfs = vec![0u8; 0x500];
-            // Same straddling ceiling, but kernel_end sits just above where the
-            // below-the-hole placement (0xFEDFF000) would start → no room.
             let err = place_initramfs(
                 &initramfs,
                 ram,

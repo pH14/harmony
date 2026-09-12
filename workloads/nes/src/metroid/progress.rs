@@ -45,8 +45,6 @@ pub struct FirstSeen {
     pub route_action_end_frame: u64,
 }
 
-// Metroid_Defines.asm, SamusGear and InArea, nmikstas/metroid-disassembly
-// 4270d57f9468daebdeea485686e31e26218a780c. Array order is presentation only.
 const GEAR: [(u8, &str); 8] = [
     (0x10, "morph_ball"),
     (0x01, "bombs"),
@@ -155,10 +153,6 @@ impl NamedProgress {
         if observation.boss_defeats.ridley {
             note("ridley_defeated");
         }
-        // Metroid_Defines.asm $98 and Bank03.asm LA003-LA018: the fatal
-        // 32nd hit enters state 3. State 8 initializes a living Mother Brain.
-        // States 6/7 are the armed/exploded time bomb. No map coordinate or
-        // action advice is involved; other areas' reused RAM is ignored.
         let mut tourian = observation.tourian_events;
         tourian.observe(state, observation.mother_brain_status);
         if tourian.mother_brain_defeated {

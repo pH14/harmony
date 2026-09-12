@@ -27,8 +27,6 @@ const CRATE: &str = "vmm-core";
 #[test]
 #[ignore = "needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`"]
 fn public_api_matches_snapshot() {
-    // The concrete composition functions differ by architecture. CI freezes
-    // the x86-64 Linux surface; do not compare another target against it.
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         eprintln!("SKIP: {CRATE} public-api test — frozen on x86-64 Linux");
         return;
@@ -57,7 +55,6 @@ fn public_api_matches_snapshot() {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Missing tool / toolchain -> skip; a real build error -> fail.
         let absent = stderr.contains("no such command")
             || stderr.contains("is not installed")
             || stderr.contains("toolchain may not be installed")

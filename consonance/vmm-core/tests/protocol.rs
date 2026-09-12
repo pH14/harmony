@@ -160,14 +160,11 @@ fn scripted_run() -> Vec<Exit<X86>> {
 
 #[test]
 fn observing_a_run_does_not_change_its_state_hash() {
-    // Control: run with no observations at all.
     let mut clean = server(scripted_run());
     hello(&mut clean);
     run(&mut clean);
     let expected = state_hash(&mut clean);
 
-    // Treatment: the same run, with every observation verb interleaved before
-    // it, and again after it.
     let mut observed = server(scripted_run());
     hello(&mut observed);
     for verb in observation_verbs() {
@@ -194,9 +191,6 @@ fn observing_a_run_does_not_change_its_state_hash() {
 
 #[test]
 fn the_neutrality_test_is_not_comparing_a_constant() {
-    // Non-vacuity guard. If the two servers hashed to the same value no matter
-    // what the guest did, the test above would pass while proving nothing. Run
-    // one server and not the other: the hashes must differ.
     let mut ran = server(scripted_run());
     hello(&mut ran);
     run(&mut ran);
@@ -248,9 +242,6 @@ fn dropping_a_snapshot_releases_it_from_the_store() {
         .expect("dropping a live handle succeeds");
     assert_eq!(reply, Reply::Unit);
 
-    // The obligation: the state is *released*, not merely forgotten. Asserted
-    // against the store's own accounting, because a server that only dropped its
-    // handle map would look identical from the wire.
     let after = srv.snapshot_store_stats();
     assert_eq!(
         after.snapshots, before.snapshots,
@@ -272,9 +263,6 @@ fn a_dropped_snapshot_is_no_longer_branchable_and_double_drop_is_an_error() {
         .expect("drop is not session-fatal")
         .expect("first drop succeeds");
 
-    // Double-drop is an error, never an idempotent success: a client that
-    // believes it still holds state it has released would mint reproducers that
-    // do not reproduce.
     let second = srv
         .handle(&Request::Drop(snap))
         .expect("a double drop is a wire error, not a session-fatal one");
@@ -283,8 +271,6 @@ fn a_dropped_snapshot_is_no_longer_branchable_and_double_drop_is_an_error() {
         "dropping an already-dropped handle must be an error, got {second:?}"
     );
 
-    // And the state algebra's own consequence: a released snapshot cannot be
-    // restored from.
     let replay = srv
         .handle(&Request::Replay(snap))
         .expect("replaying a dropped handle is a wire error, not session-fatal");
@@ -299,8 +285,6 @@ fn a_dangling_snapshot_handle_is_an_error() {
     let mut srv = server(vec![Exit::Common(CommonExit::Idle)]);
     hello(&mut srv);
 
-    // A handle the server never minted. Every state-algebra verb that takes one
-    // must refuse it loudly rather than answer for some other layer.
     let dangling = SnapId(0xDEAD_BEEF);
     for req in [Request::Drop(dangling), Request::Replay(dangling)] {
         let reply = req_reply(&mut srv, &req);

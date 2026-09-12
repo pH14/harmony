@@ -65,10 +65,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(|entry| entry.id)
         .collect();
     archive.entries.retain(|entry| kept_ids.contains(&entry.id));
-    // A kept entry whose parent was trimmed away must carry its full input
-    // on the wire, which the suffix encoder already does when the parent is
-    // not in the serialized list; parent ids are cleared so the import
-    // re-roots them explicitly rather than chasing missing ids.
     for entry in &mut archive.entries {
         if let Some(parent) = entry.parent_id
             && !kept_ids.contains(&parent)

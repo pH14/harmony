@@ -21,8 +21,6 @@ fn preflight_runs_and_reports() {
 
 #[test]
 fn oci_run_refuses_missing_image_input() {
-    // A nonexistent path with no docker/podman reachable name shape still
-    // exercises argument handling; the command must fail, not hang.
     let out = harmony()
         .args(["oci", "run", "/nonexistent/image.tar", "--timeout", "5"])
         .env("HARMONY_GUEST_DIR", "/nonexistent")

@@ -74,7 +74,6 @@ fn configure(backend: &mut KvmBackend) {
         .set_policy(&X86Policy {
             cpuid: CpuidModel::default(),
             msr_filter: MsrFilter {
-                // SYSENTER MSRs (0x174..0x177) — present, harmless, in-kernel.
                 allow_inkernel: vec![MsrRange {
                     base: 0x174,
                     count: 3,
@@ -91,14 +90,13 @@ fn enter_real_mode_at(backend: &mut KvmBackend, entry: u64) {
     st.sregs.cs.base = 0;
     st.sregs.cs.selector = 0;
     st.regs.rip = entry;
-    st.regs.rflags = 0x2; // reserved bit set, the minimal valid RFLAGS
+    st.regs.rflags = 0x2;
     backend.restore(&st).expect("restore setup state");
 }
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
 fn bringup_smoke_out_then_hlt() {
-    // mov dx, 0x3f8 ; mov al, 0x42 ; out dx, al ; hlt
     let code: &[u8] = &[0xBA, 0xF8, 0x03, 0xB0, 0x42, 0xEE, 0xF4];
 
     let mut backend = new_backend_or_explain();
@@ -138,7 +136,6 @@ fn save_restore_round_trips_on_real_kvm() {
     unsafe { backend.map_memory(Gpa(0), mem.as_mut_slice()) }.expect("map_memory");
     configure(&mut backend);
 
-    // Set GPRs via restore, save, then prove restore→save is a fixpoint.
     let mut st = backend.save().expect("save");
     st.regs.rax = 0xDEAD_BEEF_CAFE_F00D;
     st.regs.rbx = 0x0123_4567_89AB_CDEF;
@@ -149,36 +146,21 @@ fn save_restore_round_trips_on_real_kvm() {
     assert_eq!(a.regs.rax, 0xDEAD_BEEF_CAFE_F00D);
     assert_eq!(a.regs.rbx, 0x0123_4567_89AB_CDEF);
 
-    // The full allow-stateful MSR set was captured (get_msrs got == requested):
-    // the 3 SYSENTER MSRs from `configure`, none silently dropped.
     assert_eq!(a.msrs.len(), 3, "all allow-stateful MSRs captured");
-    // The XSAVE image is the host-sized XSAVE2 buffer (>= the 4 KiB legacy size),
-    // not a fixed 4 KiB truncation.
     assert!(a.xsave.len() >= 4096, "host-sized XSAVE2 image");
 
     backend.restore(&a).expect("restore a");
     let b = backend.save().expect("save b");
-    // The fixpoint now spans SREGS2 (incl. flags/PDPTRs) and the full XSAVE2 image.
     assert_eq!(a, b, "restore→save must be a fixpoint on real KVM");
 }
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored"]
 fn msr_filter_is_loud() {
-    // Real-mode stub at 0x1000:
-    //   mov ecx, 0x12345678   (66 b9 ..)   ; denied MSR index
-    //   rdmsr                 (0f 32)
-    //   mov al, 0x99          (b0 99)       ; only reached if rdmsr *silently allowed*
-    //   out 0x10, al          (e6 10)       ; -> X86Exit::Io (the silent-value path)
-    //   hlt                   (f4)
     let code: &[u8] = &[
         0x66, 0xB9, 0x78, 0x56, 0x34, 0x12, 0x0F, 0x32, 0xB0, 0x99, 0xE6, 0x10, 0xF4,
     ];
-    // Real-mode IVT entry for #GP (vector 13) at physical 13*4 = 0x34: offset
-    // 0x2000, segment 0x0000.
     let gp_ivt: &[u8] = &[0x00, 0x20, 0x00, 0x00];
-    // The #GP handler at 0x2000: a single HLT — reached only if the fault is
-    // actually delivered.
     let gp_handler: &[u8] = &[0xF4];
 
     let mut backend = new_backend_or_explain();
@@ -195,15 +177,10 @@ fn msr_filter_is_loud() {
         .expect("load handler");
     enter_real_mode_at(&mut backend, 0x1000);
 
-    // The denied RDMSR surfaces loudly to userspace, not a silent in-kernel value.
     match backend.run().expect("run to RDMSR") {
         Exit::Arch(X86Exit::Rdmsr { index: 0x1234_5678 }) => {}
         other => panic!("expected RDMSR exit for the denied index, got {other:?}"),
     }
-    // Deny it (#GP). The fault vectors through IVT[13] to the HLT handler, so the
-    // next exit is HLT — proving the guest took the fault. A silent in-kernel
-    // value instead would have advanced past RDMSR into the `out 0x10` and
-    // surfaced X86Exit::Io, which would fail this assertion loudly.
     backend.complete_fault().expect("complete_fault");
     match backend.run().expect("run after #GP") {
         Exit::Common(CommonExit::Idle) => {}

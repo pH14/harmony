@@ -445,7 +445,6 @@ mod tests {
             .is_err()
         );
 
-        // A record that states its horizon replays only under that horizon.
         std::fs::write(
             file.path(),
             serde_json::json!({ "actions": actions, "horizon_nanos": 250_000_000_u64 }).to_string(),

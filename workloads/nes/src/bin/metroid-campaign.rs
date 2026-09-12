@@ -155,8 +155,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         selector: args.selector.clone(),
         suffix: SuffixShape::OneToSix,
         mixture: args.mixture,
-        // A Metroid run ends only at death, so the deepest route is the
-        // champion rather than a victory endpoint.
         victory_input_path: None,
     };
     let mut stream = BufWriter::new(fs::File::create(args.output.join("stream.jsonl"))?);

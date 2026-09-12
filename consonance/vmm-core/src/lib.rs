@@ -36,9 +36,6 @@
 //! guest state and replay hashes.
 
 pub mod control;
-// Task 81 — the `exec` improvisation's pure sentinel state machine (what bytes to
-// type at the serial shell + how to detect completion/status). Portable and
-// off-record by ruling; the real serial wiring lives in `vmm`/`control`.
 pub mod exec;
 /// M3's pure real-payload acceptance, V-time-gap, and throughput oracles.
 pub mod m3_report;
@@ -49,12 +46,5 @@ pub mod session_trace;
 pub mod snapshot;
 /// Architecture-neutral assigned-at-exit virtual time and its independent oracles.
 pub mod virtual_time;
-// The engine/vendor seam (`docs/ARCHITECTURE.md`): every module OUTSIDE
-// `vendor` is the arch-neutral engine; everything x86 lives under `vendor::x86`
-// (the CPU contract, exit dispatch + dispositions, the boot loaders + entry
-// state, the interrupt fabric + platform devices, the host-homogeneity probe,
-// the exit-count-clock event, and the `vm_state` record set). A module split, not a
-// crate split — the reserved engine/vendor crate names activate with the ARM
-// window.
 pub mod vendor;
 pub mod vmm;

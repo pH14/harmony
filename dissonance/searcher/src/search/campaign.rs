@@ -1619,8 +1619,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                     .collect()
             })
             .unwrap_or_default();
-        // The source evidence already covers every action interior the source
-        // run observed, so both import paths merge it whole.
         game.merge_origin_evidence(&mut self.evidence, source);
         let preserve_inactive_snapshots = self.archive.preserves_inactive_snapshots();
         self.archive.preserve_inactive_snapshots(true)?;
@@ -1641,8 +1639,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                 imported.push(None);
                 continue;
             }
-            // Nearest imported ancestor; the walk stays within earlier source
-            // entries, which are the only ones that can be imported already.
             let mut ancestor = entry.parent_id;
             let mut parent = None;
             while let Some(id) = ancestor {
@@ -1677,8 +1673,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
             let mut milestones = parent_entry.milestones;
             let prefix = entry.input.clone();
             let snapshot = if let Some(snapshot) = checkpointed.get(&entry.id) {
-                // The source recorded the strongest milestones along this
-                // input, which is what replaying its actions would merge.
                 game.restore(target, snapshot)?;
                 milestones = merge_max(game, milestones, entry.milestones);
                 counts.checkpointed = counts.checkpointed.saturating_add(1);
@@ -1769,8 +1763,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
             .archive
             .index_of_id(parent_id)
             .ok_or("campaign job parent is no longer resident")?;
-        // Entries are append-only and immutable once inserted, so the parent
-        // read here is identical to the parent the worker saw at selection.
         let mut current_parent = parent_index;
         let mut pending_suffix = Vec::new();
         let mut previous_key = None;
@@ -2139,7 +2131,7 @@ fn record_compaction_elapsed(
     }
 }
 
-#[allow(clippy::disallowed_methods)] // not order-observable: temporary live diagnostics only.
+#[allow(clippy::disallowed_methods)]
 fn profile_now(enabled: bool) -> Option<Instant> {
     enabled.then(Instant::now)
 }
@@ -2541,9 +2533,6 @@ fn write_live_progress<G: Game>(
         search_elapsed_millis: Some(telemetry_started)
             .map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX)),
         unix_time,
-        // `sequence` is the one-based count returned by admission;
-        // the sidecar must report completed executions, not the
-        // zero-based reservation/admission index.
         executions: sequence,
         frames_emulated: counters
             .bootstrap_frames
@@ -2799,9 +2788,7 @@ where
         )?));
     }
 
-    // The wall cutoff is live-schedule input only: it stops issuing new
-    // reservations and never enters campaign state.
-    #[allow(clippy::disallowed_methods)] // not order-observable: reservation cutoff only.
+    #[allow(clippy::disallowed_methods)]
     let telemetry_started = std::time::Instant::now();
     let started = config.wall_budget.map(|_| telemetry_started);
 
@@ -2844,7 +2831,6 @@ where
             .map_err(|error| error.to_string())
         },
         |pool| -> Result<(), Box<dyn Error>> {
-            // Select one job for one worker, recording skips, or report exhaustion.
             let select = |core: &mut CoordinatorCore<G>,
                           rands: &mut [RomuDuoJrRand],
                           draw_state: &mut G::DrawState,
@@ -2876,9 +2862,6 @@ where
                 let max_actions = core.max_actions;
                 core.archive.establish_liveness_anchor(max_actions);
                 let mut consecutive_skips = 0_u64;
-                // One fixed slot in four may carry an observed transition.
-                // The complete tail is recorded before old metadata can be
-                // reclaimed; serial replay needs no retained donor snapshot.
                 if reserved.wrapping_add(1).is_multiple_of(4) {
                     while let Some(continuation) = core.archive.pop_continuation() {
                         let Some(parent_index) = core.archive.index_of_id(continuation.parent)
@@ -3086,14 +3069,9 @@ where
             let pipeline_depth = admission_window_depth(workers, config.reservations_per_worker);
             let mut pending = BTreeMap::<usize, PendingJob>::new();
             let mut completed = BTreeMap::<usize, CompletedJob<G>>::new();
-            // The run can never reserve past its execution budget, so a
-            // saturated pipeline depth must not size the initial allocation.
             let mut queued_specs = VecDeque::with_capacity(
                 pipeline_depth.min(usize::try_from(config.execution_budget).unwrap_or(usize::MAX)),
             );
-            // Fill only the pipeline depth. Every later reservation is
-            // selected after, and therefore from the archive produced by,
-            // its predecessor's ordered admission.
             for _ in 0..pipeline_depth {
                 let worker_index = usize::try_from(reserved % u64::from(config.workers))?;
                 let worker = u32::try_from(worker_index)?;
@@ -3307,9 +3285,6 @@ where
                     }
                     result_slots.admit(physical_worker)?;
                     if let Some(sink) = progress.as_deref_mut() {
-                        // Count-based boundaries keep sidecar presence
-                        // independent of host speed; the timestamp below is
-                        // informational only.
                         if progress_checkpoint_due(sequence) {
                             write_live_progress(
                                 &core,
@@ -3392,10 +3367,6 @@ where
                         queued_specs.push_back(spec);
                     }
 
-                    // Refill an executor as soon as the corresponding
-                    // reservation is selected. This keeps the physical
-                    // pipeline full while preserving logical reservation and
-                    // admission order.
                     while !queued_specs.is_empty() {
                         let Some(worker) = result_slots.reserve() else {
                             break;
@@ -3435,9 +3406,6 @@ where
         },
     )?;
 
-    // Every worker and queued specification has been joined at this point.
-    // Drop any non-selectable payload retained only by an in-flight Arc so
-    // final artifacts describe the deterministic breeding population.
     core.archive.preserve_inactive_snapshots(false)?;
     core.archive.compact_history_for_final_report()?;
     core.finish_curve();
@@ -3692,10 +3660,6 @@ where
             return Err("campaign replay checkpoint does not match the recorded stream".into());
         }
     }
-    // Replay already borrows the decoded origin from its caller. Do not clone
-    // a mature archive and its multi-gigabyte checkpoint merely to satisfy the
-    // live-run ownership shape: the clone survives the whole replay and can
-    // double peak memory without changing any campaign state.
     let draw_origin = match header.origin_kind.as_str() {
         ORIGIN_ARCHIVE => Some((
             header.origin_archive_sha256.as_deref().unwrap_or_default(),
@@ -3789,8 +3753,6 @@ where
         core.archive
             .preserve_recorded_metadata_uses(recorded_metadata_uses);
     } else {
-        // Replay models selected-but-not-yet-admitted jobs with explicit Arc
-        // holders below; leave the legacy future-use map empty for this path.
         core.archive
             .preserve_recorded_snapshot_uses(BTreeMap::new());
         core.archive.preserve_inactive_snapshots(false)?;
@@ -4974,8 +4936,6 @@ mod tests {
         assert!(profile_now(false).is_none());
         assert!(profile_now(true).is_some());
         assert_eq!(profile_elapsed(None), 0);
-        // Test-only wall time verifies the observability-only profiler seam;
-        // it cannot reach campaign state or recorded bytes.
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now()
             .checked_sub(Duration::from_millis(1))
@@ -5047,9 +5007,6 @@ mod tests {
         let depth = admission_window_depth(workers, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
         assert_eq!(depth, workers * DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
 
-        // Model the coordinator's event order: fill the pipeline, then admit
-        // one result and select one replacement. No reservation can be more
-        // than `depth` ahead of the ordered admission cursor.
         let mut next_selection = 0_usize;
         let mut selected = Vec::new();
         for next_admission in 0..=depth {
@@ -5086,9 +5043,6 @@ mod tests {
 
     #[test]
     fn the_first_victory_counters_exclude_jobs_that_drain_after_the_win() {
-        // Once an admission wins, the coordinator stops reserving, but every
-        // job already reserved still runs, still lands at its own sequence
-        // position, and still adds to `job_frames`.
         let mut counters = CampaignCounters::new(4);
         counters.bootstrap_frames = 1_000;
         counters.job_frames = 250;
@@ -5098,7 +5052,6 @@ mod tests {
 
         for (sequence, drained) in [(12, 90), (13, 140), (14, 70)] {
             counters.job_frames = counters.job_frames.saturating_add(drained);
-            // A later admission cannot move either metric even if it wins.
             counters.note_first_victory(sequence);
         }
         assert_eq!(counters.frames_to_first_victory, Some(1_250));
@@ -5184,15 +5137,11 @@ mod tests {
 
     #[test]
     fn a_live_window_of_sixty_four_is_not_recorded_as_the_legacy_policy() {
-        // The legacy identifier is exactly the window-64 text in the `_v1`
-        // namespace, so a live window-64 run must record `_v2` and replay as
-        // a window, not as the legacy all-future pinning.
         let live = schedule_policy_identifier(64);
         assert_ne!(live, super::LEGACY_CAMPAIGN_SCHEDULE_POLICY);
         assert!(!schedule_policy_is_legacy(Some(&live)));
         assert_eq!(schedule_policy_window(Some(&live)), Some(64));
 
-        // The same text in the historical namespace still means legacy.
         assert!(schedule_policy_is_legacy(Some(
             "deterministic_window_64_per_worker_v1"
         )));

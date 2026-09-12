@@ -24,9 +24,6 @@ pub const APIC_VERSION_VALUE: u32 = 0x0005_0014;
 /// so a mid-count divide change re-anchors instead of applying retroactively).
 pub const LAPIC_STATE_VERSION: u32 = 3;
 
-// --- Register offsets (16-byte aligned, within the 4 KiB page) --------------
-// SDM Vol. 3A §11.4.1 "The Local APIC Block Diagram", Table 11-1.
-
 /// Local APIC ID register (read-only here; the single-vCPU ID is frozen).
 pub const APIC_ID: u32 = 0x020;
 /// Local APIC Version register (read-only, [`APIC_VERSION_VALUE`]).

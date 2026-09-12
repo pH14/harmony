@@ -135,8 +135,6 @@ fn put_u64(page: &mut [u8], off: usize, v: u64) {
 
 #[inline]
 fn get_u32(page: &[u8], off: usize) -> u32 {
-    // Callers bounds-check `page` once up front; the offsets are compile-time
-    // constants within PVCLOCK_PAGE_LEN.
     u32::from_le_bytes([page[off], page[off + 1], page[off + 2], page[off + 3]])
 }
 
@@ -189,20 +187,14 @@ pub fn stamp(page: &mut [u8], vns: u64, guest_clock: u64, guest_clock_hz: u64) -
     if published(page, vns, guest_clock, guest_clock_hz) {
         return false;
     }
-    // seq ← seq | 1 (odd: update in progress).
     let odd = get_u32(page, SEQ_OFF) | 1;
     put_u32(page, SEQ_OFF, odd);
-    // Publish the new materialized values (+ the fixed ABI fields, so a stamp
-    // also repairs a page the guest scribbled on — self-healing, and keeps the
-    // stable frame a total function of the published values).
     put_u32(page, ABI_VERSION_OFF, PVCLOCK_ABI_VERSION);
     put_u64(page, VNS_OFF, vns);
     put_u64(page, GUEST_CLOCK_OFF, guest_clock);
     put_u64(page, GUEST_CLOCK_HZ_OFF, guest_clock_hz);
     put_u32(page, FLAGS_OFF, PVCLOCK_FLAGS_V1);
     put_u32(page, VCPU_INDEX_OFF, 0);
-    // seq ← odd + 1 (even: stable, one epoch newer). Wrapping: a u32 epoch
-    // rolling over is deterministic and the reader only compares equality.
     put_u32(page, SEQ_OFF, odd.wrapping_add(1));
     true
 }
@@ -233,12 +225,10 @@ pub fn stamp_canonical(page: &mut [u8], vns: u64, guest_clock: u64, guest_clock_
     }
     let mut canonical = [0u8; PVCLOCK_PAGE_LEN];
     put_u32(&mut canonical, ABI_VERSION_OFF, PVCLOCK_ABI_VERSION);
-    // seq = 0 (even, stable) — the zeroed default.
     put_u64(&mut canonical, VNS_OFF, vns);
     put_u64(&mut canonical, GUEST_CLOCK_OFF, guest_clock);
     put_u64(&mut canonical, GUEST_CLOCK_HZ_OFF, guest_clock_hz);
     put_u32(&mut canonical, FLAGS_OFF, PVCLOCK_FLAGS_V1);
-    // vcpu_index = 0, reserved tail = 0 — already the zeroed default.
     if page[..PVCLOCK_PAGE_LEN] == canonical {
         return false;
     }
@@ -291,7 +281,6 @@ mod tests {
             0xAABB_CCDD_EEFF_0011,
             2_000_000_000
         ));
-        // Raw little-endian bytes at the §1 offsets.
         assert_eq!(
             page[ABI_VERSION_OFF..ABI_VERSION_OFF + 4],
             1u32.to_le_bytes()
@@ -316,7 +305,6 @@ mod tests {
         assert_eq!(f.guest_clock_hz, 2_000_000_000);
         assert_eq!(f.flags, PVCLOCK_FLAGS_V1);
         assert_eq!(f.vcpu_index, 0);
-        // First publish from a zeroed page: 0 → 1 → 2.
         assert_eq!(f.seq, 2);
     }
 
@@ -325,10 +313,8 @@ mod tests {
         let mut page = fresh_page();
         assert!(stamp(&mut page, 100, 200, 1_000_000_000));
         let snapshot = page.clone();
-        // Same values again: byte-identical, seq unmoved, reports unchanged.
         assert!(!stamp(&mut page, 100, 200, 1_000_000_000));
         assert_eq!(page, snapshot);
-        // New values: epoch advances by exactly one even step.
         assert!(stamp(&mut page, 101, 202, 1_000_000_000));
         assert_eq!(read(&page).unwrap().seq, 4);
     }
@@ -339,7 +325,6 @@ mod tests {
         stamp(&mut page, 1, 2, 3);
         let seq_before = read(&page).unwrap().seq;
         stamp(&mut page, 10, 20, 3);
-        // The epoch moved, so a reader holding `seq_before` re-reads.
         assert_ne!(read(&page).unwrap().seq, seq_before);
     }
 
@@ -347,19 +332,15 @@ mod tests {
     fn canonical_is_total_function_of_values() {
         let mut a = fresh_page();
         let mut b = fresh_page();
-        // Two different histories...
         for i in 0..7u64 {
             stamp(&mut a, i, 2 * i, 5);
         }
         stamp(&mut b, 999, 999, 5);
-        // ...and some guest scribbles in the reserved tail of one of them.
         b[RESERVED_OFF + 100] = 0xEE;
-        // Canonicalizing both to the same values yields byte-identical pages.
         assert!(stamp_canonical(&mut a, 42, 84, 5));
         assert!(stamp_canonical(&mut b, 42, 84, 5));
         assert_eq!(a, b);
         assert_eq!(read(&a).unwrap().seq, 0);
-        // Canonicalizing an already-canonical page is a byte-level no-op.
         let snap = a.clone();
         assert!(!stamp_canonical(&mut a, 42, 84, 5));
         assert_eq!(a, snap);
@@ -367,19 +348,13 @@ mod tests {
 
     #[test]
     fn a_verbatim_sealed_page_keeps_restored_and_continued_runs_in_lockstep() {
-        // The r4 seal contract: the image is the live page VERBATIM (no
-        // canonicalization), so a restored run inherits the parent's epoch and
-        // the two evolve byte-identically. This is what a copy-only
-        // canonicalization would break — the child would start at seq 0 while
-        // the parent carried seq K, and their guest RAM would differ forever.
         let mut parent = fresh_page();
         for i in 0..5u64 {
             stamp(&mut parent, i, i, 7);
         }
-        let sealed = parent.clone(); // exactly what the snapshot engine captures
-        let mut child = sealed.clone(); // exactly what a restore installs
+        let sealed = parent.clone();
+        let mut child = sealed.clone();
         assert_eq!(parent, child);
-        // Both run on to the same next value: same bytes, same epoch.
         assert!(stamp(&mut parent, 9, 9, 7));
         assert!(stamp(&mut child, 9, 9, 7));
         assert_eq!(parent, child);
@@ -387,22 +362,16 @@ mod tests {
 
     #[test]
     fn canonical_reset_would_be_an_aba_on_a_live_page() {
-        // Why the seal path does NOT canonicalize (r4 P1), pinned as a test: a
-        // reader samples the epoch, is interrupted, a refresh publishes new
-        // values, and a canonicalizing seal puts the epoch BACK — so the
-        // reader's validating re-read matches and it accepts the stale value it
-        // loaded before the refresh.
         let mut page = fresh_page();
-        stamp_canonical(&mut page, 100, 200, 7); // registration
+        stamp_canonical(&mut page, 100, 200, 7);
         let reader_sampled_seq = read(&page).unwrap().seq;
         let reader_loaded_vns = read(&page).unwrap().vns;
-        stamp(&mut page, 500, 600, 7); // a refresh the reader straddled
+        stamp(&mut page, 500, 600, 7);
         assert_ne!(
             read(&page).unwrap().seq,
             reader_sampled_seq,
             "mid-run the epoch moves, so the straddling reader retries — correct"
         );
-        // Now canonicalize as a seal once would have:
         stamp_canonical(&mut page, 500, 600, 7);
         assert_eq!(
             read(&page).unwrap().seq,
@@ -411,18 +380,13 @@ mod tests {
              accepts vns={reader_loaded_vns} even though the page now publishes 500 — the ABA \
              the seal path must not create"
         );
-        // The seal path therefore leaves live pages alone; only registration
-        // (no reader possible) canonicalizes.
     }
 
     #[test]
     fn stamp_repairs_guest_scribbles_in_fixed_fields() {
         let mut page = fresh_page();
         stamp(&mut page, 5, 10, 3);
-        // A (misbehaving but deterministic) guest scribbles the flags field.
         put_u32(&mut page, FLAGS_OFF, 0xDEAD);
-        // `published` no longer holds, so the next stamp re-publishes and
-        // repairs the fixed fields.
         assert!(stamp(&mut page, 5, 10, 3));
         assert_eq!(read(&page).unwrap().flags, PVCLOCK_FLAGS_V1);
     }
@@ -431,10 +395,10 @@ mod tests {
     fn read_refuses_odd_seq_and_bad_abi() {
         let mut page = fresh_page();
         stamp(&mut page, 1, 2, 3);
-        put_u32(&mut page, SEQ_OFF, 7); // mid-update frame
+        put_u32(&mut page, SEQ_OFF, 7);
         assert!(read(&page).is_none());
         put_u32(&mut page, SEQ_OFF, 8);
-        put_u32(&mut page, ABI_VERSION_OFF, 2); // foreign ABI
+        put_u32(&mut page, ABI_VERSION_OFF, 2);
         assert!(read(&page).is_none());
     }
 
@@ -452,10 +416,8 @@ mod tests {
     fn seq_epoch_wraps_deterministically() {
         let mut page = fresh_page();
         stamp(&mut page, 1, 1, 1);
-        // Force the epoch to the wrap boundary and publish once more.
-        put_u32(&mut page, SEQ_OFF, u32::MAX - 1); // even
+        put_u32(&mut page, SEQ_OFF, u32::MAX - 1);
         stamp(&mut page, 2, 2, 1);
-        // (u32::MAX - 1) | 1 = u32::MAX (odd), +1 wraps to 0 (even).
         assert_eq!(read(&page).unwrap().seq, 0);
     }
 }

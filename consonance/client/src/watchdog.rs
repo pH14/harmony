@@ -40,7 +40,6 @@ impl Watchdog {
     pub fn start(budget: Duration, cancel: Arc<AtomicBool>) -> std::io::Result<Self> {
         install_signal()?;
         // SAFETY: pthread_self returns the calling thread's live identifier.
-        // The non-Send guard joins the only user of it before this thread exits.
         let owner = unsafe { libc::pthread_self() };
         let (done, receiver) = mpsc::channel();
         let outcome = Arc::new(AtomicU8::new(RUNNING));
@@ -50,7 +49,6 @@ impl Watchdog {
             .spawn(move || {
                 watch(receiver, budget, &watched, &cancel, || {
                     // SAFETY: owner stays alive until this sender has been joined.
-                    // SIGUSR1 has a no-op handler and is unblocked on that thread.
                     let _ = unsafe { libc::pthread_kill(owner, libc::SIGUSR1) };
                 });
             })?;
@@ -100,8 +98,6 @@ fn watch(
     cancel.store(true, Ordering::Release);
     loop {
         kick();
-        // Repeat after expiry to close the signal-before-KVM_RUN race. No
-        // signals are sent before expiry, and the VM is abandoned afterward.
         if done.recv_timeout(Duration::from_millis(10)) != Err(mpsc::RecvTimeoutError::Timeout) {
             break;
         }
@@ -251,7 +247,6 @@ mod tests {
             done,
             thread: Some(std::thread::spawn(move || {
                 let _ = rx.recv();
-                // Without join(), guard destruction returns before this write.
                 std::thread::sleep(Duration::from_millis(20));
                 flag.store(true, Ordering::Release);
             })),
@@ -302,8 +297,6 @@ mod tests {
                 .unwrap();
             let report = String::from_utf8_lossy(&child.stdout).into_owned();
             assert!(child.status.success(), "{mode}: {report}");
-            // A filter that matches nothing also exits zero, so require the
-            // child to report the case it was spawned to run.
             assert!(report.contains("1 passed"), "{mode}: {report}");
         }
     }

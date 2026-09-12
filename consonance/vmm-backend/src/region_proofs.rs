@@ -40,20 +40,18 @@ fn split_parts_structural_invariants() {
     let end = base + len;
     let hole_end = hole_base + hole_len;
 
-    let mut prev_end = base; // parts are ordered; each starts at or after the last end
+    let mut prev_end = base;
     for slot in split_parts(base, len, hole_base, hole_len) {
         if let Some(p) = slot {
             assert!(p.size > 0, "non-empty");
             assert!(p.host_off == p.gpa - base, "host offset tracks the gpa");
             assert!(p.gpa >= base, "starts within the region");
-            assert!(p.gpa + p.size <= end, "ends within the region"); // no wrap: <= end
+            assert!(p.gpa + p.size <= end, "ends within the region");
             assert!(
                 p.gpa >= prev_end,
                 "ordered + non-overlapping with earlier parts"
             );
             prev_end = p.gpa + p.size;
-            // Disjoint from the hole (an empty hole carves nothing, so the single
-            // full region trivially does not intersect it).
             assert!(
                 hole_len == 0 || p.gpa + p.size <= hole_base || p.gpa >= hole_end,
                 "a part never intersects the hole"
@@ -78,7 +76,7 @@ fn split_parts_pointwise_coverage() {
     let parts = split_parts(base, len, hole_base, hole_len);
 
     let x: u64 = kani::any();
-    kani::assume(base <= x && x < end); // an arbitrary byte inside the region
+    kani::assume(base <= x && x < end);
     let in_hole = hole_base <= x && x < hole_end;
     let mut covered = false;
     for slot in parts {
@@ -129,7 +127,7 @@ fn split_parts_disjoint_hole_is_single_region() {
     kani::assume(len > 0);
     let end = base + len;
     let hole_end = hole_base + hole_len;
-    kani::assume(hole_end <= base || hole_base >= end); // hole entirely outside
+    kani::assume(hole_end <= base || hole_base >= end);
 
     let parts = split_parts(base, len, hole_base, hole_len);
     assert!(

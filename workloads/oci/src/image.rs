@@ -171,8 +171,6 @@ fn export_from_tool(image: &str, stage_dir: &Path) -> Result<PathBuf, ImageError
         if Command::new(tool).arg("--version").output().is_err() {
             continue;
         }
-        // Pull only when the image is absent so a cached image stages
-        // offline and without a registry round trip.
         if local_image_id(tool, image).is_none() {
             let _ = Command::new(tool).args(["pull", image]).status();
         }
@@ -204,9 +202,6 @@ fn stage_from_path(input: &Path, stage_dir: &Path) -> Result<StagedImage, ImageE
         dir
     };
 
-    // Both `docker save` (modern) and OCI layout carry index.json +
-    // blobs/sha256/...; docker-save additionally has a legacy manifest.json,
-    // which we prefer because it lists layers directly in order.
     let (layers, config_blob) = if layout.join("manifest.json").is_file() {
         docker_save_layers(&layout)?
     } else if layout.join("index.json").is_file() {
@@ -270,8 +265,6 @@ struct OciManifest {
 /// symlinked `blobs/` can move the read outside the image.
 fn blob_path(layout: &Path, digest: &str) -> Result<PathBuf, ImageError> {
     let relative = digest.replace(':', "/");
-    // Check the digest's own path before it is prefixed, so an absolute
-    // digest cannot hide behind the prefix.
     check_relative(Path::new(&relative))?;
     if Path::new(&relative).components().next().is_none() {
         return Err(ImageError::UnsafePath(digest.to_string()));
@@ -480,8 +473,6 @@ impl Drop for ArchiveReader {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        // Close the pipe first so a decompressor still producing output sees
-        // the reader go away instead of blocking.
         self.reader = Box::new(std::io::empty());
         let _ = child.kill();
         let _ = child.wait();
@@ -548,8 +539,6 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
         verify_checksum(&block)?;
         let size = parse_octal(&block[124..136])?;
         match block[156] {
-            // GNU long name: this member's data is the next member's name,
-            // stored with a terminating NUL that is not part of it.
             b'L' => {
                 let mut data = header_data(&mut stream, size)?;
                 data.truncate(
@@ -559,26 +548,18 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                 );
                 long_name = Some(data);
             }
-            // GNU long link name: link targets are not part of the check.
             b'K' => {
                 header_data(&mut stream, size)?;
             }
-            // pax extended header: its records describe the member that
-            // follows.
             b'x' => {
                 let data = header_data(&mut stream, size)?;
                 parse_pax(&data, &mut pax)?;
             }
-            // A global pax header carries metadata for every member after
-            // it. This reader does not model that, and ignoring one would
-            // let the archive rename members behind the check.
             b'g' => {
                 return Err(ImageError::Tar(
                     "archive carries a global pax header".into(),
                 ));
             }
-            // Sparse and multi-volume members store their data in layouts
-            // this reader does not model, so it cannot find the next header.
             b'S' | b'M' => {
                 return Err(ImageError::Tar(
                     "archive carries an unsupported member type".into(),
@@ -672,7 +653,6 @@ fn require_trailing_zeros(stream: &mut impl Read) -> Result<(), ImageError> {
 
 fn verify_checksum(block: &[u8; TAR_BLOCK]) -> Result<(), ImageError> {
     let stored = parse_octal(&block[148..156])?;
-    // The checksum field counts as spaces in its own sum.
     let sum: u32 = block
         .iter()
         .enumerate()
@@ -802,8 +782,6 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
                     .ok_or_else(|| ImageError::Tar("unreadable pax size record".into()))?;
                 pax.size = Some(size);
             }
-            // An id an octal header field cannot hold is stored here, and
-            // `tar` applies it over the field.
             b"uid" | b"gid" => {
                 let id = std::str::from_utf8(value)
                     .ok()
@@ -815,8 +793,6 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
                     pax.gid = Some(id);
                 }
             }
-            // A sparse member's data is stored in a layout these records
-            // describe, so a reader that ignores them skips the wrong bytes.
             key if key.starts_with(b"GNU.sparse.") => {
                 return Err(ImageError::Tar(
                     "archive uses an unsupported sparse pax record".into(),
@@ -841,8 +817,6 @@ fn extract_checked(archive: &Path, dest: &Path) -> Result<(), ImageError> {
 /// checked as it is used: a lower layer can leave a symlink where this layer
 /// has a directory, and descending through it would write outside the
 /// staging tree.
-// Layer installation temporarily grants the owner traversal and write access,
-// while preserving group/other and special bits until the final mode is restored.
 fn writable_layer_mode(mode: u32) -> u32 {
     mode | 0o700
 }
@@ -852,7 +826,6 @@ fn merge_layer(staged: &Path, rootfs: &Path) -> Result<(), ImageError> {
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
         let name = entry.file_name();
-        // Whiteout markers describe deletions; they are not image content.
         if name.to_string_lossy().starts_with(".wh.") {
             continue;
         }
@@ -872,10 +845,6 @@ fn merge_layer(staged: &Path, rootfs: &Path) -> Result<(), ImageError> {
                 }
                 None => std::fs::create_dir(&target)?,
             }
-            // An image may ship a directory its owner cannot write. Both
-            // sides stay writable while this layer's children move across,
-            // because moving an entry out of a directory needs write
-            // permission on it. The target takes the layer's mode afterwards.
             let mode = meta.permissions().mode() & 0o7777;
             let open = std::fs::Permissions::from_mode(writable_layer_mode(mode));
             std::fs::set_permissions(&source, open.clone())?;
@@ -904,7 +873,6 @@ fn resolve_under(rootfs: &Path, relative: &Path) -> Result<Option<PathBuf>, Imag
         return Ok(None);
     };
     let Some(name) = relative.file_name() else {
-        // The layer's own root, named by a top-level opaque whiteout.
         return Ok(Some(real_root));
     };
     let parent = rootfs.join(relative.parent().unwrap_or(Path::new("")));
@@ -1017,8 +985,6 @@ fn apply_whiteouts(members: &[Member], rootfs: &Path) -> Result<(), ImageError> 
             let Ok(meta) = std::fs::symlink_metadata(&dir) else {
                 continue;
             };
-            // Clearing a directory that is really a symlink would clear the
-            // link's target, which can sit outside the staging tree.
             if meta.is_symlink() {
                 return Err(ImageError::UnsafePath(member.shown()));
             }
@@ -1030,8 +996,6 @@ fn apply_whiteouts(members: &[Member], rootfs: &Path) -> Result<(), ImageError> 
             let Some(target) = resolve_under(rootfs, &path.with_file_name(hidden))? else {
                 continue;
             };
-            // Read the target's own type, never the type it points at: a
-            // whiteout deletes the entry, not what a symlink resolves to.
             let Ok(meta) = std::fs::symlink_metadata(&target) else {
                 continue;
             };
@@ -1082,14 +1046,12 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("m"), b"secret").unwrap();
 
-        // The blobs directory itself points out of the layout.
         let via_dir = dir.path().join("via-dir");
         std::fs::create_dir_all(&via_dir).unwrap();
         std::os::unix::fs::symlink(dir.path().join("outside"), via_dir.join("blobs")).unwrap();
         let err = blob_path(&via_dir, "sha256:m").unwrap_err();
         assert!(matches!(err, ImageError::UnsafePath(_)), "{err:?}");
 
-        // One blob points out of the layout.
         let via_blob = dir.path().join("via-blob");
         std::fs::create_dir_all(via_blob.join("blobs/sha256")).unwrap();
         std::os::unix::fs::symlink(outside.join("m"), via_blob.join("blobs/sha256/m")).unwrap();
@@ -1111,7 +1073,6 @@ mod tests {
         let err = oci_layout_layers(&layout).unwrap_err();
         assert!(matches!(err, ImageError::UnsafePath(_)), "{err:?}");
 
-        // A real index whose manifest blob is a symlink out of the layout.
         std::fs::remove_file(layout.join("index.json")).unwrap();
         std::fs::write(
             layout.join("index.json"),
@@ -1138,7 +1099,6 @@ mod tests {
         let err = docker_save_layers(&layout).unwrap_err();
         assert!(matches!(err, ImageError::UnsafePath(_)), "{err:?}");
 
-        // A real manifest whose layer reference is a symlink out of the layout.
         std::fs::remove_file(layout.join("manifest.json")).unwrap();
         std::fs::write(
             layout.join("manifest.json"),
@@ -1296,7 +1256,6 @@ mod tests {
         data: &[u8],
         owner: Owner,
     ) -> Vec<u8> {
-        // A directory needs its search bit for the members below it to land.
         let mode = if typeflag == b'5' { 0o755 } else { 0o644 };
         raw_member_with_mode(name, typeflag, linkname, data, owner, mode)
     }
@@ -1316,11 +1275,11 @@ mod tests {
         };
         put(0, &name[..name.len().min(100)]);
         put(100, format!("{mode:07o}\0").as_bytes());
-        put(108, format!("{:07o}\0", owner.uid).as_bytes()); // uid
-        put(116, format!("{:07o}\0", owner.gid).as_bytes()); // gid
-        put(124, format!("{:011o}\0", data.len()).as_bytes()); // size
-        put(136, b"00000000000\0"); // mtime
-        put(148, b"        "); // checksum field, spaces while summing
+        put(108, format!("{:07o}\0", owner.uid).as_bytes());
+        put(116, format!("{:07o}\0", owner.gid).as_bytes());
+        put(124, format!("{:011o}\0", data.len()).as_bytes());
+        put(136, b"00000000000\0");
+        put(148, b"        ");
         put(156, &[typeflag]);
         put(157, linkname.as_bytes());
         put(257, b"ustar\0");
@@ -1441,7 +1400,6 @@ mod tests {
                 "{member} deleted outside"
             );
         }
-        // The symlink itself is still a whiteout-able entry in the rootfs.
         assert!(std::fs::symlink_metadata(rootfs.join("link")).is_ok());
     }
 
@@ -1467,7 +1425,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (rootfs, victim) = planted(dir.path());
 
-        // Lower layer: a symlink pointing out of the rootfs.
         let stage = dir.path().join("base-stage");
         std::fs::create_dir_all(&stage).unwrap();
         std::os::unix::fs::symlink("../victim", stage.join("link")).unwrap();
@@ -1490,7 +1447,6 @@ mod tests {
                 .is_symlink()
         );
 
-        // Upper layer: an ordinary file stored under that name.
         let upper = tar_layer(dir.path(), "upper", &[("link/pwn", b"owned")]);
         let err = apply_layer(&upper, &rootfs, &mut Ownership::default()).unwrap_err();
         assert!(matches!(err, ImageError::UnsafePath(_)), "{err:?}");
@@ -1627,7 +1583,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let long = "d/".repeat(60) + "leaf";
         let pax = pax_record("path", &long);
-        // GNU stores the name with a terminating NUL.
         let gnu = [long.as_bytes(), b"\0"].concat();
         let body = [
             raw_member(b"././@LongLink", b'L', "", &gnu),
@@ -1643,7 +1598,6 @@ mod tests {
             .collect();
         assert_eq!(names, vec![long.as_bytes().to_vec(); 2]);
 
-        // The same name through whichever long-name form the host tar picks.
         let host = tar_layer(dir.path(), "long-host", &[(long.as_str(), b"x")]);
         let names: Vec<String> = read_members(&host)
             .unwrap()
@@ -1747,7 +1701,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (rootfs, victim) = planted(dir.path());
         let mut cover = raw_member(b"cover", b'0', "", b"");
-        cover[124..136].copy_from_slice(b"00000002000\0"); // 1024, in octal
+        cover[124..136].copy_from_slice(b"00000002000\0");
         reseal(&mut cover);
         let body = [
             raw_member(
@@ -1832,7 +1786,6 @@ mod tests {
             );
         };
 
-        // A global pax header, whatever it carries.
         for (name, record) in [
             ("global-path.tar", pax_record("path", "elsewhere")),
             ("global-comment.tar", pax_record("comment", "anything")),
@@ -1842,7 +1795,6 @@ mod tests {
             refused(name, &body);
         }
 
-        // Sparse metadata, in either the pax records or the member type.
         let mut sparse = raw_member(
             b"PaxHeaders/0",
             b'x',
@@ -1853,15 +1805,12 @@ mod tests {
         refused("sparse-pax.tar", &sparse);
         refused("sparse-member.tar", &raw_member(b"file", b'S', "", b""));
 
-        // A multi-volume continuation, whose data starts mid-member.
         refused("multivolume.tar", &raw_member(b"file", b'M', "", b""));
 
-        // A pax record with no key.
         let mut keyless = raw_member(b"PaxHeaders/0", b'x', "", b"5 bad\n");
         keyless.extend_from_slice(&member);
         refused("keyless-pax.tar", &keyless);
 
-        // A pax size that is not a number.
         let mut unreadable = raw_member(
             b"PaxHeaders/0",
             b'x',
@@ -1911,7 +1860,6 @@ mod tests {
                 .arg(&plain)
                 .stdout(std::fs::File::create(&compressed).unwrap())
                 .status();
-            // A host without the tool cannot exercise that format.
             if !out.is_ok_and(|status| status.success()) {
                 continue;
             }
@@ -1931,9 +1879,7 @@ mod tests {
         for (n, members) in [
             vec![("link", b'2', "../../victim"), ("link/pwn", b'0', "")],
             vec![("link", b'2', "/etc"), ("link/pwn", b'0', "")],
-            // Case-insensitive host filesystems make these one entry.
             vec![("Link", b'2', "../../victim"), ("link/pwn", b'0', "")],
-            // A regular file used as a directory is refused on the same rule.
             vec![("link", b'0', ""), ("link/pwn", b'0', "")],
         ]
         .iter()
@@ -2017,7 +1963,6 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o555);
-        // Leave the trees removable for the temporary directory's cleanup.
         for path in [stage.join("ro"), rootfs.join("ro")] {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
@@ -2058,7 +2003,6 @@ mod tests {
         assert!(rootfs.join("keep.txt").is_file());
         assert!(rootfs.join("d/old").is_file());
 
-        // Upper layer: delete gone.txt, opaque-clear d/, add d/new.
         let upper = tar_layer(
             dir.path(),
             "upper",
@@ -2224,7 +2168,6 @@ mod tests {
             other,
             "a later layer owns what it replaced"
         );
-        // The tree agrees with the map.
         assert!(!rootfs.join("gone").exists());
         assert!(!rootfs.join("data/conf").exists());
         assert!(rootfs.join("swap").is_file());
@@ -2322,8 +2265,6 @@ mod tests {
         assert_eq!(staged.config.cmd, ["/node"]);
         assert_eq!(staged.owners.owner_of(Path::new("var/data/conf")), POSTGRES);
         assert_eq!(staged.owners.owner_of(Path::new("var")), Owner::ROOT);
-        // Nothing on disk says who the image meant; the map does. The tree
-        // belongs to whoever staged it, even when that is root or uid 70.
         use std::os::unix::fs::MetadataExt as _;
         let staging_user = std::fs::metadata(&stage_dir).unwrap().uid();
         for path in ["var", "var/data", "var/data/conf", "node"] {

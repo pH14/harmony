@@ -52,8 +52,8 @@ fn writable_offset() -> impl Strategy<Value = u32> {
         Just(APIC_ICR_HIGH),
         Just(APIC_TMICT),
         Just(APIC_EOI),
-        Just(0x030), // Version: read-only, write must be a no-op
-        Just(0x2F0), // CMCI: not modeled
+        Just(0x030),
+        Just(0x2F0),
     ]
 }
 
@@ -78,7 +78,6 @@ fn drive(ops: &[Op], timer_hz: u64) -> Lapic {
     for op in ops {
         match *op {
             Op::Write { offset, value, now } => {
-                // Writes to known-good offsets never error.
                 l.mmio_write(offset, value, now).unwrap();
             }
             Op::Advance(now) => {
@@ -129,13 +128,10 @@ proptest! {
         let snap = l.snapshot();
         let restored = Lapic::restore(&snap).expect("snapshot is internally consistent");
 
-        // Restore reproduces an observationally identical device...
         assert_observationally_equal(&l, &restored)?;
 
-        // ...and re-snapshotting the restored device yields the same bytes.
         prop_assert_eq!(restored.snapshot(), snap.clone());
 
-        // snapshot() is deterministic: snapshotting twice is identical.
         prop_assert_eq!(l.snapshot(), snap);
     }
 
@@ -172,35 +168,27 @@ fn restore_rejects_inconsistent_timer() {
     })
     .unwrap();
 
-    // A pending count cannot be zero.
     let mut bad_pending = l.snapshot();
     bad_pending.timer_pending = true;
     bad_pending.initial_count = 0;
     assert!(Lapic::restore(&bad_pending).is_err());
 
-    // Counting (running) requires the count to be pending.
     let mut bad_running = l.snapshot();
     bad_running.timer_running = true;
     bad_running.timer_pending = false;
     bad_running.initial_count = 100;
     assert!(Lapic::restore(&bad_running).is_err());
 
-    // Running while the APIC is software-disabled / the LVT timer masked is
-    // impossible (`timer_running` must equal armability). The fresh snapshot is
-    // disabled+masked, so a running+pending timer is incoherent here.
     let mut bad_disabled = l.snapshot();
     bad_disabled.timer_running = true;
     bad_disabled.timer_pending = true;
     bad_disabled.initial_count = 100;
     assert!(Lapic::restore(&bad_disabled).is_err());
 
-    // A zero timer frequency is rejected.
     let mut bad_hz = l.snapshot();
     bad_hz.timer_hz = 0;
     assert!(Lapic::restore(&bad_hz).is_err());
 
-    // A genuinely coherent armed snapshot (enabled + unmasked one-shot, armed
-    // via TMICT) is accepted.
     let mut armed = Lapic::new(LapicConfig {
         apic_id: 0,
         timer_hz: 25_000_000,
@@ -208,9 +196,9 @@ fn restore_rejects_inconsistent_timer() {
     .unwrap();
     armed
         .mmio_write(lapic::APIC_SVR, 0xFF | (1 << 8), 0)
-        .unwrap(); // enable
-    armed.mmio_write(APIC_LVT_TIMER, 0x40, 0).unwrap(); // unmasked one-shot
-    armed.mmio_write(APIC_TMICT, 1000, 0).unwrap(); // arm
+        .unwrap();
+    armed.mmio_write(APIC_LVT_TIMER, 0x40, 0).unwrap();
+    armed.mmio_write(APIC_TMICT, 1000, 0).unwrap();
     let good = armed.snapshot();
     assert!(good.timer_running && good.timer_pending);
     assert!(Lapic::restore(&good).is_ok());
@@ -225,27 +213,20 @@ fn restore_rejects_inconsistent_timer() {
 /// comparison survives.
 #[test]
 fn restore_enforces_anchor_count_bound() {
-    // A genuinely coherent running one-shot, armed via TMICT: at a fresh arm the
-    // anchor count equals the loaded initial count.
     let mut armed = Lapic::new(LapicConfig {
         apic_id: 0,
         timer_hz: 25_000_000,
     })
     .unwrap();
-    armed.mmio_write(APIC_SVR, 0xFF | (1 << 8), 0).unwrap(); // enable
-    armed.mmio_write(APIC_LVT_TIMER, 0x40, 0).unwrap(); // unmasked one-shot
-    armed.mmio_write(APIC_TMICT, 1000, 0).unwrap(); // arm
+    armed.mmio_write(APIC_SVR, 0xFF | (1 << 8), 0).unwrap();
+    armed.mmio_write(APIC_LVT_TIMER, 0x40, 0).unwrap();
+    armed.mmio_write(APIC_TMICT, 1000, 0).unwrap();
     let good = armed.snapshot();
     assert!(good.timer_running && good.timer_pending);
 
-    // (b) Boundary: count_at_arm == initial_count is accepted ("never MORE than").
     assert_eq!(good.count_at_arm, good.initial_count);
     assert!(Lapic::restore(&good).is_ok());
 
-    // (a) One over the loaded count is unreachable -> rejected. This is the
-    // assertion that kills the `> -> <` mutant: under the mutation the guard reads
-    // `count_at_arm < initial_count`, which is false here, so restore would wrongly
-    // accept.
     let mut over = good.clone();
     over.count_at_arm = over.initial_count + 1;
     assert_eq!(Lapic::restore(&over).unwrap_err(), LapicError::InvalidState);

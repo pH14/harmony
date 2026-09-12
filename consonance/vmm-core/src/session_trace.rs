@@ -124,11 +124,9 @@ impl SessionVirtualTimeTrace {
     /// single live-VMM trace digest.
     pub fn digest(&self) -> [u8; 32] {
         let mut body = Vec::new();
-        // Writing to Vec is infallible.
         self.write_body(&mut body)
             .expect("writing session trace to Vec cannot fail");
         let mut hasher = Sha256::new();
-        // Frozen v1 log-domain identifier: changing it would invalidate N1 byte fixtures.
         hasher.update(b"consonance.session-prescriptive-log.v1\0");
         hasher.update(body);
         hasher.finalize().into()

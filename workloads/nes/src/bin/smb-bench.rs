@@ -13,7 +13,7 @@ use nes_workload::{
 };
 use sha2::{Digest, Sha256};
 
-#[allow(clippy::disallowed_methods)] // wall time is the measurement here.
+#[allow(clippy::disallowed_methods)]
 fn main() -> Result<(), Box<dyn Error>> {
     let rom =
         fs::read(env::var_os("HARMONY_SMB_ROM").ok_or("HARMONY_SMB_ROM must name the SMB ROM")?)?;

@@ -159,7 +159,7 @@ pub struct Arm64CoreRegs {
 /// snapshot contract: `TODO(AA-6)` owns which sysregs a snapshot must carry;
 /// this file grows only from that measured record set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[allow(missing_docs)] // the system-register names are self-documenting
+#[allow(missing_docs)]
 pub struct Arm64SysregFile {
     pub sctlr_el1: u64,
     pub ttbr0_el1: u64,
@@ -262,8 +262,6 @@ mod tests {
         physical_exception_residue.pstate |= PSTATE_TCO | PSTATE_BTYPE;
         physical_exception_residue.spsr_el1 |= PSTATE_TCO | PSTATE_BTYPE;
 
-        // Negative control: an identity comparison without canonicalization
-        // detects the exact host exception-entry residue seen in M5.
         assert_ne!(physical_exception_residue, canonical);
         assert!(has_noncanonical_core_regs(&physical_exception_residue));
 

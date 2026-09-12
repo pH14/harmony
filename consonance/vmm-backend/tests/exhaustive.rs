@@ -100,9 +100,6 @@ fn exit_counts_entries_cover_every_reason_once() {
         "every ExitReason must appear exactly once"
     );
 
-    // The entries' reason order matches the field order: the pre-arm64 prefix
-    // (`one_of_each`) byte-for-byte, then the appended arm64 vendor reasons —
-    // existing report lines never reorder.
     let expected: Vec<ExitReason> = one_of_each()
         .iter()
         .map(Exit::reason)

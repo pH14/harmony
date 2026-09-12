@@ -100,8 +100,6 @@ pub trait Vendor: Arch + Sized {
     /// (`docs/ARCHITECTURE.md`).
     fn mmio_holes() -> &'static [(u64, u64)];
 
-    // --- run-loop dispatch ---------------------------------------------------
-
     /// Dispatch one vendor exit against the contract dispositions and the device
     /// models. Matches the vendor's exit enum **exhaustively**.
     fn dispatch_arch<B: Backend<A = Self>>(
@@ -141,8 +139,6 @@ pub trait Vendor: Arch + Sized {
     fn normalize_virtual_time_exit(_exit: &Exit<Self>) -> Option<(NormalizedEventClass, Vec<u8>)> {
         None
     }
-
-    // --- interrupt fabric ----------------------------------------------------
 
     /// Advance the fabric to the current V-time and hand the backend the one
     /// arbitrated deliverable interrupt identity (or `None`) for the next entry.
@@ -217,8 +213,6 @@ pub trait Vendor: Arch + Sized {
         vmm: &mut Vmm<B>,
     ) -> Result<bool, VmmError>;
 
-    // --- serial --------------------------------------------------------------
-
     /// The serial output captured so far (the engine's `SERL` hash chunk, the run
     /// result, and the scrape stream all read this).
     fn serial_capture(devices: &Self::Devices) -> &[u8];
@@ -226,8 +220,6 @@ pub trait Vendor: Arch + Sized {
     /// Queue bytes on the guest's serial input (task 81 `exec`; off-record by
     /// ruling).
     fn inject_serial_input(devices: &mut Self::Devices, bytes: &[u8]);
-
-    // --- state records (hash + snapshot) --------------------------------------
 
     /// The canonical byte encoding of the vCPU record set for the engine's `VCPU`
     /// hash chunk. Deterministic; canonicalizes exactly what the snapshot records

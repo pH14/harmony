@@ -28,8 +28,6 @@ fn exit_counts() -> impl Strategy<Value = ExitCounts> {
 
 fn event_kind() -> impl Strategy<Value = EventKind> {
     prop_oneof![
-        // `any::<String>()` exercises arbitrary UTF-8 incl. control chars and
-        // non-ASCII — JSON must escape and recover them byte-for-byte.
         any::<String>().prop_map(|text| EventKind::Console { text }),
         (any::<u32>(), proptest::collection::vec(any::<u8>(), 0..48))
             .prop_map(|(id, data)| EventKind::GuestEvent { id, data }),

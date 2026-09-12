@@ -14,10 +14,6 @@ use hypercall_proto::{
     Client, CoverageService, Dispatcher, ProtoError, Service, ServiceId, Status, Transport,
 };
 
-// ---------------------------------------------------------------------------
-// A safe loopback transport over one preconfigured dispatcher.
-// ---------------------------------------------------------------------------
-
 struct DispatcherLoopback(Dispatcher);
 
 impl Transport for DispatcherLoopback {
@@ -77,10 +73,6 @@ fn harness() -> (Sdk<DispatcherLoopback>, EventLog) {
     (sdk, events)
 }
 
-// ---------------------------------------------------------------------------
-// Tests.
-// ---------------------------------------------------------------------------
-
 /// The first emission is the catalog declaration (event id 0, `SDKC` magic +
 /// version + point count).
 #[test]
@@ -113,13 +105,11 @@ fn init_rejects_duplicate_coordinates() {
         );
         DispatcherLoopback(d)
     };
-    // Two assert points at id 7 (always vs sometimes) collide: both are NS_ASSERT.
     let dup = [Point::always(7, "a"), Point::sometimes(7, "b")];
     assert!(
         matches!(Sdk::init(fresh(), &dup), Err(SdkError::DuplicateCoordinate)),
         "same (NS_ASSERT, id) across assert kinds is rejected"
     );
-    // The same id in different namespaces (assert vs state vs buggify) is fine.
     let ok = [
         Point::always(7, "a"),
         Point::state(7, "s"),
@@ -141,8 +131,6 @@ fn init_rejects_duplicate_names() {
         ServiceId::Event,
         Box::new(SharedEvent(Rc::new(RefCell::new(Vec::new())))),
     );
-    // Same name, different namespaces AND ids — the coordinate check would pass;
-    // the name check must still fire.
     let dup = [Point::always(1, "dup"), Point::state(2, "dup")];
     assert!(
         matches!(
@@ -160,12 +148,12 @@ fn assertion_verbs_emit_expected_dispositions() {
     let (mut sdk, events) = harness();
     let base = events.borrow().len();
 
-    sdk.assert_always(true, 20).unwrap(); // holds -> nothing
-    sdk.assert_always(false, 20).unwrap(); // violated -> violation
-    sdk.assert_sometimes(false, 1).unwrap(); // not satisfied -> nothing
-    sdk.assert_sometimes(true, 1).unwrap(); // satisfied -> hit
-    sdk.assert_reachable(30).unwrap(); // reached -> hit
-    sdk.assert_unreachable(30).unwrap(); // reached -> violation
+    sdk.assert_always(true, 20).unwrap();
+    sdk.assert_always(false, 20).unwrap();
+    sdk.assert_sometimes(false, 1).unwrap();
+    sdk.assert_sometimes(true, 1).unwrap();
+    sdk.assert_reachable(30).unwrap();
+    sdk.assert_unreachable(30).unwrap();
 
     let ev = events.borrow();
     let got: Vec<(u32, Vec<u8>)> = ev[base..].to_vec();
@@ -289,9 +277,6 @@ fn oversize_catalog_is_rejected() {
     let events: EventLog = Rc::new(RefCell::new(Vec::new()));
     let mut d = Dispatcher::new();
     d.register(ServiceId::Event, Box::new(SharedEvent(events.clone())));
-    // Long names × many points overflow one frame. Names must be DISTINCT (else
-    // the duplicate-name check fires first) — leak per-point strings, a test-only
-    // way to mint `&'static str`s carrying the id.
     let big: Vec<Point> = (0..500)
         .map(|i| {
             let name: &'static str =
@@ -305,14 +290,6 @@ fn oversize_catalog_is_rejected() {
     );
     assert!(events.borrow().is_empty(), "nothing emitted on overflow");
 }
-
-// ---------------------------------------------------------------------------
-// Compile-time proof that the SDK composes over the REAL guest doorbell
-// transport (`Client<VmcallTransport>`) with zero new transport code. Never
-// called — constructing a real `VmcallTransport` needs `unsafe` page setup that
-// the box gate performs; here we only type-check the composition, so the SDK
-// crate itself stays free of `unsafe` (and of the Miri obligation).
-// ---------------------------------------------------------------------------
 
 #[allow(dead_code)]
 fn _sdk_composes_over_hypercall_doorbell(

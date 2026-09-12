@@ -388,9 +388,6 @@ fn merge_action_milestones<M: Machine>(
     target: &NovaTarget<M>,
 ) -> Result<(), Box<dyn Error>> {
     if target.exit_kind() != ExitKind::Ok {
-        // A target failure is an ordinary terminal search result. Its action
-        // may not have produced a complete observation, so retain the
-        // parent's milestones and let the generic campaign record `failed`.
         return Ok(());
     }
     for observation in target.last_action_observations() {
@@ -874,8 +871,6 @@ mod tests {
         let level = NovaLevel::from_number(17).expect("level");
         let game = NovaGame::new_at_level(&[1, 2, 3], Path::new("core.so"), &"a".repeat(64), level);
         assert_eq!(game.level(), level);
-        // This is the native identity emitted before the package extraction;
-        // changing it would make existing Nova streams unreplayable.
         assert_eq!(
             game.emulator_identity(),
             format!(

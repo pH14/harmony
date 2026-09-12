@@ -62,7 +62,6 @@ proptest! {
         let mut b = vec![0u8; PVCLOCK_PAGE_LEN];
         for r in &history {
             stamp(&mut a, r.vns, r.guest_clock, hz);
-            // Run B replays the same values but a different refresh count.
             stamp(&mut b, r.vns, r.guest_clock, hz);
             for _ in 0..r.redundant {
                 stamp(&mut b, r.vns, r.guest_clock, hz);
@@ -92,8 +91,6 @@ proptest! {
         stamp_canonical(&mut b, seal_vns, seal_gc, hz);
         prop_assert_eq!(&a, &b);
         prop_assert_eq!(read(&a).unwrap().seq, 0);
-        // Post-seal continuation (a restored run vs. the sealed-and-continued
-        // run) stays byte-identical.
         stamp(&mut a, next_vns, next_gc, hz);
         stamp(&mut b, next_vns, next_gc, hz);
         prop_assert_eq!(a, b);

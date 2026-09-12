@@ -92,8 +92,6 @@ enum Op {
 
 fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
-        // Bias toward raises (so there is something to deliver), across a range
-        // of priority classes including ties within a class.
         3 => (16u8..=255).prop_map(Op::Raise),
         2 => Just(Op::Take),
         2 => Just(Op::Eoi),
@@ -117,9 +115,6 @@ proptest! {
                     model.pending.insert(v);
                 }
                 Op::Take => {
-                    // `peek_interrupt` must predict `take_interrupt`'s result
-                    // without mutating: same value, and calling it twice (and the
-                    // register file) is unchanged until the actual take.
                     let peeked = l.peek_interrupt();
                     prop_assert_eq!(peeked, l.peek_interrupt());
                     prop_assert_eq!(read_words(&l, APIC_IRR), words(&model.pending));
@@ -138,7 +133,6 @@ proptest! {
                 }
             }
 
-            // Observable equivalence after every operation.
             prop_assert_eq!(l.has_deliverable(), model.has_deliverable());
             prop_assert_eq!(read_words(&l, APIC_IRR), words(&model.pending));
             prop_assert_eq!(read_words(&l, APIC_ISR), words(&model.in_service));
@@ -155,25 +149,18 @@ proptest! {
         let mut l = Lapic::new(LapicConfig { apic_id: 0, timer_hz: 25_000_000 }).unwrap();
         l.mmio_write(APIC_SVR, 0xFF | SVR_ENABLE, 0).unwrap();
 
-        // Distinct, strictly increasing vectors (one per class, ascending).
         let mut sorted = classes;
         sorted.sort_unstable();
         sorted.dedup();
         let vectors: Vec<u8> = sorted.iter().map(|&c| c << 4).collect();
 
-        // Raise+take one at a time in increasing-priority order: each new, higher
-        // vector preempts the current in-service top (its class strictly exceeds
-        // the current PPR class), building a nested in-service stack.
         for &v in &vectors {
             l.raise(v).unwrap();
             prop_assert_eq!(l.take_interrupt(), Some(v));
         }
-        // Nothing left pending.
         prop_assert!(!l.has_deliverable());
 
-        // EOI pops the in-service set highest-first.
         for &v in vectors.iter().rev() {
-            // The highest in-service vector is `v`; PPR reflects its class.
             prop_assert_eq!(l.mmio_read(lapic::APIC_PPR, 0).unwrap(), u32::from(v) & 0xF0);
             l.eoi();
         }

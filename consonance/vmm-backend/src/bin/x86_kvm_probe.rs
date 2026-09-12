@@ -133,12 +133,8 @@ mod x86 {
         }
         drop(kvm);
 
-        // One minimal guest through the public backend, exactly the
-        // `kvm_smoke` bring-up shape:
-        //   mov dx, 0x3f8 ; mov al, 0x42 ; out dx, al ; hlt
         let code: &[u8] = &[0xBA, 0xF8, 0x03, 0xB0, 0x42, 0xEE, 0xF4];
 
-        // Declared before `backend` so the mapped RAM outlives it.
         let mut mem = GuestMem::new(0x10000);
         let mut backend = KvmBackend::new().map_err(|e| {
             println!("BACKEND_NEW=err:{e}");
@@ -154,7 +150,6 @@ mod x86 {
             .set_policy(&X86Policy {
                 cpuid: CpuidModel::default(),
                 msr_filter: MsrFilter {
-                    // SYSENTER MSRs (0x174..0x177) — present, harmless, in-kernel.
                     allow_inkernel: vec![MsrRange {
                         base: 0x174,
                         count: 3,

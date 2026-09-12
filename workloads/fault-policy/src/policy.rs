@@ -238,9 +238,6 @@ impl FaultPolicy {
                 codec::write_fault(&mut w, f);
             }
         }
-        // Buggify section (task 73): default bias, then the per-point overrides
-        // in ascending id order (the `BTreeMap` is already canonical, so no
-        // insertion order reaches a byte).
         codec::put_u32(&mut w, self.buggify.default_num);
         codec::put_u32(&mut w, self.buggify.default_den);
         codec::put_len(&mut w, self.buggify.per_point.len());
@@ -355,10 +352,6 @@ impl FaultPolicy {
         match class {
             DecisionClass::BlockIo => &mut self.block,
             DecisionClass::Process => &mut self.process,
-            // NetFlow lands here. Supply classes and `Buggify` are rejected by
-            // `set_class` (the only caller) before reaching this, so the fall-
-            // through is `NetFlow` only — a buggify fault can never be routed
-            // into the net slot (the round-trip-rejection bug).
             _ => &mut self.net,
         }
     }

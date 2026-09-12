@@ -1170,8 +1170,6 @@ where
                 .map(|identifier| SmbTerminalPredicate::from_identifier(identifier))
                 .transpose()?,
         };
-        // A name SMB does not own would silently survive replay, so the
-        // recorded set must be exactly the set this build writes.
         let unknown = policies
             .keys()
             .find(|field| !self.policies(&run).contains_key(field.as_str()));
@@ -2130,7 +2128,6 @@ mod tests {
             Some(empty),
         )
         .expect("derive suffix");
-        // Disturb the first instance so the job must depend on the snapshot alone.
         first.apply(&ButtonChord::new(0x02, 30));
         let run = SmbCampaignRun {
             chord: SmbCampaignChordPolicy::default(),
@@ -2392,8 +2389,6 @@ mod tests {
         )
         .expect("window-64 live campaign");
         let recorded = String::from_utf8(stream).expect("stream is utf-8");
-        // Window 64 in the historical namespace is the legacy identifier
-        // verbatim, so a live run at that window must record its own.
         assert!(
             recorded
                 .lines()
@@ -2413,8 +2408,6 @@ mod tests {
             "deterministic_window_64_per_worker_v1",
             1,
         );
-        // Rewriting only the namespace claims a run recorded before the
-        // budget maintenance was corrected, which this stream is not.
         assert!(
             replay_smb_campaign_checkpointed(&rom, legacy_tagged.as_bytes(), None, None).is_err(),
             "the legacy path must not silently accept a live window-64 stream"
@@ -2423,10 +2416,6 @@ mod tests {
 
     #[test]
     fn a_budgeted_stream_in_a_historical_namespace_is_refused_rather_than_replayed() {
-        // Budgeted runs recorded before the maintenance correction enforced
-        // the budget at other stream positions and counted CLOCK work
-        // differently, so which entries survive differs. Replay must say so
-        // instead of running and diverging.
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca44, 2, 128);
         config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
@@ -2462,8 +2451,6 @@ mod tests {
             assert_eq!(error.to_string(), refused);
         }
 
-        // The same rewrite stays replayable without a budget, because the
-        // maintenance step does nothing there.
         let unbudgeted = genesis_config(0x5eed_ca45, 2, 32);
         let mut stream = Vec::new();
         run_smb_campaign(&rom, &unbudgeted, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -2506,8 +2493,6 @@ mod tests {
                 .expect("legacy policy replays deterministically");
         assert_eq!(historical_replay, historical_replay_again);
         assert_eq!(historical_checkpoint, historical_checkpoint_again);
-        // Replacing only the schedule tag changes the stream digest by
-        // design; the archive and checkpoint must remain identical.
         assert_eq!(historical_replay.archive, live.archive);
         assert_eq!(historical_checkpoint, live_checkpoint);
         assert_eq!(
@@ -2685,8 +2670,6 @@ mod tests {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca31, 4, 8_192);
         config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
-        // This bounded setup drives the active population to the action limit
-        // while the 64-entry budget continues admitting replacements.
         config.memory_budget_mib = Some(4);
         config.archive_entry_limit = 64;
         let mut stream = Vec::new();
@@ -2701,8 +2684,6 @@ mod tests {
         assert_eq!(live.executions_completed, 8_192);
         assert_eq!(live.memory_budget_mib, Some(4));
         assert!(live.resident_memory_bytes <= 4 * 1024 * 1024);
-        // Skips account a selection without inserting, so this run exercises
-        // the budget maintenance the coordinator spends outside admission.
         assert!(live.duplicates_skipped > 0);
         assert!(live.archive.retained > 1);
         assert!(live.history_compactions > 0);
@@ -2884,9 +2865,6 @@ mod tests {
 
     #[test]
     fn retiring_selector_reports_survive_a_seed_sweep() {
-        // The scale replays diverged only in end-state retirement counters,
-        // so this sweeps seeds under reset-heavy thresholds until a live
-        // report and its replay disagree.
         let rom = synthetic_nrom();
         for seed in 0..24_u64 {
             let mut config = genesis_config(0x5eed_d000 + seed, 4, 64);
@@ -2981,8 +2959,6 @@ mod tests {
         let rom = synthetic_nrom();
         let config = SmbCampaignConfig {
             chord: derived_policy(),
-            // Cross the reservation window so a later job must draw against
-            // a table updated by earlier retained successes.
             ..genesis_config(0x5eed_ca13, 1, 20)
         };
         let mut stream = Vec::new();
@@ -3032,8 +3008,6 @@ mod tests {
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
             .expect("live campaign");
-        // Tampering with a recorded skip must fail replay loudly rather than
-        // silently reproducing the counters.
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         if let Some(skip_line) = text.lines().find(|line| line.contains("\"skip\"")) {
             let tampered_line = skip_line.replace("\"mutation_seed\":", "\"mutation_seed\":9");
@@ -3064,8 +3038,6 @@ mod tests {
         .expect("seed campaign");
         let source = seed_campaign.archive.clone();
         let source_sha = "0000000000000000000000000000000000000000000000000000000000000000";
-        // The re-emulated and checkpoint-restored campaigns below are two
-        // independent live runs whose archives are compared for equality.
         let tree_config = genesis_config(0x5eed_ca06, 1, 16);
         let mut tree_stream = Vec::new();
         let tree_live = run_smb_campaign(
@@ -3116,9 +3088,6 @@ mod tests {
         );
         assert_eq!(counts.checkpointed, 0);
 
-        // Restoring the compact source breeding population from its snapshot
-        // checkpoint reaches the same archive as re-emulating it, records the
-        // checkpoint in the header, and replays with or without the file.
         let checkpoint_bytes = seed_checkpoint.to_bytes().expect("encode checkpoint");
         let checkpoint = SmbCampaignCheckpoint {
             path: "seed-snapshots.bin".to_owned(),
@@ -3236,8 +3205,6 @@ mod tests {
             Some(&mut sidecar),
         )
         .expect("campaign with a sidecar");
-        // The deterministic window schedule means the sidecar run must record
-        // byte-identical stream bytes.
         assert_eq!(without, with);
         assert!(!with.is_empty());
         assert!(

@@ -63,10 +63,6 @@ impl StubServer {
             Request::Snapshot => {
                 let id = self.next_snap;
                 self.next_snap += 1;
-                // The one seal-bound reply (task 127): the stub stamps a fixed
-                // cut (its canned SdkEvents capture has 2 events at/before the
-                // canned Moment 500) plus the timeline taint (task 81) — both
-                // taint states cross the same cut-carrying shape.
                 Ok(Reply::Snapshot {
                     id: SnapId(id),
                     at: Moment(500),
@@ -80,8 +76,6 @@ impl StubServer {
             | Request::Perturb { .. } => Ok(Reply::Unit),
             Request::Run { resolve, .. } => {
                 if let Some(resolution) = resolve {
-                    // A resolve with no outstanding decision is a loud error,
-                    // never silently dropped (it would desync the DecisionId).
                     if !self.armed
                         || resolution.vtime != Moment(100)
                         || resolution.service != 19
@@ -92,7 +86,6 @@ impl StubServer {
                     self.armed = false;
                     Ok(Reply::Stop(StopReason::Quiescent { vtime: Moment(500) }))
                 } else {
-                    // First run surfaces and arms a decision.
                     self.armed = true;
                     Ok(Reply::Stop(StopReason::Decision {
                         vtime: Moment(100),
@@ -114,9 +107,6 @@ impl StubServer {
                     chunk: serial[start..].to_vec(),
                 })
             }
-            // Observation verbs (task 80): a stubbed guest returns `len` bytes and
-            // a fixed register view — the point here is that they cross the wire
-            // and round-trip, not that the bytes are a real guest's.
             &Request::Read { len, .. } => Ok(Reply::Bytes(vec![0xAB; len as usize])),
             Request::Regs => Ok(Reply::Regs(RegsView {
                 version: RegsView::VERSION,
@@ -130,8 +120,6 @@ impl StubServer {
                 moment: Moment(500),
                 vtime: 500,
             })),
-            // Improvisation (task 81): `exec` taints the timeline and returns the
-            // crude serial capture; the server refuses nothing.
             Request::Exec { .. } => {
                 self.tainted = true;
                 Ok(Reply::ExecResult {
@@ -139,8 +127,6 @@ impl StubServer {
                     ok: true,
                 })
             }
-            // The reproducer mint is the taint guard's fail-loud site: a tainted
-            // timeline is a loud `Tainted`, never a lying `Reproducer`.
             Request::RecordedEnv => {
                 if self.tainted {
                     Err(ControlError::Tainted)
@@ -177,24 +163,20 @@ impl Loopback {
         let seq = self.seq;
         self.seq += 1;
 
-        // client -> server
         let mut c2s = Vec::new();
         encode_request(seq, &req, &mut c2s).unwrap();
         self.transcript.extend_from_slice(&c2s);
 
-        // server decodes, handles, replies
         let (rseq, dreq, consumed) = decode_request(&c2s).unwrap().unwrap();
         assert_eq!(rseq, seq, "server sees the client's seq");
         assert_eq!(consumed, c2s.len());
         assert_eq!(dreq, req, "server decodes the request verbatim");
         let reply = self.server.handle(&dreq);
 
-        // server -> client
         let mut s2c = Vec::new();
         encode_reply(rseq, &reply, &mut s2c).unwrap();
         self.transcript.extend_from_slice(&s2c);
 
-        // client decodes
         let (cseq, dreply, dconsumed) = decode_reply(&s2c).unwrap().unwrap();
         assert_eq!(cseq, seq, "reply echoes the request seq");
         assert_eq!(dconsumed, s2c.len());
@@ -225,7 +207,6 @@ fn run_session() -> (Vec<u8>, Vec<Result<Reply, ControlError>>) {
             bytes: vec![0x01, 0x02, 0x03],
         },
     }));
-    // run -> Decision, then run(resolve) -> Quiescent
     replies.push(lb.exchange(Request::Run {
         until: conds(),
         resolve: None,
@@ -243,15 +224,11 @@ fn run_session() -> (Vec<u8>, Vec<Result<Reply, ControlError>>) {
     replies.push(lb.exchange(Request::Hash {
         scope: HashScope::Whole,
     }));
-    // Observation verbs (task 80): read a small region, then the register view.
     replies.push(lb.exchange(Request::Read {
         gpa: 0x1000,
         len: 4,
     }));
     replies.push(lb.exchange(Request::Regs));
-    // Improvisation (task 81): the reproducer mints cleanly BEFORE any exec, then
-    // `exec` taints the timeline, the mint fails loud `Tainted`, and a snapshot
-    // taken there surfaces the taint-carrying reply — every new wire shape crosses.
     replies.push(lb.exchange(Request::RecordedEnv));
     replies.push(lb.exchange(Request::Exec {
         cmd: "ps aux".to_string(),
@@ -259,12 +236,10 @@ fn run_session() -> (Vec<u8>, Vec<Result<Reply, ControlError>>) {
     }));
     replies.push(lb.exchange(Request::RecordedEnv));
     replies.push(lb.exchange(Request::Snapshot));
-    // Stage a host-plane fault over the wire (the perturb verb).
     replies.push(lb.exchange(Request::Perturb {
-        fault: HostFault(vec![0x02, 0x80]), // opaque environment::HostFault bytes
+        fault: HostFault(vec![0x02, 0x80]),
         at: Moment(1_234),
     }));
-    // resolve with no outstanding decision -> loud ControlError
     replies.push(lb.exchange(Request::Run {
         until: conds(),
         resolve: Some(Resolution {
@@ -291,15 +266,15 @@ fn loopback_exercises_every_verb_with_expected_replies() {
                 at: Moment(500),
                 sdk_events: 2,
                 tainted: false,
-            }), // the seal-bound reply: handle + cut, untainted
-            Ok(Reply::Unit), // Branch
+            }),
+            Ok(Reply::Unit),
             Ok(Reply::Stop(StopReason::Decision {
                 vtime: Moment(100),
                 id: DecisionId(1),
                 ctx: vec![0xAB],
             })),
             Ok(Reply::Stop(StopReason::Quiescent { vtime: Moment(500) })),
-            Ok(Reply::Unit), // Replay
+            Ok(Reply::Unit),
             Ok(Reply::Hash([0x42; 32])),
             Ok(Reply::Bytes(vec![0xAB; 4])),
             Ok(Reply::Regs(RegsView {
@@ -317,21 +292,21 @@ fn loopback_exercises_every_verb_with_expected_replies() {
             Ok(Reply::Recorded(Reproducer {
                 blob_version: 1,
                 bytes: vec![0x07, 0x08, 0x09],
-            })), // RecordedEnv (untainted) mints the reproducer
+            })),
             Ok(Reply::ExecResult {
                 output: b"root@guest:/# ".to_vec(),
                 ok: true,
-            }), // Exec taints the timeline
-            Err(ControlError::Tainted), // RecordedEnv now fails loud
+            }),
+            Err(ControlError::Tainted),
             Ok(Reply::Snapshot {
                 id: SnapId(1),
                 at: Moment(500),
                 sdk_events: 2,
                 tainted: true,
-            }), // a snapshot from the tainted timeline still binds its cut
-            Ok(Reply::Unit),            // Perturb
+            }),
+            Ok(Reply::Unit),
             Err(ControlError::ResolveWithoutDecision),
-            Ok(Reply::Unit), // Drop
+            Ok(Reply::Unit),
         ]
     );
 }

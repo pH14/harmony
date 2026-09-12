@@ -861,8 +861,6 @@ impl Evaluation for MetroidGame {
             || (action.milestones.gained && evidence.first_inputs.first_gain.is_none());
         let champion = action_champion_key(&action.observations)
             .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
-        // Reconstruction is counted in deterministic reports. Whether files
-        // are published must not change that count when the stream is replayed.
         if first_input_needed || champion.is_some() || !discoveries.is_empty() {
             let input = input()?;
             self.publish_milestones(&discoveries, &input)?;
@@ -969,8 +967,6 @@ mod tests {
                 game = game.with_milestone_input_dir(directory.clone());
             }
             let mut evidence = MetroidCampaignEvidence {
-                // Suppress the scalar champion/first-gain paths: this second
-                // area is solely a new named discovery.
                 champion_key: action_champion_key(&action.observations),
                 ..Default::default()
             };
@@ -981,7 +977,6 @@ mod tests {
             })
             .unwrap();
             assert_eq!(reconstructions, 1);
-            // Repeated discoveries must stay bounded.
             game.merge_action_evidence(&mut evidence, &action, 13, || {
                 panic!("an unchanged discovery must not reconstruct again")
             })

@@ -199,17 +199,11 @@ impl<C: Core> Agent<C> {
     ) -> Result<StepReport, AgentError<H::Error>> {
         let window_boundary = self.frame.is_multiple_of(self.cfg.window);
 
-        // (1) Draw this window's chord — one entropy byte per input window,
-        // decoded against the weighted alphabet, held for the whole window.
         if window_boundary {
             let byte = harness.entropy_byte().map_err(AgentError::Harness)?;
             self.chord = self.cfg.alphabet.decode(byte);
         }
 
-        // (3 in spec order, done first here so the header can never disagree
-        // with what retro_run will see) Publish the billboard *before* the
-        // frame's retro_run: header (frame + this frame's joypad byte), the
-        // core's full savestate, the 2 KiB console work RAM.
         self.layout
             .write_header(billboard, self.frame, self.chord)
             .map_err(AgentError::Billboard)?;
@@ -220,8 +214,6 @@ impl<C: Core> Agent<C> {
             return Err(AgentError::WorkRamFailed);
         }
 
-        // (2) Emit state registers once per window, decoded from the work RAM
-        // just published (the state as of the previous frame's end).
         let mut state = None;
         if window_boundary {
             let s = ram::decode(self.layout.work_ram_mut(billboard)).map_err(AgentError::Ram)?;
@@ -244,8 +236,6 @@ impl<C: Core> Agent<C> {
                 .state_set(regs::REG_POWERUP, u64::from(s.powerup))
                 .map_err(AgentError::Harness)?;
 
-            // (4) Depth + legibility markers, gameplay only (title-screen
-            // bytes are menu state, not progress).
             if s.in_gameplay() {
                 let ordinal = s.depth_ordinal();
                 harness
@@ -268,14 +258,10 @@ impl<C: Core> Agent<C> {
             state = Some(s);
         }
 
-        // The frame clock, every vblank — the Moment task 87 addresses this
-        // frame's billboard by, emitted after the billboard bytes are in
-        // place so the read at that Moment sees this frame.
         harness
             .state_set(regs::REG_FRAME, u64::from(self.frame))
             .map_err(AgentError::Harness)?;
 
-        // Run the frame under the held chord.
         let report = StepReport {
             frame: self.frame,
             joypad: self.chord,
@@ -351,7 +337,6 @@ mod tests {
         for _ in 0..12 {
             tape.push(agent.step(&mut h, &mut buf).unwrap().joypad);
         }
-        // Three windows of four frames, each holding its decoded chord.
         let expected: Vec<u8> = [0u8, 56, 200]
             .into_iter()
             .flat_map(|b| std::iter::repeat_n(alphabet.decode(b), 4))
@@ -381,7 +366,6 @@ mod tests {
             .map(|(_, v)| *v)
             .collect();
         assert_eq!(modes.len(), 2, "two window boundaries in six frames");
-        // Depth is emitted via state_max on each boundary during gameplay.
         assert_eq!(h.maxes.len(), 2);
         assert!(h.maxes.iter().all(|(r, _)| *r == regs::REG_DEPTH));
     }
@@ -405,18 +389,15 @@ mod tests {
         let mut agent = Agent::new(MockCore::in_gameplay(), small_cfg(1)).unwrap();
         let mut h = FakeHarness::scripted(vec![0; 32]);
         let mut buf = vec![0u8; agent.layout().total_len()];
-        agent.step(&mut h, &mut buf).unwrap(); // baseline: 1-1 observed
+        agent.step(&mut h, &mut buf).unwrap();
         assert!(h.reachables.is_empty());
 
-        // Clear a level: 1-1 -> 1-2.
         agent.core_mut().ram_mut()[addr::LEVEL_NUMBER] = 1;
         agent.step(&mut h, &mut buf).unwrap();
         assert_eq!(h.reachables, vec![regs::POINT_LEVEL_CLEARED]);
         agent.step(&mut h, &mut buf).unwrap();
         assert_eq!(h.reachables.len(), 1, "fires once");
 
-        // Warp to world 5 (index 4): world-two marker fires (warp zones are
-        // real progress).
         agent.core_mut().ram_mut()[addr::WORLD_NUMBER] = 4;
         agent.step(&mut h, &mut buf).unwrap();
         assert_eq!(

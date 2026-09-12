@@ -31,7 +31,7 @@ from typing import Any, Iterable
 
 
 POLICY_VERSION = 1
-DEFAULT_POLICY = Path(__file__).resolve().parent.parent / "docs" / "dependency-boundaries.toml"
+DEFAULT_POLICY = Path(__file__).resolve().parent / "dependency-boundaries.toml"
 IGNORED_MANIFEST_PARTS = {
     ".git",
     "target",
@@ -543,7 +543,7 @@ def main(argv: list[str] | None = None) -> int:
         "--policy",
         type=Path,
         default=DEFAULT_POLICY,
-        help="dependency policy TOML (default: docs/dependency-boundaries.toml)",
+        help="dependency policy TOML (default: scripts/dependency-boundaries.toml)",
     )
     parser.add_argument(
         "--cargo",

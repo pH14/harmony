@@ -62,18 +62,16 @@ fn wrap(body: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(14 + body.len());
     v.extend_from_slice(b"CTL1");
     v.extend_from_slice(&PROTO_VERSION.to_le_bytes());
-    v.extend_from_slice(&0u32.to_le_bytes()); // seq
+    v.extend_from_slice(&0u32.to_le_bytes());
     v.extend_from_slice(&(body.len() as u32).to_le_bytes());
     v.extend_from_slice(body);
     v
 }
 
 fuzz_target!(|data: &[u8]| {
-    // 1. Raw untrusted bytes: never panic; accepted frames round-trip.
     check_request(data);
     check_reply(data);
 
-    // 2. Valid envelope around arbitrary body bytes: reach the body parsers.
     let framed = wrap(data);
     check_request(&framed);
     check_reply(&framed);

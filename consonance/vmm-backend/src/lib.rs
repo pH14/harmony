@@ -22,19 +22,9 @@ mod error;
 mod exit;
 mod types;
 
-// The `Backend` contract tests (`docs/TESTING.md`): the shared exam
-// every implementor must pass, generic over the trait and driven through a
-// caller-supplied fixture. Behind the non-default `contract-tests` feature and
-// NOT `#[cfg(test)]` — a `#[cfg(test)]` item is invisible downstream, and the
-// exam's whole point is that the box-only KVM integration tests run the
-// *identical* exam the portable mock test runs.
 #[cfg(feature = "contract-tests")]
 pub mod contract;
 
-// The two pointer seams (`region` slot table + GPA copies, `run_buf` kvm_run
-// offset math). Used by `KvmBackend` on Linux and by their own `#[cfg(test)]`
-// suites under Miri; dead on a non-test, non-Linux build, hence the conditional
-// allow rather than shipping the seam unguarded.
 #[cfg_attr(
     not(any(test, all(target_os = "linux", target_arch = "x86_64"))),
     allow(dead_code)
@@ -51,38 +41,12 @@ mod mock;
 #[cfg(feature = "mock")]
 mod mock_arm64;
 
-// The **stock KVM/arm64 backend**, split like the x86 backend. `arm64_kvm` is
-// the PURE half — the `KVM_RUN`⇄`Exit` decode, the register-ID save/restore
-// table, and the `Backend` orchestration over the `Arm64Kvm` syscall seam
-// (`docs/ARCHITECTURE.md`; `tasks/112` M4). It carries no `kvm_bindings`
-// dependency, so it compiles + unit/Miri-tests on macOS against the recording
-// `FakeKvm` (portable mechanism attestation — no `/dev/kvm`).
 mod arm64_kvm;
-// Apple Silicon bring-up backend over Hypervisor.framework. The framework and
-// AArch64 ABI are both target-specific, so no part of this module is compiled
-// on Linux or Intel macOS.
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani)))]
 mod hvf;
-// The box-only syscall half (`LiveKvm`, real ioctls), gated on the arch it
-// traps as well as the OS — `kvm_bindings` exposes a different register ABI per
-// arch, so this is aarch64-linux-only, exactly as the x86 `kvm_sys` is
-// x86_64-linux-only (`arch-seam-aarch64-cross-gate`).
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 mod arm64_kvm_sys;
 
-// The **x86-64 KVM substrate**, gated on the architecture it traps as well as the
-// OS (`all(target_os = "linux", target_arch = "x86_64")` — the same seam
-// other Linux-only backend facilities use). `kvm_bindings` exposes a *different*
-// `kvm_regs`/`kvm_sregs` on each arch, so this code is not merely Linux-only, it is
-// x86-64-only: gating it on the OS alone made the crate fail to even `cargo check`
-// on `aarch64-unknown-linux-gnu`, which would have blocked the additive ARM backend
-// the `Arch` seam exists to enable (`docs/ARCHITECTURE.md`). An ARM vendor adds
-// its own `kvm_arm64`/`kvm_arm64_sys` pair beside these under its own arch gate.
-//
-// `kvm` is the pure KVM exit-mapping + state-conversion logic (covered + mutation-
-// tested by its synthetic-`kvm_run` unit tests); `kvm_sys` is the box-only syscall
-// orchestration that wires those helpers to the ioctls (excluded from the coverage
-// + mutation gates — it cannot run without `/dev/kvm`).
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvm;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -116,8 +80,6 @@ pub use arm64_kvm::{Arm64Kvm, Arm64KvmBackend, KvmRunView, MmioView};
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani)))]
 pub use hvf::{HvfBackend, HvfExitHandle};
 
-// The box-only stock KVM/arm64 constructor — the concrete `(Arm64KvmBackend,
-// Arm64)` pair's syscall seam, named only on the aarch64-linux leg.
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub use arm64_kvm_sys::LiveKvm;
 

@@ -238,8 +238,6 @@ where
             EmpiricalStepHashRule::IncrementalHistory
                 | EmpiricalStepHashRule::IncrementalCompactHistory
         ) {
-            // Each contribution is a complete JSON array, so the byte stream
-            // fed to the running hasher is framed unambiguously.
             let bytes =
                 serde_json::to_vec(&contribution).map_err(EmpiricalStepError::Serialization)?;
             self.history_hasher.update(&bytes);
@@ -712,8 +710,6 @@ mod tests {
         for round in 0..6_u8 {
             costs.push(flush_cost(&mut tables, round));
         }
-        // Once the recent window is full, per-flush serialization work is
-        // constant: history growth never re-enters the hash.
         assert_eq!(costs[2], costs[5]);
     }
 

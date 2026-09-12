@@ -360,11 +360,6 @@ where
     U: FnMut(&mut RomuDuoJrRand) -> Result<A, Box<dyn Error>>,
 {
     let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
-    // The energy strategy draw comes first so it is re-derivable from the
-    // seed and recorded weights alone; see `energy_strategy`. A suffix the
-    // splice strategy could not fill reaches this function and lands in the
-    // alphabet arm, since the draw is below the table weight only for the
-    // table strategy.
     let energy_biased = match mixture {
         DrawMixture::Energy { .. }
         | DrawMixture::EnergySplice { .. }

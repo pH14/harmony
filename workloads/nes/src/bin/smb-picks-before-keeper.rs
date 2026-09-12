@@ -190,8 +190,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         let record: SmbCampaignStreamRecord = match serde_json::from_slice(&line) {
             Ok(record) => record,
-            // A live stream's final line can be a partial write; anything
-            // unparseable past the header is counted and ends the walk.
             Err(_) => {
                 truncated_tail_lines = truncated_tail_lines.saturating_add(1);
                 break;

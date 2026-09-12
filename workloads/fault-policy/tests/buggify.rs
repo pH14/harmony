@@ -60,15 +60,11 @@ fn buggify_policy(num: u32, den: u32) -> FaultPolicy {
 fn buggify_never_disturbs_the_supply_stream() {
     let seed = 0xABCD_1234_5678_9F01;
 
-    // A schedule with NO buggify decisions — the baseline supply sequence.
     let plain: Vec<DecisionPoint> = (0..8)
         .map(|_| DecisionPoint::Entropy { bytes: 16 })
         .collect();
     let baseline = supply_only(seed, FaultPolicy::none(), &plain);
 
-    // The SAME entropy decisions, now with a buggify decision wedged before each
-    // one, and buggify fully enabled (fires every time, 1/1). The entropy answers
-    // must be byte-for-byte the baseline: only the fault stream moved.
     let mut mixed: Vec<DecisionPoint> = Vec::new();
     for i in 0..8u32 {
         mixed.push(DecisionPoint::Buggify { point: i });
@@ -100,10 +96,9 @@ fn per_point_biasing_reproduces_a_golden_sequence() {
     let seed = 42;
     let mut policy = FaultPolicy::none();
     policy.set_buggify_default(1, 2).unwrap();
-    policy.set_buggify_point(0, 1, 1).unwrap(); // always fire
-    policy.set_buggify_point(1, 0, 1).unwrap(); // never fire
+    policy.set_buggify_point(0, 1, 1).unwrap();
+    policy.set_buggify_point(1, 0, 1).unwrap();
 
-    // Ask each point a few times in a fixed order.
     let points: Vec<DecisionPoint> = [0u32, 1, 2, 0, 1, 2, 2, 2]
         .into_iter()
         .map(|point| DecisionPoint::Buggify { point })
@@ -114,15 +109,12 @@ fn per_point_biasing_reproduces_a_golden_sequence() {
         .map(|a| matches!(a, Answer::Fault(Fault::BuggifyFire)))
         .collect();
 
-    // Points 0 (always) and 1 (never) are pinned by construction; the point-2
-    // draws are pinned by the fault PRNG given seed 42.
     assert_eq!(
         fired,
         vec![true, false, false, true, false, true, true, false],
         "per-point buggify draw sequence drifted"
     );
 
-    // Same (seed, policy, points) ⇒ same sequence (determinism).
     let again: Vec<bool> = answers(seed, policy, &points)
         .iter()
         .map(|a| matches!(a, Answer::Fault(Fault::BuggifyFire)))
@@ -148,7 +140,6 @@ fn set_class_rejects_buggify_and_policy_round_trips() {
         Err(EnvError::Malformed)
     );
 
-    // The sanctioned per-point path, then a self round-trip.
     p.set_buggify_default(1, 3).unwrap();
     p.set_buggify_point(50, 1, 1).unwrap();
     p.set_buggify_point(7, 2, 5).unwrap();
@@ -186,14 +177,11 @@ fn stream_state_resumes_both_streams_exactly() {
             .collect()
     };
 
-    // Advance to a mid-run position, capture it, and record the continuation.
     let mut a = SeededEnv::new(seed, policy.clone());
     let _prefix = seq(&mut a);
     let mid = a.stream_state();
     let continuation = seq(&mut a);
 
-    // A fresh env resumed at `mid` produces the identical continuation — and a
-    // wrong-position env (fresh, not resumed) does not.
     let mut b = SeededEnv::new(seed, policy.clone());
     b.restore_stream_state(&mid);
     assert_eq!(seq(&mut b), continuation, "resumed streams match exactly");

@@ -242,9 +242,6 @@ pub fn build_control_segment(
 /// thrown away, and level 9 costs ~8x the wall time of the whole guest run
 /// on a container-sized rootfs for ~8% smaller output.
 fn gzip(data: &[u8]) -> Result<Vec<u8>, BundleError> {
-    // Feed gzip from a file, not a stdin pipe: writing a multi-megabyte
-    // segment into a pipe while gzip's stdout pipe is unread deadlocks both
-    // processes at the kernel pipe buffer size.
     let mut input = tempfile::NamedTempFile::new()?;
     std::io::Write::write_all(&mut input, data)?;
     let out = Command::new("gzip")
@@ -348,10 +345,8 @@ mod tests {
             .expect("chroot start");
         assert!(probe < switch, "the probe must precede the switch");
         assert!(switch < runc && switch < chroot, "both paths sit under it");
-        // Each start path appears once, so the workload runs exactly once.
         assert_eq!(INIT_START.matches("runc run --bundle").count(), 1);
         assert_eq!(INIT_START.matches("chroot /harmony-oci/rootfs").count(), 1);
-        // Nothing branches on the workload's own status.
         assert!(!INIT_START.contains("case $rc"));
         assert_eq!(INIT_START.matches("rc=$?").count(), 2);
         assert!(INIT_START.rfind("rc=$?").unwrap() < INIT_START.find("HARMONY_OCI_EXIT").unwrap());
@@ -377,7 +372,6 @@ mod tests {
             );
             assert!(script.starts_with("#!/bin/sh\n"));
         }
-        // Only the arm64 variant routes output through the mmio console.
         assert!(init_script(Console::Mmio).contains("| /bin/mmio-console"));
         assert!(!init_script(Console::Serial).contains("mmio-console"));
     }

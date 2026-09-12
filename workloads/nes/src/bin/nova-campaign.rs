@@ -80,8 +80,6 @@ impl Args {
                 continue;
             }
             if flag == "--fixed-execution-soak" {
-                // Throughput acceptance runs must reach their exact budget
-                // even when ordinary search finds a victory first.
                 fixed_execution_soak = true;
                 continue;
             }

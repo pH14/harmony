@@ -330,7 +330,7 @@ impl MockBackend {
     /// issuing `KVM_INTERRUPT` for the queued vectors.
     fn accept_pending_irqs(&mut self) {
         if self.defer_accept {
-            return; // model the interrupt-window wait: the pending IRQ stays pending.
+            return;
         }
         if let Some(v) = self.pending_irq.take() {
             self.accepted_irq.push_back(v);
@@ -347,9 +347,6 @@ impl Backend for MockBackend {
     }
 
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()> {
-        // The mock performs no registration; it only records the region (no
-        // `unsafe` block — the host pointer is not retained or dereferenced).
-        // Validate the spec's invariants so a test exercises the error path.
         if host.is_empty() {
             return Err(BackendError::Memory("zero-length memory region"));
         }
@@ -379,9 +376,7 @@ impl Backend for MockBackend {
                 what: "drain_dirty_pages (mock dirty tracking not enabled)",
             }),
             Some(pending) => {
-                // Retrieve-and-reset, like the live log.
                 let mut gfns = std::mem::take(pending);
-                // Honor the trait contract regardless of how the test scripted it.
                 gfns.sort_unstable();
                 gfns.dedup();
                 Ok(gfns)
@@ -393,17 +388,12 @@ impl Backend for MockBackend {
         self.ensure_runnable()?;
         self.accept_pending_irqs();
         let exit = self.next_scripted()?;
-        // A normal modeled entry consumes a staged completion before it
-        // returns the next scripted exit. Keep this after `next_scripted` so
-        // an exhausted script does not falsely report that the entry retired.
         self.completion_staged = false;
         Ok(self.deliver(exit))
     }
 
     fn inject(&mut self, event: Injection) -> Result<()> {
         self.injected.push(event);
-        // Set the pending maskable vector (overwrite) for acceptance at the next
-        // entry, mirroring the live backend. NMIs do not flow through this path.
         if let Injection::Interrupt { vector } = event {
             self.pending_irq = Some(vector);
         }
@@ -471,9 +461,6 @@ impl Backend for MockBackend {
     }
 
     fn retire_pending_completion(&mut self) -> Result<()> {
-        // The mock has no run page or guest instruction stream to enter. A
-        // staged completion is therefore retired by clearing only its marker;
-        // in particular, the next scripted exit must remain queued.
         if !self.completion_staged {
             return Ok(());
         }
@@ -490,10 +477,6 @@ impl Backend for MockBackend {
         if self.pending != Pending::None || self.completion_staged {
             return Err(BackendError::PendingCompletion);
         }
-        // The mock has no host to reject the blob; it accepts any well-typed
-        // `VcpuState` (the malformed-blob → `InvalidState` path is a `KvmBackend`
-        // concern). `restore` then `save` reproduces an identical state by
-        // construction.
         self.state = state.clone();
         self.pending_irq = None;
         self.accepted_irq.clear();
@@ -525,9 +508,6 @@ mod tests {
     #[test]
     fn retirement_consumes_a_staged_completion_marker() {
         let mut mock = MockBackend::new();
-        // This is the state left by `finish`: the architectural pending exit
-        // is already resolved, while the completion remains staged in the
-        // backend's userspace buffer until the next entry or explicit retire.
         mock.pending = Pending::None;
         mock.completion_staged = true;
         mock.completions.push(Completion::Read(0x55));

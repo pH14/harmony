@@ -378,7 +378,6 @@ mod tests {
 
     #[test]
     fn init_state_encodings_collapse_to_one_image() {
-        // The measured Xeon 8573C flip: same bytes, XSTATE_BV 0x3 vs 0x2.
         let mut a = init_image(0x3);
         let mut b = init_image(0x2);
         canonicalize_xsave(&mut a);
@@ -399,8 +398,6 @@ mod tests {
 
     #[test]
     fn ignored_area_bytes_become_the_init_values() {
-        // Bit clear ⇒ the area is architecturally ignored; residue there must
-        // not reach the state hash.
         let mut image = init_image(0x0);
         image[X87_ST.start] = 0xEE;
         image[SSE_XMM.start + 7] = 0xEE;
@@ -410,7 +407,6 @@ mod tests {
 
     #[test]
     fn mxcsr_mask_is_pinned_to_the_contract_value() {
-        // The measured cross-vendor divergence: AMD writes 0x2FFFF, Intel 0xFFFF.
         let mut image = init_image(0x2);
         image[MXCSR_MASK].copy_from_slice(&0x0002FFFFu32.to_le_bytes());
         canonicalize_xsave(&mut image);
@@ -419,8 +415,6 @@ mod tests {
 
     #[test]
     fn legacy_tail_host_template_is_zeroed() {
-        // The measured pair: the exporting kernel stamps its host feature mask
-        // at byte 464 (0x7 on Zen 3, 0x600e7 on Granite Rapids).
         let mut a = init_image(0x2);
         let mut b = init_image(0x2);
         a[464..472].copy_from_slice(&0x7u64.to_le_bytes());
@@ -433,8 +427,6 @@ mod tests {
 
     #[test]
     fn rf_exit_residue_collapses_across_vendors() {
-        // The measured cross-vendor pair at an MMIO exit (run 33127863719):
-        // VMX reports RF set in the exit-time RFLAGS, SVM reports it clear.
         let mut intel = VcpuRegs {
             rflags: 0x10282,
             ..VcpuRegs::default()
@@ -467,8 +459,6 @@ mod tests {
 
     #[test]
     fn unusable_segment_residue_collapses_to_the_zeroed_form() {
-        // The measured cross-vendor pair: VMX reports the stale cached
-        // descriptor for a null-loaded segment, SVM reports zeros.
         let intel = Segment {
             base: 726582208,
             selector: 0x23,
@@ -533,9 +523,6 @@ mod tests {
 
     #[test]
     fn xsave_header_length_boundary_is_fail_closed_and_inclusive() {
-        // One byte short cannot contain XCOMP_BV and must return without an
-        // index panic. Exactly 528 bytes does contain the complete header and
-        // must be canonicalized rather than mistaken for a short image.
         let mut short = vec![0xa5; XCOMP_BV + 7];
         let before = short.clone();
         canonicalize_xsave(&mut short);

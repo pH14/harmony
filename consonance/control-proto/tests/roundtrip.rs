@@ -73,7 +73,6 @@ proptest! {
         prop_assert_eq!(&got, &req_a);
         prop_assert_eq!(consumed, first_len, "stops at the first frame boundary");
 
-        // The remainder decodes to the second frame.
         let (got_seq2, got2, consumed2) =
             decode_request(&buf[consumed..]).expect("decode").expect("complete");
         prop_assert_eq!(got_seq2, seq_b);
@@ -105,13 +104,12 @@ proptest! {
 fn oversize_request_body_is_bad_length_and_leaves_buf_untouched() {
     let req = Request::Branch {
         snap: SnapId(0),
-        // One byte past the cap, before adding the tag/snap/version/len overhead.
         env: Reproducer {
             blob_version: 0,
             bytes: vec![0u8; MAX_FRAME_LEN + 1],
         },
     };
-    let mut buf = vec![0xAB, 0xCD]; // pre-existing content must survive.
+    let mut buf = vec![0xAB, 0xCD];
     let err = encode_request(0, &req, &mut buf).unwrap_err();
     assert_eq!(err, ProtocolError::BadLength);
     assert_eq!(buf, vec![0xAB, 0xCD], "buf is unchanged on BadLength");
@@ -139,8 +137,6 @@ fn oversize_reply_body_is_bad_length() {
 #[test]
 fn body_exactly_at_cap_is_accepted() {
     use control_proto::{DecisionId, Moment, Reply, StopReason};
-    // body = RESULT_OK(1) + REPLY_STOP(1) + SR_DECISION(1) + vtime(8) + id(8)
-    //        + ctx_len(4) + ctx => overhead 23 bytes before ctx.
     let overhead = 1 + 1 + 1 + 8 + 8 + 4;
     let ctx = vec![0u8; MAX_FRAME_LEN - overhead];
     let reply = Ok(Reply::Stop(StopReason::Decision {

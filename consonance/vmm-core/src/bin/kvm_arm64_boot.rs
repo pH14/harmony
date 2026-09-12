@@ -168,9 +168,6 @@ fn main() -> std::process::ExitCode {
                 LogField, check_delivery_placement, compare_normalized_logs,
             };
 
-            // M4's live save/restore oracle. Capture the typed architectural
-            // GIC independently of the hash/codec, restore the exact VM-state
-            // and RAM bytes, then require all three views to agree.
             let pre_restore_hash = match vmm.state_hash() {
                 Ok(hash) => hash,
                 Err(error) => {
@@ -322,10 +319,6 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::FAILURE;
             }
 
-            // Required negative control on the exact production workload:
-            // move every delivered tick one exit late. Identically late twins
-            // still compare equal, while the independent schedule oracle must
-            // reject that shared error at the same genuine boundary.
             let original = trace.normalized_log();
             let mut late = original.clone();
             for logged in &mut late.events {

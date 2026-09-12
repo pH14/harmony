@@ -26,8 +26,6 @@ use crate::wire::{
 };
 use crate::{ARCH_X86_64, VM_STATE_MAGIC, VM_STATE_VERSION, VmState};
 
-// Section tags, in their canonical ascending order. Every v1 blob carries all
-// of them exactly once; there are no optional sections.
 const TAG_REGS: u16 = 1;
 const TAG_SREGS: u16 = 2;
 const TAG_XCRS: u16 = 3;
@@ -76,8 +74,6 @@ impl VmState {
             HeaderWire {
                 magic: VM_STATE_MAGIC.into(),
                 version: VM_STATE_VERSION.into(),
-                // The record set below is x86-64's; the tag says so, so a decoder
-                // can never reinterpret it as another architecture's.
                 arch: ARCH_X86_64.into(),
                 section_count: SECTION_COUNT.into(),
             }
@@ -130,9 +126,6 @@ impl VmState {
         if version != VM_STATE_VERSION {
             return Err(VmStateError::UnsupportedVersion(version));
         }
-        // The arch tag gates the RECORDS: this build carries only the x86-64
-        // record set, and another architecture's `REGS`/`SREGS` bytes would decode
-        // into x86 fields without a single length or tag mismatch. Fail closed.
         let arch = header.arch.get();
         if arch != ARCH_X86_64 {
             return Err(VmStateError::UnsupportedArch(arch));
@@ -161,15 +154,6 @@ impl VmState {
             let len = r.u32()? as usize;
             let payload = r.take(len)?;
 
-            // Sections must be STRICTLY ascending, so each tag appears at most
-            // once. `tag <= prev` means "not strictly greater than the previous":
-            // equal is a duplicate, smaller is out of order. Folding both into one
-            // comparison — rather than a separate `tag == prev` guard followed by
-            // `tag < prev` — keeps the boundary observable: a duplicate-tag blob
-            // distinguishes `<=` from `<`, and an out-of-order blob distinguishes
-            // the inner `==`, so neither operator has an untestable mutant. (With
-            // the split form the `<` was redundant with the earlier `==` return
-            // and `< vs <=` was an equivalent mutant.)
             if let Some(prev) = last_tag
                 && tag <= prev
             {
@@ -284,8 +268,6 @@ fn encode_msrs(msrs: &MsrBlock) -> Result<Vec<u8>, VmStateError> {
     let count = u32::try_from(msrs.0.len()).map_err(|_| VmStateError::InvalidField)?;
     let mut payload = Vec::with_capacity(4 + msrs.0.len() * 12);
     payload.extend_from_slice(&count.to_le_bytes());
-    // BTreeMap iterates in ascending key order — deterministic regardless of
-    // the order MSRs were captured/inserted in.
     for (&index, &value) in &msrs.0 {
         let pair = MsrPairWire {
             index: index.into(),
@@ -310,8 +292,6 @@ fn decode_msrs(payload: &[u8]) -> Result<MsrBlock, VmStateError> {
     for chunk in chunks {
         let pair = read_fixed::<MsrPairWire>(chunk)?;
         let index = pair.index.get();
-        // Strictly ascending indices: rejects a duplicate or out-of-order list
-        // and guarantees the BTreeMap round-trips exactly.
         if let Some(p) = prev
             && index <= p
         {
@@ -360,10 +340,6 @@ fn validate_timers(entries: &[TimerEntry], next_seq: u64) -> Result<(), VmStateE
 
 pub(crate) fn encode_timers(timers: &TimerQueueState) -> Result<Vec<u8>, VmStateError> {
     let count = u32::try_from(timers.entries.len()).map_err(|_| VmStateError::InvalidField)?;
-    // Entries must already satisfy the task-05 TimerQueue invariants (see
-    // validate_timers): canonical (deadline_vns, seq) order, unique tokens, and
-    // every seq < next_seq. Reject a non-conforming queue rather than silently
-    // fixing it, so the round-trip contract holds for every accepted VmState.
     validate_timers(&timers.entries, timers.next_seq)?;
 
     let mut payload = Vec::with_capacity(12 + timers.entries.len() * 32);
@@ -401,9 +377,6 @@ pub(crate) fn decode_timers(payload: &[u8]) -> Result<TimerQueueState, VmStateEr
             period_vns: w.period_vns.get(),
         });
     }
-    // Enforce the same task-05 invariants on decode that encode does, so a
-    // hand-crafted blob can't smuggle in a queue that wouldn't restore faithfully
-    // (decode stays strict and symmetric with encode).
     validate_timers(&entries, next_seq)?;
     Ok(TimerQueueState { entries, next_seq })
 }

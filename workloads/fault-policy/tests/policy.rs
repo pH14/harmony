@@ -30,8 +30,6 @@ proptest! {
 
 #[test]
 fn equal_policies_built_differently_encode_identically() {
-    // Same probabilities and eligible sets, but the eligible faults are listed
-    // in different orders → identical bytes (the eligible list is canonicalized).
     let mut a = FaultPolicy::none();
     a.set_class(
         DecisionClass::NetFlow,
@@ -82,17 +80,14 @@ fn duplicate_eligible_faults_are_deduplicated() {
 #[test]
 fn set_class_rejects_misuse() {
     let mut p = FaultPolicy::none();
-    // Supply class never faults.
     assert_eq!(
         p.set_class(DecisionClass::Entropy, 1, 2, &[]),
         Err(EnvError::Malformed)
     );
-    // Zero denominator.
     assert_eq!(
         p.set_class(DecisionClass::NetFlow, 1, 0, &[]),
         Err(EnvError::Malformed)
     );
-    // Foreign-class fault in a class's eligible set.
     assert_eq!(
         p.set_class(DecisionClass::NetFlow, 1, 2, &[Fault::BlockEio]),
         Err(EnvError::Malformed)
@@ -106,25 +101,21 @@ fn set_class_rejects_misuse() {
 /// vertical.
 #[test]
 fn is_enforceable_only_admits_buggify_and_net_but_not_block_or_process() {
-    // The empty policy: trivially enforceable (and buggify-only).
     let none = FaultPolicy::none();
     assert!(none.is_enforceable_only());
     assert!(none.is_buggify_only());
 
-    // A net-only policy: enforceable now (the flow agent), but NOT buggify-only.
     let mut net = FaultPolicy::none();
     net.set_class(DecisionClass::NetFlow, 1, 1, &[Fault::NetReset])
         .unwrap();
     assert!(net.is_enforceable_only(), "net has a decide-seam enforcer");
     assert!(!net.is_buggify_only());
 
-    // A buggify-only policy: enforceable (and buggify-only).
     let mut bug = FaultPolicy::none();
     bug.set_buggify_point(7, 1, 1).unwrap();
     assert!(bug.is_enforceable_only());
     assert!(bug.is_buggify_only());
 
-    // Buggify + net together: still enforceable (both seams live).
     let mut both = FaultPolicy::none();
     both.set_buggify_point(7, 1, 1).unwrap();
     both.set_class(DecisionClass::NetFlow, 1, 2, &[Fault::NetLatency(Span(5))])
@@ -132,7 +123,6 @@ fn is_enforceable_only_admits_buggify_and_net_but_not_block_or_process() {
     assert!(both.is_enforceable_only());
     assert!(!both.is_buggify_only());
 
-    // A block fault (no decide-seam yet): NOT enforceable.
     let mut block = FaultPolicy::none();
     block
         .set_class(DecisionClass::BlockIo, 1, 2, &[Fault::BlockEio])
@@ -142,7 +132,6 @@ fn is_enforceable_only_admits_buggify_and_net_but_not_block_or_process() {
         "block has no decide-seam enforcer"
     );
 
-    // A process fault: NOT enforceable.
     let mut proc = FaultPolicy::none();
     proc.set_class(DecisionClass::Process, 1, 2, &[Fault::ProcKill])
         .unwrap();
@@ -155,7 +144,6 @@ fn is_enforceable_only_admits_buggify_and_net_but_not_block_or_process() {
 /// reset, latency, throttle) stay enforceable.
 #[test]
 fn is_enforceable_only_rejects_fractional_netloss_but_keeps_binary() {
-    // Fractional loss 1/3 in the eligible set → not enforceable.
     let mut frac = FaultPolicy::none();
     frac.set_class(
         DecisionClass::NetFlow,
@@ -169,7 +157,6 @@ fn is_enforceable_only_rejects_fractional_netloss_but_keeps_binary() {
         "a fractional NetLoss is not in-kernel enforceable"
     );
 
-    // A fractional loss anywhere in a multi-fault eligible set still taints it.
     let mut mixed = FaultPolicy::none();
     mixed
         .set_class(
@@ -181,7 +168,6 @@ fn is_enforceable_only_rejects_fractional_netloss_but_keeps_binary() {
         .unwrap();
     assert!(!mixed.is_enforceable_only());
 
-    // Full drop (num >= den) is a binary drop → enforceable.
     let mut full = FaultPolicy::none();
     full.set_class(
         DecisionClass::NetFlow,
@@ -195,7 +181,6 @@ fn is_enforceable_only_rejects_fractional_netloss_but_keeps_binary() {
         "a full drop is enforceable (nft drop)"
     );
 
-    // Reset / latency / throttle are all binary → enforceable.
     let mut binary = FaultPolicy::none();
     binary
         .set_class(
@@ -215,7 +200,6 @@ fn is_enforceable_only_rejects_fractional_netloss_but_keeps_binary() {
 #[test]
 fn from_bytes_rejects_off_version() {
     let mut bytes = FaultPolicy::none().to_bytes();
-    // Layout: magic:u32 then version:u16.
     bytes[4] = bytes[4].wrapping_add(9);
     match FaultPolicy::from_bytes(&bytes) {
         Err(EnvError::BadVersion(_)) => {}
@@ -225,23 +209,10 @@ fn from_bytes_rejects_off_version() {
 
 #[test]
 fn from_bytes_rejects_stale_v1_net_policy() {
-    // Task 50: the network `Fault` byte tags were reshaped (per-frame → per-flow),
-    // so a task-45 `v1` policy blob must reject rather than silently reinterpret an
-    // old net fault under the new tag vocabulary — the symmetric codec to the
-    // EnvSpec BLOB_VERSION gate. The hazard is concrete for the reused payload-free
-    // tag 3: old `NetDup` (tag 3) and new `NetReset` (tag 3) are byte-identical, so
-    // a stale blob would stay byte-aligned and decode to the wrong fault.
-    //
-    // Build a current (v2) policy whose eligible set uses tag 3 (`NetReset`), then
-    // rewrite the version field down to 1 — exactly the bytes an old recorder emitted
-    // for a `NetDup`-eligible net policy.
     let mut p = FaultPolicy::none();
     p.set_class(DecisionClass::NetFlow, 1, 2, &[Fault::NetReset])
         .unwrap();
     let mut bytes = p.to_bytes();
-    // Layout: magic:u32 (0..4) then version:u16 (4..6). The current version is 3
-    // (task 73 added the trailing buggify section; a stale v1/v2 blob must still
-    // reject rather than reinterpret an old net tag).
     assert_eq!(
         bytes[4..6],
         3u16.to_le_bytes(),
@@ -273,13 +244,10 @@ fn from_bytes_rejects_bad_magic_and_trailing_bytes() {
 
 #[test]
 fn from_bytes_rejects_zero_denominator() {
-    // Encode a policy with den=2, then zero the NetFlow denominator in place.
-    // Layout after magic(4)+version(2): net{ num:u32, den:u32, count:u32, ... }.
     let mut p = FaultPolicy::none();
     p.set_class(DecisionClass::NetFlow, 1, 2, &[Fault::NetReset])
         .unwrap();
     let mut bytes = p.to_bytes();
-    // num at offset 6..10, den at 10..14.
     for byte in bytes.iter_mut().skip(10).take(4) {
         *byte = 0;
     }

@@ -54,20 +54,8 @@ mod real {
     use serde_json::json;
     use sha2::{Digest, Sha256};
 
-    // Each worker keeps one guest VM resident for the campaign. This backing
-    // is outside the archive's logical snapshot charge and belongs in the
-    // whole-process reserve.
     const PERSISTENT_VM_MEMORY_MIB: usize = 128;
-    // Reserve a conservative, deterministic amount for non-archive process
-    // allocations, rounded up from measured campaign overhead.
     const NON_ARCHIVE_PROCESS_OVERHEAD_MIB: usize = 448;
-    // Sparse snapshots share page allocations, so reducing their conservative
-    // full-footprint charge does not reduce RSS byte for byte. Four exact-head
-    // hardware replicas with a 1,088 MiB archive converged at 2,290--2,291 MiB
-    // peak RSS. Cap this whole-VM campaign's archive at the already accepted
-    // twelve-worker size and reserve the remainder for VM backing, allocator
-    // retention, and other process state. The cap is deterministic: host RSS
-    // never influences search or eviction decisions.
     const ARCHIVE_MEMORY_BUDGET_MIB: usize = 64;
 
     struct MemoryBudget {
@@ -116,8 +104,6 @@ mod real {
             let mut args = values.into_iter();
             while let Some(flag) = args.next() {
                 if flag == "--fixed-execution-soak" {
-                    // A throughput acceptance run must reach its exact budget
-                    // even when the ordinary search finds a victory first.
                     fixed_execution_soak = true;
                     continue;
                 }

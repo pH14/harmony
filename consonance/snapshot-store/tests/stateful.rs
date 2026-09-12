@@ -125,7 +125,7 @@ impl RefState {
             let mut cur = Some(i);
             while let Some(c) = cur {
                 if !reachable.insert(c) {
-                    break; // already walked from here up
+                    break;
                 }
                 cur = self.snaps[c].parent;
             }
@@ -187,7 +187,6 @@ impl ReferenceStateMachine for StoreRef {
     type Transition = Transition;
 
     fn init_state() -> BoxedStrategy<RefState> {
-        // The base layer: a random sparse set of seeded pages over the zero image.
         prop::collection::vec((0..MEM_PAGES, any::<u8>()), 0..12)
             .prop_map(|base_writes| {
                 let zero = vec![0u8; MEM_PAGES as usize];
@@ -209,7 +208,6 @@ impl ReferenceStateMachine for StoreRef {
 
     fn transitions(state: &RefState) -> BoxedStrategy<Transition> {
         let live = state.live_indices();
-        // With nothing live, the only sensible thing is to garbage-collect.
         if live.is_empty() {
             return Just(Transition::Gc).boxed();
         }
@@ -342,7 +340,6 @@ impl StateMachineTest for StoreMachine {
                         "materialize gfn {gfn} diverged"
                     );
                 }
-                // Copy-on-write probe: scribbling the mapping must not reach the store.
                 if MEM_PAGES > 0 {
                     mapping.as_mut_slice()[..PAGE_SIZE].fill(0x5C);
                     assert_page(&sut.store, sut.ids[snap], 0, model.seeds[0]);
@@ -351,7 +348,6 @@ impl StateMachineTest for StoreMachine {
             Transition::Retain { snap } => sut.store.retain(sut.ids[snap]).unwrap(),
             Transition::Release { snap } => {
                 sut.store.release(sut.ids[snap]).unwrap();
-                // Reaching refcount 0 means immediately unobservable.
                 if ref_state.snaps[snap].refcount == 0 {
                     let id = sut.ids[snap];
                     let mut out = [0u8; PAGE_SIZE];
@@ -367,7 +363,6 @@ impl StateMachineTest for StoreMachine {
             }
             Transition::Gc => {
                 sut.store.gc();
-                // gc is idempotent: a second pass in a row frees nothing.
                 assert_eq!(sut.store.gc(), 0, "second gc freed bytes");
             }
         }
@@ -377,11 +372,6 @@ impl StateMachineTest for StoreMachine {
     fn check_invariants(sut: &StoreSut, ref_state: &RefState) {
         let live = ref_state.live_indices();
 
-        // Store-wide statistics agree with the model exactly — not just as a
-        // lower bound. `stored_unique_pages` and `bytes_resident` are computed
-        // from the resident-layer set (live + retained ancestors, post-gc), so a
-        // gc page-leak, an inflated unique-page count, or a wrong resident-byte
-        // total all surface here.
         let stats = sut.store.store_stats();
         assert_eq!(stats.snapshots, live.len() as u64);
         assert_eq!(stats.logical_pages_total, live.len() as u64 * MEM_PAGES);
@@ -399,14 +389,12 @@ impl StateMachineTest for StoreMachine {
         for (i, model) in ref_state.snaps.iter().enumerate() {
             let id = sut.ids[i];
             if model.refcount == 0 {
-                // Released snapshots are uniformly unknown.
                 assert!(matches!(
                     sut.store.stats(id),
                     Err(StoreError::UnknownSnapshot(_))
                 ));
                 continue;
             }
-            // Per-snapshot stats agree with the model.
             let s = sut.store.stats(id).unwrap();
             assert_eq!(s.logical_pages, MEM_PAGES);
             assert_eq!(
@@ -415,7 +403,6 @@ impl StateMachineTest for StoreMachine {
             );
             assert_eq!(s.chain_len, model.chain_len, "chain_len for id {id:?}");
             assert_eq!(sut.store.vm_state(id).unwrap(), &model.vm_state[..]);
-            // Every page reads back its model content.
             for (gfn, &seed) in model.seeds.iter().enumerate() {
                 assert_page(&sut.store, id, gfn as u64, seed);
             }

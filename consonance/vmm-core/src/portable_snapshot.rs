@@ -208,9 +208,6 @@ impl PortableSnapshotRef<'_> {
             out.write_all(bytes)?;
         }
         out.write_all(&policy)?;
-        // Finish the authenticated body before consuming the hash adapter;
-        // the digest itself is then written and flushed through the original
-        // writer below.
         out.flush()?;
         let digest = out.finish();
         writer.write_all(&digest)?;
@@ -810,7 +807,6 @@ mod tests {
         assert_eq!(decoded.trace_events, 17);
         assert_eq!(decoded.trace_schedules, 5);
         assert!(decoded.tainted);
-        // The sparse sidecar has no memory length, RAM section, or state hash.
         assert!(!bytes.windows(4).any(|tag| tag == b"MEM\0"));
         assert!(!bytes.windows(4).any(|tag| tag == b"SHA2"));
     }
@@ -949,7 +945,6 @@ mod tests {
     #[test]
     fn snapshot_decoder_rejects_empty_vm_state() {
         let mut malformed = encoded();
-        // Header field layout: vm_state length occupies bytes 20..28.
         malformed[20..28].copy_from_slice(&0_u64.to_le_bytes());
         refresh_digest(&mut malformed);
         assert!(matches!(
@@ -984,7 +979,6 @@ mod tests {
 
     #[test]
     fn every_presence_flag_must_match_its_section_length() {
-        // Header offsets: flags=10, sdk length=28.
         {
             let flag = FLAG_SDK;
             let mut flag_without_section = encoded();
@@ -1216,8 +1210,6 @@ mod tests {
         let sdk_start = vm_state_start + vm_state_len;
         let policy_start = sdk_start + sdk_len;
         assert_eq!(policy_start + policy_len + 32, original.len());
-        // Flip RAM, VM state, SDK, and policy bytes; every mutation must
-        // reach the independent trailing digest check.
         for index in [memory_start, vm_state_start, sdk_start, policy_start] {
             let mut planted = original.clone();
             planted[index] ^= 1;
@@ -1230,18 +1222,12 @@ mod tests {
 
     #[test]
     fn bad_lengths_and_all_truncations_are_total() {
-        // Re-decoding every prefix re-hashes the prefix. Keep the full 8-KiB
-        // artifact natively, but avoid quadratic interpreted SHA-256 over
-        // thousands of semantically identical bulk-memory prefixes under
-        // Miri. The smaller artifact retains every section and the loop still
-        // exercises every one of its truncation points.
         let memory_len = if cfg!(miri) { 128 } else { 8192 };
         let bytes = encoded_with_memory_len(memory_len);
         for end in 0..bytes.len() {
             assert!(PortableSnapshot::read_from(&bytes[..end], memory_len).is_err());
         }
         let mut oversized = bytes;
-        // vm_state length begins after magic/version/flags/memory length.
         oversized[20..28].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(matches!(
             PortableSnapshot::read_from(oversized.as_slice(), memory_len),

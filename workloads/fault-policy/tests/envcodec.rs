@@ -89,20 +89,12 @@ proptest! {
         let composed = EnvCodec::compose(&base, &tail, at).expect("override-only, same seed/policy");
         let out = composed.overrides();
 
-        // base keeps only m < at; tail shifts to m + at (>= at). Disjoint ranges.
         let kept_base = base_ov.iter().filter(|(m, _)| **m < at).count();
         prop_assert_eq!(out.len(), kept_base + tail_ov.len());
         for (m, a) in &base_ov {
             if *m < at {
                 prop_assert_eq!(out.get(m), Some(a), "base prefix entry kept at its Moment");
             } else {
-                // A base entry at m >= at is in the discarded suffix: the tail's
-                // spliced-in timeline governs [at, ∞), so out[m] is whatever the
-                // *tail* re-keys there (its entry at m - at), never the base's
-                // dropped entry. Usually that is nothing (out has no key m); when
-                // a tail Moment aligns to m - at it legitimately re-keys onto m —
-                // the rare coincidence that made this test flaky (issue #72) when
-                // the assertion was the too-strong `!out.contains_key(m)`.
                 prop_assert_eq!(
                     out.get(m),
                     tail_ov.get(&(m - at)),
@@ -129,8 +121,6 @@ proptest! {
         seed in any::<u64>(),
         at in 1u64..BOUND,
     ) {
-        // Nominal is admissible on a fault-class NetFlow point, so every override
-        // fires and the seed is never drawn — no cross-splice desync.
         let net = P::NetFlow { src: NodeId(0), dst: NodeId(1), conn: ConnId(0), event: fault_policy::FlowEvent::Open };
         let tail_ov: BTreeMap<Moment, Action> =
             moments.iter().map(|m| (*m, Action::Guest(Answer::Nominal))).collect();
@@ -181,9 +171,6 @@ proptest! {
         let b = EnvCodec::mutate(&spec, salt);
         prop_assert_eq!(&a, &b, "same (env, salt) ⇒ same proposal");
         prop_assert!(matches!(a, EnvSpec::Recorded { .. }), "mutate yields Recorded");
-        // The proposal is legal: it serializes to a well-formed, byte-stable blob
-        // (the input's standing-fault order is canonicalized on encode, so we
-        // compare bytes rather than structure).
         let decoded = EnvSpec::decode(&a.encode()).expect("legal blob");
         prop_assert_eq!(decoded.encode(), a.encode(), "byte-stable round-trip");
     }
@@ -210,8 +197,6 @@ proptest! {
 
 #[test]
 fn compose_rekeys_at_nonzero_concrete() {
-    // Non-genesis splice at = 10: base keeps its prefix [0, 10), tail shifts to
-    // [10, ∞). A base override >= at is dropped (it is in the discarded suffix).
     let mut policy = FaultPolicy::none();
     policy
         .set_class(
@@ -225,8 +210,8 @@ fn compose_rekeys_at_nonzero_concrete() {
         seed: 0xABCD,
         policy: policy.clone(),
         overrides: BTreeMap::from([
-            (5, Action::Guest(Answer::Nominal)),          // < at → kept at 5
-            (20, Action::Guest(Answer::Supply(vec![1]))), // >= at → dropped
+            (5, Action::Guest(Answer::Nominal)),
+            (20, Action::Guest(Answer::Supply(vec![1]))),
         ]),
         standing: vec![],
         reseeds: Default::default(),
@@ -270,15 +255,6 @@ fn compose_rekeys_at_nonzero_concrete() {
 
 #[test]
 fn compose_tail_rekeys_onto_dropped_base_moment() {
-    // The issue-#72 intermittent-flake counterexample, pinned deterministic. A
-    // base override sits at a suffix Moment (>= at) and a *tail* override re-keys
-    // exactly onto that same Moment (677_257 + 172_752 == 850_009). `compose` is
-    // correct: the base suffix is discarded and the tail's timeline governs
-    // [at, ∞), so out[850_009] carries the TAIL's override, not the base's.
-    //
-    // This is the case the proptest's old `!out.contains_key(m)` assertion could
-    // not tolerate; distinct SkewTime values here (base 0, tail 7) also pin that
-    // the tail — not the base — wins the aligned Moment.
     let at: Moment = 172_752;
     assert_eq!(
         677_257 + at,
@@ -314,15 +290,13 @@ fn compose_tail_rekeys_onto_dropped_base_moment() {
 
 #[test]
 fn compose_prefix_filter_is_strict_less_than() {
-    // A base override exactly AT the splice Moment is dropped (prefix is [0, at)),
-    // with NO tail entry there to mask it — so the filter is strict `<`, not `<=`.
     let at: Moment = 50;
     let base = recorded(BTreeMap::from([
-        (at - 1, Action::Guest(Answer::Nominal)), // kept
-        (at, Action::Guest(Answer::Nominal)),     // dropped by strict `<`
-        (at + 1, Action::Guest(Answer::Nominal)), // dropped (> at)
+        (at - 1, Action::Guest(Answer::Nominal)),
+        (at, Action::Guest(Answer::Nominal)),
+        (at + 1, Action::Guest(Answer::Nominal)),
     ]));
-    let tail = recorded(BTreeMap::new()); // empty (Recorded) → nothing re-keyed to `at`
+    let tail = recorded(BTreeMap::new());
     let out = EnvCodec::compose(&base, &tail, at).unwrap();
     let m = out.overrides();
     assert!(m.contains_key(&(at - 1)), "prefix entry (< at) kept");
@@ -336,13 +310,11 @@ fn compose_prefix_filter_is_strict_less_than() {
 
 #[test]
 fn compose_rejects_seeded_input() {
-    // A pure Seeded env's decisions are all seed-serviced, so splicing it would
-    // desync the fresh PRNG stream (task 93). Rejected at any offset, either side.
     let seeded = EnvSpec::Seeded {
         seed: 0,
         policy: FaultPolicy::none(),
     };
-    let rec = recorded(BTreeMap::from([(0, Action::Guest(Answer::Nominal))])); // seed 0, policy none
+    let rec = recorded(BTreeMap::from([(0, Action::Guest(Answer::Nominal))]));
     for at in [0u64, 1, 10, u64::MAX] {
         assert_eq!(
             EnvCodec::compose(&seeded, &rec, at),
@@ -359,10 +331,8 @@ fn compose_rejects_seeded_input() {
 
 #[test]
 fn compose_fails_closed_on_standing_seed_or_policy_mismatch() {
-    // Standing fault (V-time axis ≠ Moment offset) → reject. Both Recorded so the
-    // Seeded check does not preempt; the cause is the standing fault.
     let base_standing = recorded_with(BTreeMap::new(), vec![sf(DecisionClass::NetFlow)]);
-    let plain = recorded(BTreeMap::new()); // seed 0, policy none, no standing
+    let plain = recorded(BTreeMap::new());
     assert_eq!(
         EnvCodec::compose(&base_standing, &plain, 0),
         Err(EnvError::UnsupportedComposition),
@@ -375,8 +345,6 @@ fn compose_fails_closed_on_standing_seed_or_policy_mismatch() {
         "standing in tail is rejected"
     );
 
-    // Payload tapes are a second, independent non-composable axis. Exercise
-    // each side alone so weakening either `||` guard cannot pass.
     let mut base_payloads = plain.clone();
     base_payloads.set_payloads(Some(vec![vec![1, 2, 3]]));
     assert_eq!(
@@ -392,8 +360,6 @@ fn compose_fails_closed_on_standing_seed_or_policy_mismatch() {
         "payload tape in tail is rejected"
     );
 
-    // Seed mismatch — two Recorded envs (so the Seeded check passes) with
-    // different seeds. One EnvSpec cannot carry a piecewise stream.
     let rec = |seed, policy| EnvSpec::Recorded {
         seed,
         policy,
@@ -412,7 +378,6 @@ fn compose_fails_closed_on_standing_seed_or_policy_mismatch() {
         "seed mismatch is rejected"
     );
 
-    // Policy mismatch — same seed, different policy.
     let mut policy = FaultPolicy::none();
     policy
         .set_class(
@@ -431,20 +396,16 @@ fn compose_fails_closed_on_standing_seed_or_policy_mismatch() {
 
 #[test]
 fn compose_offset_overflow_is_rejected() {
-    // A tail Moment shifted past u64::MAX must reject, never saturate two overrides
-    // onto one colliding key.
-    let base = recorded(BTreeMap::new()); // seed 0, policy none, no standing
+    let base = recorded(BTreeMap::new());
     let tail = recorded(BTreeMap::from([
         (0, Action::Guest(Answer::Nominal)),
         (1, Action::Guest(Answer::Supply(vec![9]))),
     ]));
-    // at = u64::MAX: Moment 0 → u64::MAX (fits), Moment 1 → overflow.
     assert_eq!(
         EnvCodec::compose(&base, &tail, u64::MAX),
         Err(EnvError::Overflow),
         "a tail Moment shifted past u64::MAX is rejected, not saturated"
     );
-    // Exactly representable: a single tail Moment 0 at u64::MAX lands at u64::MAX.
     let single = recorded(BTreeMap::from([(0, Action::Guest(Answer::Nominal))]));
     let ok = EnvCodec::compose(&base, &single, u64::MAX).unwrap();
     assert!(ok.overrides().contains_key(&u64::MAX));
@@ -453,9 +414,6 @@ fn compose_offset_overflow_is_rejected() {
 
 #[test]
 fn compose_override_only_reproduces_at_nonzero() {
-    // The spec's task-93 property for the override-covered case: a branch-local
-    // delta composed onto a base at at > 0 reproduces its run at the re-keyed
-    // Moments. All overrides admissible (always fire) → no seed draw → no desync.
     let net = P::NetFlow {
         src: NodeId(0),
         dst: NodeId(1),
@@ -470,7 +428,7 @@ fn compose_override_only_reproduces_at_nonzero() {
         ),
         (7, Action::Guest(Answer::Nominal)),
     ]));
-    let base = recorded(BTreeMap::new()); // seed 0, policy none — matches delta
+    let base = recorded(BTreeMap::new());
     let at: Moment = 1_000;
     let composed = EnvCodec::compose(&base, &delta, at).unwrap();
 
@@ -502,8 +460,6 @@ fn seeded_is_a_pure_seeded_env() {
 
 #[test]
 fn mutate_of_empty_inserts_one_host_fault() {
-    // An env with no overrides has only the "insert" branch available, so mutate
-    // adds exactly one host-plane action (always legal — no admissibility).
     let env = EnvSpec::Seeded {
         seed: 1,
         policy: FaultPolicy::none(),
@@ -515,14 +471,11 @@ fn mutate_of_empty_inserts_one_host_fault() {
         matches!(action, Action::Host(_)),
         "mutate proposes a host-plane action"
     );
-    // It must also be a legal, round-tripping blob.
     assert_eq!(EnvSpec::decode(&mutated.encode()).unwrap(), mutated);
 }
 
 #[test]
 fn mutate_never_disturbs_a_guest_only_spec() {
-    // A spec with only guest overrides: across many salts, every guest entry is
-    // preserved and the only change mutate can make is to *add* a host action.
     let guest = BTreeMap::from([
         (10, Action::Guest(Answer::Nominal)),
         (
@@ -542,15 +495,12 @@ fn mutate_never_disturbs_a_guest_only_spec() {
                 "guest override preserved at salt {salt}"
             );
         }
-        // The only legal op on a host-free map is insert (one host action added).
         assert_eq!(out.len(), guest.len() + 1, "exactly one host action added");
     }
 }
 
 #[test]
 fn materialized_recorded_default_moment_is_zero() {
-    // A freshly materialized env answers for Moment 0 until `set_moment` is
-    // called, so an override at Moment 0 fires without any explicit set.
     let env_spec = recorded(BTreeMap::from([(0, Action::Guest(Answer::Nominal))]));
     let mut env = env_spec.materialize();
     let p = P::Process { node: NodeId(0) };
@@ -560,16 +510,12 @@ fn materialized_recorded_default_moment_is_zero() {
 
 #[test]
 fn set_moment_is_reflected_by_moment_accessor() {
-    // `moment()` returns the exact value last set — not `Moment::default()`. A
-    // non-zero value distinguishes the real getter from a `-> Default` mutant.
     let mut env = recorded(BTreeMap::new()).materialize();
     env.set_moment(0xDEAD_BEEF_0000_1234);
     assert_eq!(env.moment(), 0xDEAD_BEEF_0000_1234);
     env.set_moment(7);
     assert_eq!(env.moment(), 7, "tracks the most recent set_moment");
 }
-
-// ---- reseed-marker splicing (task 78) ---------------------------------------
 
 /// A `Recorded` spec with only a reseed table (no overrides/standing).
 fn reseed_spec(seed: u64, reseeds: &[(Moment, u64)]) -> EnvSpec {
@@ -585,9 +531,6 @@ fn reseed_spec(seed: u64, reseeds: &[(Moment, u64)]) -> EnvSpec {
 
 #[test]
 fn compose_splices_reseed_markers_positionally_like_overrides() {
-    // base: markers at 0 (its own branch reseed) and 300 (past the cut —
-    // superseded by the tail's branch); tail: marker at 0 (its branch reseed)
-    // and a mid-window one at 40.
     let base = reseed_spec(7, &[(0, 111), (300, 222)]);
     let tail = reseed_spec(7, &[(0, 333), (40, 444)]);
     let composed = EnvCodec::compose(&base, &tail, 250).expect("override-free, same seed/policy");
@@ -636,8 +579,6 @@ fn record_reseed_promotes_and_round_trips() {
 
 #[test]
 fn non_ascending_reseed_table_is_rejected_on_decode() {
-    // Encode a two-marker spec, then swap the marker records (each is 16
-    // bytes: moment u64 + seed u64) so the table is descending — Malformed.
     let spec = reseed_spec(0, &[(1, 10), (2, 20)]);
     let bytes = spec.encode();
     let n = bytes.len();

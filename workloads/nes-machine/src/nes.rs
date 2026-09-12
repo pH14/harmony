@@ -96,8 +96,6 @@ pub fn run_actions<M: Machine>(
             }
         };
         if let Err(error) = machine.drop_snapshot(current) {
-            // The next snapshot is independent from the failed release. Do a
-            // best-effort cleanup before returning the primary backend error.
             let _ = machine.drop_snapshot(next);
             return Err(error);
         }

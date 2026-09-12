@@ -82,24 +82,16 @@ impl Drop for GuestMem {
 /// `Idle` again — the same repeated-halt shape the mock's scripted `Idle` tail
 /// provides.
 fn stub(scenario: Scenario) -> Option<Vec<u8>> {
-    // hlt ; jmp -3  (back to the hlt)
     const HALT_LOOP: [u8; 3] = [0xF4, 0xEB, 0xFD];
     let head: Vec<u8> = match scenario {
         Scenario::Idle => Vec::new(),
-        // mov dx, 0x3f8 ; in al, dx
         Scenario::PortIn => vec![0xBA, 0xF8, 0x03, 0xEC],
-        // No MMIO aperture is reachable from real mode with all of guest RAM
-        // mapped; the exam's read-style cell uses `PortIn` instead.
         Scenario::MmioLoad => return None,
-        // mov ecx, 0x12345678 ; rdmsr   (the index is default-denied by `policy`)
         Scenario::Rdmsr => vec![0x66, 0xB9, 0x78, 0x56, 0x34, 0x12, 0x0F, 0x32],
-        // mov ecx, 0x12345678 ; xor eax,eax ; xor edx,edx ; wrmsr
         Scenario::Wrmsr => vec![
             0x66, 0xB9, 0x78, 0x56, 0x34, 0x12, 0x66, 0x31, 0xC0, 0x66, 0x31, 0xD2, 0x0F, 0x30,
         ],
-        // Serviced in-kernel from the installed CPUID table on both backends.
         Scenario::Cpuid => return None,
-        // The doorbell transport is composed above this trait.
         Scenario::Hypercall => return None,
     };
     let mut code = head;
@@ -176,7 +168,7 @@ fn enter_real_mode_at<B: LiveBackend>(backend: &mut B, entry: u64) {
     st.sregs.ds.base = 0;
     st.sregs.ds.selector = 0;
     st.regs.rip = entry;
-    st.regs.rflags = 0x2; // reserved bit set, the minimal valid RFLAGS
+    st.regs.rflags = 0x2;
     backend.restore(&st).expect("restore setup state");
 }
 
@@ -201,8 +193,6 @@ impl<B: LiveBackend> KvmFixture<B> {
     /// `entry`.
     fn boot(&mut self, code: &[u8], entry: u64) -> B {
         let mut backend = B::open();
-        // Armed before `map_memory`: the flag is a property of the memslot, so
-        // it has to be set before the slot is registered.
         backend.enable_dirty_log();
         self.mems.push(GuestMem::new(RAM_LEN));
         let mem = self.mems.last_mut().expect("just pushed");
