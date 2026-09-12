@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 {
-  description = "Locked, offline Harmony guest-image builder";
+  description = "Locked, offline Harmony platform and workload image builders";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
@@ -32,44 +32,69 @@
             url = "https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.bz2";
             sha256 = "078a03516dcdbdb705fecaf415ea3d13a956c589e46f09fed68a06fb00598c90";
           };
-          builder = pkgs.writeShellApplication {
-            name = "harmony-build-guest-images";
-            runtimeInputs = with pkgs; [
-              bash
-              bc
-              binutils
-              bison
-              bzip2
-              coreutils
-              cpio
-              diffutils
-              file
-              findutils
-              flex
-              gawk
-              gnumake
-              gnugrep
-              gnused
-              gnutar
-              gzip
-              patch
-              perl
-              python3
-              util-linux
-              which
-              xz
-            ] ++ nixpkgs.lib.optionals isArm64 [
-              gcc
-            ] ++ nixpkgs.lib.optionals (!isArm64) [
-              elfutils
-              elfutils.dev
-              gcc13
-              go
-              glibc.static
-              openssl
-              openssl.dev
-              pkg-config
+          commonRuntimeInputs = with pkgs; [
+            bash
+            bc
+            binutils
+            bison
+            bzip2
+            coreutils
+            cpio
+            diffutils
+            file
+            findutils
+            flex
+            gawk
+            gnumake
+            gnugrep
+            gnused
+            gnutar
+            gzip
+            patch
+            perl
+            python3
+            util-linux
+            which
+            xz
+          ];
+          nativeRuntimeInputs = commonRuntimeInputs
+            ++ nixpkgs.lib.optionals isArm64 [
+              pkgs.gcc
+            ]
+            ++ nixpkgs.lib.optionals (!isArm64) [
+              pkgs.elfutils
+              pkgs.elfutils.dev
+              pkgs.gcc13
+              pkgs.go
+              pkgs.glibc.static
+              pkgs.openssl
+              pkgs.openssl.dev
+              pkgs.pkg-config
             ];
+          platformBuilder = pkgs.writeShellApplication {
+            name = "harmony-build-guest-images";
+            runtimeInputs = nativeRuntimeInputs;
+            text = ''
+              export HARMONY_NIX_SOURCE=${self.outPath}
+              export HARMONY_NIX_LINUX_SOURCE=${linuxSource}
+              export HARMONY_NIX_BUSYBOX_SOURCE=${busyboxSource}
+              ${nixpkgs.lib.optionalString isArm64 ''
+                export HARMONY_NIX_MUSL_SOURCE=${muslSource}
+              ''}
+              ${nixpkgs.lib.optionalString (!isArm64) ''
+                export NIX_CFLAGS_COMPILE="-I${pkgs.elfutils.dev}/include -I${pkgs.openssl.dev}/include''${NIX_CFLAGS_COMPILE:+ $NIX_CFLAGS_COMPILE}"
+                export NIX_LDFLAGS="-L${pkgs.elfutils.out}/lib -L${pkgs.openssl.out}/lib -L${pkgs.glibc.static}/lib''${NIX_LDFLAGS:+ $NIX_LDFLAGS}"
+                export LIBRARY_PATH="${pkgs.glibc.static}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
+                export PKG_CONFIG_PATH="${pkgs.elfutils.dev}/lib/pkgconfig:${pkgs.openssl.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+                export HARMONY_RDTSC_ALLOWLIST="$HARMONY_NIX_SOURCE/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt"
+                export HARMONY_RDRAND_ALLOWLIST="$HARMONY_NIX_SOURCE/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt"
+              ''}
+              exec ${./consonance/harmony-linux/nix/build-guest-images.sh} "$@"
+            '';
+          };
+          workloadBuilder = pkgs.writeShellApplication {
+            name = "harmony-build-workload-images";
+            runtimeInputs = nativeRuntimeInputs;
             text = ''
               export HARMONY_NIX_SOURCE=${self.outPath}
               export HARMONY_NIX_LINUX_SOURCE=${linuxSource}
@@ -86,21 +111,31 @@
                 export HARMONY_RDTSC_ALLOWLIST="$HARMONY_NIX_SOURCE/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt"
                 export HARMONY_RDRAND_ALLOWLIST="$HARMONY_NIX_SOURCE/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt"
               ''}
-              exec ${./consonance/harmony-linux/nix/build-guest-images.sh} "$@"
+              exec ${./workloads/guest-images/nix/build-guest-images.sh} "$@"
             '';
           };
         in {
           busybox-source = busyboxSource;
-          guest-images = builder;
-          default = builder;
+          platform-guest-images = platformBuilder;
+          workload-guest-images = workloadBuilder;
+          guest-images = platformBuilder;
+          default = platformBuilder;
         });
 
       apps = forAllSystems (system: {
+        platform-guest-images = {
+          type = "app";
+          program = "${self.packages.${system}.platform-guest-images}/bin/harmony-build-guest-images";
+        };
+        workload-guest-images = {
+          type = "app";
+          program = "${self.packages.${system}.workload-guest-images}/bin/harmony-build-workload-images";
+        };
         guest-images = {
           type = "app";
-          program = "${self.packages.${system}.guest-images}/bin/harmony-build-guest-images";
+          program = "${self.packages.${system}.platform-guest-images}/bin/harmony-build-guest-images";
         };
-        default = self.apps.${system}.guest-images;
+        default = self.apps.${system}.platform-guest-images;
       });
     };
 }

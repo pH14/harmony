@@ -25,18 +25,21 @@ requires Linux, or a Linux/amd64 build container on macOS. Build output lives
 in `consonance/harmony-linux/build/`; `GUEST_BUILD_ROOT` can select another
 build root.
 
-The root `flake.nix` provides the locked release-image entry point on native
-Linux:
+The root `flake.nix` provides separate locked platform and workload image
+entrypoints on native Linux:
 
 ```sh
-nix run .#guest-images -- --output "$PWD/guest-output"
+nix run .#platform-guest-images -- --output "$PWD/platform-output"
+nix run .#workload-guest-images -- --output "$PWD/workload-output"
 ```
 
-On Linux/x86_64 that produces the standard platform kernel, direct fixture
-initramfs, and (when the platform runtime inputs are supplied) the canonical
-`x86_64/initramfs-oci.cpio.gz`; the emitted `MANIFEST.sha256` covers every
-staged artifact. Native Linux/aarch64 produces the corresponding `aarch64`
-directory.
+On Linux/x86_64 the platform builder produces the standard platform kernel and
+direct fixture initramfs, plus the canonical OCI runtime artifacts when their
+runtime inputs are supplied. Native Linux/aarch64 produces the corresponding
+`aarch64` directory. The workload builder owns application image recipes and
+application source inputs; those inputs are outside the platform closure. The
+existing `.#guest-images` app remains an alias for the platform builder while
+callers migrate to the explicit names.
 
 The pinned BusyBox source is also available as a standalone flake package for
 reproducible image preparation and CI reuse:
