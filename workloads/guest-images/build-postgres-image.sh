@@ -16,9 +16,9 @@
 # linux/amd64 container as root — see CONTRIBUTING.md.
 set -euo pipefail
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/../../consonance/harmony-linux/linux"
 
-# shellcheck source=lib-build.sh disable=SC1091
+# shellcheck source=../../consonance/harmony-linux/linux/lib-build.sh disable=SC1091
 . ./lib-build.sh
 
 require_linux_amd64

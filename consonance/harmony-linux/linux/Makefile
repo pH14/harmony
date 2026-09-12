@@ -30,7 +30,7 @@ arm64-postgres-kernel:
 	ARM64_KERNEL_PROFILE=postgres ./build-arm64-kernel.sh
 
 arm64-postgres-image: arm64-postgres-kernel
-	./build-arm64-postgres-image.sh
+	../../../workloads/guest-images/build-arm64-postgres-image.sh
 
 # OCI-runner initramfs for `harmony oci run`: static busybox only, no /init
 # (the CLI injects the bundle + init as a second initramfs segment).
@@ -43,16 +43,16 @@ exec-image: kernel
 	./build-exec-image.sh
 
 postgres-image:
-	./build-postgres-image.sh
+	../../../workloads/guest-images/build-postgres-image.sh
 
 campaign-image:
 	./build-campaign-image.sh
 
 docker-image:
-	./build-docker-image.sh
+	../../../workloads/guest-images/build-docker-image.sh
 
 k3s-image:
-	./build-k3s-image.sh
+	../../../workloads/guest-images/build-k3s-image.sh
 
 game-image:
 	../../../workloads/nes-guest/legacy/build-game-image.sh

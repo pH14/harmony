@@ -33,9 +33,10 @@
 # linux/amd64 container as root — see CONTRIBUTING.md.
 set -euo pipefail
 
-cd "$(dirname "$0")"
+workload_dir=$(cd "$(dirname "$0")" && pwd)
+cd "$(dirname "$0")/../../consonance/harmony-linux/linux"
 
-# shellcheck source=lib-build.sh disable=SC1091
+# shellcheck source=../../consonance/harmony-linux/linux/lib-build.sh disable=SC1091
 . ./lib-build.sh
 
 require_linux_amd64
@@ -301,7 +302,7 @@ echo "   container runs /run-workload.sh as uid 999 on pre-baked PGDATA; rootfs=
 
 # The guest /init and the in-namespace container-setup helper (the latter runs
 # as the unshared container PID 1, before chroot; see docker-init.sh).
-install -m 0755 "$LINUX_DIR/docker-init.sh" "$DKROOT/init"
+install -m 0755 "$workload_dir/docker-init.sh" "$DKROOT/init"
 install -m 0755 "$LINUX_DIR/container-setup.sh" "$DKROOT/container-setup.sh"
 # The REAL-runc /init, baked alongside as /runc-init and selected via the
 # kernel `rdinit=/runc-init` cmdline param (the unshare path above stays the

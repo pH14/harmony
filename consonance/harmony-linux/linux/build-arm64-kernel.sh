@@ -28,7 +28,7 @@ case "$arm64_profile" in
         arm64_source_root=$BUILD_ROOT/arm64-postgres-src
         arm64_object_root=$BUILD_ROOT/kernel-build-arm64-postgres
         arm64_output=Image-postgres
-        arm64_extra_fragment=$LINUX_DIR/arm64-postgres-config-fragment
+        arm64_extra_fragment=$GUEST_DIR/../../workloads/guest-images/arm64-postgres-config-fragment
         ;;
     n6-traps-off)
         arm64_source_root=$BUILD_ROOT/arm64-n6-traps-off-src

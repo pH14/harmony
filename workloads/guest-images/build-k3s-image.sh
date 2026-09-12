@@ -41,9 +41,10 @@
 # build host; the box is the pinned build environment). See CONTRIBUTING.md.
 set -euo pipefail
 
-cd "$(dirname "$0")"
+workload_dir=$(cd "$(dirname "$0")" && pwd)
+cd "$(dirname "$0")/../../consonance/harmony-linux/linux"
 
-# shellcheck source=lib-build.sh disable=SC1091
+# shellcheck source=../../consonance/harmony-linux/linux/lib-build.sh disable=SC1091
 . ./lib-build.sh
 
 require_linux_amd64
@@ -378,7 +379,7 @@ spec:
 EOF
 
 # --- 7. the guest /init ------------------------------------------------------
-install -m 0755 "$LINUX_DIR/k3s-init.sh" "$K3SROOT/k3s-init"
+install -m 0755 "$workload_dir/k3s-init.sh" "$K3SROOT/k3s-init"
 
 # --- 8. pack the initramfs (sorted, fixed mtime, gzip -n) ---------------------
 # **Ownership is PRESERVED** (no --owner=0:0): the guest-side files are root-owned

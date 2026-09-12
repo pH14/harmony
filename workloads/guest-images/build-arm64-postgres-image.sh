@@ -5,9 +5,10 @@
 # shipped ELF is rejected if it contains LL/SC or a live generic-counter access.
 set -euo pipefail
 
-cd "$(dirname "$0")"
+workload_dir=$(cd "$(dirname "$0")" && pwd)
+cd "$(dirname "$0")/../../consonance/harmony-linux/linux"
 
-# shellcheck source=lib-build.sh disable=SC1091
+# shellcheck source=../../consonance/harmony-linux/linux/lib-build.sh disable=SC1091
 . ./lib-build.sh
 
 require_linux_aarch64
@@ -202,10 +203,10 @@ install -d -o 65534 -g 65534 -m 0700 "$container_root$pgdata"
         i=$((i + 1))
     done
 } >"$container_root/workload.sql"
-install -m 0755 "$LINUX_DIR/arm64-postgres-run.sh" "$container_root/run-workload.sh"
-install -m 0755 "$LINUX_DIR/arm64-postgres-container-setup.sh" \
+install -m 0755 "$workload_dir/arm64-postgres-run.sh" "$container_root/run-workload.sh"
+install -m 0755 "$workload_dir/arm64-postgres-container-setup.sh" \
     "$postgres_root/arm64-postgres-container-setup.sh"
-install -m 0755 "$LINUX_DIR/arm64-postgres-init.sh" "$postgres_root/init"
+install -m 0755 "$workload_dir/arm64-postgres-init.sh" "$postgres_root/init"
 
 if [ "$(stat -c %u "$container_root$pgdata")" -ne 65534 ]; then
     echo "FAIL: packed PGDATA is not owned by the runtime postgres uid" >&2
