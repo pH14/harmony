@@ -40,6 +40,10 @@ pub fn command(spec: &ExecutionSpec, argv: &[String]) -> io::Result<Command> {
         let uid = spec.uid;
         let gid = spec.gid;
         let groups = spec.additional_gids.clone();
+        let replace_groups = groups != supplementary_groups()?;
+        #[cfg(target_os = "linux")]
+        let group_count = groups.len();
+        #[cfg(not(target_os = "linux"))]
         let group_count = libc::c_int::try_from(groups.len()).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidInput, "too many supplemental groups")
         })?;
@@ -49,7 +53,7 @@ pub fn command(spec: &ExecutionSpec, argv: &[String]) -> io::Result<Command> {
         // credential syscalls required by the validated execution contract.
         unsafe {
             command.pre_exec(move || {
-                if !groups.is_empty() && libc::setgroups(group_count, groups.as_ptr().cast()) != 0 {
+                if replace_groups && libc::setgroups(group_count, groups.as_ptr().cast()) != 0 {
                     return Err(io::Error::last_os_error());
                 }
                 if libc::setgid(gid) != 0 {
@@ -63,6 +67,31 @@ pub fn command(spec: &ExecutionSpec, argv: &[String]) -> io::Result<Command> {
         }
     }
     Ok(command)
+}
+
+#[cfg(unix)]
+fn supplementary_groups() -> io::Result<Vec<u32>> {
+    // SAFETY: a zero-sized getgroups call writes nothing and returns the count.
+    let count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+    if count < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut groups = vec![0; count as usize];
+    // SAFETY: groups has count initialized gid slots writable for this call.
+    let actual = unsafe { libc::getgroups(count, groups.as_mut_ptr()) };
+    if actual < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if actual > count {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "supplementary groups changed",
+        ));
+    }
+    groups.truncate(actual as usize);
+    groups.sort_unstable();
+    groups.dedup();
+    Ok(groups)
 }
 
 pub fn spawn(spec: &ExecutionSpec, argv: &[String]) -> io::Result<Child> {
@@ -107,7 +136,7 @@ pub fn run_argv_once(spec: &ExecutionSpec, argv: &[String]) -> io::Result<ExitSt
     let status = child.wait()?;
     #[cfg(unix)]
     let _ = signal_group(child.id(), libc::SIGKILL);
-    reap_descendants()?;
+    reap_descendants(child.id())?;
     Ok(status)
 }
 
@@ -156,14 +185,16 @@ pub fn reap_available() -> io::Result<usize> {
     }
 }
 
-fn reap_descendants() -> io::Result<()> {
+fn reap_descendants(pgid: u32) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
+        let pgid = libc::pid_t::try_from(pgid)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid process group"))?;
         loop {
             let mut status = 0;
             // SAFETY: `status` is a valid writable status word for this call;
             // the supervisor owns all children returned by this wait operation.
-            let result = unsafe { libc::waitpid(-1, &mut status, 0) };
+            let result = unsafe { libc::waitpid(-pgid, &mut status, 0) };
             if result > 0 {
                 continue;
             }
@@ -179,6 +210,7 @@ fn reap_descendants() -> io::Result<()> {
     }
     #[cfg(not(target_os = "linux"))]
     {
+        let _ = pgid;
         Ok(())
     }
 }
@@ -203,7 +235,7 @@ pub fn spawn_error_code(error: &io::Error) -> u8 {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use execution_proto::ExecutionSpec;
@@ -219,7 +251,7 @@ mod tests {
             // do not dereference a pointer or retain any borrowed state.
             uid: unsafe { libc::geteuid() },
             gid: unsafe { libc::getegid() },
-            additional_gids: Vec::new(),
+            additional_gids: supplementary_groups().unwrap(),
             bundle: None,
         }
     }
@@ -277,6 +309,18 @@ mod tests {
             let status = child.wait().unwrap();
             assert!(!status.success());
         }
+    }
+
+    #[test]
+    fn a_readiness_probe_does_not_wait_for_other_nodes() {
+        let node_spec = spec(&["/bin/sleep", "1"]);
+        let mut node = spawn(&node_spec, &node_spec.argv).unwrap();
+        let ready = run_once(&spec(&["/bin/true"])).unwrap();
+        let still_running = node.try_wait().unwrap().is_none();
+        signal_group(node.id(), libc::SIGKILL).unwrap();
+        let _ = node.wait();
+        assert!(ready.success());
+        assert!(still_running);
     }
 
     #[test]

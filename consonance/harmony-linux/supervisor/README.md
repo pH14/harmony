@@ -12,8 +12,8 @@ namespace. Every child receives the resolved uid, gid, and supplemental groups
 from the execution document. The supervisor retains its own privilege for
 platform device operations. `/dev/harmony` is accessed through the shared
 `hypercall-doorbell::linux::DeviceTransport`; the supervisor has no raw MMIO
-transport. Parking uses `/dev/harmony-park` where that platform facility is
-available.
+transport. Parking uses the required `/dev/harmony-park` interface. Device errors fail
+execution rather than silently omitting a requested process action.
 
 `bundle`, `directive`, `reconcile`, and `supervise` are portable library
 modules. Linux device and process wiring is isolated to the binary. The
@@ -23,3 +23,8 @@ standalone crate can be checked on a development host with:
 cargo test --manifest-path consonance/harmony-linux/supervisor/Cargo.toml
 cargo clippy --manifest-path consonance/harmony-linux/supervisor/Cargo.toml --all-targets -- -D warnings
 ```
+
+Miri covers the portable parsing and reconciliation modules. Process integration
+tests run natively: Miri cannot execute the credential, spawn, and wait syscalls.
+The native suite checks process-group isolation, descendant cleanup, and readiness
+probes alongside running nodes; the OCI fixture checks guest credentials.

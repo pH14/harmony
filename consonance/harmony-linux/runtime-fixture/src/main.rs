@@ -23,6 +23,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if metadata.uid() != 1000 || metadata.gid() != 1000 {
         return Err("application credentials were not applied".into());
     }
+    let status = fs::read_to_string("/proc/self/status")?;
+    let groups = status
+        .lines()
+        .find(|line| line.starts_with("Groups:"))
+        .ok_or("missing process groups")?;
+    if groups.split_whitespace().skip(1).next().is_some() {
+        return Err("application inherited supplementary groups".into());
+    }
     let mut sdk = Sdk::init(
         DeviceTransport::open()?,
         &[

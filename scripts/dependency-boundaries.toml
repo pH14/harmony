@@ -41,6 +41,7 @@ workload_support = [
     "workloads/nes-machine",
 ]
 guest_linux_platform = [
+    "consonance/harmony-linux/runtime-fixture",
     "consonance/harmony-linux/supervisor",
 ]
 workload_packages = [

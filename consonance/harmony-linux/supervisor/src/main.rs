@@ -38,20 +38,20 @@ mod runtime {
     use harmony_supervisor::bundle::{Bundle, HookSpec, NodeSpec, parse_bundle};
     use harmony_supervisor::directive::{Directive, LineReader, parse_directive};
     use harmony_supervisor::process;
-    use harmony_supervisor::reconcile::{ActiveWindows, Park};
+    use harmony_supervisor::reconcile::ActiveWindows;
     use harmony_supervisor::regs::{
         REG_ALIVE, REG_HOOKS_FINISHED, REG_HOOKS_STARTED, REG_PARKED, REG_RESTARTS, REG_SOMETIMES,
         REG_TICKS, REG_UNEXPECTED_DEATHS, Registers,
     };
     use harmony_supervisor::supervise::{Action, Supervisor};
     use hypercall_doorbell::linux::DeviceTransport;
-    use hypercall_proto::{MAX_PAYLOAD, Transport};
+    use hypercall_proto::MAX_PAYLOAD;
     use process_proto::STANDING_NAMESPACE;
     use std::fs::File;
     use std::io::{Read, Write};
     use std::os::unix::process::ExitStatusExt;
     use std::path::{Path, PathBuf};
-    use std::process::{Child, Command, Stdio};
+    use std::process::{Child, Stdio};
     use std::thread;
     use std::time::Duration;
 
@@ -173,7 +173,7 @@ mod runtime {
                 log(tick, &action.describe());
                 apply(action, spec, bundle, nodes, &mut hooks, &mut launches, tick)?;
             }
-            watch_parks(nodes, &mut supervisor, tick);
+            watch_parks(nodes, &mut supervisor, tick)?;
             drain_hooks(&mut hooks, &mut supervisor, sdk, tick)?;
             for (register, value) in registers.updates(supervisor.snapshot()) {
                 sdk.state_set(register, value)
@@ -267,7 +267,7 @@ mod runtime {
                         );
                         entry.park = Some(handle);
                     }
-                    Err(error) => log(tick, &format!("park node {node}: {error}")),
+                    Err(error) => return Err(format!("park node {node}: {error}")),
                 }
             }
             Action::Unpark(node) => {
@@ -284,7 +284,7 @@ mod runtime {
                             ),
                         ),
                         Ok(_) => {}
-                        Err(error) => log(tick, &format!("park node {node} status: {error}")),
+                        Err(error) => return Err(format!("park node {node} status: {error}")),
                     }
                 }
             }
@@ -326,17 +326,18 @@ mod runtime {
         })
     }
 
-    fn watch_parks(nodes: &mut [Node], supervisor: &mut Supervisor, tick: u64) {
+    fn watch_parks(
+        nodes: &mut [Node],
+        supervisor: &mut Supervisor,
+        tick: u64,
+    ) -> Result<(), String> {
         for (id, node) in nodes.iter_mut().enumerate() {
             let Some(handle) = node.park.as_mut() else {
                 continue;
             };
             let status = match handle.status() {
                 Ok(status) => status,
-                Err(error) => {
-                    log(tick, &format!("park node {id} status: {error}"));
-                    continue;
-                }
+                Err(error) => return Err(format!("park node {id} status: {error}")),
             };
             if status.state >= park::PARKED && !handle.hit_logged {
                 handle.hit_logged = true;
@@ -360,6 +361,7 @@ mod runtime {
                 );
             }
         }
+        Ok(())
     }
 
     fn signal_node(nodes: &mut [Node], node: u16, signal: libc::c_int) -> Result<(), String> {
@@ -465,8 +467,8 @@ mod runtime {
         use std::os::fd::AsRawFd;
 
         const DEVICE: &str = "/dev/harmony-park";
-        const IOC_ARM: u64 = 0x4020_5001;
-        const IOC_STATUS: u64 = 0x8030_5002;
+        const IOC_ARM: libc::Ioctl = 0x4020_5001_u32 as libc::Ioctl;
+        const IOC_STATUS: libc::Ioctl = 0x8030_5002_u32 as libc::Ioctl;
 
         pub const ARMED: u32 = 1;
         pub const PARKED: u32 = 2;

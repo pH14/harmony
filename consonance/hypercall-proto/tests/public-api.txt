@@ -1,4 +1,21 @@
 pub mod hypercall_proto
+pub mod hypercall_proto::observation
+pub struct hypercall_proto::observation::Descriptor
+pub hypercall_proto::observation::Descriptor::address: u64
+pub hypercall_proto::observation::Descriptor::handle: u32
+pub hypercall_proto::observation::Descriptor::len: u32
+impl hypercall_proto::observation::Descriptor
+pub fn hypercall_proto::observation::Descriptor::decode(&[u8]) -> core::result::Result<Self, hypercall_proto::observation::InvalidDescriptor>
+pub fn hypercall_proto::observation::Descriptor::encode(self) -> core::result::Result<[u8; 24], hypercall_proto::observation::InvalidDescriptor>
+pub fn hypercall_proto::observation::Descriptor::range(self, u32, u32) -> core::result::Result<u64, hypercall_proto::observation::InvalidDescriptor>
+pub struct hypercall_proto::observation::InvalidDescriptor
+impl core::error::Error for hypercall_proto::observation::InvalidDescriptor
+impl core::fmt::Display for hypercall_proto::observation::InvalidDescriptor
+pub fn hypercall_proto::observation::InvalidDescriptor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const hypercall_proto::observation::DESCRIPTOR_LEN: usize
+pub const hypercall_proto::observation::EVENT_ID: u32
+pub const hypercall_proto::observation::MAX_LEN: u32
+pub const hypercall_proto::observation::MAX_REGIONS: u32
 pub enum hypercall_proto::ClientError<E>
 pub hypercall_proto::ClientError::InvalidLength
 pub hypercall_proto::ClientError::Protocol(hypercall_proto::ProtoError)
