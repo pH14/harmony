@@ -32,6 +32,20 @@ memory is outside the archive's logical budget and must be measured in host RSS.
 Benchmark callers record this physical execution choice in their run identity.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 
+For first-event studies, `CampaignExecutionOptions::stop_after_milestone` accepts
+a canonical name returned by `Evaluation::named_milestone`. The workload owns
+the vocabulary, observation-policy version and first admitted execution. The
+coordinator records that criterion in the header, stops new reservations after
+the first observed admission, and drains already-reserved jobs normally. It
+does not change rollout termination, selection, retention or pre-event decisions.
+`first_milestone.frames_emulated` charges bootstrap and complete jobs through
+that admission; it is not an exact within-job event timestamp. The final frame
+total includes the remaining drain. Replay reconstructs the same event cost,
+checks the observation-policy version and rejects jobs beyond the allowed drain.
+Absent options preserve the previous stream/report fields and stopping behavior.
+Callers must compare the event cost with their frame cap: an event in post-budget
+drain is observed evidence, not a budgeted hit.
+
 ## Workload boundary
 
 `searcher` is independently buildable. Workload packages implement its typed
@@ -103,7 +117,7 @@ to splice energy, so its existing comparisons describe that combined mechanism;
 they do not isolate the effect of triggered replay. The v2 identifier enables a
 paired test of the separation while preserving recorded v1 behavior.
 
-The continuation bank retains at most 8,192 observed exits, eight destinations
+For these exit policies, the continuation bank retains at most 8,192 observed exits, eight destinations
 per source slot, 128 actions per exit, and 1,024 pending attempts. It charges a
 fixed conservative capacity reserve against the logical memory budget before
 bootstrap. Pending attempts do not pin historical snapshots: stale parents are
@@ -111,6 +125,42 @@ skipped. Dispatch records the complete action tail, so later donor reclamation
 cannot change serial replay. Only same-slot `preference_cmp` is consulted;
 preferences are never compared between unrelated locations. A workload that
 reports no preference improvements gets no continuation attempts.
+
+`alphabet_scoped_progress_reuse_v1` instead learns from a retained, same-slot
+parent-to-child transition with strictly higher known `retention_progress`, the
+same known scope, and neither known resource axis lower. It queues the observed
+parent-relative word for one trial from that child's state. Words have one to
+six actions; at most 1,024 are pending, with the oldest discarded on overflow and
+the newest tried first. This mode stores no exit graph and charges a separate,
+fixed queue-capacity reserve before bootstrap. A queued id pins no snapshots;
+inactive, missing, unreconstructable or action-limited parents are skipped.
+One in four reservation slots can dispatch a trial; ordinary draws use the
+unchanged alphabet distribution. Ordinary duplicate skips also consume
+reservation slots, so this is not a quarter of executed jobs or physical frames.
+Trials use isolated continuation accounting. Retention remains an independent
+choice: an improvement rejected by retention supplies no word.
+
+`alphabet_scoped_progress_fresh_control_v1` uses the same queue, parent checks,
+learned-word duplicate gate and seed consumption, then draws a fresh alphabet
+suffix from that seed and the current draw checkpoint. It executes that draw
+without a second duplicate filter. Thus the first differing suffix has the same
+parent and learning history; later histories can diverge. Both modes record the
+resolved suffix as a continuation tail. In the control, donor/leaf ids name the
+learning event, while tail bytes contain the fresh draw; replay rederives that
+draw and rejects a mismatch. Both enforce the six-action bound before replay
+time truncation. These explicit policies preserve all older identifiers and
+defaults. Their [finite-world tests and theory](../../benchmarks/search/continuation-reassessment/progress-word-design.md)
+include a phase change that makes a previously productive word fatal. Scoped
+progress is evidence for a bounded test, not a certificate of future success.
+
+The existing queue prioritizes newer improvement batches; within each batch,
+destination-key iteration followed by a stack pop tries larger destination
+labels first. Separately, ordinary splicing's descendant cache ranks full keys.
+Source relabeling fixtures expose both effects, including a learned route that
+becomes unavailable when only location names change. They preserve legacy
+behavior and make no native efficacy claim. See the
+[continuation reassessment](../../benchmarks/search/continuation-reassessment/README.md)
+for the scope of these findings and the separate historical depth-cost audit.
 
 These are experiments, not new defaults. Promote policies based on paired game
 panels, fresh SMB completion, and resource costs through
@@ -170,3 +220,198 @@ relation considers map cells equal, so no map cell can dominate another. It is
 not the full historical cross-location preference/Pareto implementation, and
 it does not restore the prototype's improvement-replay queues. Its separate
 identifier permits an ablation without changing any existing selector's behavior.
+
+`room_cell_uniform_128_energy_progress_cheapest_scoped_return_control_v1:<thresholds>`
+and `..._scoped_return_half_v1:<thresholds>` are explicit research policies. Both
+inherit semantic cost selection and consume one extra fair coin after every
+**group-walk cell proposal**, including singleton windows. Control ignores it;
+half redirects on heads only to a strictly higher `retention_progress()` value in
+the same known scope, with both known resource axes no worse. Only the two
+`resource_guarded_progress` retention policies qualify, and the alternate must
+already belong to the exact eligible 128-member recency window. The unchanged
+uniform quarter consumes no extra coin. Active residency, action ceilings,
+exhaustion and the existing all-exhausted reset remain owned by the original
+walk. At most one other slot member is examined; there is no extra persistent
+state, global ranking, or cache. The optional cost audit still describes the
+**proposal** weights, before a possible redirect.
+
+The control and half policy have matching RNG consumption from an identical
+history. Their histories can diverge after a different parent; old selector IDs
+retain their original random streams. Neither higher recorded progress nor this
+allocation rule guarantees a better future. The [finite checks and counterexample](../../benchmarks/search/continuation-reassessment/scoped-return-design.md)
+state the conditional claim and experimental limits.
+
+`room_cell_uniform_128_energy_progress_no_cost_v1:<thresholds>` is an ablation of
+`energy_progress_cheapest_v1`. It removes the between-cell historical cost rank
+and makes the newest sampleable within-cell window uniform. It preserves the
+semantic class walk, novelty ranks, barren energy, entry exhaustion, uniform
+quarter, retention and suffix generation. Here cost is elapsed execution time
+since entering the coarsest group, not global route length or snapshot replay
+work. The existing `(time_in_group, id)` order still couples random draws when
+weights match; the new within-cell distribution is uniform even across cost
+ties. Removing cost also removes its age tiebreak and changes the effect of
+novelty where the old combined rank reached its cap. This is one combined cost
+rank ablation, not an attribution between those effects.
+
+The optional `selector-cost-audit` feature emits `selector_cost_diagnostics` in
+progress sidecars for the uncoun-ted semantic cost/no-cost comparison. It compares
+the two normalized weight vectors at encountered between-cell and within-cell
+selection stages using exact integer arithmetic, reporting total variation
+rounded down to millionths, nonzero-change counts, cap terms and equal-cost rank
+boundaries. Counters include dispatched work not yet admitted. They never alter
+weights, random draws, reports or campaign streams. Persistent counters occupy
+112 bytes; transient vectors are bounded by the existing group/window lengths
+and are additional to the historical logical archive budget. Process RSS includes
+their physical cost. Conditional differences describe one encountered archive;
+they are not a bound on an adaptive campaign's improvement. Feature-off sidecars
+omit this optional field.
+
+## Retention diagnostics
+
+`Reporting::observe_retention` can inspect a same-slot competition before the
+incumbent is removed. The read-only event includes cached snapshots, prior
+selection exposure, and lazy reconstruction of both inputs. Observers must
+bound their storage and account for reconstruction separately; observer input
+materialization never changes deterministic reconstruction counters. The
+same event offers a lazy complete local-slot view with stable ids, optional
+cached snapshots, inputs and the local rule's proposed keep/remove flags. No
+slot vectors or inputs are allocated unless requested. The proposal precedes
+global population and memory eviction, so it does not certify the final global
+survivor set. Missing cached snapshots remain explicit members of the view.
+The constant-size `retention_diagnostics` sidecar census counts removal before
+window exposure, recorded parent selections and productive-admission credit.
+Selections include pre-execution duplicate skips, which execute no new job.
+Pending job credits and continuation within the birth job are not represented,
+so zero credit does not prove that no outgoing action was executed. It is not
+replay state.
+The evaluator flushes/disables campaign sampling before verification replay.
+
+The opt-in `resource_extremes_2_v1` slot policy keeps at most two resource
+extremes supplied by `ArchiveKey::retention_resources`, breaking ties by
+existing group cost and stable entry id. It preserves the best point under
+each axis ordering, not every Pareto point. Retained alternatives share the
+ordinary archive byte budget and selector. Unsupported keys use their ordinary
+rule. The stream header records the policy; omission replays the legacy rule.
+This is an experimental mechanism, not a default or a behavioral dominance claim.
+
+`resource_coverage_2_v1` is a separate two-representative experiment. It chooses
+the subset covering the most nonnegative integer threshold pairs under the
+two resource axes, including zero thresholds. Unlike coordinate extremes,
+it can retain intermediate tradeoffs. At each competition it considers only
+the current representatives and candidate; it is not globally optimal over
+discarded history. Equal coverage prefers fewer representatives, then sorted
+within-group cost/stable-id pairs. Exact integer arithmetic covers the entire
+u64 axis range. Missing axes use ordinary retention. The same memory budget,
+parent selector, continuation behavior and recorded replay rules apply; the
+resource coverage proxy does not prove behavioral dominance or task success.
+
+`representative_job_sample_2_v1` instead retains the ordinary best representative
+and the best candidate from the job cohort with the lowest fixed mixed rank.
+The rank uses the already recorded creation execution, consumes no campaign RNG,
+and adds no persistent per-entry state. Equal cohort ranks prefer ordinary
+quality, group cost and stable id. Coincident winners need one entry; otherwise
+the slot holds two under the same archive budget. This policy needs no resource
+axes. Between external evictions it preserves these two extrema of the seen
+stream, assuming a stable total quality order. It is not uniform sampling of
+physical states: candidates within a job share a rank, the hash is fixed, and
+search arrivals depend on earlier retention. Imports and evictions further
+limit any sampling interpretation. The parent selector remains unchanged.
+
+`quality_representatives_2_v1` keeps the top two ordinary quality/cost/arrival
+representatives. `context_representatives_2_v1` instead keeps the top two
+quality maxima from distinct `ArchiveKey::retention_context()` values. Context
+values have only equality semantics; their numeric order never supplies a
+preference. Coincident contexts need one representative. Missing context on
+any competitor uses the ordinary rule for that competition. Both mechanisms
+keep at most two entries under the same byte budget and leave selection groups
+unchanged. The first is a capacity control for the second. For fixed streams,
+the latter preserves the two highest-quality context maxima between external
+evictions/imports; neither rule guarantees useful future behavior. Replay
+records the explicit policy identifier and rejects unknown identifiers.
+
+`resource_guarded_progress_2_v1` preserves the ordinary representative and at
+most one alternate with higher `ArchiveKey::retention_progress()` value in the
+same known scope, with neither `retention_resources()` axis worse. The alternate
+maximizes progress, then ordinary quality/cost/arrival. Its capacity control,
+`resource_guarded_progress_quality_control_2_v1`, uses the same eligibility test
+and ranks eligible alternates by ordinary quality. Missing primary evidence
+supplies no alternate; an incomparable competitor cannot add progress evidence.
+These opt-in rules apply only when ordinary slot capacity is one and otherwise
+fall back to ordinary retention. All members share the existing byte budget;
+selection groups and policy defaults stay unchanged. They preserve an offered-set
+proxy invariant, not future behavior or a historical/global Pareto front. See
+[the rule and counterexamples](../../benchmarks/search/continuation-reassessment/pg01-design.md).
+
+Retention lifecycle diagnostics reuse existing selector exposure vectors and add
+only fixed counters, reported by `retention_diagnostic_memory_bytes`. Existing
+vectors remain covered by archive metadata charging. Measured process RSS also
+includes workload-owned audit storage. The final census reads only cached
+active endpoints; missing payloads are counted and never reconstructed.
+The final `retention_context_census` separately counts active retained keys,
+including keys whose snapshot payload is missing. It excludes historical
+snapshot anchors and reports same/distinct-context pairs per slot. Its temporary
+grouping storage is proportional to active keys, used only for final telemetry;
+it does not affect selection or imply useful future coverage.
+
+The abstraction fixtures in `src/search/archive_abstraction_tests.rs` use exact
+finite transition systems with the production admission rules. They distinguish
+lost continuation events from endpoint equality, show capability aliasing and
+the limits of coordinate-extreme retention, and check stable partition
+refinement against exhaustive product-graph equivalence. These are finite
+counterexamples, not correctness proofs for workload keys. The assumptions and
+research predictions are in [`retention theory`](../../benchmarks/search/retention-theory/theory.md).
+
+### Bounded local terminal retries
+
+`rollout::LocalRetry` manages one temporary live snapshot and its milestone
+accumulator. An opt-in workload may restore it once after an ordinary dead
+attempt, then consume the next command from its existing pre-drawn suffix.
+A second consecutive death, victory, error or exhausted attempt cap stops the
+rollout. Success saves a new live boundary. The helper draws no extra actions,
+reads no key or reward, and never modifies lifetime work accounting.
+
+Every attempt remains in `CampaignJobResult.actions`, including deaths and
+failures. `discard_previous_dead` marks the next attempt's restored origin.
+The coordinator validates the predecessor, removes only that dead command from
+the pending surviving input, and retains all observations and physical work.
+It reports executed retry counts and a bounded first viable retry input with
+its exact worker-snapshot digest, allowing independent linear witness replay.
+Custom workload result digests must include `discarded_attempt_positions()`.
+Those positions serialize **after** the complete legacy action vector; inserting
+optional flags between postcard action fields would be ambiguous. Empty retry
+metadata is omitted, preserving existing result/report bytes.
+
+The ordinary archive, selector and admission window remain unchanged. Attempts
+consume the existing job/input cap; a retry cannot add draws or evade charged
+work. The temporary snapshot and one first-witness input add bounded memory
+outside the archive's logical budget, measured under the process RSS cap just
+like worker result buffers. This is an experimental execution mechanism, not a
+claim that survivability is useful progress. Live dead ends can make it worse.
+
+
+### Physical work receipts
+
+`run_campaign_checkpointed_measured` and `replay_campaign_checkpointed_measured`
+accept a fresh `physical_work::PhysicalWorkMeter` for each phase. It reads every
+successfully constructed target's lifetime clock after construction and just
+before destruction, including workers whose results are discarded after an error.
+The optional guard adds no clock reads when measurement is omitted. Its receipt
+is separate from campaign reports, recorded bytes, RNG, keys and admission state;
+host overhead can still affect a wall-time cutoff.
+
+`PhysicalWorkReceipt::complete_frames()` returns a total only after every
+constructor and lifetime closes, with no counter regression, saturation, overflow
+or poisoned meter. During execution, live-target work is incomplete. Failed
+constructors expose no target clock, and an externally killed process may never
+produce a receipt. Target destructors are outside the clock contract; workloads
+must establish that they do not emulate frames there before claiming complete
+physical-frame accounting. The meter is reporting only, not a live budget limiter.
+
+For a successful fully drained Metroid snapshot-root campaign, admitted job
+frames already include action reconstruction. Lifetime measurement can check
+whether the remaining work is precisely constructor setup. Do not infer that
+identity for an errored or interrupted run, or for another workload without its
+own clock audit. Constructor frames are components of the lifetime total and must
+not be charged again. Source checks compare measured and unmeasured streams,
+reports and checkpoints under one/four workers and both result-buffer sizes;
+planted write failure verifies that unrecorded job work remains counted.

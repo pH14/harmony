@@ -1,0 +1,53 @@
+{
+  "format": "depth-transfer-b01-analysis-v1",
+  "decision": "pass",
+  "analyzed_utc": "2026-09-09T21:46:38.048803+00:00",
+  "registration_sha256": "abe09db3f44e4be3f69a37d9b2a614b226b7536bcd533763caeba636f7884db3",
+  "results_sha256": "a25019e005366ea73df8921c7b2c9b68da172c5a547fc950803e6409c40d57f1",
+  "reference_results_sha256": "fae2f6588b467f802d5261e64f40c447fa57c1c08c025d80ae7a89cd6d656e47",
+  "reference_record": "control-1",
+  "reference_seed": 3776618068,
+  "exact_event": {
+    "execution": 283788,
+    "frames_emulated": 33896740
+  },
+  "actual_admitted_qualification_frames": 33897593,
+  "twice_replayed_witness_frames": 202204,
+  "known_auxiliary_frame_charge": 34099797,
+  "main_input_sha256_both_hosts": "ba94ba2de1a260d3f515ffc216ec55c1ea7ee9b6770cdbabcb6163bae2de28e5",
+  "witness_checks": [
+    {
+      "witness": "main",
+      "semantic_replay_equal": true,
+      "snapshot_hash_equal": false
+    },
+    {
+      "witness": "brinstar",
+      "semantic_replay_equal": true,
+      "snapshot_hash_equal": false
+    },
+    {
+      "witness": "energy_tank",
+      "semantic_replay_equal": true,
+      "snapshot_hash_equal": false
+    },
+    {
+      "witness": "missile_capacity",
+      "semantic_replay_equal": true,
+      "snapshot_hash_equal": false
+    },
+    {
+      "witness": "morph_ball",
+      "semantic_replay_equal": true,
+      "snapshot_hash_equal": false
+    },
+    {
+      "witness": "norfair",
+      "semantic_replay_equal": true,
+      "snapshot_hash_equal": false
+    }
+  ],
+  "cpu_seconds": 767.309969,
+  "elapsed_seconds": 245.50369577901438,
+  "interpretation": "The known long ARM control reproduces on x86 at its exact event and work, with identical main/milestone action tapes and replayed semantic observations. This rejects a platform explanation for failure to reach this known event; it does not establish universal platform identity or add a fresh performance sample."
+}

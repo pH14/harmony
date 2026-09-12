@@ -1,0 +1,113 @@
+{
+  "format": "milestone-stop-q01r-registration-v1",
+  "registered_utc": "2026-09-09T18:56:43.502822+00:00",
+  "purpose": "Recheck the unchanged binary with the corrected existing first-admission observation contract. Preserve and account Q01 including its failed genesis-zero expectation.",
+  "source": "source-milestone-stop-001",
+  "build": "builds/milestone-stop-001",
+  "source_commit": "780415bdea636c2bd54cf3d865fc264dd33fd649",
+  "source_tree_sha256": "2a4cc365f0dcbfa66f8818a5076d75766139b6920b60a6f378672308631d5647",
+  "binary_sha256": "6ec98a710a52f6d8a16d96d7d254bee31868cf425307f4876bbc03c24d0b3f7b",
+  "build_info_sha256": "d9097d21b7a6b7281e4638154854b72fd197546a3e28fb762bb3d310788638b3",
+  "runner_sha256": "063854cd362316afc1fa6d15fe07feaba0e5f778f3e8e0355344360a5c047404",
+  "analyzer_sha256": "d2de4d01141269b0a296ef4df22b215226fdd2f5b4b60f126bdfdb4e27e82bde",
+  "qualification_checker_sha256": "821790031be89cec26ffacca1178bda69d08fff27eb881915136100d15a80ee3",
+  "output": "runs/milestone-stop-20260909/q01r",
+  "cpus": "8-11",
+  "deadline_utc": "2026-09-09T20:15:00+00:00",
+  "systemd_memory_max": "12G",
+  "additional_auxiliary_limit": 20000000,
+  "budget_class": "original tranche auxiliary qualification only",
+  "prior_ledger": "source-milestone-stop-001/benchmarks/search/continuation-yield/work-ledger-after-t01.json",
+  "prior_ledger_sha256": "ceb11965c0e95b4c6647860d9d6ac370e8324d27449ef76c07a9671dcb581fc9",
+  "required_evidence": [
+    {
+      "path": "runs/milestone-stop-20260909/q01/results.json",
+      "sha256": "824fc9f63f8dd119cecc6ed9e6528a8da17c88923f3a9526c7cd56f9639834ed",
+      "passed_cells": [
+        "default",
+        "morph-one-slot",
+        "morph-two-slots",
+        "energy-unreached",
+        "morph-beyond-budget"
+      ]
+    }
+  ],
+  "old_fixture_sha256": {
+    "stream.jsonl": "0fcaad970e2a219874bdc7c92c523bff482b03e2e832da61d7ce9bc35caee13f",
+    "campaign.json": "78005a151703507cecf51124bf534e3e56c9a7485c6dc578270f5e058a2cf8fb",
+    "checkpoint.json": "a2e8c828dc28c24f165b8a8632866552d8e36ed81c8ac71a82dccefbf2d3c82d"
+  },
+  "pass_rule": "The one recheck must satisfy all frozen expectations. The composite checker must verify all five prior passed Q01 cells, preserve the failed original origin expectation, reproduce its stream/report/checkpoint with the corrected contract, and account all seven actual cells. Stop on failure; no implicit further rerun.",
+  "cells": [
+    {
+      "id": "first-admission-brinstar",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "milestone-stop-q01r-first-admission-brinstar",
+        "seeds": [
+          2026090902
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 2000,
+          "frames": 1000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 240,
+          "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "campaign",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3",
+          "stop_after_milestone": "brinstar"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 390,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "milestone"
+      ],
+      "expected_identity": {
+        "source_tree_sha256": "2a4cc365f0dcbfa66f8818a5076d75766139b6920b60a6f378672308631d5647",
+        "milestone_stop": {
+          "name": "brinstar",
+          "observation_policy": "metroid-named-progress-v2"
+        }
+      },
+      "expected_result": {
+        "solved": false,
+        "executions": 8,
+        "frames_emulated": 1474,
+        "first_milestone": {
+          "execution": 1,
+          "frames_emulated": 171
+        },
+        "milestone_within_budget": true,
+        "stop_reason": "milestone",
+        "milestone_stop": {
+          "name": "brinstar",
+          "observation_policy": "metroid-named-progress-v2"
+        }
+      }
+    }
+  ],
+  "initial_registration": "milestone-stop-q01-registration.json",
+  "initial_registration_sha256": "5680a38effc22b1f89d9795c66b6134a456d7ce2c000701d0e49d6294e140bd9"
+}

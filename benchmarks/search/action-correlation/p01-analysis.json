@@ -1,0 +1,166 @@
+{
+  "format": "action-persistence-p01-analysis-v1",
+  "recorded_utc": "2026-09-10T01:42:47.311421+00:00",
+  "registration_sha256": "32c857b6fd23ff78f54240d8b12d18f7e3c92d856aecfe8e1d46245a947a1731",
+  "scorer_sha256": "a68eac1b6677a37a2326bcffe38b7e198238f862308ae14006d707b6a57d0d63",
+  "decision": "stop_persistence_line",
+  "screen": {
+    "decision": "fail_impossible_win_count",
+    "completed_pairs": 2,
+    "strict_wins": 0,
+    "remaining_pairs": 2,
+    "candidate_to_control_cost_ratio_interval": null,
+    "candidate_to_control_resource_ratios": null,
+    "pairs": [
+      {
+        "seed": 3483428449,
+        "control": [
+          45196579,
+          45196579
+        ],
+        "candidate": [
+          50000000,
+          50000000
+        ],
+        "strict_win": false,
+        "difference_interval": [
+          4803421,
+          4803421
+        ]
+      },
+      {
+        "seed": 1805348997,
+        "control": [
+          50000000,
+          50000000
+        ],
+        "candidate": [
+          50000000,
+          50000000
+        ],
+        "strict_win": false,
+        "difference_interval": [
+          0,
+          0
+        ]
+      }
+    ],
+    "interpretation": "Exploratory compute-allocation gate, not statistical significance or independent confirmation."
+  },
+  "panels": [
+    {
+      "id": "p01-pair-0",
+      "sha256": "494537f9fe1c608dd7aee8795cea993fbd90e4a40512d3a913d8c6133bc81dbf",
+      "execution_complete": true,
+      "allocation_stop": null
+    },
+    {
+      "id": "p01-pair-1",
+      "sha256": "f73c4fd8a34fb85c6702a5eb6579341e191a5369eab205e89959aa822fe850b8",
+      "execution_complete": true,
+      "allocation_stop": null
+    }
+  ],
+  "cells": [
+    {
+      "id": "p01-pair-0-ordinary",
+      "admitted_search_frames": 45197677,
+      "known_auxiliary_frames": 203438,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": 45196579,
+        "observed_through_frames": 45197677,
+        "observed_full_budget": false,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          45196579,
+          45196579
+        ]
+      },
+      "cpu_seconds": 2312.723535,
+      "elapsed_seconds": 793.2077626410173
+    },
+    {
+      "id": "p01-pair-0-whole",
+      "admitted_search_frames": 50000470,
+      "known_auxiliary_frames": 19468,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": null,
+        "observed_through_frames": 50000470,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          50000000,
+          50000000
+        ]
+      },
+      "cpu_seconds": 2549.7507870000004,
+      "elapsed_seconds": 858.2513287029578
+    },
+    {
+      "id": "p01-pair-1-whole",
+      "admitted_search_frames": 50001010,
+      "known_auxiliary_frames": 109928,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": null,
+        "observed_through_frames": 50001010,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          50000000,
+          50000000
+        ]
+      },
+      "cpu_seconds": 1129.790053,
+      "elapsed_seconds": 357.2136431169929
+    },
+    {
+      "id": "p01-pair-1-ordinary",
+      "admitted_search_frames": 50000954,
+      "known_auxiliary_frames": 97986,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": null,
+        "observed_through_frames": 50000954,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          50000000,
+          50000000
+        ]
+      },
+      "cpu_seconds": 1134.374439,
+      "elapsed_seconds": 355.22199328499846
+    }
+  ],
+  "actual_admitted_search_frames": 195200111,
+  "known_auxiliary_frames": 430820,
+  "incomplete_work": [],
+  "limits": "Prospective allocation gate for an exploratory nominee; D01 is excluded. This is not population significance or a boss/Wily result. Setup and unadmitted work remain additional unknowns."
+}

@@ -1,0 +1,49 @@
+{
+  "format": "metroid-endpoint-q01-master-v1",
+  "registered_utc": "2026-09-10T02:30:43.772003+00:00",
+  "source_commit": "d2293b9cdcd2272fa7de9e887c67608ab51d05ad",
+  "source_archive_sha256": "2af2f708c82e41e3d8f7834b90768e35477fd4b67bfb96bd7682fc1e79a5bf9b",
+  "source_tree_sha256": "4e73fb478a0a2888017cd8d01a5379556687055a8b77b967757eca88ec7bd202",
+  "subregistrations": [
+    {
+      "file": "q01-msr1-default.json",
+      "sha256": "1810e24bfc0f20b7794b08a35533317cf8a5655086674008b8fd8e1d0758c10c",
+      "host": "msr1",
+      "cells": 1
+    },
+    {
+      "file": "q01-msr1-audit.json",
+      "sha256": "a7db8a62f7d3c73842a273703764bee56f8ecd004eb26d10bb38550a9fa99a33",
+      "host": "msr1",
+      "cells": 1
+    },
+    {
+      "file": "q01-ms02-audit.json",
+      "sha256": "c5a596986c9bc05808171db5e4ecfd30c52833f228fc90b0e0666481e69a800d",
+      "host": "ms02",
+      "cells": 2
+    }
+  ],
+  "deadline_utc": "2026-09-10T03:00:00+00:00",
+  "nominal_performance_search_frames": 0,
+  "known_auxiliary_ceiling": 4000000,
+  "expected_known_auxiliary_frames": "approximately 2.3M; actual full replay inferred from admitted work, witness frames measured",
+  "scope": "Separate native qualification block after closed P01; no renewed performance allocation.",
+  "pass_rule": [
+    "All four fixed cells complete, full replay succeeds, no failures or replacements.",
+    "msr1 default exactly reproduces historical stream, campaign and checkpoint hashes.",
+    "All normalized stream, event, checkpoint, campaign and witness hashes agree.",
+    "ms02 audited one/two-slot artifacts and counters are byte identical.",
+    "Audited endpoint counters are present and eligible; this historical short fixture has no classified episode.",
+    "Memory delta is solely a fixed 0..16 bytes per cached snapshot; total resident delta equals snapshot delta.",
+    "All observed costs fit the recorded block; no further cell after a failed check."
+  ],
+  "limits": [
+    "4 workers; 8 GiB archive; 12 GiB process; 4 GiB output per cell.",
+    "2000 executions, 1M frame cap, 240s search, 120s finish, 390s outer per cell; complete time reservation required.",
+    "Per-host service 900s; kill whole process group; stop both panels on a discovered failure.",
+    "Setup, reconstruction and unadmitted physical work remain unknown.",
+    "No positive native branch or cost neutrality at memory/wall limits is inferred."
+  ],
+  "projection_tests": "test_verify.py: changes to parent, mutation seed, frames, decisions, emulator bytes and decoded health must survive."
+}

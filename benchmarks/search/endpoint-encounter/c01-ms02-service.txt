@@ -1,0 +1,13 @@
+RuntimeMaxUSec=39min
+MainPID=0
+Result=exit-code
+ExecMainStartTimestamp=Thu 2026-09-10 02:44:24 UTC
+ExecMainExitTimestamp=Thu 2026-09-10 03:19:58 UTC
+ExecMainStatus=1
+MemoryPeak=4435611648
+CPUUsageNSec=6779670121000
+MemoryMax=12884901888
+KillMode=control-group
+Id=harmony-endpoint-c01-20260910.service
+ActiveState=failed
+SubState=failed

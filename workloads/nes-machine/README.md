@@ -67,6 +67,13 @@ cartridge RAM is initialized to `0xff` before gameplay, matching its undeclared
 RAM initialization and preventing allocator contents from entering power-on
 state. The same checked FFI path runs through the Miri loopback tests.
 
+The bounded RAM-write hooks also support explicitly recorded, standalone
+counterfactual diagnostics. They are never campaign actions. The Metroid
+diagnostic restricts writes to earned resource capacities and validates the
+exact serialized resource locations, all other RAM and an unchanged frame
+clock. Under Miri, requesting a native dynamic core returns an explicit error;
+tests must construct the loopback core deliberately.
+
 The source-built search CI also writes a pattern across declared cartridge RAM,
 captures a real QuickNES snapshot, clobbers RAM, and restores it in both the same
 core and an independent instance. Run this qualification locally with

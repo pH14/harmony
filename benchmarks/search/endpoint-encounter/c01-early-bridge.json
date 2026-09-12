@@ -1,0 +1,61 @@
+{
+  "format": "endpoint-c01-early-development-bridge-v1",
+  "current_progress_execution": 529600,
+  "current_progress_frames": 64325902,
+  "historical_summary_sha256": "c00f7015323a100a923fef2acd9ffae865c9f1dc1e00352145fa972207669571",
+  "milestones": [
+    {
+      "name": "morph_ball",
+      "historical_first": {
+        "execution": 505,
+        "route_action_end_frame": 901
+      },
+      "current_first": {
+        "execution": 505,
+        "route_action_end_frame": 901
+      },
+      "historical_input_sha256": "b9f03047d52002a85343b2f5bb85057b2ce097f82abedcbb4c9090f8218d22da",
+      "current_input_sha256": "b9f03047d52002a85343b2f5bb85057b2ce097f82abedcbb4c9090f8218d22da"
+    },
+    {
+      "name": "energy_tank",
+      "historical_first": {
+        "execution": 144673,
+        "route_action_end_frame": 16254
+      },
+      "current_first": {
+        "execution": 144673,
+        "route_action_end_frame": 16254
+      },
+      "historical_input_sha256": "819ecfc83a99c1bacf13fd91ce7bc309654ac83d5943d5cfbce0128d951fc861",
+      "current_input_sha256": "819ecfc83a99c1bacf13fd91ce7bc309654ac83d5943d5cfbce0128d951fc861"
+    },
+    {
+      "name": "missile_capacity",
+      "historical_first": {
+        "execution": 169281,
+        "route_action_end_frame": 24198
+      },
+      "current_first": {
+        "execution": 169281,
+        "route_action_end_frame": 24198
+      },
+      "historical_input_sha256": "992a2cd9fa5e1cc0c0e9403ce3f45ae175bc6727c7c710fefe5751b752d23961",
+      "current_input_sha256": "992a2cd9fa5e1cc0c0e9403ce3f45ae175bc6727c7c710fefe5751b752d23961"
+    },
+    {
+      "name": "norfair",
+      "historical_first": {
+        "execution": 173824,
+        "route_action_end_frame": 26994
+      },
+      "current_first": {
+        "execution": 173824,
+        "route_action_end_frame": 26994
+      },
+      "historical_input_sha256": "f2a0743c13f58fe132642946b368825f517c03382255be4de6bdb95fedc3f05e",
+      "current_input_sha256": "f2a0743c13f58fe132642946b368825f517c03382255be4de6bdb95fedc3f05e"
+    }
+  ],
+  "scope": "Sparse already-registered live-run check; no additional emulation, no whole-campaign identity or performance claim."
+}

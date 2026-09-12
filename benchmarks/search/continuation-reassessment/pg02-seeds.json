@@ -1,0 +1,15 @@
+{
+  "draw": "One secrets.randbits(32) draw per seed; no observed outcome, rejection sampling or reroll.",
+  "seeds": [
+    1421509093,
+    1377503798,
+    3227091735,
+    2601406073
+  ],
+  "prior_tracked_occurrences": 0,
+  "checked_extensions": [
+    "json",
+    "md",
+    "py"
+  ]
+}

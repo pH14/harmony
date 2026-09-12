@@ -10,7 +10,7 @@
 
 use std::{error::Error, num::NonZeroUsize};
 
-use crate::search::rand::RomuDuoJrRand;
+use crate::search::{continuation::ContinuationLearning, rand::RomuDuoJrRand};
 
 /// Identifier recorded for the one-or-two suffix shape.
 pub const SUFFIX_ONE_OR_TWO_IDENTIFIER: &str = "one_or_two";
@@ -123,6 +123,12 @@ pub enum DrawMixture {
     /// Retry learned exits in one quarter of reservations; other draws use
     /// only the alphabet. Retries have separate exploration accounting.
     AlphabetContinuation,
+    /// Retry a retained same-slot progress word from its own result state;
+    /// all other reservations draw only from the alphabet.
+    AlphabetScopedProgressReuse,
+    /// Same learned queue, parent and reservation schedule, with a fresh
+    /// alphabet suffix on the queued trial. Isolates word reuse from return.
+    AlphabetScopedProgressFreshControl,
     /// Energy-splice mutation with separately accounted learned retries.
     EnergySpliceContinuationIsolated {
         /// Barren ordinary suffixes per halving of a strategy's share.
@@ -134,17 +140,31 @@ impl DrawMixture {
     pub(crate) fn isolates_continuations(self) -> bool {
         matches!(
             self,
-            Self::AlphabetContinuation | Self::EnergySpliceContinuationIsolated { .. }
+            Self::AlphabetContinuation
+                | Self::AlphabetScopedProgressReuse
+                | Self::AlphabetScopedProgressFreshControl
+                | Self::EnergySpliceContinuationIsolated { .. }
         )
     }
 
     pub(crate) fn uses_continuations(self) -> bool {
-        matches!(
-            self,
+        self.continuation_learning().is_some()
+    }
+
+    pub(crate) fn continuation_learning(self) -> Option<ContinuationLearning> {
+        match self {
+            Self::AlphabetScopedProgressReuse | Self::AlphabetScopedProgressFreshControl => {
+                Some(ContinuationLearning::ScopedProgress)
+            }
             Self::EnergySpliceContinuation { .. }
-                | Self::AlphabetContinuation
-                | Self::EnergySpliceContinuationIsolated { .. }
-        )
+            | Self::AlphabetContinuation
+            | Self::EnergySpliceContinuationIsolated { .. } => Some(ContinuationLearning::Exits),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn redraws_progress_word(self) -> bool {
+        self == Self::AlphabetScopedProgressFreshControl
     }
 }
 
@@ -183,6 +203,10 @@ pub fn draw_mixture_identifier(mixture: DrawMixture) -> String {
         }
         DrawMixture::AlphabetOnly => MIXTURE_ALPHABET_ONLY_IDENTIFIER.to_owned(),
         DrawMixture::AlphabetContinuation => "alphabet_continuation_v1".to_owned(),
+        DrawMixture::AlphabetScopedProgressReuse => "alphabet_scoped_progress_reuse_v1".to_owned(),
+        DrawMixture::AlphabetScopedProgressFreshControl => {
+            "alphabet_scoped_progress_fresh_control_v1".to_owned()
+        }
         DrawMixture::BiasedHalf => MIXTURE_BIASED_HALF_IDENTIFIER.to_owned(),
         DrawMixture::Energy { scale } => format!("{MIXTURE_ENERGY_PREFIX}{scale}"),
         DrawMixture::EnergySplice { scale } => format!("{MIXTURE_ENERGY_SPLICE_PREFIX}{scale}"),
@@ -226,6 +250,10 @@ pub fn draw_mixture_from_identifier(identifier: &str) -> Result<DrawMixture, Box
     match identifier {
         MIXTURE_ALPHABET_ONLY_IDENTIFIER => Ok(DrawMixture::AlphabetOnly),
         "alphabet_continuation_v1" => Ok(DrawMixture::AlphabetContinuation),
+        "alphabet_scoped_progress_reuse_v1" => Ok(DrawMixture::AlphabetScopedProgressReuse),
+        "alphabet_scoped_progress_fresh_control_v1" => {
+            Ok(DrawMixture::AlphabetScopedProgressFreshControl)
+        }
         MIXTURE_BIASED_HALF_IDENTIFIER => Ok(DrawMixture::BiasedHalf),
         _ => Err(format!("draw mixture {identifier} is not recognized").into()),
     }
@@ -373,9 +401,11 @@ where
             rand.below(NonZeroUsize::new(256).ok_or("invalid mixture weight bound")?)
                 < usize::from(mixture_weight),
         ),
-        DrawMixture::AlphabetOnly | DrawMixture::AlphabetContinuation | DrawMixture::BiasedHalf => {
-            None
-        }
+        DrawMixture::AlphabetOnly
+        | DrawMixture::AlphabetContinuation
+        | DrawMixture::AlphabetScopedProgressReuse
+        | DrawMixture::AlphabetScopedProgressFreshControl
+        | DrawMixture::BiasedHalf => None,
     };
     let length = match shape {
         SuffixShape::OneOrTwo => {
@@ -414,6 +444,44 @@ mod tests {
         draw_mixture_identifier, draw_suffix, energy_strategy, energy_strategy_is_biased,
         suffix_shape_from_identifier, suffix_shape_identifier,
     };
+
+    #[test]
+    fn scoped_progress_modes_record_distinct_ids_and_preserve_ordinary_alphabet_draws() {
+        use crate::search::continuation::ContinuationLearning;
+        for (mode, name) in [
+            (
+                DrawMixture::AlphabetScopedProgressReuse,
+                "alphabet_scoped_progress_reuse_v1",
+            ),
+            (
+                DrawMixture::AlphabetScopedProgressFreshControl,
+                "alphabet_scoped_progress_fresh_control_v1",
+            ),
+        ] {
+            assert_eq!(draw_mixture_identifier(mode), name);
+            assert_eq!(draw_mixture_from_identifier(name).unwrap(), mode);
+            assert!(mode.uses_continuations() && mode.isolates_continuations());
+            assert_eq!(
+                mode.continuation_learning(),
+                Some(ContinuationLearning::ScopedProgress)
+            );
+            for seed in 0..64 {
+                let draw = |mixture| {
+                    draw_suffix(
+                        SuffixShape::OneToSix,
+                        mixture,
+                        128,
+                        seed,
+                        |_| Ok(None),
+                        |rng| Ok(rng.next_u64()),
+                    )
+                    .unwrap()
+                };
+                assert_eq!(draw(mode), draw(DrawMixture::AlphabetOnly));
+            }
+        }
+        assert!(draw_mixture_from_identifier("alphabet_scoped_progress_reuse_v2").is_err());
+    }
 
     #[test]
     fn the_bounded_shape_cuts_a_suffix_after_the_action_that_reaches_the_bound() {

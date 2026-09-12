@@ -1,0 +1,31 @@
+{
+  "format": "retention-pq01-local-inventory-v1",
+  "binary_sha256": "34eba953ff5689dc395c26a0bb9b36af63ebbe7f497fe23161ec69b1ad05494c",
+  "source_file_sha256": "29e266bb4406e48ca51002708ac68e00db568d1cd2bd06af83adc9cfb46b78c5",
+  "emulator_initialized": false,
+  "emulated_frames": 0,
+  "arms": [
+    {
+      "arm": "ordinary",
+      "wall_seconds": 6.449926,
+      "entries": 1752,
+      "groups": 1675,
+      "classified_endpoint_snapshots": 337,
+      "min_id": 0,
+      "max_id": 3451,
+      "inventory_sha256": "f860bff14c9c83fd7e600e9e9ab77cc433b0716e1a431d62d169ffe512ed39d2",
+      "checkpoint_sha256": "f025572cdd434171dd5747ad3b5e2e13bdbb94469894be9c3b190efebe6cfb2d"
+    },
+    {
+      "arm": "progress",
+      "wall_seconds": 5.951628583000001,
+      "entries": 1693,
+      "groups": 1443,
+      "classified_endpoint_snapshots": 558,
+      "min_id": 0,
+      "max_id": 3509,
+      "inventory_sha256": "2c11b8f00bba34f52e4f3ac47c709715fd4ff39104378fd1a1f7c329a4e57fdc",
+      "checkpoint_sha256": "2e40916ad0563ea39a3570e8bad7f6514378506dff4fc2d843e007e980903b14"
+    }
+  ]
+}

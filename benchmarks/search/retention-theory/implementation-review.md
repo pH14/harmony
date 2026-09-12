@@ -1,0 +1,92 @@
+# Implementation review checkpoint
+
+This is the implementing agent's review of the production changes frozen at
+`4e3f0255`, with subsequent theory fixtures through `a03297bc`. It is not an
+independent review or a CI claim. The applicable `REVIEWING.md` lenses are
+deterministic execution, compatibility, semantic ownership and test strength.
+
+No additional correctness defect was found in this pass. The earlier census
+defect remains recorded with its failed results and search-neutral correction.
+
+* Retention compares opaque quality, within-group cost and stable arrival.
+  Context retention uses context equality; job ranking consumes recorded job
+  numbers and no new RNG draws. Their finite invariants exclude external
+  evictions/imports and exact-input deduplication. Actual pressure/continuation
+  fixtures require alternative admissions and compare complete replay reports
+  and checkpoints, so they cannot pass through inactive optional policies alone.
+* Motion is decoded inside the NES workload from already cached endpoint RAM.
+  Actual candidates and reconstructed-origin keys use the same helper. The
+  generic core sees only an optional opaque context. P04 reconstruction checks
+  direct/cache/current-key agreement and unchanged snapshot hashes on actual
+  searched endpoints. No new unsafe block or dependency-boundary crossing exists.
+* Feature-specific key and semantic-digest identities prevent interpreting the
+  extra serialized field as an old key. Terminal v3 has a separate recorded
+  policy and rejects mismatched replay contexts. Five actual-ROM qualification
+  streams reproduce the prescribed old and experimental hashes. Ordinary
+  defaults remain unchanged. This does not qualify motion-feature splice,
+  resume, or combined-refinement performance; full-key ordering remains the
+  explicit limitation tracked by #270.
+* The final context census reads active keys, including missing payloads, and
+  excludes historical anchors. Its temporary grouping storage is proportional
+  to the active set, used only for reporting. The historical-entry fixture and
+  exact pre/post-repair stream comparisons check that distinction directly.
+* The evaluator replays each milestone twice and checks the named event in the
+  replayed diagnostics, beyond merely observing a witness filename. R05's
+  analyzer requires equal requests/identities apart from retention, the frozen
+  binary, corrected terminal handling, verified milestone names, conservative
+  work-arrival intervals and no wall-censored arm. A pass still represents one
+  development seed, never the goal's breakthrough threshold.
+
+[Portable verification](portable-verification.json) records the completed
+checks and their preserved logs. The new P03 objective auditor also passes side-
+swapping symmetry and rejects a planted exit flag inconsistent with the raw
+map sets. Its numerical uncertainty example is an explicitly assumed model;
+it supplies no confidence interval for the selected deterministic P03 data.
+
+The nearby Metroid README now describes the stable qualification boundary and
+links to the ledger instead of retaining an obsolete numeric probe prediction.
+Frozen sources and running experiments were not modified during this review.
+
+## Complete-survivor audit review
+
+Reporting source8d503c28 adds a lazy full-slot view. The view returns all existing
+members, including missing cached snapshots; stable stream ids are distinct from
+compact indices. Keep/remove flags use the already computed local proposal.
+They deliberately do not certify subsequent global eviction. The default
+callback does not invoke the closure, and materialization uses the existing
+untracked reconstruction path without RNG or deterministic-counter changes.
+
+The NES feature samples at the unchanged indices, caps extra members at two,
+limits stored inputs and keeps explicit counters for incomplete records. It
+leaves the default serialization layout behind compile-time guards. Four actual
+ARM campaign/replay streams and the default v1 audit bytes match the old build.
+The suffix adapter verifies repeated unretained outcomes before union analysis;
+its unused exposure fields are labeled placeholders. Analysis distinguishes
+rejected opportunities from actual replacement loss. No sampled utility or
+success gate was selected from these outcomes. Relevant checks and hashes are
+recorded in the portable verification and U01 qualification artifacts.
+
+### Capacity defect found during consolidation
+
+A later review found that input-length checks did not bound retained Vec
+capacity after appending a candidate suffix. The d7d83518 repair compacts all
+stored sampled inputs; an overallocated maximum-length regression checks the
+capacity and serialization contract. Two fresh ARM qualifications preserve both
+complete audit files and search streams exactly. Earlier strict capacity claims
+are corrected in the ledger; historical RSS and outcome evidence are preserved.
+Default/all-feature NES and strict Clippy checks were rerun for this change.
+No further production change or experiment is planned beyond addressing a
+specific failure in the remaining required CI checks.
+
+### Prefix-horizon diagnostic
+
+The optional standalone recorder observes outcomes after each requested action
+without additional emulation, RNG draws or snapshots. Default calls retain old
+outputs. After a terminal, padding repeats state, events and cumulative frames.
+Actual-ROM qualification requires byte-identical full summary/outcomes/suffix
+bank against U01; it passed before any prefix interpretation. The analyzer
+checks the complete paired grid, repeated unretained outcomes, cumulative frame
+and map-set consistency, and terminal non-continuation. Joint cover keeps
+horizon in the condition; its public masks pass independent integer enumeration.
+The uniform length average is descriptive under the existing search's length
+mixture, not a new success rate or confidence statement. No policy gate changed.

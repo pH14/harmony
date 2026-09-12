@@ -1,0 +1,32 @@
+{
+  "binary": "nes-eval",
+  "binary_sha256": "dbeca841f7bcc42842c2fdce137bd46fe3486f9862bf11eda896ea8d5e444361",
+  "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+  "command": [
+    "cargo",
+    "build",
+    "--release",
+    "--locked",
+    "--manifest-path",
+    "/root/harmony-retention-theory-20260908/source-action-correlation-001/workloads/nes/Cargo.toml",
+    "--bin",
+    "nes-eval",
+    "--features",
+    "metroid-motion-context,selector-cost-audit",
+    "--target-dir",
+    "/root/harmony-retention-theory-20260908/target",
+    "-j",
+    "4"
+  ],
+  "dirty": null,
+  "features": "metroid-motion-context,selector-cost-audit",
+  "files": 596,
+  "format": "harmony-search-build-v1",
+  "locked": true,
+  "profile": "release",
+  "revision": null,
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "source_archive_sha256": "98aa6ccf81e7c953a79231f8c8ca7bba7ce750911ccf9c02ee2dd399ca9ef535",
+  "source_commit": "2fb37f9c3c21656f629a5bd11a2c54ad88ee03a5",
+  "source_tree_sha256": "cdc31d561e14b5615bf8ca50b400eb88e5ea116a5a93c4c99070424ae1108659"
+}

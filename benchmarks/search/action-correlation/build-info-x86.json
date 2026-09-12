@@ -1,0 +1,32 @@
+{
+  "binary": "nes-eval",
+  "binary_sha256": "73c8694a95d579a47395c84cdbcfa2fcccee97471f8aed9cbff4f67dcdea91fd",
+  "cargo": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
+  "command": [
+    "cargo",
+    "build",
+    "--release",
+    "--locked",
+    "--manifest-path",
+    "/root/harmony-depth-transfer-20260909/source-action-correlation-001/workloads/nes/Cargo.toml",
+    "--bin",
+    "nes-eval",
+    "--features",
+    "metroid-motion-context,selector-cost-audit",
+    "--target-dir",
+    "/root/harmony-depth-transfer-20260909/target",
+    "-j",
+    "4"
+  ],
+  "dirty": null,
+  "features": "metroid-motion-context,selector-cost-audit",
+  "files": 596,
+  "format": "harmony-search-build-v1",
+  "locked": true,
+  "profile": "release",
+  "revision": null,
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.0\nLLVM version: 22.1.8\n",
+  "source_archive_sha256": "98aa6ccf81e7c953a79231f8c8ca7bba7ce750911ccf9c02ee2dd399ca9ef535",
+  "source_commit": "2fb37f9c3c21656f629a5bd11a2c54ad88ee03a5",
+  "source_tree_sha256": "cdc31d561e14b5615bf8ca50b400eb88e5ea116a5a93c4c99070424ae1108659"
+}

@@ -1,0 +1,28 @@
+{
+  "format": "continuation-cc01-nonrecord-sidecar-verification-v1",
+  "records": [
+    {
+      "path": "/root/harmony-alternative-futures-20260908/benchmarks/search/._candidate-registration-005.json",
+      "bytes": 163,
+      "sha256": "8c974eead2bace934b2dbf0f0cc81b137b2ef901c3953f815eed30901f836e5d",
+      "file_identification": "AppleDouble encoded Macintosh file",
+      "magic_hex": "0x51607",
+      "version_hex": "0x20000",
+      "primary_json": "/root/harmony-alternative-futures-20260908/benchmarks/search/candidate-registration-005.json",
+      "primary_sha256": "ca97ffea60b8917572b4ae3abcefad93b205e8696120a4b769e89ee690c630b1",
+      "primary_parsed_without_seed_match": true
+    },
+    {
+      "path": "/root/harmony-depth-transfer-20260909/endpoint-q01-20260910/benchmarks/search/endpoint-encounter/._q01-registration.json",
+      "bytes": 163,
+      "sha256": "8c974eead2bace934b2dbf0f0cc81b137b2ef901c3953f815eed30901f836e5d",
+      "file_identification": "AppleDouble encoded Macintosh file",
+      "magic_hex": "0x51607",
+      "version_hex": "0x20000",
+      "primary_json": "/root/harmony-depth-transfer-20260909/endpoint-q01-20260910/benchmarks/search/endpoint-encounter/q01-registration.json",
+      "primary_sha256": "aae1d2b86f37ec1ee14539798cf5fe6b9a127861872f01291dd8124eb2ff6e8f",
+      "primary_parsed_without_seed_match": true
+    }
+  ],
+  "emulator_frames": 0
+}

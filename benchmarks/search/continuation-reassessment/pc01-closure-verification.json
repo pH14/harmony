@@ -1,0 +1,10 @@
+{
+  "format": "retention-pc01-closure-verification-v1",
+  "status": "verified",
+  "evidence_files": 10,
+  "episodes": 64,
+  "held_boundaries": 242,
+  "physical_frames": 15583,
+  "decision": "paired_continuation_counterexample_found",
+  "emulator_executed": false
+}

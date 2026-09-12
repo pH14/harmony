@@ -37,3 +37,47 @@ replay rejects a different recorded policy instead of silently reinterpreting it
 Use the common [local evaluation runner](../../../../benchmarks/search/README.md).
 The source lineage and discarded search claims are listed in the
 [synthesis record](../../../../benchmarks/search/SYNTHESIS.md).
+
+`nes-eval` also accepts an explicit `mm2_chain` stage origin and an optional
+power-on `prefix_input` with a required SHA-256. On a searched victory it emits
+`full-victory-input.json` and `next-prefix.json`, using the existing adapter-owned
+award/menu transition. `chain-cost.json` counts repeated target construction
+(including every prefix replay) and the transition helper's physical frames.
+Witness suffix frames are reported independently. Partial setup failures have
+incomplete cost accounting and cannot be scored as successful searches.
+The research driver in `benchmarks/search/alternative-futures/mm2_chain.py`
+accepts no gameplay prefix; it carries only prior searched victories from its
+own new output directory under the recovered fixed historical order. This is
+chained qualification, distinct from unrestricted whole-game search.
+
+Physical chain exports expand the adapter's automatic award-idle frames into
+explicit zero-button holds. Concatenating the originally sampled holds alone
+omits that executed work and can fail the next-stage replay. `physical_input`
+replays and expands those holds without changing campaign action semantics.
+
+`mm2-metal-export CORE ROM VICTORY.json OUT` qualifies the existing chain
+export path from a searched Metal victory without repeating search. It uses
+the adapter's physical-input expansion and ordinary award/menu transition,
+records their frame costs, and writes a private next-stage prefix. A separate
+twice-replayed next-stage bridge remains required. It does not make a supplied
+victory into a fresh chain result.
+
+A replayed stage-award witness can report both `victory: true` and
+`dead: true` at its final endpoint. Those raw flags do not alone establish
+continued gameplay. Keep them in the evidence, then qualify chainability by
+replaying the ordinary award/menu transition and next-stage entry with the
+awarded inventory retained. The R03b Metal qualification records this case
+for both policies, with twice-replayed Heat entry at full health.
+
+### Experimental local terminal retry
+
+`Mm2Game::with_local_terminal_retry(true)` opts into the shared bounded
+`searcher::rollout::LocalRetry` mechanism. It records
+`local_terminal_retry=one_per_live_boundary_predrawn_attempts_v1`; legacy runs
+omit the field, and replay rejects mismatched contexts. Only independent
+`alphabet_only` draws with `admit_alive` are supported. A normal death permits
+one restore to the preceding live snapshot and the next pre-drawn command.
+Failed attempts still consume the original cap and physical work. Boss success,
+emulator errors and a second consecutive death stop. Retry markers participate
+in result digests, and the generic coordinator keeps surviving inputs linear.
+Native transfer/performance is unmeasured; this adds no default policy change.

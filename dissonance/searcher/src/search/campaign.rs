@@ -45,6 +45,7 @@ use crate::search::draw::{
 pub const SPLICE_ACTION_CAP: usize = 128;
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
 use crate::search::parallel::{ResultSlots, with_worker_pool};
+use crate::search::physical_work::{PhysicalWorkMeter, TrackedTarget};
 use crate::search::rand::RomuDuoJrRand;
 
 /// A campaign's finished report and its whole-tree snapshot checkpoint.
@@ -97,7 +98,7 @@ impl ResultBuffering {
     }
 }
 
-/// Optional execution controls. Buffering changes host memory and timing only;
+/// Optional execution and retention controls. Buffering changes host memory and timing only;
 /// callers record that choice in benchmark provenance, outside deterministic
 /// campaign bytes. A wall-time stop can still change with execution speed.
 #[derive(Clone, Copy, Debug, Default)]
@@ -108,6 +109,29 @@ pub struct CampaignExecutionOptions {
     /// Worker results are outside the archive's logical memory budget and must
     /// be included in the caller's host capacity planning and RSS measurements.
     pub result_buffering: ResultBuffering,
+    /// Optional versioned retention mechanism; changes deterministic campaign bytes.
+    pub slot_retention: super::archive::SlotRetentionPolicy,
+    /// Stop reserving after this workload-owned milestone is first admitted.
+    /// Resolve runtime names with `Evaluation::named_milestone` first.
+    pub stop_after_milestone: Option<&'static str>,
+}
+
+/// Workload-owned meaning of an opt-in campaign endpoint.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CampaignMilestoneCondition {
+    /// Canonical milestone name; never a navigation instruction.
+    pub name: String,
+    /// Version of the workload's observation semantics.
+    pub observation_policy: String,
+}
+
+/// Work charged through the first admission that reports the endpoint.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CampaignMilestoneObservation {
+    /// Ordered execution; zero denotes an observed supplied origin.
+    pub execution: u64,
+    /// Bootstrap and job frames through that admission, before window drain.
+    pub frames_emulated: u64,
 }
 
 /// Reservations held ahead of ordered admission per logical worker when the
@@ -281,9 +305,32 @@ pub trait CampaignTypes: Sync {
 
 /// Stream and result serialization owned by a campaign adapter.
 pub trait Reporting: CampaignTypes {
+    /// Observe a same-slot competition without affecting search decisions.
+    /// Implementations must bound their memory and account for diagnostic work.
+    fn observe_retention(
+        &self,
+        _event: &super::archive::RetentionObservation<'_, Self::Action, Self::Key, Self::Snapshot>,
+    ) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+    /// Flush and disable campaign-only diagnostics before verification replay.
+    fn finish_retention_observation(&self) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+
     /// Optional bounded observation diagnostics for the live sidecar. These
     /// values never influence selection, admission, or deterministic reports.
     fn diagnostics(_evidence: &Self::Evidence) -> Option<serde_json::Value> {
+        None
+    }
+    /// Optional final census over cached active endpoints. Missing snapshots
+    /// must be counted explicitly. No reconstruction or search feedback is allowed.
+    fn retained_diagnostics<'a>(
+        _snapshots: impl Iterator<Item = Option<&'a Self::Snapshot>>,
+    ) -> Option<serde_json::Value>
+    where
+        Self::Snapshot: 'a,
+    {
         None
     }
     /// Accumulate observation-only diagnostics during witness replay. Unlike
@@ -302,6 +349,8 @@ pub trait Reporting: CampaignTypes {
     /// SHA-256 of the game image bytes.
     fn image_sha256(&self) -> String;
     /// Incrementally digest one complete worker result for stream replay verification.
+    /// Retry-capable adapters must include `discarded_attempt_positions()` after
+    /// their complete legacy action projection, as the generic serializer does.
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>>;
     /// Assemble the game's archive report from the campaign's final state.
     fn archive_report(
@@ -551,6 +600,16 @@ pub trait TargetExecution: CampaignTypes {
 
 /// Outcome classification, archive keys, and retained evidence owned by a workload.
 pub trait Evaluation: CampaignTypes {
+    /// Resolve a supported milestone to its canonical name and observation
+    /// policy version. The default supports no milestone stopping.
+    fn named_milestone(&self, _name: &str) -> Option<(&'static str, &'static str)> {
+        None
+    }
+    /// First execution where this run's admitted evidence observed a milestone.
+    /// Historical aggregate evidence must not be reported as a new observation.
+    fn milestone_first_execution(&self, _evidence: &Self::Evidence, _name: &str) -> Option<u64> {
+        None
+    }
     /// Whether the target is dead or failed, ending an imported walk.
     fn is_terminal(&self, target: &Self::Target) -> bool;
     /// Whether the target satisfies any terminal condition recorded by this run.
@@ -859,6 +918,12 @@ pub struct CampaignStreamHeader<T> {
     /// deterministic reservation window drains and may overshoot the limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_budget: Option<u64>,
+    /// Optional workload-owned milestone stopping criterion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub milestone_stop: Option<CampaignMilestoneCondition>,
+    /// Versioned same-slot mechanism; omitted for historical representative behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_retention: Option<String>,
     /// Wall budget in seconds when one was set.
     pub wall_budget_seconds: Option<u64>,
     /// Bounded clean-reset action horizon.
@@ -928,7 +993,10 @@ pub enum CampaignSpliceRecord {
         /// Dispatch-time deepest descendant archive id.
         leaf_id: u64,
         /// Exact generic action tail selected at dispatch, postcard encoded.
-        /// Older streams omit it and use donor/leaf reconstruction.
+        /// Older streams omit it and use donor/leaf reconstruction. For the
+        /// explicit scoped-progress fresh control, donor/leaf identify the
+        /// queued learning event; these bytes are the independently redrawn
+        /// control suffix, verified against its mutation seed during replay.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tail_postcard: Option<Vec<u8>>,
     },
@@ -1082,6 +1150,15 @@ pub struct CampaignOriginRecord {
     pub resume_actions: usize,
 }
 
+/// First viable endpoint reached immediately after a recorded local retry.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(bound = "A: Serialize + DeserializeOwned + Ord + Clone")]
+pub struct LocalRetryWitness<A: Ord> {
+    pub input: Input<A>,
+    /// Postcard digest of the exact worker snapshot at this boundary.
+    pub snapshot_sha256: String,
+}
+
 /// Complete deterministic report for one campaign, live or replayed.
 ///
 /// Every field derives from the stream header, the recorded stream, and the
@@ -1108,6 +1185,15 @@ pub struct CampaignModeReport<A: Ord, R> {
     /// deterministic reservation window drains and may overshoot the limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_budget: Option<u64>,
+    /// Optional workload-owned milestone stopping criterion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub milestone_stop: Option<CampaignMilestoneCondition>,
+    /// First admitted endpoint evidence; subsequent in-flight work remains charged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_milestone: Option<CampaignMilestoneObservation>,
+    /// Versioned same-slot mechanism; omitted for historical representative behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_retention: Option<String>,
     /// Jobs actually executed and admitted, the winning admission's own
     /// drained window included. This is the run's throughput.
     pub executions_completed: u64,
@@ -1166,6 +1252,12 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub duplicates_skipped: u64,
     /// Candidates refused by the admission probe.
     pub probe_refused: u64,
+    /// Executed retries whose failed predecessor remains charged and recorded.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub local_terminal_retries: u64,
+    /// Bounded first viable retry witness; absent when no retry survives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_local_retry: Option<LocalRetryWitness<A>>,
     /// Actions that reached the run's recorded success predicate.
     pub victories: u64,
     /// The first input that reached the success predicate, when one did.
@@ -1363,6 +1455,13 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignCandidate<G> {
 #[derive(Serialize)]
 #[serde(bound = "")]
 pub struct CampaignActionResult<G: CampaignTypes + ?Sized> {
+    /// This attempt starts from the live boundary preceding the previous dead
+    /// attempt. That attempt remains evidence/work but is removed from this
+    /// branch's input. Only ordinary death can be retried; never victory/error.
+    /// The complete job serializes these markers after all legacy action data,
+    /// preserving unambiguous bytes and unchanged default results.
+    #[serde(skip)]
+    pub discard_previous_dead: bool,
     /// The executed action.
     pub action: G::Action,
     /// Per-frame observations across the action.
@@ -1381,7 +1480,8 @@ pub struct CampaignActionResult<G: CampaignTypes + ?Sized> {
 
 impl<G: CampaignTypes + ?Sized> PartialEq for CampaignActionResult<G> {
     fn eq(&self, other: &Self) -> bool {
-        self.action == other.action
+        self.discard_previous_dead == other.discard_previous_dead
+            && self.action == other.action
             && self.observations == other.observations
             && self.milestones == other.milestones
             && self.dead == other.dead
@@ -1395,6 +1495,7 @@ impl<G: CampaignTypes + ?Sized> Eq for CampaignActionResult<G> {}
 impl<G: CampaignTypes + ?Sized> Clone for CampaignActionResult<G> {
     fn clone(&self) -> Self {
         Self {
+            discard_previous_dead: self.discard_previous_dead,
             action: self.action,
             observations: self.observations.clone(),
             milestones: self.milestones,
@@ -1410,6 +1511,7 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignActionResult<G> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CampaignActionResult")
+            .field("discard_previous_dead", &self.discard_previous_dead)
             .field("action", &self.action)
             .field("observations", &self.observations)
             .field("milestones", &self.milestones)
@@ -1424,11 +1526,38 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignActionResult<G> {
 /// Complete result of one executed job. Games choose the deterministic
 /// projection they digest into the stream; [`postcard_result_sha256`] uses the
 /// complete serialization, including snapshots.
-#[derive(Serialize)]
-#[serde(bound = "")]
 pub struct CampaignJobResult<G: CampaignTypes + ?Sized> {
     /// Executed actions in order.
     pub actions: Vec<CampaignActionResult<G>>,
+}
+
+impl<G: CampaignTypes + ?Sized> CampaignJobResult<G> {
+    /// Ordered attempt positions that discard their immediately preceding dead
+    /// action. Custom workload result digests must include this suffix too.
+    pub fn discarded_attempt_positions(&self) -> Vec<usize> {
+        self.actions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, action)| action.discard_previous_dead.then_some(index))
+            .collect()
+    }
+}
+impl<G: CampaignTypes + ?Sized> Serialize for CampaignJobResult<G> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let positions = self.discarded_attempt_positions();
+        let mut record = serializer.serialize_struct(
+            "CampaignJobResult",
+            if positions.is_empty() { 1 } else { 2 },
+        )?;
+        record.serialize_field("actions", &self.actions)?;
+        // Append after the self-delimiting legacy action vector. A marker must
+        // never shift an action's fields and create an ambiguous postcard hash.
+        if !positions.is_empty() {
+            record.serialize_field("discard_previous_dead_actions", &positions)?;
+        }
+        record.end()
+    }
 }
 
 impl<G: CampaignTypes + ?Sized> PartialEq for CampaignJobResult<G> {
@@ -1496,6 +1625,8 @@ pub(crate) struct CoordinatorCore<G: Game + ?Sized> {
     pub(crate) victory_input: Option<Input<G::Action>>,
     sequence: u64,
     probe_refused: u64,
+    local_terminal_retries: u64,
+    first_local_retry: Option<LocalRetryWitness<G::Action>>,
     max_actions: usize,
     pub(crate) mixture_energy: MixtureEnergy,
 }
@@ -1530,6 +1661,8 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
             victory_input: None,
             sequence: 0,
             probe_refused: 0,
+            local_terminal_retries: 0,
+            first_local_retry: None,
             max_actions,
             mixture_energy: MixtureEnergy::default(),
         }
@@ -1775,7 +1908,19 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         let mut pending_suffix = Vec::new();
         let mut previous_key = None;
         let mut decisions = Vec::new();
+        let mut previous_retryable_death = false;
         for action in result.actions {
+            if action.discard_previous_dead {
+                if !previous_retryable_death || pending_suffix.pop().is_none() {
+                    return Err("local retry does not follow an ordinary dead attempt".into());
+                }
+                self.local_terminal_retries = self.local_terminal_retries.saturating_add(1);
+            }
+            previous_retryable_death = action.dead
+                && !action.failed
+                && !action.victory
+                && action.candidate.is_none()
+                && !action.discard_previous_dead;
             pending_suffix.push(action.action);
             game.merge_action_evidence(&mut self.evidence, &action, sequence, || {
                 let mut input = self
@@ -1800,6 +1945,19 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                 }
                 decisions.push(CampaignAdmissionDecision::Victory);
             }
+            if action.discard_previous_dead
+                && self.first_local_retry.is_none()
+                && !action.dead
+                && !action.failed
+                && let Some(candidate) = action.candidate.as_ref().filter(|c| c.viable)
+            {
+                let mut input = self.archive.materialize_input(current_parent)?;
+                input.actions.extend_from_slice(&pending_suffix);
+                self.first_local_retry = Some(LocalRetryWitness {
+                    input,
+                    snapshot_sha256: postcard_value_sha256(&candidate.snapshot)?,
+                });
+            }
             if let Some(candidate) = action.candidate {
                 if !candidate.viable {
                     self.probe_refused = self.probe_refused.saturating_add(1);
@@ -1807,7 +1965,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                     continue;
                 }
                 let retained_before = self.archive.retained;
-                let (admitted, key) = self.archive.insert_after(
+                let (admitted, key) = self.archive.insert_after_observed(
                     Some(current_parent),
                     previous_key,
                     sequence,
@@ -1817,6 +1975,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                         milestones: action.milestones,
                     },
                     candidate.snapshot,
+                    |event| game.observe_retention(event),
                 )?;
                 match admitted {
                     Some(id) if self.archive.retained > retained_before => {
@@ -1994,6 +2153,22 @@ fn resolve_origin<G: Game>(
     })
 }
 
+fn resolve_milestone_condition<G: Evaluation + ?Sized>(
+    game: &G,
+    name: &str,
+) -> Result<CampaignMilestoneCondition, Box<dyn Error>> {
+    let (name, policy) = game
+        .named_milestone(name)
+        .ok_or("workload does not support this milestone stop")?;
+    if name.is_empty() || policy.is_empty() {
+        return Err("milestone name and observation policy must be nonempty".into());
+    }
+    Ok(CampaignMilestoneCondition {
+        name: name.to_owned(),
+        observation_policy: policy.to_owned(),
+    })
+}
+
 fn stream_header<G: Game>(
     game: &G,
     config: &CampaignConfig<G>,
@@ -2016,6 +2191,8 @@ fn stream_header<G: Game>(
         resume_actions: origin.resume_actions,
         execution_budget: config.execution_budget,
         frame_budget: None,
+        milestone_stop: None,
+        slot_retention: None,
         wall_budget_seconds: config.wall_budget.map(|budget| budget.as_secs()),
         action_limit: config.action_limit,
         archive_entry_limit: config.archive_entry_limit,
@@ -2074,6 +2251,7 @@ struct CampaignCounters {
     job_frames: u64,
     frames_to_first_victory: Option<u64>,
     executions_to_first_victory: Option<u64>,
+    first_milestone: Option<CampaignMilestoneObservation>,
     duplicates_skipped: u64,
     draw_state_memory_bytes: usize,
     jobs_per_worker: Vec<u64>,
@@ -2149,6 +2327,28 @@ fn profile_elapsed(started: Option<Instant>) -> u128 {
 }
 
 impl CampaignCounters {
+    fn note_milestone<G: Game>(
+        &mut self,
+        game: &G,
+        evidence: &G::Evidence,
+        condition: Option<&CampaignMilestoneCondition>,
+        sequence: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        if self.first_milestone.is_none()
+            && let Some(condition) = condition
+            && let Some(first) = game.milestone_first_execution(evidence, &condition.name)
+        {
+            if first != sequence {
+                return Err("milestone evidence was not reported at its first admission".into());
+            }
+            self.first_milestone = Some(CampaignMilestoneObservation {
+                execution: sequence,
+                frames_emulated: self.bootstrap_frames.saturating_add(self.job_frames),
+            });
+        }
+        Ok(())
+    }
+
     /// Record the ordered admission that first reached the success
     /// predicate, in its sequence position and in the frames run to reach
     /// it. Jobs reserved before that admission keep draining afterwards and
@@ -2168,6 +2368,7 @@ impl CampaignCounters {
             job_frames: 0,
             frames_to_first_victory: None,
             executions_to_first_victory: None,
+            first_milestone: None,
             duplicates_skipped: 0,
             draw_state_memory_bytes: 0,
             jobs_per_worker: vec![0; workers as usize],
@@ -2187,6 +2388,8 @@ fn build_report<G: Game>(
 ) -> CampaignOutcome<G> {
     let executions_completed = core.sequence;
     let probe_refused = core.probe_refused;
+    let local_terminal_retries = core.local_terminal_retries;
+    let first_local_retry = core.first_local_retry.clone();
     let victories = core.victories;
     let victory_input = core.victory_input.clone();
     let replacement_frames_displaced = core.archive.replacement_time_displaced();
@@ -2232,6 +2435,9 @@ fn build_report<G: Game>(
         origin,
         execution_budget: header.execution_budget,
         frame_budget: header.frame_budget,
+        milestone_stop: header.milestone_stop.clone(),
+        first_milestone: counters.first_milestone,
+        slot_retention: header.slot_retention.clone(),
         executions_completed,
         executions_to_first_victory: counters.executions_to_first_victory,
         wall_budget_seconds: header.wall_budget_seconds,
@@ -2255,6 +2461,8 @@ fn build_report<G: Game>(
         frames_to_first_victory: counters.frames_to_first_victory,
         duplicates_skipped: counters.duplicates_skipped,
         probe_refused,
+        local_terminal_retries,
+        first_local_retry,
         victories,
         victory_input,
         replacement_frames_displaced,
@@ -2415,9 +2623,25 @@ fn replay_splice<G: Game>(
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "K: Serialize + DeserializeOwned")]
 pub struct CampaignProgressRecord<K> {
+    /// Constant-space retention/exposure census; not deterministic replay state.
+    #[serde(default)]
+    pub retention_diagnostics: super::archive::RetentionDiagnostics,
+    /// Host allocation owned by generic retention diagnostics, outside the
+    /// historical logical archive budget and included in measured process RSS.
+    #[serde(default)]
+    pub retention_diagnostic_memory_bytes: usize,
     /// Workload-owned observation counters; no selector feedback is implied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workload_diagnostics: Option<serde_json::Value>,
+    /// Final cached-endpoint census, separate from observations and one trajectory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_diagnostics: Option<serde_json::Value>,
+    /// Final active-key context census; excludes inactive snapshot anchors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_context_census: Option<serde_json::Value>,
+    /// Optional conditional selector weight census; never replay or decision state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector_cost_diagnostics: Option<serde_json::Value>,
     /// Objective workload evidence, independent of the selector's deepest key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<serde_json::Value>,
@@ -2516,6 +2740,7 @@ fn write_live_progress<G: Game>(
     coordinator_profile: &LiveCoordinatorProfile,
     draw_state_memory_bytes: usize,
     telemetry_started: Instant,
+    final_census: bool,
     sink: &mut dyn Write,
 ) -> Result<(), Box<dyn Error>> {
     let sequence = core.sequence;
@@ -2529,7 +2754,16 @@ fn write_live_progress<G: Game>(
         .map(|(key, cheapest, retained)| (Some(key), cheapest, retained))
         .unwrap_or((None, 0, 0));
     let line = serde_json::to_string(&CampaignProgressRecord {
+        retention_diagnostics: core.archive.retention_diagnostics,
+        retention_diagnostic_memory_bytes: core.archive.retention_diagnostic_memory_bytes(),
         workload_diagnostics: G::diagnostics(&core.evidence),
+        retained_diagnostics: final_census
+            .then(|| G::retained_diagnostics(core.archive.retained_snapshots()))
+            .flatten(),
+        retention_context_census: final_census
+            .then(|| core.archive.retention_context_census())
+            .flatten(),
+        selector_cost_diagnostics: core.archive.selector_cost_diagnostics(),
         coordinator: coordinator_profile
             .enabled
             .then(|| serde_json::to_value(coordinator_profile))
@@ -2707,14 +2941,56 @@ pub fn run_campaign_checkpointed_with_options<G: CampaignInterfaces>(
     config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
     stream: &mut dyn Write,
+    progress: Option<&mut dyn Write>,
+    options: CampaignExecutionOptions,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    run_campaign_checkpointed_inner(game, config, origin, stream, progress, options, None)
+}
+
+/// Run with independent target-lifetime accounting. The caller can read the
+/// meter after success or error; failed constructors remain unknown. The meter
+/// adds no campaign fields and implements no physical-work stopping rule.
+/// Its host overhead can change a wall-time cutoff.
+///
+/// # Errors
+/// Returns the same errors as the unmeasured entry point.
+pub fn run_campaign_checkpointed_measured<G: CampaignInterfaces>(
+    game: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    stream: &mut dyn Write,
+    progress: Option<&mut dyn Write>,
+    options: CampaignExecutionOptions,
+    meter: &PhysicalWorkMeter,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    run_campaign_checkpointed_inner(game, config, origin, stream, progress, options, Some(meter))
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_campaign_checkpointed_inner<G: CampaignInterfaces>(
+    game: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    stream: &mut dyn Write,
     mut progress: Option<&mut dyn Write>,
     options: CampaignExecutionOptions,
+    meter: Option<&PhysicalWorkMeter>,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
 {
     let frame_budget = options.frame_budget;
     let result_limit = options.result_buffering.capacity();
+    let milestone_stop = options
+        .stop_after_milestone
+        .map(|name| resolve_milestone_condition(game, name))
+        .transpose()?;
     if frame_budget == Some(0) {
         return Err("frame budget must be nonzero".into());
     }
@@ -2758,6 +3034,8 @@ where
     }
     let mut header = stream_header(game, config, &origin_record, draw_table_header);
     header.frame_budget = frame_budget;
+    header.milestone_stop = milestone_stop;
+    header.slot_retention = options.slot_retention.identifier().map(str::to_owned);
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
 
@@ -2769,18 +3047,21 @@ where
         config.memory_budget_mib,
     );
     core.archive.selector_policy = config.selector.clone();
+    core.archive.slot_retention = options.slot_retention;
     core.archive
-        .enable_continuations(config.mixture.uses_continuations());
+        .enable_continuations(config.mixture.continuation_learning());
     let mut counters = CampaignCounters::new(config.workers);
-    let mut bootstrap_target = game.new_target().map_err(|error| -> Box<dyn Error> {
-        format!("failed to build the bootstrap target: {error}").into()
-    })?;
+    let mut bootstrap_target =
+        TrackedTarget::new(game, meter).map_err(|error| -> Box<dyn Error> {
+            format!("failed to build the bootstrap target: {error}").into()
+        })?;
     let frames_before = game.frames_clocked(&bootstrap_target);
     counters.tree_import =
         bootstrap_core(game, &config.run, &mut core, &mut bootstrap_target, origin)?;
     counters.bootstrap_frames = game
         .frames_clocked(&bootstrap_target)
         .saturating_sub(frames_before);
+    counters.note_milestone(game, &core.evidence, header.milestone_stop.as_ref(), 0)?;
     drop(bootstrap_target);
     let bootstrap_memory_bytes = core
         .archive
@@ -2815,7 +3096,7 @@ where
     let retention = config.retention;
     with_worker_pool(
         config.workers,
-        |_| game.new_target(),
+        |_| TrackedTarget::new(game, meter),
         |target, spec: JobSpec<G>| {
             let reservation = spec.reservation;
             let frames_before = game.frames_clocked(target);
@@ -2854,6 +3135,7 @@ where
                           worker: u32|
              -> Result<Option<SelectedJob<G>>, Box<dyn Error>> {
                 if *reserved >= config.execution_budget
+                    || counters.first_milestone.is_some()
                     || frame_budget.is_some_and(|budget| {
                         counters
                             .bootstrap_frames
@@ -2887,6 +3169,9 @@ where
                         };
                         if !core.archive.active[parent_index]
                             || core.archive.entries[parent_index].input_len >= max_actions
+                            || (config.mixture.continuation_learning()
+                                == Some(crate::search::continuation::ContinuationLearning::ScopedProgress)
+                                && !core.archive.progress_trial_parent_eligible(parent_index, max_actions))
                         {
                             continue;
                         }
@@ -2913,6 +3198,35 @@ where
                         };
                         let checkpoint = game.draw_checkpoint(draw_state)?;
                         let draw_table_before = draw_checkpoint_to_wire(game, checkpoint.as_ref())?;
+                        // Queue, parent, learned-word duplicate gate and RNG draws
+                        // match from identical history. Only the trial's suffix
+                        // changes. A fresh control draw is executed even if its
+                        // prefixes are known, avoiding a second parent filter.
+                        if config.mixture.redraws_progress_word() {
+                            suffix = game.expand_suffix(
+                                &config.run,
+                                draw_state,
+                                config.suffix,
+                                MixtureDraw {
+                                    mixture: DrawMixture::AlphabetOnly,
+                                    weight: default_mixture_weight(),
+                                    splice_weight: 0,
+                                },
+                                mutation_seed,
+                            )?;
+                            config
+                                .suffix
+                                .bound_time(&mut suffix, action_time, longest_action_time);
+                        }
+                        if config.mixture.continuation_learning()
+                            == Some(
+                                crate::search::continuation::ContinuationLearning::ScopedProgress,
+                            )
+                            && (suffix.is_empty()
+                                || suffix.len() > crate::search::continuation::PROGRESS_ACTION_CAP)
+                        {
+                            return Err("scoped progress trial exceeds its action bound".into());
+                        }
                         let splice = Some(CampaignSpliceRecord::Tail {
                             donor_id: continuation.donor,
                             leaf_id: continuation.leaf,
@@ -3302,6 +3616,12 @@ where
                     counters.jobs_per_worker[worker_index] =
                         counters.jobs_per_worker[worker_index].saturating_add(1);
                     counters.job_frames = counters.job_frames.saturating_add(frames);
+                    counters.note_milestone(
+                        game,
+                        &core.evidence,
+                        header.milestone_stop.as_ref(),
+                        sequence,
+                    )?;
                     if victories_before == 0 && core.victories > 0 {
                         counters.note_first_victory(sequence);
                     }
@@ -3317,6 +3637,7 @@ where
                                 &coordinator_profile,
                                 draw_state_memory_bytes,
                                 telemetry_started,
+                                false,
                                 sink,
                             )?;
                             if coordinator_profile.enabled {
@@ -3448,6 +3769,7 @@ where
             &coordinator_profile,
             game.draw_state_memory_bytes(&draw_state),
             telemetry_started,
+            true,
             sink,
         )?;
     }
@@ -3553,6 +3875,44 @@ pub fn replay_campaign_checkpointed<G: CampaignInterfaces>(
 where
     G::ArchiveReport: Serialize,
 {
+    replay_campaign_checkpointed_inner(game, stream_bytes, origin_report, origin_checkpoint, None)
+}
+
+/// Replay with a separate target-lifetime receipt, including constructor and
+/// any work performed before a replay error. A failed constructor stays unknown.
+///
+/// # Errors
+/// Returns the same replay errors as the unmeasured entry point.
+pub fn replay_campaign_checkpointed_measured<G: CampaignInterfaces>(
+    game: &G,
+    stream_bytes: &[u8],
+    origin_report: Option<&G::ArchiveReport>,
+    origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
+    meter: &PhysicalWorkMeter,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    replay_campaign_checkpointed_inner(
+        game,
+        stream_bytes,
+        origin_report,
+        origin_checkpoint,
+        Some(meter),
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn replay_campaign_checkpointed_inner<G: CampaignInterfaces>(
+    game: &G,
+    stream_bytes: &[u8],
+    origin_report: Option<&G::ArchiveReport>,
+    origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
+    meter: Option<&PhysicalWorkMeter>,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
     let stream_sha256 = format!("{:x}", Sha256::digest(stream_bytes));
     let text = std::str::from_utf8(stream_bytes)?;
     let mut lines = text.lines();
@@ -3566,6 +3926,11 @@ where
     }
     if header.frame_budget == Some(0) {
         return Err("recorded frame budget must be nonzero".into());
+    }
+    if let Some(condition) = &header.milestone_stop
+        && resolve_milestone_condition(game, &condition.name)? != *condition
+    {
+        return Err("recorded milestone observation policy is not recognized".into());
     }
     let record_lines = lines.collect::<Vec<_>>();
     let mut required_draw_versions = BTreeSet::new();
@@ -3731,10 +4096,12 @@ where
     core.record_progress = header.progress_policy.is_some();
     core.bounded_progress_curve = uses_bounded_progress_curve(header.progress_policy.as_deref());
     core.archive.selector_policy = replay_selector.clone();
+    core.archive.slot_retention =
+        super::archive::SlotRetentionPolicy::from_identifier(header.slot_retention.as_deref())?;
     core.archive
-        .enable_continuations(replay_mixture.uses_continuations());
+        .enable_continuations(replay_mixture.continuation_learning());
     let mut counters = CampaignCounters::new(header.workers);
-    let mut target = game.new_target().map_err(|error| -> Box<dyn Error> {
+    let mut target = TrackedTarget::new(game, meter).map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
     })?;
     let frames_before = game.frames_clocked(&target);
@@ -3761,6 +4128,7 @@ where
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
+    counters.note_milestone(game, &core.evidence, header.milestone_stop.as_ref(), 0)?;
     let bootstrap_memory_bytes = core
         .archive
         .resident_memory_bytes()
@@ -3820,6 +4188,9 @@ where
         let record: CampaignStreamRecord = serde_json::from_str(line)?;
         match record {
             CampaignStreamRecord::Skip(skip) => {
+                if counters.first_milestone.is_some() {
+                    return Err("recorded selection after the milestone stop".into());
+                }
                 let parent_index = core
                     .archive
                     .index_of_id(skip.parent_id)
@@ -3931,6 +4302,15 @@ where
                     strategy,
                     job.splice.clone(),
                 )?;
+                if job.selector.path == SelectorPath::Continuation
+                    && replay_mixture.continuation_learning()
+                        == Some(crate::search::continuation::ContinuationLearning::ScopedProgress)
+                    && spliced.as_ref().is_none_or(|tail| {
+                        tail.len() > crate::search::continuation::PROGRESS_ACTION_CAP
+                    })
+                {
+                    return Err("scoped progress word exceeds its six-action bound".into());
+                }
                 let draw_checkpoint_before =
                     game.draw_checkpoint_from_wire(job.draw_table_before.as_ref())?;
                 let mut suffix = match spliced {
@@ -3949,6 +4329,32 @@ where
                     )?,
                 };
                 replay_suffix.bound_time(&mut suffix, action_time, longest_action_time);
+                if job.selector.path == SelectorPath::Continuation
+                    && replay_mixture.continuation_learning()
+                        == Some(crate::search::continuation::ContinuationLearning::ScopedProgress)
+                {
+                    if suffix.len() > crate::search::continuation::PROGRESS_ACTION_CAP {
+                        return Err("scoped progress word exceeds its six-action bound".into());
+                    }
+                    if replay_mixture.redraws_progress_word() {
+                        let mut expected = game.expand_suffix_recorded(
+                            &replay_run,
+                            &draw_state,
+                            replay_suffix,
+                            MixtureDraw {
+                                mixture: DrawMixture::AlphabetOnly,
+                                weight: default_mixture_weight(),
+                                splice_weight: 0,
+                            },
+                            draw_checkpoint_before.as_ref(),
+                            job.mutation_seed,
+                        )?;
+                        replay_suffix.bound_time(&mut expected, action_time, longest_action_time);
+                        if postcard::to_allocvec(&expected)? != postcard::to_allocvec(&suffix)? {
+                            return Err("scoped progress fresh-control suffix diverged".into());
+                        }
+                    }
+                }
                 let job_frames_before = game.frames_clocked(&target);
                 let result = game.execute_job(
                     &replay_run,
@@ -4075,10 +4481,28 @@ where
                 counters.jobs_per_worker[worker] =
                     counters.jobs_per_worker[worker].saturating_add(1);
                 counters.job_frames = counters.job_frames.saturating_add(frames);
+                counters.note_milestone(
+                    game,
+                    &core.evidence,
+                    header.milestone_stop.as_ref(),
+                    sequence,
+                )?;
                 if victories_before == 0 && core.victories > 0 {
                     counters.note_first_victory(sequence);
                 }
             }
+        }
+    }
+    if let Some(first) = counters.first_milestone {
+        let last_allowed = if first.execution == 0 {
+            0
+        } else {
+            first
+                .execution
+                .saturating_add(u64::try_from(replay_window_depth)?.saturating_sub(1))
+        };
+        if core.sequence > last_allowed {
+            return Err("recorded jobs exceed the milestone stop's bounded drain".into());
         }
     }
     core.archive.preserve_inactive_snapshots(false)?;
@@ -4497,6 +4921,188 @@ mod tests {
         }
     }
 
+    // A finite target with normal death, a permanent live trap, and a distinct
+    // emulator-error outcome. Snapshot restores preserve physical work.
+    fn local_retry_fixture(
+        draws: &[u8],
+        limit: usize,
+        enabled: bool,
+        alias: bool,
+    ) -> (CampaignJobResult<TestGame>, u64) {
+        use crate::search::rollout::LocalRetry;
+        let mut retry = LocalRetry::new(enabled.then_some((0_u8, ())));
+        let mut state = 0_u8;
+        let mut frames = 0_u64;
+        let mut actions = Vec::new();
+        for draw in draws.iter().take(limit) {
+            let discard_previous_dead = retry
+                .restore_pending(|snapshot| {
+                    state = *snapshot;
+                    Ok(())
+                })
+                .unwrap()
+                .is_some();
+            frames += 1;
+            let failed = *draw == 255;
+            let dead = !failed && (*draw == 0 || state == 200);
+            if !dead && !failed {
+                state = if *draw == 2 { 200 } else { state + 1 };
+            }
+            let victory = state == 3 && !dead && !failed;
+            let outcome = Outcome {
+                dead,
+                failed,
+                victory,
+            };
+            let candidate = (!outcome.terminal()).then_some(CampaignCandidate {
+                key: TestKey(if alias { 0 } else { state }),
+                viable: true,
+                snapshot: state,
+            });
+            let keep_going = retry
+                .observe(outcome, candidate.as_ref().map(|c| &c.snapshot), ())
+                .unwrap();
+            actions.push(CampaignActionResult {
+                discard_previous_dead,
+                action: TestAction::new(*draw, 1),
+                observations: vec![()],
+                milestones: (),
+                dead,
+                victory,
+                failed,
+                candidate,
+            });
+            if !keep_going {
+                break;
+            }
+        }
+        (CampaignJobResult { actions }, frames)
+    }
+
+    #[test]
+    fn local_retry_preserves_failed_work_and_linear_witnesses_with_or_without_aliasing() {
+        for alias in [false, true] {
+            let (baseline, old_work) = local_retry_fixture(&[1, 0, 1, 1], 4, false, alias);
+            assert_eq!(old_work, 2);
+            assert!(baseline.actions.last().unwrap().dead);
+            let (result, work) = local_retry_fixture(&[1, 0, 1, 1], 4, true, alias);
+            assert_eq!(work, 4);
+            assert!(result.actions[1].dead);
+            assert!(result.actions[2].discard_previous_dead);
+            assert!(result.actions[3].victory);
+            let replay = local_retry_fixture(&[1, 0, 1, 1], 4, true, alias);
+            assert_eq!(replay, (result.clone(), work));
+            let (game, _, mut core, _) = test_core();
+            core.admit_job(&game, 0, result).unwrap();
+            assert_eq!(core.deaths, 1);
+            assert_eq!(core.local_terminal_retries, 1);
+            let witness = core.first_local_retry.as_ref().unwrap();
+            assert_eq!(witness.input.actions, vec![TestAction::new(1, 1); 2]);
+            assert_eq!(
+                witness.snapshot_sha256,
+                postcard_value_sha256(&2_u8).unwrap()
+            );
+            assert_eq!(
+                core.victory_input.unwrap().actions,
+                vec![TestAction::new(1, 1); 3]
+            );
+            let (reports, _) = core.archive.take_entry_reports_and_snapshots();
+            for report in reports {
+                assert!(report.input.actions.iter().all(|a| a.input == 1));
+            }
+        }
+    }
+
+    #[test]
+    fn local_retry_stops_on_second_death_errors_victory_and_attempt_cap() {
+        for (draws, limit, expected) in [
+            (vec![0, 0, 1], 3, 2),
+            (vec![1, 255, 1], 3, 2),
+            (vec![1, 1, 1, 0], 4, 3),
+            (vec![0, 1], 1, 1),
+        ] {
+            let (result, work) = local_retry_fixture(&draws, limit, true, true);
+            assert_eq!(work, expected);
+            assert_eq!(result.actions.len(), expected as usize);
+        }
+        let (crash, _) = local_retry_fixture(&[1, 255, 1], 3, true, true);
+        assert!(crash.actions.last().unwrap().failed);
+        assert!(!crash.actions.last().unwrap().discard_previous_dead);
+        let (baseline, _) = local_retry_fixture(&[1, 0, 1, 1], 4, false, true);
+        let (mut malformed, _) = local_retry_fixture(&[1, 0, 1, 1], 4, true, true);
+        malformed.actions[0].discard_previous_dead = true;
+        let (game, _, mut core, _) = test_core();
+        assert!(core.admit_job(&game, 0, malformed).is_err());
+        assert!(baseline.actions.iter().all(|a| !a.discard_previous_dead));
+        let (two_retries, work) = local_retry_fixture(&[0, 1, 0, 1, 1], 5, true, true);
+        assert_eq!(work, 5);
+        assert_eq!(two_retries.discarded_attempt_positions(), vec![1, 3]);
+        let (game, _, mut core, _) = test_core();
+        core.admit_job(&game, 0, two_retries).unwrap();
+        assert_eq!(
+            core.victory_input.unwrap().actions,
+            vec![TestAction::new(1, 1); 3]
+        );
+        for (failed, victory) in [(true, false), (false, true)] {
+            let (mut invalid, _) = local_retry_fixture(&[0, 1], 2, true, true);
+            invalid.actions[0].failed = failed;
+            invalid.actions[0].victory = victory;
+            let (game, _, mut core, _) = test_core();
+            assert!(core.admit_job(&game, 0, invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn local_retry_live_trap_is_an_executable_counterexample() {
+        let ordinary = local_retry_fixture(&[2, 1, 1], 3, false, true);
+        let retry = local_retry_fixture(&[2, 1, 1], 3, true, true);
+        assert_eq!((ordinary.1, retry.1), (2, 3));
+        assert!(ordinary.0.actions.last().unwrap().dead);
+        assert!(retry.0.actions.last().unwrap().dead);
+    }
+
+    #[test]
+    fn local_retry_marker_changes_hash_but_default_action_bytes_are_unchanged() {
+        #[derive(Serialize)]
+        struct OldAction<'a> {
+            action: TestAction,
+            observations: &'a [()],
+            milestones: (),
+            dead: bool,
+            victory: bool,
+            failed: bool,
+            candidate: &'a Option<CampaignCandidate<TestGame>>,
+        }
+        let (result, _) = local_retry_fixture(&[1, 0, 1, 1], 4, true, true);
+        let action = &result.actions[0];
+        let old = OldAction {
+            action: action.action,
+            observations: &action.observations,
+            milestones: (),
+            dead: action.dead,
+            victory: action.victory,
+            failed: action.failed,
+            candidate: &action.candidate,
+        };
+        assert_eq!(
+            postcard::to_allocvec(&old).unwrap(),
+            postcard::to_allocvec(action).unwrap()
+        );
+        let mut corrupted = result.clone();
+        corrupted.actions[2].discard_previous_dead = false;
+        assert_ne!(
+            postcard_value_sha256(&result).unwrap(),
+            postcard_value_sha256(&corrupted).unwrap()
+        );
+        let mut expected = postcard::to_allocvec(&corrupted).unwrap();
+        expected.extend(postcard::to_allocvec(&vec![2_usize]).unwrap());
+        assert_eq!(
+            postcard::to_allocvec(&result).unwrap(),
+            expected,
+            "retry positions follow the complete legacy action vector"
+        );
+    }
+
     fn test_core() -> (TestGame, (), CoordinatorCore<TestGame>, TestTarget) {
         let game = TestGame;
         let run = ();
@@ -4505,6 +5111,104 @@ mod tests {
         core.bootstrap(&game, &mut target)
             .expect("bootstrap generic core");
         (game, run, core, target)
+    }
+
+    #[test]
+    fn zero_parent_selections_does_not_mean_no_executed_continuation() {
+        let (game, _run, mut core, mut target) = test_core();
+        let action = TestAction::new(1, 1);
+        let mut rollout = TestRollout::new(&mut target);
+        let result = execute_suffix(
+            &mut rollout,
+            0,
+            (),
+            &[action, action],
+            8,
+            RetentionPolicy::AdmitAlive,
+        )
+        .expect("execute both actions from the selected genesis parent");
+        assert_eq!(rollout.target.value, 2);
+        assert_eq!(result.actions[0].candidate.as_ref().unwrap().snapshot, 1);
+        assert_eq!(result.actions[1].candidate.as_ref().unwrap().snapshot, 2);
+        let (_, decisions) = core.admit_job(&game, 0, result).expect("admit one job");
+        assert_eq!(
+            decisions,
+            vec![
+                CampaignAdmissionDecision::Retained { id: 1 },
+                CampaignAdmissionDecision::Retained { id: 2 },
+            ]
+        );
+        core.archive.record_selection(
+            0,
+            &SelectorDraw {
+                path: SelectorPath::Uniform,
+                classes_skipped: 0,
+                counter_reset: false,
+                concentration: None,
+            },
+        );
+        core.archive.record_selection_outcome(0, true, true, true);
+        let (report, _) = core.into_archive_report_and_snapshots(&game, 0, true);
+        assert_eq!(report.entries[0].selector.unwrap().selected, 1);
+        assert_eq!(report.entries[1].selector.unwrap().selected, 0);
+        assert_eq!(report.entries[1].selector.unwrap().productive, 0);
+        assert_eq!(report.entries[2].parent_id, Some(1));
+        assert_eq!(
+            report.entries[1].created_execution,
+            report.entries[2].created_execution
+        );
+        assert_eq!(report.entries[2].input.actions, vec![action, action]);
+    }
+
+    #[test]
+    fn removal_exposure_precedes_a_pending_parent_jobs_accounting() {
+        let (game, _run, mut core, _target) = test_core();
+        let execute = |value, action| {
+            let mut target = TestTarget { value, frames: 0 };
+            execute_suffix(
+                &mut TestRollout::new(&mut target),
+                0,
+                (),
+                &[action],
+                8,
+                RetentionPolicy::AdmitAlive,
+            )
+            .unwrap()
+        };
+        // Fill the fixture's two-route slot, then add a cheap route to state 2.
+        assert_eq!(TestKey::slot_capacity(), 2);
+        core.admit_job(&game, 0, execute(0, TestAction::new(1, 9)))
+            .unwrap();
+        core.admit_job(&game, 0, execute(0, TestAction::new(1, 8)))
+            .unwrap();
+        core.admit_job(&game, 0, execute(0, TestAction::new(2, 1)))
+            .unwrap();
+        // State 1's parent job has actually executed. Ordered admission waits
+        // for an earlier job, which replaces state 1 through the cheaper route.
+        let pending = execute(1, TestAction::new(4, 1));
+        assert_eq!(pending.actions[0].candidate.as_ref().unwrap().snapshot, 5);
+        core.admit_job(&game, 3, execute(2, TestAction::new(255, 1)))
+            .unwrap();
+        assert!(!core.archive.active[1]);
+        assert_eq!(core.archive.retention_diagnostics.removed, 1);
+        assert_eq!(core.archive.retention_diagnostics.removed_never_selected, 1);
+        core.admit_job(&game, 1, pending).unwrap();
+        core.archive.record_selection(
+            1,
+            &SelectorDraw {
+                path: SelectorPath::Uniform,
+                classes_skipped: 0,
+                counter_reset: false,
+                concentration: None,
+            },
+        );
+        core.archive.record_selection_outcome(1, true, true, true);
+        // The lifecycle census captures removal-time state; it is not revised
+        // when a previously dispatched job receives its admission accounting.
+        assert_eq!(core.archive.retention_diagnostics.removed_never_selected, 1);
+        let (report, _) = core.into_archive_report_and_snapshots(&game, 0, true);
+        assert_eq!(report.entries[1].selector.unwrap().selected, 1);
+        assert_eq!(report.entries[1].selector.unwrap().productive, 1);
     }
 
     #[test]
@@ -4753,6 +5457,7 @@ mod tests {
         let snapshot = target.snapshot().expect("snapshot candidate");
         let result = CampaignJobResult::<TestGame> {
             actions: vec![CampaignActionResult {
+                discard_previous_dead: false,
                 action,
                 observations: Vec::new(),
                 milestones: (),
@@ -4789,6 +5494,7 @@ mod tests {
         let winning = TestAction::new(0x81, 7);
         let result = CampaignJobResult::<TestGame> {
             actions: vec![CampaignActionResult {
+                discard_previous_dead: false,
                 action: winning,
                 observations: Vec::new(),
                 milestones: (),
@@ -4812,6 +5518,7 @@ mod tests {
 
         let later = CampaignJobResult {
             actions: vec![CampaignActionResult {
+                discard_previous_dead: false,
                 action: TestAction::new(0x01, 9),
                 ..winning_action
             }],
@@ -4998,6 +5705,7 @@ mod tests {
         let snapshot = target.snapshot().expect("snapshot candidate");
         let result = CampaignJobResult::<TestGame> {
             actions: vec![CampaignActionResult {
+                discard_previous_dead: false,
                 action,
                 observations: Vec::new(),
                 milestones: (),
@@ -5343,6 +6051,10 @@ mod tests {
         assert_eq!(round_trip, job);
     }
 }
+
+#[cfg(test)]
+#[path = "campaign_progress_reuse_tests.rs"]
+mod progress_reuse_tests;
 
 #[cfg(test)]
 #[path = "campaign_continuation_tests.rs"]

@@ -1,0 +1,13 @@
+RuntimeMaxUSec=infinity
+MainPID=0
+Result=success
+ExecMainStartTimestamp=
+ExecMainExitTimestamp=
+ExecMainStatus=0
+MemoryPeak=[not set]
+CPUUsageNSec=[not set]
+MemoryMax=infinity
+KillMode=control-group
+Id=harmony-endpoint-e01-20260910.service
+ActiveState=inactive
+SubState=dead

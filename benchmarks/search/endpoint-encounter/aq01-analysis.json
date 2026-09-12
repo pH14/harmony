@@ -1,0 +1,19 @@
+{
+  "decision": "pass",
+  "root": {
+    "decision": "pass",
+    "snapshot_sha256": "487a63a62f716207f45b67ad5c812e467f722c4def54d5d50b98fe94b2ad9d73",
+    "root_json_sha256": "1010ee9028d2c4ac5b84f8b2cd4339cb2f66ee13876e7b72ad2c83181242219c",
+    "known_auxiliary_frames": 237608
+  },
+  "cell_known_auxiliary_frames": [
+    481326,
+    481326
+  ],
+  "known_auxiliary_frames": 1200260,
+  "native_executions_per_cell": 16,
+  "native_admitted_frames_per_cell": 1954,
+  "buffer_artifacts_identical": true,
+  "scope": "Supplied-root integration qualification, not an archive capability or performance result.",
+  "unknown": "Engine target setup, unadmitted work and reconstruction remain additional unknown costs. Campaign replay admitted frames are an inferred component, not total physical replay work."
+}

@@ -1,0 +1,767 @@
+{
+  "source": "source-selection-001",
+  "build": "builds/selection-001",
+  "binary_sha256": "20adb6389bce6d14071172dd72df33cc8d3279311a013f9ec2c60cdb534ffb94",
+  "build_info_sha256": "de2997dd59d7f4295279110049478db5d5c60df9f5c555c0e7f8f24edcd67b55",
+  "source_commit": "d391fb5876dff705f095767caaf9637f4f113095",
+  "cpus": "8-11",
+  "systemd_memory_max": "12G",
+  "analyzer_sha256": "d2de4d01141269b0a296ef4df22b215226fdd2f5b4b60f126bdfdb4e27e82bde",
+  "format": "continuation-yield-r01-registration-v1",
+  "registered_utc": "2026-09-09T15:58:17.254625+00:00",
+  "purpose": "Independent four-pair confirmation of the unchanged selection mechanism at a separately declared 20M-frame restricted first-missile horizon.",
+  "output": "runs/renewal-20260909/r01",
+  "deadline_utc": "2026-09-09T20:49:08+00:00",
+  "runner_sha256": "063854cd362316afc1fa6d15fe07feaba0e5f778f3e8e0355344360a5c047404",
+  "screen_scorer_sha256": "65994f5e7df7ae8b9df66faa54b94286e79d043f948887c43aab50259894791d",
+  "protocol_sha256": "3da60c86e7c92886fd70c0f9eb4e08b4e8634564d75f66983a06af2e7a85a568",
+  "required_evidence": [
+    {
+      "path": "runs/renewal-20260909/d02/results.json",
+      "sha256": "c6a13efc37dbca09d2ef3435b2a4987b631115de7866f514ff6c497fe7789be7",
+      "passed_cells": [
+        "compatibility",
+        "metroid-candidate-smoke"
+      ]
+    },
+    {
+      "path": "runs/renewal-20260909/d02r/results.json",
+      "sha256": "25b9684a388fd5ada8eaf91b189e67a5d3dcd6ebb91335519369b814beaa0a2c",
+      "passed_cells": [
+        "mm2-candidate-smoke"
+      ]
+    },
+    {
+      "path": "runs/renewal-20260909/s01/results.json",
+      "sha256": "a14316175b8bf664239457df29b3cc11d43aecdebb459bdf07ec3de82739b13c",
+      "passed_cells": [
+        "pair-0-control",
+        "pair-0-candidate",
+        "pair-1-candidate",
+        "pair-1-control",
+        "pair-2-control",
+        "pair-2-candidate",
+        "pair-3-candidate",
+        "pair-3-control"
+      ],
+      "screen_decision": "pass"
+    }
+  ],
+  "seed_derivation": [
+    {
+      "label": "harmony-r01-confirmation-20260909-v1:0",
+      "seed": 1192010857
+    },
+    {
+      "label": "harmony-r01-confirmation-20260909-v1:1",
+      "seed": 690938892
+    },
+    {
+      "label": "harmony-r01-confirmation-20260909-v1:2",
+      "seed": 2686054190
+    },
+    {
+      "label": "harmony-r01-confirmation-20260909-v1:3",
+      "seed": 3252380807
+    }
+  ],
+  "prior_seed_audit": "Runner scans all owned completed run summaries and refuses any prior use before dispatching the first cell.",
+  "cells": [
+    {
+      "id": "pair-0-control",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-r01-pair-0-control",
+        "seeds": [
+          1192010857
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 20000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 4096,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 20000000,
+        "game": "metroid",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "alphabet_only",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_v10",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": true,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 1192010857,
+        "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": null,
+        "suffix": "one_to_six",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    },
+    {
+      "id": "pair-0-candidate",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-r01-pair-0-candidate",
+        "seeds": [
+          1192010857
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 20000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 4096,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 20000000,
+        "game": "metroid",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "alphabet_only",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_v10",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": true,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 1192010857,
+        "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": null,
+        "suffix": "one_to_six",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    },
+    {
+      "id": "pair-1-candidate",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-r01-pair-1-candidate",
+        "seeds": [
+          690938892
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 20000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 4096,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 20000000,
+        "game": "metroid",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "alphabet_only",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_v10",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": true,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 690938892,
+        "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": null,
+        "suffix": "one_to_six",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    },
+    {
+      "id": "pair-1-control",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-r01-pair-1-control",
+        "seeds": [
+          690938892
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 20000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 4096,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 20000000,
+        "game": "metroid",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "alphabet_only",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_v10",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": true,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 690938892,
+        "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": null,
+        "suffix": "one_to_six",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    },
+    {
+      "id": "pair-2-control",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-r01-pair-2-control",
+        "seeds": [
+          2686054190
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 20000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 4096,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 20000000,
+        "game": "metroid",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "alphabet_only",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_v10",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": true,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 2686054190,
+        "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": null,
+        "suffix": "one_to_six",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    },
+    {
+      "id": "pair-2-candidate",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-r01-pair-2-candidate",
+        "seeds": [
+          2686054190
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 20000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 4096,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 20000000,
+        "game": "metroid",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "alphabet_only",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_v10",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": true,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 2686054190,
+        "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": null,
+        "suffix": "one_to_six",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    },
+    {
+      "id": "pair-3-candidate",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-r01-pair-3-candidate",
+        "seeds": [
+          3252380807
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 20000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 4096,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 20000000,
+        "game": "metroid",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "alphabet_only",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_v10",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": true,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 3252380807,
+        "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": null,
+        "suffix": "one_to_six",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    },
+    {
+      "id": "pair-3-control",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-r01-pair-3-control",
+        "seeds": [
+          3252380807
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 20000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "witness",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 4096,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 20000000,
+        "game": "metroid",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "alphabet_only",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_v10",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": true,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 3252380807,
+        "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": null,
+        "suffix": "one_to_six",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    }
+  ],
+  "screen": {
+    "budget_frames": 20000000,
+    "required_strict_wins": 3,
+    "pairs": [
+      {
+        "seed": 1192010857,
+        "control": "pair-0-control",
+        "candidate": "pair-0-candidate"
+      },
+      {
+        "seed": 690938892,
+        "control": "pair-1-control",
+        "candidate": "pair-1-candidate"
+      },
+      {
+        "seed": 2686054190,
+        "control": "pair-2-control",
+        "candidate": "pair-2-candidate"
+      },
+      {
+        "seed": 3252380807,
+        "control": "pair-3-control",
+        "candidate": "pair-3-candidate"
+      }
+    ],
+    "resources": {
+      "max_candidate_to_control_ratio": 1.25
+    },
+    "criterion": "At the fixed 20M horizon: three strict interval wins and >=15% lower mean restricted first-missile cost, with the same resource gate. This does not estimate the 25M restricted mean.",
+    "early_stop": "Only after a completed pair when three strict wins are unattainable, or for infrastructure/resource failure."
+  },
+  "budget_class": "Admitted search: at most 160M nominal frames plus bounded in-flight drain; preserve 40M nominal search frames for a conditional four-pair MM2 transfer."
+}

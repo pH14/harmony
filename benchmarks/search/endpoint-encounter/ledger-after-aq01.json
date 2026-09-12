@@ -1,0 +1,19 @@
+{
+  "format": "archive-challenge-aq01-closed-ledger-v1",
+  "prior_ledger_sha256": "500b0093f9bc72d3e9cc2a7ef76f9f8b24229d98ba3630bc46845e40a3dcdb9b",
+  "prepare_registration_sha256": "781d7da97b30101a6bdb71545aff16c9caf685124904c248fbc0025fd999fb9d",
+  "run_registration_sha256": "74173f2c6962fe89df0d03bdf99ea6b326f7dc04ba6b035e93e12be716352392",
+  "admitted_performance_search_frames": 0,
+  "block_known_auxiliary_ceiling": 4000000,
+  "block_known_auxiliary_frames": 1200260,
+  "prepare_known_frames": 237608,
+  "campaign_qualification_admitted_frames": 3908,
+  "campaign_replay_admitted_frames": 3908,
+  "campaign_helper_physical_frames": 954836,
+  "cumulative_since_user_resumption_admitted_search_frames": 1083261532,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 51217468,
+  "scope": "One positive-root preparation and two tiny buffer/replay qualifications. No capability or performance-search allocation.",
+  "outcome": "Exact original E01 root, full campaign replay and root-local/full-prefix witness agreement; all requested buffer artifacts byte identical.",
+  "unknown": "Engine target setup, unadmitted work and reconstruction remain additional unknown costs; campaign replay admitted frames are an inferred component. All helper setup/replay frames are counted.",
+  "old_expired_tranche": "489,962,470 admitted search and 30,112,297 known auxiliary frames remain frozen and excluded from these renewed totals."
+}

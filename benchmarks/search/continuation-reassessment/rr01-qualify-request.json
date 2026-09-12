@@ -1,0 +1,112 @@
+{
+  "phase": "qualify",
+  "stream": {
+    "path": "/root/harmony-depth-transfer-20260909/retention-replay-rr01-001/inputs/stream.jsonl",
+    "sha256": "9ad315a76c38276c673fccd2b660a250254a8a74bc92d9f4a77670702a53a32c"
+  },
+  "origin": {
+    "path": "/root/harmony-depth-transfer-20260909/retention-replay-rr01-001/inputs/origin.bin",
+    "sha256": "35b2677423102a0997d1762b8b448766a9e0219eba4173a28a8693b6892294eb"
+  },
+  "final_checkpoint": {
+    "path": "/root/harmony-depth-transfer-20260909/retention-replay-rr01-001/inputs/checkpoint.bin",
+    "sha256": "454d55597dfe3014fc11ebde87c17a2f419648893c7ace1f22c7e5bec309f850"
+  },
+  "rom": {
+    "path": "/root/harmony-search-eval/assets/metroid.nes",
+    "sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6"
+  },
+  "core": {
+    "path": "/root/harmony-search-eval/assets/quicknes_libretro.so",
+    "sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda"
+  },
+  "original_core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+  "root_snapshot_sha256": "487a63a62f716207f45b67ad5c812e467f722c4def54d5d50b98fe94b2ad9d73",
+  "expected_root_context": {
+    "memory": {
+      "area": 20,
+      "door": 2,
+      "enemies": [
+        {
+          "data_index": 9,
+          "hit_points": 140,
+          "name_table": 1,
+          "slot": 0,
+          "special": 64,
+          "status": 1,
+          "x": 108,
+          "y": 104
+        },
+        {
+          "data_index": 6,
+          "hit_points": 4,
+          "name_table": 0,
+          "slot": 16,
+          "special": 128,
+          "status": 2,
+          "x": 104,
+          "y": 212
+        },
+        {
+          "data_index": 6,
+          "hit_points": 2,
+          "name_table": 0,
+          "slot": 32,
+          "special": 0,
+          "status": 2,
+          "x": 168,
+          "y": 183
+        },
+        {
+          "data_index": 6,
+          "hit_points": 2,
+          "name_table": 1,
+          "slot": 48,
+          "special": 0,
+          "status": 0,
+          "x": 216,
+          "y": 196
+        },
+        {
+          "data_index": 0,
+          "hit_points": 16,
+          "name_table": 0,
+          "slot": 64,
+          "special": 128,
+          "status": 1,
+          "x": 182,
+          "y": 216
+        },
+        {
+          "data_index": 3,
+          "hit_points": 16,
+          "name_table": 0,
+          "slot": 80,
+          "special": 128,
+          "status": 2,
+          "x": 170,
+          "y": 49
+        }
+      ],
+      "kraid_status": 0,
+      "loader_present": 1,
+      "mode": 3,
+      "ridley_status": 0,
+      "room_number": 255
+    },
+    "saved_status": [
+      130,
+      2,
+      130,
+      2,
+      2,
+      2
+    ]
+  },
+  "expected_jobs": 2548,
+  "expected_frames": 250267,
+  "expected_competitions": 3770,
+  "physical_frame_ceiling": 500000,
+  "wall_seconds": 60,
+  "qualification": null
+}

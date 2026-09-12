@@ -1,0 +1,41 @@
+{
+  "format": "metroid-endpoint-native-qualification-v1",
+  "decision": "pass",
+  "registration_sha256": "1810e24bfc0f20b7794b08a35533317cf8a5655086674008b8fd8e1d0758c10c",
+  "panel_sha256": "d1e2309fbe0320994a65775c7bedebcca8c78afde45cffc0c4d3f83cd7e92748",
+  "source_commit": "d2293b9cdcd2272fa7de9e887c67608ab51d05ad",
+  "binary_sha256": "8e4e775ce11319e530e930f9bb4ddb8f20490130e7fd0a5a98241943fda8bedb",
+  "cells": [
+    {
+      "id": "metroid-slots-2",
+      "artifact_sha256": {
+        "stream.jsonl": "0fcaad970e2a219874bdc7c92c523bff482b03e2e832da61d7ce9bc35caee13f",
+        "campaign.json": "78005a151703507cecf51124bf534e3e56c9a7485c6dc578270f5e058a2cf8fb",
+        "checkpoint.json": "a2e8c828dc28c24f165b8a8632866552d8e36ed81c8ac71a82dccefbf2d3c82d"
+      },
+      "normalized_stream_sha256": "dbe12f1b560021937ea6e6e87133b888ec4fc52a632ceca92184598732650521",
+      "normalized_events_sha256": "410369f42a8e0bbf2144287de355e696edda11898f33a3a31e5072cc85f87e3c",
+      "normalized_checkpoint_sha256": "687cf139a237b20028869003a466a11a1380c8cd88b89799e85fbef5129260ff",
+      "normalized_campaign_sha256": "c1e2077866d374baafe79bb61a16a523ab318521d372ceb3547ffc20e2dc387f",
+      "normalized_witnesses_sha256": "126a0dd64a84492a1ee3f47ebf34db42981ecb37e1189f4549f5ef2e186892d3",
+      "snapshot_count": 1139,
+      "memory": {
+        "resident_memory_bytes": 24889013,
+        "resident_snapshot_bytes": 24180970
+      },
+      "endpoint_counts": null,
+      "summary_sha256": "4fd468bb10fb90b05bd7cb5899d028644642caa8e5858c3f930c66d29224b1ec",
+      "admitted_qualification_frames": 284283,
+      "inferred_full_replay_frames": 284283,
+      "twice_replayed_witness_frames": 1908,
+      "cpu_seconds": 27.043848,
+      "elapsed_seconds": 18.288377429009415
+    }
+  ],
+  "known_auxiliary_frames": 570474,
+  "limits": [
+    "Reused short fixture, no positive native episode or fresh-search sample.",
+    "Full replay cost inferred from admitted work; setup, reconstruction and unadmitted work are additional unknowns.",
+    "Semantic job hashes are excluded only from cross-feature projection; full replay checks them within each build."
+  ]
+}

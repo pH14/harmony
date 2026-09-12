@@ -1,0 +1,762 @@
+{
+  "source": "source-selection-001",
+  "build": "builds/selection-001",
+  "binary_sha256": "20adb6389bce6d14071172dd72df33cc8d3279311a013f9ec2c60cdb534ffb94",
+  "build_info_sha256": "de2997dd59d7f4295279110049478db5d5c60df9f5c555c0e7f8f24edcd67b55",
+  "source_commit": "d391fb5876dff705f095767caaf9637f4f113095",
+  "cpus": "8-11",
+  "systemd_memory_max": "12G",
+  "analyzer_sha256": "d2de4d01141269b0a296ef4df22b215226fdd2f5b4b60f126bdfdb4e27e82bde",
+  "format": "continuation-yield-t01-registration-v1",
+  "registered_utc": "2026-09-09T16:57:06.324170+00:00",
+  "purpose": "Four fresh paired MM2 Metal-stage searches test transfer of the unchanged selection-cost ablation at a fixed 5M-frame first-stage-victory horizon.",
+  "output": "runs/renewal-20260909/t01",
+  "deadline_utc": "2026-09-09T20:49:08+00:00",
+  "runner_sha256": "063854cd362316afc1fa6d15fe07feaba0e5f778f3e8e0355344360a5c047404",
+  "screen_scorer_sha256": "65994f5e7df7ae8b9df66faa54b94286e79d043f948887c43aab50259894791d",
+  "protocol_sha256": "3da60c86e7c92886fd70c0f9eb4e08b4e8634564d75f66983a06af2e7a85a568",
+  "required_evidence": [
+    {
+      "path": "runs/renewal-20260909/r01/results.json",
+      "sha256": "70068c90a31b504bd3060cc52bdcc3a22ecc894d1b2c8561cd4d43793d530327",
+      "screen_decision": "pass",
+      "passed_cells": [
+        "pair-0-control",
+        "pair-0-candidate",
+        "pair-1-candidate",
+        "pair-1-control",
+        "pair-2-control",
+        "pair-2-candidate",
+        "pair-3-candidate",
+        "pair-3-control"
+      ]
+    },
+    {
+      "path": "runs/renewal-20260909/tq01/results.json",
+      "sha256": "011c4ef0a1149ef8d14603a6c07796ab7a0848a5d7710548f3f95027f9cc12ec",
+      "passed_cells": [
+        "mm2-default-actions-replay"
+      ]
+    }
+  ],
+  "seed_derivation": [
+    {
+      "label": "harmony-t01-transfer-20260909-v1:0",
+      "seed": 1916272911
+    },
+    {
+      "label": "harmony-t01-transfer-20260909-v1:1",
+      "seed": 2118083943
+    },
+    {
+      "label": "harmony-t01-transfer-20260909-v1:2",
+      "seed": 2191615824
+    },
+    {
+      "label": "harmony-t01-transfer-20260909-v1:3",
+      "seed": 2344522873
+    }
+  ],
+  "prior_seed_audit": "Runner scans all owned completed run summaries and refuses any prior use before dispatching the first cell.",
+  "cells": [
+    {
+      "id": "pair-0-control",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-t01-pair-0-control",
+        "seeds": [
+          1916272911
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 5000000,
+          "actions": 8192,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "mixture": "energy_splice:6",
+          "verification": "witness",
+          "retention_audit": false
+        },
+        "cases": [
+          {
+            "id": "mm2-metal",
+            "game": "mm2",
+            "stage": 6,
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 8192,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 5000000,
+        "game": "mm2",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "energy_splice:6",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_start_taps_no_select_v2",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:6:prefix-sha256=ad8eeacb2139d12f5bba3b2e13b10bb4cc1208da0b16c35e1af428abf54cc86d;result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_first_boss_defeated"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": false,
+        "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+        "seed": 1916272911,
+        "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": 6,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    },
+    {
+      "id": "pair-0-candidate",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-t01-pair-0-candidate",
+        "seeds": [
+          1916272911
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 5000000,
+          "actions": 8192,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "mixture": "energy_splice:6",
+          "verification": "witness",
+          "retention_audit": false
+        },
+        "cases": [
+          {
+            "id": "mm2-metal",
+            "game": "mm2",
+            "stage": 6,
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 8192,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 5000000,
+        "game": "mm2",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "energy_splice:6",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_start_taps_no_select_v2",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:6:prefix-sha256=ad8eeacb2139d12f5bba3b2e13b10bb4cc1208da0b16c35e1af428abf54cc86d;result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_first_boss_defeated"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": false,
+        "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+        "seed": 1916272911,
+        "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": 6,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    },
+    {
+      "id": "pair-1-candidate",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-t01-pair-1-candidate",
+        "seeds": [
+          2118083943
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 5000000,
+          "actions": 8192,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "mixture": "energy_splice:6",
+          "verification": "witness",
+          "retention_audit": false
+        },
+        "cases": [
+          {
+            "id": "mm2-metal",
+            "game": "mm2",
+            "stage": 6,
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 8192,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 5000000,
+        "game": "mm2",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "energy_splice:6",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_start_taps_no_select_v2",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:6:prefix-sha256=ad8eeacb2139d12f5bba3b2e13b10bb4cc1208da0b16c35e1af428abf54cc86d;result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_first_boss_defeated"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": false,
+        "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+        "seed": 2118083943,
+        "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": 6,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    },
+    {
+      "id": "pair-1-control",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-t01-pair-1-control",
+        "seeds": [
+          2118083943
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 5000000,
+          "actions": 8192,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "mixture": "energy_splice:6",
+          "verification": "witness",
+          "retention_audit": false
+        },
+        "cases": [
+          {
+            "id": "mm2-metal",
+            "game": "mm2",
+            "stage": 6,
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 8192,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 5000000,
+        "game": "mm2",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "energy_splice:6",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_start_taps_no_select_v2",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:6:prefix-sha256=ad8eeacb2139d12f5bba3b2e13b10bb4cc1208da0b16c35e1af428abf54cc86d;result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_first_boss_defeated"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": false,
+        "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+        "seed": 2118083943,
+        "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": 6,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    },
+    {
+      "id": "pair-2-control",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-t01-pair-2-control",
+        "seeds": [
+          2191615824
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 5000000,
+          "actions": 8192,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "mixture": "energy_splice:6",
+          "verification": "witness",
+          "retention_audit": false
+        },
+        "cases": [
+          {
+            "id": "mm2-metal",
+            "game": "mm2",
+            "stage": 6,
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 8192,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 5000000,
+        "game": "mm2",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "energy_splice:6",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_start_taps_no_select_v2",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:6:prefix-sha256=ad8eeacb2139d12f5bba3b2e13b10bb4cc1208da0b16c35e1af428abf54cc86d;result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_first_boss_defeated"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": false,
+        "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+        "seed": 2191615824,
+        "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": 6,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    },
+    {
+      "id": "pair-2-candidate",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-t01-pair-2-candidate",
+        "seeds": [
+          2191615824
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 5000000,
+          "actions": 8192,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "mixture": "energy_splice:6",
+          "verification": "witness",
+          "retention_audit": false
+        },
+        "cases": [
+          {
+            "id": "mm2-metal",
+            "game": "mm2",
+            "stage": 6,
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 8192,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 5000000,
+        "game": "mm2",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "energy_splice:6",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_start_taps_no_select_v2",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:6:prefix-sha256=ad8eeacb2139d12f5bba3b2e13b10bb4cc1208da0b16c35e1af428abf54cc86d;result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_first_boss_defeated"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": false,
+        "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+        "seed": 2191615824,
+        "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": 6,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    },
+    {
+      "id": "pair-3-candidate",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-t01-pair-3-candidate",
+        "seeds": [
+          2344522873
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 5000000,
+          "actions": 8192,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "mixture": "energy_splice:6",
+          "verification": "witness",
+          "retention_audit": false
+        },
+        "cases": [
+          {
+            "id": "mm2-metal",
+            "game": "mm2",
+            "stage": 6,
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 8192,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 5000000,
+        "game": "mm2",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "energy_splice:6",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_start_taps_no_select_v2",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:6:prefix-sha256=ad8eeacb2139d12f5bba3b2e13b10bb4cc1208da0b16c35e1af428abf54cc86d;result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_first_boss_defeated"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": false,
+        "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+        "seed": 2344522873,
+        "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": 6,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    },
+    {
+      "id": "pair-3-control",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "continuation-yield-t01-pair-3-control",
+        "seeds": [
+          2344522873
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500000,
+          "frames": 5000000,
+          "actions": 8192,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 900,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six_within_3_longest_actions_full_hold",
+          "mixture": "energy_splice:6",
+          "verification": "witness",
+          "retention_audit": false
+        },
+        "cases": [
+          {
+            "id": "mm2-metal",
+            "game": "mm2",
+            "stage": 6,
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 1050,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "actions": 8192,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+        "executions": 500000,
+        "format": "nes-eval-identity-v1",
+        "frames": 5000000,
+        "game": "mm2",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "energy_splice:6",
+        "mm2_chain": false,
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_start_taps_no_select_v2",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:6:prefix-sha256=ad8eeacb2139d12f5bba3b2e13b10bb4cc1208da0b16c35e1af428abf54cc86d;result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_first_boss_defeated"
+        },
+        "prefix_sha256": null,
+        "result_slots": 2,
+        "retention_audit": false,
+        "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+        "seed": 2344522873,
+        "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+        "slot_retention": null,
+        "source_tree_sha256": "e8e72c53cdab223cb8f2323b4113a9e1e38aa037b1386dbeb432ef281e22315d",
+        "stage": 6,
+        "suffix": "one_to_six_within_3_longest_actions_full_hold",
+        "verification": "witness",
+        "wall_seconds": 900,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      }
+    }
+  ],
+  "screen": {
+    "budget_frames": 5000000,
+    "required_strict_wins": 3,
+    "pairs": [
+      {
+        "seed": 1916272911,
+        "control": "pair-0-control",
+        "candidate": "pair-0-candidate"
+      },
+      {
+        "seed": 2118083943,
+        "control": "pair-1-control",
+        "candidate": "pair-1-candidate"
+      },
+      {
+        "seed": 2191615824,
+        "control": "pair-2-control",
+        "candidate": "pair-2-candidate"
+      },
+      {
+        "seed": 2344522873,
+        "control": "pair-3-control",
+        "candidate": "pair-3-candidate"
+      }
+    ],
+    "resources": {
+      "max_candidate_to_control_ratio": 1.25,
+      "interpretation": "CPU and elapsed ratios compare total event-stopped panel cost, including finishing and verification. Because stage victories stop cells early, this is not a fixed-admitted-frame throughput estimate. Both arms retain identical hard resource caps."
+    },
+    "criterion": "At the fixed 5M horizon: three strict wins and >=15% lower mean restricted first-stage-victory cost, with the unchanged resource gate. Both-censored pairs are ties.",
+    "early_stop": "Only after a completed pair when three strict wins are unattainable, or for infrastructure/resource failure."
+  },
+  "budget_class": "Admitted search: at most 40M nominal frames plus bounded in-flight drain; total tranche nominal search allowance is 500M. Qualification and replays remain separately charged.",
+  "victory_endpoint_sha256": "78145cd41059317525e5a526025284c158ae2f98ace8c08ca8d04ac09a98c136",
+  "evaluation_source_sha256": "a495acc3be13b02277e491f1d3905c5da9861dd9414a24025174a71744c8eca1"
+}

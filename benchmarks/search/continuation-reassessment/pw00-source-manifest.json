@@ -1,0 +1,65 @@
+{
+  "format": "productive-word-source-qualification-v1",
+  "recorded_utc": "2026-09-11T00:41:19.289711+00:00",
+  "parent_commit": "f1febad118af1f52ec3aca2ec0fcfad31ce104e6",
+  "source_files_sha256": {
+    "dissonance/searcher/src/search/continuation.rs": "ed53a551b8be3dcdcbd713227e3a5bb08044da270af9898ca1ce5403dcb40f9a",
+    "dissonance/searcher/src/search/campaign_progress_reuse_tests.rs": "358e896af15e3184a4d7e47e24f6a4a937438e7bc83e2e7fa3e6fc725cb55aa0",
+    "dissonance/searcher/src/search/draw.rs": "5215344215687e9f02aeeb4b837350098543ade242f9a63bf867219bff16467a",
+    "dissonance/searcher/src/search/archive.rs": "250613299d4e9f4bfff0dea38493bf751e84d4743978958ca80de1e211e287a3",
+    "dissonance/searcher/src/search/campaign.rs": "ffa224ecfdd5d38585bd931f4a3575976ed901d2d573155554b13371978b6a24",
+    "dissonance/searcher/src/search/archive_progress_tests.rs": "88148c6c7fe9520c9732e52dc6b6a18a3c6e30005dd7149dfd9bc06ec9ad1cb9",
+    "workloads/nes/src/bin/metroid-archive-challenge.rs": "3398f36b8e2b7e1ad5fdc0a5358231ff402cac80397bcd4e043258d63c14555f"
+  },
+  "emulator_frames": 0,
+  "host_policy": "ms02 only; msr1 is unavailable",
+  "checks": {
+    "searcher_all_features_tests": 181,
+    "nes_all_features_tests": 197,
+    "caller_default_tests": 8,
+    "strict_release_clippy": "Both workspaces, all features and all targets, -D warnings",
+    "full_nes_process": {
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_seconds": 44.926191584
+    }
+  },
+  "artifacts": [
+    {
+      "path": "benchmarks/search/continuation-reassessment/pw00-source-output/searcher-clippy.log.gz",
+      "sha256": "625ace03f0407571879674a8e3817025034e922ebf30e416c9d88d3afe50d06c",
+      "bytes": 154,
+      "raw_sha256": "6d06469b034f12bcc72e8376bcf6c289437cb067599915f73c4e7232cabeb344",
+      "raw_bytes": 165
+    },
+    {
+      "path": "benchmarks/search/continuation-reassessment/pw00-source-output/nes-clippy.log.gz",
+      "sha256": "270877369ae9dbc2b24153f7e5c0bd6fc6729ddcb758217c0a25a1135d5a6dcd",
+      "bytes": 282,
+      "raw_sha256": "8443eb676291c4b8137c1170a681933f07fd3f931bf964db2bcc40015e52daf8",
+      "raw_bytes": 1141
+    },
+    {
+      "path": "benchmarks/search/continuation-reassessment/pw00-source-output/searcher-tests.log.gz",
+      "sha256": "0dc9fe29408a178718f328289706f6528bde32891587c09258d323e8f4098672",
+      "bytes": 5105,
+      "raw_sha256": "f0434e8abc3d07a67b7fe64485e5a68fdcb2648aeadb0f3ce9d20528daa7ef10",
+      "raw_bytes": 18768
+    },
+    {
+      "path": "benchmarks/search/continuation-reassessment/pw00-source-output/nes-tests.log.gz",
+      "sha256": "68c48f9bd975f5f0f56fc203ed0225c25d4f254f43f1ebf8c3b2ed2129763f00",
+      "bytes": 6046,
+      "raw_sha256": "9d8c3e9dbe6718d68bb697bdea17356ab376df7a0284f978c290a6cffb76ea17",
+      "raw_bytes": 26330
+    },
+    {
+      "path": "benchmarks/search/continuation-reassessment/pw00-source-output/caller-default-tests.log.gz",
+      "sha256": "6a5bcded6452df37ae59dc195cd3b0532c68654f4078cb112705c25626845754",
+      "bytes": 601,
+      "raw_sha256": "5bc6e771cb93648ec5145fbe04dd7ead5de6bf03b09b729bf6abe40f73d46931",
+      "raw_bytes": 1159
+    }
+  ],
+  "limitations": "Source/finite-world evidence only. Native qualification and all efficacy panels unallocated. Existing failed nominees remain closed."
+}

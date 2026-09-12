@@ -1,0 +1,247 @@
+{
+  "format": "continuation-yield-screen-analysis-v1",
+  "registration_format": "continuation-yield-t01-registration-v1",
+  "stage_purpose": "Four fresh paired MM2 Metal-stage searches test transfer of the unchanged selection-cost ablation at a fixed 5M-frame first-stage-victory horizon.",
+  "results_sha256": "c19288c6be4e3a16b9b4086e3496f5f5698e6a437d11c7e7af1b70ef25fcdcfd",
+  "registration_sha256": "a1a1e40bbae9b38f534b6f479660533ed8fd01150143608a5644e5ea88bf00de",
+  "score": {
+    "decision": "fail_impossible_win_count",
+    "completed_pairs": 3,
+    "strict_wins": 1,
+    "remaining_pairs": 1,
+    "candidate_to_control_cost_ratio_interval": null,
+    "candidate_to_control_resource_ratios": null,
+    "pairs": [
+      {
+        "seed": 1916272911,
+        "control": [
+          5000000,
+          5000000
+        ],
+        "candidate": [
+          4939007,
+          4939007
+        ],
+        "strict_win": true,
+        "difference_interval": [
+          -60993,
+          -60993
+        ]
+      },
+      {
+        "seed": 2118083943,
+        "control": [
+          5000000,
+          5000000
+        ],
+        "candidate": [
+          5000000,
+          5000000
+        ],
+        "strict_win": false,
+        "difference_interval": [
+          0,
+          0
+        ]
+      },
+      {
+        "seed": 2191615824,
+        "control": [
+          5000000,
+          5000000
+        ],
+        "candidate": [
+          5000000,
+          5000000
+        ],
+        "strict_win": false,
+        "difference_interval": [
+          0,
+          0
+        ]
+      }
+    ],
+    "interpretation": "Exploratory compute-allocation gate, not statistical significance or independent confirmation."
+  },
+  "rows": [
+    {
+      "id": "pair-0-control",
+      "seed": 1916272911,
+      "admitted_frames": 5000869,
+      "frame_drain": 869,
+      "executions": 37949,
+      "search_seconds": 82.909663032,
+      "elapsed_seconds": 84.059588224045,
+      "cpu_seconds": 245.627688,
+      "max_process_rss_bytes": 94294016,
+      "peak_disk_allocated_bytes_sampled": 1667072,
+      "twice_replayed_witness_suffix_frames": 21294,
+      "stream_sha256": "fd838fa3c606d948f61521ae8e1c99a8930093e4a149dcd72a247a6bc8202ea1",
+      "summary_sha256": "60b4d5d197ed87d5a4c193a1c2f071ad07b19ec053a6c29faf865ebd3fc188b9",
+      "progress_sha256": "d919e35b682e90c871e35726b4262fec491c8dcbf8dcc12ab1ff0bc03ce3a1c1",
+      "endpoint_evidence": {
+        "endpoint": "first_stage_victory",
+        "budget_frames": 5000000,
+        "arrival_exact": null,
+        "observed_through_frames": 5000869,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          5000000,
+          5000000
+        ]
+      }
+    },
+    {
+      "id": "pair-0-candidate",
+      "seed": 1916272911,
+      "admitted_frames": 4939944,
+      "frame_drain": 0,
+      "executions": 37983,
+      "search_seconds": 82.468523386,
+      "elapsed_seconds": 84.10725173796527,
+      "cpu_seconds": 243.197679,
+      "max_process_rss_bytes": 101376000,
+      "peak_disk_allocated_bytes_sampled": 1716224,
+      "twice_replayed_witness_suffix_frames": 26186,
+      "stream_sha256": "69605ca1d60b595568e17a93089a62d97017a66691c209a559b76be00ccf7fd8",
+      "summary_sha256": "adebdc9a5c5e585396143a18ab306ba1d329d4eb96fc7c02a237b48ed080aaeb",
+      "progress_sha256": "af7cc8bc376f3b4b6466a18087cb7fa39741a01bed31fb0c5bf90dc1f235f91b",
+      "endpoint_evidence": {
+        "endpoint": "first_stage_victory",
+        "budget_frames": 5000000,
+        "arrival_exact": 4939007,
+        "observed_through_frames": 4939944,
+        "observed_full_budget": false,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          4939007,
+          4939007
+        ]
+      }
+    },
+    {
+      "id": "pair-1-candidate",
+      "seed": 2118083943,
+      "admitted_frames": 5001283,
+      "frame_drain": 1283,
+      "executions": 37845,
+      "search_seconds": 82.577649431,
+      "elapsed_seconds": 84.12769996200223,
+      "cpu_seconds": 245.32823399999998,
+      "max_process_rss_bytes": 103264256,
+      "peak_disk_allocated_bytes_sampled": 1667072,
+      "twice_replayed_witness_suffix_frames": 24860,
+      "stream_sha256": "0bcd91295f95d68a3d4a304512f687c5cbdde9a2936fec23fc5ec27f81e27081",
+      "summary_sha256": "4789dbb0ccab35f5b492401deb0d54b5d96ddc138bd604a1e4d3661702c005f8",
+      "progress_sha256": "736d2e4727723db07d5973cb33c2520cc51fcced0aaee27ed6ad5034fc9a5064",
+      "endpoint_evidence": {
+        "endpoint": "first_stage_victory",
+        "budget_frames": 5000000,
+        "arrival_exact": null,
+        "observed_through_frames": 5001283,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          5000000,
+          5000000
+        ]
+      }
+    },
+    {
+      "id": "pair-1-control",
+      "seed": 2118083943,
+      "admitted_frames": 5001212,
+      "frame_drain": 1212,
+      "executions": 37859,
+      "search_seconds": 82.910425221,
+      "elapsed_seconds": 84.06729484297102,
+      "cpu_seconds": 245.726134,
+      "max_process_rss_bytes": 83742720,
+      "peak_disk_allocated_bytes_sampled": 1654784,
+      "twice_replayed_witness_suffix_frames": 20022,
+      "stream_sha256": "562d2c23f2d819527999a74899e1cd98180e48fc590a18c159c69b5eb8f57a96",
+      "summary_sha256": "3049992f82ba0aac2ff390a93e46aedf6e628f63d642fc42bb04e72521960f11",
+      "progress_sha256": "56d1dc6c2b68ae2c5ef514550bd6fa73cbcb6c4b8c5150fe09ea17a5716b40ff",
+      "endpoint_evidence": {
+        "endpoint": "first_stage_victory",
+        "budget_frames": 5000000,
+        "arrival_exact": null,
+        "observed_through_frames": 5001212,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          5000000,
+          5000000
+        ]
+      }
+    },
+    {
+      "id": "pair-2-control",
+      "seed": 2191615824,
+      "admitted_frames": 5000671,
+      "frame_drain": 671,
+      "executions": 37795,
+      "search_seconds": 83.155959975,
+      "elapsed_seconds": 84.08401105902158,
+      "cpu_seconds": 245.857294,
+      "max_process_rss_bytes": 77492224,
+      "peak_disk_allocated_bytes_sampled": 1646592,
+      "twice_replayed_witness_suffix_frames": 13066,
+      "stream_sha256": "c98d6ab7ebccf339132b60913de8022c7e50eec17df6829cf35096405fd3d6ab",
+      "summary_sha256": "8f667a49c791fdf688b6f92ec2437982f0e3983e1feded7ae8ff6c81aaee2793",
+      "progress_sha256": "92b69dafd053c3170fe49a7e59ab508df059f20d042583792f8aacb5e655342d",
+      "endpoint_evidence": {
+        "endpoint": "first_stage_victory",
+        "budget_frames": 5000000,
+        "arrival_exact": null,
+        "observed_through_frames": 5000671,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          5000000,
+          5000000
+        ]
+      }
+    },
+    {
+      "id": "pair-2-candidate",
+      "seed": 2191615824,
+      "admitted_frames": 5001220,
+      "frame_drain": 1220,
+      "executions": 38101,
+      "search_seconds": 82.715401805,
+      "elapsed_seconds": 84.14617651398294,
+      "cpu_seconds": 246.732823,
+      "max_process_rss_bytes": 77770752,
+      "peak_disk_allocated_bytes_sampled": 1658880,
+      "twice_replayed_witness_suffix_frames": 15620,
+      "stream_sha256": "6dab9300095b3a2c0c7bbff69b47a69ce12ed18ed309dbdf4a75c7a296c99a3a",
+      "summary_sha256": "57177b560264d4652419aa89cb21204d5bc4de0c1fa52333d71e004aa9931e98",
+      "progress_sha256": "16c79e63551e39ded06ec36fa4becd9744a4911c807b94a32331efb1f4f7e865",
+      "endpoint_evidence": {
+        "endpoint": "first_stage_victory",
+        "budget_frames": 5000000,
+        "arrival_exact": null,
+        "observed_through_frames": 5001220,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          5000000,
+          5000000
+        ]
+      }
+    }
+  ],
+  "admitted_frames": 29945199,
+  "twice_replayed_witness_suffix_frames": 121048,
+  "unrun_pairs": 1,
+  "interpretation": [
+    "The score is the registered allocation gate, not a significance test or proof of seed independence.",
+    "This panel's role is given by stage_purpose. Independence requires the separate registration and prior-seed audit; the scorer alone does not establish it.",
+    "Unrun pairs and untouched validation have no observed outcomes.",
+    "Map/gear/boss anecdotes cannot override this fixed primary endpoint.",
+    "Physical setup, snapshot reconstruction and unadmitted work may be additional.",
+    "A pass supports only this registered stage; further claims require their specified gates and sufficient remaining budget. It is not a breakthrough."
+  ]
+}

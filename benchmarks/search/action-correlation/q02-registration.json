@@ -1,0 +1,534 @@
+{
+  "source_commit": "2fb37f9c3c21656f629a5bd11a2c54ad88ee03a5",
+  "source_tree_sha256": "cdc31d561e14b5615bf8ca50b400eb88e5ea116a5a93c4c99070424ae1108659",
+  "binary_sha256": "dbeca841f7bcc42842c2fdce137bd46fe3486f9862bf11eda896ea8d5e444361",
+  "format": "action-correlation-q02-registration-v1",
+  "registered_utc": "2026-09-09T23:41:45.044256+00:00",
+  "purpose": "Both fixed policies on both games; exact buffering invariance and full replay. Reused seed, short action cap, no performance sample.",
+  "source": "source-action-correlation-001",
+  "build": "builds/action-correlation-001",
+  "build_info_sha256": "6ca22129a155bd129092c3885b51e071c3cb69c895fc71aa88aecc7b8b831e3f",
+  "output": "runs/action-correlation-20260909/q02",
+  "cpus": "8-11",
+  "deadline_utc": "2026-09-10T00:10:00+00:00",
+  "systemd_memory_max": "12G",
+  "service_runtime_seconds": 1200,
+  "known_auxiliary_limit": 3000000,
+  "budget_class": "Renewed block auxiliary; previous ledger 40,787,243. No fresh performance allocation.",
+  "pass_rule": "All eight cells replay; every one/two-slot pair has identical stream, campaign and checkpoint. No failure retry.",
+  "qualification_checker_sha256": "dce9a108b0b4cda82e2dd2bdfc4effbe9b4bf36bbf91be8f8adef88896d42a0e",
+  "cells": [
+    {
+      "id": "metroid-component-slots1",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "action-correlation-q02-metroid-component-slots1",
+        "seeds": [
+          2026090902
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500,
+          "frames": 50000,
+          "actions": 64,
+          "window": 2,
+          "result_slots": 1,
+          "wall_seconds": 90,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "campaign",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3",
+          "chord_correlation": "component_refresh_half_v1"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 180,
+      "finish_seconds": 60,
+      "disk_limit_gib": 1,
+      "allowed_stops": [
+        "execution_limit",
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "source_tree_sha256": "cdc31d561e14b5615bf8ca50b400eb88e5ea116a5a93c4c99070424ae1108659",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_v10",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_bcd_underflow_or_ending_v3",
+          "action_correlation": "component_refresh_half_v1"
+        }
+      }
+    },
+    {
+      "id": "metroid-component-slots2",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "action-correlation-q02-metroid-component-slots2",
+        "seeds": [
+          2026090902
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500,
+          "frames": 50000,
+          "actions": 64,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 90,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "campaign",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3",
+          "chord_correlation": "component_refresh_half_v1"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 180,
+      "finish_seconds": 60,
+      "disk_limit_gib": 1,
+      "allowed_stops": [
+        "execution_limit",
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "source_tree_sha256": "cdc31d561e14b5615bf8ca50b400eb88e5ea116a5a93c4c99070424ae1108659",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_v10",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_bcd_underflow_or_ending_v3",
+          "action_correlation": "component_refresh_half_v1"
+        }
+      }
+    },
+    {
+      "id": "metroid-whole-slots1",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "action-correlation-q02-metroid-whole-slots1",
+        "seeds": [
+          2026090902
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500,
+          "frames": 50000,
+          "actions": 64,
+          "window": 2,
+          "result_slots": 1,
+          "wall_seconds": 90,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "campaign",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3",
+          "chord_correlation": "whole_repeat_37_of_210_v1"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 180,
+      "finish_seconds": 60,
+      "disk_limit_gib": 1,
+      "allowed_stops": [
+        "execution_limit",
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "source_tree_sha256": "cdc31d561e14b5615bf8ca50b400eb88e5ea116a5a93c4c99070424ae1108659",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_v10",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_bcd_underflow_or_ending_v3",
+          "action_correlation": "whole_repeat_37_of_210_v1"
+        }
+      }
+    },
+    {
+      "id": "metroid-whole-slots2",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "action-correlation-q02-metroid-whole-slots2",
+        "seeds": [
+          2026090902
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500,
+          "frames": 50000,
+          "actions": 64,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 90,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "campaign",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3",
+          "chord_correlation": "whole_repeat_37_of_210_v1"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 180,
+      "finish_seconds": 60,
+      "disk_limit_gib": 1,
+      "allowed_stops": [
+        "execution_limit",
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "source_tree_sha256": "cdc31d561e14b5615bf8ca50b400eb88e5ea116a5a93c4c99070424ae1108659",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_v10",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_bcd_underflow_or_ending_v3",
+          "action_correlation": "whole_repeat_37_of_210_v1"
+        }
+      }
+    },
+    {
+      "id": "mm2-component-slots1",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "action-correlation-q02-mm2-component-slots1",
+        "seeds": [
+          2026090902
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500,
+          "frames": 50000,
+          "actions": 64,
+          "window": 2,
+          "result_slots": 1,
+          "wall_seconds": 90,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "campaign",
+          "retention_audit": false,
+          "chord_correlation": "component_refresh_half_v1"
+        },
+        "cases": [
+          {
+            "id": "mm2-metal",
+            "game": "mm2",
+            "stage": 6,
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 180,
+      "finish_seconds": 60,
+      "disk_limit_gib": 1,
+      "allowed_stops": [
+        "execution_limit",
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "source_tree_sha256": "cdc31d561e14b5615bf8ca50b400eb88e5ea116a5a93c4c99070424ae1108659",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_start_taps_no_select_v2",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:6:prefix-sha256=ad8eeacb2139d12f5bba3b2e13b10bb4cc1208da0b16c35e1af428abf54cc86d;result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_first_boss_defeated",
+          "action_correlation": "component_refresh_half_v1"
+        }
+      }
+    },
+    {
+      "id": "mm2-component-slots2",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "action-correlation-q02-mm2-component-slots2",
+        "seeds": [
+          2026090902
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500,
+          "frames": 50000,
+          "actions": 64,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 90,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "campaign",
+          "retention_audit": false,
+          "chord_correlation": "component_refresh_half_v1"
+        },
+        "cases": [
+          {
+            "id": "mm2-metal",
+            "game": "mm2",
+            "stage": 6,
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 180,
+      "finish_seconds": 60,
+      "disk_limit_gib": 1,
+      "allowed_stops": [
+        "execution_limit",
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "source_tree_sha256": "cdc31d561e14b5615bf8ca50b400eb88e5ea116a5a93c4c99070424ae1108659",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_start_taps_no_select_v2",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:6:prefix-sha256=ad8eeacb2139d12f5bba3b2e13b10bb4cc1208da0b16c35e1af428abf54cc86d;result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_first_boss_defeated",
+          "action_correlation": "component_refresh_half_v1"
+        }
+      }
+    },
+    {
+      "id": "mm2-whole-slots1",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "action-correlation-q02-mm2-whole-slots1",
+        "seeds": [
+          2026090902
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500,
+          "frames": 50000,
+          "actions": 64,
+          "window": 2,
+          "result_slots": 1,
+          "wall_seconds": 90,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "campaign",
+          "retention_audit": false,
+          "chord_correlation": "whole_repeat_37_of_210_v1"
+        },
+        "cases": [
+          {
+            "id": "mm2-metal",
+            "game": "mm2",
+            "stage": 6,
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 180,
+      "finish_seconds": 60,
+      "disk_limit_gib": 1,
+      "allowed_stops": [
+        "execution_limit",
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "source_tree_sha256": "cdc31d561e14b5615bf8ca50b400eb88e5ea116a5a93c4c99070424ae1108659",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_start_taps_no_select_v2",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:6:prefix-sha256=ad8eeacb2139d12f5bba3b2e13b10bb4cc1208da0b16c35e1af428abf54cc86d;result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_first_boss_defeated",
+          "action_correlation": "whole_repeat_37_of_210_v1"
+        }
+      }
+    },
+    {
+      "id": "mm2-whole-slots2",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "action-correlation-q02-mm2-whole-slots2",
+        "seeds": [
+          2026090902
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 500,
+          "frames": 50000,
+          "actions": 64,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 90,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "campaign",
+          "retention_audit": false,
+          "chord_correlation": "whole_repeat_37_of_210_v1"
+        },
+        "cases": [
+          {
+            "id": "mm2-metal",
+            "game": "mm2",
+            "stage": 6,
+            "origin": "power-on menus selecting Metal stage; independent stage",
+            "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 180,
+      "finish_seconds": 60,
+      "disk_limit_gib": 1,
+      "allowed_stops": [
+        "execution_limit",
+        "frame_limit",
+        "victory"
+      ],
+      "expected_identity": {
+        "source_tree_sha256": "cdc31d561e14b5615bf8ca50b400eb88e5ea116a5a93c4c99070424ae1108659",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_start_taps_no_select_v2",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=mm2-stage-select-v2:6:prefix-sha256=ad8eeacb2139d12f5bba3b2e13b10bb4cc1208da0b16c35e1af428abf54cc86d;result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "key_policy": "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_first_boss_defeated",
+          "action_correlation": "whole_repeat_37_of_210_v1"
+        }
+      }
+    }
+  ],
+  "runner_sha256": "9d8e319b5cfd674976ea1ee3e116c50cc7e690343d88653cbdbf341a980ad235",
+  "analyzer_sha256": "d2de4d01141269b0a296ef4df22b215226fdd2f5b4b60f126bdfdb4e27e82bde",
+  "named_endpoint_sha256": "f2badcaa078f4c80c858e78416221b51dbcd8cc624eee53c2f6b2784e0cc678e",
+  "buffer_pairs": [
+    [
+      "metroid-component-slots1",
+      "metroid-component-slots2"
+    ],
+    [
+      "metroid-whole-slots1",
+      "metroid-whole-slots2"
+    ],
+    [
+      "mm2-component-slots1",
+      "mm2-component-slots2"
+    ],
+    [
+      "mm2-whole-slots1",
+      "mm2-whole-slots2"
+    ]
+  ],
+  "required_evidence": [
+    {
+      "path": "runs/action-correlation-20260909/q01/results.json",
+      "sha256": "c46692f2694160f860689203452e5518e6d58a8047ed94053fc388f686e6bb41",
+      "passed_cells": [
+        "metroid-default",
+        "mm2-default"
+      ]
+    }
+  ],
+  "default_qualification_sha256": "6f1cbe3644f033bf680608165ff421f032170eb7e0b14447164f545e27021980"
+}

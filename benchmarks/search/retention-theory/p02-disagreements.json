@@ -1,0 +1,135 @@
+{
+  "format": "p02-paired-disagreements-v1",
+  "outcomes_sha256": "c79df7524bbb28d0dc3ebc8a86f7028b60380469f5df03a29f4b66cd137bc945",
+  "audit_sha256": "cae156018d08bbe61364442f936224528bbf7a151b7319a2209cc8c6a0d48b46",
+  "pairs": [
+    {
+      "pair": 0,
+      "execution": 414040,
+      "trials": 64,
+      "useful_disagreements": 33,
+      "discarded_only_exit": 18,
+      "survivor_only_exit": 0
+    },
+    {
+      "pair": 1,
+      "execution": 437887,
+      "trials": 64,
+      "useful_disagreements": 8,
+      "discarded_only_exit": 2,
+      "survivor_only_exit": 6
+    },
+    {
+      "pair": 2,
+      "execution": 290923,
+      "trials": 64,
+      "useful_disagreements": 48,
+      "discarded_only_exit": 7,
+      "survivor_only_exit": 1
+    },
+    {
+      "pair": 3,
+      "execution": 298341,
+      "trials": 64,
+      "useful_disagreements": 10,
+      "discarded_only_exit": 9,
+      "survivor_only_exit": 8
+    },
+    {
+      "pair": 4,
+      "execution": 252677,
+      "trials": 64,
+      "useful_disagreements": 47,
+      "discarded_only_exit": 3,
+      "survivor_only_exit": 2
+    },
+    {
+      "pair": 5,
+      "execution": 414113,
+      "trials": 64,
+      "useful_disagreements": 52,
+      "discarded_only_exit": 41,
+      "survivor_only_exit": 0
+    },
+    {
+      "pair": 6,
+      "execution": 303644,
+      "trials": 64,
+      "useful_disagreements": 33,
+      "discarded_only_exit": 5,
+      "survivor_only_exit": 2
+    },
+    {
+      "pair": 7,
+      "execution": 344926,
+      "trials": 64,
+      "useful_disagreements": 12,
+      "discarded_only_exit": 3,
+      "survivor_only_exit": 5
+    },
+    {
+      "pair": 8,
+      "execution": 251966,
+      "trials": 64,
+      "useful_disagreements": 25,
+      "discarded_only_exit": 11,
+      "survivor_only_exit": 0
+    },
+    {
+      "pair": 9,
+      "execution": 233725,
+      "trials": 64,
+      "useful_disagreements": 29,
+      "discarded_only_exit": 8,
+      "survivor_only_exit": 10
+    },
+    {
+      "pair": 10,
+      "execution": 267000,
+      "trials": 64,
+      "useful_disagreements": 5,
+      "discarded_only_exit": 0,
+      "survivor_only_exit": 0
+    },
+    {
+      "pair": 11,
+      "execution": 258630,
+      "trials": 64,
+      "useful_disagreements": 0,
+      "discarded_only_exit": 0,
+      "survivor_only_exit": 0
+    },
+    {
+      "pair": 12,
+      "execution": 151014,
+      "trials": 64,
+      "useful_disagreements": 8,
+      "discarded_only_exit": 2,
+      "survivor_only_exit": 6
+    },
+    {
+      "pair": 13,
+      "execution": 349473,
+      "trials": 64,
+      "useful_disagreements": 38,
+      "discarded_only_exit": 38,
+      "survivor_only_exit": 0
+    },
+    {
+      "pair": 14,
+      "execution": 288844,
+      "trials": 64,
+      "useful_disagreements": 4,
+      "discarded_only_exit": 1,
+      "survivor_only_exit": 2
+    },
+    {
+      "pair": 15,
+      "execution": 257556,
+      "trials": 64,
+      "useful_disagreements": 16,
+      "discarded_only_exit": 8,
+      "survivor_only_exit": 0
+    }
+  ]
+}

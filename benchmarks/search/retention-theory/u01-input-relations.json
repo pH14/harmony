@@ -1,0 +1,148 @@
+{
+  "format": "u01-input-prefix-relations-v1",
+  "source_audit_sha256": "03dfff2588e8d72f1cfe23bbd501a2c9b6dff76f7e59b3bf970b18abc45a2385",
+  "scope": "exact recorded input prefixes only; no claim about other routes or a waiting-state mechanism",
+  "emulator_work": false,
+  "records": [
+    {
+      "source_sample": 2,
+      "discarded_actions": 111,
+      "comparisons": [
+        {
+          "survivor_role": "incumbent_3140",
+          "survivor_actions": 102,
+          "common_prefix_actions": 93,
+          "survivor_is_strict_input_prefix": false,
+          "recorded_tail_actions_if_prefix": null
+        },
+        {
+          "survivor_role": "incumbent_3189",
+          "survivor_actions": 101,
+          "common_prefix_actions": 93,
+          "survivor_is_strict_input_prefix": false,
+          "recorded_tail_actions_if_prefix": null
+        }
+      ]
+    },
+    {
+      "source_sample": 3,
+      "discarded_actions": 16,
+      "comparisons": [
+        {
+          "survivor_role": "candidate",
+          "survivor_actions": 14,
+          "common_prefix_actions": 8,
+          "survivor_is_strict_input_prefix": false,
+          "recorded_tail_actions_if_prefix": null
+        },
+        {
+          "survivor_role": "incumbent_284",
+          "survivor_actions": 14,
+          "common_prefix_actions": 14,
+          "survivor_is_strict_input_prefix": true,
+          "recorded_tail_actions_if_prefix": 2
+        }
+      ]
+    },
+    {
+      "source_sample": 4,
+      "discarded_actions": 49,
+      "comparisons": [
+        {
+          "survivor_role": "incumbent_3578",
+          "survivor_actions": 32,
+          "common_prefix_actions": 30,
+          "survivor_is_strict_input_prefix": false,
+          "recorded_tail_actions_if_prefix": null
+        },
+        {
+          "survivor_role": "incumbent_5267",
+          "survivor_actions": 33,
+          "common_prefix_actions": 30,
+          "survivor_is_strict_input_prefix": false,
+          "recorded_tail_actions_if_prefix": null
+        }
+      ]
+    },
+    {
+      "source_sample": 6,
+      "discarded_actions": 76,
+      "comparisons": [
+        {
+          "survivor_role": "incumbent_5817",
+          "survivor_actions": 74,
+          "common_prefix_actions": 74,
+          "survivor_is_strict_input_prefix": true,
+          "recorded_tail_actions_if_prefix": 2
+        },
+        {
+          "survivor_role": "incumbent_5818",
+          "survivor_actions": 75,
+          "common_prefix_actions": 75,
+          "survivor_is_strict_input_prefix": true,
+          "recorded_tail_actions_if_prefix": 1
+        }
+      ]
+    },
+    {
+      "source_sample": 8,
+      "discarded_actions": 39,
+      "comparisons": [
+        {
+          "survivor_role": "incumbent_3686",
+          "survivor_actions": 36,
+          "common_prefix_actions": 25,
+          "survivor_is_strict_input_prefix": false,
+          "recorded_tail_actions_if_prefix": null
+        },
+        {
+          "survivor_role": "incumbent_5302",
+          "survivor_actions": 36,
+          "common_prefix_actions": 25,
+          "survivor_is_strict_input_prefix": false,
+          "recorded_tail_actions_if_prefix": null
+        }
+      ]
+    },
+    {
+      "source_sample": 9,
+      "discarded_actions": 35,
+      "comparisons": [
+        {
+          "survivor_role": "incumbent_1844",
+          "survivor_actions": 30,
+          "common_prefix_actions": 25,
+          "survivor_is_strict_input_prefix": false,
+          "recorded_tail_actions_if_prefix": null
+        },
+        {
+          "survivor_role": "incumbent_1845",
+          "survivor_actions": 31,
+          "common_prefix_actions": 25,
+          "survivor_is_strict_input_prefix": false,
+          "recorded_tail_actions_if_prefix": null
+        }
+      ]
+    },
+    {
+      "source_sample": 10,
+      "discarded_actions": 48,
+      "comparisons": [
+        {
+          "survivor_role": "incumbent_1995",
+          "survivor_actions": 40,
+          "common_prefix_actions": 38,
+          "survivor_is_strict_input_prefix": false,
+          "recorded_tail_actions_if_prefix": null
+        },
+        {
+          "survivor_role": "incumbent_2385",
+          "survivor_actions": 41,
+          "common_prefix_actions": 38,
+          "survivor_is_strict_input_prefix": false,
+          "recorded_tail_actions_if_prefix": null
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,433 @@
+{
+  "format": "p05-new-seed-descriptor-analysis-v1",
+  "scope": "post-failure diagnostic; no fresh-search or population-rate claim",
+  "source_audit_sha256": "d7c2e2c30741d1bd7a7a44384ee57cb1817a01c6d85e81a0fee69be218e236bd",
+  "subset_audit_sha256": "460fa2fef0f34e2c087e3300bf7cbf8edf4c83e8cd1dabb161167b451252d083",
+  "outcomes_sha256": "0d6e2ba322416f16f426123feb2ba96912fa485faab38239af8ad1f63554ed4e",
+  "motion_rows_sha256": "b3544917bad53ead682e5021cb9384180b1ec84e8bfaa2294c769a235a7ec092",
+  "suffix_sha256": "b902641c75a00a0b0cfc8ef919770e07d0b3caedd82c87c2d7d05f02159a1155",
+  "suffix_seed": 20261214,
+  "trials_per_pair": 16,
+  "physical_frames": 2503117,
+  "work_bound": {
+    "prefix_upper_bound": 821698,
+    "suffix_upper_bound": 1474560,
+    "gain_exports_upper_bound": 7325712,
+    "total_upper_bound": 9621970
+  },
+  "contingency": [
+    {
+      "motion_contexts_differ": false,
+      "useful_disagreement_observed": false,
+      "pairs": 2
+    },
+    {
+      "motion_contexts_differ": false,
+      "useful_disagreement_observed": true,
+      "pairs": 6
+    },
+    {
+      "motion_contexts_differ": true,
+      "useful_disagreement_observed": false,
+      "pairs": 2
+    },
+    {
+      "motion_contexts_differ": true,
+      "useful_disagreement_observed": true,
+      "pairs": 6
+    }
+  ],
+  "aggregate": {
+    "discarded_survives": 122,
+    "survivor_survives": 120,
+    "discarded_exclusive_map_suffix_events": 23,
+    "survivor_exclusive_map_suffix_events": 15,
+    "discarded_exclusive_exit_trials": 23,
+    "survivor_exclusive_exit_trials": 13,
+    "both_sides_have_exclusive_exit": 5,
+    "net_survival_count": 2,
+    "net_map_suffix_event_count": 8
+  },
+  "rows": [
+    {
+      "pair": 0,
+      "execution": 26994,
+      "motion_contexts": {
+        "candidate": 10,
+        "incumbent": 10
+      },
+      "motion_contexts_differ": false,
+      "raw_seven_motion_fields_equal": true,
+      "mechanical_endpoints_equal": false,
+      "useful_disagreements": 2,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 16,
+      "survivor_survives": 16,
+      "discarded_exclusive_map_suffix_events": 1,
+      "survivor_exclusive_map_suffix_events": 1,
+      "discarded_exclusive_exit_trials": 1,
+      "survivor_exclusive_exit_trials": 1,
+      "both_sides_have_exclusive_exit": 0,
+      "net_survival_count": 0,
+      "net_map_suffix_event_count": 0
+    },
+    {
+      "pair": 1,
+      "execution": 26876,
+      "motion_contexts": {
+        "candidate": 3,
+        "incumbent": 3
+      },
+      "motion_contexts_differ": false,
+      "raw_seven_motion_fields_equal": false,
+      "mechanical_endpoints_equal": false,
+      "useful_disagreements": 2,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 8,
+      "survivor_survives": 8,
+      "discarded_exclusive_map_suffix_events": 1,
+      "survivor_exclusive_map_suffix_events": 1,
+      "discarded_exclusive_exit_trials": 1,
+      "survivor_exclusive_exit_trials": 1,
+      "both_sides_have_exclusive_exit": 0,
+      "net_survival_count": 0,
+      "net_map_suffix_event_count": 0
+    },
+    {
+      "pair": 2,
+      "execution": 367175,
+      "motion_contexts": {
+        "candidate": 14,
+        "incumbent": 14
+      },
+      "motion_contexts_differ": false,
+      "raw_seven_motion_fields_equal": false,
+      "mechanical_endpoints_equal": false,
+      "useful_disagreements": 0,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 10,
+      "survivor_survives": 10,
+      "discarded_exclusive_map_suffix_events": 0,
+      "survivor_exclusive_map_suffix_events": 0,
+      "discarded_exclusive_exit_trials": 0,
+      "survivor_exclusive_exit_trials": 0,
+      "both_sides_have_exclusive_exit": 0,
+      "net_survival_count": 0,
+      "net_map_suffix_event_count": 0
+    },
+    {
+      "pair": 3,
+      "execution": 360491,
+      "motion_contexts": {
+        "candidate": 7,
+        "incumbent": 10
+      },
+      "motion_contexts_differ": true,
+      "raw_seven_motion_fields_equal": false,
+      "mechanical_endpoints_equal": false,
+      "useful_disagreements": 6,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 0,
+      "survivor_survives": 0,
+      "discarded_exclusive_map_suffix_events": 5,
+      "survivor_exclusive_map_suffix_events": 1,
+      "discarded_exclusive_exit_trials": 5,
+      "survivor_exclusive_exit_trials": 1,
+      "both_sides_have_exclusive_exit": 0,
+      "net_survival_count": 0,
+      "net_map_suffix_event_count": 4
+    },
+    {
+      "pair": 4,
+      "execution": 71703,
+      "motion_contexts": {
+        "candidate": 4,
+        "incumbent": 4
+      },
+      "motion_contexts_differ": false,
+      "raw_seven_motion_fields_equal": false,
+      "mechanical_endpoints_equal": false,
+      "useful_disagreements": 1,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 16,
+      "survivor_survives": 16,
+      "discarded_exclusive_map_suffix_events": 1,
+      "survivor_exclusive_map_suffix_events": 0,
+      "discarded_exclusive_exit_trials": 1,
+      "survivor_exclusive_exit_trials": 0,
+      "both_sides_have_exclusive_exit": 0,
+      "net_survival_count": 0,
+      "net_map_suffix_event_count": 1
+    },
+    {
+      "pair": 5,
+      "execution": 311369,
+      "motion_contexts": {
+        "candidate": 1,
+        "incumbent": 10
+      },
+      "motion_contexts_differ": true,
+      "raw_seven_motion_fields_equal": false,
+      "mechanical_endpoints_equal": false,
+      "useful_disagreements": 0,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 6,
+      "survivor_survives": 6,
+      "discarded_exclusive_map_suffix_events": 0,
+      "survivor_exclusive_map_suffix_events": 0,
+      "discarded_exclusive_exit_trials": 0,
+      "survivor_exclusive_exit_trials": 0,
+      "both_sides_have_exclusive_exit": 0,
+      "net_survival_count": 0,
+      "net_map_suffix_event_count": 0
+    },
+    {
+      "pair": 6,
+      "execution": 266231,
+      "motion_contexts": {
+        "candidate": 6,
+        "incumbent": 10
+      },
+      "motion_contexts_differ": true,
+      "raw_seven_motion_fields_equal": false,
+      "mechanical_endpoints_equal": false,
+      "useful_disagreements": 5,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 16,
+      "survivor_survives": 16,
+      "discarded_exclusive_map_suffix_events": 5,
+      "survivor_exclusive_map_suffix_events": 4,
+      "discarded_exclusive_exit_trials": 5,
+      "survivor_exclusive_exit_trials": 4,
+      "both_sides_have_exclusive_exit": 4,
+      "net_survival_count": 0,
+      "net_map_suffix_event_count": 1
+    },
+    {
+      "pair": 7,
+      "execution": 39779,
+      "motion_contexts": {
+        "candidate": 11,
+        "incumbent": 11
+      },
+      "motion_contexts_differ": false,
+      "raw_seven_motion_fields_equal": true,
+      "mechanical_endpoints_equal": false,
+      "useful_disagreements": 1,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 15,
+      "survivor_survives": 15,
+      "discarded_exclusive_map_suffix_events": 1,
+      "survivor_exclusive_map_suffix_events": 0,
+      "discarded_exclusive_exit_trials": 1,
+      "survivor_exclusive_exit_trials": 0,
+      "both_sides_have_exclusive_exit": 0,
+      "net_survival_count": 0,
+      "net_map_suffix_event_count": 1
+    },
+    {
+      "pair": 8,
+      "execution": 150911,
+      "motion_contexts": {
+        "candidate": 11,
+        "incumbent": 4
+      },
+      "motion_contexts_differ": true,
+      "raw_seven_motion_fields_equal": false,
+      "mechanical_endpoints_equal": false,
+      "useful_disagreements": 0,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 0,
+      "survivor_survives": 0,
+      "discarded_exclusive_map_suffix_events": 0,
+      "survivor_exclusive_map_suffix_events": 0,
+      "discarded_exclusive_exit_trials": 0,
+      "survivor_exclusive_exit_trials": 0,
+      "both_sides_have_exclusive_exit": 0,
+      "net_survival_count": 0,
+      "net_map_suffix_event_count": 0
+    },
+    {
+      "pair": 9,
+      "execution": 326381,
+      "motion_contexts": {
+        "candidate": 13,
+        "incumbent": 13
+      },
+      "motion_contexts_differ": false,
+      "raw_seven_motion_fields_equal": false,
+      "mechanical_endpoints_equal": true,
+      "useful_disagreements": 0,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 16,
+      "survivor_survives": 16,
+      "discarded_exclusive_map_suffix_events": 0,
+      "survivor_exclusive_map_suffix_events": 0,
+      "discarded_exclusive_exit_trials": 0,
+      "survivor_exclusive_exit_trials": 0,
+      "both_sides_have_exclusive_exit": 0,
+      "net_survival_count": 0,
+      "net_map_suffix_event_count": 0
+    },
+    {
+      "pair": 10,
+      "execution": 297752,
+      "motion_contexts": {
+        "candidate": 10,
+        "incumbent": 10
+      },
+      "motion_contexts_differ": false,
+      "raw_seven_motion_fields_equal": false,
+      "mechanical_endpoints_equal": true,
+      "useful_disagreements": 3,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 8,
+      "survivor_survives": 7,
+      "discarded_exclusive_map_suffix_events": 2,
+      "survivor_exclusive_map_suffix_events": 4,
+      "discarded_exclusive_exit_trials": 2,
+      "survivor_exclusive_exit_trials": 2,
+      "both_sides_have_exclusive_exit": 1,
+      "net_survival_count": 1,
+      "net_map_suffix_event_count": -2
+    },
+    {
+      "pair": 11,
+      "execution": 118560,
+      "motion_contexts": {
+        "candidate": 11,
+        "incumbent": 11
+      },
+      "motion_contexts_differ": false,
+      "raw_seven_motion_fields_equal": false,
+      "mechanical_endpoints_equal": false,
+      "useful_disagreements": 3,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 11,
+      "survivor_survives": 10,
+      "discarded_exclusive_map_suffix_events": 0,
+      "survivor_exclusive_map_suffix_events": 0,
+      "discarded_exclusive_exit_trials": 0,
+      "survivor_exclusive_exit_trials": 0,
+      "both_sides_have_exclusive_exit": 0,
+      "net_survival_count": 1,
+      "net_map_suffix_event_count": 0
+    },
+    {
+      "pair": 12,
+      "execution": 294199,
+      "motion_contexts": {
+        "candidate": 4,
+        "incumbent": 11
+      },
+      "motion_contexts_differ": true,
+      "raw_seven_motion_fields_equal": false,
+      "mechanical_endpoints_equal": false,
+      "useful_disagreements": 1,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 0,
+      "survivor_survives": 0,
+      "discarded_exclusive_map_suffix_events": 0,
+      "survivor_exclusive_map_suffix_events": 1,
+      "discarded_exclusive_exit_trials": 0,
+      "survivor_exclusive_exit_trials": 1,
+      "both_sides_have_exclusive_exit": 0,
+      "net_survival_count": 0,
+      "net_map_suffix_event_count": -1
+    },
+    {
+      "pair": 13,
+      "execution": 175458,
+      "motion_contexts": {
+        "candidate": 4,
+        "incumbent": 10
+      },
+      "motion_contexts_differ": true,
+      "raw_seven_motion_fields_equal": false,
+      "mechanical_endpoints_equal": false,
+      "useful_disagreements": 4,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 0,
+      "survivor_survives": 0,
+      "discarded_exclusive_map_suffix_events": 4,
+      "survivor_exclusive_map_suffix_events": 0,
+      "discarded_exclusive_exit_trials": 4,
+      "survivor_exclusive_exit_trials": 0,
+      "both_sides_have_exclusive_exit": 0,
+      "net_survival_count": 0,
+      "net_map_suffix_event_count": 4
+    },
+    {
+      "pair": 14,
+      "execution": 325652,
+      "motion_contexts": {
+        "candidate": 13,
+        "incumbent": 7
+      },
+      "motion_contexts_differ": true,
+      "raw_seven_motion_fields_equal": false,
+      "mechanical_endpoints_equal": false,
+      "useful_disagreements": 4,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 0,
+      "survivor_survives": 0,
+      "discarded_exclusive_map_suffix_events": 1,
+      "survivor_exclusive_map_suffix_events": 3,
+      "discarded_exclusive_exit_trials": 1,
+      "survivor_exclusive_exit_trials": 3,
+      "both_sides_have_exclusive_exit": 0,
+      "net_survival_count": 0,
+      "net_map_suffix_event_count": -2
+    },
+    {
+      "pair": 15,
+      "execution": 281562,
+      "motion_contexts": {
+        "candidate": 5,
+        "incumbent": 6
+      },
+      "motion_contexts_differ": true,
+      "raw_seven_motion_fields_equal": false,
+      "mechanical_endpoints_equal": false,
+      "useful_disagreements": 2,
+      "discarded_only_gain_trials": 0,
+      "survivor_only_gain_trials": 0,
+      "discarded_survives": 0,
+      "survivor_survives": 0,
+      "discarded_exclusive_map_suffix_events": 2,
+      "survivor_exclusive_map_suffix_events": 0,
+      "discarded_exclusive_exit_trials": 2,
+      "survivor_exclusive_exit_trials": 0,
+      "both_sides_have_exclusive_exit": 0,
+      "net_survival_count": 0,
+      "net_map_suffix_event_count": 2
+    }
+  ],
+  "decision": {
+    "reopens_motion_retention": false,
+    "qualifies_longer_search": false,
+    "qualifies_breakthrough": false
+  },
+  "limitations": [
+    "All sixteen equal-preference audit pairs in recorded order; no pair chosen by its probe outcome.",
+    "Shared sixteen suffixes, one development campaign and a post-failure question; no confidence or population-rate claim.",
+    "Matching finite suffixes never establishes equivalent futures or descriptor sufficiency.",
+    "Local map events and survival are separate objectives; capability-gain flags here are diagnostic observations.",
+    "The source ordinary policy has one incumbent; this does not measure marginal coverage against two survivors."
+  ]
+}

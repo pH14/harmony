@@ -1,0 +1,15 @@
+{
+  "format": "continuation-cc01-local-seed-audit-v1",
+  "recorded_utc": "2026-09-10T12:13:16.772593+00:00",
+  "seeds": [
+    833917373,
+    4204540845,
+    586667767,
+    2160473381
+  ],
+  "files_checked": 224,
+  "matches": [],
+  "skipped": [],
+  "scanned_path_content_digest": "4df7bc1bf5e1e0e8cfbb63f01f1cb36e0c1bb2335d6952d067f17b83d1604dd0",
+  "scope": "Tracked summary/result/registration/seed JSON and JSON.gz in the research checkout, including copied historical msr1 records. Does not access reassigned msr1. Unrecorded historical use cannot be certified."
+}

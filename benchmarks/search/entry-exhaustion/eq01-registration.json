@@ -1,0 +1,21 @@
+{
+  "format": "entry-exhaustion-eq01-registration-v1",
+  "registered_utc": "2026-09-10T08:05:55.365217+00:00",
+  "deadline_utc": "2026-09-10T08:35:55.365217+00:00",
+  "known_auxiliary_frame_ceiling": 8000000,
+  "fresh_search_frames": 0,
+  "seed": 2026090902,
+  "reused": true,
+  "source_commit": "780415bdea636c2bd54cf3d865fc264dd33fd649",
+  "source_tree_sha256": "2a4cc365f0dcbfa66f8818a5076d75766139b6920b60a6f378672308631d5647",
+  "candidate_selector": "room_cell_uniform_128_energy_progress_cheapest_v1:64,6,12,2",
+  "host_registration_sha256": {
+    "msr1": "6151c4fd6505f4280dccc72c7dccc4ce8df35e83d99a66712d72e916fb5c37e9",
+    "ms02": "3c6ae6a802cfbca3f4fd616c646613c44e463dd3f9ed3b6e2f1d04025465ab42"
+  },
+  "checker_sha256": "f386cfed2a00662820a9719d3ada22197fe0e723f3be19a8e962bf95fea64ca5",
+  "pass_rule": "All three bounded cells complete full campaign/checkpoint/witness replay, record cutoff64, and pass same-host one/two-buffer artifact identity plus cross-host post-header stream identity. No retries.",
+  "failure_rule": "Stop; no performance allocation on incomplete measurement, identity/replay discrepancy or resource overrun.",
+  "prior_ledger_sha256": "91f307c80a8e3cb162fc3bf494de58936d5d76b8d70e928ec7ab99c6e86e5cf8",
+  "cost_scope": "Qualification frames, inferred full campaign replay and measured held witnesses are known auxiliary work. Setup/unadmitted/reconstruction gaps stay unknown."
+}

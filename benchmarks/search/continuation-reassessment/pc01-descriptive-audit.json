@@ -1,0 +1,101 @@
+{
+  "format": "retention-pc01-descriptive-audit-v1",
+  "roots": 1,
+  "shared_tails": 32,
+  "arms": {
+    "candidate": {
+      "episodes": 32,
+      "stop_reasons": {
+        "death": 32
+      },
+      "frames": 3801,
+      "minimum_frames": 18,
+      "maximum_frames": 610,
+      "new_surviving_damage_tails": 7,
+      "completed_boundaries": 93
+    },
+    "incumbent": {
+      "episodes": 32,
+      "stop_reasons": {
+        "death": 32
+      },
+      "frames": 3526,
+      "minimum_frames": 23,
+      "maximum_frames": 723,
+      "new_surviving_damage_tails": 4,
+      "completed_boundaries": 85
+    }
+  },
+  "common_completed_boundaries": 69,
+  "common_valid_boundaries": 69,
+  "held_boundaries_verified": 242,
+  "note": "One selected state pair. Six qualifying prefixes are distinct, but two start with the same button chord at different durations. No independent-trial or population claim.",
+  "candidate_witness_prefixes": [
+    {
+      "trial": 1,
+      "commands": [
+        {
+          "buttons": 99,
+          "hold_frames": 97
+        }
+      ]
+    },
+    {
+      "trial": 3,
+      "commands": [
+        {
+          "buttons": 99,
+          "hold_frames": 58
+        }
+      ]
+    },
+    {
+      "trial": 5,
+      "commands": [
+        {
+          "buttons": 34,
+          "hold_frames": 5
+        }
+      ]
+    },
+    {
+      "trial": 10,
+      "commands": [
+        {
+          "buttons": 3,
+          "hold_frames": 112
+        }
+      ]
+    },
+    {
+      "trial": 14,
+      "commands": [
+        {
+          "buttons": 32,
+          "hold_frames": 9
+        },
+        {
+          "buttons": 162,
+          "hold_frames": 11
+        },
+        {
+          "buttons": 147,
+          "hold_frames": 9
+        },
+        {
+          "buttons": 81,
+          "hold_frames": 74
+        }
+      ]
+    },
+    {
+      "trial": 28,
+      "commands": [
+        {
+          "buttons": 2,
+          "hold_frames": 54
+        }
+      ]
+    }
+  ]
+}

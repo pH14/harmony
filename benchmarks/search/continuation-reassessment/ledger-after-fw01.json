@@ -1,0 +1,35 @@
+{
+  "format": "continuation-fw01-closed-ledger-v1",
+  "closed_utc": "2026-09-10T09:52:15.532112+00:00",
+  "prior_ledger_sha256": "a11e4eb21bb535e1690254f23f2f4f7c31d0d493ba26e9a5d5333b2308478cfd",
+  "registration_sha256": "dd17bc157b2b843f3292d32a6830cdb9776094d2bb4d2b6e99eaf99d24e478c3",
+  "results_sha256": "44486429f9b41f2e670b5551a68045196a13e5dccad181a7bd5071a6046f3fde",
+  "decision": "stop_fw01_measurement_contract_error",
+  "admitted_search_frames": 0,
+  "known_auxiliary_frames": 234966,
+  "budget_charged_upper_frames": 234966,
+  "partial_emulator_advancement": "none: all three native passes completed",
+  "unrun_cases": [
+    "fw01-continuation-s3",
+    "fw01-control-s4",
+    "fw01-continuation-s4",
+    "fw01-control-s5",
+    "fw01-continuation-s5"
+  ],
+  "cumulative_since_user_resumption_admitted_search_frames": 1273426135,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 61139911,
+  "native_elapsed_seconds": 51.45475077396259,
+  "native_cpu_seconds": 51.035923,
+  "native_maxrss_kib": 19288,
+  "service": {
+    "MainPID": "0",
+    "ExecMainStartTimestamp": "Thu 2026-09-10 09:43:48 UTC",
+    "ExecMainExitTimestamp": "Thu 2026-09-10 09:44:39 UTC",
+    "ExecMainStatus": "1",
+    "MemoryPeak": "15765504",
+    "CPUUsageNSec": "51597185000",
+    "ActiveState": "failed",
+    "SubState": "failed"
+  },
+  "failure": "The checker required final mode3. The actual endpoint is mode9, health85, equipment21, endingfalse. All three corrected-terminal native replays agree; the adapter terminal contract does not require active-play mode. The original FW01 gate remains failed."
+}

@@ -1,0 +1,29 @@
+{
+  "format": "rf01-source-verification-v1",
+  "source_pass_started_utc": "2026-09-10T07:08:55+00:00",
+  "source_pass_completed_utc": "2026-09-10T07:36:33.126201+00:00",
+  "source_pass_wall_ceiling_seconds": 2700,
+  "final_source_commit": "f47ad6c1651b019703a661347d3d3f97ac0e1673",
+  "nes_all_feature_library_tests": 144,
+  "library_seconds": 24.51,
+  "controller_probe_tests": 4,
+  "python_evidence_tests": 30,
+  "clippy": "all features/all targets, warnings denied; pass",
+  "miri": {
+    "host": "ms02",
+    "source_commit": "f47ad6c1651b019703a661347d3d3f97ac0e1673",
+    "toolchain": "nightly-2026-06-16",
+    "command": "cargo miri test --manifest-path workloads/nes/Cargo.toml --lib resource_",
+    "tests_passed": 3,
+    "test_seconds": 2.39,
+    "cpu_seconds": 4.212,
+    "memory_peak_reported": "424.5M",
+    "service": "harmony-rf01-miri2-20260910",
+    "exit_status": 0,
+    "active_state": "inactive"
+  },
+  "earlier_miri_failure": "Source593be755 hit seven existing missing-native-constructor compilation errors under cfg(miri); f47ad6c1 provides a Miri-only explicit error constructor. No test or emulator ran in that failed attempt.",
+  "native_build_seconds": 33.95,
+  "new_unsafe_blocks": 0,
+  "native_experiment_frames_so_far": 0
+}

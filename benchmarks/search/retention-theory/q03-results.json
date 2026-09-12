@@ -1,0 +1,280 @@
+[
+  {
+    "build": {
+      "binary_sha256": "5ecf664c8437c1ad23cb8ee888c10b257c115b245e02f4ebfb55c2f2f523ff49",
+      "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+      "dirty": null,
+      "features": "",
+      "files": 321,
+      "format": "harmony-search-build-v1",
+      "locked": true,
+      "profile": "release",
+      "revision": null,
+      "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+      "rustflags": "",
+      "source_tree_sha256": "201ff7fca0af72a4610e0b5d63c938ab43c08e1eb637861e181e4a2b0bbf5dd3",
+      "target_cache": "/root/harmony-retention-theory-20260908/target"
+    },
+    "case": "mm2-metal",
+    "result": {
+      "executions": 5000,
+      "executions_per_second": 386.68389789510337,
+      "executions_to_first_victory": null,
+      "export_seconds": 0.139245469,
+      "format": "nes-eval-result-v1",
+      "frame_budget_overshoot": null,
+      "frames_emulated": 564972,
+      "frames_per_second": 43693.11503231846,
+      "frames_to_first_victory": null,
+      "milestone_witnesses": {},
+      "milestones": {
+        "defeated_boss": false,
+        "max_screen": 6,
+        "reached_boss": false
+      },
+      "preparation_seconds": 0.020733872,
+      "progress": {
+        "boss_damage": 0,
+        "bosses": 0,
+        "enemy_damage": 0,
+        "room": 6,
+        "screen": 6,
+        "stage": 6,
+        "x": 158,
+        "y": 116
+      },
+      "search_seconds": 12.930458256,
+      "solved": false,
+      "status": "complete",
+      "stop_reason": "execution_limit",
+      "stream_bytes_generated": 2240980,
+      "stream_retained": true,
+      "stream_sha256": "2b94c50e70fc971007730fc17a8dc1a3402cc9fdcc2cc8f6953b6dd4e194b49d",
+      "verification": "campaign",
+      "verification_seconds": 23.567494302,
+      "victory_observed": false,
+      "witness": {
+        "dead": false,
+        "diagnostics": null,
+        "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+        "milestones": {
+          "defeated_boss": false,
+          "max_screen": 6,
+          "reached_boss": false
+        },
+        "physical_suffix_frames": 3311,
+        "snapshot_sha256": "d5617588b1562e4e77ca21014765b48ccd229aeb23e9347f18482940581eb310",
+        "victory": false
+      }
+    },
+    "elapsed_seconds": 37.57604067598004,
+    "peak_rss_bytes": 59125760
+  },
+  {
+    "build": {
+      "binary_sha256": "5ecf664c8437c1ad23cb8ee888c10b257c115b245e02f4ebfb55c2f2f523ff49",
+      "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+      "dirty": null,
+      "features": "",
+      "files": 321,
+      "format": "harmony-search-build-v1",
+      "locked": true,
+      "profile": "release",
+      "revision": null,
+      "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+      "rustflags": "",
+      "source_tree_sha256": "201ff7fca0af72a4610e0b5d63c938ab43c08e1eb637861e181e4a2b0bbf5dd3",
+      "target_cache": "/root/harmony-retention-theory-20260908/target"
+    },
+    "case": "smb-full",
+    "result": {
+      "executions": 5000,
+      "executions_per_second": 274.2403210398838,
+      "executions_to_first_victory": null,
+      "export_seconds": 1.222857358,
+      "format": "nes-eval-result-v1",
+      "frame_budget_overshoot": null,
+      "frames_emulated": 689658,
+      "frames_per_second": 37826.406265544836,
+      "frames_to_first_victory": null,
+      "milestone_witnesses": {},
+      "milestones": {
+        "max_1_1_scroll_bucket": 195,
+        "reached_1_1_flag": true,
+        "reached_1_2": true,
+        "reached_onward": true
+      },
+      "preparation_seconds": 0.006921642,
+      "progress": {
+        "level": 2,
+        "progress": 34,
+        "world": 0
+      },
+      "search_seconds": 18.232184024,
+      "solved": false,
+      "status": "complete",
+      "stop_reason": "execution_limit",
+      "stream_bytes_generated": 3223270,
+      "stream_retained": true,
+      "stream_sha256": "12945d74e4fc4ac83dae39c3419c2d0785acc241afd15407ce04b41c4bf42e32",
+      "verification": "campaign",
+      "verification_seconds": 37.463268307,
+      "victory_observed": false,
+      "witness": {
+        "dead": false,
+        "diagnostics": null,
+        "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+        "milestones": {
+          "max_1_1_scroll_bucket": 195,
+          "reached_1_1_flag": true,
+          "reached_1_2": true,
+          "reached_onward": true
+        },
+        "physical_suffix_frames": 15271,
+        "snapshot_sha256": "4ff00bd8b95a506874281da747e0b87dddd43e7c2b84662b476f89d4b584a48a",
+        "victory": false
+      }
+    },
+    "elapsed_seconds": 57.96011048502987,
+    "peak_rss_bytes": 460050432
+  },
+  {
+    "build": {
+      "binary_sha256": "5b3582723f1400ce3110b3f8a485416d56a5300ad7d7f55f184e93835fc75df7",
+      "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+      "dirty": null,
+      "features": "metroid-refined-archive",
+      "files": 321,
+      "format": "harmony-search-build-v1",
+      "locked": true,
+      "profile": "release",
+      "revision": null,
+      "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+      "rustflags": "",
+      "source_tree_sha256": "201ff7fca0af72a4610e0b5d63c938ab43c08e1eb637861e181e4a2b0bbf5dd3",
+      "target_cache": "/root/harmony-retention-theory-20260908/target"
+    },
+    "case": "mm2-metal",
+    "result": {
+      "executions": 5000,
+      "executions_per_second": 385.8338619304185,
+      "executions_to_first_victory": null,
+      "export_seconds": 0.127858817,
+      "format": "nes-eval-result-v1",
+      "frame_budget_overshoot": null,
+      "frames_emulated": 564972,
+      "frames_per_second": 43597.06572851048,
+      "frames_to_first_victory": null,
+      "milestone_witnesses": {},
+      "milestones": {
+        "defeated_boss": false,
+        "max_screen": 6,
+        "reached_boss": false
+      },
+      "preparation_seconds": 0.022540675,
+      "progress": {
+        "boss_damage": 0,
+        "bosses": 0,
+        "enemy_damage": 0,
+        "room": 6,
+        "screen": 6,
+        "stage": 6,
+        "x": 158,
+        "y": 116
+      },
+      "search_seconds": 12.958945529,
+      "solved": false,
+      "status": "complete",
+      "stop_reason": "execution_limit",
+      "stream_bytes_generated": 2240980,
+      "stream_retained": true,
+      "stream_sha256": "2b94c50e70fc971007730fc17a8dc1a3402cc9fdcc2cc8f6953b6dd4e194b49d",
+      "verification": "campaign",
+      "verification_seconds": 23.551823428,
+      "victory_observed": false,
+      "witness": {
+        "dead": false,
+        "diagnostics": null,
+        "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+        "milestones": {
+          "defeated_boss": false,
+          "max_screen": 6,
+          "reached_boss": false
+        },
+        "physical_suffix_frames": 3311,
+        "snapshot_sha256": "d5617588b1562e4e77ca21014765b48ccd229aeb23e9347f18482940581eb310",
+        "victory": false
+      }
+    },
+    "elapsed_seconds": 37.68638882302912,
+    "peak_rss_bytes": 58208256
+  },
+  {
+    "build": {
+      "binary_sha256": "5b3582723f1400ce3110b3f8a485416d56a5300ad7d7f55f184e93835fc75df7",
+      "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+      "dirty": null,
+      "features": "metroid-refined-archive",
+      "files": 321,
+      "format": "harmony-search-build-v1",
+      "locked": true,
+      "profile": "release",
+      "revision": null,
+      "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.0\nLLVM version: 22.1.6\n",
+      "rustflags": "",
+      "source_tree_sha256": "201ff7fca0af72a4610e0b5d63c938ab43c08e1eb637861e181e4a2b0bbf5dd3",
+      "target_cache": "/root/harmony-retention-theory-20260908/target"
+    },
+    "case": "smb-full",
+    "result": {
+      "executions": 5000,
+      "executions_per_second": 281.01611580702416,
+      "executions_to_first_victory": null,
+      "export_seconds": 1.214878251,
+      "format": "nes-eval-result-v1",
+      "frame_budget_overshoot": null,
+      "frames_emulated": 689658,
+      "frames_per_second": 38761.00247904813,
+      "frames_to_first_victory": null,
+      "milestone_witnesses": {},
+      "milestones": {
+        "max_1_1_scroll_bucket": 195,
+        "reached_1_1_flag": true,
+        "reached_1_2": true,
+        "reached_onward": true
+      },
+      "preparation_seconds": 0.009326725,
+      "progress": {
+        "level": 2,
+        "progress": 34,
+        "world": 0
+      },
+      "search_seconds": 17.792573873,
+      "solved": false,
+      "status": "complete",
+      "stop_reason": "execution_limit",
+      "stream_bytes_generated": 3223270,
+      "stream_retained": true,
+      "stream_sha256": "12945d74e4fc4ac83dae39c3419c2d0785acc241afd15407ce04b41c4bf42e32",
+      "verification": "campaign",
+      "verification_seconds": 37.447986204,
+      "victory_observed": false,
+      "witness": {
+        "dead": false,
+        "diagnostics": null,
+        "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+        "milestones": {
+          "max_1_1_scroll_bucket": 195,
+          "reached_1_1_flag": true,
+          "reached_1_2": true,
+          "reached_onward": true
+        },
+        "physical_suffix_frames": 15271,
+        "snapshot_sha256": "4ff00bd8b95a506874281da747e0b87dddd43e7c2b84662b476f89d4b584a48a",
+        "victory": false
+      }
+    },
+    "elapsed_seconds": 57.14563648903277,
+    "peak_rss_bytes": 387477504
+  }
+]

@@ -1,0 +1,2434 @@
+{
+  "format": "historical-continuation-frame-audit-v1",
+  "historical_record_sha256": "543a7341d606e04a4e98fa5ffd8f189b047664cb51c0d5130a33da86d82000f1",
+  "cells": [
+    {
+      "arm": "control",
+      "seed": 3,
+      "cell": "metroid-full-s3-w4-m8192",
+      "summary_sha256": "1cbfef5917a8adbff20450308b4ca451ab9b8c8152ffdd4c3829f13f3e1303d2",
+      "result_sha256": "271844a341b4af054ff9209836ca73f27777bdcbe231a690b564a700affd816d",
+      "progress_sha256": "8194572c802a9b58e7073d09980a814afe6061b2bdd2f1eb598412cfd658d5d7",
+      "progress_bytes": 65833670,
+      "progress_records": 30002,
+      "identity": {
+        "actions": 4096,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 3000000,
+        "format": "nes-eval-identity-v1",
+        "frames": 400000000,
+        "game": "metroid",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "alphabet_only",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v4;sha256=a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+          "key_policy": "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_ending_v2"
+        },
+        "result_slots": 2,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 3,
+        "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+        "source_tree_sha256": "3ded3c1bab754e754017d80b2c8e2f19a2a37c0e3ab812a8ca280937955b9fc4",
+        "stage": null,
+        "suffix": "one_to_six",
+        "verification": "witness",
+        "wall_seconds": 7200,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      },
+      "cpu_set": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "endpoints": {
+        "bombs": {
+          "first_execution": 2847297,
+          "arrival_frames_interval": [
+            363700295,
+            363712621
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 2847200,
+              "frames": 363700294
+            },
+            "after": {
+              "execution": 2847300,
+              "frames": 363712621
+            }
+          }
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "arrival_frames_interval": [
+            180,
+            180
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": null,
+            "after": {
+              "execution": 1,
+              "frames": 180
+            }
+          }
+        },
+        "ending": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 382101298,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "energy_tank": {
+          "first_execution": 369048,
+          "arrival_frames_interval": [
+            45544459,
+            45557517
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 369000,
+              "frames": 45544458
+            },
+            "after": {
+              "execution": 369100,
+              "frames": 45557517
+            }
+          }
+        },
+        "escape_started": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 382101298,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "high_jump": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 382101298,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "ice_beam": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 382101298,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "kraid_area": {
+          "first_execution": 2937978,
+          "arrival_frames_interval": [
+            374667946,
+            374679027
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 2937900,
+              "frames": 374667945
+            },
+            "after": {
+              "execution": 2938000,
+              "frames": 374679027
+            }
+          }
+        },
+        "kraid_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 382101298,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "long_beam": {
+          "first_execution": 1761899,
+          "arrival_frames_interval": [
+            226057391,
+            226069549
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 1761800,
+              "frames": 226057390
+            },
+            "after": {
+              "execution": 1761900,
+              "frames": 226069549
+            }
+          }
+        },
+        "missile_capacity": {
+          "first_execution": 135155,
+          "arrival_frames_interval": [
+            18075136,
+            18087920
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 135100,
+              "frames": 18075135
+            },
+            "after": {
+              "execution": 135200,
+              "frames": 18087920
+            }
+          }
+        },
+        "morph_ball": {
+          "first_execution": 361,
+          "arrival_frames_interval": [
+            42196,
+            56757
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 300,
+              "frames": 42195
+            },
+            "after": {
+              "execution": 400,
+              "frames": 56757
+            }
+          }
+        },
+        "mother_brain_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 382101298,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "norfair": {
+          "first_execution": 137386,
+          "arrival_frames_interval": [
+            18323796,
+            18336350
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 137300,
+              "frames": 18323795
+            },
+            "after": {
+              "execution": 137400,
+              "frames": 18336350
+            }
+          }
+        },
+        "ridley_area": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 382101298,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "ridley_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 382101298,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "screw_attack": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 382101298,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "tourian": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 382101298,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "varia_suit": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 382101298,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "wave_beam": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 382101298,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        }
+      }
+    },
+    {
+      "arm": "control",
+      "seed": 4,
+      "cell": "metroid-full-s4-w4-m8192",
+      "summary_sha256": "988a32ebb03785601efaf8d9fe55e88f31f6eb33432aa598b6dd1089a515d72e",
+      "result_sha256": "339f85b259ef086475535157f160e3a99487805027cdb9fd81bf9f5d3ffe196c",
+      "progress_sha256": "ebebdb6cb59b0e47b12b836c18eb1b908bf0d955b70b3ff9c26caec7576efdc9",
+      "progress_bytes": 66556870,
+      "progress_records": 30002,
+      "identity": {
+        "actions": 4096,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 3000000,
+        "format": "nes-eval-identity-v1",
+        "frames": 400000000,
+        "game": "metroid",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "alphabet_only",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v4;sha256=a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+          "key_policy": "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_ending_v2"
+        },
+        "result_slots": 2,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 4,
+        "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+        "source_tree_sha256": "3ded3c1bab754e754017d80b2c8e2f19a2a37c0e3ab812a8ca280937955b9fc4",
+        "stage": null,
+        "suffix": "one_to_six",
+        "verification": "witness",
+        "wall_seconds": 7200,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      },
+      "cpu_set": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "endpoints": {
+        "bombs": {
+          "first_execution": 2393367,
+          "arrival_frames_interval": [
+            299041623,
+            299056399
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 2393300,
+              "frames": 299041622
+            },
+            "after": {
+              "execution": 2393400,
+              "frames": 299056399
+            }
+          }
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "arrival_frames_interval": [
+            21,
+            21
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": null,
+            "after": {
+              "execution": 1,
+              "frames": 21
+            }
+          }
+        },
+        "ending": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 371057908,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "energy_tank": {
+          "first_execution": 423120,
+          "arrival_frames_interval": [
+            52779080,
+            52792516
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 423100,
+              "frames": 52779079
+            },
+            "after": {
+              "execution": 423200,
+              "frames": 52792516
+            }
+          }
+        },
+        "escape_started": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 371057908,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "high_jump": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 371057908,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "ice_beam": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 371057908,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "kraid_area": {
+          "first_execution": 2443424,
+          "arrival_frames_interval": [
+            305031858,
+            305044611
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 2443400,
+              "frames": 305031857
+            },
+            "after": {
+              "execution": 2443500,
+              "frames": 305044611
+            }
+          }
+        },
+        "kraid_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 371057908,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "long_beam": {
+          "first_execution": 1121066,
+          "arrival_frames_interval": [
+            142134568,
+            142148002
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 1121000,
+              "frames": 142134567
+            },
+            "after": {
+              "execution": 1121100,
+              "frames": 142148002
+            }
+          }
+        },
+        "missile_capacity": {
+          "first_execution": 173696,
+          "arrival_frames_interval": [
+            23658245,
+            23670620
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 173600,
+              "frames": 23658244
+            },
+            "after": {
+              "execution": 173700,
+              "frames": 23670620
+            }
+          }
+        },
+        "morph_ball": {
+          "first_execution": 164,
+          "arrival_frames_interval": [
+            14100,
+            28565
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 100,
+              "frames": 14099
+            },
+            "after": {
+              "execution": 200,
+              "frames": 28565
+            }
+          }
+        },
+        "mother_brain_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 371057908,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "norfair": {
+          "first_execution": 179540,
+          "arrival_frames_interval": [
+            24332468,
+            24347369
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 179500,
+              "frames": 24332467
+            },
+            "after": {
+              "execution": 179600,
+              "frames": 24347369
+            }
+          }
+        },
+        "ridley_area": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 371057908,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "ridley_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 371057908,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "screw_attack": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 371057908,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "tourian": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 371057908,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "varia_suit": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 371057908,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "wave_beam": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 371057908,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        }
+      }
+    },
+    {
+      "arm": "control",
+      "seed": 5,
+      "cell": "metroid-full-s5-w4-m8192",
+      "summary_sha256": "89826f8035e51ce52fc6447fb080b3956dfb7bd185f862e20f19b2d23708bc5a",
+      "result_sha256": "156e4f7ab47b6913299af25bd5cb1ecacf69afa6a053e265adaf04b0ad95a5f5",
+      "progress_sha256": "eba768269c487744597fa14d297135bd8371a81cf8de62ddc852171d2b99f580",
+      "progress_bytes": 66873737,
+      "progress_records": 30002,
+      "identity": {
+        "actions": 4096,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 3000000,
+        "format": "nes-eval-identity-v1",
+        "frames": 400000000,
+        "game": "metroid",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "alphabet_only",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v4;sha256=a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+          "key_policy": "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_ending_v2"
+        },
+        "result_slots": 2,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 5,
+        "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+        "source_tree_sha256": "3ded3c1bab754e754017d80b2c8e2f19a2a37c0e3ab812a8ca280937955b9fc4",
+        "stage": null,
+        "suffix": "one_to_six",
+        "verification": "witness",
+        "wall_seconds": 7200,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      },
+      "cpu_set": [
+        8,
+        9,
+        10,
+        11
+      ],
+      "endpoints": {
+        "bombs": {
+          "first_execution": 2137376,
+          "arrival_frames_interval": [
+            263199528,
+            263211554
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 2137300,
+              "frames": 263199527
+            },
+            "after": {
+              "execution": 2137400,
+              "frames": 263211554
+            }
+          }
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "arrival_frames_interval": [
+            201,
+            201
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": null,
+            "after": {
+              "execution": 1,
+              "frames": 201
+            }
+          }
+        },
+        "ending": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 366764950,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "energy_tank": {
+          "first_execution": 144673,
+          "arrival_frames_interval": [
+            19073266,
+            19084754
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 144600,
+              "frames": 19073265
+            },
+            "after": {
+              "execution": 144700,
+              "frames": 19084754
+            }
+          }
+        },
+        "escape_started": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 366764950,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "high_jump": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 366764950,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "ice_beam": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 366764950,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "kraid_area": {
+          "first_execution": 2207373,
+          "arrival_frames_interval": [
+            271591033,
+            271604096
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 2207300,
+              "frames": 271591032
+            },
+            "after": {
+              "execution": 2207400,
+              "frames": 271604096
+            }
+          }
+        },
+        "kraid_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 366764950,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "long_beam": {
+          "first_execution": 1431568,
+          "arrival_frames_interval": [
+            174778016,
+            174793949
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 1431500,
+              "frames": 174778015
+            },
+            "after": {
+              "execution": 1431600,
+              "frames": 174793949
+            }
+          }
+        },
+        "missile_capacity": {
+          "first_execution": 169281,
+          "arrival_frames_interval": [
+            22404343,
+            22418181
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 169200,
+              "frames": 22404342
+            },
+            "after": {
+              "execution": 169300,
+              "frames": 22418181
+            }
+          }
+        },
+        "morph_ball": {
+          "first_execution": 505,
+          "arrival_frames_interval": [
+            71965,
+            87522
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 500,
+              "frames": 71964
+            },
+            "after": {
+              "execution": 600,
+              "frames": 87522
+            }
+          }
+        },
+        "mother_brain_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 366764950,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "norfair": {
+          "first_execution": 173824,
+          "arrival_frames_interval": [
+            22918470,
+            22932824
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 173800,
+              "frames": 22918469
+            },
+            "after": {
+              "execution": 173900,
+              "frames": 22932824
+            }
+          }
+        },
+        "ridley_area": {
+          "first_execution": 2742879,
+          "arrival_frames_interval": [
+            335821999,
+            335833974
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 2742800,
+              "frames": 335821998
+            },
+            "after": {
+              "execution": 2742900,
+              "frames": 335833974
+            }
+          }
+        },
+        "ridley_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 366764950,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "screw_attack": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 366764950,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "tourian": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 366764950,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "varia_suit": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 366764950,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "wave_beam": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 366764950,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        }
+      }
+    },
+    {
+      "arm": "continuation",
+      "seed": 3,
+      "cell": "metroid-full-s3-w4-m8192",
+      "summary_sha256": "590d844dca56a669a4bee8f1c4d98b7baf74b9837028502142adfe004bc9186a",
+      "result_sha256": "f18912ba929aed53f5474ee0781c2c8887d9f3eb1a03a95ec72954f9e0ea9c6c",
+      "progress_sha256": "a50bdb3f6d0180e6431ebccfe5d860fda791d5f437529b35ceb0546e29bfedad",
+      "progress_bytes": 66260221,
+      "progress_records": 30002,
+      "identity": {
+        "actions": 4096,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 3000000,
+        "format": "nes-eval-identity-v1",
+        "frames": 400000000,
+        "game": "metroid",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "alphabet_continuation_v1",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v4;sha256=a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+          "key_policy": "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_ending_v2"
+        },
+        "result_slots": 2,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 3,
+        "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+        "source_tree_sha256": "3ded3c1bab754e754017d80b2c8e2f19a2a37c0e3ab812a8ca280937955b9fc4",
+        "stage": null,
+        "suffix": "one_to_six",
+        "verification": "witness",
+        "wall_seconds": 7200,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      },
+      "cpu_set": [
+        12,
+        13,
+        14,
+        15
+      ],
+      "endpoints": {
+        "bombs": {
+          "first_execution": 1409832,
+          "arrival_frames_interval": [
+            173632256,
+            173646518
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 1409800,
+              "frames": 173632255
+            },
+            "after": {
+              "execution": 1409900,
+              "frames": 173646518
+            }
+          }
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "arrival_frames_interval": [
+            180,
+            180
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": null,
+            "after": {
+              "execution": 1,
+              "frames": 180
+            }
+          }
+        },
+        "ending": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 354818860,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "energy_tank": {
+          "first_execution": 640052,
+          "arrival_frames_interval": [
+            76222740,
+            76233752
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 640000,
+              "frames": 76222739
+            },
+            "after": {
+              "execution": 640100,
+              "frames": 76233752
+            }
+          }
+        },
+        "escape_started": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 354818860,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "high_jump": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 354818860,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "ice_beam": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 354818860,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "kraid_area": {
+          "first_execution": 1555597,
+          "arrival_frames_interval": [
+            189611785,
+            189624447
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 1555500,
+              "frames": 189611784
+            },
+            "after": {
+              "execution": 1555600,
+              "frames": 189624447
+            }
+          }
+        },
+        "kraid_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 354818860,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "long_beam": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 354818860,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "missile_capacity": {
+          "first_execution": 332529,
+          "arrival_frames_interval": [
+            42254929,
+            42265992
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 332500,
+              "frames": 42254928
+            },
+            "after": {
+              "execution": 332600,
+              "frames": 42265992
+            }
+          }
+        },
+        "morph_ball": {
+          "first_execution": 251,
+          "arrival_frames_interval": [
+            26989,
+            38549
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 200,
+              "frames": 26988
+            },
+            "after": {
+              "execution": 300,
+              "frames": 38549
+            }
+          }
+        },
+        "mother_brain_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 354818860,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "norfair": {
+          "first_execution": 338661,
+          "arrival_frames_interval": [
+            42900901,
+            42912686
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 338600,
+              "frames": 42900900
+            },
+            "after": {
+              "execution": 338700,
+              "frames": 42912686
+            }
+          }
+        },
+        "ridley_area": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 354818860,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "ridley_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 354818860,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "screw_attack": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 354818860,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "tourian": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 354818860,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "varia_suit": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 354818860,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "wave_beam": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 354818860,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        }
+      }
+    },
+    {
+      "arm": "continuation",
+      "seed": 4,
+      "cell": "metroid-full-s4-w4-m8192",
+      "summary_sha256": "db2084e10ce35ae7d223f13320098f41967b18391239af81f9564550a81f9117",
+      "result_sha256": "eaf2d5bd468e06547a95c2405ad9463605baace8ec9aeefd8f593f9d83269101",
+      "progress_sha256": "7cda49b6b024324c5d03eb63fad35c996ed8b308b9f70cd133065bce1d3031a9",
+      "progress_bytes": 66820187,
+      "progress_records": 30002,
+      "identity": {
+        "actions": 4096,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 3000000,
+        "format": "nes-eval-identity-v1",
+        "frames": 400000000,
+        "game": "metroid",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "alphabet_continuation_v1",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v4;sha256=a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+          "key_policy": "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_ending_v2"
+        },
+        "result_slots": 2,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 4,
+        "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+        "source_tree_sha256": "3ded3c1bab754e754017d80b2c8e2f19a2a37c0e3ab812a8ca280937955b9fc4",
+        "stage": null,
+        "suffix": "one_to_six",
+        "verification": "witness",
+        "wall_seconds": 7200,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      },
+      "cpu_set": [
+        16,
+        17,
+        18,
+        19
+      ],
+      "endpoints": {
+        "bombs": {
+          "first_execution": 2154605,
+          "arrival_frames_interval": [
+            263270557,
+            263285051
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 2154600,
+              "frames": 263270556
+            },
+            "after": {
+              "execution": 2154700,
+              "frames": 263285051
+            }
+          }
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "arrival_frames_interval": [
+            21,
+            21
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": null,
+            "after": {
+              "execution": 1,
+              "frames": 21
+            }
+          }
+        },
+        "ending": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 358282129,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "energy_tank": {
+          "first_execution": 417026,
+          "arrival_frames_interval": [
+            46912582,
+            46924277
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 417000,
+              "frames": 46912581
+            },
+            "after": {
+              "execution": 417100,
+              "frames": 46924277
+            }
+          }
+        },
+        "escape_started": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 358282129,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "high_jump": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 358282129,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "ice_beam": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 358282129,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "kraid_area": {
+          "first_execution": 2225573,
+          "arrival_frames_interval": [
+            270887375,
+            270898507
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 2225500,
+              "frames": 270887374
+            },
+            "after": {
+              "execution": 2225600,
+              "frames": 270898507
+            }
+          }
+        },
+        "kraid_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 358282129,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "long_beam": {
+          "first_execution": 1025044,
+          "arrival_frames_interval": [
+            123572991,
+            123586681
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 1025000,
+              "frames": 123572990
+            },
+            "after": {
+              "execution": 1025100,
+              "frames": 123586681
+            }
+          }
+        },
+        "missile_capacity": {
+          "first_execution": 164934,
+          "arrival_frames_interval": [
+            19474306,
+            19485654
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 164900,
+              "frames": 19474305
+            },
+            "after": {
+              "execution": 165000,
+              "frames": 19485654
+            }
+          }
+        },
+        "morph_ball": {
+          "first_execution": 105,
+          "arrival_frames_interval": [
+            13392,
+            29147
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 100,
+              "frames": 13391
+            },
+            "after": {
+              "execution": 200,
+              "frames": 29147
+            }
+          }
+        },
+        "mother_brain_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 358282129,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "norfair": {
+          "first_execution": 170551,
+          "arrival_frames_interval": [
+            20094192,
+            20107449
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 170500,
+              "frames": 20094191
+            },
+            "after": {
+              "execution": 170600,
+              "frames": 20107449
+            }
+          }
+        },
+        "ridley_area": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 358282129,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "ridley_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 358282129,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "screw_attack": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 358282129,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "tourian": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 358282129,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "varia_suit": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 358282129,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "wave_beam": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 358282129,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        }
+      }
+    },
+    {
+      "arm": "continuation",
+      "seed": 5,
+      "cell": "metroid-full-s5-w4-m8192",
+      "summary_sha256": "6aca85083295bdf11dcc293b0c05b096c197fe8fd9dcfb3c48246d8429514f62",
+      "result_sha256": "46076d098dc82650bf0e5e9ea06279cb6dfa5f9e35cbffbab469271ed80ebfc2",
+      "progress_sha256": "ab6a08ee0fd9128d93fe001ec1ab7437b5ea551d9ffbb90dab20eade95482465",
+      "progress_bytes": 67251249,
+      "progress_records": 30002,
+      "identity": {
+        "actions": 4096,
+        "ai": null,
+        "backend": "native",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+        "executions": 3000000,
+        "format": "nes-eval-identity-v1",
+        "frames": 400000000,
+        "game": "metroid",
+        "level": null,
+        "memory_mib": 8192,
+        "mixture": "alphabet_continuation_v1",
+        "policies": {
+          "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+          "duration_policy": "stratified_short_or_long_v1",
+          "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v4;sha256=a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+          "key_policy": "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8",
+          "replacement_policy": "opaque_preference_then_fewest_frames",
+          "terminal_policy": "death_or_ending_v2"
+        },
+        "result_slots": 2,
+        "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+        "seed": 5,
+        "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+        "source_tree_sha256": "3ded3c1bab754e754017d80b2c8e2f19a2a37c0e3ab812a8ca280937955b9fc4",
+        "stage": null,
+        "suffix": "one_to_six",
+        "verification": "witness",
+        "wall_seconds": 7200,
+        "whole_game": false,
+        "window": 2,
+        "workers": 4
+      },
+      "cpu_set": [
+        20,
+        21,
+        22,
+        23
+      ],
+      "endpoints": {
+        "bombs": {
+          "first_execution": 742842,
+          "arrival_frames_interval": [
+            88803718,
+            88818147
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 742800,
+              "frames": 88803717
+            },
+            "after": {
+              "execution": 742900,
+              "frames": 88818147
+            }
+          }
+        },
+        "brinstar": {
+          "first_execution": 1,
+          "arrival_frames_interval": [
+            201,
+            201
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": null,
+            "after": {
+              "execution": 1,
+              "frames": 201
+            }
+          }
+        },
+        "ending": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 349373025,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "energy_tank": {
+          "first_execution": 391771,
+          "arrival_frames_interval": [
+            44738937,
+            44750996
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 391700,
+              "frames": 44738936
+            },
+            "after": {
+              "execution": 391800,
+              "frames": 44750996
+            }
+          }
+        },
+        "escape_started": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 349373025,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "high_jump": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 349373025,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "ice_beam": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 349373025,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "kraid_area": {
+          "first_execution": 860117,
+          "arrival_frames_interval": [
+            101743561,
+            101755394
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 860100,
+              "frames": 101743560
+            },
+            "after": {
+              "execution": 860200,
+              "frames": 101755394
+            }
+          }
+        },
+        "kraid_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 349373025,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "long_beam": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 349373025,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "missile_capacity": {
+          "first_execution": 119219,
+          "arrival_frames_interval": [
+            14550350,
+            14559085
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 119200,
+              "frames": 14550349
+            },
+            "after": {
+              "execution": 119300,
+              "frames": 14559085
+            }
+          }
+        },
+        "morph_ball": {
+          "first_execution": 307,
+          "arrival_frames_interval": [
+            40506,
+            53092
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 300,
+              "frames": 40505
+            },
+            "after": {
+              "execution": 400,
+              "frames": 53092
+            }
+          }
+        },
+        "mother_brain_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 349373025,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "norfair": {
+          "first_execution": 125119,
+          "arrival_frames_interval": [
+            15129319,
+            15143733
+          ],
+          "right_censored_after_frames": null,
+          "bracket": {
+            "before": {
+              "execution": 125100,
+              "frames": 15129318
+            },
+            "after": {
+              "execution": 125200,
+              "frames": 15143733
+            }
+          }
+        },
+        "ridley_area": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 349373025,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "ridley_defeated": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 349373025,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "screw_attack": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 349373025,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "tourian": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 349373025,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "varia_suit": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 349373025,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        },
+        "wave_beam": {
+          "first_execution": null,
+          "arrival_frames_interval": null,
+          "right_censored_after_frames": 349373025,
+          "bracket": {
+            "before": null,
+            "after": null
+          }
+        }
+      }
+    }
+  ],
+  "comparisons": {
+    "bombs": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": [
+            363700295,
+            363712621
+          ],
+          "continuation": [
+            173632256,
+            173646518
+          ],
+          "strict_win": true
+        },
+        {
+          "seed": 4,
+          "control": [
+            299041623,
+            299056399
+          ],
+          "continuation": [
+            263270557,
+            263285051
+          ],
+          "strict_win": true
+        },
+        {
+          "seed": 5,
+          "control": [
+            263199528,
+            263211554
+          ],
+          "continuation": [
+            88803718,
+            88818147
+          ],
+          "strict_win": true
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": [
+        0.567729546127606,
+        0.567800175995146
+      ]
+    },
+    "brinstar": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": [
+            180,
+            180
+          ],
+          "continuation": [
+            180,
+            180
+          ],
+          "strict_win": false
+        },
+        {
+          "seed": 4,
+          "control": [
+            21,
+            21
+          ],
+          "continuation": [
+            21,
+            21
+          ],
+          "strict_win": false
+        },
+        {
+          "seed": 5,
+          "control": [
+            201,
+            201
+          ],
+          "continuation": [
+            201,
+            201
+          ],
+          "strict_win": false
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": [
+        1.0,
+        1.0
+      ]
+    },
+    "ending": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 4,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 5,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": null
+    },
+    "energy_tank": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": [
+            45544459,
+            45557517
+          ],
+          "continuation": [
+            76222740,
+            76233752
+          ],
+          "strict_win": false
+        },
+        {
+          "seed": 4,
+          "control": [
+            52779080,
+            52792516
+          ],
+          "continuation": [
+            46912582,
+            46924277
+          ],
+          "strict_win": true
+        },
+        {
+          "seed": 5,
+          "control": [
+            19073266,
+            19084754
+          ],
+          "continuation": [
+            44738937,
+            44750996
+          ],
+          "strict_win": false
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": [
+        1.4295104822730254,
+        1.430269120186022
+      ]
+    },
+    "escape_started": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 4,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 5,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": null
+    },
+    "high_jump": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 4,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 5,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": null
+    },
+    "ice_beam": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 4,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 5,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": null
+    },
+    "kraid_area": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": [
+            374667946,
+            374679027
+          ],
+          "continuation": [
+            189611785,
+            189624447
+          ],
+          "strict_win": true
+        },
+        {
+          "seed": 4,
+          "control": [
+            305031858,
+            305044611
+          ],
+          "continuation": [
+            270887375,
+            270898507
+          ],
+          "strict_win": true
+        },
+        {
+          "seed": 5,
+          "control": [
+            271591033,
+            271604096
+          ],
+          "continuation": [
+            101743561,
+            101755394
+          ],
+          "strict_win": true
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": [
+        0.5910084410510836,
+        0.5910688152670601
+      ]
+    },
+    "kraid_defeated": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 4,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 5,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": null
+    },
+    "long_beam": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": [
+            226057391,
+            226069549
+          ],
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 4,
+          "control": [
+            142134568,
+            142148002
+          ],
+          "continuation": [
+            123572991,
+            123586681
+          ],
+          "strict_win": true
+        },
+        {
+          "seed": 5,
+          "control": [
+            174778016,
+            174793949
+          ],
+          "continuation": null,
+          "strict_win": null
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": null
+    },
+    "missile_capacity": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": [
+            18075136,
+            18087920
+          ],
+          "continuation": [
+            42254929,
+            42265992
+          ],
+          "strict_win": false
+        },
+        {
+          "seed": 4,
+          "control": [
+            23658245,
+            23670620
+          ],
+          "continuation": [
+            19474306,
+            19485654
+          ],
+          "strict_win": true
+        },
+        {
+          "seed": 5,
+          "control": [
+            22404343,
+            22418181
+          ],
+          "continuation": [
+            14550350,
+            14559085
+          ],
+          "strict_win": true
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": [
+        1.1885865125455692,
+        1.1897948078107667
+      ]
+    },
+    "morph_ball": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": [
+            42196,
+            56757
+          ],
+          "continuation": [
+            26989,
+            38549
+          ],
+          "strict_win": true
+        },
+        {
+          "seed": 4,
+          "control": [
+            14100,
+            28565
+          ],
+          "continuation": [
+            13392,
+            29147
+          ],
+          "strict_win": false
+        },
+        {
+          "seed": 5,
+          "control": [
+            71965,
+            87522
+          ],
+          "continuation": [
+            40506,
+            53092
+          ],
+          "strict_win": true
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": [
+        0.46797690402906666,
+        0.9417359914549239
+      ]
+    },
+    "mother_brain_defeated": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 4,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 5,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": null
+    },
+    "norfair": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": [
+            18323796,
+            18336350
+          ],
+          "continuation": [
+            42900901,
+            42912686
+          ],
+          "strict_win": false
+        },
+        {
+          "seed": 4,
+          "control": [
+            24332468,
+            24347369
+          ],
+          "continuation": [
+            20094192,
+            20107449
+          ],
+          "strict_win": true
+        },
+        {
+          "seed": 5,
+          "control": [
+            22918470,
+            22932824
+          ],
+          "continuation": [
+            15129319,
+            15143733
+          ],
+          "strict_win": true
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": [
+        1.1906206640602812,
+        1.191981472620232
+      ]
+    },
+    "ridley_area": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 4,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 5,
+          "control": [
+            335821999,
+            335833974
+          ],
+          "continuation": null,
+          "strict_win": null
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": null
+    },
+    "ridley_defeated": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 4,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 5,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": null
+    },
+    "screw_attack": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 4,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 5,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": null
+    },
+    "tourian": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 4,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 5,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": null
+    },
+    "varia_suit": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 4,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 5,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": null
+    },
+    "wave_beam": {
+      "pairs": [
+        {
+          "seed": 3,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 4,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        },
+        {
+          "seed": 5,
+          "control": null,
+          "continuation": null,
+          "strict_win": null
+        }
+      ],
+      "all_attained_mean_cost_ratio_interval": null
+    }
+  },
+  "energy_loss_but_bombs_win_seeds": [
+    3,
+    5
+  ],
+  "new_emulator_frames": 0,
+  "limits": [
+    "Retrospective reused development seeds; no fresh confirmation or new allocation gate.",
+    "Intervals bound checkpoint timing, not population uncertainty; no within-job arrival claim.",
+    "Original arms used different CPU sets concurrently; no matched wall/CPU efficacy claim.",
+    "All six use legacy terminal v2; current corrected-terminal efficacy remains unmeasured.",
+    "No boss defeat is observed; earlier milestone gains do not qualify untouched validation.",
+    "Unattained endpoints remain censored; no success-only means are computed for them."
+  ]
+}

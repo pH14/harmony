@@ -1,0 +1,108 @@
+{
+  "format": "action-persistence-p01-registration-v1",
+  "registered_utc": "2026-09-10T00:59:24.137531+00:00",
+  "purpose": "Independent prospective test of the whole-command persistence signal nominated after D01; D01 outcomes excluded from this score.",
+  "horizon_frames": 50000000,
+  "nominal_search_limit": 400000000,
+  "bounded_inflight_drain_per_cell": 5760,
+  "known_auxiliary_limit": 4000000,
+  "prior_block_ledger_sha256": "e9f1db1d33c5da6e1579343e5d5169f7807670bd68c89867a4cbfd4935b7faa7",
+  "decision_sha256": "f6c8f3a53a93b21da10ef2d0859cdc4693473a4ffb1afa2a34a543953658db07",
+  "scorer_sha256": "a68eac1b6677a37a2326bcffe38b7e198238f862308ae14006d707b6a57d0d63",
+  "helper_sha256": {
+    "score_screen.py": "507e727de3bccb1f6b791433def8f258b762f34809432a6176263e82b3b86036",
+    "named_milestone_endpoint.py": "f2badcaa078f4c80c858e78416221b51dbcd8cc624eee53c2f6b2784e0cc678e"
+  },
+  "milestone_stop": {
+    "name": "energy_tank",
+    "observation_policy": "metroid-named-progress-v2"
+  },
+  "deadline_utc": "2026-09-10T02:50:00+00:00",
+  "seed_registration_sha256": "5a8a9b95187013a635eba64a10bc8a33d0ca79da2f01711fd783d11b2ada4226",
+  "seed_audits_sha256": {
+    "msr1": "b5adfeaf8789f6989981fc16d75995b67b240a4f8e77df01001b3969ea257fbe",
+    "ms02": "9ea3c50a34c382cc39e6eaea732e8ba71e767ca1a9aec7c02588baf09b53f729"
+  },
+  "qualification_sha256": {
+    "q01": "6f1cbe3644f033bf680608165ff421f032170eb7e0b14447164f545e27021980",
+    "q02": "c45735455757a792245306818f686570a42989fcf6b7da1a9f59aca9376e7844",
+    "qx01": "4b546b08f305a5de0d7421c3cb9d69a8fb91fd431efe9c06c2cc71343b4d9706"
+  },
+  "schedule": "Wave 1 pairs 0/1, one per host. Finish both arms per pair. Stop on failed measurement/resource limits or impossible three-win criterion; otherwise dispatch registered pairs 2/3 only when their complete time reservations and auxiliary balance fit. No new seeds, retries, parameter tuning or horizon extension.",
+  "identity_difference": "Only action_correlation GamePolicies entry differs within a pair. Defaults, source, CPU set and all other identities match.",
+  "screen": {
+    "budget_frames": 50000000,
+    "milestone_stop": {
+      "name": "energy_tank",
+      "observation_policy": "metroid-named-progress-v2"
+    },
+    "required_strict_wins": 3,
+    "pairs": [
+      {
+        "seed": 3483428449,
+        "control": "p01-pair-0-ordinary",
+        "candidate": "p01-pair-0-whole"
+      },
+      {
+        "seed": 1805348997,
+        "control": "p01-pair-1-ordinary",
+        "candidate": "p01-pair-1-whole"
+      },
+      {
+        "seed": 4271701205,
+        "control": "p01-pair-2-ordinary",
+        "candidate": "p01-pair-2-whole"
+      },
+      {
+        "seed": 1911459263,
+        "control": "p01-pair-3-ordinary",
+        "candidate": "p01-pair-3-whole"
+      }
+    ],
+    "resources": {
+      "max_candidate_to_control_ratio": 1.25,
+      "measurement": "event_stopped_cell_totals_v1"
+    },
+    "criterion": "Three strict wins and at least 15% lower mean restricted first-energy-tank admitted cost, plus CPU/elapsed totals at most 1.25 times control. Prospective allocation gate for the exploratory nominee; D01 excluded.",
+    "early_stop": "Only after a completed pair when three wins become impossible, or after measurement failure."
+  },
+  "panels": [
+    {
+      "id": "p01-pair-0",
+      "seed": 3483428449,
+      "host": "msr1",
+      "cpus": "8-11",
+      "registration": "p01-pair-0-registration.json",
+      "registration_sha256": "bea9e747c915d907d498e1b8d8e8456f04b959b5b28dff0a4c7b0d6502eb2024",
+      "service_runtime_seconds": 2900
+    },
+    {
+      "id": "p01-pair-1",
+      "seed": 1805348997,
+      "host": "ms02",
+      "cpus": "0-3",
+      "registration": "p01-pair-1-registration.json",
+      "registration_sha256": "1caeb28034777c26db03b6f4517bcbc2e282b65c322f7b5a64571853fce4bc2a",
+      "service_runtime_seconds": 2900
+    },
+    {
+      "id": "p01-pair-2",
+      "seed": 4271701205,
+      "host": "msr1",
+      "cpus": "8-11",
+      "registration": "p01-pair-2-registration.json",
+      "registration_sha256": "ab68b0895d43ac6e1c3bebf96391715dbc74552b88bdd3b3fd471bc6199fe5b0",
+      "service_runtime_seconds": 2900
+    },
+    {
+      "id": "p01-pair-3",
+      "seed": 1911459263,
+      "host": "ms02",
+      "cpus": "0-3",
+      "registration": "p01-pair-3-registration.json",
+      "registration_sha256": "7c8d4a5e2add4898d2f9dad96a72408612869357dfef1358863a0a486afda386",
+      "service_runtime_seconds": 2900
+    }
+  ],
+  "next_gate": "A pass earns a separately registered unchanged-policy MM2 transfer and later-depth decision. No boss/Wily claim or untouched validation follows from a precursor pass. A failure closes this proposal without tuning."
+}

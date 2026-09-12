@@ -1,0 +1,128 @@
+{
+  "format": "depth-transfer-c01-analysis-v1",
+  "analyzed_utc": "2026-09-09T21:10:56.388837+00:00",
+  "registration_sha256": "049af3cbf63c8cc9fae816fba55a7c63b200272424c85b996abb564e5a322972",
+  "results_sha256": "fae2f6588b467f802d5261e64f40c447fa57c1c08c025d80ae7a89cd6d656e47",
+  "analyzer_sha256": "ee6c915c447c84d9930b6f549a4dd9b0d6fee00da23a9813df9359fafc288290",
+  "decision": "pass",
+  "hits": 3,
+  "controls": 4,
+  "cells": [
+    {
+      "id": "control-0",
+      "seed": 2234161540,
+      "hit": true,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": 40909271,
+        "observed_through_frames": 40910389,
+        "observed_full_budget": false,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          40909271,
+          40909271
+        ]
+      },
+      "actual_admitted_frames": 40910389,
+      "frames_after_event_or_horizon": 1118,
+      "twice_replayed_witness_frames": 203606,
+      "cpu_seconds": 2105.860988,
+      "elapsed_seconds": 716.9511954429909,
+      "summary_sha256": "df45e3a90d1b88893ee1afc264a0874ddae745c9cb693a31531cd48d92f7443c"
+    },
+    {
+      "id": "control-1",
+      "seed": 3776618068,
+      "hit": true,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": 33896740,
+        "observed_through_frames": 33897593,
+        "observed_full_budget": false,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          33896740,
+          33896740
+        ]
+      },
+      "actual_admitted_frames": 33897593,
+      "frames_after_event_or_horizon": 853,
+      "twice_replayed_witness_frames": 202204,
+      "cpu_seconds": 1745.045038,
+      "elapsed_seconds": 596.8386862050393,
+      "summary_sha256": "cf4804e65e18168c10fc06f1a0f50564865389eaece86507655f9052d0dc617b"
+    },
+    {
+      "id": "control-2",
+      "seed": 2030421909,
+      "hit": true,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": 48845104,
+        "observed_through_frames": 48845809,
+        "observed_full_budget": false,
+        "hit_by_budget": true,
+        "restricted_cost_interval": [
+          48845104,
+          48845104
+        ]
+      },
+      "actual_admitted_frames": 48845809,
+      "frames_after_event_or_horizon": 705,
+      "twice_replayed_witness_frames": 199766,
+      "cpu_seconds": 2498.282509,
+      "elapsed_seconds": 847.1758844100405,
+      "summary_sha256": "834f2177e951a4b87b1247e7af3284cf8963634a9eeeae92c0c8cb67d64e9251"
+    },
+    {
+      "id": "control-3",
+      "seed": 3101192823,
+      "hit": false,
+      "endpoint": {
+        "endpoint": "energy_tank",
+        "milestone_stop": {
+          "name": "energy_tank",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "cost_convention": "first_admitted_job_frames_v1",
+        "budget_frames": 50000000,
+        "arrival_exact": null,
+        "observed_through_frames": 50001206,
+        "observed_full_budget": true,
+        "hit_by_budget": false,
+        "restricted_cost_interval": [
+          50000000,
+          50000000
+        ]
+      },
+      "actual_admitted_frames": 50001206,
+      "frames_after_event_or_horizon": 1206,
+      "twice_replayed_witness_frames": 105720,
+      "cpu_seconds": 2578.677723,
+      "elapsed_seconds": 874.2857870860025,
+      "summary_sha256": "c6e980618a56eb6805b1c4bb6f386e9071366af3ceaac0dd29a7028d19fe0dfc"
+    }
+  ],
+  "actual_admitted_search_frames": 173654997,
+  "known_auxiliary_frames": 711296,
+  "interpretation": "Endpoint allocation calibration, not a candidate comparison or a power guarantee.",
+  "unmeasured_work": "Setup and unadmitted emulator work are additional; no full physical-frame accounting claim."
+}

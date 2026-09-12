@@ -1,0 +1,142 @@
+{
+  "format": "action-correlation-d01-registration-v1",
+  "registered_utc": "2026-09-09T23:50:15.183633+00:00",
+  "purpose": "Test suffix-local component refresh against ordinary actions and matched full-command persistence at the calibrated first-energy-tank endpoint.",
+  "horizon_frames": 50000000,
+  "nominal_search_limit": 600000000,
+  "bounded_inflight_drain_per_cell": 5760,
+  "known_auxiliary_limit": 5000000,
+  "prior_ledger_sha256": "ff0bdaf0677b05b64f0dfe2885567f684523b7eae34bd40994c96087a30b131f",
+  "scorer_sha256": "ac52361eecfc1e0036262e4f4b4940e3de6b4492e93574eff5d82829062ef448",
+  "milestone_stop": {
+    "name": "energy_tank",
+    "observation_policy": "metroid-named-progress-v2"
+  },
+  "deadline_utc": "2026-09-10T02:30:00+00:00",
+  "seed_registration_sha256": "f3dcfc394ae1eae9ebaa1566854fd701b04f408c1209c2a4e8538d628350856a",
+  "seed_audits_sha256": {
+    "msr1": "cfb108b3c88e862a90823ccea78f04bd97bf7d88dfe4cbf609496f91ac9170ed",
+    "ms02": "acbf80bc3131bba824f15f2c06b42de9cd13791f8ce9a353cbe302332bf0af06"
+  },
+  "qualification_sha256": {
+    "q01": "6f1cbe3644f033bf680608165ff421f032170eb7e0b14447164f545e27021980",
+    "q02": "c45735455757a792245306818f686570a42989fcf6b7da1a9f59aca9376e7844",
+    "qx01": "4b546b08f305a5de0d7421c3cb9d69a8fb91fd431efe9c06c2cc71343b4d9706"
+  },
+  "schedule": "Wave 1: triplets 0 and 1 concurrently, one per host. Complete all three arms of each triplet. Evaluate both comparison gates; a failed/futile gate or measurement failure stops dispatch. Only if both remain attainable, wave 2 runs triplets 2 and 3 on the same respective host/CPU set. No retries, replacement seeds, horizon extension or tuning. Check auxiliary balance before further dispatch.",
+  "pass_rule": "For each comparison separately: at least 3/4 strict wins, at least 15% lower mean restricted cost and aggregate candidate CPU/elapsed totals <=1.25 times that control. Both-censored pairs tie. Stop when either three-win criterion is impossible. These are allocation rules, not power guarantees.",
+  "next_gate": "Passing both comparisons earns separately registered independent confirmation and bounded MM2 transfer with the identical candidate. No boss/Wily breakthrough or untouched validation is inferred.",
+  "identity_difference": "Only the action_correlation GamePolicies entry intentionally differs within a triplet; empty means the unchanged ordinary policy. The generic eval compare compatibility guard remains unchanged.",
+  "comparisons": {
+    "ordinary": {
+      "budget_frames": 50000000,
+      "milestone_stop": {
+        "name": "energy_tank",
+        "observation_policy": "metroid-named-progress-v2"
+      },
+      "required_strict_wins": 3,
+      "pairs": [
+        {
+          "seed": 3192859461,
+          "control": "pair-0-ordinary",
+          "candidate": "pair-0-component"
+        },
+        {
+          "seed": 3735135754,
+          "control": "pair-1-ordinary",
+          "candidate": "pair-1-component"
+        },
+        {
+          "seed": 2625380762,
+          "control": "pair-2-ordinary",
+          "candidate": "pair-2-component"
+        },
+        {
+          "seed": 2798373971,
+          "control": "pair-3-ordinary",
+          "candidate": "pair-3-component"
+        }
+      ],
+      "resources": {
+        "max_candidate_to_control_ratio": 1.25,
+        "measurement": "event_stopped_cell_totals_v1"
+      },
+      "criterion": "Three strict wins and at least 15% lower mean restricted first-energy-tank admitted cost, plus CPU/elapsed totals at most 1.25 times control. Exploratory allocation gate, not statistical significance.",
+      "early_stop": "Only after a completed pair when three wins become impossible, or after measurement failure."
+    },
+    "whole": {
+      "budget_frames": 50000000,
+      "milestone_stop": {
+        "name": "energy_tank",
+        "observation_policy": "metroid-named-progress-v2"
+      },
+      "required_strict_wins": 3,
+      "pairs": [
+        {
+          "seed": 3192859461,
+          "control": "pair-0-whole",
+          "candidate": "pair-0-component"
+        },
+        {
+          "seed": 3735135754,
+          "control": "pair-1-whole",
+          "candidate": "pair-1-component"
+        },
+        {
+          "seed": 2625380762,
+          "control": "pair-2-whole",
+          "candidate": "pair-2-component"
+        },
+        {
+          "seed": 2798373971,
+          "control": "pair-3-whole",
+          "candidate": "pair-3-component"
+        }
+      ],
+      "resources": {
+        "max_candidate_to_control_ratio": 1.25,
+        "measurement": "event_stopped_cell_totals_v1"
+      },
+      "criterion": "Three strict wins and at least 15% lower mean restricted first-energy-tank admitted cost, plus CPU/elapsed totals at most 1.25 times control. Exploratory allocation gate, not statistical significance.",
+      "early_stop": "Only after a completed pair when three wins become impossible, or after measurement failure."
+    }
+  },
+  "triplets": [
+    {
+      "id": "triplet-0",
+      "seed": 3192859461,
+      "host": "msr1",
+      "cpus": "8-11",
+      "registration": "d01-triplet-0-registration.json",
+      "registration_sha256": "22a88aee6f7f7a9aba6c3378870e477dd52c94df579d1ac5f148c9125722a02b",
+      "service_runtime_seconds": 4350
+    },
+    {
+      "id": "triplet-1",
+      "seed": 3735135754,
+      "host": "ms02",
+      "cpus": "0-3",
+      "registration": "d01-triplet-1-registration.json",
+      "registration_sha256": "fe7a53aba4226039bb727d8584af71ffd55d85e16a9e780f1bf8151745950655",
+      "service_runtime_seconds": 4350
+    },
+    {
+      "id": "triplet-2",
+      "seed": 2625380762,
+      "host": "msr1",
+      "cpus": "8-11",
+      "registration": "d01-triplet-2-registration.json",
+      "registration_sha256": "2e456f6a44df45f5a54948a8cffa8ef8d921394a85860eb4ddcced77ae192f64",
+      "service_runtime_seconds": 4350
+    },
+    {
+      "id": "triplet-3",
+      "seed": 2798373971,
+      "host": "ms02",
+      "cpus": "0-3",
+      "registration": "d01-triplet-3-registration.json",
+      "registration_sha256": "b0c761ee268611c3fc5159558c9f3d53db31686c969c4524169f7853b10c673a",
+      "service_runtime_seconds": 4350
+    }
+  ]
+}

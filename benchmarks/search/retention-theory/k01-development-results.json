@@ -1,0 +1,1417 @@
+{
+  "passed": true,
+  "records": [
+    {
+      "stage": "development",
+      "label": "corrected-default",
+      "build": {
+        "binary_sha256": "2fcc627a1828782efc529e2f708fd2921353a1f21cc8adeba18d1a3b1650491b",
+        "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+        "dirty": null,
+        "features": "",
+        "files": 331,
+        "format": "harmony-search-build-v1",
+        "locked": true,
+        "profile": "release",
+        "revision": null,
+        "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+        "rustflags": "",
+        "source_tree_sha256": "9627498c39976309bf3570bf024945247832fee8fb9849b18542ea725cd9203b",
+        "target_cache": "/root/harmony-retention-theory-20260908/target"
+      },
+      "summary": {
+        "build": {
+          "attestation": "supplied",
+          "binary_sha256": "2fcc627a1828782efc529e2f708fd2921353a1f21cc8adeba18d1a3b1650491b",
+          "source": {
+            "binary_sha256": "2fcc627a1828782efc529e2f708fd2921353a1f21cc8adeba18d1a3b1650491b",
+            "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+            "dirty": null,
+            "features": "",
+            "files": 331,
+            "format": "harmony-search-build-v1",
+            "locked": true,
+            "profile": "release",
+            "revision": null,
+            "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+            "rustflags": "",
+            "source_tree_sha256": "9627498c39976309bf3570bf024945247832fee8fb9849b18542ea725cd9203b",
+            "target_cache": "/root/harmony-retention-theory-20260908/target"
+          }
+        },
+        "case": "metroid-full",
+        "cell": "metroid-full-s3-w4-m8192",
+        "cpu_seconds": 4406.59284,
+        "cpu_set": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "elapsed_seconds": 1674.7593018130283,
+        "exit_code": 0,
+        "final_disk": {
+          "allocated_bytes": 24326144,
+          "categories": {
+            "reports_and_logs": 6825860,
+            "telemetry": 17450010
+          },
+          "logical_bytes": 24275870
+        },
+        "format": "harmony-search-eval-v1",
+        "host": {
+          "cpu_model": null,
+          "hostname": "msr1",
+          "logical_cpus": 12,
+          "machine": "aarch64",
+          "release": "6.18.43-current-arm64",
+          "system": "Linux"
+        },
+        "identity": {
+          "actions": 4096,
+          "ai": null,
+          "backend": "native",
+          "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "executions": 500000,
+          "format": "nes-eval-identity-v1",
+          "frames": 70000000,
+          "game": "metroid",
+          "level": null,
+          "memory_mib": 8192,
+          "mixture": "alphabet_only",
+          "mm2_chain": false,
+          "policies": {
+            "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+            "duration_policy": "stratified_short_or_long_v1",
+            "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v4;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+            "key_policy": "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8",
+            "replacement_policy": "opaque_preference_then_fewest_frames",
+            "terminal_policy": "death_or_bcd_underflow_or_ending_v3"
+          },
+          "prefix_sha256": null,
+          "result_slots": 2,
+          "retention_audit": true,
+          "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+          "seed": 3,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "slot_retention": null,
+          "source_tree_sha256": "9627498c39976309bf3570bf024945247832fee8fb9849b18542ea725cd9203b",
+          "stage": null,
+          "suffix": "one_to_six",
+          "verification": "witness",
+          "wall_seconds": 1800,
+          "whole_game": false,
+          "window": 2,
+          "workers": 4
+        },
+        "io_bytes_last_sample": {
+          "read_bytes": 8192,
+          "rss_bytes": 0,
+          "write_bytes": 235335680
+        },
+        "last_progress": {
+          "active_entries": 42543,
+          "barren_groups": 15710,
+          "barren_memory_bytes": 1272510,
+          "cheapest_time_in_group": 3584,
+          "coordinator": {
+            "admission_ns": 18860709181,
+            "admissions": 500000,
+            "bookkeeping_ns": 3959798362,
+            "enabled": true,
+            "history_compaction_ns": 0,
+            "receive_wait_ns": 1591088834861,
+            "receives": 500000,
+            "replay_actions": 0,
+            "replay_jobs": 0,
+            "replay_time": 0,
+            "selection_ns": 26734704512,
+            "selections": 500008,
+            "stream_write_ns": 8388699618,
+            "suffix_actions": 1750515,
+            "suffix_time": 73639419
+          },
+          "deaths": 159824,
+          "deepest_key": {
+            "area": 16,
+            "door": 0,
+            "health": 26,
+            "items": 1,
+            "map_x": 30,
+            "map_y": 7,
+            "missiles": 0,
+            "posture": 2,
+            "tanks": 3,
+            "x": 13,
+            "y": 14
+          },
+          "draw_state_memory_bytes": 0,
+          "entry_drops": 0,
+          "entry_metadata_memory_bytes": 14482104,
+          "executions": 500000,
+          "frames_emulated": 60731080,
+          "historical_cells": 15376,
+          "historical_entries_dropped": 135617,
+          "history_compactions": 2,
+          "history_memory_bytes": 28685714,
+          "input_index_memory_bytes": 11808652,
+          "input_index_nodes": 102300,
+          "input_reconstructions": 24,
+          "live_entries": 46417,
+          "milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 3
+          },
+          "novelty_memory_bytes": 1122448,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "resident_memory_bytes": 1014118624,
+          "resident_snapshot_bytes": 985432910,
+          "resident_snapshots": 46417,
+          "retained": 182034,
+          "retained_diagnostics": {
+            "active_entries": 42543,
+            "equipment_union": 16,
+            "map_cells_retained_cached": 84,
+            "max_bosses": 0,
+            "max_energy_tanks": 1,
+            "max_health_cached": 1999,
+            "max_missile_capacity": 10,
+            "missing_snapshots": 0,
+            "scope": "union/maxima over cached active endpoints; not one trajectory; lower bounds when snapshots are missing",
+            "temporary_bitmap_bytes": 32768,
+            "underflow_endpoints_cached": 0
+          },
+          "retention_diagnostic_memory_bytes": 64,
+          "retention_diagnostics": {
+            "alternative_admissions": 0,
+            "competitions": 1241558,
+            "removed": 139491,
+            "removed_never_in_window": 28962,
+            "removed_never_productive": 87667,
+            "removed_never_selected": 38007,
+            "removed_selections": 349900,
+            "resource_decisions": 0
+          },
+          "search_elapsed_millis": 1664212,
+          "snapshot_evictions": 0,
+          "unix_time": 1788915011,
+          "victories": 0,
+          "workload_diagnostics": {
+            "coverage_bitmap_bytes": 32768,
+            "first_underflow_execution": 36074,
+            "map_cells_observed": 84,
+            "max_observed_endpoint_health": 9982,
+            "named_progress": {
+              "first_seen": {
+                "bombs": null,
+                "brinstar": {
+                  "execution": 1,
+                  "route_action_end_frame": 51
+                },
+                "ending": null,
+                "energy_tank": {
+                  "execution": 487706,
+                  "route_action_end_frame": 38747
+                },
+                "escape_started": null,
+                "high_jump": null,
+                "ice_beam": null,
+                "kraid_area": null,
+                "kraid_defeated": null,
+                "long_beam": null,
+                "missile_capacity": {
+                  "execution": 135155,
+                  "route_action_end_frame": 14111
+                },
+                "morph_ball": {
+                  "execution": 361,
+                  "route_action_end_frame": 437
+                },
+                "mother_brain_defeated": null,
+                "norfair": {
+                  "execution": 137386,
+                  "route_action_end_frame": 16610
+                },
+                "ridley_area": null,
+                "ridley_defeated": null,
+                "screw_attack": null,
+                "tourian": null,
+                "varia_suit": null,
+                "wave_beam": null
+              },
+              "format": "metroid-named-progress-v2",
+              "max_energy_tanks": 1,
+              "max_missile_capacity": 10
+            },
+            "observation_filter": "live gameplay observations supplied to this accumulator",
+            "underflow_action_endpoints": 46,
+            "underflow_candidate_eligible_endpoints": 0,
+            "underflow_diagnostic_memory_bytes": 40
+          }
+        },
+        "max_process_rss_bytes": 1174228992,
+        "origin": "power-on new-game genesis",
+        "peak_disk_allocated_bytes_sampled": 24326144,
+        "peak_disk_logical_bytes_sampled": 24275870,
+        "peak_process_tree_rss_bytes_sampled": 1165631488,
+        "result": {
+          "executions": 500000,
+          "executions_per_second": 300.39800338639117,
+          "executions_to_first_victory": null,
+          "export_seconds": 0.002081744,
+          "format": "nes-eval-result-v1",
+          "frame_budget_overshoot": 0,
+          "frames_emulated": 60731080,
+          "frames_per_second": 36486.990350998385,
+          "frames_to_first_victory": null,
+          "milestone_witnesses": {
+            "brinstar": {
+              "input_sha256": "ef3e2d64fd32d4492aacaf62a1157609aa6d8671682d3a801cdc795de5a0519e",
+              "replay": {
+                "dead": false,
+                "diagnostics": {
+                  "coverage_bitmap_bytes": 32768,
+                  "first_underflow_execution": null,
+                  "map_cells_observed": 1,
+                  "max_observed_endpoint_health": 0,
+                  "named_progress": {
+                    "first_seen": {
+                      "bombs": null,
+                      "brinstar": {
+                        "execution": 0,
+                        "route_action_end_frame": 0
+                      },
+                      "ending": null,
+                      "energy_tank": null,
+                      "escape_started": null,
+                      "high_jump": null,
+                      "ice_beam": null,
+                      "kraid_area": null,
+                      "kraid_defeated": null,
+                      "long_beam": null,
+                      "missile_capacity": null,
+                      "morph_ball": null,
+                      "mother_brain_defeated": null,
+                      "norfair": null,
+                      "ridley_area": null,
+                      "ridley_defeated": null,
+                      "screw_attack": null,
+                      "tourian": null,
+                      "varia_suit": null,
+                      "wave_beam": null
+                    },
+                    "format": "metroid-named-progress-v2",
+                    "max_energy_tanks": 0,
+                    "max_missile_capacity": 0
+                  },
+                  "observation_filter": "live gameplay observations supplied to this accumulator",
+                  "underflow_action_endpoints": 0,
+                  "underflow_candidate_eligible_endpoints": 0,
+                  "underflow_diagnostic_memory_bytes": 40
+                },
+                "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+                "milestones": {
+                  "areas": 1,
+                  "gained": false,
+                  "items": 0,
+                  "tanks": 0
+                },
+                "physical_suffix_frames": 51,
+                "snapshot_sha256": "443344e0bb12481eb8274646fe3d37afddc2fa41eb3458d83ee3de8229cf2418",
+                "victory": false
+              }
+            },
+            "energy_tank": {
+              "input_sha256": "a555b6708fa1f0ad0eba08afb3d911f4eb6fb7ae621292da431f046bf4910bf5",
+              "replay": {
+                "dead": false,
+                "diagnostics": {
+                  "coverage_bitmap_bytes": 32768,
+                  "first_underflow_execution": null,
+                  "map_cells_observed": 52,
+                  "max_observed_endpoint_health": 0,
+                  "named_progress": {
+                    "first_seen": {
+                      "bombs": null,
+                      "brinstar": {
+                        "execution": 0,
+                        "route_action_end_frame": 0
+                      },
+                      "ending": null,
+                      "energy_tank": {
+                        "execution": 1119,
+                        "route_action_end_frame": 38747
+                      },
+                      "escape_started": null,
+                      "high_jump": null,
+                      "ice_beam": null,
+                      "kraid_area": null,
+                      "kraid_defeated": null,
+                      "long_beam": null,
+                      "missile_capacity": {
+                        "execution": 408,
+                        "route_action_end_frame": 14111
+                      },
+                      "morph_ball": {
+                        "execution": 8,
+                        "route_action_end_frame": 437
+                      },
+                      "mother_brain_defeated": null,
+                      "norfair": {
+                        "execution": 474,
+                        "route_action_end_frame": 16625
+                      },
+                      "ridley_area": null,
+                      "ridley_defeated": null,
+                      "screw_attack": null,
+                      "tourian": null,
+                      "varia_suit": null,
+                      "wave_beam": null
+                    },
+                    "format": "metroid-named-progress-v2",
+                    "max_energy_tanks": 1,
+                    "max_missile_capacity": 10
+                  },
+                  "observation_filter": "live gameplay observations supplied to this accumulator",
+                  "underflow_action_endpoints": 0,
+                  "underflow_candidate_eligible_endpoints": 0,
+                  "underflow_diagnostic_memory_bytes": 40
+                },
+                "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+                "milestones": {
+                  "areas": 3,
+                  "gained": true,
+                  "items": 1,
+                  "tanks": 3
+                },
+                "physical_suffix_frames": 38747,
+                "snapshot_sha256": "5d4ab349c8d796031b54d4f15dc94803d65083f1f2e0ad9cbc0e03832aa1baac",
+                "victory": false
+              }
+            },
+            "missile_capacity": {
+              "input_sha256": "9fb939517a70b2be7229309cf0bdace55f7f2512857d06f403b6cd9ad12a117d",
+              "replay": {
+                "dead": false,
+                "diagnostics": {
+                  "coverage_bitmap_bytes": 32768,
+                  "first_underflow_execution": null,
+                  "map_cells_observed": 28,
+                  "max_observed_endpoint_health": 0,
+                  "named_progress": {
+                    "first_seen": {
+                      "bombs": null,
+                      "brinstar": {
+                        "execution": 0,
+                        "route_action_end_frame": 0
+                      },
+                      "ending": null,
+                      "energy_tank": null,
+                      "escape_started": null,
+                      "high_jump": null,
+                      "ice_beam": null,
+                      "kraid_area": null,
+                      "kraid_defeated": null,
+                      "long_beam": null,
+                      "missile_capacity": {
+                        "execution": 408,
+                        "route_action_end_frame": 14111
+                      },
+                      "morph_ball": {
+                        "execution": 8,
+                        "route_action_end_frame": 437
+                      },
+                      "mother_brain_defeated": null,
+                      "norfair": null,
+                      "ridley_area": null,
+                      "ridley_defeated": null,
+                      "screw_attack": null,
+                      "tourian": null,
+                      "varia_suit": null,
+                      "wave_beam": null
+                    },
+                    "format": "metroid-named-progress-v2",
+                    "max_energy_tanks": 0,
+                    "max_missile_capacity": 5
+                  },
+                  "observation_filter": "live gameplay observations supplied to this accumulator",
+                  "underflow_action_endpoints": 0,
+                  "underflow_candidate_eligible_endpoints": 0,
+                  "underflow_diagnostic_memory_bytes": 40
+                },
+                "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+                "milestones": {
+                  "areas": 1,
+                  "gained": true,
+                  "items": 1,
+                  "tanks": 1
+                },
+                "physical_suffix_frames": 14111,
+                "snapshot_sha256": "2056b7b379207f9afaead0630382caa2a683a7fd6bb3ca07dc0ef2694af9aecc",
+                "victory": false
+              }
+            },
+            "morph_ball": {
+              "input_sha256": "50fd650a61121b7457580c2b8e6406368979b9510251452ecbe50607193d2348",
+              "replay": {
+                "dead": false,
+                "diagnostics": {
+                  "coverage_bitmap_bytes": 32768,
+                  "first_underflow_execution": null,
+                  "map_cells_observed": 2,
+                  "max_observed_endpoint_health": 0,
+                  "named_progress": {
+                    "first_seen": {
+                      "bombs": null,
+                      "brinstar": {
+                        "execution": 0,
+                        "route_action_end_frame": 0
+                      },
+                      "ending": null,
+                      "energy_tank": null,
+                      "escape_started": null,
+                      "high_jump": null,
+                      "ice_beam": null,
+                      "kraid_area": null,
+                      "kraid_defeated": null,
+                      "long_beam": null,
+                      "missile_capacity": null,
+                      "morph_ball": {
+                        "execution": 8,
+                        "route_action_end_frame": 437
+                      },
+                      "mother_brain_defeated": null,
+                      "norfair": null,
+                      "ridley_area": null,
+                      "ridley_defeated": null,
+                      "screw_attack": null,
+                      "tourian": null,
+                      "varia_suit": null,
+                      "wave_beam": null
+                    },
+                    "format": "metroid-named-progress-v2",
+                    "max_energy_tanks": 0,
+                    "max_missile_capacity": 0
+                  },
+                  "observation_filter": "live gameplay observations supplied to this accumulator",
+                  "underflow_action_endpoints": 0,
+                  "underflow_candidate_eligible_endpoints": 0,
+                  "underflow_diagnostic_memory_bytes": 40
+                },
+                "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+                "milestones": {
+                  "areas": 1,
+                  "gained": true,
+                  "items": 1,
+                  "tanks": 0
+                },
+                "physical_suffix_frames": 437,
+                "snapshot_sha256": "765e6cdd1df3762de4b62483feed562399b4cbb5a59ed185b8e49d383dd0cce1",
+                "victory": false
+              }
+            },
+            "norfair": {
+              "input_sha256": "d3cefacd4a68d320aed5afe83d9c9ad6eca4767f8eb582567277739d05d163fa",
+              "replay": {
+                "dead": false,
+                "diagnostics": {
+                  "coverage_bitmap_bytes": 32768,
+                  "first_underflow_execution": null,
+                  "map_cells_observed": 34,
+                  "max_observed_endpoint_health": 0,
+                  "named_progress": {
+                    "first_seen": {
+                      "bombs": null,
+                      "brinstar": {
+                        "execution": 0,
+                        "route_action_end_frame": 0
+                      },
+                      "ending": null,
+                      "energy_tank": null,
+                      "escape_started": null,
+                      "high_jump": null,
+                      "ice_beam": null,
+                      "kraid_area": null,
+                      "kraid_defeated": null,
+                      "long_beam": null,
+                      "missile_capacity": {
+                        "execution": 408,
+                        "route_action_end_frame": 14111
+                      },
+                      "morph_ball": {
+                        "execution": 8,
+                        "route_action_end_frame": 437
+                      },
+                      "mother_brain_defeated": null,
+                      "norfair": {
+                        "execution": 476,
+                        "route_action_end_frame": 16610
+                      },
+                      "ridley_area": null,
+                      "ridley_defeated": null,
+                      "screw_attack": null,
+                      "tourian": null,
+                      "varia_suit": null,
+                      "wave_beam": null
+                    },
+                    "format": "metroid-named-progress-v2",
+                    "max_energy_tanks": 0,
+                    "max_missile_capacity": 5
+                  },
+                  "observation_filter": "live gameplay observations supplied to this accumulator",
+                  "underflow_action_endpoints": 0,
+                  "underflow_candidate_eligible_endpoints": 0,
+                  "underflow_diagnostic_memory_bytes": 40
+                },
+                "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+                "milestones": {
+                  "areas": 3,
+                  "gained": true,
+                  "items": 1,
+                  "tanks": 1
+                },
+                "physical_suffix_frames": 16610,
+                "snapshot_sha256": "332ef8e0f9a78746ad34ec126be868e8f1108c04715d727efb275d6c21aae8f7",
+                "victory": false
+              }
+            }
+          },
+          "milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 3
+          },
+          "preparation_seconds": 0.010957685,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "search_seconds": 1664.458466313,
+          "solved": false,
+          "status": "complete",
+          "stop_reason": "execution_limit",
+          "stream_bytes_generated": 216845430,
+          "stream_retained": false,
+          "stream_sha256": "1b9a8ca82dda524719ec5236db69131914cb93aa114abe26460e9713d1bcdce6",
+          "verification": "witness",
+          "verification_seconds": 9.734525188,
+          "victory_observed": false,
+          "witness": {
+            "dead": false,
+            "diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "first_underflow_execution": null,
+              "map_cells_observed": 52,
+              "max_observed_endpoint_health": 0,
+              "named_progress": {
+                "first_seen": {
+                  "bombs": null,
+                  "brinstar": {
+                    "execution": 0,
+                    "route_action_end_frame": 0
+                  },
+                  "ending": null,
+                  "energy_tank": {
+                    "execution": 1119,
+                    "route_action_end_frame": 38747
+                  },
+                  "escape_started": null,
+                  "high_jump": null,
+                  "ice_beam": null,
+                  "kraid_area": null,
+                  "kraid_defeated": null,
+                  "long_beam": null,
+                  "missile_capacity": {
+                    "execution": 408,
+                    "route_action_end_frame": 14111
+                  },
+                  "morph_ball": {
+                    "execution": 8,
+                    "route_action_end_frame": 437
+                  },
+                  "mother_brain_defeated": null,
+                  "norfair": {
+                    "execution": 474,
+                    "route_action_end_frame": 16625
+                  },
+                  "ridley_area": null,
+                  "ridley_defeated": null,
+                  "screw_attack": null,
+                  "tourian": null,
+                  "varia_suit": null,
+                  "wave_beam": null
+                },
+                "format": "metroid-named-progress-v2",
+                "max_energy_tanks": 1,
+                "max_missile_capacity": 10
+              },
+              "observation_filter": "live gameplay observations supplied to this accumulator",
+              "underflow_action_endpoints": 0,
+              "underflow_candidate_eligible_endpoints": 0,
+              "underflow_diagnostic_memory_bytes": 40
+            },
+            "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 3
+            },
+            "physical_suffix_frames": 38747,
+            "snapshot_sha256": "5d4ab349c8d796031b54d4f15dc94803d65083f1f2e0ad9cbc0e03832aa1baac",
+            "victory": false
+          }
+        },
+        "rss_by_phase_bytes_sampled": {
+          "done": 0,
+          "search": 1165631488,
+          "verification": 690429952
+        },
+        "runner": {
+          "coordinator_profile": true
+        },
+        "rusage": {
+          "input_block_operations": 16,
+          "involuntary_context_switches": 434647,
+          "output_block_operations": 459640,
+          "voluntary_context_switches": 754465
+        },
+        "search_request": {
+          "actions": 4096,
+          "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "executions": 500000,
+          "frames": 70000000,
+          "game": "metroid",
+          "memory_mib": 8192,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3",
+          "mixture": "alphabet_only",
+          "result_slots": 2,
+          "retention_audit": true,
+          "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+          "seed": 3,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "verification": "witness",
+          "wall_seconds": 1800,
+          "window": 2,
+          "workers": 4
+        },
+        "status": "complete",
+        "suite": "retention-theory-k01-development",
+        "suite_sha256": "dbe463856ea464c152320fab54b322318eedfeb29000c40ee7714b16f2053c8b"
+      }
+    },
+    {
+      "stage": "development",
+      "label": "corrected-refined",
+      "build": {
+        "binary_sha256": "fb59c715a11e24cf4a1c89b10bca9ff26c210b68a4b3c959591c49a365953b48",
+        "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+        "dirty": null,
+        "features": "metroid-refined-archive",
+        "files": 331,
+        "format": "harmony-search-build-v1",
+        "locked": true,
+        "profile": "release",
+        "revision": null,
+        "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+        "rustflags": "",
+        "source_tree_sha256": "9627498c39976309bf3570bf024945247832fee8fb9849b18542ea725cd9203b",
+        "target_cache": "/root/harmony-retention-theory-20260908/target"
+      },
+      "summary": {
+        "build": {
+          "attestation": "supplied",
+          "binary_sha256": "fb59c715a11e24cf4a1c89b10bca9ff26c210b68a4b3c959591c49a365953b48",
+          "source": {
+            "binary_sha256": "fb59c715a11e24cf4a1c89b10bca9ff26c210b68a4b3c959591c49a365953b48",
+            "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+            "dirty": null,
+            "features": "metroid-refined-archive",
+            "files": 331,
+            "format": "harmony-search-build-v1",
+            "locked": true,
+            "profile": "release",
+            "revision": null,
+            "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+            "rustflags": "",
+            "source_tree_sha256": "9627498c39976309bf3570bf024945247832fee8fb9849b18542ea725cd9203b",
+            "target_cache": "/root/harmony-retention-theory-20260908/target"
+          }
+        },
+        "case": "metroid-full",
+        "cell": "metroid-full-s3-w4-m8192",
+        "cpu_seconds": 3098.4252890000002,
+        "cpu_set": [
+          8,
+          9,
+          10,
+          11
+        ],
+        "elapsed_seconds": 1056.3882437499706,
+        "exit_code": 0,
+        "final_disk": {
+          "allocated_bytes": 23224320,
+          "categories": {
+            "reports_and_logs": 7361443,
+            "telemetry": 15814465
+          },
+          "logical_bytes": 23175908
+        },
+        "format": "harmony-search-eval-v1",
+        "host": {
+          "cpu_model": null,
+          "hostname": "msr1",
+          "logical_cpus": 12,
+          "machine": "aarch64",
+          "release": "6.18.43-current-arm64",
+          "system": "Linux"
+        },
+        "identity": {
+          "actions": 4096,
+          "ai": null,
+          "backend": "native",
+          "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "executions": 500000,
+          "format": "nes-eval-identity-v1",
+          "frames": 70000000,
+          "game": "metroid",
+          "level": null,
+          "memory_mib": 8192,
+          "mixture": "alphabet_only",
+          "mm2_chain": false,
+          "policies": {
+            "controller_vocabulary": "directions9_times_ab4_select_taps_no_start_v1",
+            "duration_policy": "stratified_short_or_long_v1",
+            "emulator_backend": "quicknes-libretro:26bb785c9deddb66a17717b21bb4e328f03ade32;DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32;headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled;state=ppu-unused2-zero-v1;genesis=metroid-new-game-v1:prefix-sha256=63e59a2c3cb4e87038a260501ee3057ee498f60d4ad51af2b3f3611ae7856e08;image=cartridge-ram-declared-v1;result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v4;sha256=5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+            "key_policy": "metroid_items_tanks_spatial_8_raw_pose_selection_32_legacy_progress_v9",
+            "replacement_policy": "opaque_preference_then_fewest_frames",
+            "terminal_policy": "death_or_bcd_underflow_or_ending_v3"
+          },
+          "prefix_sha256": null,
+          "result_slots": 2,
+          "retention_audit": true,
+          "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+          "seed": 3,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "slot_retention": null,
+          "source_tree_sha256": "9627498c39976309bf3570bf024945247832fee8fb9849b18542ea725cd9203b",
+          "stage": null,
+          "suffix": "one_to_six",
+          "verification": "witness",
+          "wall_seconds": 1800,
+          "whole_game": false,
+          "window": 2,
+          "workers": 4
+        },
+        "io_bytes_last_sample": {
+          "read_bytes": 12288,
+          "rss_bytes": 0,
+          "write_bytes": 280788992
+        },
+        "last_progress": {
+          "active_entries": 161829,
+          "barren_groups": 18605,
+          "barren_memory_bytes": 1507005,
+          "cheapest_time_in_group": 3505,
+          "coordinator": {
+            "admission_ns": 10406373100,
+            "admissions": 500000,
+            "bookkeeping_ns": 1922316982,
+            "enabled": true,
+            "history_compaction_ns": 0,
+            "receive_wait_ns": 995418099574,
+            "receives": 500000,
+            "replay_actions": 0,
+            "replay_jobs": 0,
+            "replay_time": 0,
+            "selection_ns": 16624674035,
+            "selections": 500008,
+            "stream_write_ns": 3397067360,
+            "suffix_actions": 1750695,
+            "suffix_time": 73648803
+          },
+          "deaths": 174761,
+          "deepest_key": {
+            "area": 16,
+            "door": 5,
+            "health": 33,
+            "items": 1,
+            "map_x": 30,
+            "map_y": 7,
+            "missiles": 0,
+            "posture": 5,
+            "tanks": 3,
+            "x": 31,
+            "y": 11
+          },
+          "draw_state_memory_bytes": 0,
+          "entry_drops": 0,
+          "entry_metadata_memory_bytes": 53108952,
+          "executions": 500000,
+          "frames_emulated": 59348941,
+          "historical_cells": 18111,
+          "historical_entries_dropped": 163807,
+          "history_compactions": 2,
+          "history_memory_bytes": 89643328,
+          "input_index_memory_bytes": 33705268,
+          "input_index_nodes": 291501,
+          "input_reconstructions": 16,
+          "live_entries": 170221,
+          "milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 3
+          },
+          "novelty_memory_bytes": 1322103,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "resident_memory_bytes": 3703435158,
+          "resident_snapshot_bytes": 3613791830,
+          "resident_snapshots": 170221,
+          "retained": 334028,
+          "retained_diagnostics": {
+            "active_entries": 161829,
+            "equipment_union": 16,
+            "map_cells_retained_cached": 87,
+            "max_bosses": 0,
+            "max_energy_tanks": 1,
+            "max_health_cached": 1999,
+            "max_missile_capacity": 10,
+            "missing_snapshots": 0,
+            "scope": "union/maxima over cached active endpoints; not one trajectory; lower bounds when snapshots are missing",
+            "temporary_bitmap_bytes": 32768,
+            "underflow_endpoints_cached": 0
+          },
+          "retention_diagnostic_memory_bytes": 64,
+          "retention_diagnostics": {
+            "alternative_admissions": 0,
+            "competitions": 1073012,
+            "removed": 172199,
+            "removed_never_in_window": 32376,
+            "removed_never_productive": 120198,
+            "removed_never_selected": 85719,
+            "removed_selections": 213094,
+            "resource_decisions": 0
+          },
+          "search_elapsed_millis": 1043477,
+          "snapshot_evictions": 0,
+          "unix_time": 1788914390,
+          "victories": 0,
+          "workload_diagnostics": {
+            "coverage_bitmap_bytes": 32768,
+            "first_underflow_execution": 1824,
+            "map_cells_observed": 87,
+            "max_observed_endpoint_health": 9980,
+            "named_progress": {
+              "first_seen": {
+                "bombs": null,
+                "brinstar": {
+                  "execution": 1,
+                  "route_action_end_frame": 51
+                },
+                "ending": null,
+                "energy_tank": {
+                  "execution": 420973,
+                  "route_action_end_frame": 42104
+                },
+                "escape_started": null,
+                "high_jump": null,
+                "ice_beam": null,
+                "kraid_area": null,
+                "kraid_defeated": null,
+                "long_beam": null,
+                "missile_capacity": {
+                  "execution": 145674,
+                  "route_action_end_frame": 16539
+                },
+                "morph_ball": {
+                  "execution": 471,
+                  "route_action_end_frame": 899
+                },
+                "mother_brain_defeated": null,
+                "norfair": {
+                  "execution": 151530,
+                  "route_action_end_frame": 21061
+                },
+                "ridley_area": null,
+                "ridley_defeated": null,
+                "screw_attack": null,
+                "tourian": null,
+                "varia_suit": null,
+                "wave_beam": null
+              },
+              "format": "metroid-named-progress-v2",
+              "max_energy_tanks": 1,
+              "max_missile_capacity": 10
+            },
+            "observation_filter": "live gameplay observations supplied to this accumulator",
+            "underflow_action_endpoints": 116,
+            "underflow_candidate_eligible_endpoints": 0,
+            "underflow_diagnostic_memory_bytes": 40
+          }
+        },
+        "max_process_rss_bytes": 4023746560,
+        "origin": "power-on new-game genesis",
+        "peak_disk_allocated_bytes_sampled": 23224320,
+        "peak_disk_logical_bytes_sampled": 23175908,
+        "peak_process_tree_rss_bytes_sampled": 4005302272,
+        "result": {
+          "executions": 500000,
+          "executions_per_second": 478.8613789556571,
+          "executions_to_first_victory": null,
+          "export_seconds": 0.002456383,
+          "format": "nes-eval-result-v1",
+          "frame_budget_overshoot": 0,
+          "frames_emulated": 59348941,
+          "frames_per_second": 56839.83145363587,
+          "frames_to_first_victory": null,
+          "milestone_witnesses": {
+            "brinstar": {
+              "input_sha256": "ef3e2d64fd32d4492aacaf62a1157609aa6d8671682d3a801cdc795de5a0519e",
+              "replay": {
+                "dead": false,
+                "diagnostics": {
+                  "coverage_bitmap_bytes": 32768,
+                  "first_underflow_execution": null,
+                  "map_cells_observed": 1,
+                  "max_observed_endpoint_health": 0,
+                  "named_progress": {
+                    "first_seen": {
+                      "bombs": null,
+                      "brinstar": {
+                        "execution": 0,
+                        "route_action_end_frame": 0
+                      },
+                      "ending": null,
+                      "energy_tank": null,
+                      "escape_started": null,
+                      "high_jump": null,
+                      "ice_beam": null,
+                      "kraid_area": null,
+                      "kraid_defeated": null,
+                      "long_beam": null,
+                      "missile_capacity": null,
+                      "morph_ball": null,
+                      "mother_brain_defeated": null,
+                      "norfair": null,
+                      "ridley_area": null,
+                      "ridley_defeated": null,
+                      "screw_attack": null,
+                      "tourian": null,
+                      "varia_suit": null,
+                      "wave_beam": null
+                    },
+                    "format": "metroid-named-progress-v2",
+                    "max_energy_tanks": 0,
+                    "max_missile_capacity": 0
+                  },
+                  "observation_filter": "live gameplay observations supplied to this accumulator",
+                  "underflow_action_endpoints": 0,
+                  "underflow_candidate_eligible_endpoints": 0,
+                  "underflow_diagnostic_memory_bytes": 40
+                },
+                "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+                "milestones": {
+                  "areas": 1,
+                  "gained": false,
+                  "items": 0,
+                  "tanks": 0
+                },
+                "physical_suffix_frames": 51,
+                "snapshot_sha256": "443344e0bb12481eb8274646fe3d37afddc2fa41eb3458d83ee3de8229cf2418",
+                "victory": false
+              }
+            },
+            "energy_tank": {
+              "input_sha256": "d81e0676c8c327ac71b0a8aa6ad003d4abcf04f63bc7b1ad71fe42752a38fea6",
+              "replay": {
+                "dead": false,
+                "diagnostics": {
+                  "coverage_bitmap_bytes": 32768,
+                  "first_underflow_execution": null,
+                  "map_cells_observed": 52,
+                  "max_observed_endpoint_health": 0,
+                  "named_progress": {
+                    "first_seen": {
+                      "bombs": null,
+                      "brinstar": {
+                        "execution": 0,
+                        "route_action_end_frame": 0
+                      },
+                      "ending": null,
+                      "energy_tank": {
+                        "execution": 1250,
+                        "route_action_end_frame": 42104
+                      },
+                      "escape_started": null,
+                      "high_jump": null,
+                      "ice_beam": null,
+                      "kraid_area": null,
+                      "kraid_defeated": null,
+                      "long_beam": null,
+                      "missile_capacity": {
+                        "execution": 500,
+                        "route_action_end_frame": 16539
+                      },
+                      "morph_ball": {
+                        "execution": 22,
+                        "route_action_end_frame": 899
+                      },
+                      "mother_brain_defeated": null,
+                      "norfair": {
+                        "execution": 603,
+                        "route_action_end_frame": 21033
+                      },
+                      "ridley_area": null,
+                      "ridley_defeated": null,
+                      "screw_attack": null,
+                      "tourian": null,
+                      "varia_suit": null,
+                      "wave_beam": null
+                    },
+                    "format": "metroid-named-progress-v2",
+                    "max_energy_tanks": 1,
+                    "max_missile_capacity": 10
+                  },
+                  "observation_filter": "live gameplay observations supplied to this accumulator",
+                  "underflow_action_endpoints": 0,
+                  "underflow_candidate_eligible_endpoints": 0,
+                  "underflow_diagnostic_memory_bytes": 40
+                },
+                "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+                "milestones": {
+                  "areas": 3,
+                  "gained": true,
+                  "items": 1,
+                  "tanks": 3
+                },
+                "physical_suffix_frames": 42104,
+                "snapshot_sha256": "b2c41478f9c104e6d8204fef8a4a078ab6686d9c662b5ccfdb623d559ae4af09",
+                "victory": false
+              }
+            },
+            "missile_capacity": {
+              "input_sha256": "6d32a8e54ea3f9b939484b52c558dbec8c120dc446204d31c020cc365fe9fd6c",
+              "replay": {
+                "dead": false,
+                "diagnostics": {
+                  "coverage_bitmap_bytes": 32768,
+                  "first_underflow_execution": null,
+                  "map_cells_observed": 28,
+                  "max_observed_endpoint_health": 0,
+                  "named_progress": {
+                    "first_seen": {
+                      "bombs": null,
+                      "brinstar": {
+                        "execution": 0,
+                        "route_action_end_frame": 0
+                      },
+                      "ending": null,
+                      "energy_tank": null,
+                      "escape_started": null,
+                      "high_jump": null,
+                      "ice_beam": null,
+                      "kraid_area": null,
+                      "kraid_defeated": null,
+                      "long_beam": null,
+                      "missile_capacity": {
+                        "execution": 500,
+                        "route_action_end_frame": 16539
+                      },
+                      "morph_ball": {
+                        "execution": 22,
+                        "route_action_end_frame": 899
+                      },
+                      "mother_brain_defeated": null,
+                      "norfair": null,
+                      "ridley_area": null,
+                      "ridley_defeated": null,
+                      "screw_attack": null,
+                      "tourian": null,
+                      "varia_suit": null,
+                      "wave_beam": null
+                    },
+                    "format": "metroid-named-progress-v2",
+                    "max_energy_tanks": 0,
+                    "max_missile_capacity": 5
+                  },
+                  "observation_filter": "live gameplay observations supplied to this accumulator",
+                  "underflow_action_endpoints": 0,
+                  "underflow_candidate_eligible_endpoints": 0,
+                  "underflow_diagnostic_memory_bytes": 40
+                },
+                "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+                "milestones": {
+                  "areas": 1,
+                  "gained": true,
+                  "items": 1,
+                  "tanks": 1
+                },
+                "physical_suffix_frames": 16539,
+                "snapshot_sha256": "fdeaa195bd042cc18f37ce2afcfbee4fede0f39d62f664601314f6882e5d04ae",
+                "victory": false
+              }
+            },
+            "morph_ball": {
+              "input_sha256": "9032196f0bef025a0817afee7b6c237116c616fdcc0c96b7eb337963231da7a5",
+              "replay": {
+                "dead": false,
+                "diagnostics": {
+                  "coverage_bitmap_bytes": 32768,
+                  "first_underflow_execution": null,
+                  "map_cells_observed": 2,
+                  "max_observed_endpoint_health": 0,
+                  "named_progress": {
+                    "first_seen": {
+                      "bombs": null,
+                      "brinstar": {
+                        "execution": 0,
+                        "route_action_end_frame": 0
+                      },
+                      "ending": null,
+                      "energy_tank": null,
+                      "escape_started": null,
+                      "high_jump": null,
+                      "ice_beam": null,
+                      "kraid_area": null,
+                      "kraid_defeated": null,
+                      "long_beam": null,
+                      "missile_capacity": null,
+                      "morph_ball": {
+                        "execution": 22,
+                        "route_action_end_frame": 899
+                      },
+                      "mother_brain_defeated": null,
+                      "norfair": null,
+                      "ridley_area": null,
+                      "ridley_defeated": null,
+                      "screw_attack": null,
+                      "tourian": null,
+                      "varia_suit": null,
+                      "wave_beam": null
+                    },
+                    "format": "metroid-named-progress-v2",
+                    "max_energy_tanks": 0,
+                    "max_missile_capacity": 0
+                  },
+                  "observation_filter": "live gameplay observations supplied to this accumulator",
+                  "underflow_action_endpoints": 0,
+                  "underflow_candidate_eligible_endpoints": 0,
+                  "underflow_diagnostic_memory_bytes": 40
+                },
+                "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+                "milestones": {
+                  "areas": 1,
+                  "gained": true,
+                  "items": 1,
+                  "tanks": 0
+                },
+                "physical_suffix_frames": 899,
+                "snapshot_sha256": "970f73faf916a897721b4d66f0e9fcd8394f1efb22e5082db8724c36fd6fcde0",
+                "victory": false
+              }
+            },
+            "norfair": {
+              "input_sha256": "7e5ddb2ef60da7d77d265d4faf1e662ff32c01751cd494518078b1768f57025d",
+              "replay": {
+                "dead": false,
+                "diagnostics": {
+                  "coverage_bitmap_bytes": 32768,
+                  "first_underflow_execution": null,
+                  "map_cells_observed": 34,
+                  "max_observed_endpoint_health": 0,
+                  "named_progress": {
+                    "first_seen": {
+                      "bombs": null,
+                      "brinstar": {
+                        "execution": 0,
+                        "route_action_end_frame": 0
+                      },
+                      "ending": null,
+                      "energy_tank": null,
+                      "escape_started": null,
+                      "high_jump": null,
+                      "ice_beam": null,
+                      "kraid_area": null,
+                      "kraid_defeated": null,
+                      "long_beam": null,
+                      "missile_capacity": {
+                        "execution": 500,
+                        "route_action_end_frame": 16539
+                      },
+                      "morph_ball": {
+                        "execution": 22,
+                        "route_action_end_frame": 899
+                      },
+                      "mother_brain_defeated": null,
+                      "norfair": {
+                        "execution": 603,
+                        "route_action_end_frame": 21061
+                      },
+                      "ridley_area": null,
+                      "ridley_defeated": null,
+                      "screw_attack": null,
+                      "tourian": null,
+                      "varia_suit": null,
+                      "wave_beam": null
+                    },
+                    "format": "metroid-named-progress-v2",
+                    "max_energy_tanks": 0,
+                    "max_missile_capacity": 5
+                  },
+                  "observation_filter": "live gameplay observations supplied to this accumulator",
+                  "underflow_action_endpoints": 0,
+                  "underflow_candidate_eligible_endpoints": 0,
+                  "underflow_diagnostic_memory_bytes": 40
+                },
+                "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+                "milestones": {
+                  "areas": 3,
+                  "gained": true,
+                  "items": 1,
+                  "tanks": 1
+                },
+                "physical_suffix_frames": 21061,
+                "snapshot_sha256": "1363070a4c42db55b73d9e77cea82981b4c7c77daaabb5ac637f8acfb3c2215d",
+                "victory": false
+              }
+            }
+          },
+          "milestones": {
+            "areas": 3,
+            "gained": true,
+            "items": 1,
+            "tanks": 3
+          },
+          "preparation_seconds": 0.00773051,
+          "progress": {
+            "items": 1,
+            "missile_capacity": 10
+          },
+          "search_seconds": 1044.143507857,
+          "solved": false,
+          "status": "complete",
+          "stop_reason": "execution_limit",
+          "stream_bytes_generated": 217527419,
+          "stream_retained": false,
+          "stream_sha256": "79a483fa4ab9d29788033faaf0e891698d71f2340f458cf4b28b6b4928b6d7c3",
+          "verification": "witness",
+          "verification_seconds": 11.257633883,
+          "victory_observed": false,
+          "witness": {
+            "dead": false,
+            "diagnostics": {
+              "coverage_bitmap_bytes": 32768,
+              "first_underflow_execution": null,
+              "map_cells_observed": 52,
+              "max_observed_endpoint_health": 0,
+              "named_progress": {
+                "first_seen": {
+                  "bombs": null,
+                  "brinstar": {
+                    "execution": 0,
+                    "route_action_end_frame": 0
+                  },
+                  "ending": null,
+                  "energy_tank": {
+                    "execution": 1250,
+                    "route_action_end_frame": 42104
+                  },
+                  "escape_started": null,
+                  "high_jump": null,
+                  "ice_beam": null,
+                  "kraid_area": null,
+                  "kraid_defeated": null,
+                  "long_beam": null,
+                  "missile_capacity": {
+                    "execution": 500,
+                    "route_action_end_frame": 16539
+                  },
+                  "morph_ball": {
+                    "execution": 22,
+                    "route_action_end_frame": 899
+                  },
+                  "mother_brain_defeated": null,
+                  "norfair": {
+                    "execution": 603,
+                    "route_action_end_frame": 21033
+                  },
+                  "ridley_area": null,
+                  "ridley_defeated": null,
+                  "screw_attack": null,
+                  "tourian": null,
+                  "varia_suit": null,
+                  "wave_beam": null
+                },
+                "format": "metroid-named-progress-v2",
+                "max_energy_tanks": 1,
+                "max_missile_capacity": 10
+              },
+              "observation_filter": "live gameplay observations supplied to this accumulator",
+              "underflow_action_endpoints": 0,
+              "underflow_candidate_eligible_endpoints": 0,
+              "underflow_diagnostic_memory_bytes": 40
+            },
+            "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+            "milestones": {
+              "areas": 3,
+              "gained": true,
+              "items": 1,
+              "tanks": 3
+            },
+            "physical_suffix_frames": 42104,
+            "snapshot_sha256": "b2c41478f9c104e6d8204fef8a4a078ab6686d9c662b5ccfdb623d559ae4af09",
+            "victory": false
+          }
+        },
+        "rss_by_phase_bytes_sampled": {
+          "done": 0,
+          "search": 4005302272,
+          "verification": 2011668480
+        },
+        "runner": {
+          "coordinator_profile": true
+        },
+        "rusage": {
+          "input_block_operations": 24,
+          "involuntary_context_switches": 411092,
+          "output_block_operations": 548416,
+          "voluntary_context_switches": 688270
+        },
+        "search_request": {
+          "actions": 4096,
+          "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+          "executions": 500000,
+          "frames": 70000000,
+          "game": "metroid",
+          "memory_mib": 8192,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3",
+          "mixture": "alphabet_only",
+          "result_slots": 2,
+          "retention_audit": true,
+          "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+          "seed": 3,
+          "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "verification": "witness",
+          "wall_seconds": 1800,
+          "window": 2,
+          "workers": 4
+        },
+        "status": "complete",
+        "suite": "retention-theory-k01-development",
+        "suite_sha256": "dbe463856ea464c152320fab54b322318eedfeb29000c40ee7714b16f2053c8b"
+      }
+    }
+  ]
+}

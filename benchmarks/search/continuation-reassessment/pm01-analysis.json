@@ -1,0 +1,81 @@
+{
+  "format": "retention-pm01-offline-verification-v1",
+  "verified": true,
+  "files": 17,
+  "assessment": {
+    "qualified": true,
+    "matched_artifacts": {
+      "campaign.json": true,
+      "checkpoint.bin": true,
+      "origin.bin": true,
+      "root-snapshot.json": true,
+      "root.json": true,
+      "stream.jsonl": true,
+      "witness-full.json": true,
+      "witness-local.json": true
+    },
+    "physical_frames": {
+      "direct_helpers": 477418,
+      "replay_engine": 251249,
+      "replay_outside_admission": 929,
+      "scope": "Complete successfully constructed target lifetimes through final clock reads. Target destructors do not emulate frames in this pinned Metroid adapter. Not a live stopping counter.",
+      "search_engine": 254965,
+      "search_outside_admission": 4645,
+      "total": 983632
+    },
+    "cost": {
+      "admitted_search_frames": 250320,
+      "campaign_replay_admitted_frames": 250320,
+      "direct_physical_frames": 477418,
+      "direct_setup_frames": 5574,
+      "replay_engine": {
+        "closed_post_constructor_frames": 250320,
+        "construction_attempts": 1,
+        "constructor_frames": 929,
+        "invalid_counter": false,
+        "targets_closed": 1,
+        "targets_created": 1
+      },
+      "search_engine": {
+        "closed_post_constructor_frames": 250320,
+        "construction_attempts": 5,
+        "constructor_frames": 4645,
+        "invalid_counter": false,
+        "targets_closed": 5,
+        "targets_created": 5
+      }
+    },
+    "alternative_admissions": 70,
+    "admitted_search_frames": 250320,
+    "known_auxiliary_frames": 733312
+  },
+  "process": {
+    "started_utc": "2026-09-10T21:42:46.879052+00:00",
+    "ended_utc": "2026-09-10T21:43:05.149660+00:00",
+    "wall_seconds": 18.27053016400896,
+    "cpu_seconds": 21.466649,
+    "peak_rss_kib": 58568
+  },
+  "service": {
+    "RuntimeMaxUSec": "3min",
+    "MainPID": "0",
+    "Result": "success",
+    "ExecMainStatus": "0",
+    "MemoryPeak": "83210240",
+    "MemorySwapPeak": "0",
+    "CPUUsageNSec": "21507427000",
+    "AllowedCPUs": "0-3",
+    "MemoryMax": "4294967296",
+    "MemorySwapMax": "0",
+    "TasksMax": "64",
+    "CPUAffinity": "0-3",
+    "ActiveState": "active",
+    "SubState": "exited",
+    "InvocationID": "04c39ff021234996941e309735670f20"
+  },
+  "ledger": {
+    "admitted_search": 2983485644,
+    "known_auxiliary": 71300232
+  },
+  "scope": "Complete native accounting qualification and unchanged behavior verified from receipts; no emulator rerun or efficacy claim."
+}

@@ -1,0 +1,217 @@
+{
+  "format": "action-correlation-exact-model-v1",
+  "candidate_alpha": {
+    "exact": "1/2",
+    "decimal": 0.5
+  },
+  "derived_whole_repeat_probability": {
+    "exact": "37/210",
+    "decimal": 0.1761904761904762
+  },
+  "actions": 36,
+  "special_tap_probability": {
+    "exact": "1/12",
+    "decimal": 0.08333333333333333
+  },
+  "expected_proposed_frames_per_chord": {
+    "exact": "505/12",
+    "decimal": 42.083333333333336
+  },
+  "expected_proposed_frames_per_one_to_six_suffix": {
+    "exact": "3535/24",
+    "decimal": 147.29166666666666
+  },
+  "law_checks": "exact row/column sums, reversibility, full-support stationarity, special-tap reset stationarity and matched full-chord run lengths passed",
+  "kernels": {
+    "iid": {
+      "whole_chord_same": {
+        "exact": "1/36",
+        "decimal": 0.027777777777777776
+      },
+      "direction_same": {
+        "exact": "1/9",
+        "decimal": 0.1111111111111111
+      },
+      "direction_and_a_same": {
+        "exact": "1/18",
+        "decimal": 0.05555555555555555
+      },
+      "all_components_change": {
+        "exact": "2/9",
+        "decimal": 0.2222222222222222
+      },
+      "matrix_sha256": "f8c5fd85be4eb5e8678c01dd751fc424afca90e2f8ffb7d9f367b9276c44a897",
+      "four_regular_chord_patterns": {
+        "direction_preserved_and_a_changes_at_least_once": {
+          "exact": "7/5832",
+          "decimal": 0.0012002743484224967
+        },
+        "all_components_change_at_every_boundary": {
+          "exact": "8/729",
+          "decimal": 0.010973936899862825
+        }
+      },
+      "one_to_six_ordinary_chord_mean_patterns": {
+        "direction_preserved_and_a_changes_at_least_once": {
+          "exact": "125041/11337408",
+          "decimal": 0.01102906413882256
+        },
+        "all_components_change_at_every_boundary": {
+          "exact": "8431/177147",
+          "decimal": 0.04759324177095858
+        }
+      },
+      "full_chord_run_survival_at_regular_boundaries": [
+        {
+          "exact": "1/36",
+          "decimal": 0.027777777777777776
+        },
+        {
+          "exact": "1/1296",
+          "decimal": 0.0007716049382716049
+        },
+        {
+          "exact": "1/46656",
+          "decimal": 2.143347050754458e-05
+        },
+        {
+          "exact": "1/1679616",
+          "decimal": 5.953741807651273e-07
+        },
+        {
+          "exact": "1/60466176",
+          "decimal": 1.65381716879202e-08
+        }
+      ]
+    },
+    "component_half": {
+      "whole_chord_same": {
+        "exact": "43/216",
+        "decimal": 0.19907407407407407
+      },
+      "direction_same": {
+        "exact": "11/27",
+        "decimal": 0.4074074074074074
+      },
+      "direction_and_a_same": {
+        "exact": "8/27",
+        "decimal": 0.2962962962962963
+      },
+      "all_components_change": {
+        "exact": "1/9",
+        "decimal": 0.1111111111111111
+      },
+      "matrix_sha256": "5400c9fd72050f9c583184cbc7236e7cf55c991c327e2937dad130bf6b518d0d",
+      "four_regular_chord_patterns": {
+        "direction_preserved_and_a_changes_at_least_once": {
+          "exact": "91/2187",
+          "decimal": 0.041609510745313216
+        },
+        "all_components_change_at_every_boundary": {
+          "exact": "1/729",
+          "decimal": 0.0013717421124828531
+        }
+      },
+      "one_to_six_ordinary_chord_mean_patterns": {
+        "direction_preserved_and_a_changes_at_least_once": {
+          "exact": "1242101/28697814",
+          "decimal": 0.04328207716448368
+        },
+        "all_components_change_at_every_boundary": {
+          "exact": "7381/354294",
+          "decimal": 0.02083298051900399
+        }
+      },
+      "full_chord_run_survival_at_regular_boundaries": [
+        {
+          "exact": "43/216",
+          "decimal": 0.19907407407407407
+        },
+        {
+          "exact": "1849/46656",
+          "decimal": 0.03963048696844993
+        },
+        {
+          "exact": "79507/10077696",
+          "decimal": 0.00788940249834883
+        },
+        {
+          "exact": "3418801/2176782336",
+          "decimal": 0.0015705754973564798
+        },
+        {
+          "exact": "147008443/470184984576",
+          "decimal": 0.0003126608628996696
+        }
+      ]
+    },
+    "matched_whole_repeat": {
+      "whole_chord_same": {
+        "exact": "43/216",
+        "decimal": 0.19907407407407407
+      },
+      "direction_same": {
+        "exact": "253/945",
+        "decimal": 0.2677248677248677
+      },
+      "direction_and_a_same": {
+        "exact": "839/3780",
+        "decimal": 0.22195767195767196
+      },
+      "all_components_change": {
+        "exact": "173/945",
+        "decimal": 0.18306878306878308
+      },
+      "matrix_sha256": "7a40630e2640d4ca20dffeb41f7a4c94ef58283604372442a29183ae8028a545",
+      "four_regular_chord_patterns": {
+        "direction_preserved_and_a_changes_at_least_once": {
+          "exact": "445844009/54010152000",
+          "decimal": 0.008254818631134383
+        },
+        "all_components_change_at_every_boundary": {
+          "exact": "5177717/843908625",
+          "decimal": 0.006135400026276542
+        }
+      },
+      "one_to_six_ordinary_chord_mean_patterns": {
+        "direction_preserved_and_a_changes_at_least_once": {
+          "exact": "61722542198423333/4630311935020800000",
+          "decimal": 0.01333010455118421
+        },
+        "all_components_change_at_every_boundary": {
+          "exact": "168849016475513/4521788999043750",
+          "decimal": 0.03734119759042727
+        }
+      },
+      "full_chord_run_survival_at_regular_boundaries": [
+        {
+          "exact": "43/216",
+          "decimal": 0.19907407407407407
+        },
+        {
+          "exact": "1849/46656",
+          "decimal": 0.03963048696844993
+        },
+        {
+          "exact": "79507/10077696",
+          "decimal": 0.00788940249834883
+        },
+        {
+          "exact": "3418801/2176782336",
+          "decimal": 0.0015705754973564798
+        },
+        {
+          "exact": "147008443/470184984576",
+          "decimal": 0.0003126608628996696
+        }
+      ]
+    }
+  },
+  "emulator_frames": 0,
+  "limits": [
+    "Ideal independent uniform draws; finite PRNG output sequences need separate implementation/replay checks.",
+    "Pattern probabilities condition on ordinary chords; real special taps reset correlation.",
+    "Matched proposed frame laws do not force equal actual work after terminal boundaries.",
+    "Constructed rewarding and adverse patterns refute utility dominance; neither is evidence of Metroid or MM2 efficacy."
+  ]
+}

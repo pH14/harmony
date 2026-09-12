@@ -1,0 +1,467 @@
+{
+  "format": "local-retry-rq01-analysis-v1",
+  "decision": "pass",
+  "registration_sha256": "0c5cc47296e3233c0b7f13f2d3718380cade932cdc1653d0a21ee0ecc4d56b69",
+  "historical_default_artifacts_identical": true,
+  "cells": {
+    "rq01-control": {
+      "executions": 16,
+      "admitted_frames": 1954,
+      "retry_attempts": 0,
+      "first_surviving_retry": null,
+      "known_auxiliary_frames": 481326,
+      "cost": {
+        "admitted_search_frames": 1954,
+        "campaign_replay_admitted_frames": 1954,
+        "direct_physical_frames": 477418,
+        "direct_setup_frames": 5574
+      },
+      "process": {
+        "cell": "rq01-control",
+        "returncode": 0,
+        "stop_reason": null,
+        "wall_seconds": 21.012688075948972,
+        "maxrss_kib": 20968,
+        "user_seconds": 21.003633,
+        "system_seconds": 0.039968
+      },
+      "witness": {
+        "context": {
+          "memory": {
+            "area": 20,
+            "door": 2,
+            "enemies": [
+              {
+                "data_index": 9,
+                "hit_points": 140,
+                "name_table": 1,
+                "slot": 0,
+                "special": 64,
+                "status": 2,
+                "x": 108,
+                "y": 94
+              },
+              {
+                "data_index": 6,
+                "hit_points": 4,
+                "name_table": 0,
+                "slot": 16,
+                "special": 128,
+                "status": 2,
+                "x": 104,
+                "y": 183
+              },
+              {
+                "data_index": 6,
+                "hit_points": 2,
+                "name_table": 0,
+                "slot": 32,
+                "special": 0,
+                "status": 2,
+                "x": 168,
+                "y": 188
+              },
+              {
+                "data_index": 6,
+                "hit_points": 2,
+                "name_table": 1,
+                "slot": 48,
+                "special": 0,
+                "status": 0,
+                "x": 216,
+                "y": 196
+              },
+              {
+                "data_index": 0,
+                "hit_points": 16,
+                "name_table": 0,
+                "slot": 64,
+                "special": 128,
+                "status": 1,
+                "x": 182,
+                "y": 216
+              },
+              {
+                "data_index": 3,
+                "hit_points": 16,
+                "name_table": 0,
+                "slot": 80,
+                "special": 128,
+                "status": 2,
+                "x": 174,
+                "y": 44
+              }
+            ],
+            "kraid_status": 0,
+            "loader_present": 1,
+            "mode": 3,
+            "ridley_status": 0,
+            "room_number": 255
+          },
+          "saved_status": [
+            130,
+            2,
+            130,
+            2,
+            2,
+            2
+          ]
+        },
+        "dead": false,
+        "emulator_sha256": "aa31a5df9b74a120aaa6be74f5f02ea0cbfea143b58ddacd3bca9413c971ebba",
+        "endpoint": {
+          "area": 20,
+          "bosses": 0,
+          "door": 2,
+          "ending": false,
+          "energy_tanks": 1,
+          "equipment": 17,
+          "health": 79,
+          "map_x": 18,
+          "map_y": 29,
+          "missile_capacity": 20,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 5,
+          "x": 1,
+          "y": 113
+        },
+        "full_input_sha256": "aa5ece3a6834fe83a7e8a54fe4f28a274921743840cbdc81fb2830b96f570feb",
+        "local_input_sha256": "7ecd3995587991732cc4e9ff8fdf33a932a10dc07dfb3ab5f8c68a76e8343316"
+      },
+      "artifacts_sha256": {
+        "stream.jsonl": "8fe594e3ba2701365cb0a631fe47385e7b463212ce6d4b1dd80e828bcd6f06aa",
+        "checkpoint.bin": "c7e2cb5d18dc1357d63c4344ca5161ca46a4ae668885505669eae01ff77bb74f",
+        "origin.bin": "35b2677423102a0997d1762b8b448766a9e0219eba4173a28a8693b6892294eb",
+        "campaign.json": "47c725d2896e09b2843005c3dbe4d07cc58c0025d7176da23c9017ca8912e8f0",
+        "root-snapshot.json": "1010ee9028d2c4ac5b84f8b2cd4339cb2f66ee13876e7b72ad2c83181242219c",
+        "root.json": "cfc425cda75516e679d5939efce535c4bf737012b39671c99d081fe2244d0429",
+        "result.json": "73bc6bb76373a41943833b55993a13b84bf32e3b2f4867b947adba07933bce1f",
+        "witness-local.json": "7ecd3995587991732cc4e9ff8fdf33a932a10dc07dfb3ab5f8c68a76e8343316",
+        "witness-full.json": "aa5ece3a6834fe83a7e8a54fe4f28a274921743840cbdc81fb2830b96f570feb"
+      }
+    },
+    "rq01-one": {
+      "executions": 128,
+      "admitted_frames": 19010,
+      "retry_attempts": 44,
+      "first_surviving_retry": {
+        "input": {
+          "actions": [
+            {
+              "buttons": 35,
+              "hold_frames": 7
+            },
+            {
+              "buttons": 145,
+              "hold_frames": 115
+            },
+            {
+              "buttons": 83,
+              "hold_frames": 87
+            },
+            {
+              "buttons": 3,
+              "hold_frames": 88
+            }
+          ]
+        },
+        "snapshot_sha256": "1f87eaf331e80c23f6ef1d089a48a601dac7e17177816bfec584af9929ef2171"
+      },
+      "known_auxiliary_frames": 516282,
+      "cost": {
+        "admitted_search_frames": 19010,
+        "campaign_replay_admitted_frames": 19010,
+        "direct_physical_frames": 478262,
+        "direct_setup_frames": 5574
+      },
+      "process": {
+        "cell": "rq01-one",
+        "returncode": 0,
+        "stop_reason": null,
+        "wall_seconds": 23.012739770987537,
+        "maxrss_kib": 22528,
+        "user_seconds": 22.958692,
+        "system_seconds": 0.079939
+      },
+      "witness": {
+        "context": {
+          "memory": {
+            "area": 20,
+            "door": 0,
+            "enemies": [
+              {
+                "data_index": 9,
+                "hit_points": 138,
+                "name_table": 1,
+                "slot": 0,
+                "special": 2,
+                "status": 6,
+                "x": 108,
+                "y": 109
+              },
+              {
+                "data_index": 6,
+                "hit_points": 4,
+                "name_table": 0,
+                "slot": 16,
+                "special": 128,
+                "status": 2,
+                "x": 104,
+                "y": 183
+              },
+              {
+                "data_index": 10,
+                "hit_points": 255,
+                "name_table": 1,
+                "slot": 32,
+                "special": 0,
+                "status": 2,
+                "x": 166,
+                "y": 100
+              },
+              {
+                "data_index": 10,
+                "hit_points": 255,
+                "name_table": 1,
+                "slot": 48,
+                "special": 0,
+                "status": 2,
+                "x": 117,
+                "y": 78
+              },
+              {
+                "data_index": 10,
+                "hit_points": 255,
+                "name_table": 1,
+                "slot": 64,
+                "special": 0,
+                "status": 2,
+                "x": 125,
+                "y": 41
+              },
+              {
+                "data_index": 10,
+                "hit_points": 255,
+                "name_table": 1,
+                "slot": 80,
+                "special": 0,
+                "status": 2,
+                "x": 142,
+                "y": 76
+              }
+            ],
+            "kraid_status": 0,
+            "loader_present": 0,
+            "mode": 3,
+            "ridley_status": 0,
+            "room_number": 255
+          },
+          "saved_status": [
+            65,
+            2,
+            130,
+            2,
+            2,
+            2
+          ]
+        },
+        "dead": false,
+        "emulator_sha256": "0a90a083c377c295efde67ff4b54a2e6d24626c4f1346449a9c1670938326f47",
+        "endpoint": {
+          "area": 20,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 1,
+          "equipment": 17,
+          "health": 79,
+          "map_x": 17,
+          "map_y": 29,
+          "missile_capacity": 20,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 0,
+          "x": 143,
+          "y": 129
+        },
+        "full_input_sha256": "a9b33c280d4d9cfc20a8d5da26b198fd5f3caa7e8342559be1b968d668ede7c1",
+        "local_input_sha256": "35e113edb3edc22778a72fe2e4162cf33821cb4c02d515c40eed41a89e67dc5c"
+      },
+      "artifacts_sha256": {
+        "stream.jsonl": "47540ee8760ab3d50dd2d520f1cc076c31aabaf1721544e1e66723f5a5658027",
+        "checkpoint.bin": "852b709ae06b773d5f474efde31a9ce4c4b80f7fd4cd60417f0fcbf9ce1ad79a",
+        "origin.bin": "35b2677423102a0997d1762b8b448766a9e0219eba4173a28a8693b6892294eb",
+        "campaign.json": "258598f7dbae06aa3a4e4ee4b42fb5d34ed51acfc6e726470ea5d989c387e68d",
+        "root-snapshot.json": "1010ee9028d2c4ac5b84f8b2cd4339cb2f66ee13876e7b72ad2c83181242219c",
+        "root.json": "cfc425cda75516e679d5939efce535c4bf737012b39671c99d081fe2244d0429",
+        "result.json": "4fa41dba8d45f7b85edc91fa38f0505e2b2c6cc1a70aa233ac68c4e77d8f3e1c",
+        "witness-local.json": "35e113edb3edc22778a72fe2e4162cf33821cb4c02d515c40eed41a89e67dc5c",
+        "witness-full.json": "a9b33c280d4d9cfc20a8d5da26b198fd5f3caa7e8342559be1b968d668ede7c1"
+      }
+    },
+    "rq01-two": {
+      "executions": 128,
+      "admitted_frames": 19010,
+      "retry_attempts": 44,
+      "first_surviving_retry": {
+        "input": {
+          "actions": [
+            {
+              "buttons": 35,
+              "hold_frames": 7
+            },
+            {
+              "buttons": 145,
+              "hold_frames": 115
+            },
+            {
+              "buttons": 83,
+              "hold_frames": 87
+            },
+            {
+              "buttons": 3,
+              "hold_frames": 88
+            }
+          ]
+        },
+        "snapshot_sha256": "1f87eaf331e80c23f6ef1d089a48a601dac7e17177816bfec584af9929ef2171"
+      },
+      "known_auxiliary_frames": 516282,
+      "cost": {
+        "admitted_search_frames": 19010,
+        "campaign_replay_admitted_frames": 19010,
+        "direct_physical_frames": 478262,
+        "direct_setup_frames": 5574
+      },
+      "process": {
+        "cell": "rq01-two",
+        "returncode": 0,
+        "stop_reason": null,
+        "wall_seconds": 29.013157813984435,
+        "maxrss_kib": 22420,
+        "user_seconds": 29.499659,
+        "system_seconds": 0.048018
+      },
+      "witness": {
+        "context": {
+          "memory": {
+            "area": 20,
+            "door": 0,
+            "enemies": [
+              {
+                "data_index": 9,
+                "hit_points": 138,
+                "name_table": 1,
+                "slot": 0,
+                "special": 2,
+                "status": 6,
+                "x": 108,
+                "y": 109
+              },
+              {
+                "data_index": 6,
+                "hit_points": 4,
+                "name_table": 0,
+                "slot": 16,
+                "special": 128,
+                "status": 2,
+                "x": 104,
+                "y": 183
+              },
+              {
+                "data_index": 10,
+                "hit_points": 255,
+                "name_table": 1,
+                "slot": 32,
+                "special": 0,
+                "status": 2,
+                "x": 166,
+                "y": 100
+              },
+              {
+                "data_index": 10,
+                "hit_points": 255,
+                "name_table": 1,
+                "slot": 48,
+                "special": 0,
+                "status": 2,
+                "x": 117,
+                "y": 78
+              },
+              {
+                "data_index": 10,
+                "hit_points": 255,
+                "name_table": 1,
+                "slot": 64,
+                "special": 0,
+                "status": 2,
+                "x": 125,
+                "y": 41
+              },
+              {
+                "data_index": 10,
+                "hit_points": 255,
+                "name_table": 1,
+                "slot": 80,
+                "special": 0,
+                "status": 2,
+                "x": 142,
+                "y": 76
+              }
+            ],
+            "kraid_status": 0,
+            "loader_present": 0,
+            "mode": 3,
+            "ridley_status": 0,
+            "room_number": 255
+          },
+          "saved_status": [
+            65,
+            2,
+            130,
+            2,
+            2,
+            2
+          ]
+        },
+        "dead": false,
+        "emulator_sha256": "0a90a083c377c295efde67ff4b54a2e6d24626c4f1346449a9c1670938326f47",
+        "endpoint": {
+          "area": 20,
+          "bosses": 0,
+          "door": 0,
+          "ending": false,
+          "energy_tanks": 1,
+          "equipment": 17,
+          "health": 79,
+          "map_x": 17,
+          "map_y": 29,
+          "missile_capacity": 20,
+          "missiles": 0,
+          "mode": 3,
+          "pose": 0,
+          "x": 143,
+          "y": 129
+        },
+        "full_input_sha256": "a9b33c280d4d9cfc20a8d5da26b198fd5f3caa7e8342559be1b968d668ede7c1",
+        "local_input_sha256": "35e113edb3edc22778a72fe2e4162cf33821cb4c02d515c40eed41a89e67dc5c"
+      },
+      "artifacts_sha256": {
+        "stream.jsonl": "47540ee8760ab3d50dd2d520f1cc076c31aabaf1721544e1e66723f5a5658027",
+        "checkpoint.bin": "852b709ae06b773d5f474efde31a9ce4c4b80f7fd4cd60417f0fcbf9ce1ad79a",
+        "origin.bin": "35b2677423102a0997d1762b8b448766a9e0219eba4173a28a8693b6892294eb",
+        "campaign.json": "258598f7dbae06aa3a4e4ee4b42fb5d34ed51acfc6e726470ea5d989c387e68d",
+        "root-snapshot.json": "1010ee9028d2c4ac5b84f8b2cd4339cb2f66ee13876e7b72ad2c83181242219c",
+        "root.json": "cfc425cda75516e679d5939efce535c4bf737012b39671c99d081fe2244d0429",
+        "result.json": "4fa41dba8d45f7b85edc91fa38f0505e2b2c6cc1a70aa233ac68c4e77d8f3e1c",
+        "witness-local.json": "35e113edb3edc22778a72fe2e4162cf33821cb4c02d515c40eed41a89e67dc5c",
+        "witness-full.json": "a9b33c280d4d9cfc20a8d5da26b198fd5f3caa7e8342559be1b968d668ede7c1"
+      }
+    }
+  },
+  "candidate_buffer_artifacts_identical": true,
+  "known_auxiliary_frames": 1513890,
+  "scope": "Native integration qualification on one supplied original root and reused seed; not fresh performance evidence.",
+  "unknown": "Engine setup, unadmitted work and reconstruction remain additional unknown costs."
+}

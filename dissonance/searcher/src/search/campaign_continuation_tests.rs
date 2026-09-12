@@ -42,6 +42,13 @@ impl ArchiveKey for TestKey {
     fn preference_cmp(self, other: Self) -> std::cmp::Ordering {
         (self.0 / 16).cmp(&(other.0 / 16))
     }
+    fn retention_resources(self) -> Option<[u64; 2]> {
+        let level = u64::from(self.0 / 16);
+        Some([level, 15 - level])
+    }
+    fn retention_context(self) -> Option<u64> {
+        Some(u64::from(self.0 / 16) % 3)
+    }
     type Lineage = ();
 
     fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
@@ -84,7 +91,7 @@ impl CampaignTypes for TestGame {
     type Progress = ();
     type Snapshot = u8;
     type Observations = ();
-    type Evidence = ();
+    type Evidence = Option<u64>;
     type ArchiveReport = TestArchiveReport;
     type Run = ();
     type DrawState = ();
@@ -93,7 +100,7 @@ impl CampaignTypes for TestGame {
 }
 
 impl Reporting for TestGame {
-    fn diagnostics(_: &()) -> Option<serde_json::Value> {
+    fn diagnostics(_: &Self::Evidence) -> Option<serde_json::Value> {
         Some(serde_json::json!({"observed": 42}))
     }
     fn stream_format(&self) -> &'static str {
@@ -163,7 +170,12 @@ impl InputPolicy for TestGame {
 
 impl TargetExecution for TestGame {
     fn new_target(&self) -> Result<Self::Target, String> {
-        Ok(TestTarget::default())
+        // Constructor work must be visible to lifetime accounting without
+        // entering snapshots or the campaign's historical admission clock.
+        Ok(TestTarget {
+            frames: 7,
+            ..TestTarget::default()
+        })
     }
     fn reset(&self, target: &mut Self::Target) {
         target.value = 0;
@@ -202,6 +214,18 @@ impl TargetExecution for TestGame {
 }
 
 impl Evaluation for TestGame {
+    fn named_milestone(&self, name: &str) -> Option<(&'static str, &'static str)> {
+        match name {
+            "zero_endpoint" => Some(("zero_endpoint", "test-endpoint-v1")),
+            "never" => Some(("never", "test-endpoint-v1")),
+            _ => None,
+        }
+    }
+
+    fn milestone_first_execution(&self, evidence: &Self::Evidence, name: &str) -> Option<u64> {
+        (name == "zero_endpoint").then_some(*evidence).flatten()
+    }
+
     fn is_terminal(&self, _target: &Self::Target) -> bool {
         false
     }
@@ -233,9 +257,12 @@ impl Evaluation for TestGame {
     }
     fn merge_snapshot_root_evidence(
         &self,
-        _evidence: &mut Self::Evidence,
-        _target: &Self::Target,
+        evidence: &mut Self::Evidence,
+        target: &Self::Target,
     ) -> Result<(), Box<dyn Error>> {
+        if target.value == 0 {
+            evidence.get_or_insert(0);
+        }
         Ok(())
     }
     fn merge_import_evidence(
@@ -247,14 +274,21 @@ impl Evaluation for TestGame {
     }
     fn merge_action_evidence<F>(
         &self,
-        _evidence: &mut Self::Evidence,
-        _action: &CampaignActionResult<Self>,
-        _sequence: u64,
+        evidence: &mut Self::Evidence,
+        action: &CampaignActionResult<Self>,
+        sequence: u64,
         _input: F,
     ) -> Result<(), Box<dyn Error>>
     where
         F: FnOnce() -> Result<Input<Self::Action>, Box<dyn Error>>,
     {
+        if action
+            .candidate
+            .as_ref()
+            .is_some_and(|candidate| candidate.key.0 == 0)
+        {
+            evidence.get_or_insert(sequence);
+        }
         Ok(())
     }
     fn source_entries<'a>(
@@ -330,6 +364,387 @@ fn isolated_continuation_admission_does_not_tune_the_next_ordinary_splice_draw()
     );
 }
 
+fn milestone_config(workers: u32) -> CampaignConfig<TestGame> {
+    CampaignConfig {
+        campaign_seed: 947,
+        workers,
+        execution_budget: 2_000,
+        action_limit: 64,
+        host: "milestone-test".into(),
+        wall_budget: None,
+        continue_after_victory: false,
+        archive_entry_limit: 128,
+        reservations_per_worker: 2,
+        memory_budget_mib: Some(12),
+        materialize_final_artifacts: true,
+        run: (),
+        suffix: SuffixShape::OneOrTwo,
+        mixture: DrawMixture::AlphabetOnly,
+        retention: RetentionPolicy::AdmitAlive,
+        selector: SelectorPolicy::EnergyProgressNoCost(RetireThresholds {
+            entry: 3,
+            groups: vec![],
+        }),
+        victory_input_path: None,
+    }
+}
+
+#[test]
+fn lifetime_meter_preserves_campaign_bytes_and_closes_search_and_replay_costs() {
+    for workers in [1, 4] {
+        let mut config = milestone_config(workers);
+        config.execution_budget = 60;
+        let options = CampaignExecutionOptions {
+            frame_budget: Some(40),
+            ..Default::default()
+        };
+        let mut ordinary = Vec::new();
+        let baseline = run_campaign_checkpointed_with_options(
+            &TestGame,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut ordinary,
+            None,
+            options,
+        )
+        .unwrap();
+        for result_buffering in [ResultBuffering::OnePerWorker, ResultBuffering::TwoPerWorker] {
+            let meter = PhysicalWorkMeter::default();
+            let mut measured = Vec::new();
+            let outcome = run_campaign_checkpointed_measured(
+                &TestGame,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut measured,
+                None,
+                CampaignExecutionOptions {
+                    result_buffering,
+                    ..options
+                },
+                &meter,
+            )
+            .unwrap();
+            assert_eq!(ordinary, measured, "meter altered deterministic bytes");
+            assert_eq!(
+                serde_json::to_value(&baseline.0).unwrap(),
+                serde_json::to_value(&outcome.0).unwrap()
+            );
+            assert_eq!(baseline.1, outcome.1);
+            let receipt = meter.receipt();
+            assert_eq!(receipt.targets_created, u64::from(workers) + 1);
+            assert_eq!(receipt.constructor_frames, 7 * (u64::from(workers) + 1));
+            assert_eq!(
+                receipt.complete_frames(),
+                Some(outcome.0.frames_emulated + receipt.constructor_frames)
+            );
+            let replay_meter = PhysicalWorkMeter::default();
+            let replay = replay_campaign_checkpointed_measured(
+                &TestGame,
+                &measured,
+                None,
+                None,
+                &replay_meter,
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(&outcome.0).unwrap(),
+                serde_json::to_value(&replay.0).unwrap()
+            );
+            assert_eq!(outcome.1, replay.1);
+            let receipt = replay_meter.receipt();
+            assert_eq!(receipt.targets_created, 1);
+            assert_eq!(receipt.constructor_frames, 7);
+            assert_eq!(
+                receipt.complete_frames(),
+                Some(replay.0.frames_emulated + 7)
+            );
+        }
+    }
+}
+
+#[test]
+fn lifetime_meter_counts_work_when_output_fails_before_any_job_is_recorded() {
+    struct HeaderOnlyWriter(usize);
+    impl Write for HeaderOnlyWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.0 == 0 {
+                return Err(std::io::Error::other("planted stream failure"));
+            }
+            self.0 -= 1;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let config = milestone_config(4);
+    let meter = PhysicalWorkMeter::default();
+    let result = run_campaign_checkpointed_measured(
+        &TestGame,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut HeaderOnlyWriter(2),
+        None,
+        CampaignExecutionOptions::default(),
+        &meter,
+    );
+    assert!(result.is_err());
+    let receipt = meter.receipt();
+    assert_eq!(receipt.targets_created, 5);
+    assert_eq!(receipt.targets_closed, 5);
+    assert_eq!(receipt.constructor_frames, 35);
+    assert!(
+        receipt.complete_frames().unwrap() > 35,
+        "unrecorded physical job work vanished"
+    );
+}
+
+#[test]
+fn lifetime_meter_does_not_rewind_with_snapshots_and_live_receipts_are_incomplete() {
+    use crate::search::physical_work::TrackedTarget;
+    let meter = PhysicalWorkMeter::default();
+    let mut target = TrackedTarget::new(&TestGame, Some(&meter)).unwrap();
+    assert_eq!(meter.receipt().complete_frames(), None);
+    target.apply(&TestAction::new(1, 5));
+    let snapshot = target.snapshot().unwrap();
+    target.apply(&TestAction::new(2, 3));
+    TestGame.restore(&mut target, &snapshot).unwrap();
+    TestGame.reset(&mut target);
+    target.apply(&TestAction::new(3, 2));
+    drop(target);
+    let receipt = meter.receipt();
+    assert_eq!(receipt.constructor_frames, 7);
+    assert_eq!(receipt.closed_post_constructor_frames, 10);
+    assert_eq!(receipt.complete_frames(), Some(17));
+}
+
+#[test]
+fn lifetime_meter_rejects_a_regressed_or_saturated_target_clock() {
+    use crate::search::physical_work::TrackedTarget;
+    for clock in [6, u64::MAX] {
+        let meter = PhysicalWorkMeter::default();
+        let mut target = TrackedTarget::new(&TestGame, Some(&meter)).unwrap();
+        target.frames = clock;
+        drop(target);
+        let receipt = meter.receipt();
+        assert_eq!(receipt.targets_created, receipt.targets_closed);
+        assert!(receipt.invalid_counter);
+        assert_eq!(receipt.complete_frames(), None);
+    }
+}
+
+#[test]
+fn milestone_stops_preserve_prefix_order_cost_and_full_replay() {
+    for workers in [1, 4] {
+        let config = milestone_config(workers);
+        let mut baseline = Vec::new();
+        let (ordinary, _) = run_campaign_checkpointed(
+            &TestGame,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut baseline,
+            None,
+        )
+        .unwrap();
+        let ordinary_json = serde_json::to_value(&ordinary).unwrap();
+        assert!(ordinary_json.get("milestone_stop").is_none());
+        assert!(ordinary_json.get("first_milestone").is_none());
+        let baseline_lines = std::str::from_utf8(&baseline)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>();
+        let mut previous = None;
+        for buffering in [ResultBuffering::OnePerWorker, ResultBuffering::TwoPerWorker] {
+            let mut bytes = Vec::new();
+            let outcome = run_campaign_checkpointed_with_options(
+                &TestGame,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut bytes,
+                None,
+                CampaignExecutionOptions {
+                    stop_after_milestone: Some("zero_endpoint"),
+                    result_buffering: buffering,
+                    ..CampaignExecutionOptions::default()
+                },
+            )
+            .unwrap();
+            let first = outcome.0.first_milestone.expect("fixture reaches zero");
+            assert!(first.execution > 0 && first.execution < config.execution_budget);
+            assert!(outcome.0.executions_completed < first.execution + u64::from(workers) * 2);
+            assert!(outcome.0.frames_emulated >= first.frames_emulated);
+            let lines = std::str::from_utf8(&bytes)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>();
+            let mut event_line = None;
+            let mut charged = outcome.0.bootstrap_frames;
+            for (index, line) in lines.iter().enumerate().skip(1) {
+                if let CampaignStreamRecord::Job(job) = serde_json::from_str(line).unwrap() {
+                    charged += job.frames;
+                    if job.sequence == first.execution {
+                        event_line = Some(index);
+                        break;
+                    }
+                }
+            }
+            let event_line = event_line.unwrap();
+            assert_eq!(
+                charged, first.frames_emulated,
+                "first cost excludes later drain"
+            );
+            assert_eq!(
+                &lines[1..=event_line],
+                &baseline_lines[1..=event_line],
+                "requested endpoint changed pre-event decisions"
+            );
+            assert_eq!(
+                replay_campaign_checkpointed(&TestGame, &bytes, None, None).unwrap(),
+                outcome
+            );
+            if let Some((old_bytes, old_outcome)) =
+                previous.replace((bytes.clone(), outcome.clone()))
+            {
+                assert_eq!(
+                    old_bytes, bytes,
+                    "physical buffering changed the stop boundary"
+                );
+                assert_eq!(old_outcome, outcome);
+            }
+
+            // The endpoint job was already reserved when this smaller frame
+            // cap was crossed. Its event remains observable but exceeds budget.
+            let mut capped = Vec::new();
+            let capped_outcome = run_campaign_checkpointed_with_options(
+                &TestGame,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut capped,
+                None,
+                CampaignExecutionOptions {
+                    frame_budget: Some(first.frames_emulated - 1),
+                    stop_after_milestone: Some("zero_endpoint"),
+                    result_buffering: buffering,
+                    ..CampaignExecutionOptions::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(capped_outcome.0.first_milestone, Some(first));
+            assert!(first.frames_emulated > capped_outcome.0.frame_budget.unwrap());
+            assert_eq!(
+                replay_campaign_checkpointed(&TestGame, &capped, None, None).unwrap(),
+                capped_outcome
+            );
+        }
+
+        // A longer unrestricted stream cannot be relabelled as a milestone stop.
+        let mut header: serde_json::Value = serde_json::from_str(baseline_lines[0]).unwrap();
+        header["milestone_stop"] = serde_json::json!({
+            "name":"zero_endpoint", "observation_policy":"test-endpoint-v1"
+        });
+        let forged = std::iter::once(header.to_string())
+            .chain(baseline_lines.iter().skip(1).map(|line| (*line).to_owned()))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let error =
+            replay_campaign_checkpointed(&TestGame, forged.as_bytes(), None, None).unwrap_err();
+        assert!(error.to_string().contains("milestone stop"), "{error}");
+    }
+}
+
+#[test]
+fn an_observed_snapshot_root_stops_before_reserving_any_job() {
+    let config = milestone_config(4);
+    let snapshots = SnapshotCheckpoint {
+        format: TestGame.checkpoint_format().into(),
+        entries: vec![SnapshotCheckpointEntry { id: 0, snapshot: 0 }],
+    };
+    let checkpoint = CampaignCheckpoint {
+        path: "observed-zero-origin".into(),
+        file_sha256: format!("{:x}", Sha256::digest(snapshots.to_bytes().unwrap())),
+        snapshots,
+    };
+    let origin = CampaignOrigin::SnapshotRoot {
+        checkpoint: checkpoint.clone(),
+    };
+    let mut stream = Vec::new();
+    let outcome = run_campaign_checkpointed_with_options(
+        &TestGame,
+        &config,
+        &origin,
+        &mut stream,
+        None,
+        CampaignExecutionOptions {
+            stop_after_milestone: Some("zero_endpoint"),
+            ..CampaignExecutionOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(outcome.0.executions_completed, 0);
+    assert_eq!(
+        outcome.0.first_milestone,
+        Some(CampaignMilestoneObservation {
+            execution: 0,
+            frames_emulated: 0,
+        })
+    );
+    assert_eq!(std::str::from_utf8(&stream).unwrap().lines().count(), 1);
+    assert_eq!(
+        replay_campaign_checkpointed(&TestGame, &stream, None, Some(&checkpoint)).unwrap(),
+        outcome
+    );
+}
+
+#[test]
+fn unobserved_milestones_keep_censoring_and_reject_unknown_meanings() {
+    let config = milestone_config(4);
+    let mut bytes = Vec::new();
+    let outcome = run_campaign_checkpointed_with_options(
+        &TestGame,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        None,
+        CampaignExecutionOptions {
+            frame_budget: Some(128),
+            stop_after_milestone: Some("never"),
+            ..CampaignExecutionOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(outcome.0.frames_emulated >= 128);
+    assert!(outcome.0.first_milestone.is_none());
+    assert_eq!(
+        replay_campaign_checkpointed(&TestGame, &bytes, None, None).unwrap(),
+        outcome
+    );
+    let text = std::str::from_utf8(&bytes).unwrap();
+    let unknown_version = text.replacen("test-endpoint-v1", "test-endpoint-v2", 1);
+    assert!(
+        replay_campaign_checkpointed(&TestGame, unknown_version.as_bytes(), None, None).is_err()
+    );
+    let mut invalid = Vec::new();
+    assert!(
+        run_campaign_checkpointed_with_options(
+            &TestGame,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut invalid,
+            None,
+            CampaignExecutionOptions {
+                stop_after_milestone: Some("unknown"),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .is_err()
+    );
+    assert!(
+        invalid.is_empty(),
+        "unknown criterion wrote a campaign header"
+    );
+}
+
 #[test]
 fn continuations_and_count_selection_replay_under_snapshot_pressure() {
     for (workers, semantic, persistent, mode) in [
@@ -342,6 +757,12 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         (4, false, true, 1),
         (1, false, false, 2),
         (4, false, false, 2),
+        (1, true, false, 3),
+        (4, true, false, 3),
+        (1, true, false, 4),
+        (4, true, false, 4),
+        (1, true, false, 5),
+        (4, true, false, 5),
     ] {
         let config = CampaignConfig {
             campaign_seed: 947,
@@ -363,7 +784,22 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
                 _ => DrawMixture::EnergySpliceContinuation { scale: 6 },
             },
             retention: RetentionPolicy::AdmitAlive,
-            selector: if persistent {
+            selector: if mode == 4 {
+                SelectorPolicy::EnergyProgressCheapestScopedReturnControl(RetireThresholds {
+                    entry: 3,
+                    groups: vec![],
+                })
+            } else if mode == 5 {
+                SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(RetireThresholds {
+                    entry: 3,
+                    groups: vec![],
+                })
+            } else if mode == 3 {
+                SelectorPolicy::EnergyProgressNoCost(RetireThresholds {
+                    entry: 3,
+                    groups: vec![],
+                })
+            } else if persistent {
                 SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
                     entry: 3,
                     groups: vec![],
@@ -398,8 +834,10 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             &mut buffered_bytes,
             None,
             CampaignExecutionOptions {
+                slot_retention: Default::default(),
                 frame_budget: None,
                 result_buffering: ResultBuffering::TwoPerWorker,
+                ..CampaignExecutionOptions::default()
             },
         )
         .unwrap();
@@ -487,8 +925,10 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             &mut bounded_buffered_bytes,
             None,
             CampaignExecutionOptions {
+                slot_retention: Default::default(),
                 frame_budget: Some(128),
                 result_buffering: ResultBuffering::TwoPerWorker,
+                ..CampaignExecutionOptions::default()
             },
         )
         .unwrap();
@@ -515,5 +955,103 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             replay_campaign_checkpointed(&TestGame, lines.join("\n").as_bytes(), None, None)
                 .is_err()
         );
+    }
+}
+
+#[test]
+fn optional_slot_policies_replay_active_and_unsupported_paths() {
+    use crate::search::archive::SlotRetentionPolicy;
+    for policy in [
+        SlotRetentionPolicy::ResourceExtremes2,
+        SlotRetentionPolicy::ResourceCoverage2,
+        SlotRetentionPolicy::RepresentativeJobSample2,
+        SlotRetentionPolicy::QualityRepresentatives2,
+        SlotRetentionPolicy::ContextRepresentatives2,
+        SlotRetentionPolicy::ResourceGuardedProgress2,
+        SlotRetentionPolicy::ResourceGuardedProgressQuality2,
+    ] {
+        let config = CampaignConfig {
+            campaign_seed: 947,
+            workers: 4,
+            execution_budget: 1200,
+            action_limit: 64,
+            host: "resource-test".into(),
+            wall_budget: None,
+            continue_after_victory: false,
+            archive_entry_limit: 128,
+            reservations_per_worker: 2,
+            memory_budget_mib: Some(12),
+            materialize_final_artifacts: true,
+            run: (),
+            suffix: SuffixShape::OneOrTwo,
+            mixture: DrawMixture::AlphabetContinuation,
+            retention: RetentionPolicy::AdmitAlive,
+            selector: SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
+                entry: 3,
+                groups: vec![],
+            }),
+            victory_input_path: None,
+        };
+        let mut stream = Vec::new();
+        let mut sidecar = Vec::new();
+        let (live, checkpoint) = run_campaign_checkpointed_with_options(
+            &TestGame,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            Some(&mut sidecar),
+            CampaignExecutionOptions {
+                frame_budget: None,
+                result_buffering: ResultBuffering::TwoPerWorker,
+                slot_retention: policy,
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(live.slot_retention.as_deref(), policy.identifier());
+        assert!(live.snapshot_evictions > 0, "must exercise pressure");
+        assert!(
+            std::str::from_utf8(&stream)
+                .unwrap()
+                .lines()
+                .any(|line| line.contains("\"path\":\"continuation\"")),
+            "must exercise continuation dispatch"
+        );
+        let last: CampaignProgressRecord<TestKey> = serde_json::from_slice(
+            sidecar
+                .split(|byte| *byte == b'\n')
+                .rfind(|line| !line.is_empty())
+                .unwrap(),
+        )
+        .unwrap();
+        if matches!(
+            policy,
+            SlotRetentionPolicy::ResourceGuardedProgress2
+                | SlotRetentionPolicy::ResourceGuardedProgressQuality2
+        ) {
+            assert_eq!(
+                last.retention_diagnostics.alternative_admissions, 0,
+                "this fixture supplies no scoped progress; do not invent an alternate"
+            );
+        } else {
+            assert!(
+                last.retention_diagnostics.alternative_admissions > 0,
+                "must keep actual alternatives"
+            );
+        }
+        assert!(
+            last.retention_diagnostics.removed > 0,
+            "must replace or evict entries"
+        );
+        let (replayed, replay_checkpoint) =
+            replay_campaign_checkpointed(&TestGame, &stream, None, None).unwrap();
+        assert_eq!(live, replayed);
+        assert_eq!(checkpoint, replay_checkpoint);
+        let corrupted = String::from_utf8(stream).unwrap().replacen(
+            policy.identifier().unwrap(),
+            "resource_policy_invalid",
+            1,
+        );
+        assert!(replay_campaign_checkpointed(&TestGame, corrupted.as_bytes(), None, None).is_err());
     }
 }

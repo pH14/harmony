@@ -86,3 +86,123 @@ all 40 cleared-level flags, continues execution through intermediate clears, and
 permits an 8,192-action horizon. The default remains the isolated-level workload.
 Whole-game runs must begin at level 1; isolated level setups are never scored as
 whole-game completion.
+
+`nes-eval` optionally accepts `slot_retention: "resource_extremes_2_v1"`.
+Metroid supplies health/missiles and MM2 health/total weapon energy; other
+workloads keep ordinary retention. This bounded research policy leaves the
+controller vocabulary and selector unchanged. Its identity is recorded in
+streams and evaluation provenance.
+
+The separate `resource_coverage_2_v1` option keeps up to two states maximizing
+joint resource-threshold coverage, allowing a useful intermediate tradeoff to
+survive. It uses the same axes and archive budget. Total weapon energy remains
+a scalar proxy; it does not encode weapon-specific future requirements. Both
+policies require matched fresh-search evaluation before promotion.
+
+`representative_job_sample_2_v1` instead keeps the ordinary best representative
+and the best state from the lowest-ranked creation job. Its fixed job ranking
+uses no search RNG and needs no resource axes. It retains at most two states
+under the same archive byte budget, including when resources tie. This is a
+research option; the ranking gives no guarantee of useful future behavior.
+
+`quality_representatives_2_v1` supplies a plain top-two-quality control.
+`context_representatives_2_v1` keeps the top two representatives from distinct
+opaque contexts. Metroid supplies a facing/speed-sign context only in builds
+with `--features metroid-motion-context`; other builds/workloads have no such
+context and use ordinary retention for that policy. Motion metadata changes
+neither retention-slot geometry nor selector groups. Both comparison arms must
+use the same feature build, resource limits and recorded terminal semantics.
+No experimental policy or feature is a production default.
+
+`--features metroid-retention-progress` adds an explicit, qualified snapshot-local
+boss-progress projection for the generic `resource_guarded_progress_2_v1` policy
+and its `resource_guarded_progress_quality_control_2_v1` capacity control. Both
+keep the ordinary anchor; an alternate needs matching known scope, strictly
+higher progress and no worse resource axes. The feature includes motion/context
+observation support and records a separate Metroid key/stream/digest identity.
+All comparison arms need the same feature build. It changes no selection groups,
+ordinary preference or controller law. MM2 has no such projection yet. See the
+[Metroid projection](src/metroid/README.md#experimental-scoped-progress-retention)
+and [research gate](../../benchmarks/search/continuation-reassessment/pg01-design.md).
+
+`--features metroid-boss-context-audit` adds a reporting-only Metroid encounter
+sample at each completed live action endpoint and saves the first producing
+input for two replays. It uses separate artifact identities and adds metadata
+and verification costs; both comparison arms must use the same feature build.
+See the [Metroid observation and cost contract](src/metroid/README.md#experimental-endpoint-encounters).
+
+Build `nes-eval` with `--features selector-cost-audit` to forward the generic
+searcher's observation-only cost-rank diagnostic into progress sidecars. This
+can be combined with `metroid-motion-context`; comparison arms must use the same
+feature build. The separate selector identifier
+`room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2` removes selection-side
+historical group-time ranks. Its use does not change workload retention or the
+controller vocabulary. See the [searcher policy contract](../../dissonance/searcher/README.md)
+and [registered research](../../benchmarks/search/continuation-yield/README.md).
+
+
+## Experimental action correlation
+
+For Metroid and MM2, `nes-eval` optionally accepts `chord_correlation` as
+`component_refresh_half_v1` or `whole_repeat_37_of_210_v1`. Both require
+`alphabet_only`. The shared controller transform operates only within each
+newly drawn suffix; it never reads a restored state's action history or game
+observations. It preserves suffix length, all hold frames and special-tap
+positions. A special tap clears the previous-command context. No persistent
+draw state or snapshot field is added.
+
+The component policy draws a complete fresh command half the time and refreshes
+one of the three direction/A/B components otherwise. The whole-command control
+has a derived repeat probability that matches complete-command run lengths.
+The optional `action_correlation` entry in game policies records the exact law;
+a different policy context rejects replay. Defaults and explicit
+`independent_v1` preserve the existing policy map and independent sampler.
+These are research choices, not demonstrated game improvements. The
+[finite model and counterexample](../../benchmarks/search/action-correlation/README.md)
+explain what is proved and what remains empirical.
+
+## Exact local-retention diagnostics
+
+`metroid-retention-replay extract REQUEST OUT` exports a pinned competition
+from a complete capture without constructing an emulator. It checks the full
+footer and both snapshot/input hashes; the exported inputs are checkpoint-local.
+`metroid-retention-pair draws SEEDS BANK` freezes ordinary shared continuations,
+and `metroid-retention-pair run REQUEST OUT` compares exact captured states with
+per-frame boss diagnostics, verified restores and held-command boundary replay.
+Use the same `metroid-motion-context,metroid-boss-context-audit` feature identity
+as the capture. The finite diagnostic changes no archive policy. Its bounds and
+limitations are documented in
+[PC01](../../benchmarks/search/continuation-reassessment/pc01-design.md).
+
+
+The standalone `metroid-archive-challenge` request optionally sets
+`measure_physical_work: true`. It then attaches separate search/replay lifetime
+receipts and emits `metroid-archive-challenge-physical-result-v2`, whose
+`physical_frames.total` sums direct helpers and both complete engine lifetimes.
+Constructor setup and admitted work are components, not extra charges. Failed
+engine calls retain available receipts in `usage.json`; failed construction or
+process termination must remain incomplete. Omission preserves the earlier
+request/result and campaign-stream formats. This observation flag does not change
+retention or enforce a physical limit; use the registered search, process, memory
+and output bounds and qualify the physical-cost identity before an efficacy panel.
+QuickNES's lifetime clock survives restore/reset, and its destructor unloads and
+deinitializes the core without calling the frame runner.
+
+The challenge caller also accepts an optional `selector` identifier. Omission
+keeps `room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2`. Its only
+additional choices are the `..._scoped_return_control_v1:3,6,12,2` and
+`..._scoped_return_half_v1:3,6,12,2` variants, requiring the explicit
+`metroid-retention-progress` feature. Other laws, versions and thresholds fail
+validation before file/core I/O. All arms of a return experiment must use the
+same feature build; use the coin-consuming control to separate redirection from
+changed random tapes. This caller remains a supplied-state qualification tool.
+
+Its optional `mixture` field defaults to `alphabet_only`. The additional
+`alphabet_scoped_progress_reuse_v1` and
+`alphabet_scoped_progress_fresh_control_v1` choices require the
+`metroid-retention-progress` feature and the unchanged default selector. Their
+bounded queue learns only from the current campaign's retained same-slot
+progress; the control returns to the same queued parent with fresh actions.
+Other mixtures and combinations with scoped-return selectors fail validation
+before I/O. All existing execution, frame, memory, action and wall limits apply.
+See the [mechanism and qualification gates](../../benchmarks/search/continuation-reassessment/progress-word-design.md).

@@ -1,0 +1,72 @@
+{
+  "actions_per_trial": 24,
+  "audit_sha256": "cae156018d08bbe61364442f936224528bbf7a151b7319a2209cc8c6a0d48b46",
+  "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+  "equal_work_rule": "identical pre-sampled action suffixes and frame allowances; terminal branches stop early, actual frames reported separately",
+  "format": "metroid-equal-suffix-probe-v1",
+  "limitations": [
+    "cached incumbent sample only",
+    "finite matching suffixes do not prove equivalence",
+    "map exit is local reach evidence, not a boss or new global coverage claim",
+    "resource gain is relative to each starting state"
+  ],
+  "pairs": 16,
+  "prefix_and_gain_export_frames": 898376,
+  "probe_frames_discarded_survivor": [
+    707878,
+    489897
+  ],
+  "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+  "scope": "development-discovered competitors; diagnostic, not fresh search",
+  "totals_by_stratum": [
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      1024,
+      0,
+      0,
+      156,
+      42,
+      197
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  ],
+  "totals_columns": [
+    "trials",
+    "discarded_only_gain",
+    "survivor_only_gain",
+    "discarded_only_living_map_exit",
+    "survivor_only_living_map_exit",
+    "discarded_survives_survivor_dies"
+  ],
+  "trials_per_pair": 64
+}

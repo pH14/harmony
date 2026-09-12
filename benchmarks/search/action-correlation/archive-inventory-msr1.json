@@ -1,0 +1,342 @@
+{
+  "format": "metroid-persisted-checkpoint-inventory-v1",
+  "host": "msr1",
+  "recorded_utc": "2026-09-10T00:28:28.434949+00:00",
+  "roots": [
+    "/root/harmony-retention-theory-20260908/runs"
+  ],
+  "scope": "Campaign checkpoint.json files with matching Metroid summary; selected diagnostic origins and progress reports are not whole archives.",
+  "records": [
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/renewal-20260909/d02/metroid-candidate-smoke/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 70106911,
+      "summary_sha256": "6aacf135481dad86f8ce11fa49245d4b5ec4c6d0372f59271b1f78382ea08e71",
+      "seed": 2026090902,
+      "frames": 284283,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/r03-qualify-metroid-representative_job_sample_2_v1/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 190833407,
+      "summary_sha256": "19f16dfd4f0279c326f5a7ac4ad0abb29408bbc4afb28226921e089d2a18f7fb",
+      "seed": 3,
+      "frames": 704227,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/k01-smoke-legacy-default/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 132158404,
+      "summary_sha256": "6ad2c0e04602f3892f1572352d9248235d2e0411425b4d89aa04160fd416fc42",
+      "seed": 3,
+      "frames": 691673,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/r03-qualify-metroid-legacy/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 132158404,
+      "summary_sha256": "7e0c8b0cf1d11ea0d76c08f31d927252fde2a4f0526c486e1691a4f33b157561",
+      "seed": 3,
+      "frames": 691673,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/r04b-qualify-default-sample/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 190833407,
+      "summary_sha256": "dd76df6d30bf103ca971b0cb3597e051540c7cc8e38edbc1a13c7a8ff9a170b8",
+      "seed": 3,
+      "frames": 704227,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/u01-qualify/quality/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 245262880,
+      "summary_sha256": "ac2727ae9032aec6e5cac206b3bae26bb1b2b205bbf35d61e66d6b3177b12463",
+      "seed": 3,
+      "frames": 696966,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/u01-qualify/context/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 222081828,
+      "summary_sha256": "a9ff52d3ef9d6db5879641927223481cb902868a1ae024daa8905f4c1e9e5a9c",
+      "seed": 3,
+      "frames": 703716,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/u01-qualify/default-metroid/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 132158404,
+      "summary_sha256": "0f7ea96c76cf2b5c09bd5b6383d825c470adf4fa73be7f664f884499e7112d63",
+      "seed": 3,
+      "frames": 691673,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/r04b-qualify-quality/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 245262880,
+      "summary_sha256": "d146e4d2813b4c10d2c9218e74ed420563cbccd6fcac7f31fd1fc41b2249e034",
+      "seed": 3,
+      "frames": 696966,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/u01-qualify-002/quality/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 245262880,
+      "summary_sha256": "157fa881434b8097d695ebef4111bd64813652863770b65902a31b619e48c13e",
+      "seed": 3,
+      "frames": 696966,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/u01-qualify-002/default-metroid/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 132158404,
+      "summary_sha256": "128090a01d7034116a7fc2956dc7d6bc68240e5cdc8044ecce0de0210baa104e",
+      "seed": 3,
+      "frames": 691673,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/action-correlation-20260909/q01/metroid-default/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 70106911,
+      "summary_sha256": "2b8a65449ac91bef407d2f08f4b50ea52c33885c42701ce9168bc7c43fa2ea61",
+      "seed": 2026090902,
+      "frames": 284283,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/action-correlation-20260909/q02/metroid-component-slots2/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 18221310,
+      "summary_sha256": "b6f3b55277446d0d3d420c074a1219f894f5b3459f341b25cded1e955937b9ff",
+      "seed": 2026090902,
+      "frames": 50967,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/action-correlation-20260909/q02/metroid-whole-slots2/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 18620861,
+      "summary_sha256": "4357da91f9361c0c9ba550d490ef7f4d50ff8de3f5868233154bf3748fc2ec8c",
+      "seed": 2026090902,
+      "frames": 50916,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/action-correlation-20260909/q02/metroid-component-slots1/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 18221310,
+      "summary_sha256": "84c9988e1ca20343e71b49461c34d0a2eabf2620d3effe9cb2cb63b410ef934a",
+      "seed": 2026090902,
+      "frames": 50967,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/action-correlation-20260909/q02/metroid-whole-slots1/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 18620861,
+      "summary_sha256": "c2258b166f11abee0cc0cd8002aff8943649d0aa3e4ec15fbd2b5a49756bcd88",
+      "seed": 2026090902,
+      "frames": 50916,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/r03-qualify-metroid-resource_extremes_2_v1/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 132158404,
+      "summary_sha256": "235ff1fca288ddad09c9e5936a3e9835fa037110d6ebac5d719e8145d04688b7",
+      "seed": 3,
+      "frames": 691673,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/r04b-qualify-default-metroid/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 132158404,
+      "summary_sha256": "c66e0135b0fb75c0e265f9821032f9279356ce005ea60f77fa0d13f18826caf6",
+      "seed": 3,
+      "frames": 691673,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/b02-smoke/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 132158404,
+      "summary_sha256": "2fdc9c2118e55e7610bacbcbc7e1d797387b71bcbf364d89a5cb4349b20a79a2",
+      "seed": 3,
+      "frames": 691673,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/r04-qualify-quality/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 245262880,
+      "summary_sha256": "3267c6d13cf8a7d35e6cbd8d8d0e9b8103b480a5ae1addacba7c77e17947b06d",
+      "seed": 3,
+      "frames": 696966,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/k01-smoke-corrected-refined/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 305598101,
+      "summary_sha256": "221705e1dea96cd66a78525533ac30228e218f04ae6b19560cdb941dd5484a2c",
+      "seed": 3,
+      "frames": 701655,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/r04b-qualify-context/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 222081828,
+      "summary_sha256": "c591378a2a550fc9c8ea0fd47274c2be49c7c05e8ab214535f977b0b70d88968",
+      "seed": 3,
+      "frames": 703716,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/milestone-stop-20260909/q01/default/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 70106911,
+      "summary_sha256": "d0ba39622b9cb88c2347aac54e768d9264419080a00f3253c003c9bd71ce1af1",
+      "seed": 2026090902,
+      "frames": 284283,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/milestone-stop-20260909/q01/morph-one-slot/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 10755918,
+      "summary_sha256": "cd03c8807742155609a1b946fa30cb9b1ee90bf4b19b11be51a694c19b00e4b6",
+      "seed": 2026090902,
+      "frames": 23883,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/milestone-stop-20260909/q01/origin-brinstar/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 1171771,
+      "summary_sha256": "8c948fb29a2a4836e2104a55159cf8b413a77e10ffa0c67aa12a93582b49b2dc",
+      "seed": 2026090902,
+      "frames": 1474,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/milestone-stop-20260909/q01/morph-two-slots/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 10755918,
+      "summary_sha256": "3eff30446c4bf2950ccf3d823eb58687a0690ddf83eeb7e528995f69f4bdc1b5",
+      "seed": 2026090902,
+      "frames": 23883,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/milestone-stop-20260909/q01/energy-unreached/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 70106911,
+      "summary_sha256": "96419c4d905645f3c6062ea84573aa33df5489e41b59f90d3faada4191c00c3f",
+      "seed": 2026090902,
+      "frames": 284283,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/milestone-stop-20260909/q01/morph-beyond-budget/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 10755918,
+      "summary_sha256": "7e648d275dc76d53b82e1443c7b4cc2202e2de7601a43127f2393af7303a7c52",
+      "seed": 2026090902,
+      "frames": 23883,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/milestone-stop-20260909/q01r/first-admission-brinstar/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 1171771,
+      "summary_sha256": "48a93e37682c06053826fad447b6993a45a12620533cd75c1e01dbdfb7479953",
+      "seed": 2026090902,
+      "frames": 1474,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/r04-qualify-default-sample/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 190833407,
+      "summary_sha256": "d22e683e65817a3eda778500a439aae60f8125c5377c25964008ea1f975af648",
+      "seed": 3,
+      "frames": 704227,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/r04-qualify-context/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 222081828,
+      "summary_sha256": "615486cac6d6551a1692ed4985ff4a4d53dd3556495d78260b08314c0aeeaed9",
+      "seed": 3,
+      "frames": 703716,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/r04-qualify-default-metroid/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 132158404,
+      "summary_sha256": "b497a620956eba4b3552cc9de172bd7348c97596d3576b08b437daafcc92279f",
+      "seed": 3,
+      "frames": 691673,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    },
+    {
+      "checkpoint": "/root/harmony-retention-theory-20260908/runs/k01-smoke-corrected-default/metroid-full-s3-w4-m8192/campaign/checkpoint.json",
+      "checkpoint_bytes": 132158404,
+      "summary_sha256": "486c01cb29cceaeb7e6e96947f3bc488a499dc78af6226a011b1dbbb719dcade",
+      "seed": 3,
+      "frames": 691673,
+      "verification": "campaign",
+      "status": "complete",
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2"
+    }
+  ],
+  "emulator_frames": 0
+}

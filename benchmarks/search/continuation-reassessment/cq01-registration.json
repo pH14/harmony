@@ -1,0 +1,27 @@
+{
+  "format": "continuation-cq01-registration-v1",
+  "registered_utc": "2026-09-10T10:12:34.985232+00:00",
+  "deadline_utc": "2026-09-10T10:42:34.985232+00:00",
+  "known_auxiliary_frame_ceiling": 8000000,
+  "fresh_search_frames": 0,
+  "seed": 2026090902,
+  "reused": true,
+  "source_commit": "780415bdea636c2bd54cf3d865fc264dd33fd649",
+  "source_tree_sha256": "2a4cc365f0dcbfa66f8818a5076d75766139b6920b60a6f378672308631d5647",
+  "candidate_mixture": "alphabet_continuation_v1",
+  "unchanged_selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+  "host_registration_sha256": {
+    "msr1": "f094f2f8c8039fd263851bce5fa2e5953c1705f5a479b7610edf13277116c989",
+    "ms02": "72b2b7679d1e4d3db00f74a036b3031c42e457670500027ac9ff136c768b8295"
+  },
+  "checker_sha256": "753b6076e932cc452fd747467f20d69e6c87085ca7db3186c568eab20fee2480",
+  "prior_ledger_sha256": "0338cbf87c950afbf37eb69fe15b963b791a7cba95e3c806467747700321d694",
+  "pass_rule": "All three bounded cells complete full campaign/checkpoint/witness replay, with at least one actual continuation dispatch and no more than the registered quarter share, every continuation on its fourth reservation with a recorded tail. Require same-host one/two-buffer artifact identity, cross-host post-header stream identity and resource limits.",
+  "failure_rule": "Stop; no retry, replacement fixture, new policy or performance allocation on incomplete measurement, missing continuation, identity/replay discrepancy or resource overrun.",
+  "cost_scope": "Charge diagnostic admitted frames, inferred full campaign replay and measured held witnesses as known auxiliary work. In-job origin replay is already charged by the lifetime clock; setup, unadmitted work and any out-of-job reconstruction remain unknown.",
+  "decision_basis": [
+    "Historical 012 first-Bombs frame signal is retrospective, with legacy terminal v2/key v8. FW02 establishes compatibility of all six historical witnesses, not efficacy.",
+    "Current corrected C01 seed5 reaches Bombs at113.33M admitted frames versus263.2M historically; no baseline effect or fresh calibration is inferred.",
+    "The unchanged continuation policy needs current native qualification before any fresh deeper-endpoint panel. Source-ordering fixes and failed families remain separate."
+  ]
+}

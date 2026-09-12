@@ -1,0 +1,729 @@
+{
+  "format": "p04-motion-partition-analysis-v1",
+  "scope": "adaptive descriptor diagnostic on existing P03 pairs; no causal sufficiency or population claim",
+  "probe_summary": {
+    "audit_sha256": "c310985ec09f24a35f1f8e755a44ecc934f5bc2eba355207f80d74efe85b5120",
+    "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+    "format": "metroid-competitor-motion-probe-v1",
+    "pairs": 16,
+    "physical_frames": 1587338,
+    "read_only_snapshot_checks": true,
+    "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+    "scope": "existing recorded competitors, no new search or suffix trials",
+    "terminal_policy": "death_or_bcd_underflow_or_ending_v3",
+    "verified_replays_per_endpoint": 2
+  },
+  "pairs_sha256": "34b8f90e846b9014a5038276c9530e4984de0c6a03b24ec92b94a83e19541ad9",
+  "p03_outcomes_sha256": "3822eb2912329046c037bfa1419e17fceeb0f9af4fab3b6ffe072ddb58470004",
+  "coarse_context": [
+    "direction",
+    "signed horizontal speed sign",
+    "signed vertical speed sign"
+  ],
+  "still_merged_useful_pairs": [
+    0,
+    3,
+    4,
+    5,
+    6,
+    11,
+    12,
+    13
+  ],
+  "coarse_motion_separates_still_merged": [
+    0,
+    3,
+    5,
+    6,
+    12,
+    13
+  ],
+  "same_observation_distinguishing_examples": [
+    {
+      "pair": 0,
+      "trial": 15,
+      "outcome": {
+        "candidate_replaces": false,
+        "discarded": {
+          "boss_gain": false,
+          "capacity_gain": false,
+          "dead": true,
+          "endpoint": {
+            "area": 16,
+            "bosses": 0,
+            "door": 0,
+            "ending": false,
+            "energy_tanks": 0,
+            "equipment": 16,
+            "health": 0,
+            "map_x": 11,
+            "map_y": 11,
+            "missile_capacity": 10,
+            "missiles": 0,
+            "mode": 3,
+            "pose": 7,
+            "x": 109,
+            "y": 33
+          },
+          "equipment_gained": 0,
+          "frames": 954,
+          "reached_maps": [
+            [
+              16,
+              11,
+              9
+            ],
+            [
+              16,
+              11,
+              10
+            ],
+            [
+              16,
+              11,
+              11
+            ]
+          ]
+        },
+        "discarded_only_exit": true,
+        "discarded_only_gain": false,
+        "execution": 471442,
+        "pair": 0,
+        "stratum": 3,
+        "survivor": {
+          "boss_gain": false,
+          "capacity_gain": false,
+          "dead": true,
+          "endpoint": {
+            "area": 16,
+            "bosses": 0,
+            "door": 0,
+            "ending": false,
+            "energy_tanks": 0,
+            "equipment": 16,
+            "health": 0,
+            "map_x": 11,
+            "map_y": 8,
+            "missile_capacity": 10,
+            "missiles": 0,
+            "mode": 3,
+            "pose": 7,
+            "x": 130,
+            "y": 155
+          },
+          "equipment_gained": 0,
+          "frames": 87,
+          "reached_maps": []
+        },
+        "survivor_only_exit": false,
+        "survivor_only_gain": false,
+        "trial": 15
+      }
+    }
+  ],
+  "rows": [
+    {
+      "pair": 0,
+      "execution": 471442,
+      "useful_disagreements": 8,
+      "still_merged_by_finer_key": true,
+      "same_mechanical_state": true,
+      "candidate_context": [
+        0,
+        0,
+        0
+      ],
+      "incumbent_context": [
+        0,
+        1,
+        0
+      ],
+      "coarse_motion_splits": true,
+      "raw_motion_splits": true,
+      "candidate_motion": {
+        "direction": 0,
+        "gravity": 0,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 0,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 78,
+        "vertical_speed": 0
+      },
+      "incumbent_motion": {
+        "direction": 0,
+        "gravity": 0,
+        "horizontal_acceleration": 48,
+        "horizontal_speed": 1,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 78,
+        "vertical_speed": 0
+      }
+    },
+    {
+      "pair": 1,
+      "execution": 489616,
+      "useful_disagreements": 52,
+      "still_merged_by_finer_key": false,
+      "same_mechanical_state": false,
+      "candidate_context": [
+        0,
+        0,
+        0
+      ],
+      "incumbent_context": [
+        1,
+        0,
+        0
+      ],
+      "coarse_motion_splits": true,
+      "raw_motion_splits": true,
+      "candidate_motion": {
+        "direction": 0,
+        "gravity": 26,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 0,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 15,
+        "vertical_speed": 0
+      },
+      "incumbent_motion": {
+        "direction": 1,
+        "gravity": 26,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 0,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 255,
+        "vertical_speed": 0
+      }
+    },
+    {
+      "pair": 2,
+      "execution": 394437,
+      "useful_disagreements": 23,
+      "still_merged_by_finer_key": false,
+      "same_mechanical_state": false,
+      "candidate_context": [
+        1,
+        -1,
+        1
+      ],
+      "incumbent_context": [
+        0,
+        1,
+        1
+      ],
+      "coarse_motion_splits": true,
+      "raw_motion_splits": true,
+      "candidate_motion": {
+        "direction": 1,
+        "gravity": 24,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 255,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 28,
+        "vertical_speed": 1
+      },
+      "incumbent_motion": {
+        "direction": 0,
+        "gravity": 24,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 1,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 28,
+        "vertical_speed": 1
+      }
+    },
+    {
+      "pair": 3,
+      "execution": 387001,
+      "useful_disagreements": 2,
+      "still_merged_by_finer_key": true,
+      "same_mechanical_state": false,
+      "candidate_context": [
+        1,
+        -1,
+        0
+      ],
+      "incumbent_context": [
+        0,
+        1,
+        -1
+      ],
+      "coarse_motion_splits": true,
+      "raw_motion_splits": true,
+      "candidate_motion": {
+        "direction": 1,
+        "gravity": 24,
+        "horizontal_acceleration": 208,
+        "horizontal_speed": 254,
+        "horizontal_speed_maximum": 18,
+        "jump_displacement": 73,
+        "vertical_speed": 0
+      },
+      "incumbent_motion": {
+        "direction": 0,
+        "gravity": 24,
+        "horizontal_acceleration": 48,
+        "horizontal_speed": 1,
+        "horizontal_speed_maximum": 18,
+        "jump_displacement": 68,
+        "vertical_speed": 254
+      }
+    },
+    {
+      "pair": 4,
+      "execution": 75710,
+      "useful_disagreements": 9,
+      "still_merged_by_finer_key": true,
+      "same_mechanical_state": false,
+      "candidate_context": [
+        1,
+        -1,
+        -1
+      ],
+      "incumbent_context": [
+        1,
+        -1,
+        -1
+      ],
+      "coarse_motion_splits": false,
+      "raw_motion_splits": false,
+      "candidate_motion": {
+        "direction": 1,
+        "gravity": 24,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 255,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 15,
+        "vertical_speed": 252
+      },
+      "incumbent_motion": {
+        "direction": 1,
+        "gravity": 24,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 255,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 15,
+        "vertical_speed": 252
+      }
+    },
+    {
+      "pair": 5,
+      "execution": 335695,
+      "useful_disagreements": 9,
+      "still_merged_by_finer_key": true,
+      "same_mechanical_state": false,
+      "candidate_context": [
+        0,
+        0,
+        0
+      ],
+      "incumbent_context": [
+        0,
+        1,
+        0
+      ],
+      "coarse_motion_splits": true,
+      "raw_motion_splits": true,
+      "candidate_motion": {
+        "direction": 0,
+        "gravity": 0,
+        "horizontal_acceleration": 48,
+        "horizontal_speed": 0,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 16,
+        "vertical_speed": 0
+      },
+      "incumbent_motion": {
+        "direction": 0,
+        "gravity": 0,
+        "horizontal_acceleration": 48,
+        "horizontal_speed": 1,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 16,
+        "vertical_speed": 0
+      }
+    },
+    {
+      "pair": 6,
+      "execution": 281626,
+      "useful_disagreements": 13,
+      "still_merged_by_finer_key": true,
+      "same_mechanical_state": false,
+      "candidate_context": [
+        1,
+        -1,
+        0
+      ],
+      "incumbent_context": [
+        0,
+        1,
+        0
+      ],
+      "coarse_motion_splits": true,
+      "raw_motion_splits": true,
+      "candidate_motion": {
+        "direction": 1,
+        "gravity": 0,
+        "horizontal_acceleration": 208,
+        "horizontal_speed": 254,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 0,
+        "vertical_speed": 0
+      },
+      "incumbent_motion": {
+        "direction": 0,
+        "gravity": 0,
+        "horizontal_acceleration": 48,
+        "horizontal_speed": 1,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 165,
+        "vertical_speed": 0
+      }
+    },
+    {
+      "pair": 7,
+      "execution": 41415,
+      "useful_disagreements": 8,
+      "still_merged_by_finer_key": false,
+      "same_mechanical_state": false,
+      "candidate_context": [
+        1,
+        0,
+        0
+      ],
+      "incumbent_context": [
+        1,
+        0,
+        0
+      ],
+      "coarse_motion_splits": false,
+      "raw_motion_splits": true,
+      "candidate_motion": {
+        "direction": 1,
+        "gravity": 0,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 0,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 0,
+        "vertical_speed": 0
+      },
+      "incumbent_motion": {
+        "direction": 1,
+        "gravity": 0,
+        "horizontal_acceleration": 208,
+        "horizontal_speed": 0,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 249,
+        "vertical_speed": 0
+      }
+    },
+    {
+      "pair": 8,
+      "execution": 463048,
+      "useful_disagreements": 0,
+      "still_merged_by_finer_key": false,
+      "same_mechanical_state": true,
+      "candidate_context": [
+        0,
+        0,
+        0
+      ],
+      "incumbent_context": [
+        0,
+        0,
+        0
+      ],
+      "coarse_motion_splits": false,
+      "raw_motion_splits": false,
+      "candidate_motion": {
+        "direction": 0,
+        "gravity": 0,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 0,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 0,
+        "vertical_speed": 0
+      },
+      "incumbent_motion": {
+        "direction": 0,
+        "gravity": 0,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 0,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 0,
+        "vertical_speed": 0
+      }
+    },
+    {
+      "pair": 9,
+      "execution": 352611,
+      "useful_disagreements": 37,
+      "still_merged_by_finer_key": false,
+      "same_mechanical_state": false,
+      "candidate_context": [
+        0,
+        0,
+        0
+      ],
+      "incumbent_context": [
+        1,
+        -1,
+        1
+      ],
+      "coarse_motion_splits": true,
+      "raw_motion_splits": true,
+      "candidate_motion": {
+        "direction": 0,
+        "gravity": 0,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 0,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 166,
+        "vertical_speed": 0
+      },
+      "incumbent_motion": {
+        "direction": 1,
+        "gravity": 24,
+        "horizontal_acceleration": 208,
+        "horizontal_speed": 254,
+        "horizontal_speed_maximum": 18,
+        "jump_displacement": 33,
+        "vertical_speed": 2
+      }
+    },
+    {
+      "pair": 10,
+      "execution": 319804,
+      "useful_disagreements": 1,
+      "still_merged_by_finer_key": false,
+      "same_mechanical_state": false,
+      "candidate_context": [
+        0,
+        1,
+        1
+      ],
+      "incumbent_context": [
+        0,
+        1,
+        1
+      ],
+      "coarse_motion_splits": false,
+      "raw_motion_splits": true,
+      "candidate_motion": {
+        "direction": 0,
+        "gravity": 26,
+        "horizontal_acceleration": 48,
+        "horizontal_speed": 1,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 0,
+        "vertical_speed": 3
+      },
+      "incumbent_motion": {
+        "direction": 0,
+        "gravity": 26,
+        "horizontal_acceleration": 48,
+        "horizontal_speed": 1,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 185,
+        "vertical_speed": 3
+      }
+    },
+    {
+      "pair": 11,
+      "execution": 120305,
+      "useful_disagreements": 21,
+      "still_merged_by_finer_key": true,
+      "same_mechanical_state": false,
+      "candidate_context": [
+        0,
+        1,
+        1
+      ],
+      "incumbent_context": [
+        0,
+        1,
+        1
+      ],
+      "coarse_motion_splits": false,
+      "raw_motion_splits": true,
+      "candidate_motion": {
+        "direction": 0,
+        "gravity": 26,
+        "horizontal_acceleration": 48,
+        "horizontal_speed": 1,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 60,
+        "vertical_speed": 2
+      },
+      "incumbent_motion": {
+        "direction": 0,
+        "gravity": 26,
+        "horizontal_acceleration": 48,
+        "horizontal_speed": 1,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 31,
+        "vertical_speed": 2
+      }
+    },
+    {
+      "pair": 12,
+      "execution": 315708,
+      "useful_disagreements": 7,
+      "still_merged_by_finer_key": true,
+      "same_mechanical_state": false,
+      "candidate_context": [
+        1,
+        -1,
+        1
+      ],
+      "incumbent_context": [
+        0,
+        0,
+        -1
+      ],
+      "coarse_motion_splits": true,
+      "raw_motion_splits": true,
+      "candidate_motion": {
+        "direction": 1,
+        "gravity": 24,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 255,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 34,
+        "vertical_speed": 2
+      },
+      "incumbent_motion": {
+        "direction": 0,
+        "gravity": 24,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 0,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 34,
+        "vertical_speed": 253
+      }
+    },
+    {
+      "pair": 13,
+      "execution": 499559,
+      "useful_disagreements": 4,
+      "still_merged_by_finer_key": true,
+      "same_mechanical_state": false,
+      "candidate_context": [
+        1,
+        0,
+        -1
+      ],
+      "incumbent_context": [
+        1,
+        -1,
+        -1
+      ],
+      "coarse_motion_splits": true,
+      "raw_motion_splits": true,
+      "candidate_motion": {
+        "direction": 1,
+        "gravity": 24,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 0,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 7,
+        "vertical_speed": 252
+      },
+      "incumbent_motion": {
+        "direction": 1,
+        "gravity": 24,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 255,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 3,
+        "vertical_speed": 252
+      }
+    },
+    {
+      "pair": 14,
+      "execution": 351779,
+      "useful_disagreements": 9,
+      "still_merged_by_finer_key": false,
+      "same_mechanical_state": false,
+      "candidate_context": [
+        1,
+        -1,
+        0
+      ],
+      "incumbent_context": [
+        0,
+        0,
+        0
+      ],
+      "coarse_motion_splits": true,
+      "raw_motion_splits": true,
+      "candidate_motion": {
+        "direction": 1,
+        "gravity": 0,
+        "horizontal_acceleration": 208,
+        "horizontal_speed": 255,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 0,
+        "vertical_speed": 0
+      },
+      "incumbent_motion": {
+        "direction": 0,
+        "gravity": 0,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 0,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 80,
+        "vertical_speed": 0
+      }
+    },
+    {
+      "pair": 15,
+      "execution": 300909,
+      "useful_disagreements": 0,
+      "still_merged_by_finer_key": false,
+      "same_mechanical_state": false,
+      "candidate_context": [
+        0,
+        0,
+        1
+      ],
+      "incumbent_context": [
+        1,
+        -1,
+        1
+      ],
+      "coarse_motion_splits": true,
+      "raw_motion_splits": true,
+      "candidate_motion": {
+        "direction": 0,
+        "gravity": 24,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 0,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 164,
+        "vertical_speed": 5
+      },
+      "incumbent_motion": {
+        "direction": 1,
+        "gravity": 24,
+        "horizontal_acceleration": 0,
+        "horizontal_speed": 255,
+        "horizontal_speed_maximum": 24,
+        "jump_displacement": 173,
+        "vertical_speed": 4
+      }
+    }
+  ],
+  "decision": {
+    "at_least_six_of_eight_separated": true,
+    "qualifies_memory_bounded_retention_design": true,
+    "qualifies_fresh_campaign": false,
+    "qualifies_breakthrough": false
+  },
+  "limitations": [
+    "Motion covaries with other hidden machine state; correlation does not identify the cause of a divergent future.",
+    "The seven-byte raw tuple is descriptive only and cannot rescue a failed coarse-context gate.",
+    "No new suffix trials, fresh search, or default changes."
+  ]
+}

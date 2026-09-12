@@ -1,0 +1,12 @@
+{
+  "format": "continuation-cc01-seeds-v1",
+  "drawn_utc": "2026-09-10T12:13:16.772593+00:00",
+  "method": "Four secrets.randbits(32) draws after all CD01 cells and independent native audits completed; no outcome-conditioned seed selection.",
+  "seeds": [
+    833917373,
+    4204540845,
+    586667767,
+    2160473381
+  ],
+  "purpose": "Independent confirmation of unchanged first-Bombs continuation; not untouched boss/Wily validation."
+}

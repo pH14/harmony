@@ -1,0 +1,94 @@
+{
+  "format": "continuation-cd01-second-wave-preflight-v1",
+  "checked_utc": "2026-09-10T11:22:26.979993+00:00",
+  "passed": true,
+  "host": "ms02",
+  "remaining_deadline_seconds": 11401.588186,
+  "gate_sha256": "5b1ee307c4efcac01b771860d30ae7bd562ffdd061c3935a1d06c9fb6b1929df",
+  "completed_services": {
+    "cd01-pair-0": {
+      "MainPID": "0",
+      "LoadState": "not-found",
+      "ActiveState": "inactive",
+      "SubState": "dead"
+    },
+    "cd01-pair-1": {
+      "MainPID": "0",
+      "LoadState": "not-found",
+      "ActiveState": "inactive",
+      "SubState": "dead"
+    }
+  },
+  "remaining_seeds": [
+    4193773728,
+    2971383614
+  ],
+  "saved_summaries_scanned": 30,
+  "registrations": [
+    {
+      "pair": 2,
+      "registration_sha256": "eb43f6a59da7f7b4aa2a3c4a739545187afe076d249b01b8b4ca331156681d47",
+      "cpus": "0-3",
+      "service_runtime_seconds": 5900
+    },
+    {
+      "pair": 3,
+      "registration_sha256": "523790f1535f4fc7f198f7d9a510a325a1a9f2874f93d4fab7e28253641472b2",
+      "cpus": "4-7",
+      "service_runtime_seconds": 5900
+    }
+  ],
+  "topology": [
+    {
+      "cpu": 0,
+      "package": "0",
+      "core": "0",
+      "max_khz": 5500000
+    },
+    {
+      "cpu": 1,
+      "package": "0",
+      "core": "4",
+      "max_khz": 5500000
+    },
+    {
+      "cpu": 2,
+      "package": "0",
+      "core": "16",
+      "max_khz": 5500000
+    },
+    {
+      "cpu": 3,
+      "package": "0",
+      "core": "20",
+      "max_khz": 5500000
+    },
+    {
+      "cpu": 4,
+      "package": "0",
+      "core": "24",
+      "max_khz": 5500000
+    },
+    {
+      "cpu": 5,
+      "package": "0",
+      "core": "28",
+      "max_khz": 5500000
+    },
+    {
+      "cpu": 6,
+      "package": "0",
+      "core": "40",
+      "max_khz": 5500000
+    },
+    {
+      "cpu": 7,
+      "package": "0",
+      "core": "44",
+      "max_khz": 5500000
+    }
+  ],
+  "available_memory_bytes": 56142196736,
+  "available_disk_bytes": 523005128704,
+  "emulated_frames": 0
+}

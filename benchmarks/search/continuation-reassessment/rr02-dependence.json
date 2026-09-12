@@ -1,0 +1,8 @@
+{
+  "scope": "Descriptive dependence check; frozen primary counts and earliest selection unchanged.",
+  "positive_events": 22,
+  "unique_candidate_snapshot_hashes": 22,
+  "unique_candidate_input_hashes": 22,
+  "unique_incumbent_snapshot_hashes": 10,
+  "unique_snapshot_pairs": 22
+}

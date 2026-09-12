@@ -1,0 +1,33 @@
+{
+  "format": "action-correlation-dispatch-checkpoint-v1",
+  "recorded_utc": "2026-09-10T00:00:58.188380+00:00",
+  "registration_commit": "70da940b",
+  "registration_sha256": "ce8d0a4b38cde026149aee74c92fd97d54e21324529184b5df9495de8e18bafa",
+  "published_pr": 287,
+  "published_head": "78d03b18aa7f6293f191c79fdfe8bbabb7f705c0",
+  "first_wave": [
+    {
+      "triplet": 0,
+      "host": "msr1",
+      "root": "/root/harmony-retention-theory-20260908",
+      "unit": "harmony-action-d01-triplet0-20260909.service",
+      "started_utc": "2026-09-09T23:51:02+00:00",
+      "last_verified_state": "terminal successful service; all three cells complete",
+      "completed_evidence": "d01-analysis.json"
+    },
+    {
+      "triplet": 1,
+      "host": "ms02",
+      "root": "/root/harmony-depth-transfer-20260909",
+      "unit": "harmony-action-d01-triplet1-20260909.service",
+      "started_utc": "2026-09-09T23:51:09+00:00",
+      "last_verified_state": "inactive/dead, Result=success; all three cells complete",
+      "completed_evidence": "d01-analysis.json"
+    }
+  ],
+  "second_wave_dispatched": false,
+  "next_action": "D01 is closed. Preserve the whole-control signal separately and register P01 on fresh seeds before dispatch; see p01-decision.md.",
+  "goal": "Active; original repeated fresh boss/Wily objective remains unmet. Component refresh failed the registered gate.",
+  "last_checked_utc": "2026-09-10T00:36:03.948246+00:00",
+  "decision": "stop_action_correlation_line"
+}

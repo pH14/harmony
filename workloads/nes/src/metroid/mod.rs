@@ -3,6 +3,17 @@
 //! Metroid adapter over the game-neutral Dissonance searcher.
 
 pub mod archive;
+pub mod boss_interval;
+pub mod boss_probe;
 pub mod campaign;
+pub mod kinematics_probe;
 pub mod progress;
 pub mod target;
+
+/// Reporting-only bounded replacement-pair diagnostics.
+pub mod retention_audit;
+/// Exhaustive bounded snapshots for separately qualified replay diagnostics.
+pub mod retention_capture;
+/// Opt-in policy projection of qualified snapshot-local boss state.
+#[cfg(feature = "metroid-retention-progress")]
+pub mod retention_progress;

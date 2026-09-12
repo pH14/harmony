@@ -1,0 +1,279 @@
+{
+  "format": "retention-pg02-registration-v1",
+  "registered_utc": "2026-09-10T22:13:08.329157+00:00",
+  "deadline_utc": "2026-09-10T22:53:08.329157+00:00",
+  "synthesis_deadline_utc": "2026-09-10T23:13:08.329157+00:00",
+  "host": "ms02",
+  "msr1": "Reassigned; no access authorized for this task.",
+  "source_commit": "5522b6a5e22d963ccb38446361b8142e2485fd77",
+  "binary": "/root/harmony-depth-transfer-20260909/builds/progress-screen-x86-001/metroid-archive-challenge", "binary_path_note": "# pragma: allowlist secret -- public local build path",
+  "binary_sha256": "2f5a4bfbe69435a2400e7fdf9c40128992aed39555919b4dd457b4db991b2c99",
+  "build_info": "/root/harmony-depth-transfer-20260909/builds/progress-screen-x86-001/build-info.json",
+  "build_info_sha256": "17ea00b8e218636dd7fe07117a61e6b36d3eb93b89aa379a4ba9b06d80c18710",
+  "protocol": "/root/harmony-depth-transfer-20260909/protocol/pg02-20260910",
+  "protocol_sha256": {
+    "pg02-design.md": "df390a53bc024d4275795b20b531cd74e1cf1dbbe912c2e4cd57e7c42cda8202",
+    "pg02-seeds.json": "6cfb599c841c971378028eb85b5a1908860125bf9e8568480e95baf0ec059658",
+    "pg01-prefix.json": "5126eee64820c99697194dec63a20c44491ec7f913d49e77e4fefb97f4f319c5",
+    "score_pg02.py": "48aa9e04abd0580fd4170581252d3614bedf30451218a6bfd773453f5f0c6283",
+    "test_pg02.py": "28c210d93c20d30f420784fa44a9b282ffc410e7cc1a8a775d56c74717f6f7f1",
+    "run_pg02.py": "b87df40e509ac9155e28797d2c2e08b19f128faffb81490a125d682014d175af",
+    "run_pg01.py": "5eb502b82c9d253011d67274c09ead99201691d449b6d9e51993382c94a63500",
+    "run_pm01.py": "37514a2655082e77b2f23e50ed33abb890a60e88103c784e277c0989eca5d436",
+    "run_pc01.py": "18d90b084728f9b79ddb399d0cab5d3215d333fc5a06a92c65051048a75df752",
+    "p0-ordinary-pg02-request.json": "242bfb42dfaa80885d45fd4098ac4caf89ad3a86ef2bc455f29897ebbed34dda",
+    "p0-progress-pg02-request.json": "03a5ef7e3c5558f4887e1d77f1bc7e6390b32563ef1a1668e27ee1a631ce9219",
+    "p0-capacity-pg02-request.json": "c52aae20aaaadbf23fb169cc41f473adec60b07cfd4749e361811b2e437b9e55",
+    "p1-capacity-pg02-request.json": "7b174b70b2246a88d83d476ecb105312984368e17d822a36d785bb7cf982c1b9",
+    "p1-ordinary-pg02-request.json": "6a3e28a51f1395a6436415980b38bec3d268f486feba8e293b38d23c743cd195",
+    "p1-progress-pg02-request.json": "9ef95acbcae1c714cff6e5c6cb31c433829a07dde2325a83b27900f88c8c09d4",
+    "p2-progress-pg02-request.json": "7b2dcc5aaa36f67961fa9e491e4e7df57f98e99c776f93297ba62955c117c8d9",
+    "p2-capacity-pg02-request.json": "7a5fb847789a0006ac784101a0e30715523bee47044939c9beb5107ab98d1cfa",
+    "p2-ordinary-pg02-request.json": "c29a12813fb2acc2d84252db7cdd8996bbce2c813c7ba22092702af078174371",
+    "p3-ordinary-pg02-request.json": "c7c885859c105bcf7329bba9111960af92673f0443e026a8cc4cdb8b3910ea29",
+    "p3-capacity-pg02-request.json": "8a416bcf91923c67a98ffc9fb427211f0c1cea47e18601398ee771ef13a287d6",
+    "p3-progress-pg02-request.json": "f18ca52cf8545a0271764e6aeae97e9b5eb78933334fe715b44571c77b289951"
+  },
+  "output": "/root/harmony-depth-transfer-20260909/runs/progress-screen-pg02",
+  "service": "harmony-progress-screen-pg02-20260910.service",
+  "controller_service_runtime_seconds": 1800,
+  "controller_cpus": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "controller_cgroup_limits": {
+    "memory.max": "536870912",
+    "memory.swap.max": "0",
+    "pids.max": "64"
+  },
+  "cell_service_runtime_seconds": 210,
+  "process_runtime_seconds": 180,
+  "cell_cgroup_limits": {
+    "memory.max": "4294967296",
+    "memory.swap.max": "0",
+    "pids.max": "64"
+  },
+  "file_limit_bytes": 268435456,
+  "cell_output_limit_bytes": 536870912,
+  "output_limit_bytes": 4294967296,
+  "accepted_drain_frames": 2880,
+  "safety_drain_frames": 1966080,
+  "physical_frame_allocation": 96000000,
+  "full_panel_source_bound": 95252808,
+  "physical_restricted_horizon": 1004645,
+  "frame_bound_derivation": "One reservations-per-worker pipeline has four outstanding jobs. Each job replays at most its parent actions and executes a suffix within 4096 total local actions, each <=120 frames: 4*4096*120=1966080 conservative drain. Per cell: 2000000 direct helper cap + 2*(1000000+1966080) + 5574 constructors = 7937734. Twelve cells <=95252808, within 96M allocation. The 2880 accepted-drain gate is deliberately smaller; exceeding it invalidates the panel, not a reason to retry. This safety allocation does not raise any search horizon. Incomplete construction/receipts remain unknown.",
+  "ledger_before": {
+    "admitted_search": 2983485644,
+    "known_auxiliary": 71300232
+  },
+  "cells": [
+    {
+      "id": "p0-ordinary",
+      "pair": 0,
+      "arm": "ordinary",
+      "seed": 1421509093,
+      "request": "p0-ordinary-pg02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-pg02-p0-ordinary-20260910.service"
+    },
+    {
+      "id": "p0-progress",
+      "pair": 0,
+      "arm": "progress",
+      "seed": 1421509093,
+      "request": "p0-progress-pg02-request.json",
+      "cpus": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "service": "harmony-pg02-p0-progress-20260910.service"
+    },
+    {
+      "id": "p0-capacity",
+      "pair": 0,
+      "arm": "capacity",
+      "seed": 1421509093,
+      "request": "p0-capacity-pg02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-pg02-p0-capacity-20260910.service"
+    },
+    {
+      "id": "p1-capacity",
+      "pair": 1,
+      "arm": "capacity",
+      "seed": 1377503798,
+      "request": "p1-capacity-pg02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-pg02-p1-capacity-20260910.service"
+    },
+    {
+      "id": "p1-ordinary",
+      "pair": 1,
+      "arm": "ordinary",
+      "seed": 1377503798,
+      "request": "p1-ordinary-pg02-request.json",
+      "cpus": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "service": "harmony-pg02-p1-ordinary-20260910.service"
+    },
+    {
+      "id": "p1-progress",
+      "pair": 1,
+      "arm": "progress",
+      "seed": 1377503798,
+      "request": "p1-progress-pg02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-pg02-p1-progress-20260910.service"
+    },
+    {
+      "id": "p2-progress",
+      "pair": 2,
+      "arm": "progress",
+      "seed": 3227091735,
+      "request": "p2-progress-pg02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-pg02-p2-progress-20260910.service"
+    },
+    {
+      "id": "p2-capacity",
+      "pair": 2,
+      "arm": "capacity",
+      "seed": 3227091735,
+      "request": "p2-capacity-pg02-request.json",
+      "cpus": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "service": "harmony-pg02-p2-capacity-20260910.service"
+    },
+    {
+      "id": "p2-ordinary",
+      "pair": 2,
+      "arm": "ordinary",
+      "seed": 3227091735,
+      "request": "p2-ordinary-pg02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-pg02-p2-ordinary-20260910.service"
+    },
+    {
+      "id": "p3-ordinary",
+      "pair": 3,
+      "arm": "ordinary",
+      "seed": 2601406073,
+      "request": "p3-ordinary-pg02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-pg02-p3-ordinary-20260910.service"
+    },
+    {
+      "id": "p3-capacity",
+      "pair": 3,
+      "arm": "capacity",
+      "seed": 2601406073,
+      "request": "p3-capacity-pg02-request.json",
+      "cpus": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "service": "harmony-pg02-p3-capacity-20260910.service"
+    },
+    {
+      "id": "p3-progress",
+      "pair": 3,
+      "arm": "progress",
+      "seed": 2601406073,
+      "request": "p3-progress-pg02-request.json",
+      "cpus": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "service": "harmony-pg02-p3-progress-20260910.service"
+    }
+  ],
+  "batches": [
+    [
+      "p0-ordinary",
+      "p0-progress"
+    ],
+    [
+      "p0-capacity"
+    ],
+    [
+      "p1-capacity",
+      "p1-ordinary"
+    ],
+    [
+      "p1-progress"
+    ],
+    [
+      "p2-progress",
+      "p2-capacity"
+    ],
+    [
+      "p2-ordinary"
+    ],
+    [
+      "p3-ordinary",
+      "p3-capacity"
+    ],
+    [
+      "p3-progress"
+    ]
+  ],
+  "gate": "Fixed progress candidate needs >=3 strict paired wins and <=0.85 restricted-cost sum ratio against BOTH ordinary and scoped capacity comparators, after four complete triples. Both-censored ties; optional nonactivation valid. Evaluate futility only after complete triples; stop if three wins against either comparator become impossible. An invalid cell stops allocation, including owned concurrent peers. No retries, reseeding, control promotion, longer horizons or pooling with fresh panels.",
+  "next_if_pass": "Separate fresh-development design only; independent confirmation, MM2 transfer and untouched fresh validation remain required.",
+  "next_if_fail": "Close this conditional efficacy gate and preserve all results. No automatic larger panel or horizon rescue.",
+  "historical_scope": "All prior allocations and failed gates remain closed. No PG02 native work has occurred at registration publication time."
+}

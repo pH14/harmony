@@ -1,0 +1,47 @@
+{
+  "format": "metroid-archive-capability-ap01-analysis-v1",
+  "registration_sha256": "a9a41ea4f9d8860ca45f5481348b6d45adba60f08329d55a1671d34ebfc05720",
+  "decision": "no_defeat_at_horizon",
+  "fixed_horizon_completed": true,
+  "milestone_reached": false,
+  "observed_first_milestone": null,
+  "stop_reason": "frame_limit",
+  "executions": 2548,
+  "admitted_frames": 250267,
+  "admitted_drain_frames": 267,
+  "known_auxiliary_frames": 977952,
+  "cost": {
+    "admitted_search_frames": 250267,
+    "campaign_replay_admitted_frames": 250267,
+    "direct_physical_frames": 477418,
+    "direct_setup_frames": 5574
+  },
+  "witness_endpoint": {
+    "area": 20,
+    "bosses": 0,
+    "door": 2,
+    "ending": false,
+    "energy_tanks": 1,
+    "equipment": 17,
+    "health": 79,
+    "map_x": 18,
+    "map_y": 29,
+    "missile_capacity": 20,
+    "missiles": 0,
+    "mode": 3,
+    "pose": 5,
+    "x": 1,
+    "y": 113
+  },
+  "artifacts_sha256": {
+    "result.json": "a974a9f540ebe3c4a88d3a0b60650549939184171f17e0d27b8e6b2190e75770",
+    "stream.jsonl": "9ad315a76c38276c673fccd2b660a250254a8a74bc92d9f4a77670702a53a32c",
+    "checkpoint.bin": "454d55597dfe3014fc11ebde87c17a2f419648893c7ace1f22c7e5bec309f850",
+    "origin.bin": "35b2677423102a0997d1762b8b448766a9e0219eba4173a28a8693b6892294eb",
+    "campaign.json": "fc1059f618b202a39c5d46d2b2e7531c132a6698fe706070c6ebf751349d0be9",
+    "witness-local.json": "7ecd3995587991732cc4e9ff8fdf33a932a10dc07dfb3ab5f8c68a76e8343316",
+    "witness-full.json": "aa5ece3a6834fe83a7e8a54fe4f28a274921743840cbdc81fb2830b96f570feb"
+  },
+  "scope": "One supplied original encounter and reused diagnostic seed; no matched-control or fresh-discovery inference.",
+  "unknown": "Engine target setup, unadmitted work and reconstruction remain additional unknown costs. Campaign replay admitted frames are an inferred component, not total physical replay work."
+}

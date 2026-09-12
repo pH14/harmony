@@ -1,0 +1,62 @@
+{
+  "format": "depth-transfer-nq02-registration-v1",
+  "registered_utc": "2026-09-09T22:50:50.920151+00:00",
+  "purpose": "Qualify opt-in snapshot-local interval decoding and real self-restores on one deliberately reused existing route; no search.",
+  "host": "msr1",
+  "source_commit": "0fd8c6f9ca6b1d584165f6a148096074787a1c55",
+  "source_tree_sha256": "78be2883d79f7a05c96a8a518e92beaf15e6308e4cbf7b2ca26a3e0ca7da453f",
+  "binary_sha256": "c6a5b591f170c12e858faf27ecd3d082767d09b5b8b21fd271dc3eae8353acc3",
+  "build_info_sha256": "2378d4578a9ff605df35e7540a40d3d9ecb87518b260525cc5a92a517e82dbae",
+  "binary": "builds/boss-context-001/metroid-boss-probe",
+  "input": "depth-transfer-20260909/e02-seed5-input.json",
+  "input_sha256": "03e1adf0185bb5dc0bbb5cdf6519eac669a794730e460319e82d0833d0b5d2c1",
+  "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+  "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+  "legacy_summary": "depth-transfer-20260909/e02-seed5-result/summary.json",
+  "legacy_summary_sha256": "e5863362f11ee4a79bd1b41c1b664f0958f4b51f2f1019fc6872b46200be4ea9",
+  "cases": [
+    {
+      "id": "nq02-default",
+      "cpu": "4",
+      "arguments": []
+    },
+    {
+      "id": "nq02-area",
+      "cpu": "5",
+      "arguments": [
+        "boss-area"
+      ]
+    },
+    {
+      "id": "nq02-context",
+      "cpu": "6",
+      "arguments": [
+        "boss-context"
+      ]
+    },
+    {
+      "id": "nq02-restores",
+      "cpu": "7",
+      "arguments": [
+        "boss-context-restores"
+      ]
+    }
+  ],
+  "max_wall_seconds_per_case": 300,
+  "memory_max_per_case": "4G",
+  "trace_limit_bytes": 33554432,
+  "auxiliary_frame_ceiling": 2000000,
+  "expected_physical_frames_per_case": 383796,
+  "decisions": [
+    "Default and area summary/trace bytes must equal their NQ01 counterparts exactly.",
+    "Context modes preserve every old summary value except added fields and trace byte counts. Dropping new trace columns reproduces NQ01 area bytes exactly.",
+    "Context and restore modes have identical retained trace bytes and all-frame raw/context hashes, endpoints and interval counts. Only the explicit restore count/qualification mode differs.",
+    "Each self-restore verifies same-boundary raw bytes and seeds a fresh baseline. Exactly floor((127003-1)/4096)=31 restores per one-frame pass are expected.",
+    "Python independently decodes native retained contexts and agrees with the native interval outputs on consecutive retained rows.",
+    "Any mismatch stops qualification and development-tape dispatch. No implicit retry or new search."
+  ],
+  "resource_note": "Four independent qualification cases on idle msr1 CPUs 4-7 concurrently; at most 4 GiB each, 300 seconds per service, 32 MiB per trace. No speed comparison.",
+  "expected_total_physical_frames": 1535184,
+  "previous_ledger_sha256": "1de81d65aacf7e06f23322517af35937c49fa3c009f87ee2ff290effe9d4f3ef",
+  "remaining_known_auxiliary_frames_before": 12098214
+}

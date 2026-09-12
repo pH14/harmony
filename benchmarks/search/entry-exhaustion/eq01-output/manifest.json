@@ -1,0 +1,327 @@
+[
+  {
+    "file": "ms02/results.json",
+    "bytes": 23364,
+    "sha256": "6409a29ac6fa4ff84cd99e7633dee48b4be98472ddbda803f62001df8b17b1fe"
+  },
+  {
+    "file": "ms02/two-slots/matrix.json",
+    "bytes": 1714,
+    "sha256": "112c8c988eaf330895a70e71454e34b2380a6dbf83f3bf3d698713c179ffffd7"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/campaign.json",
+    "bytes": 9095,
+    "sha256": "8dc54ddeb440789c881dc6a0b5a9a6cf6289a2c400234f5c9ed356a9dc9b97d7"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+    "bytes": 77338909,
+    "sha256": "d2ef9f59a0103c8f0ec70b25e386b9ec2480c46721cf3415c0df17d1735b8973"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/identity.json",
+    "bytes": 1801,
+    "sha256": "5be43bbf9a081edcbdd509ab364f82d407fe20c429d49a84aea43a800964b55c"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/milestone-inputs/brinstar.json",
+    "bytes": 46,
+    "sha256": "1418557c26a520197e190a4b4cb63f23ba570c1898ba73b59783a43af69e11ce"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/milestone-inputs/morph_ball.json",
+    "bytes": 488,
+    "sha256": "805338ea5564fbf479cbf09b5bda2ed9df8402a2588a60af80b2658a716d4322"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/phase.json",
+    "bytes": 47,
+    "sha256": "73ecbbbe435454ac5f7b24e0de13ff4400598b856b11bd673ea5b13e2eaf0893"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/progress.jsonl",
+    "bytes": 71257,
+    "sha256": "32b76ec6ff2d08703d9f50a70f3b8343c0979ad19a779a73cdc1d93fecbc1615"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/result.json",
+    "bytes": 4523,
+    "sha256": "eb7dc412ba9da2ab37742c4f4370b8e22a485967e696ab681379a29ba60067dd"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/retention-audit.json",
+    "bytes": 110874,
+    "sha256": "3c90c33c80ccf56e2496c2954db3c1753aa4e8eec46f0388ae0e259ce6a2e067"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/stream.jsonl",
+    "bytes": 912077,
+    "sha256": "9b765ab374ef74f58c099ebb7571aedea0b9c99695378ff16e145983689bab6f"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/campaign/witness-input.json",
+    "bytes": 1609,
+    "sha256": "acb7fa7fa4931a076667125df143bb1beee99c328e3efa64038aaff0f4942d0a"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/request.private.json",
+    "bytes": 667,
+    "sha256": "c5e6144f422973b5cbe7d610f40a33fe149c41c21118d1a34f2c6564d40cdfc1"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/resources.jsonl",
+    "bytes": 37016,
+    "sha256": "688f62e2c37c6cb20447e8929359f0ecb2a429b62479b4e34adca50e8172ba9d"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/stderr.log",
+    "bytes": 17792,
+    "sha256": "bfdad7ab8ef8af3606fcaae5369753e04430bc5eb657c5cc3a7050e0142d970e"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/stdout.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "file": "ms02/two-slots/metroid-full-s2026090902-w4-m8192/summary.json",
+    "bytes": 13299,
+    "sha256": "5dcebde0124088b710e7fabfd32bc1a156a79165bd0f5898612e91be4aa9a233"
+  },
+  {
+    "file": "ms02/two-slots/results.json",
+    "bytes": 13301,
+    "sha256": "5e0170ba134d811eec4aaae6309b4f72529d987a8c677336a292bae9afb35750"
+  },
+  {
+    "file": "ms02/two-slots/suite.json",
+    "bytes": 647,
+    "sha256": "4d898b624efb44bbbf0cbc3bf670b80ef33986f288f364c6b5c68904a09e7975"
+  },
+  {
+    "file": "ms02/two-slots.json",
+    "bytes": 828,
+    "sha256": "bdb722c0353224d3ac5e2370a6a3612577669d7e7acdb4c12975ec51a8d60f96"
+  },
+  {
+    "file": "ms02/two-slots.log",
+    "bytes": 102,
+    "sha256": "69b328d0d389c2f2710235f5f2af596b10d24fd0f9eceb3366701a73936ee7a2"
+  },
+  {
+    "file": "msr1/one-slot/matrix.json",
+    "bytes": 1262,
+    "sha256": "f2987b047682213cf60db357a376baa07884913f8774b40e0374fbe45d198c31"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/campaign.json",
+    "bytes": 9095,
+    "sha256": "ee8be6dff5609aca68caf37a854f54698a9e9294637d9df6e80bc5d5f4e0ebb7"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+    "bytes": 77333881,
+    "sha256": "65c743458a67f340b88596a8ef9c91006aabe777235233e64ad56dd0111f2980"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/identity.json",
+    "bytes": 1801,
+    "sha256": "bd3f0f217963c22f0537a9fa78849c26597f4ab6e4ae9ad72186f105bbd295e7"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/milestone-inputs/brinstar.json",
+    "bytes": 46,
+    "sha256": "1418557c26a520197e190a4b4cb63f23ba570c1898ba73b59783a43af69e11ce"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/milestone-inputs/morph_ball.json",
+    "bytes": 488,
+    "sha256": "805338ea5564fbf479cbf09b5bda2ed9df8402a2588a60af80b2658a716d4322"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/phase.json",
+    "bytes": 47,
+    "sha256": "1285372b037762b6e35e484bf4256f6df65efd352cf974bb8ebc8ecd0912c057"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/progress.jsonl",
+    "bytes": 71290,
+    "sha256": "c7f98ef2dc19f892a21b74ddd0bda766556f5676dc01efcefe6d7196725a29a0"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/result.json",
+    "bytes": 4525,
+    "sha256": "9e595a7fc87735d1b4fd71c4316b413d9607eb3be3fd1e4236cdd4f7a98bca0a"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/retention-audit.json",
+    "bytes": 110874,
+    "sha256": "3c90c33c80ccf56e2496c2954db3c1753aa4e8eec46f0388ae0e259ce6a2e067"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/stream.jsonl",
+    "bytes": 912077,
+    "sha256": "f1eb4f60701cab892b5273d37a4471f7b762f6a2da425d24bc8ae235a0df401c"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/campaign/witness-input.json",
+    "bytes": 1609,
+    "sha256": "acb7fa7fa4931a076667125df143bb1beee99c328e3efa64038aaff0f4942d0a"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/request.private.json",
+    "bytes": 695,
+    "sha256": "d4e90c6b08749c6065799edde75ae7acd6feb1b88560678ca12cbc30553bfef2"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/resources.jsonl",
+    "bytes": 80876,
+    "sha256": "6ecb433e4c86e487e97478c966ee96145f69e858469cfaa9c9a0e7852c35eece"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/stderr.log",
+    "bytes": 17818,
+    "sha256": "98b596d6ddd0c7a594e9f9d5602b227cf535cfde52de4d3b323659f7c903157f"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/stdout.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "file": "msr1/one-slot/metroid-full-s2026090902-w4-m8192/summary.json",
+    "bytes": 12853,
+    "sha256": "34dcfa432f16e7278ba02ab08dfdbd8b422846a84634109d50e0f14b9bf06140"
+  },
+  {
+    "file": "msr1/one-slot/results.json",
+    "bytes": 12855,
+    "sha256": "c71a1a17ac979796c4331ebd65dc098223b87fff3fa81a672c152dbd06f6a71b"
+  },
+  {
+    "file": "msr1/one-slot/suite.json",
+    "bytes": 646,
+    "sha256": "d5e67dba744c765f86b20fbf4a79dfb5f28eb2a327370a446e936e5c0ba1168a"
+  },
+  {
+    "file": "msr1/one-slot.json",
+    "bytes": 827,
+    "sha256": "92f693337d773ab7cab4c677d5b4dc83284770506a79193df41a2327a6133b61"
+  },
+  {
+    "file": "msr1/one-slot.log",
+    "bytes": 103,
+    "sha256": "1d7e7159d66b36e895a25d71c49513cf47670b8380d7c296d8164606f40efa18"
+  },
+  {
+    "file": "msr1/results.json",
+    "bytes": 45049,
+    "sha256": "ace0a58ff1ceee22453ee822748fe8a5f3b6f71806fff63b712009163fcae93d"
+  },
+  {
+    "file": "msr1/two-slots/matrix.json",
+    "bytes": 1262,
+    "sha256": "f2987b047682213cf60db357a376baa07884913f8774b40e0374fbe45d198c31"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/campaign.json",
+    "bytes": 9095,
+    "sha256": "ee8be6dff5609aca68caf37a854f54698a9e9294637d9df6e80bc5d5f4e0ebb7"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/checkpoint.json",
+    "bytes": 77333881,
+    "sha256": "65c743458a67f340b88596a8ef9c91006aabe777235233e64ad56dd0111f2980"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/identity.json",
+    "bytes": 1801,
+    "sha256": "6d79c071d815cf9ebb16cfc0417430b569e5e64f34d4670cc4d919eb44311c02"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/milestone-inputs/brinstar.json",
+    "bytes": 46,
+    "sha256": "1418557c26a520197e190a4b4cb63f23ba570c1898ba73b59783a43af69e11ce"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/milestone-inputs/morph_ball.json",
+    "bytes": 488,
+    "sha256": "805338ea5564fbf479cbf09b5bda2ed9df8402a2588a60af80b2658a716d4322"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/phase.json",
+    "bytes": 48,
+    "sha256": "7482905d5d5f4efe473344c793c788a50d10793997de7f31b629a5c214a80e08"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/progress.jsonl",
+    "bytes": 71287,
+    "sha256": "2c2c21c0a5aa631dbbc581290ac128af438feae0df9a863c104b06532e1d27e1"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/result.json",
+    "bytes": 4523,
+    "sha256": "d0157999b789367f6280b4788904c672706fe67a3a006170d8509361749b8be9"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/retention-audit.json",
+    "bytes": 110874,
+    "sha256": "3c90c33c80ccf56e2496c2954db3c1753aa4e8eec46f0388ae0e259ce6a2e067"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/stream.jsonl",
+    "bytes": 912077,
+    "sha256": "f1eb4f60701cab892b5273d37a4471f7b762f6a2da425d24bc8ae235a0df401c"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/campaign/witness-input.json",
+    "bytes": 1609,
+    "sha256": "acb7fa7fa4931a076667125df143bb1beee99c328e3efa64038aaff0f4942d0a"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/request.private.json",
+    "bytes": 695,
+    "sha256": "455f3a3c7b2fd25f6d21a0032d5b477a612dddbe52ba398b51064a18691c17b7"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/resources.jsonl",
+    "bytes": 77952,
+    "sha256": "90ad6afbb48e64b9890629b676903373c79824ebc4c5ac34873c9161640c23c6"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/stderr.log",
+    "bytes": 17815,
+    "sha256": "c261e1eda1e564a8bc04d816215019a3a370a3d975fdd6c590602f391e3c152d"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/stdout.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "file": "msr1/two-slots/metroid-full-s2026090902-w4-m8192/summary.json",
+    "bytes": 12869,
+    "sha256": "b34a0f4a81492bd30260a0dffbfc393ea63dab9270945e379d03ae7d9ffccca5"
+  },
+  {
+    "file": "msr1/two-slots/results.json",
+    "bytes": 12871,
+    "sha256": "235280210aa97e33813f571d9449bfb05e20521972b584a3d553b2564b30c6d0"
+  },
+  {
+    "file": "msr1/two-slots/suite.json",
+    "bytes": 647,
+    "sha256": "612e7ccd6962ebcfd24fe1706f276a3a6d893067cf79fafd2e8a8e3cfa9132d9"
+  },
+  {
+    "file": "msr1/two-slots.json",
+    "bytes": 828,
+    "sha256": "869ca6b0aac4143bac30bf787652b9a1fa29c56a14f581d07337f2de24011fec"
+  },
+  {
+    "file": "msr1/two-slots.log",
+    "bytes": 103,
+    "sha256": "344cb5ee657039fd2ef51fea4f994ec140a03ea83d41e9fcdc2e4e2fb006b3ac"
+  }
+]

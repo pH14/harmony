@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Named, reporting-only discoveries. No ordering, route, or search reward.
+//! Named discoveries for reporting and opt-in stopping. No route or search reward.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use super::target::MetroidObservations;
+
+/// Meaning of the named observation vocabulary, including opt-in endpoints.
+pub const NAMED_PROGRESS_POLICY: &str = "metroid-named-progress-v2";
 
 /// Raw boss identity, kept separate from the archive's legacy progress count.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -87,7 +90,7 @@ pub struct NamedProgress {
 impl Default for NamedProgress {
     fn default() -> Self {
         Self {
-            format: "metroid-named-progress-v2",
+            format: NAMED_PROGRESS_POLICY,
             first_seen: GEAR
                 .iter()
                 .map(|(_, name)| *name)
@@ -205,6 +208,8 @@ mod tests {
             },
             mother_brain_status: 0,
             tourian_events: TourianEvents::default(),
+            #[cfg(feature = "metroid-boss-context-audit")]
+            endpoint_boss_slots: None,
             changed_indices: Vec::new(),
             dead: false,
             log_line: String::new(),

@@ -1,0 +1,48 @@
+{
+  "format": "metroid-endpoint-e01-registration-v1",
+  "registered_utc": "2026-09-10T03:21:41.857820+00:00",
+  "purpose": "Qualify one reproducible positive endpoint on the standalone native observer; no fresh search or combat probe.",
+  "host": "msr1",
+  "cpu": "4",
+  "source_commit": "0fd8c6f9ca6b1d584165f6a148096074787a1c55",
+  "binary": "builds/boss-context-001/metroid-boss-probe",
+  "binary_sha256": "c6a5b591f170c12e858faf27ecd3d082767d09b5b8b21fd271dc3eae8353acc3",
+  "build_info_sha256": "2378d4578a9ff605df35e7540a40d3d9ecb87518b260525cc5a92a517e82dbae",
+  "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+  "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+  "input": "first-encounter-input.json",
+  "input_sha256": "5126eee64820c99697194dec63a20c44491ec7f913d49e77e4fefb97f4f319c5",
+  "producing_artifact_sha256": "9e02d794f61e49eb7dba25b981fcca81ad5c5e1adf0ff8d6c5b8ba7e45c3a4a3",
+  "c01_panel_sha256": "9d84a99c3f4513f895d5576073ced00bafe55fccce89cce9f6802c32a8fb8478",
+  "producing_first": {
+    "area": 20,
+    "boss_slots": 1,
+    "execution": 1853341,
+    "route_action_end_frame": 117875
+  },
+  "arguments": [
+    "boss-context"
+  ],
+  "output": "endpoint-e01-20260910/replay",
+  "expected_route_frames": 117875,
+  "expected_replays": 3,
+  "expected_physical_frames_including_setup": 356412,
+  "auxiliary_frame_ceiling": 500000,
+  "c01_known_auxiliary_frames_before": 1120250,
+  "funding": "Within the C01 4M auxiliary envelope; never a retry or extension of the stopped census.",
+  "max_wall_seconds": 300,
+  "service_runtime_seconds": 330,
+  "deadline_utc": "2026-09-10T03:30:00+00:00",
+  "memory_max": "4G",
+  "trace_limit_bytes": 33554432,
+  "output_limit_bytes": 67108864,
+  "pass_rule": [
+    "Three replays agree on endpoint and emulator bytes; two one-frame traces agree.",
+    "Last same-boundary trace row is route frame 117875, area20, with Python-classified boss-slot mask1.",
+    "Python independently agrees with Rust interval outputs on consecutive retained rows.",
+    "Positive classification, health/resource values and observed HP changes are descriptive; no fight capability, retention cause or fresh-search improvement follows.",
+    "A mismatch or resource failure stops qualification; no automatic retry."
+  ],
+  "census_gate": "C01 did not complete its 250M horizon; do not relabel it passed. A twice-replayed existential positive does not require extending the horizon and is qualified separately here.",
+  "launcher_sha256": "b5b95fcdd67a3e37849329ebb6501cb28132250c06ab0a8ceb5e989164e5d3ea"
+}

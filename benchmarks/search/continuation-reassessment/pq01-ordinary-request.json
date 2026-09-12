@@ -1,0 +1,92 @@
+{
+  "core": "/root/harmony-search-eval/assets/quicknes_libretro.so",
+  "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+  "rom": "/root/harmony-search-eval/assets/metroid.nes",
+  "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+  "checkpoint": "/root/harmony-depth-transfer-20260909/runs/progress-screen-pg02/p0-ordinary/campaign/checkpoint.bin",
+  "checkpoint_sha256": "f025572cdd434171dd5747ad3b5e2e13bdbb94469894be9c3b190efebe6cfb2d",
+  "origin": "/root/harmony-depth-transfer-20260909/runs/progress-screen-pg02/p0-ordinary/campaign/origin.bin",
+  "origin_sha256": "9a1577f32b63de9299a2313cd7cc550d076fd79ac8a227972c4ca85a5dc2ca9b",
+  "root_snapshot_sha256": "e40440cd0384c4681767bfd920aaaea5b9b8833a6127c1647c599ef7411c65fd",
+  "expected_root_context": {
+    "memory": {
+      "area": 20,
+      "door": 2,
+      "enemies": [
+        {
+          "data_index": 9,
+          "hit_points": 140,
+          "name_table": 1,
+          "slot": 0,
+          "special": 64,
+          "status": 1,
+          "x": 108,
+          "y": 104
+        },
+        {
+          "data_index": 6,
+          "hit_points": 4,
+          "name_table": 0,
+          "slot": 16,
+          "special": 128,
+          "status": 2,
+          "x": 104,
+          "y": 212
+        },
+        {
+          "data_index": 6,
+          "hit_points": 2,
+          "name_table": 0,
+          "slot": 32,
+          "special": 0,
+          "status": 2,
+          "x": 168,
+          "y": 183
+        },
+        {
+          "data_index": 6,
+          "hit_points": 2,
+          "name_table": 1,
+          "slot": 48,
+          "special": 0,
+          "status": 0,
+          "x": 216,
+          "y": 196
+        },
+        {
+          "data_index": 0,
+          "hit_points": 16,
+          "name_table": 0,
+          "slot": 64,
+          "special": 128,
+          "status": 1,
+          "x": 182,
+          "y": 216
+        },
+        {
+          "data_index": 3,
+          "hit_points": 16,
+          "name_table": 0,
+          "slot": 80,
+          "special": 128,
+          "status": 2,
+          "x": 170,
+          "y": 49
+        }
+      ],
+      "kraid_status": 0,
+      "loader_present": 1,
+      "mode": 3,
+      "ridley_status": 0,
+      "room_number": 255
+    },
+    "saved_status": [
+      130,
+      2,
+      130,
+      2,
+      2,
+      2
+    ]
+  }
+}

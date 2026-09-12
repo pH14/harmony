@@ -1,0 +1,66 @@
+{
+  "format": "continuation-yield-d02-analysis-v1",
+  "qualification_passed": true,
+  "original_d02_execution_complete": false,
+  "failed_configuration_preserved": true,
+  "mm2_correction": "Removed Metroid-only retention_audit flag; original failed before game dispatch; no successful cell repeated.",
+  "compatibility_stream_sha256": "fc7148d5d35d4c675474b1cea31aa6b3a7d9d88c5b888f64d6bf87c18b116e27",
+  "compatible_admitted_frames": 25000911,
+  "compatible_executions": 193760,
+  "baseline_search_seconds": 430.183592104,
+  "instrumented_search_seconds": 429.646224542,
+  "conditional_layers": {
+    "between_cells": {
+      "capped_cost_terms": 32715,
+      "changed_distributions": 124702,
+      "draws": 145455,
+      "equal_cost_rank_boundaries": 0,
+      "max_tv_ppm_floor": 916019,
+      "sum_tv_ppm_floor": 40823235407,
+      "terms": 2756527,
+      "mean_tv_interval": [
+        0.2806588663641676,
+        0.28065986636416757
+      ],
+      "changed_fraction": 0.857323570863841,
+      "capped_share_of_offered_terms": 0.01186819501495904
+    },
+    "within_cells": {
+      "capped_cost_terms": 0,
+      "changed_distributions": 0,
+      "draws": 145455,
+      "equal_cost_rank_boundaries": 0,
+      "max_tv_ppm_floor": 0,
+      "sum_tv_ppm_floor": 0,
+      "terms": 312101,
+      "mean_tv_interval": [
+        0,
+        0
+      ],
+      "changed_fraction": 0.0,
+      "capped_share_of_offered_terms": 0.0
+    }
+  },
+  "limitations": [
+    "These are conditional stages along one baseline history, not full-parent probabilities or adaptive effect sizes.",
+    "No within-cell effect on this baseline trace does not imply none on a diverged candidate trace.",
+    "The observed between-cell effect contradicts the focused consultation\u2019s suggestion that only within-cell ranking would matter early.",
+    "Matched full stream proves compatibility on this path, not every possible seed."
+  ],
+  "native_candidate_replays": [
+    {
+      "game": "metroid",
+      "executions": 2000,
+      "admitted_frames": 284283,
+      "stream_sha256": "0fcaad970e2a219874bdc7c92c523bff482b03e2e832da61d7ce9bc35caee13f",
+      "exact_report_checkpoint_replay": true
+    },
+    {
+      "game": "mm2",
+      "executions": 2000,
+      "admitted_frames": 241988,
+      "stream_sha256": "f701a7b00f6ffe0ec24f0a9bf89a9d0d1f2d1854cdc68e18ea6f86cb9bff9cc7",
+      "exact_report_checkpoint_replay": true
+    }
+  ]
+}

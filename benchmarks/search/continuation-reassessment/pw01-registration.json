@@ -1,0 +1,74 @@
+{
+  "format": "productive-word-pw01-registration-v1",
+  "host": "ms02",
+  "registered_utc": "2026-09-11T00:49:59.819631+00:00",
+  "deadline_utc": "2026-09-11T01:09:59.819631+00:00",
+  "synthesis_deadline_utc": "2026-09-11T01:24:59.819631+00:00",
+  "source_commit": "adc8e70394a97e212fd36fdd002b48761808df7d",
+  "binary": "/root/harmony-depth-transfer-20260909/builds/progress-word-x86-001/metroid-archive-challenge", "binary_path_note": "# pragma: allowlist secret -- public local build path",
+  "binary_sha256": "fa5ea5bdf83c79f27a73e3b4f6678f7dfca71cac3ace40baff8e45a7ea6d09e5",
+  "build_info": "/root/harmony-depth-transfer-20260909/builds/progress-word-x86-001/build-info.json",
+  "build_info_sha256": "34da1ad118a921cb86c22e37690bb429294408424260192c37bdcaa72b96e9e0",
+  "protocol": "/root/harmony-depth-transfer-20260909/protocol/pw01-20260911",
+  "protocol_sha256": {
+    "run_pw01.py": "f43f735b4faa19682d367567e5859177a6d0a872b8eb49670ff589437971f588",
+    "score_pw01.py": "406ca10386f00205d551f27cf550e24bdc3ef457215a2c9cd751bb0b56718eac",
+    "run_pg01.py": "5eb502b82c9d253011d67274c09ead99201691d449b6d9e51993382c94a63500",
+    "run_pm01.py": "37514a2655082e77b2f23e50ed33abb890a60e88103c784e277c0989eca5d436",
+    "run_pc01.py": "18d90b084728f9b79ddb399d0cab5d3215d333fc5a06a92c65051048a75df752",
+    "pg01-prefix.json": "5126eee64820c99697194dec63a20c44491ec7f913d49e77e4fefb97f4f319c5",
+    "ordinary-pw01-request.json": "58cb0685276cf0233d53f3f024ecb2e466b7344d7f771c7567f19f50869161ef",
+    "fresh-control-pw01-request.json": "35242106ce3892363fb10f232067acd9952a2fe5f2e8753f6868f05dc6efe1e7",
+    "reuse-pw01-request.json": "52ba429f0b0379f11524e54f99e9a9cb102bbb57330f23cb136c1787f7152b74"
+  },
+  "output": "/root/harmony-depth-transfer-20260909/runs/progress-word-pw01",
+  "service": "harmony-progress-word-pw01-20260911.service",
+  "cpus": [
+    4,
+    5,
+    6,
+    7
+  ],
+  "cgroup_limits": {
+    "memory.max": "4294967296",
+    "memory.swap.max": "0",
+    "pids.max": "64"
+  },
+  "service_runtime_seconds": 300,
+  "process_runtime_seconds": 90,
+  "output_limit_bytes": 1073741824,
+  "file_limit_bytes": 134217728,
+  "physical_frame_ceiling": 7600000,
+  "admitted_frame_ceiling_before_drain": 750000,
+  "accepted_drain_frames": 2880,
+  "cells": [
+    {
+      "id": "ordinary",
+      "arm": "ordinary",
+      "pair": 0,
+      "request": "ordinary-pw01-request.json"
+    },
+    {
+      "id": "fresh-control",
+      "arm": "fresh-control",
+      "pair": 0,
+      "request": "fresh-control-pw01-request.json"
+    },
+    {
+      "id": "reuse",
+      "arm": "reuse",
+      "pair": 0,
+      "request": "reuse-pw01-request.json"
+    }
+  ],
+  "seed": 2871049831,
+  "scope": "One three-cell native implementation qualification; actual coupled action divergence, replay and physical accounting only. No efficacy claim, retry, seed replacement or automatic next allocation. ms02 only.",
+  "frame_bound": "Three times (2,000,000 direct ceiling + twice (250,000 admitted + 2,880 bounded in-flight drain) + 6*929 constructors) = 7,534,002 complete physical frames, below 7,600,000. Exact receipts are required; incomplete work is not zero.",
+  "ledger_before": {
+    "admitted_search": 2994490470,
+    "known_auxiliary": 89073024
+  },
+  "status": "cancelled_before_publication_and_execution_by_user_pause",
+  "executable": false,
+  "publication_note": "Archived cancelled proposal, never published as an active allocation. Protocol hashes describe this preserved draft; the runner now rejects cancellation before host/process access."
+}

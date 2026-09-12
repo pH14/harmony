@@ -1,0 +1,16 @@
+{
+  "binary": "nes-eval",
+  "binary_sha256": "6ec98a710a52f6d8a16d96d7d254bee31868cf425307f4876bbc03c24d0b3f7b",
+  "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+  "dirty": null,
+  "features": "metroid-motion-context,selector-cost-audit",
+  "files": 514,
+  "format": "harmony-diagnostic-build-v1",
+  "locked": true,
+  "profile": "release",
+  "revision": null,
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "source_commit": "780415bdea636c2bd54cf3d865fc264dd33fd649",
+  "source_tree_sha256": "2a4cc365f0dcbfa66f8818a5076d75766139b6920b60a6f378672308631d5647",
+  "target_cache": "/root/harmony-retention-theory-20260908/target"
+}

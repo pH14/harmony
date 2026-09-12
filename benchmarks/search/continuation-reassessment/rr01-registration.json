@@ -1,0 +1,74 @@
+{
+  "format": "retention-replay-rr01-registration-v1",
+  "registered_utc": "2026-09-10T17:51:24.101315+00:00",
+  "deadline_utc": "2026-09-10T18:11:24.101315+00:00",
+  "synthesis_deadline_utc": "2026-09-10T18:31:24.101315+00:00",
+  "host": "ms02",
+  "source_commit": "eb6f0dcc7d87a12ae5b9a1fceccef1bfde7b97cf",
+  "source_archive_sha256": "82759d3edae83006f3546762fe4d4645ad71a41b543586bac274c8c634cdf5f8",
+  "binary": "/root/harmony-depth-transfer-20260909/builds/retention-replay-x86-001/metroid-retention-replay",
+  "binary_sha256": "533107504a3853409841b30c0a9d8a28a6bb5c805f72d8892ea5d9ea155270a2",
+  "build_info": "/root/harmony-depth-transfer-20260909/builds/retention-replay-x86-001/build-info.json",
+  "build_info_sha256": "8e0c6850e55d9ac811a00447f18d4ab83dc54dbf5c714349db1979dce93dbc20",
+  "protocol": "/root/harmony-depth-transfer-20260909/retention-replay-rr01-001",
+  "output": "/root/harmony-depth-transfer-20260909/runs/retention-replay-rr01",
+  "inputs": "/root/harmony-depth-transfer-20260909/retention-replay-rr01-001/inputs",
+  "cpus": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "service_runtime_seconds": 450,
+  "cgroup_limits": {
+    "memory.max": "4294967296",
+    "memory.swap.max": "0",
+    "pids.max": "64"
+  },
+  "output_limit_bytes": 1073741824,
+  "admitted_search_frame_ceiling": 0,
+  "physical_auxiliary_frame_ceiling": 1250000,
+  "expected_competitions": 3770,
+  "expected_qualified_jobs": 4,
+  "expected_qualified_frames": 865,
+  "expected_full_jobs": 2548,
+  "expected_full_frames": 250267,
+  "expected_known_auxiliary_frames_if_both_pass": 252990,
+  "accounting": "These are prospective physical ceilings. Charge actual verified replay frames and measured inspector setup; replay constructor counters and unsuccessful partial work remain explicit unknowns. No fresh search frames.",
+  "saved_inputs": [
+    {
+      "name": "stream.jsonl",
+      "bytes": 1039374,
+      "sha256": "9ad315a76c38276c673fccd2b660a250254a8a74bc92d9f4a77670702a53a32c",
+      "gzip_source": "/root/harmony-depth-transfer-20260909/source-retention-replay-001/benchmarks/search/endpoint-encounter/ap01-output/stream.jsonl.gz"
+    },
+    {
+      "name": "origin.bin",
+      "bytes": 23392,
+      "sha256": "35b2677423102a0997d1762b8b448766a9e0219eba4173a28a8693b6892294eb",
+      "gzip_source": "/root/harmony-depth-transfer-20260909/source-retention-replay-001/benchmarks/search/endpoint-encounter/ap01-output/origin.bin.gz"
+    },
+    {
+      "name": "checkpoint.bin",
+      "bytes": 12925769,
+      "sha256": "454d55597dfe3014fc11ebde87c17a2f419648893c7ace1f22c7e5bec309f850",
+      "gzip_source": "/root/harmony-depth-transfer-20260909/source-retention-replay-001/benchmarks/search/endpoint-encounter/ap01-output/checkpoint.bin.gz"
+    }
+  ],
+  "protocol_sha256": {
+    "run_rr01.py": "d67b29e34035566022ba2cf4b6880c08fa86d5cd8a610b42e801837149a7ddd3",
+    "score_rr01.py": "0299ea073795fb3b0bf26c59b31ed0f799fa25b2cd887bd84fcb7a4ab43f27c0",
+    "test_rr01_evidence.py": "734d6df4f5db223b8a1d22f0705aa1e9e9b760657a37ebcbba6f96d03a1e0401",
+    "rr01-query.md": "86552ded339b55c31ef9204ef13263d2e5aa30048c317400be9f71d923d55b95",
+    "rr01-qualify-request.json": "d9efa8edf9d61b673537d59f5597785f5620fdfddce23b052eb3d300e3c14bc1",
+    "rr01-inspect-template.json": "f0cea028f553ef0da291ab2ad64e19911bf28d0be4d39b1763682a8943868ea4",
+    "rr01-build-info.json": "8e0c6850e55d9ac811a00447f18d4ab83dc54dbf5c714349db1979dce93dbc20"
+  },
+  "scorer_dependency_sha256": {
+    "benchmarks/search/endpoint-encounter/score_checkpoint_inspection.py": "c87370840986b3e18fcc7c1b5ee643786f80d795fcc0b80d4cc1dcf8ecd4ba83",
+    "benchmarks/search/endpoint-encounter/score_s01.py": "c806d63ba844f7b713d4945167a67e0e493c8942ce3b67e98241aabb8d34dda6",
+    "benchmarks/search/depth-transfer/boss_interval.py": "d833e9575ad4a26a5db5955738128f44c701065f4446f4834f3ff5cff89d3995"
+  },
+  "gate": "Inspect only after successful same-executable/input qualification. Inject only the verified qualification report path/hash into the fixed inspect template. Any failure stops without retry, new input or larger horizon. Query and witness selection are frozen in rr01-query.md. A positive local observation does not earn a policy change.",
+  "scope": "Exact existing short AP01 replay; no fresh search or global oracle. msr1 unavailable. Original boss/Wily and untouched-validation goal remains unachieved."
+}

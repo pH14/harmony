@@ -1,0 +1,29 @@
+{
+  "source_host": "ms02",
+  "progress_source_relative_path": "campaign/progress.jsonl",
+  "files": [
+    {
+      "name": "summary.json",
+      "raw_bytes": 27374,
+      "raw_sha256": "72672e743c9be8080eecdd24d0190397c2a8bbbe4ef734ad53f2b10ecdf84f2d",
+      "gzip_bytes": 5824,
+      "gzip_sha256": "75698b6ef94d74dda726672706b6e470308aaf2a55340874263c8f395f451292"
+    },
+    {
+      "name": "progress.jsonl",
+      "raw_bytes": 75901941,
+      "raw_sha256": "d94305f25d805daaa27debde3d1af68431448d615eb8d6d3adcc643c961f4faa",
+      "gzip_bytes": 4232744,
+      "gzip_sha256": "6d1dbd0d9fa96781a1b6fb2d8e288828f11017e8345212f482a104b56d199c38"
+    }
+  ],
+  "source_root_components": [
+    "root",
+    "harmony-depth-transfer-20260909",
+    "runs",
+    "endpoint-encounter-20260910",
+    "c01-ms02",
+    "metroid-development-census-s5",
+    "metroid-full-s5-w4-m8192"
+  ]
+}

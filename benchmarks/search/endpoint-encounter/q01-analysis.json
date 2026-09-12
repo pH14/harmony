@@ -1,0 +1,134 @@
+{
+  "format": "metroid-endpoint-q01-score-v1",
+  "decision": "pass",
+  "master_registration_sha256": "aae1d2b86f37ec1ee14539798cf5fe6b9a127861872f01291dd8124eb2ff6e8f",
+  "known_auxiliary_frames": 2281896,
+  "cells": [
+    {
+      "host": "msr1",
+      "registration": "q01-msr1-default.json",
+      "id": "metroid-slots-2",
+      "artifact_sha256": {
+        "stream.jsonl": "0fcaad970e2a219874bdc7c92c523bff482b03e2e832da61d7ce9bc35caee13f",
+        "campaign.json": "78005a151703507cecf51124bf534e3e56c9a7485c6dc578270f5e058a2cf8fb",
+        "checkpoint.json": "a2e8c828dc28c24f165b8a8632866552d8e36ed81c8ac71a82dccefbf2d3c82d"
+      },
+      "normalized_stream_sha256": "dbe12f1b560021937ea6e6e87133b888ec4fc52a632ceca92184598732650521",
+      "normalized_events_sha256": "410369f42a8e0bbf2144287de355e696edda11898f33a3a31e5072cc85f87e3c",
+      "normalized_checkpoint_sha256": "687cf139a237b20028869003a466a11a1380c8cd88b89799e85fbef5129260ff",
+      "normalized_campaign_sha256": "c1e2077866d374baafe79bb61a16a523ab318521d372ceb3547ffc20e2dc387f",
+      "normalized_witnesses_sha256": "126a0dd64a84492a1ee3f47ebf34db42981ecb37e1189f4549f5ef2e186892d3",
+      "snapshot_count": 1139,
+      "memory": {
+        "resident_memory_bytes": 24889013,
+        "resident_snapshot_bytes": 24180970
+      },
+      "endpoint_counts": null,
+      "summary_sha256": "4fd468bb10fb90b05bd7cb5899d028644642caa8e5858c3f930c66d29224b1ec",
+      "admitted_qualification_frames": 284283,
+      "inferred_full_replay_frames": 284283,
+      "twice_replayed_witness_frames": 1908,
+      "cpu_seconds": 27.043848,
+      "elapsed_seconds": 18.288377429009415
+    },
+    {
+      "host": "msr1",
+      "registration": "q01-msr1-audit.json",
+      "id": "metroid-slots-2",
+      "artifact_sha256": {
+        "stream.jsonl": "3ea94ea77edfe9707e7937dfbe5404253f6f82cbeb1d492c801ee6d8fc80be90",
+        "campaign.json": "feeedf446e07c40d5f4bfd05f27e9e9ef5d0c98b3046292fe3db52551b83812b",
+        "checkpoint.json": "e336d7f3f17505e1a2d7d5b21d392cc2c5d3bfdcd731a6a5985b9327de375d33"
+      },
+      "normalized_stream_sha256": "dbe12f1b560021937ea6e6e87133b888ec4fc52a632ceca92184598732650521",
+      "normalized_events_sha256": "410369f42a8e0bbf2144287de355e696edda11898f33a3a31e5072cc85f87e3c",
+      "normalized_checkpoint_sha256": "687cf139a237b20028869003a466a11a1380c8cd88b89799e85fbef5129260ff",
+      "normalized_campaign_sha256": "c1e2077866d374baafe79bb61a16a523ab318521d372ceb3547ffc20e2dc387f",
+      "normalized_witnesses_sha256": "126a0dd64a84492a1ee3f47ebf34db42981ecb37e1189f4549f5ef2e186892d3",
+      "snapshot_count": 1139,
+      "memory": {
+        "resident_memory_bytes": 24889013,
+        "resident_snapshot_bytes": 24180970
+      },
+      "endpoint_counts": {
+        "actions_observed": 6784,
+        "classified_endpoints": 0,
+        "first": null,
+        "live_endpoints": 6628
+      },
+      "summary_sha256": "96177775b8ff65ff319a55ba45bc6b5d07d6c67cdddbbe37285ca66d0dd6b9be",
+      "admitted_qualification_frames": 284283,
+      "inferred_full_replay_frames": 284283,
+      "twice_replayed_witness_frames": 1908,
+      "cpu_seconds": 26.96981,
+      "elapsed_seconds": 18.274136238964275
+    },
+    {
+      "host": "ms02",
+      "registration": "q01-ms02-audit.json",
+      "id": "metroid-slots-1",
+      "artifact_sha256": {
+        "stream.jsonl": "ac61d2aa2f99d336f3d43eb7b2ce977a2a58741528af14435529979a59c2a1bd",
+        "campaign.json": "09b97c420acb99286dbb83c7da61e55eaceed761cc38fc43b94f555c3980a1bd",
+        "checkpoint.json": "54226425777894e496afa4abc285d31865fd82931ae1a941472855b2b0ebd79d"
+      },
+      "normalized_stream_sha256": "dbe12f1b560021937ea6e6e87133b888ec4fc52a632ceca92184598732650521",
+      "normalized_events_sha256": "410369f42a8e0bbf2144287de355e696edda11898f33a3a31e5072cc85f87e3c",
+      "normalized_checkpoint_sha256": "687cf139a237b20028869003a466a11a1380c8cd88b89799e85fbef5129260ff",
+      "normalized_campaign_sha256": "c1e2077866d374baafe79bb61a16a523ab318521d372ceb3547ffc20e2dc387f",
+      "normalized_witnesses_sha256": "126a0dd64a84492a1ee3f47ebf34db42981ecb37e1189f4549f5ef2e186892d3",
+      "snapshot_count": 1139,
+      "memory": {
+        "resident_memory_bytes": 24889013,
+        "resident_snapshot_bytes": 24180970
+      },
+      "endpoint_counts": {
+        "actions_observed": 6784,
+        "classified_endpoints": 0,
+        "first": null,
+        "live_endpoints": 6628
+      },
+      "summary_sha256": "b8fffc572bf77e1a022861833ecb6e3db8a88e4ec339b1a7c0cf725a0b97b928",
+      "admitted_qualification_frames": 284283,
+      "inferred_full_replay_frames": 284283,
+      "twice_replayed_witness_frames": 1908,
+      "cpu_seconds": 12.442381000000001,
+      "elapsed_seconds": 9.037554951035418
+    },
+    {
+      "host": "ms02",
+      "registration": "q01-ms02-audit.json",
+      "id": "metroid-slots-2",
+      "artifact_sha256": {
+        "stream.jsonl": "ac61d2aa2f99d336f3d43eb7b2ce977a2a58741528af14435529979a59c2a1bd",
+        "campaign.json": "09b97c420acb99286dbb83c7da61e55eaceed761cc38fc43b94f555c3980a1bd",
+        "checkpoint.json": "54226425777894e496afa4abc285d31865fd82931ae1a941472855b2b0ebd79d"
+      },
+      "normalized_stream_sha256": "dbe12f1b560021937ea6e6e87133b888ec4fc52a632ceca92184598732650521",
+      "normalized_events_sha256": "410369f42a8e0bbf2144287de355e696edda11898f33a3a31e5072cc85f87e3c",
+      "normalized_checkpoint_sha256": "687cf139a237b20028869003a466a11a1380c8cd88b89799e85fbef5129260ff",
+      "normalized_campaign_sha256": "c1e2077866d374baafe79bb61a16a523ab318521d372ceb3547ffc20e2dc387f",
+      "normalized_witnesses_sha256": "126a0dd64a84492a1ee3f47ebf34db42981ecb37e1189f4549f5ef2e186892d3",
+      "snapshot_count": 1139,
+      "memory": {
+        "resident_memory_bytes": 24889013,
+        "resident_snapshot_bytes": 24180970
+      },
+      "endpoint_counts": {
+        "actions_observed": 6784,
+        "classified_endpoints": 0,
+        "first": null,
+        "live_endpoints": 6628
+      },
+      "summary_sha256": "ce2b07d44be082df7f2dcf61cb32db63fe98049c1eb89cad16959632f76c1201",
+      "admitted_qualification_frames": 284283,
+      "inferred_full_replay_frames": 284283,
+      "twice_replayed_witness_frames": 1908,
+      "cpu_seconds": 12.348270999999999,
+      "elapsed_seconds": 9.04108873999212
+    }
+  ],
+  "memory_delta_per_snapshot": 0,
+  "claim": "Short-fixture default compatibility, full replay, audited buffering and projected cross-host physical/decision equality.",
+  "unqualified": "Positive native encounters, fresh-search performance and neutrality at memory/wall limits."
+}

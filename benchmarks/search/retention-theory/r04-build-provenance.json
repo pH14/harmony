@@ -1,0 +1,98 @@
+{
+  "context-default-001": {
+    "source_commit": "e29ee221",
+    "build_info_sha256": "caa450dd3f6b6fb6f489c474c116aa1e06ae436abf275cf6dea7dce2762486f3",
+    "build_info": {
+      "binary_sha256": "68bf2fa231c351d37ef83e477a13840d769236d529236f9280c011261ed320bf",
+      "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+      "dirty": null,
+      "features": "",
+      "files": 386,
+      "format": "harmony-search-build-v1",
+      "locked": true,
+      "profile": "release",
+      "revision": null,
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+      "rustflags": "",
+      "source_tree_sha256": "dc1a23824949cd80827b170af45635f585a617d0c42ee275b43b9b07ced23add",
+      "target_cache": "/root/harmony-retention-theory-20260908/target"
+    }
+  },
+  "context-001": {
+    "source_commit": "e29ee221",
+    "build_info_sha256": "81e9c0dc53d1708ddff44a8dd5d053f3ea971950c6adeb64a14fc6d4e7969de1",
+    "build_info": {
+      "binary_sha256": "59e335df89b65c6747064ba887eecb7be06ee0ab1d173d3cf58774d21d5c7489",
+      "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+      "dirty": null,
+      "features": "metroid-motion-context",
+      "files": 386,
+      "format": "harmony-search-build-v1",
+      "locked": true,
+      "profile": "release",
+      "revision": null,
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+      "rustflags": "",
+      "source_tree_sha256": "dc1a23824949cd80827b170af45635f585a617d0c42ee275b43b9b07ced23add",
+      "target_cache": "/root/harmony-retention-theory-20260908/target"
+    }
+  },
+  "motion-probe-002": {
+    "source_commit": "e29ee221",
+    "build_info_sha256": "6aeb672fbf9c348d096c49e7b2ee3082b4ff4b26f5272b23cfd82781845527ed",
+    "build_info": {
+      "binary": "metroid-kinematics-probe",
+      "binary_sha256": "d48042d84b6f055773131046c66a55bc522a3f92cba4c7304626e5a0a793a08c",
+      "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+      "dirty": null,
+      "features": "metroid-motion-context",
+      "files": 386,
+      "format": "harmony-diagnostic-build-v1",
+      "locked": true,
+      "profile": "release",
+      "revision": null,
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+      "source_commit": "e29ee221",
+      "source_tree_sha256": "dc1a23824949cd80827b170af45635f585a617d0c42ee275b43b9b07ced23add",
+      "target_cache": "/root/harmony-retention-theory-20260908/target"
+    }
+  },
+  "context-default-002": {
+    "source_commit": "4e3f0255",
+    "build_info_sha256": "c9e00a2737bbaa3d5e8a35e2d1ca748b63f39be03fa0fbd3ffa50e96cf8a58f4",
+    "build_info": {
+      "binary_sha256": "4c3e1e4c0364ee8f5a58cf98a0fcadc11e835dcc268a498e9a1fe3e689323bf6",
+      "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+      "dirty": null,
+      "features": "",
+      "files": 388,
+      "format": "harmony-search-build-v1",
+      "locked": true,
+      "profile": "release",
+      "revision": null,
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+      "rustflags": "",
+      "source_tree_sha256": "c0c67ce855ad874f974879bd238dd1e38d358c02d492abb04d6150c936c80113",
+      "target_cache": "/root/harmony-retention-theory-20260908/target"
+    }
+  },
+  "context-002": {
+    "source_commit": "4e3f0255",
+    "build_info_sha256": "ec7061ae68bbbfb3ed55a8febd295cd0fd53468be02c5aabf762ee6b9c3c9c0c",
+    "build_info": {
+      "binary_sha256": "2a727ac12dbc4ff07272e0119bab39179aaa45bc0a6f422c2cc8fb77cdf3f981",
+      "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+      "dirty": null,
+      "features": "metroid-motion-context",
+      "files": 388,
+      "format": "harmony-search-build-v1",
+      "locked": true,
+      "profile": "release",
+      "revision": null,
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+      "rustflags": "",
+      "source_tree_sha256": "c0c67ce855ad874f974879bd238dd1e38d358c02d492abb04d6150c936c80113",
+      "target_cache": "/root/harmony-retention-theory-20260908/target"
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "format": "pw01-cancelled-preparation-v1",
+  "recorded_utc": "2026-09-11T00:59:41.849003+00:00",
+  "status": "paused_by_user",
+  "source_commit": "adc8e70394a97e212fd36fdd002b48761808df7d",
+  "active_allocation_published": false,
+  "emulator_executed": false,
+  "physical_frames": 0,
+  "source_checks": "pw00-source-manifest.json",
+  "offline_tests_passed": 4,
+  "ms02": "Task directory removed, no owned processes/services remain. See cleanup-receipt.json.",
+  "artifacts": [
+    {
+      "path": "pw01-preparation/build-info.json",
+      "bytes": 1353,
+      "sha256": "34da1ad118a921cb86c22e37690bb429294408424260192c37bdcaa72b96e9e0"
+    },
+    {
+      "path": "pw01-preparation/build-resources.txt",
+      "bytes": 265,
+      "sha256": "4a4363e564e38698723bb49476ff51ecbdfcf4426f5d3913321143e65fed3a16"
+    },
+    {
+      "path": "pw01-preparation/build.py",
+      "bytes": 2576,
+      "sha256": "d5e9ccefc27f4e0e73d1303c04ecc7c4886eb1a307fc723c07599f19c4c8fbfc"
+    },
+    {
+      "path": "pw01-preparation/cargo.log.gz",
+      "bytes": 475,
+      "sha256": "8328c6987f4d10b34fd58d533a16276d69dbe7614ae9dde30d0850ae30455e58"
+    },
+    {
+      "path": "pw01-preparation/cleanup-receipt.json",
+      "bytes": 847,
+      "sha256": "9a51dbe0014b84c7cdb02eb1f386e8554171854e7785260b4950b9f63c3aeee3"
+    },
+    {
+      "path": "pw01-preparation/collection.json",
+      "bytes": 420,
+      "sha256": "a1336d9c80221627065c283358f9e6e7d42977105a9b862aef60da922d91066c"
+    },
+    {
+      "path": "pw01-preparation/offline-tests.log.gz",
+      "bytes": 254,
+      "sha256": "f2a6a1163483b377efb616715c96cff6327815b689bbec1e401c477b170d33db"
+    },
+    {
+      "path": "pw01-preparation/verification.json",
+      "bytes": 216,
+      "sha256": "5b9283e9e24a7786202f1b99205add11a81cdd3d7c702725dd1befaec96f6e0f"
+    }
+  ],
+  "limitations": "This preserves build and cancelled protocol preparation only. No native qualification or efficacy result exists. The large raw backup is local; previously published experiment evidence remains in Git."
+}

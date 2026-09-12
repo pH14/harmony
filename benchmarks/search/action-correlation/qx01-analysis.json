@@ -1,0 +1,106 @@
+{
+  "format": "action-correlation-native-qualification-v1",
+  "decision": "pass",
+  "recorded_utc": "2026-09-09T23:45:58.362121+00:00",
+  "registration_sha256": "a9c5b1713cfbcfe0fe838145f4b1e83ad2bca956bf678fc7f6595bfc1e3bdc47",
+  "panel_sha256": "ca85b23cc5dcf7162186b199c82eb93406bc462c53959196d42c2bbda094642a",
+  "source_commit": "2fb37f9c3c21656f629a5bd11a2c54ad88ee03a5",
+  "binary_sha256": "73c8694a95d579a47395c84cdbcfa2fcccee97471f8aed9cbff4f67dcdea91fd",
+  "cells": [
+    {
+      "id": "metroid-default",
+      "admitted_qualification_frames": 284283,
+      "inferred_full_replay_admitted_frames": 284283,
+      "twice_replayed_witness_frames": 1908,
+      "artifact_sha256": {
+        "stream.jsonl": "484ee2e2426d9e5379b00b1cb78aecd6823bfe761df9e64cd35a99f860145f9c",
+        "campaign.json": "0c39efca76ca28a3258caefe897f41ff7ab11211dfb706f26985fe6d32a12794",
+        "checkpoint.json": "7dc1247d2aba6b631e7da8f78acfc5b5f17a73e6881de5bb50304d6a1a49474d"
+      },
+      "event_stream_sha256": "8a673e84a79e667b4c5dd7aea183ed72dd1fc256c025943a747e83339efd9174",
+      "summary_sha256": "34d98d8d6568a2b9b19eeac7e2c6c8090271cf5b821066ac21e3d2f1fbdbcf91",
+      "cpu_seconds": 12.551597,
+      "elapsed_seconds": 9.04475118604023
+    },
+    {
+      "id": "mm2-default",
+      "admitted_qualification_frames": 235672,
+      "inferred_full_replay_admitted_frames": 235672,
+      "twice_replayed_witness_frames": 3842,
+      "artifact_sha256": {
+        "stream.jsonl": "30e59e4d9fba38ed61493cbaeecff59a294c8ed7fe2e7994d4929052d6dde6f9",
+        "campaign.json": "113e0b8f0ce24dbb5722c61457ae69d1b519239f2c4abcb6967dc16c5a80884f",
+        "checkpoint.json": "c81e0a96e2297dd15d0a9548e3aa7555fa63977ec2ca8bd4e53f9d338537f45e"
+      },
+      "event_stream_sha256": "e579b533d45db128cfa740d0f1b50792ca204bac2c7c05a20b2925244aa9f414",
+      "summary_sha256": "a65e1f6449ad7e1ebcdac1a71c1f7e9b2a350b14161b7381fac77fec29bceb99",
+      "cpu_seconds": 9.697655000000001,
+      "elapsed_seconds": 7.030147976009175
+    },
+    {
+      "id": "metroid-component-slots2",
+      "admitted_qualification_frames": 50967,
+      "inferred_full_replay_admitted_frames": 50967,
+      "twice_replayed_witness_frames": 556,
+      "artifact_sha256": {
+        "stream.jsonl": "19a574115b4430bbb7729d945d194f12022367e77430a488ec724fafdf3ed60a",
+        "campaign.json": "7795e7235d6dcfe2dc3acd0f5a4a1c0e3bb4a22de0acad3b76293b5d6717c4e1",
+        "checkpoint.json": "ba6c5de0434742ce54d479d0ec235cc641a1d411461989a3b8b1ef6d5d0211bf"
+      },
+      "event_stream_sha256": "6606de85ccdb143837d1f95e8e8e113bafa58c54b58ecf6aae7cbf376e4f2125",
+      "summary_sha256": "b63aa2f39965a30a046c69f3d8233f10fada0077c70e8db0a1dbc59be6bc8749",
+      "cpu_seconds": 2.397271,
+      "elapsed_seconds": 2.0128570939414203
+    },
+    {
+      "id": "metroid-whole-slots2",
+      "admitted_qualification_frames": 50916,
+      "inferred_full_replay_admitted_frames": 50916,
+      "twice_replayed_witness_frames": 3020,
+      "artifact_sha256": {
+        "stream.jsonl": "0074e28d4929a36fd42a5972fdc004f78c4882e9ea60a41dc0312c9bb05e4891",
+        "campaign.json": "cd43400dbf923e882df8fe327dee89c0a12b85af5f172e798fe9062a81d102ab",
+        "checkpoint.json": "016497087e4dfdc253e21b1cccd51a152c754e3dfed14f26c6a4237df7f3f275"
+      },
+      "event_stream_sha256": "add630a5367381def091cd2118b0e96413718b40ae924069e0c9b60508309b96",
+      "summary_sha256": "982ebb90748db34441d7dc7d7360eca5127cea4aabfc0c614290ab2b5df89130",
+      "cpu_seconds": 2.281619,
+      "elapsed_seconds": 2.0131637770682573
+    },
+    {
+      "id": "mm2-component-slots2",
+      "admitted_qualification_frames": 49552,
+      "inferred_full_replay_admitted_frames": 49552,
+      "twice_replayed_witness_frames": 1652,
+      "artifact_sha256": {
+        "stream.jsonl": "abc20611143baa2a450539dd4052690778ff3a834622aa3f20502ecbc227ddc1",
+        "campaign.json": "c3b08806d28bdffd06ab7c810518681063d739a5d73f79630bddb9f1dceb84c9",
+        "checkpoint.json": "9c9463b7db6539393bfc6007f0aff4f4a58f3fda5d51ea89f284bda919429835"
+      },
+      "event_stream_sha256": "e6b6c3408ffb5a0ea685d47cd8a3b8977b44d81b5fc83478acc94308c2b2ccb3",
+      "summary_sha256": "8c8cdad888f03426ca541520ef84c3792c0f39f79c6602a912508f1d4fc18e1b",
+      "cpu_seconds": 2.2306880000000002,
+      "elapsed_seconds": 2.0127654469106346
+    },
+    {
+      "id": "mm2-whole-slots2",
+      "admitted_qualification_frames": 51194,
+      "inferred_full_replay_admitted_frames": 51194,
+      "twice_replayed_witness_frames": 2862,
+      "artifact_sha256": {
+        "stream.jsonl": "a232ee792aebd1ef5b5448b7a47507978a904e525cbc2d52167309ef5594aed1",
+        "campaign.json": "9c65e11e5ccc30743b420de55e9d6bd8ca549965db258218e26ec2ff84ec201c",
+        "checkpoint.json": "0e7b254ddce555167a1bc9bd289268564b053f54759008b6f964959580a8cca2"
+      },
+      "event_stream_sha256": "3591065412eaa696a00d53dc3347ba3929b24c15f309d7587eefb381a0b93e7b",
+      "summary_sha256": "eab2062b9e4399b1a5698976f38c4777ff2d564dd9059f4a856748ea08481f66",
+      "cpu_seconds": 2.393239,
+      "elapsed_seconds": 2.0127937080105767
+    }
+  ],
+  "known_auxiliary_frames": 1459008,
+  "limitations": [
+    "Reused qualification seed; no performance sample.",
+    "Full replay cost is inferred from admitted work; setup, reconstruction and unadmitted work remain additional unknowns."
+  ]
+}

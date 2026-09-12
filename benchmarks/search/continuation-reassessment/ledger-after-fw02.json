@@ -1,0 +1,26 @@
+{
+  "format": "continuation-fw02-closed-ledger-v1",
+  "decision": "all_six_historical_witnesses_compatible_under_source_corrected_contract",
+  "fw01_original_gate": "failed; unchanged",
+  "fw02_result": "pass",
+  "registration_sha256": "7eb4c3366654cc799ea974f7b3ffa4cabac19509d82e27d0b4759b49712e18ef",
+  "results_sha256": "76c83dc5a89dc9f57ed4639e27b196dc73d10b42702e319a6ad4146741ee5db2",
+  "prior_ledger_sha256": "882a29b141c3ee87bce51f5203f228c77505eb9e955e3caeb18efd348b9267ce",
+  "admitted_search_frames": 0,
+  "known_auxiliary_frames": 950274,
+  "budget_charged_upper_frames": 950274,
+  "reused_frames_not_charged_again": 234966,
+  "combined_fw01_fw02_known_frames": 1185240,
+  "service_elapsed_seconds": 209.707083,
+  "service_cpu_nanoseconds": 208686515000,
+  "service_memory_peak_bytes": 16384000,
+  "service_status": "deactivated successfully; transient unit unloaded",
+  "partial_emulator_advancement": "none: all new three-pass replays completed",
+  "cumulative_since_user_resumption_admitted_search_frames": 1273426135,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 62090185,
+  "limits": [
+    "Witness compatibility only; no fresh corrected-terminal performance or boss evidence.",
+    "Historical performance used terminal v2/key v8; current source uses terminal v3/key v10.",
+    "Prior failed gates, expired-tranche totals and unknown work gaps remain unchanged."
+  ]
+}

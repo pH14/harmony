@@ -1,0 +1,271 @@
+[
+  {
+    "case": "t03-anchor-corrected-s4",
+    "summary_path": "/root/harmony-alternative-futures-20260908/runs/t03-anchor-corrected-s4/metroid-full-s4-w4-m8192/summary.json",
+    "summary_sha256": "cfebab8ddaa05b6b0d23384cca95a865b014fc400dd4c366c0e86c0cdac999e3",
+    "progress_sha256": "f37b067f152fae18a3cab3589c83e579b8008184fab6d223b0dfbca141bd8a12",
+    "progress_bytes": 79632885,
+    "search_request": {
+      "actions": 4096,
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "executions": 3000000,
+      "frames": 400000000,
+      "game": "metroid",
+      "memory_mib": 8192,
+      "metroid_terminal": "death_or_bcd_underflow_or_ending_v3",
+      "mixture": "alphabet_only",
+      "result_slots": 2,
+      "retention_audit": true,
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "seed": 4,
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+      "suffix": "one_to_six",
+      "verification": "witness",
+      "wall_seconds": 5100,
+      "window": 2,
+      "workers": 4
+    },
+    "whole_run_search_seconds": 2831.771576557,
+    "whole_run_frames": 380102776,
+    "events": {
+      "bombs": {
+        "first_execution": 2772507,
+        "route_action_end_frame": 64620,
+        "preceding_progress": {
+          "executions": 2772500,
+          "frames_emulated": 352613153,
+          "search_elapsed_millis": 2623842
+        },
+        "first_reporting_progress": {
+          "executions": 2772600,
+          "frames_emulated": 352626641,
+          "search_elapsed_millis": 2623934
+        }
+      },
+      "kraid_area": {
+        "first_execution": 2834909,
+        "route_action_end_frame": 81836,
+        "preceding_progress": {
+          "executions": 2834900,
+          "frames_emulated": 360050063,
+          "search_elapsed_millis": 2679878
+        },
+        "first_reporting_progress": {
+          "executions": 2835000,
+          "frames_emulated": 360061701,
+          "search_elapsed_millis": 2679958
+        }
+      }
+    },
+    "scope": "Selected already-searched development campaigns; not a fresh sample or boss encounter evidence."
+  },
+  {
+    "case": "t03-anchor-corrected-s5",
+    "summary_path": "/root/harmony-alternative-futures-20260908/runs/t03-anchor-corrected-s5/metroid-full-s5-w4-m8192/summary.json",
+    "summary_sha256": "c00f7015323a100a923fef2acd9ffae865c9f1dc1e00352145fa972207669571",
+    "progress_sha256": "fbd43366fe63a3ee3b4c944fc4eafb29961e2abb52d38fd6cbe176cb75cad5f1",
+    "progress_bytes": 81848639,
+    "search_request": {
+      "actions": 4096,
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "executions": 3000000,
+      "frames": 400000000,
+      "game": "metroid",
+      "memory_mib": 8192,
+      "metroid_terminal": "death_or_bcd_underflow_or_ending_v3",
+      "mixture": "alphabet_only",
+      "result_slots": 2,
+      "retention_audit": true,
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "seed": 5,
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+      "suffix": "one_to_six",
+      "verification": "witness",
+      "wall_seconds": 5100,
+      "window": 2,
+      "workers": 4
+    },
+    "whole_run_search_seconds": 3191.485021506,
+    "whole_run_frames": 364178451,
+    "events": {
+      "bombs": {
+        "first_execution": 938694,
+        "route_action_end_frame": 56913,
+        "preceding_progress": {
+          "executions": 938600,
+          "frames_emulated": 113325932,
+          "search_elapsed_millis": 983110
+        },
+        "first_reporting_progress": {
+          "executions": 938700,
+          "frames_emulated": 113337939,
+          "search_elapsed_millis": 983218
+        }
+      },
+      "ridley_area": {
+        "first_execution": 1226882,
+        "route_action_end_frame": 97185,
+        "preceding_progress": {
+          "executions": 1226800,
+          "frames_emulated": 146929089,
+          "search_elapsed_millis": 1277770
+        },
+        "first_reporting_progress": {
+          "executions": 1226900,
+          "frames_emulated": 146941130,
+          "search_elapsed_millis": 1277867
+        }
+      },
+      "kraid_area": {
+        "first_execution": 1327670,
+        "route_action_end_frame": 103645,
+        "preceding_progress": {
+          "executions": 1327600,
+          "frames_emulated": 158814162,
+          "search_elapsed_millis": 1381820
+        },
+        "first_reporting_progress": {
+          "executions": 1327700,
+          "frames_emulated": 158826249,
+          "search_elapsed_millis": 1381920
+        }
+      }
+    },
+    "scope": "Selected already-searched development campaigns; not a fresh sample or boss encounter evidence."
+  },
+  {
+    "case": "l04-anchor-middle-s3",
+    "summary_path": "/root/harmony-alternative-futures-20260908/runs/l04-anchor-middle-s3/metroid-full-s3-w4-m8192/summary.json",
+    "summary_sha256": "754b0e802cc87f995912d831a284bd2186c89e4a5ccad4e8d0d7ff0104050b11",
+    "progress_sha256": "be4ac2f99f6723592280901e95a3caa9e2f059ae05babcb5bf6e06545e7a78e5",
+    "progress_bytes": 85690811,
+    "search_request": {
+      "actions": 4096,
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "executions": 3000000,
+      "frames": 400000000,
+      "game": "metroid",
+      "memory_mib": 8192,
+      "metroid_terminal": "death_or_bcd_underflow_or_ending_v3",
+      "mixture": "alphabet_only",
+      "nes_duration": "stratified_short_middle_long_v2",
+      "result_slots": 2,
+      "retention_audit": true,
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "seed": 3,
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+      "suffix": "one_to_six",
+      "verification": "witness",
+      "wall_seconds": 5100,
+      "window": 2,
+      "workers": 4
+    },
+    "whole_run_search_seconds": 2932.736574462,
+    "whole_run_frames": 332305364,
+    "events": {
+      "bombs": {
+        "first_execution": 2560868,
+        "route_action_end_frame": 65980,
+        "preceding_progress": {
+          "executions": 2560800,
+          "frames_emulated": 286001112,
+          "search_elapsed_millis": 2522260
+        },
+        "first_reporting_progress": {
+          "executions": 2560900,
+          "frames_emulated": 286012130,
+          "search_elapsed_millis": 2522348
+        }
+      },
+      "kraid_area": {
+        "first_execution": 2641107,
+        "route_action_end_frame": 83388,
+        "preceding_progress": {
+          "executions": 2641100,
+          "frames_emulated": 294697987,
+          "search_elapsed_millis": 2598501
+        },
+        "first_reporting_progress": {
+          "executions": 2641200,
+          "frames_emulated": 294710337,
+          "search_elapsed_millis": 2598604
+        }
+      }
+    },
+    "scope": "Selected already-searched development campaigns; not a fresh sample or boss encounter evidence."
+  },
+  {
+    "case": "l04-anchor-control-s3",
+    "summary_path": "/root/harmony-alternative-futures-20260908/runs/l04-anchor-control-s3/metroid-full-s3-w4-m8192/summary.json",
+    "summary_sha256": "2a81053a83204a3a0ef8383b5c7d810a2b59a0f46fb8bf3d3c19c295ddf204cb",
+    "progress_sha256": "5b981462d6d3b27710c898cabb914777efb6eb4e52eb37a1252135928f6c64b4",
+    "progress_bytes": 80950429,
+    "search_request": {
+      "actions": 4096,
+      "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+      "executions": 3000000,
+      "frames": 400000000,
+      "game": "metroid",
+      "memory_mib": 8192,
+      "metroid_terminal": "death_or_bcd_underflow_or_ending_v3",
+      "mixture": "alphabet_only",
+      "result_slots": 2,
+      "retention_audit": true,
+      "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+      "seed": 3,
+      "selector": "room_cell_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+      "suffix": "one_to_six",
+      "verification": "witness",
+      "wall_seconds": 5100,
+      "window": 2,
+      "workers": 4
+    },
+    "whole_run_search_seconds": 3215.598798004,
+    "whole_run_frames": 366396624,
+    "events": {
+      "bombs": {
+        "first_execution": 1487653,
+        "route_action_end_frame": 48562,
+        "preceding_progress": {
+          "executions": 1487600,
+          "frames_emulated": 187622759,
+          "search_elapsed_millis": 1623777
+        },
+        "first_reporting_progress": {
+          "executions": 1487700,
+          "frames_emulated": 187634304,
+          "search_elapsed_millis": 1623866
+        }
+      },
+      "kraid_area": {
+        "first_execution": 1556014,
+        "route_action_end_frame": 64170,
+        "preceding_progress": {
+          "executions": 1556000,
+          "frames_emulated": 195721480,
+          "search_elapsed_millis": 1694574
+        },
+        "first_reporting_progress": {
+          "executions": 1556100,
+          "frames_emulated": 195734550,
+          "search_elapsed_millis": 1694693
+        }
+      },
+      "ridley_area": {
+        "first_execution": 1987951,
+        "route_action_end_frame": 88224,
+        "preceding_progress": {
+          "executions": 1987900,
+          "frames_emulated": 246337225,
+          "search_elapsed_millis": 2142251
+        },
+        "first_reporting_progress": {
+          "executions": 1988000,
+          "frames_emulated": 246352876,
+          "search_elapsed_millis": 2142363
+        }
+      }
+    },
+    "scope": "Selected already-searched development campaigns; not a fresh sample or boss encounter evidence."
+  }
+]

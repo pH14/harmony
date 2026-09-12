@@ -1,0 +1,238 @@
+{
+  "columns": [
+    "route_frame",
+    "area",
+    "mode",
+    "door",
+    "room_number",
+    "loader_present",
+    "kraid_status",
+    "ridley_status",
+    "enemy_slots"
+  ],
+  "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+  "format": "metroid-boss-memory-probe-v1",
+  "input_sha256": "fa87933e0e03475dc47b85732e8c66c062c0f9b48bcf8b066d8b1822246f28b6",
+  "limitations": [
+    "loader presence is not a damage or defeat event",
+    "special bytes may change during combat or remain stale",
+    "an empty route trace does not imply an encounter-free campaign",
+    "no values affect fresh search"
+  ],
+  "one_frame": {
+    "all_frame_trace_sha256": "0205f7f5489f8900750841c87e9095b72a466fe84a9b97036ec06969b3575e54",
+    "emulator_sha256": "9067134ee0d0ccf3f42697c97e73506476a024273dcc354a471c086cdefc9a16",
+    "endpoint": {
+      "area": 16,
+      "bosses": 0,
+      "door": 0,
+      "ending": false,
+      "energy_tanks": 1,
+      "equipment": 21,
+      "health": 85,
+      "map_x": 25,
+      "map_y": 5,
+      "missile_capacity": 10,
+      "missiles": 0,
+      "mode": 9,
+      "pose": 6,
+      "x": 116,
+      "y": 39
+    },
+    "first_guarded_loader_route_frame": null,
+    "guarded_loader_frames": 0,
+    "loader_and_active_tag_agreement_frames": 0,
+    "physical_frames_including_setup": 78322,
+    "raw_endpoint": {
+      "area": 16,
+      "door": 0,
+      "enemies": [
+        {
+          "data_index": 0,
+          "hit_points": 0,
+          "name_table": 0,
+          "slot": 0,
+          "special": 10,
+          "status": 0,
+          "x": 104,
+          "y": 179
+        },
+        {
+          "data_index": 5,
+          "hit_points": 4,
+          "name_table": 1,
+          "slot": 16,
+          "special": 128,
+          "status": 0,
+          "x": 31,
+          "y": 200
+        },
+        {
+          "data_index": 5,
+          "hit_points": 2,
+          "name_table": 1,
+          "slot": 32,
+          "special": 0,
+          "status": 0,
+          "x": 188,
+          "y": 200
+        },
+        {
+          "data_index": 5,
+          "hit_points": 2,
+          "name_table": 1,
+          "slot": 48,
+          "special": 0,
+          "status": 0,
+          "x": 220,
+          "y": 120
+        },
+        {
+          "data_index": 6,
+          "hit_points": 8,
+          "name_table": 1,
+          "slot": 64,
+          "special": 128,
+          "status": 0,
+          "x": 92,
+          "y": 40
+        },
+        {
+          "data_index": 6,
+          "hit_points": 4,
+          "name_table": 1,
+          "slot": 80,
+          "special": 0,
+          "status": 0,
+          "x": 172,
+          "y": 40
+        }
+      ],
+      "kraid_status": 0,
+      "loader_present": 0,
+      "mode": 9,
+      "ridley_status": 0,
+      "room_number": 255
+    },
+    "relevant_trace_bytes": 0,
+    "route_frames": 77393,
+    "setup_frames": 929,
+    "single_frame_sampling": true,
+    "tag_without_loader_or_active_slot_frames": 0
+  },
+  "ordinary": {
+    "all_frame_trace_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "emulator_sha256": "9067134ee0d0ccf3f42697c97e73506476a024273dcc354a471c086cdefc9a16",
+    "endpoint": {
+      "area": 16,
+      "bosses": 0,
+      "door": 0,
+      "ending": false,
+      "energy_tanks": 1,
+      "equipment": 21,
+      "health": 85,
+      "map_x": 25,
+      "map_y": 5,
+      "missile_capacity": 10,
+      "missiles": 0,
+      "mode": 9,
+      "pose": 6,
+      "x": 116,
+      "y": 39
+    },
+    "first_guarded_loader_route_frame": null,
+    "guarded_loader_frames": 0,
+    "loader_and_active_tag_agreement_frames": 0,
+    "physical_frames_including_setup": 78322,
+    "raw_endpoint": {
+      "area": 16,
+      "door": 0,
+      "enemies": [
+        {
+          "data_index": 0,
+          "hit_points": 0,
+          "name_table": 0,
+          "slot": 0,
+          "special": 10,
+          "status": 0,
+          "x": 104,
+          "y": 179
+        },
+        {
+          "data_index": 5,
+          "hit_points": 4,
+          "name_table": 1,
+          "slot": 16,
+          "special": 128,
+          "status": 0,
+          "x": 31,
+          "y": 200
+        },
+        {
+          "data_index": 5,
+          "hit_points": 2,
+          "name_table": 1,
+          "slot": 32,
+          "special": 0,
+          "status": 0,
+          "x": 188,
+          "y": 200
+        },
+        {
+          "data_index": 5,
+          "hit_points": 2,
+          "name_table": 1,
+          "slot": 48,
+          "special": 0,
+          "status": 0,
+          "x": 220,
+          "y": 120
+        },
+        {
+          "data_index": 6,
+          "hit_points": 8,
+          "name_table": 1,
+          "slot": 64,
+          "special": 128,
+          "status": 0,
+          "x": 92,
+          "y": 40
+        },
+        {
+          "data_index": 6,
+          "hit_points": 4,
+          "name_table": 1,
+          "slot": 80,
+          "special": 0,
+          "status": 0,
+          "x": 172,
+          "y": 40
+        }
+      ],
+      "kraid_status": 0,
+      "loader_present": 0,
+      "mode": 9,
+      "ridley_status": 0,
+      "room_number": 255
+    },
+    "relevant_trace_bytes": 0,
+    "route_frames": 77393,
+    "setup_frames": 929,
+    "single_frame_sampling": false,
+    "tag_without_loader_or_active_slot_frames": 0
+  },
+  "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+  "scope": "one existing searched tape; diagnostic only",
+  "slot_columns": [
+    "offset",
+    "status",
+    "data_index",
+    "special",
+    "hit_points",
+    "x_room",
+    "y_room",
+    "name_table"
+  ],
+  "terminal_policy": "death_or_bcd_underflow_or_ending_v3",
+  "verified_replays": 3
+}

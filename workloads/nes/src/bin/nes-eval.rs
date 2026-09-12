@@ -2,10 +2,13 @@
 //! Compact, headless evaluation of NES packages through the shared campaign engine.
 
 use nes_workload::{
-    metroid::campaign::{MetroidCampaignRun, MetroidGame},
+    metroid::campaign::{
+        ENDPOINT_ENCOUNTER_ARTIFACT, ENDPOINT_ENCOUNTER_ARTIFACT_FORMAT, MetroidCampaignRun,
+        MetroidGame,
+    },
     mm2::{
         campaign::{Mm2CampaignRun, Mm2Game},
-        target::Mm2Stage,
+        target::{Mm2Input, Mm2Stage},
     },
     nova::{
         campaign::{NovaCampaignRun, NovaGame},
@@ -18,7 +21,7 @@ use nes_workload::{
         },
         campaign::{
             CampaignConfig, CampaignExecutionOptions, CampaignOrigin, Game, ResultBuffering,
-            replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
+            TargetExecution, replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
         },
         draw::{draw_mixture_from_identifier, suffix_shape_from_identifier},
     },
@@ -47,7 +50,7 @@ fn telemetry_now() -> Instant {
     Instant::now()
 }
 
-fn victory_within_budget(first_victory_frames: Option<u64>, budget: Option<u64>) -> bool {
+fn event_within_budget(first_victory_frames: Option<u64>, budget: Option<u64>) -> bool {
     first_victory_frames.is_some_and(|frames| budget.is_none_or(|limit| frames <= limit))
 }
 
@@ -59,6 +62,22 @@ fn default_result_slots() -> usize {
 #[serde(deny_unknown_fields)]
 struct Request {
     game: String,
+    #[serde(default)]
+    retention_audit: bool,
+    #[serde(default)]
+    slot_retention: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stop_after_milestone: Option<String>,
+    #[serde(default)]
+    metroid_terminal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chord_correlation: Option<String>,
+    #[serde(default)]
+    mm2_chain: bool,
+    #[serde(default)]
+    prefix_input: Option<PathBuf>,
+    #[serde(default)]
+    prefix_sha256: Option<String>,
     #[serde(default)]
     whole_game: bool,
     rom: PathBuf,
@@ -135,6 +154,7 @@ fn replay_witness<G: Game>(game: &G, run: &G::Run, input: &Input<G::Action>) -> 
     let mut victory = false;
     let mut dead = false;
     let mut failed = false;
+    let frames_before = game.frames_clocked(&target);
     for (i, action) in input.actions.iter().enumerate() {
         if dead || victory || failed {
             return Err("witness contains actions after a terminal event".into());
@@ -166,13 +186,42 @@ fn replay_witness<G: Game>(game: &G, run: &G::Run, input: &Input<G::Action>) -> 
     let endpoint = game.snapshot(&mut target)?;
     Ok(
         json!({"victory": victory, "dead": dead, "milestones": aggregate,
+            "physical_suffix_frames": game.frames_clocked(&target) - frames_before,
             "diagnostics": G::diagnostics(&evidence),
             "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one", "snapshot_sha256": format!("{:x}", Sha256::digest(postcard::to_allocvec(&endpoint)?))}),
     )
 }
 
+fn verify_endpoint_encounter_witness(artifact: &Value, replay: &Value) -> Result<()> {
+    if artifact["format"] != ENDPOINT_ENCOUNTER_ARTIFACT_FORMAT || replay["dead"] != false {
+        return Err("invalid endpoint encounter artifact or dead replay".into());
+    }
+    let first = &artifact["first"];
+    let slots = first["boss_slots"]
+        .as_u64()
+        .ok_or("missing encounter slot mask")?;
+    let area = first["area"].as_u64().ok_or("missing encounter area")?;
+    let frame = first["route_action_end_frame"]
+        .as_u64()
+        .ok_or("missing encounter frame")?;
+    if !(1..=63).contains(&slots)
+        || !matches!(area, 18 | 20)
+        || frame == 0
+        || replay["physical_suffix_frames"].as_u64() != Some(frame)
+    {
+        return Err("encounter witness does not end at its classified live endpoint".into());
+    }
+    let observed = &replay["diagnostics"]["endpoint_encounters"]["counts"]["first"];
+    for key in ["area", "boss_slots", "route_action_end_frame"] {
+        if observed[key] != first[key] {
+            return Err(format!("encounter witness differs at {key}").into());
+        }
+    }
+    Ok(())
+}
+
 fn evaluate<G: Game>(
-    game: G,
+    game: &G,
     run: G::Run,
     request: &Request,
     out: &Path,
@@ -227,10 +276,19 @@ where
         2 => ResultBuffering::TwoPerWorker,
         _ => return Err("result_slots must be 1 or 2".into()),
     };
-    write_json(
-        &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "selector":request.selector, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification}),
-    )?;
+    let stop_after_milestone = request
+        .stop_after_milestone
+        .as_deref()
+        .map(|name| {
+            game.named_milestone(name)
+                .ok_or("workload does not support this milestone stop")
+        })
+        .transpose()?;
+    let mut identity = json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "selector":request.selector, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification, "retention_audit":request.retention_audit,"slot_retention":request.slot_retention,"mm2_chain":request.mm2_chain,"prefix_sha256":request.prefix_sha256});
+    if let Some((name, policy)) = stop_after_milestone {
+        identity["milestone_stop"] = json!({"name":name,"observation_policy":policy});
+    }
+    write_json(&out.join("identity.json"), &identity)?;
     let mut stream = StreamDigest {
         file: if full {
             Some(BufWriter::new(fs::File::create(out.join("stream.jsonl"))?))
@@ -245,14 +303,18 @@ where
     phase(out, "search", started)?;
     let search_started = telemetry_now();
     let (report, checkpoint) = run_campaign_checkpointed_with_options(
-        &game,
+        game,
         &config,
         &CampaignOrigin::Genesis,
         &mut stream,
         Some(&mut progress),
         CampaignExecutionOptions {
             frame_budget: request.frames,
+            stop_after_milestone: stop_after_milestone.map(|(name, _)| name),
             result_buffering,
+            slot_retention: nes_workload::search::archive::SlotRetentionPolicy::from_identifier(
+                request.slot_retention.as_deref(),
+            )?,
         },
     )?;
     stream.flush()?;
@@ -276,10 +338,11 @@ where
     }
     write_json(&out.join("campaign.json"), &value)?;
     let export_seconds = export_started.elapsed().as_secs_f64();
+    game.finish_retention_observation()?;
     phase(out, "verification", started)?;
     let verify_started = telemetry_now();
-    let first = replay_witness(&game, &run, &witness)?;
-    let second = replay_witness(&game, &run, &witness)?;
+    let first = replay_witness(game, &run, &witness)?;
+    let second = replay_witness(game, &run, &witness)?;
     if first != second {
         return Err("witness replay endpoint is nondeterministic".into());
     }
@@ -288,8 +351,7 @@ where
     }
     if full {
         let bytes = fs::read(out.join("stream.jsonl"))?;
-        let (replayed, replay_checkpoint) =
-            replay_campaign_checkpointed(&game, &bytes, None, None)?;
+        let (replayed, replay_checkpoint) = replay_campaign_checkpointed(game, &bytes, None, None)?;
         if serde_json::to_value(&replayed)? != serde_json::to_value(&report)?
             || checkpoint != replay_checkpoint
         {
@@ -306,8 +368,8 @@ where
         for path in paths {
             let bytes = fs::read(&path)?;
             let input: Input<G::Action> = serde_json::from_slice(&bytes)?;
-            let replay = replay_witness(&game, &run, &input)?;
-            if replay != replay_witness(&game, &run, &input)? {
+            let replay = replay_witness(game, &run, &input)?;
+            if replay != replay_witness(game, &run, &input)? {
                 return Err("milestone witness replay is nondeterministic".into());
             }
             let name = path
@@ -325,23 +387,64 @@ where
             );
         }
     }
+    let encounter_path = out.join(ENDPOINT_ENCOUNTER_ARTIFACT);
+    let endpoint_encounter_witness = if encounter_path.is_file() {
+        let bytes = fs::read(&encounter_path)?;
+        let artifact: Value = serde_json::from_slice(&bytes)?;
+        let input: Input<G::Action> = serde_json::from_value(artifact["input"].clone())?;
+        let execution = artifact["first"]["execution"]
+            .as_u64()
+            .ok_or("missing encounter execution")?;
+        if request.game != "metroid"
+            || input.actions.is_empty()
+            || input.actions.len() > request.actions
+            || execution == 0
+            || execution > report.executions_completed
+        {
+            return Err("encounter input is outside the admitted campaign bounds".into());
+        }
+        let replay = replay_witness(game, &run, &input)?;
+        if replay != replay_witness(game, &run, &input)? {
+            return Err("endpoint encounter witness replay is nondeterministic".into());
+        }
+        verify_endpoint_encounter_witness(&artifact, &replay)?;
+        Some(json!({
+            "artifact_sha256": format!("{:x}", Sha256::digest(&bytes)),
+            "first": artifact["first"],
+            "verified_replays": 2,
+            "known_replay_frames": 2 * replay["physical_suffix_frames"].as_u64().ok_or("missing replay cost")?,
+            "replay": replay,
+        }))
+    } else {
+        None
+    };
     let verification_seconds = verify_started.elapsed().as_secs_f64();
-    let solved = victory_within_budget(report.frames_to_first_victory, request.frames);
-    write_json(
-        &out.join("result.json"),
-        &json!({"format":"nes-eval-result-v1", "status":"complete", "solved":solved,
-            "victory_observed":report.victories>0,
-            "frame_budget_overshoot":request.frames.map(|limit| report.frames_emulated.saturating_sub(limit)),
-            "executions": report.executions_completed, "frames_emulated":report.frames_emulated,
-            "frames_to_first_victory":report.frames_to_first_victory, "executions_to_first_victory":report.executions_to_first_victory,
-            "preparation_seconds":preparation_seconds, "search_seconds":search_seconds, "executions_per_second":report.executions_completed as f64 / search_seconds,
-            "progress":value["archive"]["progress_watermark"], "milestones":value["archive"]["milestones"], "frames_per_second": report.frames_emulated as f64 / search_seconds,
-            "export_seconds":export_seconds, "verification_seconds":verification_seconds,
-            "verification":request.verification, "witness":first, "milestone_witnesses":milestone_witnesses,
-            "stream_sha256":format!("{:x}",stream.digest.finalize()), "stream_bytes_generated":stream.bytes, "stream_retained":full,
-            "stop_reason":if solved {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.frames_emulated >= limit) {"frame_limit"} else {"wall_limit"}
-        }),
-    )?;
+    let solved = event_within_budget(report.frames_to_first_victory, request.frames);
+    let milestone_reached = event_within_budget(
+        report.first_milestone.map(|event| event.frames_emulated),
+        request.frames,
+    );
+    let mut result = json!({"format":"nes-eval-result-v1", "status":"complete", "solved":solved,
+        "victory_observed":report.victories>0,
+        "frame_budget_overshoot":request.frames.map(|limit| report.frames_emulated.saturating_sub(limit)),
+        "executions": report.executions_completed, "frames_emulated":report.frames_emulated,
+        "frames_to_first_victory":report.frames_to_first_victory, "executions_to_first_victory":report.executions_to_first_victory,
+        "preparation_seconds":preparation_seconds, "search_seconds":search_seconds, "executions_per_second":report.executions_completed as f64 / search_seconds,
+        "progress":value["archive"]["progress_watermark"], "milestones":value["archive"]["milestones"], "frames_per_second": report.frames_emulated as f64 / search_seconds,
+        "export_seconds":export_seconds, "verification_seconds":verification_seconds,
+        "verification":request.verification, "witness":first, "milestone_witnesses":milestone_witnesses,
+        "stream_sha256":format!("{:x}",stream.digest.finalize()), "stream_bytes_generated":stream.bytes, "stream_retained":full,
+        "stop_reason":if solved {"victory"} else if milestone_reached {"milestone"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.frames_emulated >= limit) {"frame_limit"} else {"wall_limit"}
+    });
+    if let Some(condition) = &report.milestone_stop {
+        result["milestone_stop"] = serde_json::to_value(condition)?;
+        result["first_milestone"] = serde_json::to_value(report.first_milestone)?;
+        result["milestone_within_budget"] = json!(milestone_reached);
+    }
+    if let Some(witness) = endpoint_encounter_witness {
+        result["endpoint_encounter_witness"] = witness;
+    }
+    write_json(&out.join("result.json"), &result)?;
     phase(out, "done", started)
 }
 
@@ -364,6 +467,36 @@ fn main() -> Result<()> {
         || format!("{:x}", Sha256::digest(&core)) != request.core_sha256
     {
         return Err("ROM/core checksum mismatch".into());
+    }
+    if (request.mm2_chain || request.prefix_input.is_some() || request.prefix_sha256.is_some())
+        && request.game != "mm2"
+    {
+        return Err("chain origins are supported only for MM2".into());
+    }
+    if request.prefix_input.is_some() != request.prefix_sha256.is_some()
+        || (request.prefix_input.is_some() && !request.mm2_chain)
+    {
+        return Err("a chain prefix requires explicit chain scope and SHA-256".into());
+    }
+    if request.retention_audit && request.game != "metroid" {
+        return Err("replacement-pair observation currently requires Metroid".into());
+    }
+    if request.metroid_terminal.is_some() && request.game != "metroid" {
+        return Err("Metroid terminal policy requires the Metroid adapter".into());
+    }
+    let chord_correlation = nes_workload::chord_correlation::ChordCorrelation::parse(
+        request
+            .chord_correlation
+            .as_deref()
+            .unwrap_or("independent_v1"),
+    )?;
+    if request.chord_correlation.is_some() && !matches!(request.game.as_str(), "metroid" | "mm2") {
+        return Err("action correlation requires Metroid or MM2".into());
+    }
+    if chord_correlation != nes_workload::chord_correlation::ChordCorrelation::Independent
+        && request.mixture != "alphabet_only"
+    {
+        return Err("action correlation requires alphabet_only".into());
     }
     match request.game.as_str() {
         "smb" | "metroid"
@@ -396,7 +529,7 @@ fn main() -> Result<()> {
     let h = &request.core_sha256;
     match request.game.as_str() {
         "smb" => evaluate(
-            SmbGame::new(&rom, p, h),
+            &SmbGame::new(&rom, p, h),
             SmbCampaignRun {
                 chord: Default::default(),
                 vocabulary: Default::default(),
@@ -414,7 +547,7 @@ fn main() -> Result<()> {
                 NovaLevel::from_number(request.level.unwrap_or(1))?,
             );
             evaluate(
-                if request.whole_game {
+                &if request.whole_game {
                     game.with_whole_game()
                 } else {
                     game
@@ -425,20 +558,85 @@ fn main() -> Result<()> {
                 started,
             )
         }
-        "mm2" => evaluate(
-            Mm2Game::new_at_stage(
-                &rom,
-                p,
-                h,
-                Mm2Stage::from_number(request.stage.unwrap_or(0))?,
-            ),
-            Mm2CampaignRun,
-            &request,
-            &out,
-            started,
-        ),
+        "mm2" => {
+            let stage = Mm2Stage::from_number(request.stage.unwrap_or(0))?;
+            let prefix = request
+                .prefix_input
+                .as_ref()
+                .map(|path| -> Result<Mm2Input> {
+                    let bytes = fs::read(path)?;
+                    if Some(format!("{:x}", Sha256::digest(&bytes))) != request.prefix_sha256 {
+                        return Err("chain prefix checksum mismatch".into());
+                    }
+                    Ok(serde_json::from_slice(&bytes)?)
+                })
+                .transpose()?;
+            let game = match prefix {
+                Some(input) => Mm2Game::new_at_stage_after(&rom, p, h, input.actions, stage),
+                None => Mm2Game::new_at_stage(&rom, p, h, stage),
+            };
+            let game = game.with_chord_correlation(chord_correlation);
+            let outcome = evaluate(&game, Mm2CampaignRun, &request, &out, started);
+            let mut chain_setup = json!({"format":"mm2-chain-stage-cost-v1", "new_target_setup_frames":game.setup_frame_count(), "stage":stage.name(), "prefix_sha256":request.prefix_sha256, "scope":"freshness established by enclosing chain manifest, not by this stage tool"});
+            if request.mm2_chain {
+                write_json(&out.join("chain-cost.json"), &chain_setup)?;
+            }
+            if outcome.is_ok() && request.mm2_chain && out.join("victory-input.json").is_file() {
+                let victory: Mm2Input =
+                    serde_json::from_slice(&fs::read(out.join("victory-input.json"))?)?;
+                let mut target = game.new_target()?;
+                let mut next = target.genesis_prefix().to_vec();
+                let before = target.frames_clocked();
+                let physical = target.physical_input(&victory)?;
+                chain_setup["physical_export_replay_frames"] =
+                    json!(target.frames_clocked() - before);
+                chain_setup["searched_victory_endpoint"] =
+                    serde_json::to_value(target.mechanical_state())?;
+                next.extend(physical.actions);
+                let full = Mm2Input {
+                    actions: next.clone(),
+                };
+                write_json(&out.join("full-victory-input.json"), &full)?;
+                let mut transition_frames = 0;
+                if !stage.is_wily() {
+                    let walk = game.walk_to_stage_select(&next)?;
+                    transition_frames = next
+                        .iter()
+                        .chain(&walk)
+                        .map(|a| u64::from(a.bounded_hold_frames()))
+                        .sum::<u64>();
+                    next.extend(walk);
+                }
+                write_json(&out.join("next-prefix.json"), &Mm2Input { actions: next })?;
+                chain_setup["new_target_setup_frames"] = json!(game.setup_frame_count());
+                chain_setup["award_transition_physical_frames"] = json!(transition_frames);
+            }
+            if request.mm2_chain {
+                write_json(&out.join("chain-cost.json"), &chain_setup)?;
+            }
+            outcome
+        }
         "metroid" => evaluate(
-            MetroidGame::new(&rom, p, h).with_milestone_input_dir(out.join("milestone-inputs")),
+            &{
+                let game = MetroidGame::new(&rom, p, h)
+                    .with_chord_correlation(chord_correlation)
+                    .with_milestone_input_dir(out.join("milestone-inputs"))
+                    .with_terminal_policy(
+                        nes_workload::metroid::target::MetroidTerminalPolicy::parse(
+                            request
+                                .metroid_terminal
+                                .as_deref()
+                                .unwrap_or("death_or_ending_v2"),
+                        )?,
+                    );
+                #[cfg(feature = "metroid-boss-context-audit")]
+                let game = game.with_endpoint_encounter_path(out.join(ENDPOINT_ENCOUNTER_ARTIFACT));
+                if request.retention_audit {
+                    game.with_retention_audit(out.join("retention-audit.json"))
+                } else {
+                    game
+                }
+            },
             MetroidCampaignRun,
             &request,
             &out,
@@ -452,7 +650,7 @@ fn main() -> Result<()> {
                 _ => return Err("unknown STB difficulty".into()),
             };
             evaluate(
-                StbGame::with_ai(&rom, p, h, ai),
+                &StbGame::with_ai(&rom, p, h, ai),
                 StbCampaignRun,
                 &request,
                 &out,
@@ -465,13 +663,38 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::victory_within_budget;
+    use super::{
+        ENDPOINT_ENCOUNTER_ARTIFACT_FORMAT, event_within_budget, verify_endpoint_encounter_witness,
+    };
+    use serde_json::json;
 
     #[test]
     fn a_victory_in_the_drained_window_does_not_pass_the_frame_gate() {
-        assert!(victory_within_budget(Some(128), Some(128)));
-        assert!(!victory_within_budget(Some(129), Some(128)));
-        assert!(victory_within_budget(Some(129), None));
-        assert!(!victory_within_budget(None, Some(128)));
+        assert!(event_within_budget(Some(128), Some(128)));
+        assert!(!event_within_budget(Some(129), Some(128)));
+        assert!(event_within_budget(Some(129), None));
+        assert!(!event_within_budget(None, Some(128)));
+    }
+
+    #[test]
+    fn encounter_verification_requires_the_producing_endpoint_not_an_earlier_sighting() {
+        let first =
+            json!({"execution": 42, "area": 20, "boss_slots": 1, "route_action_end_frame": 100});
+        let artifact = json!({"format": ENDPOINT_ENCOUNTER_ARTIFACT_FORMAT, "first": first});
+        let replay = json!({"dead": false, "physical_suffix_frames": 100,
+            "diagnostics": {"endpoint_encounters": {"counts": {"first": first}}}});
+        verify_endpoint_encounter_witness(&artifact, &replay).unwrap();
+        let mut earlier = replay.clone();
+        earlier["physical_suffix_frames"] = json!(101);
+        assert!(verify_endpoint_encounter_witness(&artifact, &earlier).is_err());
+        let mut dead = replay.clone();
+        dead["dead"] = json!(true);
+        assert!(verify_endpoint_encounter_witness(&artifact, &dead).is_err());
+        let mut different = replay.clone();
+        different["diagnostics"]["endpoint_encounters"]["counts"]["first"]["boss_slots"] = json!(2);
+        assert!(verify_endpoint_encounter_witness(&artifact, &different).is_err());
+        let mut missing = replay;
+        missing["diagnostics"] = json!({});
+        assert!(verify_endpoint_encounter_witness(&artifact, &missing).is_err());
     }
 }

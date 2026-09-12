@@ -282,6 +282,7 @@ fn execute_job(
             dead,
             victory,
             failed,
+            discard_previous_dead: false,
             candidate,
         });
         if dead || victory || failed {

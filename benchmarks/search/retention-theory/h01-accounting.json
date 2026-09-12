@@ -1,0 +1,20 @@
+{
+  "format": "h01-physical-accounting-v1",
+  "new_control_components": {
+    "admitted_search": 85001033,
+    "target_setup": 131656,
+    "export_replay": 0,
+    "award_transition": 0,
+    "witness_suffix_replays": 11434
+  },
+  "new_control_physical_lower_bound": 85144123,
+  "reused_candidate_additional_search_frames": 0,
+  "scope": "lower bound; admitted search omits physically executed jobs not admitted at stop; full campaign replay not requested",
+  "chain_cost": {
+    "format": "mm2-chain-stage-cost-v1",
+    "new_target_setup_frames": 131656,
+    "prefix_sha256": "98483c03561d44fb8d6f037b6dbec83a47853a8cee821334ec10a4a9f619c6a3",
+    "scope": "freshness established by enclosing chain manifest, not by this stage tool",
+    "stage": "heat"
+  }
+}

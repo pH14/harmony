@@ -1,0 +1,115 @@
+{
+  "format": "retention-portable-verification-v1",
+  "tested_implementation_commit": "4e3f0255",
+  "subsequent_changes": "Policy implementation remains frozen at4e3f0255; a reporting-only complete-slot view and opt-in audit were added at8d503c28, separately tested and ARM-qualified below. Other later changes are evidence, theory fixtures and bounded analysis drivers.",
+  "local_toolchain": "rustc 1.97.0",
+  "runner_contract_tests": 22,
+  "chain_limit_contract_tests": 2,
+  "dependency_boundaries": "passed",
+  "nes_release_all_features": {
+    "passed": 139,
+    "failed": 0,
+    "ignored": 0
+  },
+  "nes_release_all_features_all_targets_clippy": "passed with -D warnings",
+  "generic_tests": 135,
+  "generic_interface_test": 1,
+  "generic_all_targets_clippy": "passed with -D warnings",
+  "corrected_feature_nes_library_tests": 126,
+  "corrected_feature_evaluator_test": 1,
+  "formatting": "generic and NES manifest checks passed",
+  "log_sha256": "5e1edc33e198b123ceb0e78778d86ac3541b7ff65282887a3b4363e83c3d5845",
+  "scope": "local portable checks; not a CI or full-game performance claim",
+  "default_nes_library_tests_before_census_repair": 125,
+  "subsequent_theory_fixtures": {
+    "passing_focused_tests": [
+      "equal_policy_averaged_event_features_can_hide_opposite_action_futures",
+      "pairwise_difference_does_not_prove_a_future_was_lost_from_two_survivors"
+    ],
+    "production_changes": false,
+    "generic_all_targets_strict_clippy": "passed",
+    "logs_sha256": {
+      "harmony-predictive-fingerprint-test.log": "ad974e6829ed80951591dbc69e848c2afe23759cca56aab2ccfdddf55d2697e6",
+      "harmony-survivor-union-test.log": "b7f60cb014970690712a21656ec140931f840a0da2121d7abc842b2a8ddc79a5",
+      "harmony-theory-fixtures-clippy.log": "365f6babc4736462aa56ed279026e82b7383fbe14ba469486e094be53d7510a0"
+    }
+  },
+  "r05_allocation_gate_fixtures": {
+    "passed": 5,
+    "emulator_work": false,
+    "cases": [
+      "positive_requires_both_controls_no_breakthrough",
+      "lost_control_milestone",
+      "conservative_arrival_intervals",
+      "wall_censoring",
+      "source_mismatch_and_missing_witness"
+    ],
+    "log_sha256": "78eef06a986d8417523e74a16d2bb14e35ab64ab86924c647f2bc690902433d9",
+    "note": "Local telemetry reader now closes its file explicitly; frozen R05 package remains unchanged."
+  },
+  "research_ci_contracts": {
+    "passed": 27,
+    "emulator_work": false,
+    "command": "python3 -m unittest discover -s benchmarks/search/retention-theory -p 'test_*.py'",
+    "workflow": ".github/workflows/search-eval.yml",
+    "log_sha256": "33abc81953b754022d201dd87c5b37bb020e22515d7a2775683d353e27414611",
+    "scope": "exact CI command passed locally; no hosted-CI claim",
+    "includes": "two chain-limit, five R05 gate, six exposure, five survivor-union, four finite-cover and five horizon contracts"
+  },
+  "complete_survivor_audit": {
+    "implementation_commit": "8d503c28",
+    "generic_tests": 139,
+    "interface_tests": 1,
+    "default_nes_library_tests": 125,
+    "all_features_nes_tests": 139,
+    "generic_strict_clippy": "passed",
+    "nes_all_features_all_targets_release_strict_clippy": "passed",
+    "formatting": "both manifests passed",
+    "logs_sha256": {
+      "harmony-complete-slot-default-nes-tests.log": "30e0e0c7b8a20eb223f610e924f9c29ac8b5e3685ab65f469bf896b7cd412fe4",
+      "harmony-complete-slot-nes-clippy.log": "947ed47452a288cb783ed54a18ea77faf45d1723f7ef3fcb59c7c4787c963b2d",
+      "harmony-complete-slot-interface.log": "15fdb9542d5a13e9ffa8959f5a32c73836aa7e88ab786f18bbc673b90cd26913",
+      "harmony-complete-slot-generic-tests.log": "b6e93e659dcf420de6d328cd8cadda1cb758702c5b5db97758d1915e1fdb14ac",
+      "harmony-complete-slot-nes-tests.log": "d5f3a73057e1b2bef5bd391b1946f2127a083878b4f9b8ebce350622808235f1",
+      "harmony-complete-slot-all-features-clippy.log": "34405f31d2949ef03b4515ea4fba8c2e92a1937c86c2b305fc5b75f39ee7929f",
+      "harmony-complete-slot-generic-clippy.log": "a82b9296744bc19c639640a0f9f989b4baaeda1e30416adc9e57f377457993c5"
+    },
+    "scope": "local portable checks; ARM qualification separately attested"
+  },
+  "u01_public_cover_certificate": {
+    "passed": true,
+    "competitions": 7,
+    "method": "separate integer-mask enumeration, without ROM/input tapes or emulator work",
+    "log_sha256": "f757a89f4f874fd5d774eb9fdca73130ecfd1540952a06cdf471df2b0ac3a7e2"
+  },
+  "audit_capacity_repair": {
+    "implementation_commit": "d7d83518",
+    "default_nes_library_tests": 126,
+    "all_features_nes_tests": 140,
+    "nes_all_features_all_targets_release_strict_clippy": "passed",
+    "formatting": "NES manifest passed",
+    "logs_sha256": {
+      "harmony-audit-capacity-all-features-tests.log": "68b422368e6907c3e29ed27f8ef1e6959c7ec4b4d725b9a55d9a33c677a8a94b",
+      "harmony-audit-capacity-clippy.log": "91d6b03acb5f8900b7146c4612e8cd23e9278d975a38030ad11eeb48b61c5864",
+      "harmony-audit-capacity-default-tests.log": "4ae09242fb4af6bc999f9cc44290bd6c264d7207dd989357186f82898b21c409"
+    },
+    "scope": "local portable checks and two exact ARM search-stream/audit-byte qualifications passed; no new search-performance claim",
+    "arm_qualification_sha256": "ad0c424ca7d1bde20a248177a2288eb42fbf8a1e8c7defa0fb1992717cdf609e"
+  },
+  "h02_prefix_observer": {
+    "implementation_commit": "cc0202b4",
+    "focused_prefix_tests": "passed in default and all-feature builds",
+    "strict_clippy": "default and all-feature bin/test targets passed",
+    "formatting": "NES manifest passed",
+    "full_24_action_outputs": "summary, outcomes and suffix bank byte-identical to frozen U01",
+    "logs_sha256": {
+      "harmony-prefix-probe-test.log": "0cbd32fbf673713a1a8f9b9244a5ce8926d8f1b887052db62f579bcc504cea5d",
+      "harmony-prefix-probe-clippy.log": "4f68bbf90f0c40e77fd9a50683a92c0ad6e4973c32f22a4869bec439923891cd",
+      "harmony-prefix-probe-all-features-clippy.log": "5f5c8f9a83bb5236b85fc38f968356a56d1ae42e73e3d304b728ec5a50d0a2aa",
+      "harmony-prefix-probe-all-features-test.log": "53301e17362ceff379c218055fd43173a768ad519628096a550730bdb6a182e8"
+    },
+    "physical_frames": 431144,
+    "elapsed_seconds": 23.01705313497223,
+    "joint_cover_certificate_check_sha256": "439033234cb8c9b62732f0c138c3b3a1e6b8aca44c9cd1f7db6e952e60f9b184"
+  }
+}

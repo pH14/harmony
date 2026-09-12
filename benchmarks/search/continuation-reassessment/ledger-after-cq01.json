@@ -1,0 +1,33 @@
+{
+  "format": "continuation-cq01-closed-ledger-v1",
+  "decision": "pass_current_unchanged_continuation_native_qualification",
+  "prior_ledger_sha256": "0338cbf87c950afbf37eb69fe15b963b791a7cba95e3c806467747700321d694",
+  "registration_sha256": "4eecd4b34b206142cee2ee03992c83c09996476c4633380f493043637b36acb5",
+  "analysis_sha256": "00abd0d74467c1717482399d24db5516662f507f7de702cbbe014cb721a57f91",
+  "admitted_search_frames": 0,
+  "known_auxiliary_frames": 1670658,
+  "services": {
+    "msr1": {
+      "invocation_id": "f41550f11cb840dfbf7de4e235afc2f4",
+      "status": "deactivated successfully",
+      "elapsed_seconds": 36.006396,
+      "cpu_nanoseconds": 53443111000,
+      "peak_memory_bytes": 245506048
+    },
+    "ms02": {
+      "invocation_id": "a570e729f11440b99adcfeafaed267fe",
+      "status": "deactivated successfully",
+      "elapsed_seconds": 8.119163,
+      "cpu_nanoseconds": 12119031000,
+      "peak_memory_bytes": 177397760
+    }
+  },
+  "cumulative_since_user_resumption_admitted_search_frames": 1273426135,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 63760843,
+  "setup_preflight": "Both first read-only checks rejected a stale runner helper from the old source snapshot. Exact already-registered helpers were supplied before native execution; no protocol, binary, input or outcome changed and zero emulator work was spent before dispatch.",
+  "limits": [
+    "Reused fixture; no performance or fresh-validation claim.",
+    "Full campaign replay work inferred from admitted work; in-job origin replay is included. Setup, unadmitted work and any out-of-job reconstruction remain additional unknowns.",
+    "Cross-host machine snapshots and costs are not claimed identical."
+  ]
+}

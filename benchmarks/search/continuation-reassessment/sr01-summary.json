@@ -1,0 +1,165 @@
+{
+  "format": "scoped-return-sr01-offline-verification-v1",
+  "verified": true,
+  "qualified": true,
+  "files": 61,
+  "cells": [
+    {
+      "valid": true,
+      "cell": "ordinary-control",
+      "pair": 0,
+      "arm": "ordinary-control",
+      "seed": 1540483488,
+      "reached": false,
+      "physical_frames": {
+        "direct_helpers": 477102,
+        "replay_engine": 251411,
+        "replay_outside_admission": 929,
+        "scope": "Complete successfully constructed target lifetimes through final clock reads. Target destructors do not emulate frames in this pinned Metroid adapter. Not a live stopping counter.",
+        "search_engine": 255127,
+        "search_outside_admission": 4645,
+        "total": 983640
+      },
+      "admitted_frames": 250482,
+      "auxiliary_frames": 733158,
+      "executions": 2707,
+      "alternative_admissions": 0,
+      "drain_frames": 482,
+      "stop_reason": "frame_limit",
+      "archive_bytes": 16134750
+    },
+    {
+      "valid": true,
+      "cell": "progress-control",
+      "pair": 0,
+      "arm": "progress-control",
+      "seed": 1540483488,
+      "reached": false,
+      "physical_frames": {
+        "direct_helpers": 477102,
+        "replay_engine": 251432,
+        "replay_outside_admission": 929,
+        "scope": "Complete successfully constructed target lifetimes through final clock reads. Target destructors do not emulate frames in this pinned Metroid adapter. Not a live stopping counter.",
+        "search_engine": 255148,
+        "search_outside_admission": 4645,
+        "total": 983682
+      },
+      "admitted_frames": 250503,
+      "auxiliary_frames": 733179,
+      "executions": 2661,
+      "alternative_admissions": 169,
+      "drain_frames": 503,
+      "stop_reason": "frame_limit",
+      "archive_bytes": 15630183
+    },
+    {
+      "valid": true,
+      "cell": "progress-half",
+      "pair": 0,
+      "arm": "progress-half",
+      "seed": 1540483488,
+      "reached": false,
+      "physical_frames": {
+        "direct_helpers": 477102,
+        "replay_engine": 251314,
+        "replay_outside_admission": 929,
+        "scope": "Complete successfully constructed target lifetimes through final clock reads. Target destructors do not emulate frames in this pinned Metroid adapter. Not a live stopping counter.",
+        "search_engine": 255030,
+        "search_outside_admission": 4645,
+        "total": 983446
+      },
+      "admitted_frames": 250385,
+      "auxiliary_frames": 733061,
+      "executions": 2655,
+      "alternative_admissions": 157,
+      "drain_frames": 385,
+      "stop_reason": "frame_limit",
+      "archive_bytes": 17270978
+    },
+    {
+      "valid": true,
+      "cell": "capacity-half",
+      "pair": 0,
+      "arm": "capacity-half",
+      "seed": 1540483488,
+      "reached": false,
+      "physical_frames": {
+        "direct_helpers": 477102,
+        "replay_engine": 251277,
+        "replay_outside_admission": 929,
+        "scope": "Complete successfully constructed target lifetimes through final clock reads. Target destructors do not emulate frames in this pinned Metroid adapter. Not a live stopping counter.",
+        "search_engine": 254993,
+        "search_outside_admission": 4645,
+        "total": 983372
+      },
+      "admitted_frames": 250348,
+      "auxiliary_frames": 733024,
+      "executions": 2657,
+      "alternative_admissions": 176,
+      "drain_frames": 348,
+      "stop_reason": "frame_limit",
+      "archive_bytes": 14926980
+    }
+  ],
+  "activation": {
+    "activated": true,
+    "identical_prior_records": 124,
+    "first_control": {
+      "event": "job",
+      "sequence": 125,
+      "worker": 0,
+      "parent_id": 89,
+      "mutation_seed": 15933426382622402697,
+      "frames": 106,
+      "result_sha256": "fe74c33623e28ca2d3d3ef34555048fc2fe4810a27a6e1e917b7cc193afdd4ae",
+      "decisions": [
+        {
+          "decision": "rejected"
+        },
+        {
+          "decision": "retained",
+          "id": 95
+        }
+      ],
+      "mixture_weight": 128,
+      "splice_weight": 0,
+      "selector": {
+        "path": "room_cell_uniform",
+        "classes_skipped": 1,
+        "counter_reset": false,
+        "concentration": {
+          "window_size": 2,
+          "entered_window": 0
+        }
+      }
+    },
+    "first_candidate": {
+      "event": "job",
+      "sequence": 125,
+      "worker": 0,
+      "parent_id": 90,
+      "mutation_seed": 15933426382622402697,
+      "frames": 48,
+      "result_sha256": "ec353a63b0c01e959cfbeeb92bf99dcafb753d661808e8c1e88d3640d7e69c27",
+      "decisions": [],
+      "mixture_weight": 128,
+      "splice_weight": 0,
+      "selector": {
+        "path": "room_cell_uniform",
+        "classes_skipped": 1,
+        "counter_reset": false,
+        "concentration": {
+          "window_size": 2,
+          "entered_window": 0
+        }
+      }
+    }
+  },
+  "physical_frames": 3934140,
+  "admitted_frames": 1001718,
+  "auxiliary_frames": 2932422,
+  "wall_seconds": 72.85863118595444,
+  "service_cpu_seconds": 86.315847,
+  "service_peak_bytes": 139218944,
+  "scope": "Implementation qualification only; no efficacy claim."
+}

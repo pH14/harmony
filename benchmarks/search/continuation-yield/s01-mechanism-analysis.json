@@ -1,0 +1,80 @@
+{
+  "format": "continuation-yield-s01-mechanism-summary-v1",
+  "source_sha256": "a14316175b8bf664239457df29b3cc11d43aecdebb459bdf07ec3de82739b13c",
+  "arms": [
+    {
+      "arm": "control",
+      "cells": 4,
+      "conditional_diagnostics": {
+        "between_cells": {
+          "draws": 589553,
+          "changed_distributions": 513916,
+          "sum_tv_ppm_floor": 167032474789,
+          "capped_cost_terms": 121589,
+          "terms": 11182747,
+          "equal_cost_rank_boundaries": 0,
+          "draw_weighted_mean_tv_rounding_interval": [
+            0.28332054079785873,
+            0.2833214125023535
+          ],
+          "changed_draws_without_capped_cost_terms_lower_bound": 392327
+        },
+        "within_cells": {
+          "draws": 589553,
+          "changed_distributions": 0,
+          "sum_tv_ppm_floor": 0,
+          "capped_cost_terms": 0,
+          "terms": 1242642,
+          "equal_cost_rank_boundaries": 0,
+          "draw_weighted_mean_tv_rounding_interval": [
+            0.0,
+            0.0
+          ],
+          "changed_draws_without_capped_cost_terms_lower_bound": 0
+        }
+      },
+      "snapshot_evictions": 0
+    },
+    {
+      "arm": "candidate",
+      "cells": 4,
+      "conditional_diagnostics": {
+        "between_cells": {
+          "draws": 601172,
+          "changed_distributions": 529780,
+          "sum_tv_ppm_floor": 166062360621,
+          "capped_cost_terms": 89969,
+          "terms": 10970331,
+          "equal_cost_rank_boundaries": 0,
+          "draw_weighted_mean_tv_rounding_interval": [
+            0.2762310297568749,
+            0.27623191100217576
+          ],
+          "changed_draws_without_capped_cost_terms_lower_bound": 439811
+        },
+        "within_cells": {
+          "draws": 601172,
+          "changed_distributions": 0,
+          "sum_tv_ppm_floor": 0,
+          "capped_cost_terms": 0,
+          "terms": 1218923,
+          "equal_cost_rank_boundaries": 0,
+          "draw_weighted_mean_tv_rounding_interval": [
+            0.0,
+            0.0
+          ],
+          "changed_draws_without_capped_cost_terms_lower_bound": 0
+        }
+      },
+      "snapshot_evictions": 0
+    }
+  ],
+  "scope": [
+    "Read-only exploratory summary of the eight completed S01 traces; no new emulator work.",
+    "Draw-weighted means describe encountered conditional laws; they are not full-parent laws or population confidence intervals.",
+    "TV rounding upper bound adds less than one ppm for each changed distribution; unchanged distributions have exactly zero TV.",
+    "Within-cell laws were unchanged in both arms throughout the recorded traces. Between-cell cost ranking was operative.",
+    "Capped terms count offered weights, not chosen cells. Subtracting their count from changed draws gives a lower bound on changed draws without a capped term.",
+    "Counters include dispatched work not yet admitted. These summaries do not apportion adaptive outcome improvements or alter any gate."
+  ]
+}

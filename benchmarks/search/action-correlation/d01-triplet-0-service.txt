@@ -1,0 +1,6 @@
+MainPID=0
+Result=success
+MemoryPeak=[not set]
+CPUUsageNSec=[not set]
+ActiveState=inactive
+SubState=dead

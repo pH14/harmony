@@ -1,0 +1,13 @@
+{
+  "format": "endpoint-q01-closed-ledger-v1",
+  "recorded_utc": "2026-09-10T02:35:02.977230+00:00",
+  "prior_ledger_sha256": "b83eaafc4b2af930650e740742a86c06335f395600dfdfec7eb11289a9282c96",
+  "qualification_search_frames": 0,
+  "qualification_known_auxiliary_ceiling": 4000000,
+  "qualification_known_auxiliary_frames": 2281896,
+  "cumulative_since_user_resumption_admitted_search_frames": 842318922,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 47622115,
+  "unknown": "Full replay cost inferred from admitted work. Setup, reconstruction and unadmitted physical work remain additional unknowns; tests and compilation are separate.",
+  "old_expired_tranche": "489,962,470 admitted search and 30,112,297 known auxiliary frames remain frozen and excluded from these renewed totals.",
+  "unrun": "All previously failed performance gates and their unrun panels remain closed. No new performance or positive-native-fight claim."
+}

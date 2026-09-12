@@ -2,6 +2,9 @@
 
 # Local search evaluation
 
+The [depth-transfer study](depth-transfer/README.md) continues the controlled
+selection experiments with explicit milestone endpoints and two qualified hosts.
+
 This suite evaluates Dissonance search mechanisms against fixed NES workloads.
 It is designed for a private Linux host with licensed ROMs; ordinary CI uses
 synthetic engine/runner tests and source-built games. A stage fixture is never
@@ -158,6 +161,21 @@ The watchdog kills only its own process group after the search wall budget plus
 `--disk-limit-gib`. The search itself stops issuing reservations at its wall
 limit, then drains admitted work and verifies evidence.
 
+Metroid first-event studies may set `search.stop_after_milestone` to an existing
+named milestone, for example `energy_tank`. The request and identity record the
+criterion; the stream also records its observation-policy version. A successful
+endpoint stop has `stop_reason: milestone`, `first_milestone` with the exact
+admitted job cost, and `milestone_within_budget: true`. This does not set `solved`
+or imply game victory. Post-budget drain discoveries remain in the report with
+`milestone_within_budget: false`. Unattained endpoints must reach the registered
+frame cap to count as censored observations. Total CPU/elapsed cost for these
+event-stopped cells is not a fixed-work throughput comparison; register its
+interpretation and gate before running a performance panel. Unsupported games
+or names are rejected, and the default stopping behavior is unchanged.
+Comparisons reject changed milestone names or observation versions; aggregates
+keep their stopping criteria separate. See [native replay qualification](milestone-stop/README.md)
+for unchanged-prefix, buffering, nonattainment and budget-drain checks.
+
 - **Search quality:** verified completion, first-victory executions and emulator
   frames, objective progress/milestones, deaths and retained novelty cells. The
   novelty ledger is compacted under memory pressure and is not cumulative world
@@ -308,3 +326,12 @@ Publish solve status **and named milestones**, including runs with no further
 discovery. Compare admitted work for search quality; use matched CPU types and
 isolated runs for claims about throughput. The historical audit and independently
 replayed evidence are recorded in `results/progress-audit-007.json`.
+
+
+Metroid/MM2 action-correlation studies may set `search.chord_correlation` to
+`component_refresh_half_v1` or its matched `whole_repeat_37_of_210_v1` control,
+with `mixture: alphabet_only`. An omitted field preserves ordinary draws. The
+new policy is explicit in workload identities; the generic `compare` command
+continues rejecting changed workload policies. An intentional policy experiment
+must register each arm's complete identity and its scoring rule instead of
+loosening that guard. See the [action-correlation design](action-correlation/README.md).

@@ -1,0 +1,331 @@
+[
+  {
+    "policy": null,
+    "case": "mm2-metal",
+    "result": {
+      "executions": 5000,
+      "executions_per_second": 386.831124372726,
+      "executions_to_first_victory": null,
+      "export_seconds": 0.148231583,
+      "format": "nes-eval-result-v1",
+      "frame_budget_overshoot": null,
+      "frames_emulated": 564972,
+      "frames_per_second": 43709.75079982155,
+      "frames_to_first_victory": null,
+      "milestone_witnesses": {},
+      "milestones": {
+        "defeated_boss": false,
+        "max_screen": 6,
+        "reached_boss": false
+      },
+      "preparation_seconds": 0.023934597,
+      "progress": {
+        "boss_damage": 0,
+        "bosses": 0,
+        "enemy_damage": 0,
+        "room": 6,
+        "screen": 6,
+        "stage": 6,
+        "x": 158,
+        "y": 116
+      },
+      "search_seconds": 12.925536972,
+      "solved": false,
+      "status": "complete",
+      "stop_reason": "execution_limit",
+      "stream_bytes_generated": 2240980,
+      "stream_retained": true,
+      "stream_sha256": "2b94c50e70fc971007730fc17a8dc1a3402cc9fdcc2cc8f6953b6dd4e194b49d",
+      "verification": "campaign",
+      "verification_seconds": 23.555993676,
+      "victory_observed": false,
+      "witness": {
+        "dead": false,
+        "diagnostics": null,
+        "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+        "milestones": {
+          "defeated_boss": false,
+          "max_screen": 6,
+          "reached_boss": false
+        },
+        "physical_suffix_frames": 3311,
+        "snapshot_sha256": "d5617588b1562e4e77ca21014765b48ccd229aeb23e9347f18482940581eb310",
+        "victory": false
+      }
+    },
+    "retention_diagnostics": {
+      "alternative_admissions": 0,
+      "competitions": 11674,
+      "removed": 1096,
+      "removed_never_in_window": 221,
+      "removed_never_productive": 693,
+      "removed_never_selected": 282,
+      "removed_selections": 3150,
+      "resource_decisions": 0
+    },
+    "peak_rss_bytes": 59449344,
+    "elapsed_seconds": 37.63072602200555
+  },
+  {
+    "policy": null,
+    "case": "smb-full",
+    "result": {
+      "executions": 5000,
+      "executions_per_second": 281.49912483239507,
+      "executions_to_first_victory": null,
+      "export_seconds": 1.250147132,
+      "format": "nes-eval-result-v1",
+      "frame_budget_overshoot": null,
+      "frames_emulated": 689658,
+      "frames_per_second": 38827.62468673198,
+      "frames_to_first_victory": null,
+      "milestone_witnesses": {},
+      "milestones": {
+        "max_1_1_scroll_bucket": 195,
+        "reached_1_1_flag": true,
+        "reached_1_2": true,
+        "reached_onward": true
+      },
+      "preparation_seconds": 0.009511831,
+      "progress": {
+        "level": 2,
+        "progress": 34,
+        "world": 0
+      },
+      "search_seconds": 17.762044564,
+      "solved": false,
+      "status": "complete",
+      "stop_reason": "execution_limit",
+      "stream_bytes_generated": 3223270,
+      "stream_retained": true,
+      "stream_sha256": "12945d74e4fc4ac83dae39c3419c2d0785acc241afd15407ce04b41c4bf42e32",
+      "verification": "campaign",
+      "verification_seconds": 37.501746305,
+      "victory_observed": false,
+      "witness": {
+        "dead": false,
+        "diagnostics": null,
+        "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+        "milestones": {
+          "max_1_1_scroll_bucket": 195,
+          "reached_1_1_flag": true,
+          "reached_1_2": true,
+          "reached_onward": true
+        },
+        "physical_suffix_frames": 15271,
+        "snapshot_sha256": "4ff00bd8b95a506874281da747e0b87dddd43e7c2b84662b476f89d4b584a48a",
+        "victory": false
+      }
+    },
+    "retention_diagnostics": {
+      "alternative_admissions": 0,
+      "competitions": 541,
+      "removed": 254,
+      "removed_never_in_window": 116,
+      "removed_never_productive": 235,
+      "removed_never_selected": 235,
+      "removed_selections": 22,
+      "resource_decisions": 0
+    },
+    "peak_rss_bytes": 386510848,
+    "elapsed_seconds": 57.07303332799347
+  },
+  {
+    "policy": "resource_extremes_2_v1",
+    "case": "mm2-metal",
+    "result": {
+      "executions": 5000,
+      "executions_per_second": 381.5196165279675,
+      "executions_to_first_victory": null,
+      "export_seconds": 0.221937165,
+      "format": "nes-eval-result-v1",
+      "frame_budget_overshoot": null,
+      "frames_emulated": 574840,
+      "frames_per_second": 43862.547272987365,
+      "frames_to_first_victory": null,
+      "milestone_witnesses": {},
+      "milestones": {
+        "defeated_boss": false,
+        "max_screen": 14,
+        "reached_boss": false
+      },
+      "preparation_seconds": 0.010084411,
+      "progress": {
+        "boss_damage": 0,
+        "bosses": 0,
+        "enemy_damage": 0,
+        "room": 13,
+        "screen": 14,
+        "stage": 6,
+        "x": 85,
+        "y": 164
+      },
+      "search_seconds": 13.105486018,
+      "solved": false,
+      "status": "complete",
+      "stop_reason": "execution_limit",
+      "stream_bytes_generated": 2240418,
+      "stream_retained": true,
+      "stream_sha256": "0f261e74a80548924d359a75e57ff8810412f5057860a11bd0ca38a0c8b416ff",
+      "verification": "campaign",
+      "verification_seconds": 24.195561936,
+      "victory_observed": false,
+      "witness": {
+        "dead": false,
+        "diagnostics": null,
+        "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+        "milestones": {
+          "defeated_boss": false,
+          "max_screen": 14,
+          "reached_boss": false
+        },
+        "physical_suffix_frames": 6617,
+        "snapshot_sha256": "1b275381c1f4b5f3acec3ae07fa8a2d386bafcb7ae668b3f4f9a31731e5d1b65",
+        "victory": false
+      }
+    },
+    "retention_diagnostics": {
+      "alternative_admissions": 1,
+      "competitions": 10996,
+      "removed": 1124,
+      "removed_never_in_window": 350,
+      "removed_never_productive": 730,
+      "removed_never_selected": 419,
+      "removed_selections": 2357,
+      "resource_decisions": 12030
+    },
+    "peak_rss_bytes": 83984384,
+    "elapsed_seconds": 37.56287981296191
+  },
+  {
+    "policy": "resource_coverage_2_v1",
+    "case": "mm2-metal",
+    "result": {
+      "executions": 5000,
+      "executions_per_second": 407.76728369526245,
+      "executions_to_first_victory": null,
+      "export_seconds": 0.2179945,
+      "format": "nes-eval-result-v1",
+      "frame_budget_overshoot": null,
+      "frames_emulated": 574840,
+      "frames_per_second": 46880.189071876935,
+      "frames_to_first_victory": null,
+      "milestone_witnesses": {},
+      "milestones": {
+        "defeated_boss": false,
+        "max_screen": 14,
+        "reached_boss": false
+      },
+      "preparation_seconds": 0.020615942,
+      "progress": {
+        "boss_damage": 0,
+        "bosses": 0,
+        "enemy_damage": 0,
+        "room": 13,
+        "screen": 14,
+        "stage": 6,
+        "x": 85,
+        "y": 164
+      },
+      "search_seconds": 12.261895939,
+      "solved": false,
+      "status": "complete",
+      "stop_reason": "execution_limit",
+      "stream_bytes_generated": 2240418,
+      "stream_retained": true,
+      "stream_sha256": "00c84e8c2c52f737d8395967fea65c27cdccf7e3729447d5bfef167912d0aeac",
+      "verification": "campaign",
+      "verification_seconds": 24.195204103,
+      "victory_observed": false,
+      "witness": {
+        "dead": false,
+        "diagnostics": null,
+        "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+        "milestones": {
+          "defeated_boss": false,
+          "max_screen": 14,
+          "reached_boss": false
+        },
+        "physical_suffix_frames": 6617,
+        "snapshot_sha256": "1b275381c1f4b5f3acec3ae07fa8a2d386bafcb7ae668b3f4f9a31731e5d1b65",
+        "victory": false
+      }
+    },
+    "retention_diagnostics": {
+      "alternative_admissions": 1,
+      "competitions": 10996,
+      "removed": 1124,
+      "removed_never_in_window": 350,
+      "removed_never_productive": 730,
+      "removed_never_selected": 419,
+      "removed_selections": 2357,
+      "resource_decisions": 12030
+    },
+    "peak_rss_bytes": 84738048,
+    "elapsed_seconds": 37.629920737002976
+  },
+  {
+    "policy": "resource_coverage_2_v1",
+    "case": "smb-full",
+    "result": {
+      "executions": 5000,
+      "executions_per_second": 298.36590847656703,
+      "executions_to_first_victory": null,
+      "export_seconds": 1.222707081,
+      "format": "nes-eval-result-v1",
+      "frame_budget_overshoot": null,
+      "frames_emulated": 689658,
+      "frames_per_second": 41154.087141626456,
+      "frames_to_first_victory": null,
+      "milestone_witnesses": {},
+      "milestones": {
+        "max_1_1_scroll_bucket": 195,
+        "reached_1_1_flag": true,
+        "reached_1_2": true,
+        "reached_onward": true
+      },
+      "preparation_seconds": 0.007179888,
+      "progress": {
+        "level": 2,
+        "progress": 34,
+        "world": 0
+      },
+      "search_seconds": 16.757946729,
+      "solved": false,
+      "status": "complete",
+      "stop_reason": "execution_limit",
+      "stream_bytes_generated": 3223312,
+      "stream_retained": true,
+      "stream_sha256": "84a61ff1aa9d3989388dad1320cedd8fa4c393b593b625e3d5dab2d71654fc0b",
+      "verification": "campaign",
+      "verification_seconds": 37.744754041,
+      "victory_observed": false,
+      "witness": {
+        "dead": false,
+        "diagnostics": null,
+        "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one",
+        "milestones": {
+          "max_1_1_scroll_bucket": 195,
+          "reached_1_1_flag": true,
+          "reached_1_2": true,
+          "reached_onward": true
+        },
+        "physical_suffix_frames": 15271,
+        "snapshot_sha256": "4ff00bd8b95a506874281da747e0b87dddd43e7c2b84662b476f89d4b584a48a",
+        "victory": false
+      }
+    },
+    "retention_diagnostics": {
+      "alternative_admissions": 0,
+      "competitions": 541,
+      "removed": 254,
+      "removed_never_in_window": 116,
+      "removed_never_productive": 235,
+      "removed_never_selected": 235,
+      "removed_selections": 22,
+      "resource_decisions": 0
+    },
+    "peak_rss_bytes": 383717376,
+    "elapsed_seconds": 55.82488785003079
+  }
+]

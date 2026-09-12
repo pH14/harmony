@@ -1,0 +1,90 @@
+{
+  "format": "depth-transfer-ledger-v2",
+  "recorded_utc": "2026-09-09T23:04:43.340613+00:00",
+  "decision_block_nominal_search_ceiling": 1000000000,
+  "decision_block_known_auxiliary_ceiling": 50000000,
+  "completed_actual_admitted_search_frames": 371963017,
+  "completed_known_auxiliary_frames": 40787243,
+  "search_components": [
+    {
+      "panel": "C01",
+      "frames": 173654997,
+      "analysis_sha256": "a1b4916401e804001271036e37e808920b84325cad64e06668e00b0af96aaa21"
+    },
+    {
+      "panel": "D01",
+      "frames": 198308020,
+      "analysis_sha256": "c2b953bdf92d32b54e8e94292d70ad7367be0a5d4fe343c9c641129382c88c46"
+    }
+  ],
+  "auxiliary_components": [
+    {
+      "id": "QX01",
+      "frames": 669822,
+      "evidence_sha256": "9e871590aed30ee2194d07c130961ce7ead2559c6429ca564fcec88fa8ab12df"
+    },
+    {
+      "id": "E02 seed 5",
+      "frames": 383796,
+      "evidence_sha256": "e5863362f11ee4a79bd1b41c1b664f0958f4b51f2f1019fc6872b46200be4ea9"
+    },
+    {
+      "id": "F01r",
+      "frames": 241080,
+      "evidence_sha256": "e1694b26de71dd477667b0c1e4fd00591bf6d3e5118d9aac53f18aa7e126283e"
+    },
+    {
+      "id": "F01 clock diagnostic",
+      "frames": 19,
+      "evidence_sha256": "c38f9ce9134772af0dfb9d6eea719bb6363bd538bcdad4c262687ef70e6f1081"
+    },
+    {
+      "id": "F02",
+      "frames": 241080,
+      "evidence_sha256": "cd3ce89b5ce8944fddb6decfc8a1c86bb2f84f3a04942be13e2943da8a8b29f8"
+    },
+    {
+      "id": "NQ01",
+      "frames": 767592,
+      "evidence_sha256": "705bcf9a4853b12972eabb21c53f8a9d71282654383724786463343ff5165ddc"
+    },
+    {
+      "id": "C01 witness replay",
+      "frames": 711296,
+      "evidence_sha256": "a1b4916401e804001271036e37e808920b84325cad64e06668e00b0af96aaa21"
+    },
+    {
+      "id": "D01 witness replay",
+      "frames": 546224,
+      "evidence_sha256": "c2b953bdf92d32b54e8e94292d70ad7367be0a5d4fe343c9c641129382c88c46"
+    },
+    {
+      "id": "B01 known-control qualification",
+      "frames": 34099797,
+      "evidence_sha256": "37dd4bab805a7faf1d12012213b8b2c25534f51e29085ce02dda40cc6b343bc0"
+    },
+    {
+      "id": "F03",
+      "frames": 241080,
+      "evidence_sha256": "a154d4bcfaaf051b72930398c7fd79cedca631b0cecf6bfd0f7c4c826fa02d9c"
+    },
+    {
+      "id": "NQ02",
+      "frames": 1535184,
+      "evidence_sha256": "ba9c62da08157a3c799a81271b1a8b18bc79154560890dee1051d26ea24bf8fc"
+    },
+    {
+      "id": "E03",
+      "frames": 1350273,
+      "evidence_sha256": "c0f06b75c75d505f5c4e9c42edafc07bd4b0501bf1e17ee0743a46d569082785"
+    }
+  ],
+  "unrun": "D01 final two pairs and all independent depth confirmation; neither counts as failed or completed measurement.",
+  "unmeasured": [
+    "F01 frontend advancement after its startup assertion and before stop; 29.458 CPU seconds recorded, frame count unknown.",
+    "Setup and unadmitted physical work where not reported; FCEUX frontend setup before movie reset.",
+    "Compilation, local tests and hosted CI are separate from emulator-frame totals."
+  ],
+  "previous_tranche": "489,962,470 admitted search and 30,112,297 known auxiliary frames remain frozen in their original ledgers.",
+  "previous_ledger_sha256": "1de81d65aacf7e06f23322517af35937c49fa3c009f87ee2ff290effe9d4f3ef"
+}

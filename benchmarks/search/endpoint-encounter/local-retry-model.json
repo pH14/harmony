@@ -1,0 +1,92 @@
+{
+  "format": "local-retry-finite-model-v1",
+  "rows": [
+    {
+      "stages": 1,
+      "viable_probability": "1/4",
+      "baseline_expected_attempts": "4",
+      "one_retry_expected_attempts": "4",
+      "ratio": "1",
+      "perfectly_retained_optimal_return_cost": "4"
+    },
+    {
+      "stages": 1,
+      "viable_probability": "1/2",
+      "baseline_expected_attempts": "2",
+      "one_retry_expected_attempts": "2",
+      "ratio": "1",
+      "perfectly_retained_optimal_return_cost": "2"
+    },
+    {
+      "stages": 1,
+      "viable_probability": "3/4",
+      "baseline_expected_attempts": "4/3",
+      "one_retry_expected_attempts": "4/3",
+      "ratio": "1",
+      "perfectly_retained_optimal_return_cost": "4/3"
+    },
+    {
+      "stages": 2,
+      "viable_probability": "1/4",
+      "baseline_expected_attempts": "20",
+      "one_retry_expected_attempts": "92/7",
+      "ratio": "23/35",
+      "perfectly_retained_optimal_return_cost": "8"
+    },
+    {
+      "stages": 2,
+      "viable_probability": "1/2",
+      "baseline_expected_attempts": "6",
+      "one_retry_expected_attempts": "14/3",
+      "ratio": "7/9",
+      "perfectly_retained_optimal_return_cost": "4"
+    },
+    {
+      "stages": 2,
+      "viable_probability": "3/4",
+      "baseline_expected_attempts": "28/9",
+      "one_retry_expected_attempts": "124/45",
+      "ratio": "31/35",
+      "perfectly_retained_optimal_return_cost": "8/3"
+    },
+    {
+      "stages": 5,
+      "viable_probability": "1/4",
+      "baseline_expected_attempts": "1364",
+      "one_retry_expected_attempts": "458564/2401",
+      "ratio": "114641/818741",
+      "perfectly_retained_optimal_return_cost": "20"
+    },
+    {
+      "stages": 5,
+      "viable_probability": "1/2",
+      "baseline_expected_attempts": "62",
+      "one_retry_expected_attempts": "1562/81",
+      "ratio": "781/2511",
+      "perfectly_retained_optimal_return_cost": "10"
+    },
+    {
+      "stages": 5,
+      "viable_probability": "3/4",
+      "baseline_expected_attempts": "3124/243",
+      "one_retry_expected_attempts": "1156804/151875",
+      "ratio": "26291/44375",
+      "perfectly_retained_optimal_return_cost": "20/3"
+    }
+  ],
+  "alive_trap": {
+    "baseline_expected_attempts": "3",
+    "one_retry_expected_attempts": "4"
+  },
+  "assumptions": [
+    "Independent constant-q attempts along a finite chain; every live step is useful in the favorable model.",
+    "Intermediate states alias in the global archive and a failed rollout restarts the episode.",
+    "All failed attempts count; local snapshot restore has zero emulated-frame cost, not zero wall cost.",
+    "This is a regenerative hitting-cost calculation, not a fixed-budget pass probability or a model fitted to Ridley."
+  ],
+  "limits": [
+    "Full intermediate retention removes the favorable model's exponential reset penalty.",
+    "Alive traps are a strict adverse case; viability alone is not useful progress.",
+    "Finite command/time limits and changing hazard can remove the advantage. No native allocation follows the model alone."
+  ]
+}

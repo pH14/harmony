@@ -1,0 +1,65 @@
+{
+  "format": "continuation-cc01-ms02-seed-audit-v1",
+  "recorded_utc": "2026-09-10T12:21:32.709357+00:00",
+  "host": "ms02",
+  "seeds": [
+    833917373,
+    4204540845,
+    586667767,
+    2160473381
+  ],
+  "roots": [
+    "/root/harmony",
+    "/root/harmony-255",
+    "/root/harmony-alternative-futures-20260908",
+    "/root/harmony-alternative-futures-followup-20260909",
+    "/root/harmony-at-api-target",
+    "/root/harmony-at-fixes",
+    "/root/harmony-at-fixture",
+    "/root/harmony-at-guest",
+    "/root/harmony-at-guest-seeded",
+    "/root/harmony-at-old",
+    "/root/harmony-depth-transfer-20260909",
+    "/root/harmony-fault-corpus",
+    "/root/harmony-fault-library",
+    "/root/harmony-pr253-diag",
+    "/root/harmony-pr253-soak",
+    "/root/harmony-pr253-trace-bounded",
+    "/root/harmony-pr253-trace-repeat",
+    "/root/harmony-roms",
+    "/root/harmony-search-eval",
+    "/root/harmony-searcher-scaling"
+  ],
+  "files_checked": 4830,
+  "matches": [],
+  "skipped": [],
+  "scanned_path_content_digest": "5b37cf5ffd730efeada46c5e1be7480eaec8e183b96e7900bf18539b4c8c4896",
+  "scope": "Saved summary/result/registration/seed JSON and JSON.gz under /root/harmony* directories, excluding source/build caches and assets. Tar archives and unrecorded historical use are not certified; copied native panel records are included. No emulator execution or access to msr1.",
+  "excluded_nonrecord_metadata": [
+    {
+      "path": "/root/harmony-alternative-futures-20260908/benchmarks/search/._candidate-registration-005.json",
+      "bytes": 163,
+      "sha256": "8c974eead2bace934b2dbf0f0cc81b137b2ef901c3953f815eed30901f836e5d",
+      "file_identification": "AppleDouble encoded Macintosh file",
+      "magic_hex": "0x51607",
+      "version_hex": "0x20000",
+      "primary_json": "/root/harmony-alternative-futures-20260908/benchmarks/search/candidate-registration-005.json",
+      "primary_sha256": "ca97ffea60b8917572b4ae3abcefad93b205e8696120a4b769e89ee690c630b1",
+      "primary_parsed_without_seed_match": true
+    },
+    {
+      "path": "/root/harmony-depth-transfer-20260909/endpoint-q01-20260910/benchmarks/search/endpoint-encounter/._q01-registration.json",
+      "bytes": 163,
+      "sha256": "8c974eead2bace934b2dbf0f0cc81b137b2ef901c3953f815eed30901f836e5d",
+      "file_identification": "AppleDouble encoded Macintosh file",
+      "magic_hex": "0x51607",
+      "version_hex": "0x20000",
+      "primary_json": "/root/harmony-depth-transfer-20260909/endpoint-q01-20260910/benchmarks/search/endpoint-encounter/q01-registration.json",
+      "primary_sha256": "aae1d2b86f37ec1ee14539798cf5fe6b9a127861872f01291dd8124eb2ff6e8f",
+      "primary_parsed_without_seed_match": true
+    }
+  ],
+  "initial_audit_sha256": "38995e1679647f9efcc883fb569fe509495bd9527a207c45bf7446eaac7003ff",
+  "sidecar_verification_sha256": "0cb3ad656594a6b0b8ec69141f8878da00a77f264ac610a27392107462fbeb5c",
+  "audit_note": "The original scan parsed4830 records with no match. Its only decode failures were two verified AppleDouble metadata sidecars; the associated actual JSON records parse and contain no selected seed. Exclude those nonrecords without changing seeds or executing an emulator."
+}

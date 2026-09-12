@@ -1,0 +1,36 @@
+{
+  "capture_sha256": "5cc945c766ea39f836e454fc0cc38b44d5f7eca79e02b9c77ee4eee8bb6e6d09",
+  "emulator_constructed": false,
+  "files": [
+    {
+      "bytes": 22653,
+      "file": "candidate.snapshot.bin",
+      "sha256": "8ef0de76e3b3a8184ef6b65cc6b74d816f854af4a3f8529576172293bf13261b"
+    },
+    {
+      "bytes": 22471,
+      "file": "incumbent.snapshot.bin",
+      "sha256": "b4adca7d17c7f1fe62abba9ec5e7f309c535eae9458a290ffcb7ff0f6e0e7b0f"
+    },
+    {
+      "bytes": 267,
+      "file": "candidate.input.json",
+      "sha256": "e07a017c260c68f402eade6f2de40f5f0721f6ae8cebf2b53dc690e43adeaeac"
+    },
+    {
+      "bytes": 236,
+      "file": "incumbent.input.json",
+      "sha256": "2289196e488ec0b6dfa6b0e8a7e76d62cee64503887006b70da6d9d9efecbd5f"
+    }
+  ],
+  "format": "metroid-retention-extract-v1",
+  "identity": {
+    "origin_sha256": "9a1577f32b63de9299a2313cd7cc550d076fd79ac8a227972c4ca85a5dc2ca9b",
+    "stream_sha256": "dcff3ef04e5993a48827db9341ba37fe8f856fb1d97567efd730a8e8f97929d1"
+  },
+  "physical_frames": 0,
+  "request_sha256": "9f411b9348b40301314e1ff0e36c9df77c986264837bba51252468ab037fe2ec",
+  "scope": "Exact full snapshots; inputs are checkpoint-local, not boot-replay witnesses.",
+  "selected_ordinal": 692,
+  "verified_complete_records": 3770
+}

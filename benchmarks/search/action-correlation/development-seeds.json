@@ -1,0 +1,11 @@
+{
+  "recorded_utc": "2026-09-09T23:45:58.645730+00:00",
+  "method": "Four independent secrets.randbits(32) draws before any game outcomes; audit against saved local/remote research registrations and results before dispatch.",
+  "seeds": [
+    3192859461,
+    3735135754,
+    2625380762,
+    2798373971
+  ],
+  "roles": "Fresh development, shared across ordinary/component/matched-whole arms; not untouched validation."
+}

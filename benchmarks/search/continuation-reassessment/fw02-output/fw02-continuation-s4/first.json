@@ -1,0 +1,101 @@
+{
+  "all_frame_trace_sha256": "5db93e3ed84f4a6eec683f6ce0f4f931fb1fd5153c4f664c45706a41b329c482",
+  "emulator_sha256": "24505d3845f5583707845948c53eab0013918d47dda8dd493273b343564cd46f",
+  "endpoint": {
+    "area": 16,
+    "bosses": 0,
+    "door": 0,
+    "ending": false,
+    "energy_tanks": 1,
+    "equipment": 21,
+    "health": 142,
+    "map_x": 25,
+    "map_y": 5,
+    "missile_capacity": 10,
+    "missiles": 0,
+    "mode": 9,
+    "pose": 6,
+    "x": 126,
+    "y": 44
+  },
+  "first_guarded_loader_route_frame": null,
+  "guarded_loader_frames": 0,
+  "loader_and_active_tag_agreement_frames": 0,
+  "physical_frames_including_setup": 80945,
+  "raw_endpoint": {
+    "area": 16,
+    "door": 0,
+    "enemies": [
+      {
+        "data_index": 5,
+        "hit_points": 2,
+        "name_table": 0,
+        "slot": 0,
+        "special": 0,
+        "status": 0,
+        "x": 152,
+        "y": 141
+      },
+      {
+        "data_index": 5,
+        "hit_points": 4,
+        "name_table": 0,
+        "slot": 16,
+        "special": 128,
+        "status": 2,
+        "x": 245,
+        "y": 200
+      },
+      {
+        "data_index": 5,
+        "hit_points": 2,
+        "name_table": 1,
+        "slot": 32,
+        "special": 0,
+        "status": 0,
+        "x": 188,
+        "y": 200
+      },
+      {
+        "data_index": 0,
+        "hit_points": 0,
+        "name_table": 1,
+        "slot": 48,
+        "special": 10,
+        "status": 0,
+        "x": 152,
+        "y": 153
+      },
+      {
+        "data_index": 6,
+        "hit_points": 8,
+        "name_table": 1,
+        "slot": 64,
+        "special": 128,
+        "status": 0,
+        "x": 92,
+        "y": 40
+      },
+      {
+        "data_index": 6,
+        "hit_points": 4,
+        "name_table": 1,
+        "slot": 80,
+        "special": 0,
+        "status": 0,
+        "x": 172,
+        "y": 40
+      }
+    ],
+    "kraid_status": 0,
+    "loader_present": 0,
+    "mode": 9,
+    "ridley_status": 0,
+    "room_number": 255
+  },
+  "relevant_trace_bytes": 0,
+  "route_frames": 80016,
+  "setup_frames": 929,
+  "single_frame_sampling": true,
+  "tag_without_loader_or_active_slot_frames": 0
+}

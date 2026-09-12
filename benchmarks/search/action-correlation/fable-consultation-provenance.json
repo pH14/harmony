@@ -1,0 +1,49 @@
+{
+  "model_requested": "claude-fable-5-1",
+  "effort_requested": "xhigh",
+  "started_utc": "2026-09-10T00:16:40.027241+00:00",
+  "elapsed_seconds": 255.480842666,
+  "exit_code": 0,
+  "timeout": false,
+  "wall_bound_seconds": 600,
+  "max_budget_usd": 5,
+  "reviewer_had_tools": false,
+  "prompt_sha256": "de573dbae5d37ab49bc2b03c320b6d08a3e43d0f90d4010b94fdc539bb2c38a7",
+  "response_sha256": "80776c4f0492d85d84aa4ec3332ebcd0f244e8a0428e38d6fc53533e5cf63871",
+  "input_manifest_sha256": "3e6f228a39e5db28ff2dae25b4d2dbfb74426d965b381a408f3e9f3e9201a083",
+  "verified_response_model": "claude-fable-5-1",
+  "verified_tools": [],
+  "total_cost_usd": 1.328902,
+  "input_manifest": [
+    {
+      "path": "benchmarks/search/action-correlation/README.md",
+      "sha256": "ef1372b388c1079bac3087e38afa28abcf52e1b6765edf44d93b5fe01611592d",
+      "bytes": 11003
+    },
+    {
+      "path": "benchmarks/search/action-correlation/design.json",
+      "sha256": "312fc65d35ed26d31111c5762df813ca7718ea38fc6a46730173efc40a2ba336",
+      "bytes": 1292
+    },
+    {
+      "path": "benchmarks/search/action-correlation/exact-model.json",
+      "sha256": "16fa69061ced30e3520351307b6463b4ddaa53c7a1a8d850e37ca08a533a43e2",
+      "bytes": 6548
+    },
+    {
+      "path": "benchmarks/search/action-correlation/kernel-spectrum.json",
+      "sha256": "598ad09e75e82bbc345b209fbcaa5bf6742672b1b83352832ead93fb7eea1504",
+      "bytes": 2267
+    },
+    {
+      "path": "workloads/nes/src/chord_correlation.rs",
+      "sha256": "cc656770ac14b4ced0fb328545f93ddf3af6f6889f0ffa594d9af3111d0a80b8",
+      "bytes": 9340
+    },
+    {
+      "path": "benchmarks/search/depth-transfer/README.md",
+      "sha256": "76fe47ca671a9b5725aa5b2bc597f78effed2896f86ac2629f735b7b15fb945c",
+      "bytes": 16887
+    }
+  ]
+}

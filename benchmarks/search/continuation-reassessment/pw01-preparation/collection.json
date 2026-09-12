@@ -1,0 +1,7 @@
+{
+  "archive": "/private/tmp/harmony-ms02-pause-20260911/results-and-build-records.tar.gz",
+  "archive_bytes": 357010059,
+  "archive_sha256": "37f697b22209e4021c22b419fa5ce4e4816f9adf909bfcf0513c5b1a948090f6",
+  "collection_seconds": 8.15366975,
+  "scope": "Full runs, evidence, protocols, built binaries and remaining task files; reproducible source copies, compiler caches and duplicate transfer archives excluded."
+}

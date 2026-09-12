@@ -1,0 +1,30 @@
+{
+  "format": "continuation-cd01-dispatch-v1",
+  "host": "ms02",
+  "registration_commit": "648a70474ea7477c4c3d41969f47a484b3813549",
+  "registration_sha256": "68999f9437b2d43acab13d9411a80f8bd6b9361b85a0076ec92cc4551a30274d",
+  "protocol_directory": "/root/harmony-depth-transfer-20260909/continuation-cd01-001",
+  "initial_wave": [
+    {
+      "pair": 0,
+      "service": "harmony-continuation-cd01-pair-0-20260910.service",
+      "invocation_id": "2801f85790e34952bb7b7f3c611923b9",
+      "initial_main_pid": 3266504,
+      "started_utc": "2026-09-10T10:39:50Z",
+      "cpus": "0-3"
+    },
+    {
+      "pair": 1,
+      "service": "harmony-continuation-cd01-pair-1-20260910.service",
+      "invocation_id": "f3eaf5baedcf432886ff99ef28c20aa3",
+      "initial_main_pid": 3266528,
+      "started_utc": "2026-09-10T10:39:55Z",
+      "cpus": "4-7"
+    }
+  ],
+  "unrun_pairs": [
+    2,
+    3
+  ],
+  "state_note": "Dispatch provenance only, not a live-status claim. Verify the specific service/process handles before treating them as running or terminal."
+}

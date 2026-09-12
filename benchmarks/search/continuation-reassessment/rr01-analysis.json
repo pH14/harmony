@@ -1,0 +1,35 @@
+{
+  "format": "retention-replay-rr01-failure-analysis-v1",
+  "decision": "qualification_failed_inspection_unrun",
+  "registration_sha256": "44a0e8ab5d667bd709c3e758c0c10c5e90675317227a5c9f2ea51f9dbeada8c3",
+  "process_sha256": "8ab95d92469115531cfa19a16f2317e6c7790987b46b9c3bb29ecde250203dbc",
+  "source_commit": "eb6f0dcc7d87a12ae5b9a1fceccef1bfde7b97cf",
+  "source_sha256": {
+    "workloads/nes-machine/src/quicknes.rs": "ff5fe16b3810bae0af23150fba61f20983a8c00d03ac71a93c0871bfbddd6ece",
+    "workloads/nes/src/metroid/target.rs": "cf63ea5f364b16ade50cda082e4f408a577627909f2d343895909ff363810141",
+    "workloads/nes/src/bin/metroid-retention-replay.rs": "2381e9a855b2f06baf0a56b6cf6910f8ff02d62b2fd2ec095ef734d6155ec7bc"
+  },
+  "failure": "machine backend failed: snapshot is not compatible with this QuickNES revision/build",
+  "cause": "Original raw snapshot embeds the ARM core hash; the exact-build import guard rejects the ms02 core before unserialize.",
+  "root_emulator_bytes": 21118,
+  "original_core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+  "runtime_core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda",
+  "replay_jobs_executed": 0,
+  "inspection": "unrun; local-loss query unmeasured",
+  "admitted_search_frames": 0,
+  "runtime_receipted_auxiliary_frames": 0,
+  "source_inferred_inspector_setup_frames": 929,
+  "accounting": "929 is inferred from the pinned caller reaching its first foreign-root restore after the setup-clock equality check. The failure report did not persist that counter; do not call this a runtime frame receipt. No replay target is constructed on this path. Historical unmeasured costs remain unknown.",
+  "phase_wall_seconds": 0.20113354991190135,
+  "phase_cpu_seconds": 0.039111999999999994,
+  "phase_peak_rss_kib": 35212,
+  "service_cpu_nanoseconds": 84333000,
+  "service_memory_peak_bytes": 70709248,
+  "service_invocation": "628120c3542d44a5bd41cf743a623ec4",
+  "service_state": {
+    "MainPID": "0",
+    "ActiveState": "inactive",
+    "SubState": "dead"
+  },
+  "next_decision": "RR01 closed without retry. Same-build raw replay is the supported contract. Any cross-build diagnostic must regenerate from the exact searched action prefix under a distinct prospective protocol; no policy or native allocation is earned here."
+}

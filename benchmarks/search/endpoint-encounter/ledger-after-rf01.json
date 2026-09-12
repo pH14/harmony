@@ -1,0 +1,47 @@
+{
+  "format": "metroid-rf01-closed-ledger-v1",
+  "closed_utc": "2026-09-10T07:46:50.743508+00:00",
+  "prior_ledger_sha256": "ce850a955ad7f7f16d456585f412fdcdb3ee2e32f03d35bd1b199f3e34ab9436",
+  "registration_sha256": "4cebfb1cab48c38a867fa5418732257b72feaf782cd001e255835ce493cdbd00",
+  "analysis_sha256": "09d8cfc29fabd76234e8939d3135b999d5cf908f2db2ea1c2fd355b637a946d6",
+  "block_known_auxiliary_ceiling": 4000000,
+  "block_known_auxiliary_frames": 874952,
+  "cost": {
+    "prefix_physical_frames": 237608,
+    "continuation_physical_frames": 161056,
+    "held_verification_physical_frames": 476288
+  },
+  "setup_frames_included_in_prefix_and_held_replays": 5574,
+  "cells": {
+    "control": {
+      "known_auxiliary_frames": 378525,
+      "process": {
+        "returncode": 0,
+        "stop_reason": null,
+        "wall_seconds": 54.02839979401324,
+        "maxrss_kib": 10360,
+        "user_seconds": 52.850269,
+        "system_seconds": 0.215406
+      }
+    },
+    "full": {
+      "known_auxiliary_frames": 496427,
+      "process": {
+        "returncode": 0,
+        "stop_reason": null,
+        "wall_seconds": 82.04383797198534,
+        "maxrss_kib": 10356,
+        "user_seconds": 81.483582,
+        "system_seconds": 0.21939499999999998
+      }
+    }
+  },
+  "summed_process_wall_seconds": 136.07223776599858,
+  "cumulative_since_user_resumption_admitted_search_frames": 1083261532,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 58499291,
+  "decision": "no_defeat_with_full_resources_at_episode_bounds",
+  "outcome": "Exact default identity and full-state resource intervention pass. Both cells complete; all ordinary/passive trials die without defeat. Full resources yield seven ordinary surviving-damage observations versus one, a secondary description that does not reopen allocation. The first saved witness in each cell passes two held replays.",
+  "services": "Both cells and final msr1 build inactive/dead, exit0/MainPID0; see rf01-output/services.json.gz. Final ms02 Miri service was already inactive with exit0.",
+  "unknown": "No RF01 physical-frame gap; historical engine setup, unadmitted work and reconstruction gaps remain unknown and separate. Build, Miri and local-check time is not emulator work.",
+  "old_expired_tranche": "489,962,470 admitted search and 30,112,297 known auxiliary frames remain frozen and excluded from these renewed totals."
+}

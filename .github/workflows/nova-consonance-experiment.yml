@@ -62,6 +62,8 @@ jobs:
       - uses: cachix/install-nix-action@v31
       - name: Install Nova and initramfs build tools
         run: |
+          # Chrome is unused here; its independent apt index can be inconsistent.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends binutils cc65 cpio ffmpeg g++ shellcheck
       - uses: Swatinem/rust-cache@v2
@@ -292,6 +294,8 @@ jobs:
       - uses: cachix/install-nix-action@v31
       - name: Install NES build tools
         run: |
+          # Chrome is unused here; its independent apt index can be inconsistent.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends binutils cc65 cpio g++ jq patch shellcheck
       - uses: Swatinem/rust-cache@v2

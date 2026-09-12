@@ -1,0 +1,128 @@
+{
+  "format": "action-correlation-native-qualification-v1",
+  "decision": "pass",
+  "recorded_utc": "2026-09-09T23:43:10.045724+00:00",
+  "registration_sha256": "f23a7bab421c85a111194c13d87399d68836451f91da704e2e3346bf7502bcf3",
+  "panel_sha256": "1c46608891b2eec42eb50159d051e13be9a50d8d9d385cebfad4920c87aa98c1",
+  "source_commit": "2fb37f9c3c21656f629a5bd11a2c54ad88ee03a5",
+  "binary_sha256": "dbeca841f7bcc42842c2fdce137bd46fe3486f9862bf11eda896ea8d5e444361",
+  "cells": [
+    {
+      "id": "metroid-component-slots1",
+      "admitted_qualification_frames": 50967,
+      "inferred_full_replay_admitted_frames": 50967,
+      "twice_replayed_witness_frames": 556,
+      "artifact_sha256": {
+        "stream.jsonl": "c4d780c07ecc8cf542e17c97dffa5fb7d052e906ed23c299e12bf14f2d5372e0",
+        "campaign.json": "857b541fa2512df2c053b722c1f05734ad80eb5e6af440923658a34c6081920e",
+        "checkpoint.json": "bda1a285f35ddae801aa1f614711c58edbcdc0e04336e4d78c224f45d9a6b85f"
+      },
+      "summary_sha256": "84c9988e1ca20343e71b49461c34d0a2eabf2620d3effe9cb2cb63b410ef934a",
+      "cpu_seconds": 5.424948,
+      "elapsed_seconds": 4.070272316981573
+    },
+    {
+      "id": "metroid-component-slots2",
+      "admitted_qualification_frames": 50967,
+      "inferred_full_replay_admitted_frames": 50967,
+      "twice_replayed_witness_frames": 556,
+      "artifact_sha256": {
+        "stream.jsonl": "c4d780c07ecc8cf542e17c97dffa5fb7d052e906ed23c299e12bf14f2d5372e0",
+        "campaign.json": "857b541fa2512df2c053b722c1f05734ad80eb5e6af440923658a34c6081920e",
+        "checkpoint.json": "bda1a285f35ddae801aa1f614711c58edbcdc0e04336e4d78c224f45d9a6b85f"
+      },
+      "summary_sha256": "b6f3b55277446d0d3d420c074a1219f894f5b3459f341b25cded1e955937b9ff",
+      "cpu_seconds": 5.276672,
+      "elapsed_seconds": 4.078511567960959
+    },
+    {
+      "id": "metroid-whole-slots1",
+      "admitted_qualification_frames": 50916,
+      "inferred_full_replay_admitted_frames": 50916,
+      "twice_replayed_witness_frames": 3020,
+      "artifact_sha256": {
+        "stream.jsonl": "aa336593dc309e10022d436817f1cadc8fff7de6c4641a17ab6bce8bc795e59a",
+        "campaign.json": "b96d6f06400d8cfa1afbce1e2502c1895f310f201d0744fa52fb1b982624d036",
+        "checkpoint.json": "ddd0812d370b99c0ee43e3821b2fe6cd30f4a7d0a9fc9decf1be1ad3d075c68a"
+      },
+      "summary_sha256": "c2258b166f11abee0cc0cd8002aff8943649d0aa3e4ec15fbd2b5a49756bcd88",
+      "cpu_seconds": 5.2736529999999995,
+      "elapsed_seconds": 4.07005407003453
+    },
+    {
+      "id": "metroid-whole-slots2",
+      "admitted_qualification_frames": 50916,
+      "inferred_full_replay_admitted_frames": 50916,
+      "twice_replayed_witness_frames": 3020,
+      "artifact_sha256": {
+        "stream.jsonl": "aa336593dc309e10022d436817f1cadc8fff7de6c4641a17ab6bce8bc795e59a",
+        "campaign.json": "b96d6f06400d8cfa1afbce1e2502c1895f310f201d0744fa52fb1b982624d036",
+        "checkpoint.json": "ddd0812d370b99c0ee43e3821b2fe6cd30f4a7d0a9fc9decf1be1ad3d075c68a"
+      },
+      "summary_sha256": "4357da91f9361c0c9ba550d490ef7f4d50ff8de3f5868233154bf3748fc2ec8c",
+      "cpu_seconds": 5.166364000000001,
+      "elapsed_seconds": 4.050532118999399
+    },
+    {
+      "id": "mm2-component-slots1",
+      "admitted_qualification_frames": 49552,
+      "inferred_full_replay_admitted_frames": 49552,
+      "twice_replayed_witness_frames": 1652,
+      "artifact_sha256": {
+        "stream.jsonl": "a8ce80fadc15dad42649f6a3a1fa3049046d8c07eab91b814f6470a45ed9bcc1",
+        "campaign.json": "d22dc9c78233128b76a99df77d17c0bf8cb7aa32385a6eb04c9930367835c5df",
+        "checkpoint.json": "853c4849f223bcd3c6f5f791708b292ec0b6b6d61a12100f2516c59aaa0aff7e"
+      },
+      "summary_sha256": "ffce205fd2e96079db45fdd21f3738b91bbecdee6de29c26092e2a0631292db6",
+      "cpu_seconds": 5.5007909999999995,
+      "elapsed_seconds": 4.056124996044673
+    },
+    {
+      "id": "mm2-component-slots2",
+      "admitted_qualification_frames": 49552,
+      "inferred_full_replay_admitted_frames": 49552,
+      "twice_replayed_witness_frames": 1652,
+      "artifact_sha256": {
+        "stream.jsonl": "a8ce80fadc15dad42649f6a3a1fa3049046d8c07eab91b814f6470a45ed9bcc1",
+        "campaign.json": "d22dc9c78233128b76a99df77d17c0bf8cb7aa32385a6eb04c9930367835c5df",
+        "checkpoint.json": "853c4849f223bcd3c6f5f791708b292ec0b6b6d61a12100f2516c59aaa0aff7e"
+      },
+      "summary_sha256": "e2b0366d45fddd23df5680b488f381502eeb5e11370b3f6c882b481f0a95bac9",
+      "cpu_seconds": 5.306001999999999,
+      "elapsed_seconds": 4.073031526000705
+    },
+    {
+      "id": "mm2-whole-slots1",
+      "admitted_qualification_frames": 51194,
+      "inferred_full_replay_admitted_frames": 51194,
+      "twice_replayed_witness_frames": 2862,
+      "artifact_sha256": {
+        "stream.jsonl": "d80495efed244901ea0d2ef540f5c9f509e34d7726ecc896dd71add7eeb134df",
+        "campaign.json": "591996ecb383c6798b0559d4bfba4f6765dd2de8c796a1d6608b1e1d73f30765",
+        "checkpoint.json": "be85da145616eb215723c4a0a39eba443b4aa45a557d4f6018d44f83188480ce"
+      },
+      "summary_sha256": "a5a4763b21aae60ac96357798965bfbf064b5666bbc1438938ad8d79f053a1c1",
+      "cpu_seconds": 5.747330000000001,
+      "elapsed_seconds": 4.0741649370174855
+    },
+    {
+      "id": "mm2-whole-slots2",
+      "admitted_qualification_frames": 51194,
+      "inferred_full_replay_admitted_frames": 51194,
+      "twice_replayed_witness_frames": 2862,
+      "artifact_sha256": {
+        "stream.jsonl": "d80495efed244901ea0d2ef540f5c9f509e34d7726ecc896dd71add7eeb134df",
+        "campaign.json": "591996ecb383c6798b0559d4bfba4f6765dd2de8c796a1d6608b1e1d73f30765",
+        "checkpoint.json": "be85da145616eb215723c4a0a39eba443b4aa45a557d4f6018d44f83188480ce"
+      },
+      "summary_sha256": "fa11c2e7c4db6ba76908a16c83e307840dd2b4e56c2f66799d8e860c347674ad",
+      "cpu_seconds": 5.718327,
+      "elapsed_seconds": 4.078185400983784
+    }
+  ],
+  "known_auxiliary_frames": 826696,
+  "limitations": [
+    "Reused qualification seed; no performance sample.",
+    "Full replay cost is inferred from admitted work; setup, reconstruction and unadmitted work remain additional unknowns."
+  ]
+}

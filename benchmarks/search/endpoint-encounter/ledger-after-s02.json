@@ -1,0 +1,18 @@
+{
+  "format": "endpoint-s02-closed-ledger-v1",
+  "prior_ledger_sha256": "3f6494ce15bdd630abd6fbfd36df82a48bd01a43206821169dbb9e507b2756f0",
+  "registration_sha256": "2e618fefad6ffbd3da619060434a70831c77c717e2ce403dc847eb2e42e6ccd5",
+  "admitted_search_frames": 0,
+  "block_known_auxiliary_ceiling": 2000000,
+  "block_known_auxiliary_frames": 539906,
+  "prefix_physical_frames": 119072,
+  "continuation_physical_frames": 182396,
+  "witness_physical_frames": 238438,
+  "cumulative_since_user_resumption_admitted_search_frames": 1083261532,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 50017208,
+  "setup_frames_included": 2787,
+  "scope": "Return and extend the first selected S01 damage endpoint with the unchanged, reused suffix list. Conditional diagnosis only.",
+  "outcome": "Five ordinary trials have surviving further-damage observations; first saved endpoint has boss HP 135 and replays twice. All ordinary trials eventually die. All passive trials remain alive at action limit without further damage. No defeat.",
+  "unknown": "No interrupted diagnostic frame gap; prior campaign setup, unadmitted work and reconstruction gaps remain unchanged. Compilation and tests are separate.",
+  "old_expired_tranche": "489,962,470 admitted search and 30,112,297 known auxiliary frames remain frozen and excluded from these renewed totals."
+}

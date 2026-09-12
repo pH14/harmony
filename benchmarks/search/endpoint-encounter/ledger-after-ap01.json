@@ -1,0 +1,19 @@
+{
+  "format": "archive-capability-ap01-closed-ledger-v1",
+  "prior_ledger_sha256": "06b4215b401f585ff68b7bf4f36aa7421b255b0d8da6727efd2f96c8babc84df",
+  "registration_sha256": "a9a41ea4f9d8860ca45f5481348b6d45adba60f08329d55a1671d34ebfc05720",
+  "admitted_performance_search_frames": 0,
+  "block_known_auxiliary_ceiling": 3000000,
+  "block_known_auxiliary_frames": 977952,
+  "diagnostic_admitted_search_frames": 250267,
+  "admitted_drain_frames": 267,
+  "campaign_replay_admitted_frames": 250267,
+  "direct_helper_physical_frames": 477418,
+  "direct_helper_setup_frames_included": 5574,
+  "cumulative_since_user_resumption_admitted_search_frames": 1083261532,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 52195420,
+  "scope": "One original supplied-encounter, unchanged-archive capability pilot; not fresh discovery or matched-control evidence.",
+  "outcome": "Fixed 250k horizon reached, no Ridley defeat; full campaign and root-local/full-prefix witness replay pass.",
+  "unknown": "Engine target setup, unadmitted work and reconstruction remain additional unknown costs; campaign replay admitted frames are an inferred component. All helper setup/replay frames are counted.",
+  "old_expired_tranche": "489,962,470 admitted search and 30,112,297 known auxiliary frames remain frozen and excluded from these renewed totals."
+}

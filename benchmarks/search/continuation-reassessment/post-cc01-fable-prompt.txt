@@ -1,0 +1,286 @@
+You are the independent scientific reviewer requested by the user. Use claude-fable-5-1 at xhigh. No tools, experiments, file edits, or messages. All supplied material is public and supplied for this consultation. Answer in at most1800 words. We need a decisive bounded next action, not praise or another broad framework.
+
+Original objective: a generic evidence-backed improvement in useful fresh deterministic search, repeated Metroid boss defeats or MM2 Wily4 recovery at matched physical work/memory, both games evaluated, then untouched validation (3/10 Metroid or3/5 MM2 with matched controls). No breakthrough yet. User allows autonomous research on ms02 only; msr1 is reassigned and unavailable. One draft PR287. Ordinary pilots max25Mframes/15min, longer cells only after a favorable recorded gate and max45search minutes. Every allocation is frozen and bounded; no outcome/seed/horizon edits or automatic retries. Later user resumption superseded the expired Sep9 tranche but not its failed gates or records.
+
+The latest CD01 unchanged alphabet_continuation_v1 vs alphabet_only at first Bombs/200M wins4/4 (4/4 vs1/4 hits, cost ratio0.495). Independent CC01 loses first2pairs (182858882 vs139784604;149917731 vs129156979), so its fixed3wins/4 gate is impossible and remaining2are unrun. All startedruns and native audits complete; witnesses alive. This nominee closes without pooling, seed/horizon/endpoint rescue or a bank/order pivot. No MM2 transfer is earned. Known resumed costs now2,982,484,247 admitted frames plus67,878,337 auxiliary; setup/unadmitted gaps unknown. Source and binary identical within current comparisons.
+
+Prior distinctions: #285 resource-retention under corrected terminal remains UNMEASURED, not proved ineffective; prior local gaps do not by themselves fund it. #288 prior map visitation is NOT active recoverability. Original retained states with zero parent-selection credit can have outgoing birth-job or pending-job exposure (#283); don't turn those counters into an unexplored-state count. Existing learned SMB action-table hooks and exposure-biased retained suffix frequencies don't qualify a learned Metroid policy. Full-prefix duplicate filtering already exists. New audit below findszero origin-replay work in all12CD/CCcells, and a conditional model ceiling on partial retained-prefix reuse; do not assume failed/unretained-action repetitions are measured. Complete long job streams were hashed but not retained; progress aggregates and bounded retention competition inputs survive. No full deep campaign should be reconstructed merely to fill an unclear gap.
+
+Actual boss evidence: a reused long fresh-genesis control produced a qualified Ridley encounter at low health79tenths=7.9energy, zero missiles, bossHP140. One of32ordinary conditional suffixes produced a replayed surviving1HP decrease; all ordinary episodes eventuallydie. Extending the first damage state produced further living damage but no defeat. An ordinary snapshot-root250k pilot has six CURRENT active cached states with classifiedHP139/131/130/129, all retained and revisited; HP129 received4jobs without retention candidates. The31inactive cached states containno classifiedHPbelow140. This is snapshot-local evidence, not lifetime damage/global archive history. Original-root local-terminal-retry candidate fails2censoredties and its remainingpairs are unrun. A fixed full-resource counterfactual raises surviving-damage cases to7/32 but allordinary/passiveepisodesdie, no defeat; the single-root controller/oracle line is closed. No further selected root or duration/parameter sweep is earned. Observer reporting already covers correct same-time action endpoints; a framework or more reference tapes is not needed.
+
+Please answer:
+1. Audit the attached retained-prefix opportunity argument. Is the exponential moment / optional-stop / eight-control union argument sound under the stated ideal draw premise? Identify any concrete error or missing software premise. Do not mistake the conditional bound for native confidence or efficacy.
+2. Given the full negative record, recommend ONE distinct next research direction or existing-artifact query most likely to advance the actual boss/Wily objective. Explain its causal mechanism, what new evidence would justify it, its cheapest executable falsifier and an explicit stopping rule. Do not reopen a failed nominee by renaming it, propose an untargeted measurement framework, infer capability from positivehealth/ammo alone, or suggest months of neural training. If no native experiment is justified, identify a precise offline decision that can resolve that, not merely 'need more data'.
+3. Tell us which of our self-imposed closure rules (if any) are broader than preserving their registered failed claims requires. Preserve outcomes/gates; distinguish a genuinely new hypothesis from an unjustified rescue. We need a way forward, with honest uncertainty rather than a guarantee of discovery.
+
+
+
+SUPPLIED RECORD: current_pr_summary
+This PR adds opt-in selection/action experiments and replay-verified milestone, encounter and snapshot measurements so early exploration gains can be distinguished from useful deeper progress. Ordinary search defaults remain unchanged. It consolidates the work previously split across #291 and #292 and incorporates the useful evidence and limits from parallel #285/#288.
+
+**No confirmed boss/Wily improvement has been established.** The selection candidate improves first-missile discovery in development and independent confirmation, then fails later-depth and MM2 transfer. The latest unchanged-continuation candidate wins all four fresh Bombs development pairs but loses both independent confirmation pairs. Its registered futility rule closes that nominee; the remaining pairs, MM2 transfer and untouched validation are unrun.
+
+## Changes
+
+- Add experimental retention/selection policies, component-correlated actions, a matched whole-command comparator, and shared opt-in terminal retry. Defaults retain their qualified historical artifacts; native experiments pin exact source/build identities.
+- Add opt-in milestone stopping at ordered admission, bounded in-flight drain, held attainment witnesses and full campaign replay. Registrations bind the endpoint, identity, work/resource limits and incomplete-measurement behavior.
+- Add an optional Metroid endpoint encounter report with same-boundary RAM reads and snapshot-local boss classification. Restore, gap and identity checks prevent fabricated cross-boundary damage. Reports do not guide search, keys or rewards.
+- Add standalone bounded tools for conditional control, snapshot-root campaigns, paused checkpoint inspection and guarded resource counterfactuals. These distinguish supplied-state capability and active membership from fresh-search discovery; public reference tapes never enter fresh search.
+- Preserve theory, executable adverse examples, preregistrations, failed gates, raw evidence and offline scorers. Two source fixtures demonstrate legacy location-label effects in splice availability and partial continuation-queue order without changing either policy.
+- Integrate main's faults adapter with the unchanged default result field, and remove an unused Chrome apt feed that blocked NES CI dependency installation.
+
+## Results
+
+| Registered comparison | Result |
+| --- | --- |
+| No-cost selection, first missiles | 3/4 strict wins in both development and confirmation; roughly 28% and 31% lower restricted cost |
+| Same selector, MM2 and later Metroid depth | Both gates fail; no confirmed transfer |
+| Component correlation and whole-command persistence | Component screen fails; the exploratory whole-command signal fails independent confirmation |
+| Conditional local retry at the generated Ridley encounter | Two censored ties at the fixed horizon; no defeat, remaining pairs unrun |
+| Entry-exhaustion cutoff ablation | Two fresh energy-tank losses; remaining pairs unrun |
+| Unchanged continuation, fresh Bombs development CD01 | 4/4 strict wins; candidate 4/4 hits versus control 1/4; 50.5% lower mean restricted cost at 200M frames |
+| Unchanged continuation, independent confirmation CC01 | Two losses: candidate 182,858,882 versus control 139,784,604 frames; candidate 149,917,731 versus control 129,156,979. Required three wins become impossible; pairs 2/3 unrun |
+
+All five CD01 and four CC01 Bombs attainment witnesses replay alive. Complete native audits verify registered identities, CPU placement, progress/witness hashes, service termination and resource limits. CC01's completed wave uses 23.7% more restricted search work; this is a two-pair description, not a full-panel population estimate. Development and confirmation are scored separately, with no pooling, replacement seeds, horizon extension, endpoint rescue or bank/order pivot.
+
+The diagnostic work establishes a generated Ridley encounter and replayed surviving damage. A paused ordinary-archive checkpoint contains six active, retained and revisited states with classified boss HP below 140, down to 129. A supplied full-resource counterfactual yields more local damage observations but no defeat in its fixed bank. These results do not establish a retention cause, fresh combat success or global recoverability. Area sightings alone are not encounters, and past visitation is not active recoverability.
+
+CC01 closes at **601,721,522 admitted frames**, including 3,326 stop-drain frames, plus **1,583,144 known auxiliary frames**. Closed resumed totals are **2,982,484,247 admitted search and 67,878,337 known auxiliary frames**. Every actual cell is charged once; historical first-wave ledgers are included subtotals. The expired earlier tranche remains separate. Setup, unadmitted work and any out-of-job reconstruction remain explicit unknowns.
+
+Both CC01 services are terminal; closure checks find no outputs or service history for pairs 2/3. msr1 has been reassigned and is unavailable for this work. Any later experiments use ms02 only and require a distinct evidence-backed, bounded decision.
+
+## Review map
+
+- [Selection synthesis](https://github.com/pH14/harmony/blob/codex/retention-theory-msr1-20260908/benchmarks/search/continuation-yield/SUMMARY.md), [retention synthesis](https://github.com/pH14/harmony/blob/codex/retention-theory-msr1-20260908/benchmarks/search/retention-theory/SYNTHESIS.md), and [milestone stopping](https://github.com/pH14/harmony/blob/codex/retention-theory-msr1-20260908/benchmarks/search/milestone-stop/README.md).
+- [Parallel-research integration](https://github.com/pH14/harmony/blob/codex/retention-theory-msr1-20260908/benchmarks/search/depth-transfer/README.md) and [action study / Fable 5.1 xhigh adjudication](https://github.com/pH14/harmony/blob/codex/retention-theory-msr1-20260908/benchmarks/search/action-correlation/README.md).
+- [Encounter and conditional-control evidence](https://github.com/pH14/harmony/blob/codex/retention-theory-msr1-20260908/benchmarks/search/endpoint-encounter/README.md), including checkpoint inspection, retry and resource-counterfactual limits.
+- [Entry-exhaustion ablation](https://github.com/pH14/harmony/blob/codex/retention-theory-msr1-20260908/benchmarks/search/entry-exhaustion/README.md) and [continuation reassessment](https://github.com/pH14/harmony/blob/codex/retention-theory-msr1-20260908/benchmarks/search/continuation-reassessment/README.md), including complete CD01/CC01 native evidence, recomputation commands and closed ledgers.
+- [Resumed goal and decision record](https://github.com/pH14/harmony/blob/codex/retention-theory-msr1-20260908/benchmarks/search/depth-transfer/GOAL.md). Repeated matched boss/Wily success, both-game evaluation and untouched validation remain outstanding.
+
+## Validation
+
+- Required local pre-push checks passed for this publication: formatting, strict all-feature Clippy and **1,184 tests passed, 23 skipped in 41.375 seconds**, with normal hooks enabled. This update adds evidence and synthesis only; registered native binaries and frozen scorers are unchanged.
+- Offline native verification passes for all four CD01 pairs and both CC01 pairs. Complete progress and living witnesses, source/asset identities, placement, actual process/service resources and termination are checked without emulation. Frozen scorers reproduce the development pass and independent-confirmation futility failure; ledgers charge every actual cell once.
+- Relevant source and evidence suites cover default compatibility, buffer and ARM/x86 semantic identity, witness corruption, incomplete measurement, restored-state provenance and fabricated cross-boundary observations. Unsafe counterfactual logic passes three Miri tests. Exact native default and campaign replay qualification is preserved with its original evidence.
+
+Single consolidated draft PR; no merge requested. Refs #270, #279, #281 and #290.
+
+
+SUPPLIED RECORD: prefix_opportunity_proof
+# Retained-prefix reuse does not earn the next experiment
+
+CC01 failed independent confirmation. Before adding a new attempt-history
+report or scheduler, inspect what the existing engine already avoids and what
+the completed ordinary controls can say about remaining redundant work.
+This assessment changes no policy, prior gate or ledger and runs no emulator.
+
+The [audit](prefix-opportunity-audit.json), recomputed by
+[this script](audit_prefix_opportunity.py), checks the exact native archives and
+report hashes for all twelve completed CD01/CC01 cells. Relevant functions match
+the registered source commit. All twelve final coordinator profiles account
+for every admitted job and record **zero origin-replay jobs, actions and frames**.
+An optimization of origin reconstruction has no measured work to remove here.
+This statement is about these admitted jobs, not setup or out-of-job work.
+
+The ordinary dispatch path already rejects a suffix when every executable
+action-prefix input is currently retained. The six ordinary controls contain
+8,037,314 executed jobs and 1,401 such skips: 0.01743% of their 8,038,715 draws.
+Each control has fewer than 1,024 skips in total, so none can have reached the
+1,024-consecutive-skip forced-execution guard. There is no missing ordinary
+full-prefix duplicate filter to implement. Continuation-queue operations are
+excluded from the quantitative argument below.
+
+## A conditional bound for partially known prefixes
+
+Consider a more ambitious shortcut that restores the end of a **contiguous,
+currently retained prefix** of a drawn ordinary suffix and executes only its
+unknown tail. Bound its opportunity on the original history, even granting
+free lookup, restore and compatible observations. This does not bound a cache
+of failed actions, retired/nonretained intermediates, queue policies or the
+downstream utility of a changed adaptive history.
+
+The mathematical premise is explicit: conditional on the history and selected
+parent, the suffix length N is uniform on 1,...,6 and independent of a fresh
+latent six-action tape. The source draws length first, then ordinary actions
+without consulting length. Its deterministic Romu generator does **not** prove
+this independent-random-draw premise. The result below is a model-based
+opportunity bound, not a certified confidence statement about the native runs.
+
+Hold the history and latent action tape fixed. Let L in 0,...,6 be the longest
+initial sequence whose every action boundary has a retained input owner. Let
+Y indicate an existing full-prefix skip. Let W be the largest amount of prefix
+work the hypothetical shortcut could remove from this drawn job. Actions last
+at most 120 frames. Therefore:
+
+- If N <= L, the existing code skips the job: Y=1 and W=0.
+- If N > L, Y=0 and 0 <= W <= 120L.
+
+The remaining total-action cap can only turn additional draws into skips or
+reduce W, so ignoring it is conservative. There are no forced executions in
+the observed controls, as checked above. Conditional on the tape,
+
+\[
+E[\exp(W/1200-Y)]
+\le {L\over6}e^{-1}+{6-L\over6}e^{L/10}\le1.
+\]
+
+The last inequality is checked for every possible L with exact rational
+arithmetic. Use e^(-1) <= 3/8 and e^(L/10) <= 10/(10-L); their sufficient upper
+bounds for L=0,...,6 are respectively
+1, 427/432, 23/24, 101/112, 29/36, 31/48 and 3/8.
+The first bound follows from the first four terms of the exponential series;
+the second follows by bounding that series by the geometric series.
+
+Averaging over the tape preserves the inequality for every adaptive history.
+Consequently M_t=exp(sum(W)/1200-sum(Y)) is a nonnegative supermartingale under
+the stated model, starting at one. Stop each process immediately before its
+first guard-enforced duplicate execution; every observed control finishes before
+that guard. Ville's inequality gives a simultaneous bound over all times of
+this stopped process: except on a model event of probability at most delta,
+sum(W) < 1200(sum(Y)+log(1/delta)). This is the standard nonnegative
+supermartingale argument, not a new concentration theorem.
+[Howard et al., Lemma 1 and section 6.1](https://arxiv.org/pdf/1808.03204v8).
+
+Use delta=0.05/8 for each of the eight preregistered ordinary control
+trajectories in CD01 and CC01, including the two unrun trajectories. A union
+bound then covers the family without requiring independence between cells;
+the per-cell bounds allow endpoint/futility stopping. Summing the six observed
+controls' bounds gives **1,717,741.26 frames**, or **0.17017%** of their
+1,009,463,959 admitted frames. This is not outcome pooling: neither development
+nor confirmation's efficacy score changes.
+
+The script also checks a counterexample to dropping the independence premise:
+let the action tape depend on N, using N-1 retained actions and then a new
+action. Every draw executes known prefix work when N>1, but none is skipped.
+Thus low skip counts alone give no deterministic partial-prefix bound. The
+native artifacts do not retain the complete job streams needed to measure
+the exact partially known prefixes after the fact.
+
+## Decision and limits
+
+Do not fund a retained-prefix shortcut, another duplicate filter or new
+attempt-exposure instrumentation from this evidence. Origin reconstruction is
+zero in these cells; full-prefix filtering already exists; and even a generous
+partial-prefix model gives little direct work to remove. There is no evidence
+that a small shortcut would produce a compensating adaptive discovery gain.
+This is an allocation judgment, not a theorem limiting eventual boss success.
+
+The separate issue #283 remains valid: parent selections do not measure all
+physical outgoing exposure. These aggregates cannot establish exact repeated
+failed actions, useful unseen futures or a first-exposure scheduling benefit.
+Do not replace that missing premise with a lifecycle fraction. The source
+counterexamples and this opportunity bound avoid an otherwise unnecessary
+instrumentation-and-pilot cycle; they do not nominate a new successful policy.
+
+Recompute without emulation:
+
+```sh
+python3 benchmarks/search/continuation-reassessment/audit_prefix_opportunity.py --out /tmp/prefix-opportunity-audit.json
+```
+
+
+SUPPLIED RECORD: prior_fable_adjudication
+# Decision after the independent scientific critique
+
+Fable 5.1 xhigh reviewed the supplied record without tools in 255 seconds
+($1.33). Its [response](fable-feedback.md) and
+[provenance](fable-consultation-provenance.json) are preserved. The current
+candidate has since completed two censored ties against ordinary actions, so
+three strict wins in four seeds are impossible. All six first-wave cells are
+complete. Do not dispatch the remaining triplets or tune the kernel.
+
+## Adopt
+
+- Exact proposal mathematics establishes what changed, not a prior probability
+  of useful game progress. Matching complete-command run lengths does not
+  separate individual-, pair- and triple-component contributions or adaptive
+  archive effects. No fourth control or parameter sweep is warranted.
+- Replicated first-missile improvements did not establish a boss bottleneck.
+  The next decision should concern actual encounter-bearing states and their
+  retention or use, rather than another favorable precursor.
+- Reuse existing archive and input-policy facilities where they answer the
+  question. Retained-suffix frequency is exposure-biased and is not calibrated
+  contextual credit. The existing SMB learning hooks alone do not justify a
+  Metroid/MM2 learned proposal or demonstrate an expected gain.
+
+## Corrections and limits
+
+The two suspected implementation gaps are resolved by source inspection. Both
+samplers choose the ordinary duration from fixed bounds without branching on
+the selected direction/A-B command. This is independence under the stated
+ideal-random-draw model, not a PRNG independence proof. Both adapters propagate
+`apply` errors with `?`; there is no silent independent-suffix fallback.
+
+A final archive can reveal currently cached/restorable states, with missing
+snapshots explicitly unavailable. An empty final census cannot show that a
+campaign never generated or retained an encounter state. A selected input or
+an origin checkpoint is not a whole archive. An active boss classification,
+positive health and ammunition do not by themselves prove the state is
+fight-capable; "loadable" is not a qualified predicate. Name raw conditions
+precisely before turning them into endpoints.
+
+One observed HP decrease would falsify a claim of no such local continuation
+from that tested state. It would not establish that selection is the only
+bottleneck, that defeat is reachable at the tested budget, or that another
+resource/retention policy is warranted. Zero decreases in a bounded probe
+would not prove universal action-law inadequacy. Unavailable comparisons remain
+distinct from zero. NQ02 exercised real native restores on a non-boss route;
+positive boss classification came from the FCEUX reference/model checks, not a
+positive native fight. No unqualified native census reader should be assumed.
+
+The ordinary calibration's 3/4 hits are not a population hit probability or a
+power calculation. Zero observed control victories also do not make every
+comparative experiment incapable of detecting improvement. They make another
+long, weakly motivated comparison unattractive. A replicated precursor gain
+would remain useful evidence at that endpoint, while leaving the full goal
+unproved. The adviser received only the then-complete triplet. The whole-command
+control subsequently finished with two exploratory wins. Neither the literature
+nor these two results establishes a successful confirmed policy; preserve them
+as the motivation for a separate prospective test, not a rescue of D01.
+
+## First executable consequence: artifact availability
+
+The no-emulation inventories found 17 Metroid campaign checkpoints in the
+specified ms02 research trees and 33 in msr1's research runs. Their largest
+completed campaigns used 701,780 and 704,227 admitted frames respectively.
+None is a 50M–400M archive. See [ms02](archive-inventory-ms02.json) and
+[msr1](archive-inventory-msr1.json) for scope and summary hashes. The longer
+performance runs kept witnesses and compact reports, not final snapshot
+archives. These inventories do not establish anything about boss presence.
+
+Therefore the proposed retrospective long-campaign census cannot be performed
+from these artifacts. Do not reconstruct the 33.9M control or repeat B01 just
+to obtain a final census: it would spend substantial auxiliary work and still
+not answer the historical generation/retention question.
+
+The evaluator source explains the artifact gap: `evaluate` already receives a
+snapshot checkpoint from the campaign engine, but writes it only in full
+campaign-verification mode, which is capped at 5,000 executions. It also removes
+archive entries from the compact report. A future snapshot-export option could
+preserve cached states without replaying a long campaign; snapshots alone would
+still not reconstruct omitted archive metadata or historical admission. No such
+option has been implemented or added to the frozen P01 runs.
+
+The source audit found that the existing named-progress aggregate already
+includes live observations emitted at spatial-bucket/death transitions and
+action endpoints within admitted actions, independent of candidate retention.
+Cartridge data and the named event's route stamp describe the action endpoint;
+they do not establish the exact within-action pickup time. All six D01 cells
+have no recorded
+Bombs or boss-area entry before their stops. The inventory of 43 longer saved
+campaigns includes boss-area entry without defeats; these mixed protocols are
+context, not an independent comparison. Adding another area counter would not
+resolve the remaining encounter question.
+
+The long T03 seed-5 Ridley-area tape is exactly the NQ02 input by SHA-256. Its
+completed context and restore qualifications already report zero classified
+frames. Replaying it again is therefore rejected without spending more frames.
+No new observer implementation or broad instrumentation project is earned by
+these negatives. If historical retention versus current recoverability becomes
+essential to a concrete decision, any future reporting must keep rejected,
+replaced and missing states distinct and qualify its precise observation scope.
+
+Before any new emulation, freeze the exact question, what each possible answer
+changes, complete resource/physical-work bounds and the necessary positive
+qualification. Further observer refinement needs a concrete counterexample.
+Keep the original matched boss/Wily objective and untouched validation intact.

@@ -1,0 +1,44 @@
+{
+  "format": "action-correlation-native-qualification-v1",
+  "decision": "pass",
+  "recorded_utc": "2026-09-09T23:40:48.151406+00:00",
+  "registration_sha256": "f17cb36fd780bf0210d763513d700a73ea58bffe40d86e2ad2221d8fe89830c3",
+  "panel_sha256": "c46692f2694160f860689203452e5518e6d58a8047ed94053fc388f686e6bb41",
+  "source_commit": "2fb37f9c3c21656f629a5bd11a2c54ad88ee03a5",
+  "binary_sha256": "dbeca841f7bcc42842c2fdce137bd46fe3486f9862bf11eda896ea8d5e444361",
+  "cells": [
+    {
+      "id": "metroid-default",
+      "admitted_qualification_frames": 284283,
+      "inferred_full_replay_admitted_frames": 284283,
+      "twice_replayed_witness_frames": 1908,
+      "artifact_sha256": {
+        "stream.jsonl": "0fcaad970e2a219874bdc7c92c523bff482b03e2e832da61d7ce9bc35caee13f",
+        "campaign.json": "78005a151703507cecf51124bf534e3e56c9a7485c6dc578270f5e058a2cf8fb",
+        "checkpoint.json": "a2e8c828dc28c24f165b8a8632866552d8e36ed81c8ac71a82dccefbf2d3c82d"
+      },
+      "summary_sha256": "2b8a65449ac91bef407d2f08f4b50ea52c33885c42701ce9168bc7c43fa2ea61",
+      "cpu_seconds": 26.969278000000003,
+      "elapsed_seconds": 18.15026481199311
+    },
+    {
+      "id": "mm2-default",
+      "admitted_qualification_frames": 235672,
+      "inferred_full_replay_admitted_frames": 235672,
+      "twice_replayed_witness_frames": 3842,
+      "artifact_sha256": {
+        "stream.jsonl": "d2a0c8dbcc49490aea16c0f6aa0952e9ccb8648c1aef83a3a9c96d13737532f0",
+        "campaign.json": "6959071ab0c0ff49525ce15c1a8fbc1789632f5b951a0ff9080ee669f6cc7ba4",
+        "checkpoint.json": "1d7985d0c40398581f687e5f6b6177e7a18406c93384e8bff7c1dff82c215bd0"
+      },
+      "summary_sha256": "7a61a89cc5b6ac900b7d4f1919614f6290633afe3746835b18bb07bb11750de0",
+      "cpu_seconds": 22.518131,
+      "elapsed_seconds": 15.234518535027746
+    }
+  ],
+  "known_auxiliary_frames": 1045660,
+  "limitations": [
+    "Reused qualification seed; no performance sample.",
+    "Full replay cost is inferred from admitted work; setup, reconstruction and unadmitted work remain additional unknowns."
+  ]
+}

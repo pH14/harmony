@@ -20,7 +20,7 @@ use std::{
 };
 
 use crate::search::{
-    continuation::{Continuation, ContinuationBank},
+    continuation::{Continuation, ContinuationBank, ContinuationLearning},
     key_counts::{KEY_COUNT_CAPACITY, KeyCounts},
     rand::RomuDuoJrRand,
 };
@@ -74,6 +74,24 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn preference_cmp(self, _other: Self) -> Ordering {
         Ordering::Equal
     }
+    /// Two monotone resource axes available for optional bounded retention.
+    /// These are local resource preferences, never behavioral-dominance claims.
+    /// If any competitor returns `None`, use the ordinary representative rule.
+    fn retention_resources(self) -> Option<[u64; 2]> {
+        None
+    }
+    /// Optional opaque context for bounded representative diversity. Only
+    /// equality is meaningful; its numeric value supplies no quality order.
+    /// Missing contexts use the ordinary representative rule at competition.
+    fn retention_context(self) -> Option<u64> {
+        None
+    }
+    /// Optional locally comparable progress. Values may be ordered only within
+    /// one scope; absence supplies no progress evidence. This is a workload
+    /// proxy, not a future-behavior or dominance certificate.
+    fn retention_progress(self) -> Option<ScopedProgress> {
+        None
+    }
     /// Ancestry state a key needs to complete itself.
     type Lineage: Clone + Default;
     /// Complete a freshly decoded key against its parent's key and lineage.
@@ -89,6 +107,89 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
 /// campaign's retention. Campaign runs register their own per-run bound at
 /// or below this.
 pub const MAX_ARCHIVE_ENTRIES: usize = 4_194_304;
+
+/// A workload-owned local progress proxy; larger values are preferred only
+/// when scope identities match. Neither field changes selection groups.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct ScopedProgress {
+    pub scope: u64,
+    pub value: u64,
+}
+
+/// Versioned same-slot representative mechanism, independent of parent selection.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SlotRetentionPolicy {
+    /// Existing workload capacity, opaque preference, then route cost.
+    #[default]
+    Representative,
+    /// At most two representatives: the best under each resource-axis order.
+    /// Intermediate tradeoffs can still be lost; this is not a full Pareto front.
+    ResourceExtremes2,
+    /// At most two representatives maximizing covered integer resource thresholds.
+    ResourceCoverage2,
+    /// Ordinary best representative plus the best from the lowest-ranked job.
+    RepresentativeJobSample2,
+    /// Best two candidates under ordinary quality, cost and stable arrival.
+    QualityRepresentatives2,
+    /// Best two context maxima under ordinary quality; contexts are unordered.
+    ContextRepresentatives2,
+    /// Ordinary representative plus maximum same-scope progress with no worse
+    /// resource axes. Only single-representative workloads participate.
+    ResourceGuardedProgress2,
+    /// Same eligible alternatives as ResourceGuardedProgress2, ranked by
+    /// ordinary quality instead of progress. A scoped capacity control.
+    ResourceGuardedProgressQuality2,
+}
+
+impl SlotRetentionPolicy {
+    /// `None` preserves historical bytes and behavior.
+    #[must_use]
+    pub fn identifier(self) -> Option<&'static str> {
+        match self {
+            Self::Representative => None,
+            Self::ResourceExtremes2 => Some("resource_extremes_2_v1"),
+            Self::ResourceCoverage2 => Some("resource_coverage_2_v1"),
+            Self::RepresentativeJobSample2 => Some("representative_job_sample_2_v1"),
+            Self::QualityRepresentatives2 => Some("quality_representatives_2_v1"),
+            Self::ContextRepresentatives2 => Some("context_representatives_2_v1"),
+            Self::ResourceGuardedProgress2 => Some("resource_guarded_progress_2_v1"),
+            Self::ResourceGuardedProgressQuality2 => {
+                Some("resource_guarded_progress_quality_control_2_v1")
+            }
+        }
+    }
+
+    /// Decode a recorded mechanism; unknown identifiers fail closed.
+    ///
+    /// # Errors
+    /// Returns an error for an unsupported recorded policy.
+    pub fn from_identifier(identifier: Option<&str>) -> Result<Self, Box<dyn Error>> {
+        match identifier {
+            None => Ok(Self::Representative),
+            Some("resource_extremes_2_v1") => Ok(Self::ResourceExtremes2),
+            Some("resource_coverage_2_v1") => Ok(Self::ResourceCoverage2),
+            Some("representative_job_sample_2_v1") => Ok(Self::RepresentativeJobSample2),
+            Some("quality_representatives_2_v1") => Ok(Self::QualityRepresentatives2),
+            Some("context_representatives_2_v1") => Ok(Self::ContextRepresentatives2),
+            Some("resource_guarded_progress_2_v1") => Ok(Self::ResourceGuardedProgress2),
+            Some("resource_guarded_progress_quality_control_2_v1") => {
+                Ok(Self::ResourceGuardedProgressQuality2)
+            }
+            Some(value) => Err(format!("unknown slot retention policy {value}").into()),
+        }
+    }
+}
+
+/// Fixed, bijective mixing of recorded job cohorts; no campaign RNG draws or
+/// additional replay state. This is a deterministic rank, not a claim of
+/// independent random priorities on an adaptively generated search stream.
+fn retention_job_rank(execution: u64) -> u64 {
+    let value = execution ^ 0x7265_7465_6e74_696f;
+    let value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    let value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
 /// Entries one retention slot holds before candidates must displace.
 pub const MAX_ENTRIES_PER_KEY: usize = 2;
 /// Dead metadata reclaimed per compaction. A fixed batch bounds physical
@@ -174,6 +275,21 @@ pub fn retention_policy_from_identifier(
 /// already written.
 pub const SELECTOR_IDENTIFIER: &str = "room_cell_uniform_128";
 
+/// Snapshot-local comparison only; no claim of dominance over future outcomes.
+fn resource_guarded_progress<K: ArchiveKey>(base: K, next: K) -> bool {
+    match (
+        base.retention_progress(),
+        next.retention_progress(),
+        base.retention_resources(),
+        next.retention_resources(),
+    ) {
+        (Some(a), Some(b), Some(ar), Some(br)) => {
+            a.scope == b.scope && b.value > a.value && br[0] >= ar[0] && br[1] >= ar[1]
+        }
+        _ => false,
+    }
+}
+
 /// Give-up thresholds for the retiring selector: consecutive barren draws at
 /// which a class is skipped in selection exactly as exhausted classes are
 /// skipped.
@@ -227,6 +343,16 @@ pub enum SelectorPolicy {
     /// Cost selection using semantic progress without entry-count weighting.
     /// Equal-progress locations share frontier rank regardless of map identity.
     EnergyProgressCheapest(RetireThresholds),
+    /// Semantic-progress energy and novelty without historical group-time ranks.
+    /// The cost-sorted order remains only to preserve random coupling when all
+    /// old weights were equal; it does not change the uniform within-cell law.
+    EnergyProgressNoCost(RetireThresholds),
+    /// Semantic cost selection with one additional fair coin after every cell
+    /// proposal, ignored. Matched RNG control for scoped return experiments.
+    EnergyProgressCheapestScopedReturnControl(RetireThresholds),
+    /// The matched control with half-probability redirection to the same slot's
+    /// qualified, strictly higher-progress member inside the offered window.
+    EnergyProgressCheapestScopedReturnHalf(RetireThresholds),
 }
 
 /// The recorded identifier of a parent selector.
@@ -251,6 +377,18 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
         }
         SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => format!(
             "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:{}",
+            threshold_values(scales)
+        ),
+        SelectorPolicy::EnergyProgressCheapestScopedReturnControl(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_progress_cheapest_scoped_return_control_v1:{}",
+            threshold_values(scales)
+        ),
+        SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_progress_cheapest_scoped_return_half_v1:{}",
+            threshold_values(scales)
+        ),
+        SelectorPolicy::EnergyProgressNoCost(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_progress_no_cost_v1:{}",
             threshold_values(scales)
         ),
         SelectorPolicy::EnergyProgressCheapest(scales) => format!(
@@ -300,6 +438,11 @@ pub fn selector_policy_from_identifier(
     let energy_prefix = format!("{SELECTOR_IDENTIFIER}_energy:");
     let frontier_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier:");
     let key_count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:");
+    let return_control_prefix =
+        format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_scoped_return_control_v1:");
+    let return_half_prefix =
+        format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_scoped_return_half_v1:");
+    let no_cost_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_no_cost_v1:");
     let semantic_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_v1:");
     let progress_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_count_v1:");
     let count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:");
@@ -311,6 +454,9 @@ pub fn selector_policy_from_identifier(
         EnergyFrontierCheapest,
         EnergyFrontierCheapestCount,
         EnergyProgressCheapest,
+        EnergyProgressNoCost,
+        ScopedReturnControl,
+        ScopedReturnHalf,
         EnergyProgressCheapestCount,
         EnergyFrontierCheapestKeyCount,
     }
@@ -318,6 +464,12 @@ pub fn selector_policy_from_identifier(
         (values, Parsed::Retire)
     } else if let Some(values) = identifier.strip_prefix(&key_count_prefix) {
         (values, Parsed::EnergyFrontierCheapestKeyCount)
+    } else if let Some(values) = identifier.strip_prefix(&return_control_prefix) {
+        (values, Parsed::ScopedReturnControl)
+    } else if let Some(values) = identifier.strip_prefix(&return_half_prefix) {
+        (values, Parsed::ScopedReturnHalf)
+    } else if let Some(values) = identifier.strip_prefix(&no_cost_prefix) {
+        (values, Parsed::EnergyProgressNoCost)
     } else if let Some(values) = identifier.strip_prefix(&semantic_prefix) {
         (values, Parsed::EnergyProgressCheapest)
     } else if let Some(values) = identifier.strip_prefix(&progress_prefix) {
@@ -355,6 +507,13 @@ pub fn selector_policy_from_identifier(
         Parsed::EnergyFrontierCheapestKeyCount => {
             SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
         }
+        Parsed::ScopedReturnControl => {
+            SelectorPolicy::EnergyProgressCheapestScopedReturnControl(thresholds)
+        }
+        Parsed::ScopedReturnHalf => {
+            SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(thresholds)
+        }
+        Parsed::EnergyProgressNoCost => SelectorPolicy::EnergyProgressNoCost(thresholds),
         Parsed::EnergyProgressCheapest => SelectorPolicy::EnergyProgressCheapest(thresholds),
         Parsed::EnergyProgressCheapestCount => {
             SelectorPolicy::EnergyProgressCheapestCount(thresholds)
@@ -792,11 +951,91 @@ pub struct ArchiveCandidate<A: Ord, K, M> {
     pub milestones: M,
 }
 
+/// One existing member of a local retention slot, materialized for diagnostics.
+pub struct RetentionSlotMember<'a, A: Ord, K, S> {
+    /// Stable stream entry id, not its compact in-memory index.
+    pub id: u64,
+    /// Existing endpoint key.
+    pub key: K,
+    /// Resident snapshot, if still cached.
+    pub snapshot: Option<&'a S>,
+    /// Complete input, reconstructed without changing search counters.
+    pub input: Input<A>,
+    /// Whether the local rule proposes preserving this member. Subsequent
+    /// population or memory eviction can still remove it.
+    pub retained_by_local_rule: bool,
+}
+
+/// Result of lazily reconstructing every incumbent in a local slot.
+pub type MaterializedRetentionSlot<'a, A, K, S> =
+    Result<Vec<RetentionSlotMember<'a, A, K, S>>, &'static str>;
+
+/// Read-only same-slot competition, emitted before any incumbent is removed.
+/// Lazy inputs are reconstructed only if the observer requests them. Their
+/// allocations and work belong to diagnostics, not deterministic report counters.
+pub struct RetentionObservation<'a, A: Ord, K, S> {
+    /// Admission sequence of the proposed candidate.
+    pub execution: u64,
+    /// Proposed endpoint key and snapshot.
+    pub candidate: (K, &'a S),
+    /// Incumbent key and resident snapshot, if still cached.
+    pub incumbent: (K, Option<&'a S>),
+    /// Whether the candidate displaces this incumbent under the current rule.
+    pub replaces: bool,
+    /// Whether the candidate will be admitted, possibly alongside the incumbent.
+    pub candidate_admitted: bool,
+    /// Incumbent admission sequence.
+    pub created_execution: u64,
+    /// Incumbent exposure before this competition.
+    pub exposure: EntrySelectorCounters,
+    /// Whether the incumbent ever entered the selector's recency window.
+    pub in_window_ever: bool,
+    /// Materialize candidate and incumbent inputs without changing search counters.
+    pub inputs: &'a dyn Fn() -> Result<(Input<A>, Input<A>), &'static str>,
+    /// Number of existing members in this local slot, excluding the candidate.
+    pub slot_member_count: usize,
+    /// Materialize every incumbent and the local rule's proposed survivor set.
+    /// This precedes global population and memory eviction. No vectors or
+    /// inputs are allocated unless the observer invokes this function.
+    pub slot_members: &'a dyn Fn() -> MaterializedRetentionSlot<'a, A, K, S>,
+}
+
+/// Constant-space lifecycle counters, reporting-only and excluded from replay state.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct RetentionDiagnostics {
+    /// Full-slot competitions (excluding duplicate inputs).
+    pub competitions: u64,
+    /// Optional-policy admissions that preserved a competing representative.
+    pub alternative_admissions: u64,
+    /// Resource-aware decisions, including rejected candidates.
+    pub resource_decisions: u64,
+    /// Incumbents removed by replacement or memory/population eviction.
+    pub removed: u64,
+    /// Removed incumbents never exposed in the recency window.
+    pub removed_never_in_window: u64,
+    /// Removed incumbents with no recorded parent selection at removal time.
+    /// Selections include pre-execution duplicate skips. Pending job credits
+    /// and continuation within the birth job are not represented here.
+    pub removed_never_selected: u64,
+    /// Removed incumbents with no productive parent selection. Later actions
+    /// in the birth job can already have extended such an incumbent.
+    pub removed_never_productive: u64,
+    /// Sum of recorded selections, including duplicate skips, at removal.
+    pub removed_selections: u64,
+}
+
 /// The generic snapshot archive.
 pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     /// Retention stops when the entry count reaches this bound; campaign
     /// runs record their bound in the stream header and replay under it.
     pub max_entries: usize,
+    /// Reporting-only lifecycle census; fixed size, no search feedback.
+    pub retention_diagnostics: RetentionDiagnostics,
+    #[cfg(feature = "selector-cost-audit")]
+    selector_cost_audit: super::selector_cost::SelectorCostAudit,
+    /// Recorded optional same-slot retention mechanism.
+    pub slot_retention: SlotRetentionPolicy,
     /// Retained entries in insertion order.
     pub(crate) entries: Vec<ArchiveEntry<A, K, M, S>>,
     /// Stable stream id to current compact in-memory slot.
@@ -1391,6 +1630,10 @@ where
     pub fn new(action_time: fn(&A) -> u64) -> Self {
         Self {
             max_entries: MAX_ARCHIVE_ENTRIES,
+            retention_diagnostics: RetentionDiagnostics::default(),
+            #[cfg(feature = "selector-cost-audit")]
+            selector_cost_audit: super::selector_cost::SelectorCostAudit::default(),
+            slot_retention: SlotRetentionPolicy::default(),
             entries: Vec::new(),
             id_to_index: BTreeMap::new(),
             next_entry_id: 0,
@@ -1582,6 +1825,14 @@ where
         if !self.active.get(id).copied().unwrap_or(false) {
             return false;
         }
+        self.retention_diagnostics.removed += 1;
+        self.retention_diagnostics.removed_never_in_window += u64::from(!self.in_window_ever[id]);
+        self.retention_diagnostics.removed_never_selected += u64::from(self.selected[id] == 0);
+        self.retention_diagnostics.removed_never_productive += u64::from(self.productive[id] == 0);
+        self.retention_diagnostics.removed_selections = self
+            .retention_diagnostics
+            .removed_selections
+            .saturating_add(self.selected[id]);
         self.active[id] = false;
         self.active_count = self.active_count.saturating_sub(1);
         let slot_key = self.entries[id].key.group(0);
@@ -2132,6 +2383,10 @@ where
     pub(crate) fn materialize_input(&self, id: usize) -> Result<Input<A>, &'static str> {
         self.input_reconstructions
             .set(self.input_reconstructions.get().saturating_add(1));
+        self.materialize_input_untracked(id)
+    }
+
+    fn materialize_input_untracked(&self, id: usize) -> Result<Input<A>, &'static str> {
         let entry = self.entries.get(id).ok_or("archive input id is missing")?;
         let actions = self
             .input_index
@@ -2711,6 +2966,29 @@ where
         candidate: ArchiveCandidate<A, K, M>,
         snapshot: S,
     ) -> Result<(Option<usize>, K), Box<dyn Error>> {
+        self.insert_after_observed(parent_id, previous, execution, candidate, snapshot, |_| {
+            Ok(())
+        })
+    }
+
+    /// Insert with a read-only diagnostic observer of full-slot competitions.
+    /// The observer must use bounded storage and never supply decisions or random
+    /// draws back to the campaign. Errors stop the run rather than losing evidence.
+    ///
+    /// # Errors
+    /// Returns insertion errors or an observer error.
+    pub fn insert_after_observed<F>(
+        &mut self,
+        parent_id: Option<usize>,
+        previous: Option<K>,
+        execution: u64,
+        candidate: ArchiveCandidate<A, K, M>,
+        snapshot: S,
+        observer: F,
+    ) -> Result<(Option<usize>, K), Box<dyn Error>>
+    where
+        F: FnOnce(&RetentionObservation<'_, A, K, S>) -> Result<(), Box<dyn Error>>,
+    {
         let ArchiveCandidate {
             suffix,
             key,
@@ -2740,8 +3018,8 @@ where
         let slot = self.slots.entry(key.group(0)).or_default().clone();
         let new_slot = slot.is_empty();
         let slot_full = slot.len() >= K::slot_capacity().max(1);
-        let replace = if slot_full {
-            let worst = slot.iter().copied().min_by(|left, right| {
+        let worst = if slot_full {
+            slot.iter().copied().min_by(|left, right| {
                 let left_entry = &self.entries[*left];
                 let right_entry = &self.entries[*right];
                 left_entry
@@ -2749,19 +3027,274 @@ where
                     .preference_cmp(right_entry.key)
                     .then_with(|| self.time_in_group[*right].cmp(&self.time_in_group[*left]))
                     .then_with(|| right_entry.id.cmp(&left_entry.id))
-            });
-            worst.filter(|id| match key.preference_cmp(self.entries[*id].key) {
-                Ordering::Greater => true,
-                Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
-                Ordering::Less => false,
             })
         } else {
             None
         };
-        if slot_full && replace.is_none() {
+        let replace = worst.filter(|id| match key.preference_cmp(self.entries[*id].key) {
+            Ordering::Greater => true,
+            Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
+            Ordering::Less => false,
+        });
+        let quality_pair = matches!(
+            self.slot_retention,
+            SlotRetentionPolicy::RepresentativeJobSample2
+                | SlotRetentionPolicy::QualityRepresentatives2
+        ) || (K::slot_capacity() == 1
+            && matches!(
+                self.slot_retention,
+                SlotRetentionPolicy::ResourceGuardedProgress2
+                    | SlotRetentionPolicy::ResourceGuardedProgressQuality2
+            ))
+            || (self.slot_retention == SlotRetentionPolicy::ContextRepresentatives2
+                && key.retention_context().is_some()
+                && slot
+                    .iter()
+                    .all(|id| self.entries[*id].key.retention_context().is_some()));
+        let replacements = if quality_pair {
+            let new_id = self.entries.len();
+            let attributes = |id: usize| {
+                if id == new_id {
+                    (key, candidate_time_in_group, self.next_entry_id, execution)
+                } else {
+                    let entry = &self.entries[id];
+                    (
+                        entry.key,
+                        self.time_in_group[id],
+                        entry.id,
+                        entry.created_execution,
+                    )
+                }
+            };
+            let quality = |left: usize, right: usize| {
+                let (a, ac, ai, _) = attributes(left);
+                let (b, bc, bi, _) = attributes(right);
+                a.preference_cmp(b)
+                    .then_with(|| bc.cmp(&ac))
+                    .then_with(|| bi.cmp(&ai))
+            };
+            let candidates = || slot.iter().copied().chain(std::iter::once(new_id));
+            let representative = candidates()
+                .max_by(|a, b| quality(*a, *b))
+                .expect("candidate makes nonempty competition");
+            let alternative = match self.slot_retention {
+                SlotRetentionPolicy::RepresentativeJobSample2 => candidates()
+                    .min_by(|a, b| {
+                        retention_job_rank(attributes(*a).3)
+                            .cmp(&retention_job_rank(attributes(*b).3))
+                            .then_with(|| quality(*b, *a))
+                    })
+                    .expect("candidate makes nonempty competition"),
+                SlotRetentionPolicy::QualityRepresentatives2 => candidates()
+                    .filter(|id| *id != representative)
+                    .max_by(|a, b| quality(*a, *b))
+                    .unwrap_or(representative),
+                SlotRetentionPolicy::ContextRepresentatives2 => candidates()
+                    .filter(|id| {
+                        attributes(*id).0.retention_context()
+                            != attributes(representative).0.retention_context()
+                    })
+                    .max_by(|a, b| quality(*a, *b))
+                    .unwrap_or(representative),
+                SlotRetentionPolicy::ResourceGuardedProgress2
+                | SlotRetentionPolicy::ResourceGuardedProgressQuality2 => candidates()
+                    .filter(|id| {
+                        let (peer, anchor) = (attributes(*id).0, attributes(representative).0);
+                        let evidence = peer
+                            .retention_progress()
+                            .zip(anchor.retention_progress())
+                            .zip(peer.retention_resources().zip(anchor.retention_resources()));
+                        evidence.is_some_and(|((p, a), (r, ar))| {
+                            p.scope == a.scope
+                                && p.value > a.value
+                                && r.iter().zip(ar).all(|(v, av)| *v >= av)
+                        })
+                    })
+                    .max_by(|a, b| {
+                        let progress = if self.slot_retention
+                            == SlotRetentionPolicy::ResourceGuardedProgress2
+                        {
+                            attributes(*a)
+                                .0
+                                .retention_progress()
+                                .expect("eligible progress")
+                                .value
+                                .cmp(
+                                    &attributes(*b)
+                                        .0
+                                        .retention_progress()
+                                        .expect("eligible progress")
+                                        .value,
+                                )
+                        } else {
+                            Ordering::Equal
+                        };
+                        progress.then_with(|| quality(*a, *b))
+                    })
+                    .unwrap_or(representative),
+                _ => unreachable!("quality-pair policies checked before competition"),
+            };
+            let keep = [representative, alternative];
+            if keep.contains(&new_id) {
+                if slot.iter().any(|id| keep.contains(id)) {
+                    self.retention_diagnostics.alternative_admissions += 1;
+                }
+                Some(
+                    slot.iter()
+                        .copied()
+                        .filter(|id| !keep.contains(id))
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            }
+        } else if matches!(
+            self.slot_retention,
+            SlotRetentionPolicy::ResourceExtremes2 | SlotRetentionPolicy::ResourceCoverage2
+        ) && key.retention_resources().is_some()
+            && slot
+                .iter()
+                .all(|id| self.entries[*id].key.retention_resources().is_some())
+        {
+            self.retention_diagnostics.resource_decisions += 1;
+            let new_id = self.entries.len();
+            let resource_order = |id: usize, axis: usize| {
+                let (resources, cost, stable) = if id == new_id {
+                    (
+                        key.retention_resources()
+                            .expect("candidate resources checked"),
+                        candidate_time_in_group,
+                        self.next_entry_id,
+                    )
+                } else {
+                    (
+                        self.entries[id]
+                            .key
+                            .retention_resources()
+                            .expect("incumbent resources checked"),
+                        self.time_in_group[id],
+                        self.entries[id].id,
+                    )
+                };
+                (
+                    resources[axis],
+                    resources[1 - axis],
+                    Reverse(cost),
+                    Reverse(stable),
+                )
+            };
+            let best = if self.slot_retention == SlotRetentionPolicy::ResourceCoverage2 {
+                let points: Vec<_> = slot
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(new_id))
+                    .map(|id| {
+                        let (resources, cost, stable_id) = if id == new_id {
+                            (
+                                key.retention_resources()
+                                    .expect("candidate resources checked"),
+                                candidate_time_in_group,
+                                self.next_entry_id,
+                            )
+                        } else {
+                            (
+                                self.entries[id]
+                                    .key
+                                    .retention_resources()
+                                    .expect("incumbent resources checked"),
+                                self.time_in_group[id],
+                                self.entries[id].id,
+                            )
+                        };
+                        super::resource_coverage::Point {
+                            index: id,
+                            resources,
+                            cost,
+                            stable_id,
+                        }
+                    })
+                    .collect();
+                super::resource_coverage::best(&points)
+            } else {
+                [0, 1]
+                    .map(|axis| {
+                        slot.iter()
+                            .copied()
+                            .chain(std::iter::once(new_id))
+                            .max_by_key(|id| resource_order(*id, axis))
+                            .expect("candidate makes nonempty competition")
+                    })
+                    .to_vec()
+            };
+            if best.contains(&new_id) {
+                if slot.iter().any(|id| best.contains(id)) {
+                    self.retention_diagnostics.alternative_admissions += 1;
+                }
+                Some(
+                    slot.iter()
+                        .copied()
+                        .filter(|id| !best.contains(id))
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            }
+        } else if !slot_full || replace.is_some() {
+            Some(replace.into_iter().collect::<Vec<_>>())
+        } else {
+            None
+        };
+        let observed_incumbent = replacements
+            .as_ref()
+            .and_then(|ids| ids.first().copied())
+            .or(worst);
+        if let Some(id) = observed_incumbent {
+            self.retention_diagnostics.competitions += 1;
+            observer(&RetentionObservation {
+                execution,
+                candidate: (key, &snapshot),
+                incumbent: (self.entries[id].key, self.entries[id].snapshot.as_deref()),
+                replaces: replacements.as_ref().is_some_and(|ids| ids.contains(&id)),
+                candidate_admitted: replacements.is_some(),
+                created_execution: self.entries[id].created_execution,
+                exposure: EntrySelectorCounters {
+                    selected: self.selected[id],
+                    productive: self.productive[id],
+                },
+                in_window_ever: self.in_window_ever[id],
+                inputs: &|| {
+                    let mut input = match parent_id {
+                        Some(parent) => self.materialize_input_untracked(parent)?,
+                        None => Input {
+                            actions: Vec::new(),
+                        },
+                    };
+                    input.actions.extend_from_slice(&suffix);
+                    Ok((input, self.materialize_input_untracked(id)?))
+                },
+                slot_member_count: slot.len(),
+                slot_members: &|| {
+                    slot.iter()
+                        .map(|member| {
+                            let entry = &self.entries[*member];
+                            Ok(RetentionSlotMember {
+                                id: entry.id,
+                                key: entry.key,
+                                snapshot: entry.snapshot.as_deref(),
+                                input: self.materialize_input_untracked(*member)?,
+                                retained_by_local_rule: replacements
+                                    .as_ref()
+                                    .is_none_or(|ids| !ids.contains(member)),
+                            })
+                        })
+                        .collect()
+                },
+            })?;
+        }
+        let Some(replacements) = replacements else {
             self.rejected = self.rejected.saturating_add(1);
             return Ok((None, key));
-        }
+        };
         let population_retirements = self
             .active_count
             .saturating_sub(self.max_entries)
@@ -2781,23 +3314,37 @@ where
             return Err("archive population limit did not retire an entry".into());
         }
         if let Some(bank) = &mut self.continuations {
-            if replace.is_some_and(|replaced| {
-                key.preference_cmp(self.entries[replaced].key) == Ordering::Greater
-            }) {
-                bank.improved(key.group(0), self.next_entry_id);
-            }
-            if let Some(parent) = parent_id {
-                let entry = &self.entries[parent];
-                bank.record(
-                    entry.key.group(0),
-                    key.group(0),
-                    entry.id,
-                    self.next_entry_id,
-                    &suffix,
-                );
+            match bank.learning() {
+                ContinuationLearning::ScopedProgress => {
+                    if let Some(parent) = parent_id {
+                        let entry = &self.entries[parent];
+                        if entry.key.group(0) == key.group(0)
+                            && resource_guarded_progress(entry.key, key)
+                        {
+                            bank.progressed(entry.id, self.next_entry_id, &suffix);
+                        }
+                    }
+                }
+                ContinuationLearning::Exits => {
+                    if replacements.iter().any(|replaced| {
+                        key.preference_cmp(self.entries[*replaced].key) == Ordering::Greater
+                    }) {
+                        bank.improved(key.group(0), self.next_entry_id);
+                    }
+                    if let Some(parent) = parent_id {
+                        let entry = &self.entries[parent];
+                        bank.record(
+                            entry.key.group(0),
+                            key.group(0),
+                            entry.id,
+                            self.next_entry_id,
+                            &suffix,
+                        );
+                    }
+                }
             }
         }
-        if let Some(replaced) = replace {
+        for replaced in replacements {
             self.replacement_time_displaced = self.replacement_time_displaced.saturating_add(1);
             self.deactivate(replaced);
         }
@@ -3094,10 +3641,31 @@ where
         )
     }
 
+    fn ignores_selection_cost(&self) -> bool {
+        matches!(
+            self.selector_policy,
+            SelectorPolicy::EnergyProgressNoCost(_)
+        )
+    }
+
+    #[cfg(feature = "selector-cost-audit")]
+    fn audits_selection_cost(&self) -> bool {
+        matches!(
+            self.selector_policy,
+            SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_)
+                | SelectorPolicy::EnergyProgressNoCost(_)
+        )
+    }
+
     fn semantic_progress(&self) -> bool {
         matches!(
             self.selector_policy,
             SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_)
+                | SelectorPolicy::EnergyProgressNoCost(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         )
     }
@@ -3406,6 +3974,9 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(scales)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales)
             | SelectorPolicy::EnergyProgressCheapest(scales)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(scales)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(scales)
+            | SelectorPolicy::EnergyProgressNoCost(scales)
             | SelectorPolicy::EnergyProgressCheapestCount(scales) => (scales, true),
             _ => return Ok(rand.below(count)),
         };
@@ -3451,6 +4022,12 @@ where
             _ => (Vec::new(), Vec::new()),
         };
         let mut weights = Vec::with_capacity(groups.len());
+        #[cfg(feature = "selector-cost-audit")]
+        let mut ranked_weights = Vec::with_capacity(groups.len());
+        #[cfg(feature = "selector-cost-audit")]
+        let mut cost_free_weights = Vec::with_capacity(groups.len());
+        #[cfg(feature = "selector-cost-audit")]
+        let mut capped_cost_terms = 0;
         for (index, group) in groups.iter().enumerate() {
             let barren = self
                 .group_barren
@@ -3464,7 +4041,7 @@ where
                 weights.push(energy);
                 continue;
             }
-            let (rank, span) = match (frontier, cells) {
+            let (rank, span, cost_free_rank) = match (frontier, cells) {
                 (Some(frontier), _) => {
                     let ahead = if self.semantic_progress() {
                         ranked
@@ -3478,7 +4055,7 @@ where
                         let behind = ranked.partition_point(|band| *band <= frontier[index]);
                         ranked.len().saturating_sub(behind)
                     };
-                    (ahead, 16)
+                    (ahead, 16, ahead)
                 }
                 (None, Some(cells)) => {
                     let (opened, cost) = cells[index];
@@ -3495,11 +4072,35 @@ where
                     let costlier = cost.map_or(0, |cost| {
                         cheapest.partition_point(|cheaper| *cheaper < cost) / CHEAPEST_RANK_SCALE
                     });
-                    (novelty.saturating_add(costlier), 16)
+                    let rank = novelty.saturating_add(costlier);
+                    #[cfg(feature = "selector-cost-audit")]
+                    if costlier > 0 && rank >= 16 {
+                        capped_cost_terms += 1;
+                    }
+                    (rank, 16, novelty)
                 }
-                (None, None) => (0, 8),
+                (None, None) => (0, 8, 0),
             };
-            weights.push((energy << span) >> rank.min(span));
+            let actual_rank = if self.ignores_selection_cost() {
+                cost_free_rank
+            } else {
+                rank
+            };
+            weights.push((energy << span) >> actual_rank.min(span));
+            #[cfg(feature = "selector-cost-audit")]
+            {
+                ranked_weights.push((energy << span) >> rank.min(span));
+                cost_free_weights.push((energy << span) >> cost_free_rank.min(span));
+            }
+        }
+        #[cfg(feature = "selector-cost-audit")]
+        if frontier.is_none() && cells.is_some() && self.audits_selection_cost() {
+            self.selector_cost_audit.between_cells.record(
+                &ranked_weights,
+                &cost_free_weights,
+                capped_cost_terms,
+                0,
+            );
         }
         let total = NonZeroUsize::new(weights.iter().sum()).ok_or("energy weights sum to zero")?;
         let mut draw = rand.below(total);
@@ -3526,6 +4127,9 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
             | SelectorPolicy::EnergyProgressCheapest(thresholds)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(thresholds)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(thresholds)
+            | SelectorPolicy::EnergyProgressNoCost(thresholds)
             | SelectorPolicy::EnergyProgressCheapestCount(thresholds) => {
                 self.since_retained[id] < thresholds.entry
             }
@@ -3543,6 +4147,9 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
             | SelectorPolicy::EnergyProgressCheapest(_)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(_)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_)
+            | SelectorPolicy::EnergyProgressNoCost(_)
             | SelectorPolicy::EnergyProgressCheapestCount(_) => true,
             SelectorPolicy::Retire(thresholds) => {
                 thresholds
@@ -3601,6 +4208,9 @@ where
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
                 | SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_)
+                | SelectorPolicy::EnergyProgressNoCost(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             let mut ranked = window
@@ -3628,11 +4238,28 @@ where
                         };
                         let draws = usize::try_from(count).unwrap_or(usize::MAX);
                         ((65_536_usize >> halvings) / draws.saturating_add(1)).max(1)
+                    } else if self.ignores_selection_cost() {
+                        256
                     } else {
                         256_usize >> halvings
                     }
                 })
                 .collect::<Vec<_>>();
+            #[cfg(feature = "selector-cost-audit")]
+            if self.audits_selection_cost() {
+                let cost_weights = (0..ranked.len())
+                    .map(|rank| 256_usize >> (rank / CHEAPEST_RANK_SCALE).min(8))
+                    .collect::<Vec<_>>();
+                let cost_free = vec![256; ranked.len()];
+                let ties = (1..ranked.len())
+                    .filter(|index| {
+                        index % CHEAPEST_RANK_SCALE == 0 && ranked[*index].0 == ranked[*index - 1].0
+                    })
+                    .count();
+                self.selector_cost_audit
+                    .within_cells
+                    .record(&cost_weights, &cost_free, 0, ties);
+            }
             let total =
                 NonZeroUsize::new(weights.iter().sum()).ok_or("cheapest weights sum to zero")?;
             let mut draw = rand.below(total);
@@ -3648,6 +4275,26 @@ where
         } else {
             window[rand.below(NonZeroUsize::new(window.len()).ok_or("empty tie window")?)]
         };
+        // Both experimental policies consume exactly one extra coin on every
+        // cell draw, even for a singleton or unavailable progress. The uniform
+        // exploration path never enters here. Historical policies consume none.
+        let id = match self.selector_policy {
+            SelectorPolicy::EnergyProgressCheapestScopedReturnControl(_)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_) => {
+                let redirect = rand.below(NonZeroUsize::new(2).expect("two is nonzero")) != 0;
+                if redirect
+                    && matches!(
+                        self.selector_policy,
+                        SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_)
+                    )
+                {
+                    self.scoped_return_parent(id, window)
+                } else {
+                    id
+                }
+            }
+            _ => id,
+        };
         Ok((
             id,
             ConcentrationDraw {
@@ -3655,6 +4302,49 @@ where
                 entered_window,
             },
         ))
+    }
+
+    /// Redirect only within the exact eligible window supplied by the existing
+    /// walk. That window already enforces residency, action limits, recency and
+    /// exhaustion (including the unchanged all-exhausted reset). Rechecking
+    /// streaks here would incorrectly veto that reset. Qualified retention has
+    /// at most two members per slot, so only one alternate can be examined.
+    fn scoped_return_parent(&self, proposed: usize, window: &[usize]) -> usize {
+        if !matches!(
+            self.slot_retention,
+            SlotRetentionPolicy::ResourceGuardedProgress2
+                | SlotRetentionPolicy::ResourceGuardedProgressQuality2
+        ) {
+            return proposed;
+        }
+        let key = self.entries[proposed].key;
+        let Some(members) = self.slots.get(&key.group(0)).filter(|ids| ids.len() == 2) else {
+            return proposed;
+        };
+        let Some(other) = members.iter().copied().find(|id| *id != proposed) else {
+            return proposed;
+        };
+        if !window.contains(&other) {
+            return proposed;
+        }
+        let alternate = self.entries[other].key;
+        if resource_guarded_progress(key, alternate) {
+            other
+        } else {
+            proposed
+        }
+    }
+
+    /// Optional observation-only conditional cost-rank statistics.
+    pub(crate) fn selector_cost_diagnostics(&self) -> Option<serde_json::Value> {
+        #[cfg(feature = "selector-cost-audit")]
+        {
+            Some(self.selector_cost_audit.snapshot())
+        }
+        #[cfg(not(feature = "selector-cost-audit"))]
+        {
+            None
+        }
     }
 
     /// Whether entry `id` was the first to occupy its retention slot.
@@ -3669,6 +4359,60 @@ where
     #[must_use]
     pub fn opened_new_cell(&self, id: usize) -> bool {
         self.opened_cell.get(id).copied().unwrap_or(false)
+    }
+
+    /// Additional fixed storage used by the retention lifecycle observer.
+    /// Existing selector exposure vectors are reused and already covered by
+    /// the archive metadata charge; they are not additional diagnostic storage.
+    #[must_use]
+    pub fn retention_diagnostic_memory_bytes(&self) -> usize {
+        size_of::<RetentionDiagnostics>()
+    }
+
+    /// Cached endpoints of active entries, for a final reporting-only census.
+    /// Missing snapshots remain visible; diagnostics must not reconstruct them.
+    pub(crate) fn retained_snapshots(&self) -> impl Iterator<Item = Option<&S>> {
+        self.entries
+            .iter()
+            .zip(&self.active)
+            .filter_map(|(entry, active)| active.then_some(entry.snapshot.as_deref()))
+    }
+
+    /// Final reporting-only census of active keys, independent of snapshot
+    /// residency and historical reconstruction anchors. No search feedback.
+    pub(crate) fn retention_context_census(&self) -> Option<serde_json::Value> {
+        if !self
+            .entries
+            .iter()
+            .zip(&self.active)
+            .any(|(entry, active)| *active && entry.key.retention_context().is_some())
+        {
+            return None;
+        }
+        let mut slots = BTreeMap::<_, Vec<_>>::new();
+        for (entry, active) in self.entries.iter().zip(&self.active) {
+            if *active {
+                slots
+                    .entry(entry.key.group(0))
+                    .or_default()
+                    .push(entry.key.retention_context());
+            }
+        }
+        let with_context = slots
+            .values()
+            .flatten()
+            .filter(|context| context.is_some())
+            .count();
+        (with_context > 0).then(|| serde_json::json!({
+            "scope": "active retained keys; independent of snapshot residency; no future or progress claim",
+            "active_entries": self.active_count, "with_context": with_context,
+            "slots": slots.len(), "largest_slot": slots.values().map(Vec::len).max().unwrap_or(0),
+            "two_distinct_contexts": slots.values().filter(|contexts|
+                contexts.len() == 2 && contexts[0].is_some() && contexts[1].is_some()
+                && contexts[0] != contexts[1]).count(),
+            "two_same_contexts": slots.values().filter(|contexts|
+                contexts.len() == 2 && contexts[0].is_some() && contexts[0] == contexts[1]).count()
+        }))
     }
 
     /// Number of entries currently participating in retention.
@@ -3739,8 +4483,14 @@ where
 
     /// Enable bounded learned transition reuse. Its full capacity is reserved
     /// against the campaign budget before bootstrap in both live and replay.
-    pub(crate) fn enable_continuations(&mut self, enabled: bool) {
-        self.continuations = enabled.then(ContinuationBank::default);
+    pub(crate) fn enable_continuations(&mut self, learning: Option<ContinuationLearning>) {
+        self.continuations = learning.map(ContinuationBank::new);
+    }
+
+    pub(crate) fn progress_trial_parent_eligible(&self, id: usize, max_actions: usize) -> bool {
+        self.active.get(id).copied().unwrap_or(false)
+            && self.origin_resident(id)
+            && self.entries[id].input_len < max_actions
     }
 
     /// Stale parents are deliberately not pinned by speculative work. The
@@ -3761,11 +4511,11 @@ where
                     0
                 },
             )
-            .saturating_add(if self.continuations.is_some() {
-                ContinuationBank::<K::Group, A>::reserve_bytes()
-            } else {
-                0
-            })
+            .saturating_add(
+                self.continuations
+                    .as_ref()
+                    .map_or(0, ContinuationBank::memory_reserve_bytes),
+            )
     }
 
     /// Deterministic bytes charged to compact entry metadata, excluding its
@@ -3882,6 +4632,9 @@ where
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
                 | SelectorPolicy::EnergyProgressCheapest(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(_)
+                | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_)
+                | SelectorPolicy::EnergyProgressNoCost(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
@@ -3959,6 +4712,9 @@ where
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
             | SelectorPolicy::EnergyProgressCheapest(_)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(_)
+            | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(_)
+            | SelectorPolicy::EnergyProgressNoCost(_)
             | SelectorPolicy::EnergyProgressCheapestCount(_) => new_cell_descendant,
             SelectorPolicy::GroupUniform => false,
         };
@@ -3994,6 +4750,9 @@ where
         | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
         | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
         | SelectorPolicy::EnergyProgressCheapest(thresholds)
+        | SelectorPolicy::EnergyProgressCheapestScopedReturnControl(thresholds)
+        | SelectorPolicy::EnergyProgressCheapestScopedReturnHalf(thresholds)
+        | SelectorPolicy::EnergyProgressNoCost(thresholds)
         | SelectorPolicy::EnergyProgressCheapestCount(thresholds) = &self.selector_policy
         {
             let entries_over_threshold = u64::try_from(
@@ -4070,6 +4829,18 @@ where
 }
 
 #[cfg(test)]
+#[path = "archive_abstraction_tests.rs"]
+mod abstraction_tests;
+
+#[cfg(test)]
+#[path = "archive_scoped_return_tests.rs"]
+mod scoped_return_tests;
+
+#[cfg(test)]
+#[path = "archive_progress_tests.rs"]
+mod progress_tests;
+
+#[cfg(test)]
 mod tests {
     use std::cmp::Ordering;
 
@@ -4077,11 +4848,15 @@ mod tests {
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, HISTORY_COMPACTION_MIN_DROPS, Input,
         InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, RetireThresholds,
         SELECTION_EXHAUSTION_THRESHOLD, SelectorAccounting, SelectorDraw, SelectorPath,
-        SelectorPolicy, selector_policy_from_identifier,
+        SelectorPolicy, SlotRetentionPolicy, retention_job_rank, selector_policy_from_identifier,
     };
     use crate::search::rand::RomuDuoJrRand;
     use serde::{Deserialize, Serialize};
-    use std::{cmp::Reverse, collections::BTreeMap, sync::Arc};
+    use std::{
+        cmp::Reverse,
+        collections::{BTreeMap, BTreeSet},
+        sync::Arc,
+    };
 
     /// A small action fixture with the same two dimensions the extracted
     /// archive tests need: an input identity and a deterministic duration.
@@ -4482,6 +5257,10 @@ mod tests {
             self.quality.cmp(&other.quality)
         }
 
+        fn retention_resources(self) -> Option<[u64; 2]> {
+            (self.quality != 0).then_some([u64::from(self.quality), u64::from(255 - self.quality)])
+        }
+
         type Lineage = ();
 
         fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
@@ -4489,6 +5268,284 @@ mod tests {
         }
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn resource_policies_fall_back_when_a_competitor_has_no_resources() {
+        for policy in [
+            SlotRetentionPolicy::ResourceExtremes2,
+            SlotRetentionPolicy::ResourceCoverage2,
+        ] {
+            let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+            archive.slot_retention = policy;
+            for quality in [0, 4] {
+                assert!(
+                    archive
+                        .insert(
+                            None,
+                            u64::from(quality),
+                            ArchiveCandidate {
+                                suffix: vec![quality],
+                                key: PreferredKey { slot: 7, quality },
+                                milestones: (),
+                            },
+                            ()
+                        )
+                        .unwrap()
+                        .is_some()
+                );
+            }
+            assert_eq!(archive.active_count(), 1);
+            assert_eq!(archive.entries[archive.slots[&7][0]].key.quality, 4);
+            assert_eq!(archive.retention_diagnostics.resource_decisions, 0);
+        }
+    }
+
+    #[test]
+    fn job_sample_preserves_an_alternative_without_resource_axes() {
+        let later = (1..1024)
+            .find(|job| retention_job_rank(*job) < retention_job_rank(0))
+            .unwrap();
+        let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+        archive.slot_retention = SlotRetentionPolicy::RepresentativeJobSample2;
+        for (execution, input) in [(0, vec![1]), (later, vec![2, 2, 2])] {
+            archive
+                .insert(
+                    None,
+                    execution,
+                    ArchiveCandidate {
+                        suffix: input,
+                        key: PreferredKey {
+                            slot: 7,
+                            quality: 0,
+                        },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(archive.active_count(), 2);
+        assert_eq!(archive.retention_diagnostics.resource_decisions, 0);
+        assert_eq!(archive.retention_diagnostics.alternative_admissions, 1);
+    }
+
+    #[test]
+    fn resource_extremes_keep_two_tradeoffs_and_reject_interior_points() {
+        let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+        archive.slot_retention = SlotRetentionPolicy::ResourceExtremes2;
+        for (quality, expected) in [(5, true), (9, true), (7, false), (3, true)] {
+            let admitted = archive
+                .insert(
+                    None,
+                    1,
+                    ArchiveCandidate {
+                        suffix: vec![quality],
+                        key: PreferredKey { slot: 7, quality },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap();
+            assert_eq!(admitted.is_some(), expected);
+            assert!(archive.slots[&7].len() <= 2);
+        }
+        let qualities: BTreeSet<_> = archive.slots[&7]
+            .iter()
+            .map(|id| archive.entries[*id].key.quality)
+            .collect();
+        assert_eq!(qualities, BTreeSet::from([3, 9]));
+        assert_eq!(archive.retention_diagnostics.alternative_admissions, 2);
+        assert_eq!(archive.retention_diagnostics.resource_decisions, 4);
+        // Equal resource vectors keep the cheaper route; exact cost ties keep the incumbent.
+        assert!(
+            archive
+                .insert(
+                    None,
+                    2,
+                    ArchiveCandidate {
+                        suffix: vec![],
+                        key: PreferredKey {
+                            slot: 7,
+                            quality: 3
+                        },
+                        milestones: ()
+                    },
+                    ()
+                )
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(archive.slots[&7].len(), 2);
+        assert_eq!(
+            SlotRetentionPolicy::from_identifier(None).unwrap(),
+            SlotRetentionPolicy::Representative
+        );
+        assert!(SlotRetentionPolicy::from_identifier(Some("resource_extremes_2_v0")).is_err());
+    }
+
+    #[test]
+    fn retention_observation_preserves_decisions_inputs_and_search_counters() {
+        let run = |observe: bool| {
+            let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+            let mut events = Vec::new();
+            for (execution, quality) in [2, 1, 3].into_iter().enumerate() {
+                archive
+                    .insert_after_observed(
+                        None,
+                        None,
+                        execution as u64,
+                        ArchiveCandidate {
+                            suffix: vec![quality],
+                            key: PreferredKey { slot: 7, quality },
+                            milestones: (),
+                        },
+                        (),
+                        |event| {
+                            if observe {
+                                let (candidate, incumbent) = (event.inputs)()?;
+                                events.push((
+                                    event.replaces,
+                                    candidate.actions,
+                                    incumbent.actions,
+                                    event.exposure.selected,
+                                ));
+                            }
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+            }
+            assert_eq!(archive.input_reconstructions.get(), 0);
+            assert_eq!(archive.retention_diagnostics.competitions, 2);
+            assert_eq!(archive.retention_diagnostics.removed_never_selected, 1);
+            (
+                archive.active.clone(),
+                archive.retained,
+                archive.rejected,
+                archive.selector_report(),
+                events,
+            )
+        };
+        let control = run(false);
+        let observed = run(true);
+        assert_eq!(
+            (&control.0, control.1, control.2, &control.3),
+            (&observed.0, observed.1, observed.2, &observed.3)
+        );
+        assert_eq!(
+            observed.4,
+            vec![(false, vec![1], vec![2], 0), (true, vec![3], vec![2], 0)]
+        );
+    }
+
+    #[test]
+    fn same_key_observation_distinguishes_duplicates_current_slots_and_missing_snapshots() {
+        // Snapshot values are deliberately invisible to the key's quality rule.
+        // Distinct inputs with this same key must still reach the observer.
+        let mut archive = Archive::<u8, PreferredKey, (), u16>::new(|_| 1);
+        let key = PreferredKey {
+            slot: 7,
+            quality: 2,
+        };
+        let candidate = |suffix, key| ArchiveCandidate {
+            suffix,
+            key,
+            milestones: (),
+        };
+        assert_eq!(
+            archive
+                .insert(None, 0, candidate(vec![1], key), 140)
+                .unwrap(),
+            Some(0)
+        );
+        let mut events = Vec::new();
+        let mut observe = |event: &super::RetentionObservation<'_, u8, PreferredKey, u16>| {
+            let members = (event.slot_members)()?;
+            assert_eq!(event.slot_member_count, 1);
+            assert_eq!(members.len(), 1);
+            assert_eq!(members[0].snapshot, event.incumbent.1);
+            assert_eq!(members[0].key, event.incumbent.0);
+            assert_eq!(members[0].retained_by_local_rule, !event.replaces);
+            events.push((
+                event.execution,
+                *event.candidate.1,
+                event.incumbent.1.copied(),
+                members[0].id,
+                event.candidate_admitted,
+            ));
+            Ok(())
+        };
+        // Mimic two consecutive rejected boundaries from the same job. The
+        // second receives the first boundary's key, not a skip instruction.
+        for (suffix, previous, snapshot) in [(vec![2], None, 129), (vec![2, 3], Some(key), 128)] {
+            assert_eq!(
+                archive
+                    .insert_after_observed(
+                        Some(0),
+                        previous,
+                        1,
+                        candidate(suffix, key),
+                        snapshot,
+                        &mut observe,
+                    )
+                    .unwrap(),
+                (None, key)
+            );
+        }
+        // An exact retained input bypasses competition. Its snapshot must not
+        // be counted as another discarded different-input state.
+        assert_eq!(
+            archive
+                .insert_after_observed(None, None, 2, candidate(vec![1], key), 140, &mut observe)
+                .unwrap(),
+            (Some(0), key)
+        );
+        // A reserved job can still hold a replaced entry's snapshot.
+        let (_reserved_snapshot, _, reserved_id) = archive.pin_job_origin(0).unwrap();
+        let better = PreferredKey { quality: 3, ..key };
+        assert_eq!(
+            archive
+                .insert_after_observed(None, None, 3, candidate(vec![4], better), 131, &mut observe)
+                .unwrap(),
+            (Some(1), better)
+        );
+        assert!(!archive.active[0]);
+        assert_eq!(archive.entries[0].snapshot.as_deref(), Some(&140));
+        // The old snapshot remains cached, but the next competition must name
+        // the current slot member. Then expose a missing snapshot explicitly.
+        for (execution, snapshot) in [(4, 127), (5, 126)] {
+            if execution == 5 {
+                archive.entries[1].snapshot = None;
+            }
+            assert_eq!(
+                archive
+                    .insert_after_observed(
+                        Some(1),
+                        Some(better),
+                        execution,
+                        candidate(vec![5], better),
+                        snapshot,
+                        &mut observe,
+                    )
+                    .unwrap(),
+                (None, better)
+            );
+        }
+        assert_eq!(
+            events,
+            vec![
+                (1, 129, Some(140), 0, false),
+                (1, 128, Some(140), 0, false),
+                (3, 131, Some(140), 0, true),
+                (4, 127, Some(131), 1, false),
+                (5, 126, None, 1, false),
+            ]
+        );
+        assert_eq!(archive.retention_diagnostics.competitions, 5);
+        assert_eq!(archive.input_reconstructions.get(), 0);
+        archive.unpin_job_origin(reserved_id);
     }
 
     #[test]
@@ -4537,6 +5594,121 @@ mod tests {
                 .expect("retain flat entry");
         }
         archive
+    }
+
+    fn cost_ablation_policy(remove_cost: bool) -> SelectorPolicy {
+        let thresholds = RetireThresholds {
+            entry: 1024,
+            groups: vec![6, 12, 2],
+        };
+        if remove_cost {
+            SelectorPolicy::EnergyProgressNoCost(thresholds)
+        } else {
+            SelectorPolicy::EnergyProgressCheapest(thresholds)
+        }
+    }
+
+    #[test]
+    fn cost_ablation_preserves_exact_draws_when_the_rank_bonus_is_inactive() {
+        let keys: Vec<_> = (0..super::CHEAPEST_RANK_SCALE)
+            .map(|id| [u16::try_from(id).unwrap(), 0, 0, 0])
+            .collect();
+        let mut old = flat_archive::<5>(&keys);
+        let mut new = flat_archive::<5>(&keys);
+        old.selector_policy = cost_ablation_policy(false);
+        new.selector_policy = cost_ablation_policy(true);
+        for id in 0..keys.len() {
+            old.time_in_group[id] = (keys.len() - id) as u64;
+            new.time_in_group[id] = old.time_in_group[id];
+        }
+        let identifier = super::selector_policy_identifier(&new.selector_policy);
+        assert_eq!(
+            super::selector_policy_from_identifier(&identifier, 3).unwrap(),
+            new.selector_policy
+        );
+        let mut a = RomuDuoJrRand::with_seed(193);
+        let mut b = RomuDuoJrRand::with_seed(193);
+        for _ in 0..1024 {
+            assert_eq!(
+                old.select_parent(&mut a, 64).unwrap(),
+                new.select_parent(&mut b, 64).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn cost_ablation_changes_a_planted_exit_and_its_mirror_in_opposite_directions() {
+        // Static one-step opportunity: the expensive half holds the only useful
+        // exit, or in the mirror the cheap half does. Exercise the actual full
+        // parent selector, including its uniform quarter. No universal gain is
+        // implied: which half contains useful futures is the empirical question.
+        let keys: Vec<_> = (0..128).map(|id| [id, 0, 0, 0]).collect();
+        let mut expensive_counts = [0_u64; 2];
+        for (arm, remove_cost) in [false, true].into_iter().enumerate() {
+            let mut archive = flat_archive::<5>(&keys);
+            archive.selector_policy = cost_ablation_policy(remove_cost);
+            for id in 0..keys.len() {
+                archive.time_in_group[id] = id as u64;
+            }
+            let mut rand = RomuDuoJrRand::with_seed(194);
+            for _ in 0..16_384 {
+                let (id, _) = archive.select_parent(&mut rand, 64).unwrap();
+                expensive_counts[arm] += u64::from(id >= 64);
+            }
+        }
+        assert!(expensive_counts[1] > expensive_counts[0] * 2);
+        assert!((7000..9500).contains(&expensive_counts[1]));
+        let cheap_old = 16_384 - expensive_counts[0];
+        let cheap_new = 16_384 - expensive_counts[1];
+        assert!(
+            cheap_old > cheap_new * 3 / 2,
+            "the mirror must favor the old prior"
+        );
+    }
+
+    #[test]
+    fn cost_ablation_removes_between_cell_cost_but_preserves_novelty_and_energy() {
+        let keys: Vec<_> = (0..32).map(|id| [0, id, 0, 0]).collect();
+        let mut old = flat_archive::<5>(&keys);
+        let mut new = flat_archive::<5>(&keys);
+        old.selector_policy = cost_ablation_policy(false);
+        new.selector_policy = cost_ablation_policy(true);
+        let groups = keys;
+        let band = super::CHEAPEST_RANK_SCALE;
+        let costs: Vec<_> = (0..2 * band).map(|id| (None, Some(id as u64))).collect();
+        let mut old_rand = RomuDuoJrRand::with_seed(195);
+        let mut new_rand = RomuDuoJrRand::with_seed(195);
+        let mut counts = [0_u64; 2];
+        for _ in 0..8192 {
+            counts[0] += u64::from(
+                old.draw_group_index(&mut old_rand, 1, &groups[..2 * band], None, Some(&costs))
+                    .unwrap()
+                    >= band,
+            );
+            counts[1] += u64::from(
+                new.draw_group_index(&mut new_rand, 1, &groups[..2 * band], None, Some(&costs))
+                    .unwrap()
+                    >= band,
+            );
+        }
+        assert!((2400..3100).contains(&counts[0]));
+        assert!((3700..4500).contains(&counts[1]));
+
+        // With tied between-cell costs, only the old novelty and barren terms
+        // distinguish cells. Keep them, their ordering, and their RNG coupling.
+        let tied: Vec<_> = (0..32).map(|id| (Some(id), Some(5))).collect();
+        old.group_barren[0].insert(groups[0], 18);
+        new.group_barren[0].insert(groups[0], 18);
+        let mut old_rand = RomuDuoJrRand::with_seed(196);
+        let mut new_rand = RomuDuoJrRand::with_seed(196);
+        for _ in 0..1024 {
+            assert_eq!(
+                old.draw_group_index(&mut old_rand, 1, &groups, None, Some(&tied))
+                    .unwrap(),
+                new.draw_group_index(&mut new_rand, 1, &groups, None, Some(&tied))
+                    .unwrap()
+            );
+        }
     }
 
     #[test]
@@ -5926,6 +7098,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn legacy_splice_availability_changes_under_location_relabeling() {
+        #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+        struct PlaceKey {
+            place: u8,
+            position: u8,
+        }
+        impl ArchiveKey for PlaceKey {
+            type Group = (u8, u8);
+            type Lineage = ();
+            fn groups() -> usize {
+                3
+            }
+            fn group(self, depth: usize) -> Self::Group {
+                match depth {
+                    0 => (self.place, self.position),
+                    1 => (self.place, 0),
+                    2 => (0, 0),
+                    _ => panic!("invalid test depth"),
+                }
+            }
+            fn progress_cmp(_: Self::Group, _: Self::Group) -> Ordering {
+                Ordering::Equal
+            }
+            fn complete(self, _: Option<(Self, &())>) -> Self {
+                self
+            }
+            fn record(_: &mut (), _: Self) {}
+        }
+        let tail = |from, to| {
+            let mut archive = Archive::<u8, PlaceKey, (), ()>::new(|_| 1);
+            archive.selector_policy = SelectorPolicy::EnergyProgressCheapest(RetireThresholds {
+                entry: 3,
+                groups: vec![],
+            });
+            let mut offer = |parent, place, position, action| {
+                archive
+                    .insert(
+                        parent,
+                        0,
+                        ArchiveCandidate {
+                            suffix: vec![action],
+                            key: PlaceKey { place, position },
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .unwrap()
+                    .unwrap()
+            };
+            let donor = offer(None, from, 1, 0);
+            let leaf = offer(Some(donor), to, 0, 7);
+            let arrival = offer(None, from, 0, 9);
+            assert_eq!((donor, leaf, arrival), (0, 1, 2));
+            archive
+                .splice_tail_for_campaign(arrival, 64, 8)
+                .map(|splice| splice.actions)
+        };
+        // The same route, parent, semantic progress relation and insertion order.
+        // Only the opaque labels of the two places are exchanged. The legacy
+        // full-key descendant cache loses the route whose destination sorts low.
+        assert_eq!(tail(0, 1), Some(vec![7]));
+        assert_eq!(tail(1, 0), None);
+    }
+
     /// Selection must run on every geometry the key contract allows, down to
     /// a single group depth where the walk class, the selection cell, and the
     /// retention slot are all depth 0.
@@ -6370,6 +7607,72 @@ mod tests {
     }
 
     #[test]
+    fn entry_cutoff_ablation_changes_only_post_cutoff_walk_eligibility() {
+        let make = |cutoff| {
+            let mut archive = selector_archive(&[(1, 0, 144), (0, 0, 100)]);
+            let identifier =
+                format!("room_cell_uniform_128_energy_progress_cheapest_v1:{cutoff},6,12,2");
+            archive.selector_policy = selector_policy_from_identifier(&identifier, 3).unwrap();
+            assert_eq!(
+                super::selector_policy_identifier(&archive.selector_policy),
+                identifier
+            );
+            archive
+        };
+        let mut control = make(3);
+        let mut candidate = make(SELECTION_EXHAUSTION_THRESHOLD);
+        let mut left = RomuDuoJrRand::with_seed(0x0364);
+        let mut right = left;
+        for _ in 0..64 {
+            assert_eq!(
+                control
+                    .select_parent(&mut left, MAX_COMPLETION_ACTIONS)
+                    .unwrap(),
+                candidate
+                    .select_parent(&mut right, MAX_COMPLETION_ACTIONS)
+                    .unwrap()
+            );
+        }
+        assert_eq!(left.next_u64(), right.next_u64());
+        let failed = SelectorDraw {
+            path: SelectorPath::GroupWalk,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+        };
+        for _ in 0..3 {
+            control.record_selection(0, &failed);
+            candidate.record_selection(0, &failed);
+        }
+        assert!(!control.entry_unexhausted(0));
+        assert!(candidate.entry_unexhausted(0));
+        for (archive, expected) in [(&mut control, 1), (&mut candidate, 0)] {
+            let mut walk = 0;
+            let mut uniform_preferred = 0;
+            let mut rand = RomuDuoJrRand::with_seed(0x0364);
+            for _ in 0..256 {
+                let (id, draw) = archive
+                    .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
+                    .unwrap();
+                assert!(!draw.counter_reset);
+                if draw.path == SelectorPath::GroupWalk {
+                    walk += 1;
+                    assert_eq!(id, expected);
+                } else if id == 0 {
+                    uniform_preferred += 1;
+                }
+            }
+            assert!(walk > 0 && uniform_preferred > 0);
+        }
+        for _ in 3..SELECTION_EXHAUSTION_THRESHOLD {
+            candidate.record_selection(0, &failed);
+        }
+        assert!(!candidate.entry_unexhausted(0));
+        candidate.record_selection_outcome(0, true, false, false);
+        assert!(candidate.entry_unexhausted(0));
+    }
+
+    #[test]
     fn the_selector_resets_deterministically_when_all_are_exhausted() {
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (0, 0, 100)];
         let mut archive = selector_archive(&keys);
@@ -6666,6 +7969,7 @@ mod tests {
             labels: [u16; 3],
             semantic: bool,
             counts: bool,
+            no_cost: bool,
         ) -> [usize; 3] {
             let mut archive = Archive::<u8, LabelledKey<CLASSES>, (), ()>::new(|_| 1);
             for (id, label) in labels.into_iter().enumerate() {
@@ -6689,7 +7993,9 @@ mod tests {
                 entry: 1000,
                 groups: vec![1000; 3],
             };
-            archive.selector_policy = if semantic && !counts {
+            archive.selector_policy = if no_cost {
+                SelectorPolicy::EnergyProgressNoCost(thresholds)
+            } else if semantic && !counts {
                 SelectorPolicy::EnergyProgressCheapest(thresholds)
             } else if semantic {
                 SelectorPolicy::EnergyProgressCheapestCount(thresholds)
@@ -6707,7 +8013,7 @@ mod tests {
             counts
         }
         for labels in [[1, 900, 2000], [2000, 1, 900]] {
-            let classes = sample::<true>(labels, true, true);
+            let classes = sample::<true>(labels, true, true, false);
             assert!(
                 classes[0] > 4000 && classes[1] > 4000,
                 "equivalent progress must share classes: {classes:?}"
@@ -6716,7 +8022,7 @@ mod tests {
                 classes[2], 0,
                 "a larger label must not displace actual progress"
             );
-            let bands = sample::<false>(labels, true, true);
+            let bands = sample::<false>(labels, true, true, false);
             assert!(
                 bands[0].abs_diff(bands[1]) < 400,
                 "location labels changed frontier weighting: {bands:?}"
@@ -6726,13 +8032,13 @@ mod tests {
                 "declared progress must still influence selection: {bands:?}"
             );
         }
-        let legacy = sample::<true>([1, 900, 2000], false, true);
+        let legacy = sample::<true>([1, 900, 2000], false, true, false);
         assert!(
             legacy[2] > 8000,
             "the control must reproduce the old label bias"
         );
         for labels in [[10, 90, 200], [200, 10, 90]] {
-            let draws = sample::<false>(labels, true, false);
+            let draws = sample::<false>(labels, true, false, false);
             assert!(
                 draws[0] > draws[2] && draws[1] > draws[2],
                 "semantic-only {draws:?}"
@@ -6751,5 +8057,14 @@ mod tests {
                 .unwrap(),
             policy
         );
+
+        for labels in [[10, 90, 200], [200, 10, 90]] {
+            let classes = sample::<true>(labels, true, false, true);
+            assert!(classes[0] > 4000 && classes[1] > 4000);
+            assert_eq!(classes[2], 0);
+            let bands = sample::<false>(labels, true, false, true);
+            assert!(bands[0].abs_diff(bands[1]) < 400);
+            assert!(bands[0] > bands[2] && bands[1] > bands[2]);
+        }
     }
 }

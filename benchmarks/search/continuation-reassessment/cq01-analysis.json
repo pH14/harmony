@@ -1,0 +1,62 @@
+{
+  "format": "continuation-reassessment-cq01-qualification-v1",
+  "decision": "pass",
+  "records": [
+    {
+      "cell": "msr1/one-slot",
+      "admitted_frames": 275130,
+      "continuation_jobs": 190,
+      "inferred_campaign_replay_admitted_frames": 275130,
+      "twice_replayed_witness_frames": 6626,
+      "known_auxiliary_frames": 556886,
+      "elapsed_seconds": 18.280908975051716,
+      "cpu_seconds": 26.581529,
+      "max_process_rss_bytes": 90992640,
+      "artifact_sha256": {
+        "stream.jsonl": "ceb981817755a37654beb5af3623993a1e21c6b916fe7d69de3981a8fb897130",
+        "campaign.json": "d1af9a68899a50ecdcf31d836cbaa8809bfadfa932f0fc20202bbe8d4c6a2ad9",
+        "checkpoint.json": "bf6efab9f9eb8b31aa2b675ed5b3182a21406244845bad198e4933d9d27bd7c9"
+      }
+    },
+    {
+      "cell": "msr1/two-slots",
+      "admitted_frames": 275130,
+      "continuation_jobs": 190,
+      "inferred_campaign_replay_admitted_frames": 275130,
+      "twice_replayed_witness_frames": 6626,
+      "known_auxiliary_frames": 556886,
+      "elapsed_seconds": 17.28057964995969,
+      "cpu_seconds": 26.03567,
+      "max_process_rss_bytes": 91136000,
+      "artifact_sha256": {
+        "stream.jsonl": "ceb981817755a37654beb5af3623993a1e21c6b916fe7d69de3981a8fb897130",
+        "campaign.json": "d1af9a68899a50ecdcf31d836cbaa8809bfadfa932f0fc20202bbe8d4c6a2ad9",
+        "checkpoint.json": "bf6efab9f9eb8b31aa2b675ed5b3182a21406244845bad198e4933d9d27bd7c9"
+      }
+    },
+    {
+      "cell": "ms02/two-slots",
+      "admitted_frames": 275130,
+      "continuation_jobs": 190,
+      "inferred_campaign_replay_admitted_frames": 275130,
+      "twice_replayed_witness_frames": 6626,
+      "known_auxiliary_frames": 556886,
+      "elapsed_seconds": 8.03661234001629,
+      "cpu_seconds": 12.01866,
+      "max_process_rss_bytes": 91807744,
+      "artifact_sha256": {
+        "stream.jsonl": "9e89be4399486921f5b734fcd7723ec58e818325e668c82881aeb1a4b1a71d03",
+        "campaign.json": "a32d24da26840c87296e4b9467668bfc70dbdd1ce12bedf82eee2e2c2df2aa4c",
+        "checkpoint.json": "5da81d11d30f77ec38f88ab29140ed73603707484265ba8a97e2ed5573645441"
+      }
+    }
+  ],
+  "same_host_buffer_identity": true,
+  "cross_host_post_header_stream_identity": true,
+  "known_auxiliary_frames": 1670658,
+  "limits": [
+    "Reused fixture; no performance or fresh-validation claim.",
+    "Full campaign replay work inferred from admitted work; in-job origin replay is included. Setup, unadmitted work and any out-of-job reconstruction remain additional unknowns.",
+    "Cross-host machine snapshots and costs are not claimed identical."
+  ]
+}

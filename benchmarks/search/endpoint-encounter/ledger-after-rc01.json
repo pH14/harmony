@@ -1,0 +1,84 @@
+{
+  "format": "metroid-rc01-closed-ledger-v1",
+  "prior_ledger_sha256": "b6adfb7a80993457b4d6be1e221c5f8c60015a26c0eca644efe65206eca3924b",
+  "registration_sha256": "840f49f9374b3059ba6b8e6a97473a252285462296d8855ed2d051a4e7dd16aa",
+  "block_known_auxiliary_ceiling": 25000000,
+  "block_known_auxiliary_frames": 3914100,
+  "cost": {
+    "admitted_search_frames": 1001884,
+    "campaign_replay_admitted_frames": 1001884,
+    "direct_physical_frames": 1910332,
+    "direct_setup_frames": 22296
+  },
+  "cells": [
+    {
+      "admitted_frames": 250180,
+      "admitted_drain_frames": 180,
+      "known_auxiliary_frames": 977886,
+      "process": {
+        "cell": "rc01-p1-control",
+        "returncode": 0,
+        "stop_reason": null,
+        "wall_seconds": 38.01843103003921,
+        "maxrss_kib": 54560,
+        "user_seconds": 46.296529,
+        "system_seconds": 0.185186,
+        "cpu_seconds": 46.481715
+      }
+    },
+    {
+      "admitted_frames": 250693,
+      "admitted_drain_frames": 693,
+      "known_auxiliary_frames": 979148,
+      "process": {
+        "cell": "rc01-p1-candidate",
+        "returncode": 0,
+        "stop_reason": null,
+        "wall_seconds": 37.018608229001984,
+        "maxrss_kib": 41460,
+        "user_seconds": 44.949248,
+        "system_seconds": 0.216526,
+        "cpu_seconds": 45.165774
+      }
+    },
+    {
+      "admitted_frames": 250485,
+      "admitted_drain_frames": 485,
+      "known_auxiliary_frames": 978080,
+      "process": {
+        "cell": "rc01-p2-control",
+        "returncode": 0,
+        "stop_reason": null,
+        "wall_seconds": 38.01940070197452,
+        "maxrss_kib": 49848,
+        "user_seconds": 46.063002,
+        "system_seconds": 0.24087299999999998,
+        "cpu_seconds": 46.303875
+      }
+    },
+    {
+      "admitted_frames": 250526,
+      "admitted_drain_frames": 526,
+      "known_auxiliary_frames": 978986,
+      "process": {
+        "cell": "rc01-p2-candidate",
+        "returncode": 0,
+        "stop_reason": null,
+        "wall_seconds": 38.04810263396939,
+        "maxrss_kib": 51104,
+        "user_seconds": 46.064902,
+        "system_seconds": 0.18037899999999998,
+        "cpu_seconds": 46.245281
+      }
+    }
+  ],
+  "cumulative_since_user_resumption_admitted_search_frames": 1083261532,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 57624339,
+  "decision": "stop_futility",
+  "completed_pairs": 2,
+  "unrun_pairs": 2,
+  "outcome": "Two censored ties, zero strict wins; all four horizons complete without Ridley defeat. Both candidate runs exercise over1,000 retries. Full campaign and witness replays pass. Stop at registered futility gate; no candidate escalation.",
+  "services": "All four inactive/dead, exit0 and MainPID0; no pair3/4 output exists. See rc01-output/services.json.gz.",
+  "unknown": "Engine setup, unadmitted work and reconstruction remain unknown; admitted attempted frames, direct helper work and process costs are recorded.",
+  "old_expired_tranche": "489,962,470 admitted search and 30,112,297 known auxiliary frames remain frozen and excluded from these renewed totals."
+}

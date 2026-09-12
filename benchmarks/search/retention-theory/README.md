@@ -1,0 +1,1285 @@
+# Retention theory and msr1 experiments
+
+Status: active research. No breakthrough is qualified.
+
+Start: 2026-09-08 22:16:18 UTC. Theory deadline: September 9 00:16 UTC.
+Consolidation: 08:46 UTC. Hard tranche end: 10:16 UTC.
+Worktree: `/private/tmp/harmony-retention-theory-msr1-20260908`.
+Branch: `codex/retention-theory-msr1-20260908`.
+Private host root: `msr1:/root/harmony-retention-theory-20260908`.
+
+The research baseline is commit `8e5ae6830775d886d6f486d81115b3f655e1128d`,
+which adds diagnostics and experimental two-extreme retention on top of PR #268
+(`03b8c750`). That committed work belongs to the separate ms02 research effort.
+We reuse it without modifying its worktree, runs, or uncommitted local-search
+experiment. Resource comparisons use the same frozen binary for both arms;
+key comparisons freeze separate feature builds from identical source.
+Its optional retention policy is disabled in controls.
+
+msr1 has 12 ARM cores (four A520 and eight A720), 54 GiB RAM and about 792 GiB
+free disk. At most two four-worker campaigns, each 8 GiB logical archive, may
+run concurrently, with disjoint CPU sets 0–3 and 8–11. Four little cores remain
+for compilation/verification; compilation may use idle big cores. Core classes
+have different clocks, so matched-work results are primary. Paired placements
+must be swapped before interpreting throughput. Bound total output to 80 GiB,
+each cell to 4 GiB, and each experiment with the runner's process-group watchdog.
+
+The user explicitly approved transferring the existing Metroid asset from ms02
+at the first checkpoint. The copy to msr1 has the expected SHA-256
+`e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6`.
+MM2 and SMB assets already on msr1 also have the expected hashes.
+
+## Questions and evidence gates
+
+The objective is useful future discovery per actual work under a fixed memory
+budget. Archive size, resource fronts, and local exits are diagnostic quantities,
+not substitutes for fresh deep attainment.
+
+1. Does a proposed abstraction preserve task-relevant continuation traces?
+2. Which retention decisions remove distinguishing futures?
+3. Does allocation reach retained alternatives before they disappear?
+4. Do improvements survive fresh searches and independent replay?
+
+The mathematical contract and executable finite counterexamples are developed
+in `theory.md` and the searcher's abstraction fixtures. They must state exactly
+which assumptions are checked. Finite probes may refute equivalence; matching
+finite probes cannot establish it for the NES.
+
+Existing development evidence: D01's 3M-job Metroid seed 3 found 686,536 resource
+tradeoff competitions but no equipment/capacity collisions among 8,161,836
+eligible competitions. Of 946,740 removed representatives, 245,849 had never
+been selected. P02's 16 pairs and 64 identical suffixes per pair found 156
+discarded-only versus 42 survivor-only living map exits. Actual frames differ
+because terminal branches stop early. This rejects universal behavioral
+dominance, but does not establish a fixed-cost campaign benefit. The existing
+two-extreme development arm has mixed results. Source evidence is linked from
+`../alternative-futures/results`.
+
+Development seeds: historical 3, 4, 5 plus 20261101–20261103 for this effort.
+Do not use the other effort's 20261001-series as unseen validation. Validation
+seeds will be frozen only after selecting a mechanism and budgets. A breakthrough
+requires matched-control improvement and at least 3/10 fresh Metroid boss seeds
+or 3/5 fresh MM2 Wily 4 chains, with both games evaluated. Report failures and
+timeouts, and separate verification of implementation from breakthrough claims.
+
+`validation-protocol.md` distinguishes the operational repeatability thresholds
+from exact paired evidence and defines how untouched panels, censoring, and
+multiple endpoints will be reported. Development gates allocate compute; they
+do not prove eventual success or impossibility.
+
+## Experiment ledger
+
+### B01: ARM baseline qualification
+
+Question: do current source and assets execute and replay correctly on msr1?
+The x86 evidence cannot establish ARM compatibility. Build the pinned QuickNES
+revision and baseline source with Rust 1.97.0, bounded at 10 and 20 minutes.
+Build failures are infrastructure failures, not negative scientific evidence.
+Source identity must remain unchanged during compilation.
+
+Run SMB and MM2 Metal, 5,000 jobs each, four workers, 512 MiB, window/result
+slots 2/2, ordinary existing policies, full campaign/checkpoint and repeated
+witness replay. Limit each cell to 240 seconds plus 60 seconds finishing time.
+Run one cell at a time on CPUs 0–3. If successful, retain immutable attestations
+and qualify larger mechanism tests. If unsuccessful, diagnose before expanding.
+No deep-search claim follows from qualification.
+
+An initial source transfer raced directory creation and failed before copying;
+it was retried after creation succeeded. The licensed ROM transfer was rejected
+before execution; it succeeded after the user's subsequent explicit approval.
+Neither infrastructure event consumed search work.
+
+B01 passed: both 5,000-job cells completed full campaign/checkpoint and witness
+verification. SMB admitted 689,658 frames; MM2 Metal admitted 564,972 frames.
+The four exact-model tests passed locally in 0.01s after an 18.5s first build.
+They show actual production admission losing a distinguishing future under
+count aliasing, and losing a monotone two-resource threshold exit under the
+two-extreme rule in all six arrival orders. Partition refinement restores the
+former model's task future; it is not an NES fix by itself.
+
+### R02: two-representative resource threshold coverage
+
+The exact threshold counterexample and existing P02 continuation losses qualify
+one new retention family: choose up to two states maximizing the number of
+nonnegative integer resource thresholds jointly satisfied by either state.
+For axes h,m, one state covers `(h+1)*(m+1)` thresholds, including zero-axis
+requirements. Choose the exact best subset among the current (at most two)
+representatives plus the candidate. Prefer fewer states on equal coverage,
+then existing route cost and stable id. No extra probe execution or snapshot
+capacity is introduced. The origin and integer units are part of this policy.
+
+This is local resource coverage, not behavioral dominance or a guarantee about
+the full stream of discarded states. It assumes uniform threshold importance
+only as a selection surrogate. It has no global greedy approximation claim.
+Qualify exact arithmetic, the middle-resource counterexample, missing-axis
+fallback, deterministic tie handling, pressure/continuation replay, and old
+policy compatibility before running actual-ROM trials. Bound tests at 10m and
+each release build at 20m. If these pass, register a small three-arm development
+comparison (legacy, extremes, coverage) with unchanged work and memory. If the
+proxy does not improve useful retention or fresh attainment, reject it without
+expanding run length merely to seek a success.
+
+R02 implementation checkpoint: 124 generic unit tests and one interface test
+pass, including coverage retention under pressure with actual continuations and
+exact report/checkpoint replay. All 117 NES library tests pass. Strict generic
+Clippy initially found an iterator style issue and an inherited test idiom;
+both were corrected and Clippy plus the generic suite pass. No unsafe code changed.
+
+### Q02: actual-ROM coverage and compatibility
+
+Use the R02 frozen build and B01's exact conditions/seed, first with no optional
+retention. Require both B01 stream hashes to match. Run MM2 under both optional
+policies and SMB under coverage, 5,000 jobs each, full replay, the same 240+60s
+per-cell bound. Require actual alternative admissions on the MM2 candidate;
+SMB must retain legacy decisions because it supplies no resource axes. An empty
+alternative count is compatibility evidence only, not mechanism qualification.
+Only after passing Q02 may C01 begin.
+
+Qualification correction: an explicitly requested policy necessarily changes
+the stream header's `slot_retention` tag even on unsupported workloads. The
+initial Q02 driver incorrectly expected the entire SMB coverage hash to match.
+Its recheck mode instead requires exactly that one header difference and
+byte-identical remaining records. This corrects the acceptance test without
+rerunning completed campaigns or relaxing any decision/replay comparison.
+
+### C01: fresh MM2 coverage transfer development
+
+After Q02, use untouched development seed 20261101 in two fresh chains: legacy
+and coverage, same frozen binary and existing chain driver, no imported input.
+Order: Metal, Heat, Air, Wood, Bubble, Quick, Flash, Crash, Wily 1–3, then verify
+Wily 4 entry with all eight weapon bits. Every carried prefix comes exclusively
+from that chain and is replayed twice. Fixed operator stage order is declared;
+this is not unrestricted whole-game planning.
+
+Each stage: four workers, 8 GiB logical memory, 1M jobs/120M admitted frames,
+4096 actions, window/result slots 2/2, energy-splice:6, legacy frontier-cheapest
+selector, at most 1,200 seconds plus 120s finishing. Chain hard limit 5,400s,
+outer process-group bound 5,460s. Place legacy on 0–3 and coverage on 8–11.
+The question is whether threshold coverage improves fresh chained attainment
+or the cost of reaching common milestones. Record all failed stages and prefix
+work. If the candidate fails earlier, investigate that stage without restarting
+the chain under the same identity. If both fail at the same bottleneck, inspect
+retention/exposure evidence before increasing work. A lone deep result cannot
+qualify the breakthrough; repeated fresh validation remains a separate gate.
+
+23:10 UTC checkpoint: Q02 passed, including actual MM2 alternatives and SMB
+byte-identical records after its explicit policy-header difference. The original
+driver failed its incorrect full-hash assertion after all five cells completed;
+the corrected checker qualified those same outputs without rerunning search.
+Coverage and extremes make the same decisions in this small MM2 case, so it
+does not establish an advantage of the new objective. Both fresh C01 chains
+cleared Metal and replayed their bridges twice: legacy 6,786,404 frames/43,624
+jobs, coverage 5,260,416 frames/30,149 jobs. This is one development comparison.
+
+The theory phase is complete within one hour: seven executable abstraction
+fixtures cover both favorable and adverse cases, including a reverse example
+where coverage forgets a later useful complement and extremes retain it. A
+finite seed-panel fixture also shows the production selector losing one-attempt
+goal discovery probability after retaining an additional distinct future. The
+candidate is a testable resource surrogate, not a universal dominance rule.
+
+### A01: distinguish coverage from a second resource representative
+
+Existing C01 first-stage searches share ordinary power-on genesis, while their
+Heat prefixes differ. Run one additional fresh Metal stage on development seed
+20261101 under `resource_extremes_2_v1`, using the same frozen candidate binary,
+4 workers/8 GiB, 1M jobs/120M frames, 4096 actions, identical vocabulary,
+selector, window and result slots. Limit this diagnostic to 600s search plus
+120s finish, 750s process-tree hard limit. A timeout is censored and cannot be
+treated as a matched-work loss. Compare victory work and input hashes with the
+two completed C01 Metal stages. Matching coverage would attribute that Metal
+improvement to their shared behavior, not the coverage objective.
+
+For this one bounded ablation, temporarily allow a third campaign on little
+cores 4–7 while C01 uses 0–3 and 8–11. Total logical archive allocation is at
+most 24 GiB; no compilation or other new CPU-heavy work runs concurrently.
+The dedicated host has 54 GiB RAM. All timing remains descriptive. Run this
+new job in a systemd control group with a hard memory/runtime limit so child
+sessions cannot outlive the driver. Return to two campaigns when it completes.
+
+A01 passed: extremes exactly matches coverage's 30,149 jobs, 5,260,416 frames,
+victory input and next-stage prefix. Deterministic campaign reports differ only
+in policy, requested wall limit and stream hash. Therefore the Metal saving
+over legacy does not validate the new coverage objective.
+
+### A02: same-start Heat diagnostic at 100k jobs
+
+Continue from A01's own discovered, exported Metal victory under extremes;
+its prefix hash exactly matches C01 coverage's Heat prefix. This is a diagnostic
+continuation, not a fresh validation chain. Use that fixed origin, seed 20261101,
+4 workers/8 GiB and all C01 vocabulary/selector/window settings, with 100,000
+jobs and 20M frames, 600s plus 120s finish, a 750s systemd process-tree bound,
+on little cores 4–7. Allow the same temporary third-campaign allocation as A01.
+
+Compare the completed diagnostic with C01 coverage's recorded 100k progress
+boundary (or the nearest strictly earlier common boundary if that record is
+absent). Execution/frame ceilings must not be treated as equal if a wall stop
+occurs first. The question is whether the new objective actually changes
+retention and common-origin progress, beyond the shared two-state mechanism.
+Do not infer whole-chain improvement from this diagnostic. No old solution
+input or hand-authored gameplay enters either origin.
+
+P02 retrospective check: the single-state threshold-volume preference has only
+3 strict agreements with the better observed living-exit rate per actual frame
+among 15 non-tied pairs (one additional pair is tied).
+Only 3/16 pairs share exact pixel position and 12/16 share raw pose. This does
+not support treating resource volume alone as a predictor of these local exits;
+the data contain no boss gains and do not test selecting two states. Numeric
+endpoints were extracted from the frozen audit with its matching SHA-256, with
+no ROM bytes or gameplay inputs transferred. Keep this adverse association
+beside any favorable fresh result.
+
+Reproduce the numeric analysis with `python3 analyze_p02.py`. Fifteen pairs
+have at least one distinguishing local-exit or survival probe. An 8-pixel
+position partition would separate 9 of those pairs; raw pose separates 4;
+their combination separates 11 and leaves 4 merged. This identifies a concrete
+candidate abstraction refinement, but does not measure its archive growth or
+prove fresh-search improvement. The current production key and all experiments
+remain unchanged. Metroid emulator qualification still requires the pending
+asset-transfer approval.
+
+Review of the finite checker found a shortest-witness corner case when a later
+cost difference was encountered before an already-shorter state-label difference.
+Checking successor labels when visiting each edge fixes it; the new regression
+and all eight abstraction fixtures pass. This changes test scaffolding only,
+not the frozen candidate executable.
+
+C01 ended at Heat's registered 20-minute wall limit in both arms: coverage
+reached screen 18 at 61,226,275 stage frames; legacy reached screen 16 at
+43,239,627. Neither reached or defeated the boss. The unequal actual work and
+different fresh prefixes prevent interpreting this as a matched-work Heat gain.
+Both final trajectory witnesses replayed. No chain was restarted or extended.
+
+A02 completed its 100,000 jobs: extremes reached screen 8 at 13,072,670 frames.
+At the exact 100k boundary, coverage's identical-start trace had reached screen
+16 at 12,528,426 frames. Coverage first logged screen 16 by 11,794,043 frames.
+Extremes reached screen 8 earlier than coverage (6.36M versus 8.88M frames),
+so the difference is later escape from that bottleneck, not uniformly faster
+progress. Coverage retained 7,931 active entries/195MB logical memory versus
+4,498/107MB; both used the same 8 GiB limit, with no pressure claim implied.
+
+### A03: repeat the same-start result at a fixed frame budget
+
+Freeze the A01 discovered Heat prefix and candidate build. Compare coverage
+and extremes on new development seeds 20261102 and 20261103, 4 workers/8 GiB,
+100k jobs and 12M admitted frames, 600s search plus 120s finishing per cell.
+Use a 1,500s process-tree limit and 22 GiB hard RSS limit for the two sequential
+paired panels. The original 20261101 diagnostic is re-scored from its existing
+trace; no search is repeated for that seed. Score the greatest logged screen
+whose admitted-frame counter is at most 12M. This is a conservative bound,
+not an exact first-arrival frame, and excludes drained-window overshoot.
+
+Seed 20261102: extremes on 0–3, coverage on 8–11. Swap placements for 20261103.
+Keep one paired panel running at a time; all other msr1 experiments have ended.
+This is repeated development from a fixed discovered start, not fresh chained
+validation. Primary decision: only if coverage beats extremes in logged screen
+attainment on at least two of the three seeds at this fixed budget does the
+proxy qualify for more expensive depth experiments. Otherwise retain the
+negative result and return to abstraction/exposure diagnosis. No default
+promotion follows from this small diagnostic panel.
+
+### K01: separate retention identity from selection geography
+
+The P02 analysis qualifies a second implementation family: finer Metroid
+retention identity, independently of resource coverage. The opt-in Cargo feature
+`metroid-refined-archive` uses 8-pixel positions and raw pose at depth 0. All
+coarser groups, resource preferences and per-slot capacity remain the legacy
+ones. A distinct v9 policy identifier prevents cross-policy stream replay;
+the default build keeps v8 field layout and values. This compile-time choice
+keeps the historical key type unchanged while freezing two explicit executables.
+
+First verify the exact partition refinement and all pixel/pose marginal mappings
+without an emulator (10m watchdog). Then build immutable default and feature
+variants (20m each), recording Cargo features in the build attestation. With
+the Metroid ROM available, establish the ARM baseline with the frozen baseline
+executable, run a 5k full-replay feature qualification, and require the new
+default executable to match the ARM baseline at 100k jobs. Do not compare raw
+stream hashes against ms02, whose core identity differs. Only then compare
+fresh development seed 3 under default/refined identity at 500k jobs/70M frames,
+4 workers/8 GiB, semantic/alphabet-only controls and 30m per cell. This is a
+key-only ablation: neither optional resource retention policy is enabled.
+More retained cells without better useful progress fails the gate; inspect
+memory/exposure before any longer run. These are development seeds and cannot
+qualify the breakthrough panel. Metroid ROM transfer was later approved.
+
+A03 failed its preregistered escalation gate. At the fixed work ceilings,
+the screen-attainment pairs (coverage, extremes) were (16,8), (8,8), (6,7)
+for seeds 20261101–20261103. The two new extremes cells hit 100k jobs at
+11.92M and 11.73M frames; coverage hit the 12M frame ceiling first. Thus
+coverage does not win consistently even with slightly more actual frames in
+those two cells. Do not run longer coverage chains or promote this policy.
+The single-seed improvement remains a useful counterexample to universal
+coordinate-extreme superiority, not a qualified search improvement.
+
+K01 offline qualification passed: both default and feature builds pass all
+119 NES library tests. The compiled default key merges all 16 numeric P02
+pairs; the feature key separates 11, with every coarser group unchanged in
+both outputs. Strict Clippy passes for the feature library and key-audit tool.
+The coordinate/pose contract explicitly checks both independent coordinate
+marginals so swapped-axis errors cannot hide in diagonal-only fixtures.
+
+### Q03: freeze the prepared key-refinement executables
+
+Build default and `metroid-refined-archive` variants from the same committed
+source, sequentially against the owned target cache; 20m bound per build.
+Then run B01's SMB and MM2 qualification cells through each executable, 5k
+jobs, full replay, 240+60s per cell. All four streams must match B01 because
+the new feature changes only Metroid. This completes the available cross-game
+compatibility checks before asking for the still-required Metroid asset.
+It cannot substitute for a Metroid replay or fresh-search result.
+
+Q03 passed all four cells. Both frozen executables reproduce B01's exact SMB
+and MM2 stream hashes with full campaign replay. Results and build attestations
+are in [q03-results.json](q03-results.json). No Metroid emulator qualification
+had run at this checkpoint because the ROM transfer awaited approval. The bounded next
+experiments are prepared in `k01-smoke.json`, `k01-compatibility.json`, and
+`k01-development.json`; [CHECKPOINT.md](CHECKPOINT.md) summarizes the evidence
+and resumption order.
+
+### T03/B02: observation validity before the Metroid key experiment
+
+After the approved ROM transfer, the parallel research effort reported a
+verified transient BCD health underflow. Its terminal correction at `e59a953a`
+adds an opt-in `death_or_bcd_underflow_or_ending_v3` predicate and replay-policy
+identity, with fixed observation counters. Import only its target, campaign,
+evaluation request and runner changes; do not import local-search tools or
+change the other worktree. Preserve v2 defaults and raw health. Its independently
+replayed local probes support correctness/extendability, not fresh depth.
+
+B02 establishes the original ARM Metroid 5k full-replay and 100k witness streams
+from `baseline-001`, sequentially on CPUs 0–3 under an 1100s group watchdog.
+The integrated default build must reproduce both. Both key variants then need
+5k full replay under corrected terminal semantics before the key-only pair.
+Hold terminal v3 fixed in both development arms; do not attribute its effects
+to key refinement. The prior prepared feature executables remain archived,
+but the corrected pair will receive new source and binary identities.
+
+The initial test invocation used the parent Cargo workspace and failed before
+running tests because NES is an independent package. Corrected the invocation
+to its manifest; this was tooling setup, not a scientific outcome.
+
+Integrated qualification passed locally: 122 NES library tests in each key
+mode, strict Clippy for the feature library and evaluator, 22 runner tests,
+and dependency boundaries. The exact imported prior diagnostics are retained
+in `t03-prior-evidence.json`, with the source artifact's hash; they were not
+rerun on msr1 or used as fresh search inputs.
+
+### K01 development decision rule (before running the pair)
+
+Use seed 3, corrected terminal v3 in both arms, unchanged semantic selector,
+alphabet-only suffix generation, one representative per slot, 4 workers/8 GiB,
+500k jobs and 70M admitted frames, 1800s search plus 120s finishing. The process
+group has a 1980s hard limit. Default runs on 0–3 and refined on 8–11.
+Record actual frames and replay every named milestone independently. For a
+common-cost view use the last logged row at or below 10M, 25M, 50M, and the
+smaller final frame total (capped at 70M); report that row's actual counter.
+Final drained-window observations cannot be credited to a smaller boundary.
+
+An additional replayed boss or ending is primary evidence. Otherwise, an
+additional named capability or area beyond the initial Brinstar/Morph Ball,
+or at least 20% fewer frames to a common later milestone, qualifies two more
+bounded development seeds (4 and 5, swapping CPU placements for seed 4).
+This is a practical escalation rule, not a significance test. If refined only
+increases map/cell count, do not extend its horizon. Compare retained memory,
+underflow eligibility, and unselected-removal fraction to distinguish loss of
+representation from dilution of exploration. Mixed semantic results permit
+the same small replication, never a default promotion. Longer depth runs need
+a useful-progress win on at least two of the three development seeds; untouched
+validation is still required for a breakthrough claim.
+
+B02 passed both fixed-work cells: 691,673 frames at 5k jobs with full replay,
+and 13,629,183 frames at 100k jobs with repeated witness verification. The
+new corrected builds were compiled with Rust 1.97.1; the original baseline
+used 1.97.0. Both comparison arms use the same new compiler and source;
+legacy stream compatibility remains an explicit gate. The refined corrected
+5k qualification exercised two real underflow endpoints, neither eligible
+for admission, and passed full report/checkpoint replay. At this small budget
+refinement retains 4,837 states versus 2,047, with the same ten observed maps;
+this establishes activity and cost, not improved discovery.
+
+### P03 preparation: separate new suffix evidence from the original examples
+
+The existing equal-suffix probe had a fixed random seed and implicit legacy
+terminal semantics. Add optional explicit terminal/seed arguments and record
+both plus the suffix hash in a v2 report. Preserve the original defaults and
+respect the chosen terminal predicate when counting living exits. This tool
+change does not affect the frozen K01 binaries or either running campaign.
+
+After K01 finishes, a bounded diagnostic may use the default arm's 16 sampled
+equal-preference pairs, terminal v3, 64 suffixes of 24 actions, seed 20261201.
+Those pairs have equal measured resources and capability identity, isolating
+the remaining state aliasing. Reconstruct both endpoints exactly; classify
+which pairs the compiled refined key separates and which still share a slot.
+Count distinguishing living exits and survival separately, with actual prefix
+and suffix frames. Use a 600s process-group bound on the idle little cores.
+No diagnostic prefix enters fresh search, and no finite matching sample proves
+equivalence. This tests new states/suffixes after choosing the representation;
+it is not untouched validation of global search performance.
+
+The live K01 throughput forecast places the slower CPU group's full work budget
+near its 30-minute wall limit. Do not extend the limit. If a cell is censored,
+the original full-budget gate fails; retain its completed, replayed evidence.
+The already registered 50M checkpoint can support a separately labelled
+diagnostic comparison only if both arms reach it. A follow-up prompted by that
+checkpoint must use 50M from the start, rather than relabel the censored run as
+a completed 70M panel. This operational contingency was recorded before
+inspecting either arm's 50M checkpoint.
+
+Follow-up [#281](https://github.com/pH14/harmony/issues/281) records the missing
+distinction between boss-area entry, actual encounter, and partial fight
+progress. Its source-labelled observations require their own qualification
+and must not alter search policy merely because no boss was defeated.
+
+K01 completed without wall censoring: both arms finished 500k jobs. Default
+used 60,731,080 frames and refined 59,348,941; the shared comparison ends at
+59,348,941. Both replay Morph Ball, missiles, Norfair, and one energy tank;
+neither defeats a boss. Refined obtains the tank at 49.59–49.60M frames versus
+59.16–59.17M, about 16% earlier. Missiles and Norfair are slightly later under
+refinement. No additional final named milestone or 20% arrival improvement
+passes the registered gate. Do not extend this key family to longer campaigns.
+It retains 161,829 states versus 42,543, with 87 versus 84 cached map cells.
+Results and conservative arrival intervals are in `k01-analysis.json`; full
+paired provenance is in `k01-development-results.json`.
+
+The P03 tooling qualification passed: two exact endpoint pairs, four suffixes
+of eight actions, 8,342 prefix frames and 7,368 probe frames. The final P03
+sample uses sixteen equal-preference pairs and a different registered seed.
+Three sampled candidates are explicit continuations of their incumbents.
+
+Two production-coordinator fixtures clarify exposure interpretation. A state
+can be extended inside its birth job while retaining zero parent-selection
+counts. Also, a previously executed pending job may receive its parent credit
+only after an earlier admission removed that parent. Both fixtures pass;
+comments and `theory.md` now state that removal counters capture admitted
+parent accounting at removal time. They cannot alone establish lost first
+exploration opportunities. No scheduler change is justified solely by K01's
+larger unselected-removal fraction.
+
+P03 completed within its bound using 1,885,036 physical frames including
+prefixes. Across 1,024 paired suffix trials there were 66 discarded-only and
+86 survivor-only living exits, with 48 cases where only the discarded state
+survived. No new capability or boss was found. Fourteen of sixteen equal-resource
+pairs have a useful disagreement; the compiled refinement separates six and
+still merges eight. This is new evidence against interchangeability, not an
+endorsement of either endpoint or of finer keys. `p03-analysis.json` retains
+pair-level results and source hashes. Follow-up #283 records the exposure
+accounting distinction established by the two coordinator fixtures.
+
+### R03: ordinary representative plus job-ranked sample
+
+Use `representative_job_sample_2_v1`: retain the existing best representative
+plus the best candidate from the lowest-ranked creation job. The fixed rank
+uses existing metadata and no search RNG; at most two entries share the same
+byte budget. It works at equal resources and needs no finer Metroid key or
+resource axes. The exact fixed-stream extrema invariant, idealized sampling
+calculation and limits are in `theory.md`. Test loss cases as well as successes.
+
+First qualify fixed-stream prefixes, same-cohort replacement, no-resource keys,
+and full campaign/checkpoint replay with real alternative admission, pressure,
+and continuation dispatch. Run generic and NES library checks and strict Clippy
+under ten-minute bounds. Freeze one default-key ARM binary (20m build bound).
+Require corrected Metroid legacy-policy 5k compatibility against K01, then 5k
+full replay for the sample policy on Metroid and MM2. Actual alternative
+admissions must occur. Qualify resource-extremes on the same executable as the
+matched-capacity control.
+
+Only after these checks, compare job sampling and resource extremes on fresh
+Metroid development seed 3, terminal v3, legacy v8 key, unchanged semantic
+selector/alphabet-only suffixes, 4 workers/8 GiB, 500k jobs/50M frames and
+1800+120s per cell. The two arms use the same binary and disjoint big CPU sets;
+sample uses 0–3 and extremes 8–11. Score last logged observations at or below
+50M, with conservative milestone-arrival intervals and repeated witness replay.
+The existing K01 default is an additional descriptive baseline, not a rerun.
+An additional final named capability/area or a conservative 20% later-milestone
+arrival improvement qualifies seeds 4 and 5; longer runs need wins on two of
+three development seeds. Map/cell count alone does not qualify escalation.
+A full search victory would be primary evidence but still needs fresh validation.
+Do not interpret a censored full-work cell as a mechanism failure or success.
+
+The transfer diagnostic is fresh MM2 Metal on seed 20261101, sampling versus
+extremes under the same binary, 100k jobs/12M frames, 4 workers/8 GiB, existing
+energy-splice vocabulary and 600+120s per cell. Run it after the Metroid pair
+so no more than two four-worker campaigns overlap. A Metal result alone cannot
+qualify Wily-depth recovery. Further chain work requires a useful matched-work
+result and preserves the already recorded failed coverage/extremes ablations.
+
+R03 local qualification: all 132 generic and 122 NES library tests passed;
+strict generic all-target and NES library/runner Clippy passed. The updated
+optional-policy fixture exercises real admissions, eviction, continuation,
+and complete stream/checkpoint replay. The first focused compile missed a
+test-only helper import; fixed before these checks. A duplicated full check
+was needed because the previous tool response lost its completion status;
+the logged repeat completed in under a minute. `analyze_p03.py` reproduces
+`p03-analysis.json` byte for byte from the private raw output.
+
+R03 ARM source is commit `33795855`, default features, source digest
+`0429fe61af18ef06429e6ea2920fd8a69dc225fd25289eb31df37bcc55e22f97`;
+binary `11249fff2bce1401d46d21db1f081678caae28c63124793886e78b5eb3992a7e`.
+The frozen build finished in 44.62s with Rust 1.97.1.
+Before development outputs exist, `analyze_r03.py` records the comparison
+logic. For MM2, a useful transfer gate specifically means a replayed Metal
+victory when the control does not win within budget, or at least 20% fewer
+frames to their common victory. Screen counts alone do not qualify new chains.
+Wall censoring blocks either game's escalation gate; report the completed work.
+
+R03 qualification checker correction: the candidate passed full Metroid
+replay with 2,352 alternative admissions. The early resource-extremes control
+made 15,977 resource decisions but admitted no tradeoffs, producing the same
+search decisions as legacy. The driver incorrectly required alternatives from
+that control too and stopped after the Metroid cells. Require actual sample
+admissions and actual control resource decisions; keep both full-replay checks.
+The corrected external driver reuses the three completed cells and runs only
+the absent MM2 cells. No frozen executable or source directory is edited.
+
+R03 remaining portable checks passed: generic interface test, NES evaluator
+binary test, all 22 Python runner contract tests, and dependency-boundary check.
+The exact paired-tail examples in `validation-protocol.md` agree with exhaustive
+enumeration for every success threshold and discordant sample size up to ten.
+
+### E01: read-only boss-memory trace qualification
+
+The current area labels do not establish that a boss was loaded or fought.
+Before adding campaign counters, qualify a standalone diagnostic from existing
+searched routes. It reads loader presence, six enemy slots (status, data index,
+special byte, HP and position), and persistent defeat bytes. No value enters
+archive identity, preference, selection, termination or fresh search.
+Pinned disassembly `4270d57f` documents the loader and HP stores; its combat
+code also overwrites the special byte. Therefore record raw bytes and sampled
+loader/slot agreement, not an assumed permanent bit or a damage counter.
+
+Use the already searched D01 Kraid-area tape only as a labelled diagnostic
+input, never as a fresh-search origin. At most 8,192 actions/250k route frames.
+Replay at ordinary chord boundaries, then twice with one-frame holds and
+read-only memory inspection; require equal final emulator bytes and mechanical
+state across all three runs and identical one-frame trace hashes. Stop on
+terminal before applying any remaining tape. Build on little cores under20m;
+run under300s, 4GiB and32MiB output. Record actual frames including setup.
+The route may contain no boss encounter; that qualifies a negative control
+only. Do not infer whole-campaign encounter absence or start longer searches
+from an empty trace. A positive episode is required before proposing campaign
+encounter or partial-damage counters.
+
+R03 Metroid completed the full50M-frame comparison without censoring.
+Sampling has no additional final milestone or20% arrival improvement, and
+misses the control energy tank. Its Metroid escalation gate failed. Do not
+run longer Metroid sample campaigns. Full results are preserved on msr1.
+Both MM2 starts failed immediately because the driver incorrectly passed
+the Metroid-only replacement-pair audit option. No emulator search ran.
+Remove that unsupported diagnostic option, preserve failed outputs unchanged,
+and run the same registered transfer conditions under new run ID `r03b`.
+The binary, policies, seeds, budgets, vocabulary and selection stay frozen.
+
+R03b MM2 completed with both victories replayed. Sampling used1,444,334 frames/
+11,862 jobs; extremes used7,349,785 frames/57,310 jobs. The approximately80%
+frame reduction passes the registered transfer gate. Both arms use the full-hold
+suffix profile inherited from B01, `one_to_six_within_3_longest_actions_full_hold`.
+This differs from C01's `one_to_six`; do not compare their resource-control costs
+as if policy were the only difference. The R03b within-pair comparison is isolated.
+
+E01 completed three replays of the searched92,904-frame Kraid-area tape, using
+281,499 physical frames including setup. Ordinary and one-frame cadence ended
+in identical emulator bytes/state; both one-frame hashes match. No loader or
+active miniboss-tag agreement was observed. This is a qualified negative route
+control only. No campaign encounter/damage counter or extra search is justified
+by its empty trace. Raw source/input/build provenance remains private on msr1;
+compact numeric results will be preserved here.
+
+### J01: new-seed fresh MM2 chain after the R03b transfer gate
+
+Question: does the strong Metal improvement generalize to a second development
+seed and produce useful fresh chained depth? Use new development seed20261102
+in two fresh chains, sampling versus extremes. No earlier gameplay input is
+accepted. Every later stage uses only its own chain's searched victory and
+replays the carried bridge twice. Keep R03b's full-hold suffix profile and
+energy_splice:6 vocabulary, selector, four workers/8GiB,4096 actions and2/2
+window/result slots; freeze the same `job-sample-001` executable. A driver
+argument records the suffix explicitly while preserving its historical default.
+
+Fixed stage order: Metal, Heat, Air, Wood, Bubble, Quick, Flash, Crash, Wily1–3,
+then verify Wily4 entry with all eight weapons. Per stage:1M jobs/120M admitted
+frames,1200s search+120s finish; each complete chain stops after5400s, outer
+watchdog5460s. No retries of a failed stage or imported rescue prefix. Stop a
+chain at its first unsolved stage. Run sample on8–11 and extremes on0–3, swapping
+the prior placement; at most two campaigns. Wall throughput remains descriptive.
+
+The first stage is a replication, later prefixes differ by their own search
+histories, so later-stage comparisons are end-to-end chain evidence. Record
+all setup/export/bridge/verification work separately. An earlier Metal win
+without greater chained attainment or substantially cheaper common attainment
+does not justify a longer chain. If both stop at the same stage, inspect their
+completed common-work evidence before allocating another run. A Wily4 result
+still requires the untouched repetition panel; this is development only.
+
+Before J01, qualify the existing post-victory export for both completed R03b
+victories without rerunning search, or use the already qualified chain export
+path with a small full-replay chain-mode smoke if an independent export cannot
+reuse those results. Bound extra qualification at5m per arm, preserve every
+failed check, and keep all previously failed Metroid/coverage/refinement gates.
+
+J01 export helper reuses existing adapter methods; the first compile named
+the wrong provider trait for target creation. Corrected `TargetExecution`
+import and strict Clippy pass. It will export both R03b victories and use the
+frozen progress helper to replay both Heat bridges twice, with physical work
+recorded. J01 itself still starts independently on development seed20261102.
+
+J01 first export qualification stopped before a bridge: the extra helper
+assertion required both an awarded boss and `dead == false`. Both R03b verified
+witnesses actually report victory and death simultaneously. Their award bit
+exists, but this does not yet qualify continued gameplay. The existing chain
+export has no living-endpoint assertion; it requires ordinary award/menu
+transition and then a separately replayed next-stage setup. Align the helper
+with that contract, retain the raw endpoint and death flag, and require two
+Heat replays with the Metal weapon retained before J01 may start. Do not change
+any search, death, or victory predicate. If the bridge fails, do not claim
+chainability or launch J01. Preserve the failed output and use new helper build
+`metal-export-002` and a new qualification directory for this changed check.
+
+J01 bridge qualification r2 passed for both R03b victories: twice-replayed
+Heat entry has health28, weapon mask64, and lives4(sample)/3(extremes).
+Additional export/setup/bridge work totals143,580 physical frames. Earlier
+C01 victories have the same simultaneous death/victory flags and already
+qualified their bridges; the extra living-endpoint assertion was inappropriate
+for this existing export contract. J01 launched on the fixed new seed20261102
+with its required binary and bridge gates, separate CPU sets, and watchdog.
+
+Work-accounting note:143,580 counts the successful r2 bridge qualification.
+The earlier sample export stopped after target setup and physical victory
+replay. Its16,819 additional frames are inferred from the identical unchanged
+setup/replay path (2,253+14,566), not measured by the failed helper itself.
+Including that explicitly labelled inference gives160,399 qualification frames;
+the failed command is not treated as free.
+
+### H01: isolate retention at the newly solved Heat origin
+
+J01 sampling has replayed Metal, Heat and Air awards and their bridges. The
+extremes chain stopped at Heat's original20-minute wall limit with40,507,046
+frames; sampling's Heat victory needed66,633,523. At40.5M frames neither had
+won (screen maxima16 versus17), so the apparent depth gain does not establish
+a matched-work Heat improvement. The ongoing sampling chain keeps its original
+limits. No control stage is resumed or relabelled.
+
+Register one new conditional diagnostic before observing it: run extremes
+from exactly J01 sampling's Metal prefix, seed20261102, same frozen binary,
+selector, full-hold suffix, mixture, workers,8GiB and1M jobs. Reuse the completed
+sampling Heat result instead of rerunning it. Stop at victory or85M frames,
+with3000s search,120s finish and3180s outer watchdog, CPUs0–3. The larger wall
+cap permits comparable work on the slower CPU set; it is not a chain extension.
+Only policy and stopping limits differ, and the analyzer requires all other
+request and semantic identity fields to agree. Bounds do not seed search RNG.
+
+The question is whether retention improves Heat conditional on this specific
+searched prefix. A20% frame improvement requires5×66,633,523 <=4× the control's
+victory cost or completed85M budget. Wall censoring fails this allocation gate.
+A control win earlier than that threshold rejects the20% claim. Preserve any
+control bridge, but never count this supplied-prefix run as a fresh chain or
+an untouched validation seed. This is an adaptive diagnostic prompted by J01,
+not an independent replication. No further work is licensed by screens alone.
+
+H01 launched from committed driver `d127aaa7` under a separate3240s/11GiB
+systemd limit on the free0–3 CPUs. The latest full NES library suite includes
+the raw boss decoder:123 tests passed in24.29s, plus the evaluator test. A
+persisted local log resolves a prior lost tool completion without uncertainty.
+
+### L01: retain an ordinary-production comparator
+
+R03b and J01's Metal gains compare sampling against coordinate extremes, an
+optional retention policy. Before describing sampling as an improvement over
+production, also measure ordinary retention on these same two development
+seeds. Reuse both completed candidate results. Run each control with its
+candidate's exact request, removing only the optional retention policy and
+setting the stopping limits to 12M frames and 600s search (120s finish, 780s
+outer watchdog). Keep its original execution limit, chain-export mode, frozen
+binary, fresh origin, four workers and 8GiB. No gameplay prefix is supplied.
+
+Run only when existing campaigns release CPU slots, keeping at most two
+four-worker campaigns. Pin controls to the opposite CPU group from their
+reused candidate when both groups are free. Record actual placement; compare
+admitted frames, with wall censoring explicitly disqualifying the allocation
+gate. For each seed the 20% test is 5× candidate victory frames <=4× control
+victory frames or its completed budget lower bound. Both comparisons must
+pass before claiming a replicated large Metal gain over ordinary production
+retention. These seeds were selected after observing the candidate, so this
+is an adaptive baseline diagnostic and never a held-out success-rate panel.
+A Metal result still does not qualify the Wily goal or authorize a default
+change. Subsequent causal attribution may also need a two-quality-winner
+control: current evidence does not distinguish the rank choice from the more
+general benefit of preserving an additional non-extreme state.
+
+### E02: inspect two already completed late-area development witnesses
+
+E01 stopped at the first Kraid-area milestone. Two subsequently available
+completed development witnesses continue beyond area entry: the ordinary
+corrected seed-3 anchor (`l04-anchor-control-s3`, 107,469 route frames) and
+corrected seed 5 (`t03-anchor-corrected-s5`, 127,003 frames). The former visits
+Kraid area; the latter Ridley area. Inspect exactly these two full witnesses
+with the unchanged `boss-probe-001` binary, ordinary cadence plus two one-frame
+replays each. Keep the existing 8,192-action/250k-frame input bounds, 32MiB
+trace bound, and 300s/4GiB watchdog per tape; use little CPU4, one at a time.
+No search campaign runs and no tape becomes a fresh-search origin.
+
+The source summaries are read-only development artifacts from ms02, not its
+untouched validation panel. Seed-3 summary SHA256 is
+`2a81053a83204a3a0ef8383b5c7d810a2b59a0f46fb8bf3d3c19c295ddf204cb`,
+input `5246bec4841627113d7debfc44a172238273fa6e465858f49a7e891644e4f3c0`.
+Seed-5 summary SHA256 is
+`c00f7015323a100a923fef2acd9ffae865c9f1dc1e00352145fa972207669571`,
+input `03e1adf0185bb5dc0bbb5cdf6519eac669a794730e460319e82d0833d0b5d2c1`.
+Require all three ARM replay endpoints and machine bytes to agree, and both
+one-frame traces to agree, as in E01. This does not assert ARM/x86 snapshot-byte
+identity. A positive loader/slot episode would qualify closer lifecycle
+inspection; an empty trace remains evidence only about these selected routes.
+Do not infer campaign-wide absence or extend any failed search from it.
+
+E02 transfer status: the seed-3 witness copied successfully and its SHA256
+matches. Automatic approval review separately rejected the seed-5 transfer,
+stating that broad experimentation permission did not explicitly authorize
+that private payload transfer between remote destinations. Explicit approval
+was requested for that file; no indirect transfer is attempted. The approved
+seed-3 diagnostic runs independently. Until the second route is available,
+E02 is a partial two-route check, not two negative observations.
+
+### J02: an ordinary-retention chain at the observed candidate stage budgets
+
+L01 completed both Metal comparisons without censoring. Sampling beat ordinary
+retention on seed 20261101 (1,444,334 versus 5,012,486 frames), but lost on seed
+20261102 (2,488,346 versus 2,182,520). Its two-seed production-improvement gate
+failed. Do not describe the two resource-control wins as replicated production
+improvement, or run a longer candidate chain on that basis.
+
+The outstanding question is whether J01's greater chain depth survives an
+ordinary-retention comparator at the same per-stage work. Register one fresh
+ordinary chain on seed 20261102, through Wood only. Reuse the completed J01
+candidate. Set fixed Metal/Heat/Air/Wood frame ceilings to its observed admitted
+work: 2,489,148 / 66,634,037 / 39,647,446 / 72,056,120. Preserve one attempt per
+stage, no supplied starting prefix, its own searched/replayed bridges, the same
+frozen binary, full-hold suffix, selector, mixture, 1M jobs, four workers and
+8GiB. CPUs8–11 match J01 sampling's placement. Allow up to 2400s per stage to
+complete prescribed work; a 5400s total/5460s outer limit still applies.
+
+The chain driver now supports an explicit stage-count cap and fixed per-stage
+frame ceilings; defaults preserve the full chain and uniform frame limit.
+With custom ceilings, a victory first observed beyond its stage limit is
+recorded but cannot carry the chain forward as an in-budget result. Stop at
+the first unsolved or late-solved stage, or after the Wood bridge. Never call
+that early endpoint Wily4. This adaptive budget was chosen from observed J01
+work before seeing the new control's Heat/Air/Wood outcomes, so the comparison
+is development evidence, not independent confirmation. Require equal search
+and asset identities apart from retention, own prefixes and stopping limits.
+Report wall censoring separately. If ordinary retention matches or exceeds
+sampling's three in-budget awards, the claimed deeper-chain advantage over
+production is not established and no longer sampling chains are justified by
+J01. A sample-only stage success would justify a new bounded fresh replication,
+not a default change or breakthrough claim.
+
+J01 finished at its original limits: sampling solved Metal/Heat/Air and stopped
+at Wood after 72,056,120 stage frames; extremes stopped at Heat. Total admitted
+work is 180,826,751 versus 48,180,376 frames; physical-work lower bounds are
+182,102,095 versus 48,421,033. The lineage analyzer passed every stage and
+rejected three in-memory planted provenance errors. E02 seed 3 passed three
+replays using 325,194 physical frames and produced no boss-memory episode.
+The second E02 route remains pending approval, not a negative observation.
+The new chain-stage controls passed two synthetic runner-contract checks:
+early completion cannot claim Wily4 or start a third stage, and a late victory
+is preserved without producing a carried bridge. These checks use no emulator.
+
+### P04: inspect motion state in existing equal-observation counterexamples
+
+P03 already established useful continuation differences in fourteen pairs, eight
+of which remain merged by the finer position/pose key. Before another retention
+design, reconstruct the exact same sixteen recorded pairs and read omitted
+motion bytes. Pinned disassembly `4270d57f` names facing at `$4D`, vertical and
+horizontal speed at `$0308/$0309`, jump displacement at `$030F`, gravity at
+`$0314`, horizontal acceleration at `$0315` and speed maximum at `$0316`.
+These are input-independent diagnostic reads; no value enters fresh search.
+
+Freeze two descriptors before observing the bytes: the coarse tuple is
+`(facing, sign(signed horizontal speed), sign(signed vertical speed))`; the
+full seven-byte tuple is descriptive only. The existing P03 suffixes and
+outcomes are reused without new trials. A memory-bounded retention design is
+worth specifying only if the coarse tuple separates at least six of the eight
+still-merged useful pairs, including a pair with identical recorded mechanical
+state and an existing distinguishing suffix. The seven-byte tuple cannot
+rescue a failed coarse gate. Even a pass does not yet authorize a fresh campaign:
+it needs a bounded policy, a finite counterexample and a distinguishing pilot.
+Motion covaries with other hidden state, so a partition association is not a
+causal explanation or proof of sufficient Markov state.
+
+Use exactly the P03 selected audit SHA256
+`c310985ec09f24a35f1f8e755a44ecc934f5bc2eba355207f80d74efe85b5120`.
+Each of 32 endpoints is reconstructed twice under terminal v3, checked against
+the recorded mechanical endpoint, and snapshotted before/after the read to
+prove noninterference. Cap all physical replay at 2M frames, each input at
+8,192 actions/250k frames, runtime at600s and memory at4GiB on little CPU4.
+The standalone diagnostic and analysis are frozen before execution. The
+existing Metroid coverage, finer-key and job-sampling campaign gates remain
+failed; P04 neither resumes nor extends those campaigns.
+
+P04 source is `f24b6b26`; ARM source SHA256
+`3415d10bcfa97b7ceb9242aa5f794bd77de020fe095f577946bcf9105104da37`,
+binary `8167bcce273f716b16b1e22b8c8914a6e0703e3a0cb06d216c69c9beeeccf6ae`.
+The focused raw-byte unit check and strict library/probe Clippy passed. The
+unchanged P03 audit checksum was verified before the bounded diagnostic launch.
+J02 runs separately from driver `56ab51ee`; its analyzer checks per-stage
+lineage, semantic identity and actual completed control work. A stopped control
+that has not observed its frame ceiling cannot supply a matched-work negative.
+
+P04 completed all sixteen pairs with two independent replays per endpoint and
+snapshot noninterference, using 1,587,338 physical frames. The fixed coarse
+tuple separates exactly six of the eight still-merged useful pairs: 0, 3, 5,
+6, 12 and 13. Pair0/trial15 supplies the required identical-mechanical-state
+example. The gate passes for a [bounded design](motion-retention-design.md),
+not fresh search. Pair4 remains indistinguishable even by all seven raw bytes,
+so neither descriptor is promoted to sufficient state. No new suffixes ran.
+
+H01 completed 85,001,033 admitted frames without a Heat victory or wall
+censoring. Against the reused 66,633,523-frame sampling victory, the conditional
+20% gate passes. Recorded physical work is at least85,144,123 frames, with
+zero repeated candidate search. This result concerns the selected shared
+origin and coordinate-extremes comparator; L01's mixed production result
+and the still-running J02 ordinary chain remain separate evidence.
+
+### J03: one prospective fresh depth replication
+
+J02 ordinary retention stopped at Heat after 66,634,555 admitted frames,
+without a victory. Its first Metal victory reproduced L01 at 2,182,520 frames
+with an identical replayed witness despite the different stopping ceiling.
+The complete chain analyzer passed lineage and semantic-identity checks. Thus
+sampling's three-stage attainment exceeds ordinary retention's one stage at
+the observed J01 stage budgets on this selected development seed. The bounded
+fresh-replication gate passes; no Wily or held-out claim follows.
+
+Register exactly one paired development seed, 20261103, through Wood. Both
+arms start afresh from power-on, with no imported gameplay tape, one attempt
+per stage and only their own twice-replayed bridges. Freeze `job-sample-001`,
+the existing full-hold suffix, selector, energy-splice mixture, 4 workers/8GiB,
+1M jobs per stage, and common Metal/Heat/Air/Wood ceilings of 12M/85M/60M/85M
+admitted frames. Allow2700s per stage,5400s total per chain,5460s watchdog.
+These larger prospective ceilings avoid reusing the favorable seed's exact
+stage costs as a population claim. Ordinary retention runs first, then sampling,
+both on CPUs8–11. This leaves0–3 available for the independently gated Metroid
+work and keeps at most two four-worker campaigns active.
+
+Run both arms regardless of the first search outcome; infrastructure failure
+requires inspecting the preserved failure before any retry. Stop each chain at
+its first unsolved/out-of-budget stage or the verified post-Wood bridge. A
+repeated advantage requires more candidate in-budget stage victories, with the
+control observing its prescribed work at the blocking stage, or at least20%
+less admitted work to a common third-stage victory. If those conditions fail,
+J01's production-depth advantage is not replicated and does not justify longer
+sampling chains. Wall/total-budget censoring is unresolved, not a completed
+matched-work failure. This remains development work, not the Wily4 seed panel.
+
+### R04: bounded motion-context retention
+
+Source commit `e29ee221` adds `quality_representatives_2_v1` and
+`context_representatives_2_v1`. The second retains the two best distinct context
+maxima, with the exact fixed-stream induction and finite counterexamples in
+[motion-retention-design.md](motion-retention-design.md). The optional Metroid
+feature obtains its context from already cached RAM, preserves group geometry,
+and versions both key and result digest. Missing contexts use ordinary
+competition. All 135 generic tests plus the interface check, 126 feature NES
+tests plus evaluator check, 125 default NES tests, and strict Clippy passed.
+
+[R04's registered runner](run_r04.py) first checks three historical 5k streams
+and two full-replay feature cells on msr1, sequentially on cores 0–3. A separate
+bounded replay of existing P04 pairs 0/2/12 checks cached context and actual
+campaign keys against direct motion reads. The resident-snapshot census checks
+the policies make distinct retention choices; it does not measure useful
+future coverage. The design document fixes its quantitative gate and the
+subsequent one-seed, 50M-frame development comparison before ARM data. No
+held-out seed or longer campaign is authorized by a census alone.
+
+All five original R04 cells completed full replay, costing 3,361,554 admitted
+frames plus verification. The census failed because resident snapshots include
+inactive reconstruction anchors. R04b (`4e3f0255`) uses actual active keys, with
+an executable historical-entry exclusion check. The same short cells and
+thresholds are repeated under new names; both feature streams must additionally
+match the original R04 streams exactly. No retention rule or descriptor changed.
+Original results are preserved in [r04-original-qualify-results.json](r04-original-qualify-results.json).
+
+### J03 result: depth advantage did not replicate
+
+The [frozen analyzer](analyze_j03.py) passed all source, asset, request and own-
+prefix lineage checks. On development seed 20261103, ordinary retention cleared
+Metal/Heat/Air/Wood at 2,565,160 / 50,285,649 / 38,810,609 / 29,600,933 frames
+to the first award in each stage. Sampling cleared Metal at 1,516,043, then
+failed Heat after 85,000,993 admitted frames, completing its prescribed ceiling
+without wall censoring. All awards and healthy next-stage bridges replayed.
+
+Both arms used cores 8–11 sequentially. Ordinary retention admitted 121,266,871
+frames across four stages (physical lower bound 122,846,409); sampling admitted
+86,517,905 across two attempts (physical lower bound 86,804,959). Their later
+stage starts are their own searched histories. Sampling neither improves depth
+nor reaches the common third-stage speed gate. The prospective escalation gate
+fails: **no longer sampling chains in this tranche**. The favorable J01/J02
+results remain valid development observations, but their production-depth
+advantage did not replicate. [j03-analysis.json](j03-analysis.json) preserves
+the complete evidence. No Wily 4 or held-out seed result is claimed.
+
+### R04b qualification passed; bounded development dispatched
+
+All five corrected qualification cells passed full replay and the prescribed
+hash comparisons, including unchanged feature-policy streams from original
+R04. Both active censuses have a largest slot of two and every active key has
+a context. Quality retention has 3,866 active entries, 1,083 distinct-context
+pairs and 517 same-context pairs. Context retention has 3,492 active entries,
+1,376 distinct-context pairs and zero same-context pairs. The mechanism gate
+passes. This is activity evidence, not progress evidence.
+[r04b-qualify-results.json](r04b-qualify-results.json) preserves the full cells.
+
+The cached-context probe consumed 378,316 physical frames; all original P04
+selected endpoints, raw motion fields and snapshot hashes match exactly.
+[r04-cached-motion-qualification.json](r04-cached-motion-qualification.json)
+records the comparison and [r04-build-provenance.json](r04-build-provenance.json)
+attests both source versions and all five executables. The corrected feature
+binary is `2a727ac12dbc4ff07272e0119bab39179aaa45bc0a6f422c2cc8fb77cdf3f981`.
+
+The one-seed development pair is dispatched through launcher `57bdffdd`, using
+that same binary in both arms, quality then context. J03 released cores8–11,
+so both use that faster group under a pre-data placement amendment. All other
+registered conditions remain: fresh seed3, four workers,8GiB, corrected v3,
+alphabet-only,4096 actions,500k jobs/50M frames/1800s search per arm. The outer
+service caps the pair at4080s and12GiB; the analyzer runs after both cells stop.
+No validation seeds are consumed.
+
+Portable verification after the census correction passed 22 runner contracts,
+two chain-limit contracts, dependency boundaries, 135 generic tests plus the
+independent-interface test, and 139 release tests across the NES library and
+binaries with all features enabled. Strict release Clippy covered all NES
+features/targets; generic strict Clippy and both manifest formatting checks
+also passed. [portable-verification.json](portable-verification.json) records
+the scope and preserved-log digest. These are local checks, not CI or workload
+performance claims.
+
+### R04b development passed; R05 registered and launched
+
+At common50M frames, context retention adds a replayed energy tank absent from
+the capacity control: its arrival lies in (36,975,176,36,987,803] frames.
+Both arms also reach Morph Ball, missiles and Norfair. There is no lost control
+milestone or wall censoring; the registered additional-milestone gate passes.
+This remains one adaptively investigated development seed, not a boss result.
+
+Quality admitted50,000,664 frames/416,388 jobs in869.7 search seconds; context
+admitted50,000,675 frames/407,716 jobs in870.9s. Recorded physical lower bounds,
+including final/milestone suffix replays, are50,115,898 and50,213,167 respectively,
+with setup and unadmitted work additional. Sampled process-tree RSS is1,735,016,448
+versus2,520,289,280 bytes. Active entries67,066 versus100,132 reflect their
+different discovered archives; both obey the8GiB budget and unchanged geometry.
+[The analysis](r04b-development-analysis.json) and [both full cell summaries](r04b-development-results.json)
+preserve costs, endpoints, conservative arrival intervals and exact identities.
+
+R05 (driver source`c11f4a7f`) registers exactly one new development seed,
+20261210, with ordinary-retention, context and top-two-quality arms in that fixed
+order, sequential on8–11. It uses the same `context-002` executable and all
+R04b per-arm work/memory/action limits. The ordinary arm tests relevance to the
+production retention policy while matching experimental motion metadata.
+The [design](motion-retention-design.md) requires a qualifying advantage against
+both controls at their common completed work boundary; otherwise longer motion
+campaigns stop. No held-out validation or budget extension is preapproved.
+
+### Work ledger before R05 completes
+
+[The work ledger](work-accounting-after-r04.json) scans actual run summary paths,
+excluding copied summaries embedded in analyses. Before R05 completes it counts
+67 completed evaluation cells and two recorded startup errors: 1,156,082,981
+admitted frames, 9,031,352 executions and 23,937.3 summed search-phase seconds.
+That time includes overlapping cells and is not machine wall time. Exact full
+campaign verification reexecutes another 19,644,104 admitted frames; recorded
+final/milestone suffix replays add 2,095,208 frames. Six standalone diagnostic
+summaries report another 4,473,093 physical frames, with their components and
+file hashes recorded separately.
+
+These are measured categories, not a complete physical-work total. Setup,
+bridges, exports, unadmitted work and runs without a completed summary may add
+work. Unknown cost remains unknown. The revised [accountant](account_runs.py)
+recognizes the suffix and boss probe producers' explicit counters; its totals
+match the independently recorded P03/P04/E01/E02 analyses. It does not alter
+the frozen R05 package, whose original accountant remains preserved. A final
+ledger will be generated from the revised script after R05.
+
+### R05 completed: motion replication fails both controls
+
+All three arms completed their50M-frame budgets without wall censoring on the
+same fast cores and frozen executable. The [frozen analysis](r05-analysis.json)
+rejects both escalation comparisons. Ordinary retention gets missiles by17.689M
+frames, Norfair by17.940M and a tank by42.392M. Context gets missiles by45.040M
+and Norfair by45.667M, with no tank. Quality gets missiles by19.957M and Norfair
+by22.042M, also without a tank. Every reported named milestone was replayed.
+There is no qualifying speedup or added context milestone, and context loses
+ordinary's tank. No longer motion-retention campaign is permitted this tranche.
+
+| Arm | Admitted frames | Jobs | Search seconds | Peak sampled RSS bytes | Active entries |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Ordinary | 50,000,719 | 396,412 | 863.972 | 1,257,578,496 | 47,078 |
+| Context | 50,000,990 | 369,530 | 848.919 | 864,915,456 | 31,248 |
+| Quality | 50,001,074 | 405,598 | 861.626 | 1,760,550,912 | 68,274 |
+
+Context's31,248 active entries include14,085 distinct-context pairs and zero
+same-context pairs; its largest slot is2. Quality has9,808 same-context and
+22,263 distinct-context pairs; ordinary has one entry per slot. Correct rule
+implementation therefore did not translate into improved fresh discovery.
+Lower context RSS coincides with less discovered progress and is not a success.
+[Full cell evidence](r05-results.json) preserves identities and costs.
+
+[The standalone figure](motion-development.svg), also provided as
+[PNG](motion-development.png), contrasts the initial gain with the replication.
+It plots telemetry arrival intervals, not confidence intervals. Its generator
+records exact analysis hashes and Matplotlib version in
+[motion-development-figure.json](motion-development-figure.json).
+
+[Updated work accounting](work-accounting-after-r05.json) counts70 completed
+cells and two errors:1,306,085,764 admitted frames and10,202,892 executions,
+plus19,644,104 full-replay admitted frames,2,529,008 reported witness-suffix
+frames and4,473,093 standalone probe frames. Summed search-phase time is
+26,511.8s across overlapping runs. Setup, bridges, exports and incomplete or
+unadmitted work remain additional; this is not a complete machine-wide total.
+
+Draft [PR#287](https://github.com/pH14/harmony/pull/287) preserves the research.
+The generic/portable checks and seven research driver contracts are documented
+in the verification ledger. Hosted checks remain separate from scientific
+qualification. No validation panel or fresh boss/Wily4 breakthrough is claimed.
+
+### P05: a bounded descriptor check after R05
+
+The [registered diagnostic](p05-registration.md) reuses all16 equal-preference
+pairs from R05 ordinary, in recorded order, with a new fixed bank of16 suffixes
+of24 actions (seed20261214). The two existing attested helpers reconstruct
+endpoints twice and then compare suffix futures under terminalv3. No fresh
+search or descriptor tuning occurs, and the failed motion family stays closed.
+
+Motion reconstruction costs1,440,708 frames/82.05s; suffix probing costs1,062,409
+frames/60.55s. Both satisfy their120s wall limits. Total2,503,117 physical frames
+is below the registered worst-case allowances, which include setup and every
+potential gain export. No capability gain or export occurs.
+
+| Frozen contexts | Useful disagreement observed | No disagreement in tested suffixes |
+| --- | ---: | ---: |
+| Same | 6 | 2 |
+| Different | 6 | 2 |
+
+This small panel does not show the motion split concentrating useful differences.
+It does not establish population probabilities or equivalence for matching
+samples. Two pairs with all seven raw motion fields equal still differ in their
+mechanical endpoints; they do not isolate another world variable. Pair10 has
+identical mechanical endpoints, equal coarse contexts, different raw motion and
+three distinguishing suffixes. The [analysis](p05-analysis.json) preserves these
+qualification limits and both objective directions. [Full results](p05-results.json)
+and [driver hashes](p05-driver-provenance.json) make the procedure reviewable.
+
+[Updated accounting](work-accounting-after-p05.json) leaves search work unchanged
+at70 completed evaluation cells and1,306,085,764 admitted frames. Standalone
+probe work increases to6,976,210 physical frames. Other replay categories and
+unknown setup/bridge/export/unadmitted costs remain separately identified.
+
+## Exposure trace audit: a verified lower bound
+
+`analyze_exposure_trace.py` reads the five fully replay-verified R04b5000-job
+streams. It pins Metroid streamv4 and MM2 streamv1 separately, rejects imports,
+and checks each source SHA against its verified summary. A retained decision
+is the last decision for its action; a later candidate decision in that same
+job proves a later action continued the retained intermediate state. Parent
+references include both executed jobs and pre-execution duplicate skips.
+
+Among newly created entries never referenced as a parent by stream end, the
+proven birth-continuation counts are1194/1663 (default Metroid),237/363 (MM2),
+1767/2399 (job sample),2471/3443 (quality) and2153/2967 (context). These are
+lower bounds, not removal-time or adequate-exploration measures. No emulator
+work was added. Six adversarial reader contracts pass; the complete research
+CI command now passes13 tests. The first read-only attempt rejected MM2v1
+because it assumed Metroidv4; the corrected reader explicitly pins each
+workload format. No data or frozen campaign changed. See
+[the numeric evidence](exposure-trace-analysis.json) and
+[the next bounded measurement design](survivor-audit-design.md).
+
+## U01: complete local-survivor measurement qualified
+
+The [bounded design](survivor-audit-design.md) was committed at1dbfc62f; production
+observer and feature source8d503c28 exposes a lazy complete local-slot view.
+It records stable ids, optional cached snapshots, untracked reconstructed inputs
+and local keep/remove proposals. No allocation occurs unless the view is
+requested. The callback precedes global population/memory eviction. The opt-in
+`metroid-complete-retention-audit` feature writes v2-local-survivors records at
+the same independent sample indices; default audit v1 is preserved. Extra action
+payload is bounded at5MiB, excluding temporary reconstruction and I/O buffers.
+
+Generic counterexamples now inspect the full survivor view. Rejection,
+replacement, missing snapshots, unchanged counters and the pairwise-versus-union
+counterexample pass through the actual archive. All139 generic tests, the
+interface contract,125 default NES library tests,139 all-feature release NES
+tests, strict generic/all-feature NES Clippy and formatting pass. Five Python
+union/work-bound contracts bring the research CI command to18 passing tests.
+
+The frozen ARM source digest is
+`9ac8c23a7d6e206972bd5808f6a8922e7e32fa96a3fc67a91d4bcf9a5d79ddb0`.
+Default binary`0337d330f6975507322c2597449366911c33293f7f14d710228babd8a9282d83`
+and motion/complete-audit binary
+`7934cffc0bbf201dd59f6d7774e08849f9c9a59ecc513170e9234ef43785cb9f`
+are attested in [build provenance](u01-build-provenance.json).
+Four5000-job cells reproduced the exact R04b default Metroid, default MM2,
+quality and context streams. Default Metroid also reproduced the exact v1 audit
+bytes. Quality supplied32 complete two-incumbent records; context supplied32
+complete records,31 with two incumbents. All extra incomplete counters are zero.
+Each cell finished under its120s external watchdog. Qualification cost:
+2,657,327 admitted frames plus the same full-replay admitted work; summed cell
+elapsed time167.17s. Setup, witness and unadmitted work remain additional.
+
+The [suffix registration](u01-registration.md) and driver/analyzer were frozen
+at a6ea5498 before inspecting complete samples. Twelve equal-preference records
+were eligible. The fixed first-eight prefix was shortened to seven to fit the
+4M physical ceiling; no expensive early sample was replaced by a later sample.
+Exact source indices2,3,4,6,8,9,10 and the3,474,703-frame worst-case bound were
+committed atca08e518 before execution. The bound reserves both pairwise copies,
+all setup and every possible gain export. See [frozen metadata](u01-frozen-sample.json).
+No private action tape was added to Git.
+
+The diagnostic used the existing frozen probe-001 binary, terminalv3,
+seed20261215,16 shared suffixes of24 actions,CPU8,120s and64MiB bounds. It
+completed in23.024s using431,144 physical frames:78,795 prefix frames plus
+186,008 repeated-unretained and166,341 survivor suffix frames. No gain export
+was produced. Exact repeated unretained outcomes agree for every suffix before
+forming the complete union. Suffix hash:
+`7d3c0dcb69c1ac7c70dda88a0b3e9386a4c3d25b090d6510bdb25de8cfe8793d`.
+
+[Fixed analysis](u01-analysis.json) finds17 unretained-only map/suffix events in
+four rejected candidates. Source sample2 contributes14 and survives six suffixes
+where both incumbents die. Three additional pairwise differences (samples4,6,9)
+are already covered by another survivor. The one actual replacement (sample3)
+gains two map events and loses none against the old incumbent union. Rejected
+candidates leave that union unchanged: their missed opportunities are not actual
+replacement losses. No capability gain occurred. This is a small selected local
+measurement, not evidence of improved adaptive search or a population frequency.
+No failed retention family or longer-search allocation gate is reopened.
+
+Removing the verified duplicate unretained replay gives259,345 suffix frames
+for seven three-state comparisons, excluding all prefix reconstruction. An
+[explicit naive-cost scenario](u01-probe-cost-scenario.json) uses this selected
+average and the short quality cell's696,966 admitted frames/13,902 competitions.
+For probe fraction q, per-probe cost c, reference search frames F and N
+competitions, a probe share rho of combined frames requires
+`q <= rho*F / ((1-rho)*N*c)`. At rho=5%, the conditional rate is about one probe
+per14,041 competitions. This is not a complete physical baseline, a population
+extrapolation, or a lower bound on algorithms that reuse more existing work.
+
+[Updated tranche accounting](work-accounting-after-u01.json) records74 completed
+cells, two errors,1,308,743,091 admitted frames,10,222,892 executions,
+22,301,431 full-replay admitted frames,2,548,096 reported witness-suffix frames
+and7,407,354 standalone physical probe frames. Search-phase seconds sum to
+26,557.17 across overlapping cells; that is not elapsed tranche time. All owned
+native experiment services are now inactive. No validation seed was used.
+
+## U01 retrospective finite-cover certificate
+
+After the suffix outcomes, analyzer2e744f69 exhaustively checks all subsets of
+each offered triple. Features retain the suffix index and positive map, equipment,
+boss/capacity or final-survival event. No weights are fitted. The minimum cover
+is one state in five competitions and two in two; no measured triple requires
+three. Every one of the four coverage gaps is avoidable by another subset of at
+most two offered states. This is exact only for the measured positive events;
+it is not behavioral equivalence, an online algorithm, or a fresh-search win.
+No emulator work was added. Four finite counterexamples bring research CI to22
+passing tests, in addition to the22 existing top-level runner tests.
+
+The [public certificate](u01-finite-cover.json) contains the event dictionary,
+three integer masks and all minimum subsets for each competition, with raw
+outcome/registration hashes. It contains no action tape. A separate integer-mask
+checker verifies it without access to the private ROM, inputs or raw outcomes:
+
+```sh
+python3 benchmarks/search/retention-theory/verify_survivor_cover.py \
+  benchmarks/search/retention-theory/u01-finite-cover.json
+```
+
+This distinction matters for the next design: the sampled failures are avoidable
+selection losses under the existing capacity, while the previous proxy-based
+rules failed fresh-search replication. The missing component is a cheap,
+generalizable predictor of which measured futures a state contributes. The
+finite oracle supplies neither that predictor nor permission for longer runs.
+
+## Audit capacity repair: qualifications preserve the evidence
+
+Consolidation review found that suffix appends could leave candidate vectors
+with capacity above the accepted input-length bound. Thus the earlier declared
+2.5/5MiB fields did not enforce that strict retained-capacity bound in the worst
+case; recorded input actions and separately measured process RSS are unchanged.
+The [repair](audit-capacity-repair.md), source d7d83518, compacts every stored
+sample input. A deliberately overallocated maximum-length regression requires
+bounded capacity and identical serialization. Default NES126/all-feature NES140
+tests, strict all-feature Clippy and formatting pass.
+
+Two new frozen ARM builds reproduced the exact default and complete-quality
+search streams **and complete audit bytes** from U01 qualification001. The
+scientific results and the public finite-cover certificates are therefore
+unchanged. Both5000-job cells finished within their120s/1GiB bounds, using
+1,388,639 admitted frames plus full replay and87.09s summed elapsed time.
+Earlier source/build/run bundles were preserved. See [provenance](u01-capacity-build-provenance.json)
+and [qualification](u01-capacity-qualification-results.json).
+
+[Consolidated accounting](work-accounting-after-capacity-repair.json) now records
+76 completed cells and two errors,1,310,131,730 admitted frames,10,232,892
+executions,23,690,070 full-replay admitted frames,2,556,048 reported witness-suffix
+frames and7,407,354 standalone probe frames. The26,580.8 summed search-phase
+seconds include overlapping cells and are not wall/CPU time. Setup, export,
+bridge, unadmitted and incomplete work can add cost. Native work is stopped.
+
+## H02: useful-future losses are visible within actual job horizons
+
+A [read-only input comparison](u01-input-relations.json) establishes that none
+of the four rejected candidates with U01 map losses is a strict continuation of
+either survivor's recorded input. Samples 3 and 6 have short prefix relations but
+no unretained map events at 24 actions. This does not establish other-route
+reachability or a waiting-state mechanism.
+
+Source inspection also identified an interpretation gap: the actual search
+suffix length is uniform 1–6, while the competitor probes used 24 actions. H02
+was registered at 2fedd728 after the earlier U01 implementation had qualified.
+It is a distinct bounded diagnostic, not an extension of a failed retention
+campaign. The new standalone prefix recorder and initial analyzer were frozen
+at cc0202b4. Default and all-feature focused tests pass, along with strict bin/test
+Clippy and formatting. Five Python horizon counterexamples bring research CI
+to 27 passing contracts. They include later catch-up hiding an early loss,
+terminal padding, and incompatible short/long minimum covers.
+
+The single ARM run uses the exact U01 expanded audit, 16 × 24 bank, terminal v3 and
+seed 20261215, observing cumulative outcomes after actions 1–6 without executing
+extra actions. The full summary, outcome log and suffix bank are byte-identical
+to U01. It completed in 23.017s/431,144 physical frames before 08:29 UTC, within the
+08:35 cutoff, 120s watchdog, 3,474,703 worst-case frame bound and 64 MiB output cap.
+Prefix frame counters are cumulative observations, not additional work. Frozen
+source/build identities and output hashes are in [H02 results](h02-results.json).
+No capability gain was observed and no fresh search or validation was run.
+
+| Prefix actions | Unretained-only map/suffix events | Unretained survives, both survivors die |
+|---|---:|---:|
+|1|1|2|
+|2|1|5|
+|3|0|10|
+|4|2|14|
+|5|1|14|
+|6|4|15|
+
+All 112 unretained continuations are alive at each short horizon. The horizons
+are nested, and competitors are selected development states; these counts are
+not independent successes or a population estimate. The average over the
+actual uniform length mixture is 1.5 unretained-only map events and 10 exclusive
+surviving endpoints across the fixed 112 comparisons. The initial [frozen
+analysis](h02-analysis.json) preserves each horizon separately.
+
+A separately labeled [retrospective extension](h02-analysis-with-reference.json)
+retains horizon as an explicit event condition and combines 1–6 with the original
+24-action reference. Six of seven triples need one representative and one needs
+two for the short horizons jointly. Across short and long horizons together,
+five need one and two need two; all five observed coverage gaps are avoidable
+within the same capacity in hindsight. Separate integer-mask enumeration
+verifies both public certificates without private assets. The extension adds
+no emulator work and no allocation gate. It does not provide an online predictor,
+prove equivalence, or establish improved adaptive discovery.
+
+The result rejects the claim that these losses matter only beyond a normal job's
+length. It supports investigating cheap immediate-outcome prediction before any
+new retention or local-exploration campaign. All previously failed families
+remain stopped. Native H02 service is inactive/successful.
+
+[Accounting after H02](work-accounting-after-h02.json) still has 76 complete
+cells/two errors and 1,310,131,730 admitted frames. Standalone probe work rises
+to 7,838,498 physical frames, charging the prefix-observing replay exactly once.
+The other scope limitations in the accountant remain unchanged.

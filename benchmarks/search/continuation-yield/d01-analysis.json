@@ -1,0 +1,89 @@
+{
+  "format": "continuation-yield-d01-analysis-v1",
+  "panel": "fresh controls only",
+  "endpoint": "first Metroid missile-capacity acquisition",
+  "nominal_admitted_frame_ceiling": 100000000,
+  "actual_admitted_frames": 100002831,
+  "bounded_inflight_drain_frames": 2831,
+  "sample_size": 4,
+  "known_hits": 4,
+  "known_nonattainments": 0,
+  "budget_boundary_uncertain_hits": 0,
+  "hit_fraction_interval": [
+    1.0,
+    1.0
+  ],
+  "mean_restricted_cost_interval": [
+    18167834.0,
+    18180118.75
+  ],
+  "observed_restricted_cost_envelope": [
+    14085857,
+    24855356
+  ],
+  "rows": [
+    {
+      "seed": 4133011945,
+      "hit_by_budget": true,
+      "arrival_interval": {
+        "lower_open": 16764783,
+        "upper_closed": 16776723,
+        "first_execution": 121927
+      },
+      "restricted_cost_interval": [
+        16764783,
+        16776723
+      ]
+    },
+    {
+      "seed": 1371495969,
+      "hit_by_budget": true,
+      "arrival_interval": {
+        "lower_open": 14085857,
+        "upper_closed": 14098625,
+        "first_execution": 101697
+      },
+      "restricted_cost_interval": [
+        14085857,
+        14098625
+      ]
+    },
+    {
+      "seed": 13390878,
+      "hit_by_budget": true,
+      "arrival_interval": {
+        "lower_open": 16977352,
+        "upper_closed": 16989771,
+        "first_execution": 127073
+      },
+      "restricted_cost_interval": [
+        16977352,
+        16989771
+      ]
+    },
+    {
+      "seed": 1952443731,
+      "hit_by_budget": true,
+      "arrival_interval": {
+        "lower_open": 24843344,
+        "upper_closed": 24855356,
+        "first_execution": 183083
+      },
+      "restricted_cost_interval": [
+        24843344,
+        24855356
+      ]
+    }
+  ],
+  "cv_of_uncensored_milestone_time": [
+    0.2548672233696275,
+    0.2558267427903905
+  ],
+  "cv_note": "Descriptive sample-CV interval bounds only when every fixed-panel outcome is attained before the cap; not a confidence interval, population CV, or sample-size rule.",
+  "interpretation": [
+    "Control dispersion at one fixed restricted horizon; not a mechanism effect.",
+    "Four seeds do not establish statistical power for a 15% or 20% effect.",
+    "The historical compatible control is kept separate from this prospectively registered panel.",
+    "This panel does not reopen any failed retention gate or count as held-out validation."
+  ]
+}

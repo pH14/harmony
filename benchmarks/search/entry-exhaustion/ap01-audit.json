@@ -1,0 +1,365 @@
+{
+  "format": "ap01-entry-exhaustion-audit-v1",
+  "stream_sha256": "9ad315a76c38276c673fccd2b660a250254a8a74bc92d9f4a77670702a53a32c",
+  "jobs": 2548,
+  "metadata_dropped_at_last_sidecar": 444,
+  "metadata_dropped_in_final_report": 444,
+  "matched_report_productive_selections": 768,
+  "matched_active_entries_over_threshold": 165,
+  "all_exhausted_resets": 0,
+  "admitted_job_counts": {
+    "below_3_room_cell_uniform": 1879,
+    "below_3_uniform": 518,
+    "at_least_3_room_cell_uniform": 29,
+    "at_least_3_uniform": 122
+  },
+  "after_threshold_retained_jobs": [
+    {
+      "sequence": 67,
+      "parent_id": 0,
+      "path": "room_cell_uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 325,
+      "retained_ids": [
+        53,
+        54
+      ]
+    },
+    {
+      "sequence": 104,
+      "parent_id": 43,
+      "path": "room_cell_uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 198,
+      "retained_ids": [
+        62
+      ]
+    },
+    {
+      "sequence": 274,
+      "parent_id": 43,
+      "path": "uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 183,
+      "retained_ids": [
+        141
+      ]
+    },
+    {
+      "sequence": 489,
+      "parent_id": 86,
+      "path": "uniform",
+      "pre_admission_failure_streak": 4,
+      "frames": 92,
+      "retained_ids": [
+        253
+      ]
+    },
+    {
+      "sequence": 664,
+      "parent_id": 45,
+      "path": "uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 191,
+      "retained_ids": [
+        362
+      ]
+    },
+    {
+      "sequence": 849,
+      "parent_id": 328,
+      "path": "uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 74,
+      "retained_ids": [
+        416
+      ]
+    },
+    {
+      "sequence": 884,
+      "parent_id": 425,
+      "path": "room_cell_uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 5,
+      "retained_ids": [
+        428
+      ]
+    },
+    {
+      "sequence": 920,
+      "parent_id": 249,
+      "path": "uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 136,
+      "retained_ids": [
+        439
+      ]
+    },
+    {
+      "sequence": 995,
+      "parent_id": 423,
+      "path": "room_cell_uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 82,
+      "retained_ids": [
+        454
+      ]
+    },
+    {
+      "sequence": 1028,
+      "parent_id": 263,
+      "path": "uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 168,
+      "retained_ids": [
+        470
+      ]
+    },
+    {
+      "sequence": 1070,
+      "parent_id": 434,
+      "path": "uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 14,
+      "retained_ids": [
+        487
+      ]
+    },
+    {
+      "sequence": 1137,
+      "parent_id": 521,
+      "path": "room_cell_uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 225,
+      "retained_ids": [
+        531,
+        532,
+        533
+      ]
+    },
+    {
+      "sequence": 1217,
+      "parent_id": 569,
+      "path": "room_cell_uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 57,
+      "retained_ids": [
+        578
+      ]
+    },
+    {
+      "sequence": 1232,
+      "parent_id": 234,
+      "path": "uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 8,
+      "retained_ids": [
+        587
+      ]
+    },
+    {
+      "sequence": 1321,
+      "parent_id": 303,
+      "path": "uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 11,
+      "retained_ids": [
+        633
+      ]
+    },
+    {
+      "sequence": 1325,
+      "parent_id": 344,
+      "path": "uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 104,
+      "retained_ids": [
+        637
+      ]
+    },
+    {
+      "sequence": 1372,
+      "parent_id": 109,
+      "path": "uniform",
+      "pre_admission_failure_streak": 4,
+      "frames": 99,
+      "retained_ids": [
+        659
+      ]
+    },
+    {
+      "sequence": 1515,
+      "parent_id": 372,
+      "path": "uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 101,
+      "retained_ids": [
+        714
+      ]
+    },
+    {
+      "sequence": 1582,
+      "parent_id": 723,
+      "path": "room_cell_uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 109,
+      "retained_ids": [
+        732
+      ]
+    },
+    {
+      "sequence": 1672,
+      "parent_id": 95,
+      "path": "uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 109,
+      "retained_ids": [
+        766
+      ]
+    },
+    {
+      "sequence": 1831,
+      "parent_id": 805,
+      "path": "room_cell_uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 18,
+      "retained_ids": [
+        806
+      ]
+    },
+    {
+      "sequence": 1847,
+      "parent_id": 541,
+      "path": "uniform",
+      "pre_admission_failure_streak": 4,
+      "frames": 154,
+      "retained_ids": [
+        815,
+        816,
+        817,
+        818
+      ]
+    },
+    {
+      "sequence": 1878,
+      "parent_id": 267,
+      "path": "uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 5,
+      "retained_ids": [
+        830
+      ]
+    },
+    {
+      "sequence": 1905,
+      "parent_id": 103,
+      "path": "uniform",
+      "pre_admission_failure_streak": 6,
+      "frames": 196,
+      "retained_ids": [
+        838
+      ]
+    },
+    {
+      "sequence": 1926,
+      "parent_id": 58,
+      "path": "uniform",
+      "pre_admission_failure_streak": 4,
+      "frames": 123,
+      "retained_ids": [
+        840
+      ]
+    },
+    {
+      "sequence": 2002,
+      "parent_id": 170,
+      "path": "uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 120,
+      "retained_ids": [
+        874
+      ]
+    },
+    {
+      "sequence": 2116,
+      "parent_id": 685,
+      "path": "uniform",
+      "pre_admission_failure_streak": 4,
+      "frames": 5,
+      "retained_ids": [
+        916
+      ]
+    },
+    {
+      "sequence": 2134,
+      "parent_id": 194,
+      "path": "uniform",
+      "pre_admission_failure_streak": 4,
+      "frames": 32,
+      "retained_ids": [
+        925
+      ]
+    },
+    {
+      "sequence": 2399,
+      "parent_id": 544,
+      "path": "uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 81,
+      "retained_ids": [
+        988
+      ]
+    },
+    {
+      "sequence": 2504,
+      "parent_id": 997,
+      "path": "room_cell_uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 93,
+      "retained_ids": [
+        1014
+      ]
+    }
+  ],
+  "after_threshold_frames": 13752,
+  "hp129_entry982": [
+    {
+      "sequence": 2361,
+      "parent_id": 982,
+      "path": "room_cell_uniform",
+      "pre_admission_failure_streak": 0,
+      "frames": 76,
+      "retained_ids": []
+    },
+    {
+      "sequence": 2364,
+      "parent_id": 982,
+      "path": "room_cell_uniform",
+      "pre_admission_failure_streak": 1,
+      "frames": 93,
+      "retained_ids": []
+    },
+    {
+      "sequence": 2367,
+      "parent_id": 982,
+      "path": "room_cell_uniform",
+      "pre_admission_failure_streak": 2,
+      "frames": 5,
+      "retained_ids": []
+    },
+    {
+      "sequence": 2489,
+      "parent_id": 982,
+      "path": "uniform",
+      "pre_admission_failure_streak": 3,
+      "frames": 5,
+      "retained_ids": []
+    }
+  ],
+  "limits": [
+    "Streaks are reconstructed at admission, not necessarily the earlier dispatch boundary; queued work may cross the threshold.",
+    "Retained descendants are archive outcomes, not useful milestones or demonstrated boss damage.",
+    "One conditional stream; no fresh-search prevalence or efficacy estimate.",
+    "The uniform fallback and all-exhausted reset prevent absolute permanent starvation."
+  ]
+}

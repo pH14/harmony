@@ -41,6 +41,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Runner failures and publication contracts
         run: python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
+      - name: Research allocation and chain-limit contracts
+        run: python3 -m unittest discover -s benchmarks/search/retention-theory -p 'test_*.py'
+      - name: Censored endpoint and paired allocation contracts
+        run: python3 -m unittest discover -s benchmarks/search/continuation-yield -p 'test_*.py'
       - name: Generic search and deterministic replay
         run: cargo test --manifest-path dissonance/searcher/Cargo.toml --locked
       - name: Workload contracts without licensed ROMs
@@ -57,6 +61,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install source build tools
         run: |
+          # Chrome is unused here; its independent apt index can be inconsistent.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends build-essential curl git unzip python3 python3-pil cc65
       - name: Reproduce open game images and the pinned core

@@ -1,0 +1,138 @@
+{
+  "format": "milestone-stop-qualification-v1",
+  "decision": "pass",
+  "as_of_utc": "2026-09-09T18:59:17.302012+00:00",
+  "registration_sha256": "20ab771559261ab63d1720800c5ae06bcba8a1e62b672ecbd4294007c0605f11",
+  "panel_sha256": "0673214fbbf52736ee8a1e0cbe62f84732af0ede75bf54bdeecae91c8910b0ab",
+  "initial_panel_sha256": "824fc9f63f8dd119cecc6ed9e6528a8da17c88923f3a9526c7cd56f9639834ed",
+  "preserved_failed_expectation": "Q01 assumed genesis had an observation. Metroid campaign genesis retains state without observing it; Brinstar first appears at admission 1. Q01r freezes that existing observation contract and rechecks the unchanged binary.",
+  "source_commit": "780415bdea636c2bd54cf3d865fc264dd33fd649",
+  "binary_sha256": "6ec98a710a52f6d8a16d96d7d254bee31868cf425307f4876bbc03c24d0b3f7b",
+  "cells": [
+    {
+      "id": "default",
+      "qualification_admitted_frames": 284283,
+      "inferred_full_replay_admitted_frames": 284283,
+      "twice_replayed_witness_frames": 1908,
+      "stop_reason": "execution_limit",
+      "first_milestone": null,
+      "artifact_sha256": {
+        "stream.jsonl": "0fcaad970e2a219874bdc7c92c523bff482b03e2e832da61d7ce9bc35caee13f",
+        "campaign.json": "78005a151703507cecf51124bf534e3e56c9a7485c6dc578270f5e058a2cf8fb",
+        "checkpoint.json": "a2e8c828dc28c24f165b8a8632866552d8e36ed81c8ac71a82dccefbf2d3c82d",
+        "result.json": "ddbe429fc0fa659800a124a0b4ff5160c713e9c01b9480999d5b1d24814c562b"
+      }
+    },
+    {
+      "id": "morph-one-slot",
+      "qualification_admitted_frames": 23883,
+      "inferred_full_replay_admitted_frames": 23883,
+      "twice_replayed_witness_frames": 1908,
+      "stop_reason": "milestone",
+      "first_milestone": {
+        "execution": 148,
+        "frames_emulated": 22586
+      },
+      "artifact_sha256": {
+        "stream.jsonl": "0aaac6d951ee22615c060ad8ee7eb977665dafa221e097121e4c1b11b5fa08f0",
+        "campaign.json": "1e09f9687e1e5540411a6969a2227dae81846f9b5faa64ed87dd080bbd9f6d3b",
+        "checkpoint.json": "863ca2e8c86d764e929b7360535c4d9dd576184ee39842ebcfa25b8bed0cf3fb",
+        "result.json": "4b60571d2e1e26171c44dbe5ea02ade3007a94353033bb6aca39b7e277e66e6c"
+      }
+    },
+    {
+      "id": "morph-two-slots",
+      "qualification_admitted_frames": 23883,
+      "inferred_full_replay_admitted_frames": 23883,
+      "twice_replayed_witness_frames": 1908,
+      "stop_reason": "milestone",
+      "first_milestone": {
+        "execution": 148,
+        "frames_emulated": 22586
+      },
+      "artifact_sha256": {
+        "stream.jsonl": "0aaac6d951ee22615c060ad8ee7eb977665dafa221e097121e4c1b11b5fa08f0",
+        "campaign.json": "1e09f9687e1e5540411a6969a2227dae81846f9b5faa64ed87dd080bbd9f6d3b",
+        "checkpoint.json": "863ca2e8c86d764e929b7360535c4d9dd576184ee39842ebcfa25b8bed0cf3fb",
+        "result.json": "007c0b02b2125089b25f20f7489699d22943015579069272f1a843938b4f9999"
+      }
+    },
+    {
+      "id": "energy-unreached",
+      "qualification_admitted_frames": 284283,
+      "inferred_full_replay_admitted_frames": 284283,
+      "twice_replayed_witness_frames": 1908,
+      "stop_reason": "execution_limit",
+      "first_milestone": null,
+      "artifact_sha256": {
+        "stream.jsonl": "23c54a9d7749d55c5bab058ca60fa9f10551000867459971c0d3910ddc40d6e1",
+        "campaign.json": "bdb64a80f29bfd38a4f1daa09a521cf4b3906cf18f867962db135cb1c7a1b2d0",
+        "checkpoint.json": "a2e8c828dc28c24f165b8a8632866552d8e36ed81c8ac71a82dccefbf2d3c82d",
+        "result.json": "ffe77dca1d335344a10ae357672f2d439fe52e5bc8887826a2f75ca571f1ab6b"
+      }
+    },
+    {
+      "id": "morph-beyond-budget",
+      "qualification_admitted_frames": 23883,
+      "inferred_full_replay_admitted_frames": 23883,
+      "twice_replayed_witness_frames": 1908,
+      "stop_reason": "frame_limit",
+      "first_milestone": {
+        "execution": 148,
+        "frames_emulated": 22586
+      },
+      "artifact_sha256": {
+        "stream.jsonl": "33e83266db3c6f1e551a6aeb7bc6581662fee7c848847efb3d224e67f97f8c36",
+        "campaign.json": "94e44b9cd181cdb60e48cc56a5c6e8b5e034d70ad2fdb3b0e988ee40ba868cbb",
+        "checkpoint.json": "863ca2e8c86d764e929b7360535c4d9dd576184ee39842ebcfa25b8bed0cf3fb",
+        "result.json": "f9777859c9e236e463cfa5e56fcb602f800d010b830338055af2eed69849dc2a"
+      }
+    },
+    {
+      "id": "origin-brinstar",
+      "qualification_admitted_frames": 1474,
+      "inferred_full_replay_admitted_frames": 1474,
+      "twice_replayed_witness_frames": 344,
+      "stop_reason": "milestone",
+      "first_milestone": {
+        "execution": 1,
+        "frames_emulated": 171
+      },
+      "artifact_sha256": {
+        "stream.jsonl": "bde51264007cb6fa50642f516c38abf2c49e52802657dc25c903fe070dad4d12",
+        "campaign.json": "f111a2bf73a41aab83ce2d52386b0d23e5faed5d12c86d5b6a73b694496ab010",
+        "checkpoint.json": "43f014a0594997a0c3fac2cced12730899d7367cc1e2da9342d05b5d569e7db2",
+        "result.json": "7445c5fc487022aab0c881b8d664e26fda30463eea12bb36fd9a8c22e0cb5e16"
+      }
+    },
+    {
+      "id": "first-admission-brinstar",
+      "qualification_admitted_frames": 1474,
+      "inferred_full_replay_admitted_frames": 1474,
+      "twice_replayed_witness_frames": 344,
+      "stop_reason": "milestone",
+      "first_milestone": {
+        "execution": 1,
+        "frames_emulated": 171
+      },
+      "artifact_sha256": {
+        "stream.jsonl": "bde51264007cb6fa50642f516c38abf2c49e52802657dc25c903fe070dad4d12",
+        "campaign.json": "f111a2bf73a41aab83ce2d52386b0d23e5faed5d12c86d5b6a73b694496ab010",
+        "checkpoint.json": "43f014a0594997a0c3fac2cced12730899d7367cc1e2da9342d05b5d569e7db2",
+        "result.json": "d7e7a90f5bdaf363cefffbd1758a0c2b09aa0809b04da73f09c07b510dcb5b76"
+      }
+    }
+  ],
+  "additional_known_auxiliary_frames": 1296554,
+  "cumulative_known_auxiliary_frames": 30112297,
+  "cumulative_search_admitted_frames": 489962470,
+  "limitations": [
+    "Distinct actual summary paths only; embedded analysis copies excluded.",
+    "Running cells without summaries are not included and have additional accrued work.",
+    "Setup, unadmitted worker frames, physical snapshot-reconstruction work and failed/incomplete work may be additional; unavailable counters are unknown.",
+    "Full campaign replay charge is inferred from exact report/checkpoint verification; it is not a complete physical replay counter.",
+    "Both final and milestone witnesses are replayed twice; both copies are charged.",
+    "Frame totals include bounded in-flight drain and are not wall-time totals.",
+    "Reused qualification seed; no performance estimate."
+  ]
+}

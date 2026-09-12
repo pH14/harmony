@@ -1,0 +1,17 @@
+{
+  "format": "retention-ledger-after-pm01-v1",
+  "before": {
+    "admitted_search": 2983235324,
+    "known_auxiliary": 70566920
+  },
+  "pm01": {
+    "admitted_search": 250320,
+    "known_auxiliary": 733312
+  },
+  "after": {
+    "admitted_search": 2983485644,
+    "known_auxiliary": 71300232
+  },
+  "pm01_total_measured_physical": 983632,
+  "scope": "PM01 is fully measured, including search constructors and complete replay once. Earlier ledgers retain their recorded incomplete components; no retrospective measurements are fabricated."
+}

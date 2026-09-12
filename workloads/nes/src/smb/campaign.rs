@@ -1899,6 +1899,7 @@ mod tests {
 
     fn evidence_action(milestones: SmbMilestones) -> SmbCampaignActionResult {
         SmbCampaignActionResult {
+            discard_previous_dead: false,
             action: ButtonChord::new(0x01, 4),
             observations: vec![SmbObservations {
                 frame_count: 1,

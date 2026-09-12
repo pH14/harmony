@@ -1,0 +1,95 @@
+{
+  "format": "continuation-cc01-preflight-v1",
+  "checked_utc": "2026-09-10T13:02:07.707754+00:00",
+  "passed": true,
+  "host": "ms02",
+  "remaining_seconds": 12296.021155,
+  "required_two_wave_seconds": 11800,
+  "registration_sha256": "674742836b1deb7208f42be4cf99029ef87a53ef914f5bd9e26ddaf25b82755d",
+  "fresh_seeds": [
+    833917373,
+    4204540845,
+    586667767,
+    2160473381
+  ],
+  "saved_summaries_rechecked": 34,
+  "panels": [
+    {
+      "id": "cc01-pair-0",
+      "seed": 833917373,
+      "cpus": "0-3",
+      "registration_sha256": "1e3e94a0f15e59c6782b166ca9128c9845e8a63d41b1c9b2ed0d6c86bb10ddb0"
+    },
+    {
+      "id": "cc01-pair-1",
+      "seed": 4204540845,
+      "cpus": "4-7",
+      "registration_sha256": "d84453f20600cf1d72c43956bfa0786780be2b47d683f41d3e1c06f4f5c8954e"
+    },
+    {
+      "id": "cc01-pair-2",
+      "seed": 586667767,
+      "cpus": "0-3",
+      "registration_sha256": "adb05fae06f44c5e601dd08a341a71818ef2804b6cd30ef3c718a8161adbf7b7"
+    },
+    {
+      "id": "cc01-pair-3",
+      "seed": 2160473381,
+      "cpus": "4-7",
+      "registration_sha256": "4117bfc12a5607eed6df706dd9e42d3c2376eadc7a85660239308f80b3ec5751"
+    }
+  ],
+  "topology": [
+    {
+      "cpu": 0,
+      "package": "0",
+      "core": "0",
+      "max_khz": 5500000
+    },
+    {
+      "cpu": 1,
+      "package": "0",
+      "core": "4",
+      "max_khz": 5500000
+    },
+    {
+      "cpu": 2,
+      "package": "0",
+      "core": "16",
+      "max_khz": 5500000
+    },
+    {
+      "cpu": 3,
+      "package": "0",
+      "core": "20",
+      "max_khz": 5500000
+    },
+    {
+      "cpu": 4,
+      "package": "0",
+      "core": "24",
+      "max_khz": 5500000
+    },
+    {
+      "cpu": 5,
+      "package": "0",
+      "core": "28",
+      "max_khz": 5500000
+    },
+    {
+      "cpu": 6,
+      "package": "0",
+      "core": "40",
+      "max_khz": 5500000
+    },
+    {
+      "cpu": 7,
+      "package": "0",
+      "core": "44",
+      "max_khz": 5500000
+    }
+  ],
+  "available_memory_bytes": 56139890688,
+  "available_disk_bytes": 522775838720,
+  "emulated_frames": 0
+}

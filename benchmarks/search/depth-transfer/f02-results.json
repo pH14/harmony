@@ -1,0 +1,46 @@
+{
+  "format": "depth-transfer-f02-results-v1",
+  "registration_sha256": "d780cfd72524b6f3b2cd34ed5fed8f6323ee45e49d31e9cf8e2f06aa2e5be915",
+  "runs": {
+    "f02-a": {
+      "summary": {
+        "format": "metroid-public-observer-v1",
+        "complete": true,
+        "advanced_frames": 120540,
+        "movie_frames": 120540,
+        "guarded_loader_frames": 319,
+        "loader_and_active_tag_frames": 319,
+        "first_loader_frame": 75811,
+        "first_active_tag_frame": 75811,
+        "first_kraid_defeat_frame": 105236,
+        "first_ridley_defeat_frame": 76391,
+        "trace_rows": 28522,
+        "trace_bytes": 4458475
+      },
+      "summary_sha256": "12e3f8f472cb0dbd10d90a30ace6e8950ee98edad1ee54038ddf7f1a1e8add40",
+      "trace_sha256": "e761b0f2eb068b2a95d49ec0daffef49b752bc3defc00ba552599e59474950f5",
+      "journal": "Sep 09 21:04:07 ms02 taskset[3247144]: Movie finished playing.\nSep 09 21:04:07 ms02 taskset[3247144]: Emulator Exit\nSep 09 21:04:07 ms02 systemd[1]: harmony-depth-f02-a-20260909.service: Deactivated successfully.\nSep 09 21:04:07 ms02 systemd[1]: harmony-depth-f02-a-20260909.service: Consumed 1min 40.453s CPU time, 181.9M memory peak.\n"
+    },
+    "f02-b": {
+      "summary": {
+        "format": "metroid-public-observer-v1",
+        "complete": true,
+        "advanced_frames": 120540,
+        "movie_frames": 120540,
+        "guarded_loader_frames": 319,
+        "loader_and_active_tag_frames": 319,
+        "first_loader_frame": 75811,
+        "first_active_tag_frame": 75811,
+        "first_kraid_defeat_frame": 105236,
+        "first_ridley_defeat_frame": 76391,
+        "trace_rows": 28522,
+        "trace_bytes": 4458475
+      },
+      "summary_sha256": "12e3f8f472cb0dbd10d90a30ace6e8950ee98edad1ee54038ddf7f1a1e8add40",
+      "trace_sha256": "e761b0f2eb068b2a95d49ec0daffef49b752bc3defc00ba552599e59474950f5",
+      "journal": "Sep 09 21:05:55 ms02 taskset[3247232]: Movie finished playing.\nSep 09 21:05:55 ms02 taskset[3247232]: Emulator Exit\nSep 09 21:05:55 ms02 systemd[1]: harmony-depth-f02-b-20260909.service: Deactivated successfully.\nSep 09 21:05:55 ms02 systemd[1]: harmony-depth-f02-b-20260909.service: Consumed 1min 40.515s CPU time, 182.1M memory peak.\n"
+    }
+  },
+  "independent_trace_repeat_passed": true,
+  "known_script_advanced_frames": 241080
+}

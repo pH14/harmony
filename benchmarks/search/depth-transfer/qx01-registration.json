@@ -1,0 +1,215 @@
+{
+  "format": "depth-transfer-qx01-registration-v1",
+  "registered_utc": "2026-09-09T20:22:18.302131+00:00",
+  "purpose": "Reused-fixture x86 native qualification against frozen msr1 semantic work and event costs; not fresh performance.",
+  "source": "source-milestone-stop-001",
+  "build": "builds/milestone-stop-x86-001",
+  "source_commit": "780415bdea636c2bd54cf3d865fc264dd33fd649",
+  "source_tree_sha256": "2a4cc365f0dcbfa66f8818a5076d75766139b6920b60a6f378672308631d5647",
+  "binary_sha256": "ab331788fd5755a1e6b4b30b1e73a1cb07a6338d1e6a25ebc6722fb1a242505c",
+  "build_info_sha256": "da0fc624b76a7301a3a352e84b4dad3b3afc44cac677b8d934590764da196698",
+  "runner_sha256": "063854cd362316afc1fa6d15fe07feaba0e5f778f3e8e0355344360a5c047404",
+  "analyzer_sha256": "d2de4d01141269b0a296ef4df22b215226fdd2f5b4b60f126bdfdb4e27e82bde",
+  "output": "runs/qx01",
+  "cpus": "0-3",
+  "deadline_utc": "2026-09-09T21:00:00+00:00",
+  "systemd_memory_max": "12G",
+  "additional_auxiliary_limit": 2000000,
+  "budget_class": "new depth-transfer qualification allocation",
+  "required_evidence": [],
+  "pass_rule": "All three cells pass exact frozen result/identity checks and full replay. Compare all same-host report/checkpoint/stream hashes for the slot variants. No retries or long performance cell before qualification.",
+  "cells": [
+    {
+      "id": "default",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "depth-transfer-qx01-default",
+        "seeds": [
+          2026090902
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 2000,
+          "frames": 1000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 240,
+          "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "campaign",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 390,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "execution_limit"
+      ],
+      "expected_identity": {
+        "source_tree_sha256": "2a4cc365f0dcbfa66f8818a5076d75766139b6920b60a6f378672308631d5647",
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda"
+      },
+      "expected_result": {
+        "solved": false,
+        "executions": 2000,
+        "frames_emulated": 284283,
+        "stop_reason": "execution_limit"
+      }
+    },
+    {
+      "id": "morph-one-slot",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "depth-transfer-qx01-morph-one-slot",
+        "seeds": [
+          2026090902
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 2000,
+          "frames": 1000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 1,
+          "wall_seconds": 240,
+          "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "campaign",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3",
+          "stop_after_milestone": "morph_ball"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 390,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "milestone"
+      ],
+      "expected_identity": {
+        "source_tree_sha256": "2a4cc365f0dcbfa66f8818a5076d75766139b6920b60a6f378672308631d5647",
+        "milestone_stop": {
+          "name": "morph_ball",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda"
+      },
+      "expected_result": {
+        "solved": false,
+        "first_milestone": {
+          "execution": 148,
+          "frames_emulated": 22586
+        },
+        "milestone_within_budget": true,
+        "stop_reason": "milestone",
+        "milestone_stop": {
+          "name": "morph_ball",
+          "observation_policy": "metroid-named-progress-v2"
+        }
+      }
+    },
+    {
+      "id": "morph-two-slots",
+      "manifest": {
+        "format": "harmony-search-eval-v1",
+        "id": "depth-transfer-qx01-morph-two-slots",
+        "seeds": [
+          2026090902
+        ],
+        "workers": [
+          4
+        ],
+        "memory_mib": [
+          8192
+        ],
+        "search": {
+          "executions": 2000,
+          "frames": 1000000,
+          "actions": 4096,
+          "window": 2,
+          "result_slots": 2,
+          "wall_seconds": 240,
+          "selector": "room_cell_uniform_128_energy_progress_no_cost_v1:3,6,12,2",
+          "suffix": "one_to_six",
+          "mixture": "alphabet_only",
+          "verification": "campaign",
+          "retention_audit": true,
+          "metroid_terminal": "death_or_bcd_underflow_or_ending_v3",
+          "stop_after_milestone": "morph_ball"
+        },
+        "cases": [
+          {
+            "id": "metroid-full",
+            "game": "metroid",
+            "origin": "power-on new-game genesis",
+            "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+            "search": {}
+          }
+        ]
+      },
+      "subprocess_timeout_seconds": 390,
+      "finish_seconds": 120,
+      "disk_limit_gib": 4,
+      "allowed_stops": [
+        "milestone"
+      ],
+      "expected_identity": {
+        "source_tree_sha256": "2a4cc365f0dcbfa66f8818a5076d75766139b6920b60a6f378672308631d5647",
+        "milestone_stop": {
+          "name": "morph_ball",
+          "observation_policy": "metroid-named-progress-v2"
+        },
+        "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda"
+      },
+      "expected_result": {
+        "solved": false,
+        "first_milestone": {
+          "execution": 148,
+          "frames_emulated": 22586
+        },
+        "milestone_within_budget": true,
+        "stop_reason": "milestone",
+        "milestone_stop": {
+          "name": "morph_ball",
+          "observation_policy": "metroid-named-progress-v2"
+        }
+      }
+    }
+  ],
+  "host": "ms02",
+  "cross_host_comparison": "Match default 2000 executions / 284283 admitted frames, and Morph Ball execution 148 / 22586 admitted frames with 7-job drain / 23883 total frames. Require full native replay and identical same-host slot variants. Core/build/header identities differ by architecture and are never erased.",
+  "core_sha256": "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda"
+}

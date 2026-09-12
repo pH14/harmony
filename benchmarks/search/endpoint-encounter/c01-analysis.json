@@ -1,0 +1,91 @@
+{
+  "format": "metroid-endpoint-census-analysis-v1",
+  "registration_sha256": "16fcc42c802de3abd64781355cb2039d666eb565ce3acc740511a3c0b594212f",
+  "complete": false,
+  "decision": "incomplete; no negative encounter claim or automatic rerun",
+  "admitted_frames_known": 240942610,
+  "known_auxiliary_frames": 1120250,
+  "endpoint_counts": null,
+  "first_encounter": null,
+  "unknown": [
+    "Setup, unadmitted work and unmeasured verification after failures remain additional unknowns."
+  ],
+  "scope": "One reused development seed. Eligible completed live endpoints only; no fresh-validation or performance claim.",
+  "reported_stop_reason": "wall_limit",
+  "record_failure": "unexpected censoring",
+  "last_reported_observations": {
+    "frames": 240942610,
+    "executions": 1995915,
+    "endpoint_counts": {
+      "actions_observed": 5724086,
+      "classified_endpoints": 4973,
+      "first": {
+        "area": 20,
+        "boss_slots": 1,
+        "execution": 1853341,
+        "route_action_end_frame": 117875
+      },
+      "live_endpoints": 5061181
+    },
+    "named_progress": {
+      "first_seen": {
+        "bombs": {
+          "execution": 938694,
+          "route_action_end_frame": 56913
+        },
+        "brinstar": {
+          "execution": 1,
+          "route_action_end_frame": 68
+        },
+        "ending": null,
+        "energy_tank": {
+          "execution": 144673,
+          "route_action_end_frame": 16254
+        },
+        "escape_started": null,
+        "high_jump": null,
+        "ice_beam": null,
+        "kraid_area": {
+          "execution": 1327670,
+          "route_action_end_frame": 103645
+        },
+        "kraid_defeated": null,
+        "long_beam": null,
+        "missile_capacity": {
+          "execution": 169281,
+          "route_action_end_frame": 24198
+        },
+        "morph_ball": {
+          "execution": 505,
+          "route_action_end_frame": 901
+        },
+        "mother_brain_defeated": null,
+        "norfair": {
+          "execution": 173824,
+          "route_action_end_frame": 26994
+        },
+        "ridley_area": {
+          "execution": 1226882,
+          "route_action_end_frame": 97185
+        },
+        "ridley_defeated": null,
+        "screw_attack": null,
+        "tourian": null,
+        "varia_suit": null,
+        "wave_beam": null
+      },
+      "format": "metroid-named-progress-v2",
+      "max_energy_tanks": 1,
+      "max_missile_capacity": 20
+    },
+    "scope": "Last complete progress record; may omit later interrupted work and does not establish completion of the registered horizon."
+  },
+  "search_frame_overshoot": 0,
+  "resource_cost": {
+    "cpu_seconds": 6766.049394000001,
+    "elapsed_seconds": 2133.684051080025,
+    "max_process_rss_bytes": 4305502208,
+    "peak_disk_logical_bytes_sampled": 103794739
+  },
+  "panel_sha256": "9d84a99c3f4513f895d5576073ced00bafe55fccce89cce9f6802c32a8fb8478"
+}

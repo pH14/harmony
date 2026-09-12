@@ -1,0 +1,40 @@
+{
+  "format": "u01-qualification-accounting-v1",
+  "scope": "four complete replay-qualified cells; admitted and replay frame accounting, not complete physical accounting",
+  "search_admitted_frames": 2657327,
+  "elapsed_seconds_sum": 167.174202971044,
+  "builds": {
+    "": {
+      "format": "harmony-search-build-v1",
+      "source_tree_sha256": "9ac8c23a7d6e206972bd5808f6a8922e7e32fa96a3fc67a91d4bcf9a5d79ddb0",
+      "revision": null,
+      "dirty": null,
+      "files": 427,
+      "source_commit": "8d503c28",
+      "features": "",
+      "binary_sha256": "0337d330f6975507322c2597449366911c33293f7f14d710228babd8a9282d83",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+      "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+      "profile": "release",
+      "locked": true,
+      "rustflags": "",
+      "target_cache": "/root/harmony-retention-theory-20260908/target"
+    },
+    "metroid-motion-context,metroid-complete-retention-audit": {
+      "format": "harmony-search-build-v1",
+      "source_tree_sha256": "9ac8c23a7d6e206972bd5808f6a8922e7e32fa96a3fc67a91d4bcf9a5d79ddb0",
+      "revision": null,
+      "dirty": null,
+      "files": 427,
+      "source_commit": "8d503c28",
+      "features": "metroid-motion-context,metroid-complete-retention-audit",
+      "binary_sha256": "7934cffc0bbf201dd59f6d7774e08849f9c9a59ecc513170e9234ef43785cb9f",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+      "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+      "profile": "release",
+      "locked": true,
+      "rustflags": "",
+      "target_cache": "/root/harmony-retention-theory-20260908/target"
+    }
+  }
+}

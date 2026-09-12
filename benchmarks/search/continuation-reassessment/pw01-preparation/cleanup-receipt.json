@@ -1,0 +1,35 @@
+{
+  "completed_utc": "2026-09-11T00:55:50.217705+00:00",
+  "host": "ms02",
+  "removed_directory": "/root/harmony-depth-transfer-20260909",
+  "task_processes_remaining": [],
+  "failed_service_cleanup": [
+    {
+      "action": "stop",
+      "unit": "harmony-endpoint-c01-20260910.service",
+      "returncode": 0,
+      "stderr": ""
+    },
+    {
+      "action": "stop",
+      "unit": "harmony-rf01-miri-20260910.service",
+      "returncode": 0,
+      "stderr": ""
+    },
+    {
+      "action": "reset-failed",
+      "unit": "harmony-endpoint-c01-20260910.service",
+      "returncode": 0,
+      "stderr": ""
+    },
+    {
+      "action": "reset-failed",
+      "unit": "harmony-rf01-miri-20260910.service",
+      "returncode": 0,
+      "stderr": ""
+    }
+  ],
+  "remaining_harmony_units": "",
+  "freed_bytes": 7834435584,
+  "pw01_ever_executed": false
+}

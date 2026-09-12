@@ -1,0 +1,119 @@
+{
+  "format": "continuation-yield-work-accounting-v1",
+  "as_of_utc": "2026-09-09T14:59:58.380451+00:00",
+  "cells": [
+    {
+      "path": "d01/control-0/metroid-full-s4133011945-w4-m8192/summary.json",
+      "sha256": "a824311eb7d5bffcf82a157ef51c0534cc24b89eb9fdd4b07b3991041af18f24",
+      "budget_class": "search",
+      "status": "complete",
+      "admitted_frames": 25000911,
+      "inferred_full_replay_admitted_frames": 0,
+      "twice_replayed_witness_suffix_frames": 111510,
+      "elapsed_seconds": 435.6787012910354,
+      "cpu_seconds": 1284.1938320000002,
+      "search_stop": "frame_limit"
+    },
+    {
+      "path": "d01/control-1/metroid-full-s1371495969-w4-m8192/summary.json",
+      "sha256": "143bfd31aa9bae7314197ed32a9a6c09443250f9e571de74003274dfe52d2a60",
+      "budget_class": "search",
+      "status": "complete",
+      "admitted_frames": 25000578,
+      "inferred_full_replay_admitted_frames": 0,
+      "twice_replayed_witness_suffix_frames": 109380,
+      "elapsed_seconds": 433.610512654006,
+      "cpu_seconds": 1277.844752,
+      "search_stop": "frame_limit"
+    },
+    {
+      "path": "d01/control-2/metroid-full-s13390878-w4-m8192/summary.json",
+      "sha256": "9fc32f9b5fc2f48ba8a755cb86df0c0f8664c7842e6e890316443aff8341e446",
+      "budget_class": "search",
+      "status": "complete",
+      "admitted_frames": 25000498,
+      "inferred_full_replay_admitted_frames": 0,
+      "twice_replayed_witness_suffix_frames": 219214,
+      "elapsed_seconds": 441.8871014509932,
+      "cpu_seconds": 1290.552755,
+      "search_stop": "frame_limit"
+    },
+    {
+      "path": "d01/control-3/metroid-full-s1952443731-w4-m8192/summary.json",
+      "sha256": "739d7dddc184b0c345df83043fb093a9c5e2d09be1088ed4fb3a3c78d46e93a1",
+      "budget_class": "search",
+      "status": "complete",
+      "admitted_frames": 25000844,
+      "inferred_full_replay_admitted_frames": 0,
+      "twice_replayed_witness_suffix_frames": 127126,
+      "elapsed_seconds": 432.6678983019665,
+      "cpu_seconds": 1279.9739749999999,
+      "search_stop": "frame_limit"
+    },
+    {
+      "path": "d02/compatibility/metroid-full-s4133011945-w4-m8192/summary.json",
+      "sha256": "6b2da369fd3789f2e599a6555a8293e117bda26d95c93be28e74098e39783e5c",
+      "budget_class": "qualification",
+      "status": "complete",
+      "admitted_frames": 25000911,
+      "inferred_full_replay_admitted_frames": 0,
+      "twice_replayed_witness_suffix_frames": 111510,
+      "elapsed_seconds": 435.69888696901035,
+      "cpu_seconds": 1284.103839,
+      "search_stop": "frame_limit"
+    },
+    {
+      "path": "d02/metroid-candidate-smoke/metroid-full-s2026090902-w4-m8192/summary.json",
+      "sha256": "6aacf135481dad86f8ce11fa49245d4b5ec4c6d0372f59271b1f78382ea08e71",
+      "budget_class": "qualification",
+      "status": "complete",
+      "admitted_frames": 284283,
+      "inferred_full_replay_admitted_frames": 284283,
+      "twice_replayed_witness_suffix_frames": 1908,
+      "elapsed_seconds": 18.284475460997783,
+      "cpu_seconds": 27.107248,
+      "search_stop": "execution_limit"
+    },
+    {
+      "path": "d02/mm2-candidate-smoke/mm2-metal-s2026090902-w4-m8192/summary.json",
+      "sha256": "5564c8f705a5b65fa0679da5d04de1f92495430f5281286c3281554e4dbbc860",
+      "budget_class": "qualification",
+      "status": "error",
+      "admitted_frames": null,
+      "inferred_full_replay_admitted_frames": 0,
+      "twice_replayed_witness_suffix_frames": null,
+      "elapsed_seconds": 0.01794170099310577,
+      "cpu_seconds": 0.010204,
+      "search_stop": null
+    },
+    {
+      "path": "d02r/mm2-candidate-smoke/mm2-metal-s2026090902-w4-m8192/summary.json",
+      "sha256": "143a269f6d7375e10c4d4c2624bedbfc5a40a8f2f167274cd66d9723c4a4d29b",
+      "budget_class": "qualification",
+      "status": "complete",
+      "admitted_frames": 241988,
+      "inferred_full_replay_admitted_frames": 241988,
+      "twice_replayed_witness_suffix_frames": 2980,
+      "elapsed_seconds": 15.143398081010673,
+      "cpu_seconds": 22.99615,
+      "search_stop": "execution_limit"
+    }
+  ],
+  "completed_search_admitted_frames": 100002831,
+  "completed_auxiliary_qualification_admitted_frames": 25527182,
+  "completed_full_replay_admitted_frames_reexecuted": 526271,
+  "completed_twice_replayed_witness_suffix_frames": 683628,
+  "known_auxiliary_frame_charges": 26737081,
+  "nominal_limits": {
+    "search": 500000000,
+    "auxiliary": 50000000
+  },
+  "limitations": [
+    "Distinct actual summary paths only; embedded analysis copies excluded.",
+    "Running cells without summaries are not included and have additional accrued work.",
+    "Setup, unadmitted worker frames, physical snapshot-reconstruction work and failed/incomplete work may be additional; unavailable counters are unknown.",
+    "Full campaign replay charge is inferred from exact report/checkpoint verification; it is not a complete physical replay counter.",
+    "Both final and milestone witnesses are replayed twice; both copies are charged.",
+    "Frame totals include bounded in-flight drain and are not wall-time totals."
+  ]
+}

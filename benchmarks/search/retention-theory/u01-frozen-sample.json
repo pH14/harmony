@@ -1,0 +1,131 @@
+{
+  "format": "u01-frozen-suffix-registration-v1",
+  "ready": true,
+  "scope": "short seed3 development qualification; no fresh-search or population claim",
+  "source_audit_sha256": "03dfff2588e8d72f1cfe23bbd501a2c9b6dff76f7e59b3bf970b18abc45a2385",
+  "qualification_sha256": "9fe85a14fbc2eb7ca726545ce246ad1962368ad0c1b66bf765a3bbbae69ce7c3",
+  "expanded_audit_sha256": "051df1c0cb73b43920b7ae61f45b77736b84fde9a382ef64e2b814f56049f95f",
+  "probe_binary_sha256": "20f0255bc4002d4e43ffecbfd9e0efc053c7656c2b06272bc4fbc16e7eff9672",
+  "seed": 20261215,
+  "trials_per_competition": 16,
+  "actions_per_trial": 24,
+  "eligible_competitions": 12,
+  "competitions": [
+    {
+      "source_sample": 2,
+      "execution": 2350,
+      "discarded_role": "candidate",
+      "survivor_roles": [
+        "incumbent_3140",
+        "incumbent_3189"
+      ],
+      "candidate_survivor_index": null,
+      "route_frames": [
+        4498,
+        3799,
+        3783
+      ]
+    },
+    {
+      "source_sample": 3,
+      "execution": 235,
+      "discarded_role": "incumbent_413",
+      "survivor_roles": [
+        "candidate",
+        "incumbent_284"
+      ],
+      "candidate_survivor_index": 0,
+      "route_frames": [
+        348,
+        404,
+        502
+      ]
+    },
+    {
+      "source_sample": 4,
+      "execution": 4546,
+      "discarded_role": "candidate",
+      "survivor_roles": [
+        "incumbent_3578",
+        "incumbent_5267"
+      ],
+      "candidate_survivor_index": null,
+      "route_frames": [
+        1769,
+        1199,
+        1163
+      ]
+    },
+    {
+      "source_sample": 6,
+      "execution": 4853,
+      "discarded_role": "candidate",
+      "survivor_roles": [
+        "incumbent_5817",
+        "incumbent_5818"
+      ],
+      "candidate_survivor_index": null,
+      "route_frames": [
+        2958,
+        2944,
+        2954
+      ]
+    },
+    {
+      "source_sample": 8,
+      "execution": 4603,
+      "discarded_role": "candidate",
+      "survivor_roles": [
+        "incumbent_3686",
+        "incumbent_5302"
+      ],
+      "candidate_survivor_index": null,
+      "route_frames": [
+        1484,
+        1281,
+        1295
+      ]
+    },
+    {
+      "source_sample": 9,
+      "execution": 4963,
+      "discarded_role": "candidate",
+      "survivor_roles": [
+        "incumbent_1844",
+        "incumbent_1845"
+      ],
+      "candidate_survivor_index": null,
+      "route_frames": [
+        1433,
+        1136,
+        1144
+      ]
+    },
+    {
+      "source_sample": 10,
+      "execution": 2039,
+      "discarded_role": "candidate",
+      "survivor_roles": [
+        "incumbent_1995",
+        "incumbent_2385"
+      ],
+      "candidate_survivor_index": null,
+      "route_frames": [
+        1555,
+        1466,
+        1469
+      ]
+    }
+  ],
+  "physical_work_cap": 4000000,
+  "work_bound": {
+    "prefix_upper_bound": 167471,
+    "suffix_upper_bound": 1290240,
+    "gain_exports_upper_bound": 2016992,
+    "total_upper_bound": 3474703
+  },
+  "suffix_wall_seconds": 120,
+  "output_cap_bytes": 67108864,
+  "selection": "largest prefix of first eight eligible equal-preference samples that fits conservative bound; at least four required",
+  "qualifies_longer_search": false
+}

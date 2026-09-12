@@ -500,6 +500,20 @@ impl std::fmt::Debug for QuickNesMachine {
 }
 
 impl QuickNesMachine {
+    /// Native dynamic loading is unavailable to Miri; loopback tests construct
+    /// their core explicitly. Keep callers type-checkable without substituting
+    /// a fake core for a requested native image.
+    #[cfg(miri)]
+    pub fn from_rom_bytes(
+        _rom: &[u8],
+        _core_path: &std::path::Path,
+        _core_sha256: &str,
+    ) -> Result<Self, MachineError> {
+        Err(MachineError::Backend(
+            "native QuickNES loading is unavailable under Miri".to_owned(),
+        ))
+    }
+
     /// Load a ROM in a private image of the pinned QuickNES libretro core.
     ///
     /// `core_sha256` must be the lowercase SHA-256 of `core_path`; it is

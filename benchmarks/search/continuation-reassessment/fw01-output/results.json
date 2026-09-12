@@ -1,0 +1,21 @@
+{
+  "format": "continuation-fw01-results-v1",
+  "registration_sha256": "dd17bc157b2b843f3292d32a6830cdb9776094d2bb4d2b6e99eaf99d24e478c3",
+  "registration_commit": "8d9872e71fd3f822c8fe04c850c699c1926722d5",
+  "records": [
+    {
+      "id": "fw01-control-s3",
+      "exit_code": 0,
+      "stop_reason": null,
+      "elapsed_seconds": 51.45475077396259,
+      "cumulative_child_cpu_seconds": 51.035923,
+      "cumulative_child_maxrss_kib": 19288,
+      "budget_charged_upper_frames": 234966,
+      "verified": false,
+      "verification_error": "AssertionError: ",
+      "partial_advancement": "all three native passes completed; compatibility verification failed",
+      "known_auxiliary_frames": 234966
+    }
+  ],
+  "complete": false
+}

@@ -72,7 +72,10 @@ pub struct Mm2Game {
     prefix: Vec<ButtonChord>,
     stage: Mm2Stage,
     identity: String,
+    chord_correlation: crate::chord_correlation::ChordCorrelation,
+    local_terminal_retry: bool,
     champion_input_path: Option<PathBuf>,
+    setup_frames: std::sync::atomic::AtomicU64,
 }
 
 impl Mm2Game {
@@ -113,8 +116,36 @@ impl Mm2Game {
             prefix,
             stage,
             identity,
+            chord_correlation: crate::chord_correlation::ChordCorrelation::Independent,
+            local_terminal_retry: false,
             champion_input_path: None,
+            setup_frames: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// Physical emulator frames spent constructing all targets in this context.
+    /// Includes every repeated chain prefix; reporting only, never replay state.
+    #[must_use]
+    pub fn setup_frame_count(&self) -> u64 {
+        self.setup_frames.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Opt in to one ordinary-death retry per live boundary. Attempts consume
+    /// the existing pre-drawn suffix; all failed work stays charged and recorded.
+    #[must_use]
+    pub fn with_local_terminal_retry(mut self, enabled: bool) -> Self {
+        self.local_terminal_retry = enabled;
+        self
+    }
+
+    /// Set an explicitly recorded suffix-local action correlation policy.
+    #[must_use]
+    pub fn with_chord_correlation(
+        mut self,
+        policy: crate::chord_correlation::ChordCorrelation,
+    ) -> Self {
+        self.chord_correlation = policy;
+        self
     }
 
     /// Write the champion input to `path` each time it improves, so a long
@@ -217,6 +248,8 @@ struct Mm2ResultAction<'a> {
 #[derive(Serialize)]
 struct Mm2Result<'a> {
     actions: Vec<Mm2ResultAction<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    discard_previous_dead_actions: Vec<usize>,
 }
 
 fn mm2_result_sha256(result: &Mm2CampaignJobResult) -> Result<String, Box<dyn Error>> {
@@ -239,7 +272,10 @@ fn mm2_result_sha256(result: &Mm2CampaignJobResult) -> Result<String, Box<dyn Er
                 }),
         })
         .collect();
-    postcard_value_sha256(&Mm2Result { actions })
+    postcard_value_sha256(&Mm2Result {
+        actions,
+        discard_previous_dead_actions: result.discarded_attempt_positions(),
+    })
 }
 
 /// Fixed configuration for one live campaign.
@@ -333,6 +369,7 @@ fn admission_is_viable(
     Ok(viable)
 }
 
+#[allow(clippy::too_many_arguments)] // Mirrors the existing bounded worker request plus its opt-in retry policy.
 fn execute_suffix(
     target: &mut Mm2Target,
     genesis_weapons: u8,
@@ -341,18 +378,39 @@ fn execute_suffix(
     suffix: &[ButtonChord],
     max_actions: usize,
     retention: RetentionPolicy,
+    local_terminal_retry: bool,
 ) -> Result<Mm2CampaignJobResult, Box<dyn Error>> {
+    if local_terminal_retry && retention != RetentionPolicy::AdmitAlive {
+        return Err("local terminal retry requires admit_alive".into());
+    }
     let mut aggregate = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
     if target.is_dead() || target.defeated_a_boss() {
         return Ok(CampaignJobResult { actions });
     }
+    let live = if local_terminal_retry {
+        Some((
+            target
+                .snapshot()
+                .ok_or("local retry parent snapshot failed")?,
+            aggregate,
+        ))
+    } else {
+        None
+    };
+    let mut retry = crate::search::rollout::LocalRetry::new(live);
     for action in suffix {
         if length >= max_actions {
             break;
         }
+        // Failed attempts consume this same cap; a retry draws no extra action.
         length = length.saturating_add(1);
+        let restored = retry.restore_pending(|snapshot| target.restore(snapshot))?;
+        let discard_previous_dead = restored.is_some();
+        if let Some(live_milestones) = restored {
+            aggregate = live_milestones;
+        }
         target.apply(action);
         merge_action_milestones(&mut aggregate, target, genesis_weapons);
         let observations = target.last_action_observations().to_vec();
@@ -375,7 +433,17 @@ fn execute_suffix(
                 snapshot,
             })
         };
+        let continue_rollout = retry.observe(
+            crate::search::rollout::Outcome {
+                dead,
+                victory,
+                failed,
+            },
+            candidate.as_ref().map(|candidate| &candidate.snapshot),
+            aggregate,
+        )?;
         actions.push(CampaignActionResult {
+            discard_previous_dead,
             action: *action,
             observations,
             milestones: aggregate,
@@ -384,7 +452,7 @@ fn execute_suffix(
             failed,
             candidate,
         });
-        if dead || victory || failed {
+        if !continue_rollout {
             break;
         }
     }
@@ -443,6 +511,29 @@ impl CampaignTypes for Mm2Game {
 }
 
 impl Reporting for Mm2Game {
+    fn retained_diagnostics<'a>(
+        snapshots: impl Iterator<Item = Option<&'a Mm2Snapshot>>,
+    ) -> Option<serde_json::Value> {
+        let (mut active, mut missing) = (0_u64, 0_u64);
+        let (mut weapons, mut stage, mut screen) = (0, 0, 0);
+        for snapshot in snapshots {
+            active += 1;
+            let Some(snapshot) = snapshot else {
+                missing += 1;
+                continue;
+            };
+            let state = snapshot.state();
+            weapons |= state.weapons_obtained;
+            stage = stage.max(state.stage);
+            screen = screen.max(state.screen);
+        }
+        Some(serde_json::json!({
+            "scope": "union/maxima over cached active endpoints; not one trajectory; lower bounds when snapshots are missing",
+            "active_entries": active, "missing_snapshots": missing,
+            "weapons_union": weapons, "max_stage": stage, "max_screen": screen
+        }))
+    }
+
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -500,7 +591,7 @@ impl InputPolicy for Mm2Game {
     }
 
     fn policies(&self, _run: &Mm2CampaignRun) -> GamePolicies {
-        [
+        let mut policies: GamePolicies = [
             (
                 CONTROLLER_VOCABULARY_FIELD,
                 CONTROLLER_VOCABULARY_IDENTIFIER,
@@ -516,7 +607,20 @@ impl InputPolicy for Mm2Game {
             EMULATOR_BACKEND_FIELD.to_owned(),
             self.identity.clone(),
         )))
-        .collect()
+        .collect();
+        if self.chord_correlation != crate::chord_correlation::ChordCorrelation::Independent {
+            policies.insert(
+                "action_correlation".to_owned(),
+                self.chord_correlation.identifier().to_owned(),
+            );
+        }
+        if self.local_terminal_retry {
+            policies.insert(
+                "local_terminal_retry".to_owned(),
+                "one_per_live_boundary_predrawn_attempts_v1".to_owned(),
+            );
+        }
+        policies
     }
 
     fn resolve_recorded(&self, policies: &GamePolicies) -> Result<Mm2CampaignRun, Box<dyn Error>> {
@@ -554,14 +658,29 @@ impl InputPolicy for Mm2Game {
         mixture: MixtureDraw,
         mutation_seed: u64,
     ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-        draw_suffix(
+        if self.chord_correlation != crate::chord_correlation::ChordCorrelation::Independent
+            && mixture.mixture != DrawMixture::AlphabetOnly
+        {
+            return Err("action correlation currently requires alphabet_only".into());
+        }
+        if self.local_terminal_retry
+            && (mixture.mixture != DrawMixture::AlphabetOnly
+                || self.chord_correlation
+                    != crate::chord_correlation::ChordCorrelation::Independent)
+        {
+            return Err("local terminal retry requires independent alphabet_only draws".into());
+        }
+        let mut suffix = draw_suffix(
             shape,
             mixture.mixture,
             mixture.weight,
             mutation_seed,
             |_| Ok(None),
             sample_chord,
-        )
+        )?;
+        self.chord_correlation
+            .apply(&mut suffix, mutation_seed, 8)?;
+        Ok(suffix)
     }
 
     fn expand_suffix_recorded(
@@ -615,14 +734,19 @@ impl TargetExecution for Mm2Game {
     }
 
     fn new_target(&self) -> Result<Mm2Target, String> {
-        Mm2Target::from_rom_bytes_after(
+        let target = Mm2Target::from_rom_bytes_after(
             &self.rom,
             &self.core_path,
             &self.core_sha256,
             &self.prefix,
             self.stage,
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        self.setup_frames.fetch_add(
+            target.frames_clocked(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        Ok(target)
     }
 
     fn reset(&self, target: &mut Mm2Target) {
@@ -683,6 +807,7 @@ impl TargetExecution for Mm2Game {
             suffix,
             max_actions,
             retention,
+            self.local_terminal_retry,
         )
     }
 }
@@ -850,6 +975,115 @@ pub fn replay_mm2_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_retry_identity_draws_and_semantic_digest_are_explicit() {
+        let ordinary =
+            Mm2Game::new_at_stage(&[0], Path::new("unused"), "test", Mm2Stage::default());
+        let old = ordinary.policies(&Mm2CampaignRun);
+        let candidate =
+            Mm2Game::new_at_stage(&[0], Path::new("unused"), "test", Mm2Stage::default())
+                .with_local_terminal_retry(true);
+        let new = candidate.policies(&Mm2CampaignRun);
+        assert!(!old.contains_key("local_terminal_retry"));
+        assert_eq!(new.len(), old.len() + 1);
+        assert!(ordinary.resolve_recorded(&new).is_err());
+        assert!(candidate.resolve_recorded(&old).is_err());
+        assert!(candidate.resolve_recorded(&new).is_ok());
+        let mix = MixtureDraw {
+            mixture: DrawMixture::AlphabetOnly,
+            weight: 0,
+            splice_weight: 0,
+        };
+        for seed in 0..32 {
+            assert_eq!(
+                ordinary
+                    .expand_suffix(&Mm2CampaignRun, &(), SuffixShape::OneToSix, mix, seed)
+                    .unwrap(),
+                candidate
+                    .expand_suffix(&Mm2CampaignRun, &(), SuffixShape::OneToSix, mix, seed)
+                    .unwrap()
+            );
+        }
+        let mut result = CampaignJobResult::<Mm2Game> {
+            actions: vec![CampaignActionResult {
+                discard_previous_dead: false,
+                action: ButtonChord::new(1, 1),
+                observations: vec![],
+                milestones: Mm2Milestones::default(),
+                dead: true,
+                victory: false,
+                failed: false,
+                candidate: None,
+            }],
+        };
+        let old_hash = mm2_result_sha256(&result).unwrap();
+        result.actions[0].discard_previous_dead = true;
+        assert_ne!(old_hash, mm2_result_sha256(&result).unwrap());
+    }
+
+    #[test]
+    fn correlation_identity_is_strict_and_suffix_local() {
+        use crate::chord_correlation::ChordCorrelation;
+        let ordinary =
+            Mm2Game::new_at_stage(&[0], Path::new("unused"), "test", Mm2Stage::default());
+        let old = ordinary.policies(&Mm2CampaignRun);
+        assert!(!old.contains_key("action_correlation"));
+        for policy in [
+            ChordCorrelation::ComponentHalf,
+            ChordCorrelation::MatchedWholeRepeat,
+        ] {
+            let candidate =
+                Mm2Game::new_at_stage(&[0], Path::new("unused"), "test", Mm2Stage::default())
+                    .with_chord_correlation(policy);
+            let new = candidate.policies(&Mm2CampaignRun);
+            assert_eq!(new.len(), old.len() + 1);
+            assert_eq!(new["action_correlation"], policy.identifier());
+            assert!(old.iter().all(|(key, value)| new.get(key) == Some(value)));
+            assert!(candidate.resolve_recorded(&new).is_ok());
+            assert!(ordinary.resolve_recorded(&new).is_err());
+            assert!(candidate.resolve_recorded(&old).is_err());
+            let mix = MixtureDraw {
+                mixture: DrawMixture::AlphabetOnly,
+                weight: 0,
+                splice_weight: 0,
+            };
+            let first = candidate
+                .expand_suffix(&Mm2CampaignRun, &(), SuffixShape::OneToSix, mix, 123)
+                .unwrap();
+            candidate
+                .expand_suffix(&Mm2CampaignRun, &(), SuffixShape::OneToSix, mix, 789)
+                .unwrap();
+            assert_eq!(
+                first,
+                candidate
+                    .expand_suffix_recorded(
+                        &Mm2CampaignRun,
+                        &(),
+                        SuffixShape::OneToSix,
+                        mix,
+                        None,
+                        123
+                    )
+                    .unwrap()
+            );
+            assert!(
+                candidate
+                    .expand_suffix(
+                        &Mm2CampaignRun,
+                        &(),
+                        SuffixShape::OneToSix,
+                        MixtureDraw {
+                            mixture: DrawMixture::BiasedHalf,
+                            weight: 0,
+                            splice_weight: 0,
+                        },
+                        123
+                    )
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn recorded_policy_set_is_exact_and_game_owned() {

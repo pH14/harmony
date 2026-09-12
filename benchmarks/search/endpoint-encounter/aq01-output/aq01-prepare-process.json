@@ -1,0 +1,9 @@
+{
+  "cell": "aq01-prepare",
+  "returncode": 0,
+  "stop_reason": null,
+  "wall_seconds": 32.01350469799945,
+  "maxrss_kib": 11864,
+  "user_seconds": 31.523566,
+  "system_seconds": 0.039888
+}

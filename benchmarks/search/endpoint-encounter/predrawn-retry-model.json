@@ -1,0 +1,192 @@
+{
+  "format": "predrawn-local-retry-exact-model-v1",
+  "rows": [
+    {
+      "stages": 1,
+      "q": "1/4",
+      "control": {
+        "episode_success": "1/4",
+        "episode_work": "1",
+        "expected_work_to_hit": "4"
+      },
+      "retry": {
+        "episode_success": "13/32",
+        "episode_work": "13/8",
+        "expected_work_to_hit": "4"
+      },
+      "work_ratio": "1"
+    },
+    {
+      "stages": 1,
+      "q": "1/2",
+      "control": {
+        "episode_success": "1/2",
+        "episode_work": "1",
+        "expected_work_to_hit": "2"
+      },
+      "retry": {
+        "episode_success": "17/24",
+        "episode_work": "17/12",
+        "expected_work_to_hit": "2"
+      },
+      "work_ratio": "1"
+    },
+    {
+      "stages": 1,
+      "q": "3/4",
+      "control": {
+        "episode_success": "3/4",
+        "episode_work": "1",
+        "expected_work_to_hit": "4/3"
+      },
+      "retry": {
+        "episode_success": "29/32",
+        "episode_work": "29/24",
+        "expected_work_to_hit": "4/3"
+      },
+      "work_ratio": "1"
+    },
+    {
+      "stages": 2,
+      "q": "1/4",
+      "control": {
+        "episode_success": "5/96",
+        "episode_work": "29/24",
+        "expected_work_to_hit": "116/5"
+      },
+      "retry": {
+        "episode_success": "203/1536",
+        "episode_work": "827/384",
+        "expected_work_to_hit": "3308/203"
+      },
+      "work_ratio": "4135/5887"
+    },
+    {
+      "stages": 2,
+      "q": "1/2",
+      "control": {
+        "episode_success": "5/24",
+        "episode_work": "17/12",
+        "expected_work_to_hit": "34/5"
+      },
+      "retry": {
+        "episode_success": "13/32",
+        "episode_work": "107/48",
+        "expected_work_to_hit": "214/39"
+      },
+      "work_ratio": "535/663"
+    },
+    {
+      "stages": 2,
+      "q": "3/4",
+      "control": {
+        "episode_success": "15/32",
+        "episode_work": "13/8",
+        "expected_work_to_hit": "52/15"
+      },
+      "retry": {
+        "episode_success": "345/512",
+        "episode_work": "809/384",
+        "expected_work_to_hit": "3236/1035"
+      },
+      "work_ratio": "809/897"
+    },
+    {
+      "stages": 5,
+      "q": "1/4",
+      "control": {
+        "episode_success": "1/3072",
+        "episode_work": "967/768",
+        "expected_work_to_hit": "3868"
+      },
+      "retry": {
+        "episode_success": "23/24576",
+        "episode_work": "899/384",
+        "expected_work_to_hit": "57536/23"
+      },
+      "work_ratio": "14384/22241"
+    },
+    {
+      "stages": 5,
+      "q": "1/2",
+      "control": {
+        "episode_success": "1/96",
+        "episode_work": "5/3",
+        "expected_work_to_hit": "160"
+      },
+      "retry": {
+        "episode_success": "3/128",
+        "episode_work": "23/8",
+        "expected_work_to_hit": "368/3"
+      },
+      "work_ratio": "23/30"
+    },
+    {
+      "stages": 5,
+      "q": "3/4",
+      "control": {
+        "episode_success": "81/1024",
+        "episode_work": "593/256",
+        "expected_work_to_hit": "2372/81"
+      },
+      "retry": {
+        "episode_success": "1053/8192",
+        "episode_work": "1259/384",
+        "expected_work_to_hit": "80576/3159"
+      },
+      "work_ratio": "20144/23127"
+    },
+    {
+      "stages": 7,
+      "q": "1/4",
+      "control": {
+        "episode_success": "0",
+        "episode_work": "2579/2048",
+        "expected_work_to_hit": null
+      },
+      "retry": {
+        "episode_success": "0",
+        "episode_work": "4795/2048",
+        "expected_work_to_hit": null
+      },
+      "work_ratio": null
+    },
+    {
+      "stages": 7,
+      "q": "1/2",
+      "control": {
+        "episode_success": "0",
+        "episode_work": "107/64",
+        "expected_work_to_hit": null
+      },
+      "retry": {
+        "episode_success": "0",
+        "episode_work": "553/192",
+        "expected_work_to_hit": null
+      },
+      "work_ratio": null
+    },
+    {
+      "stages": 7,
+      "q": "3/4",
+      "control": {
+        "episode_success": "0",
+        "episode_work": "4825/2048",
+        "expected_work_to_hit": null
+      },
+      "retry": {
+        "episode_success": "0",
+        "episode_work": "20387/6144",
+        "expected_work_to_hit": null
+      },
+      "work_ratio": null
+    }
+  ],
+  "scope": "Both policies receive the identical distribution of one-to-six pre-drawn Bernoulli attempts. Failed work counts; no extra command is drawn.",
+  "limits": [
+    "Aliased chain with constant independent viability; every live action advances the goal. Not fitted to NES.",
+    "Unit frame cost and zero restore emulation, not equal host overhead. No timing/memory dominance.",
+    "The fixed cap removes all chance for a seven-step aliased target; it materially limits the uncapped model benefit.",
+    "Complete intermediate retention and alive-trap counterexamples from local-retry-model.json still apply."
+  ]
+}

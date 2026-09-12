@@ -17,6 +17,18 @@ sha2 = "=0.10.9"
 
 [features]
 consonance = ["machine/consonance"]
+# Experimental Metroid retention refinement; the default preserves v8 keys.
+metroid-refined-archive = []
+# Optional motion metadata for bounded context retention; does not split cells.
+metroid-motion-context = []
+# Reporting-only complete local-survivor samples; legacy audits stay v1 by default.
+metroid-complete-retention-audit = []
+# Generic selector diagnostics in the progress sidecar only.
+selector-cost-audit = ["searcher/selector-cost-audit"]
+# Reporting-only boss classification at completed live action endpoints.
+metroid-boss-context-audit = []
+# Explicit policy metadata; ordinary builds and observation histories stay unchanged.
+metroid-retention-progress = ["metroid-motion-context", "metroid-boss-context-audit"]
 
 [[bin]]
 name = "nova-consonance-campaign"

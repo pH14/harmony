@@ -1,0 +1,17 @@
+{
+  "format": "retention-ledger-after-sr01-v1",
+  "before": {
+    "admitted_search": 2985486535,
+    "known_auxiliary": 74268821
+  },
+  "sr01": {
+    "admitted_search": 1001718,
+    "known_auxiliary": 2932422
+  },
+  "sr01_total_measured_physical": 3934140,
+  "after": {
+    "admitted_search": 2986488253,
+    "known_auxiliary": 77201243
+  },
+  "scope": "Four complete SR01 search/replay/direct-helper lifetimes. Native qualification only; all historical unknowns remain unchanged."
+}

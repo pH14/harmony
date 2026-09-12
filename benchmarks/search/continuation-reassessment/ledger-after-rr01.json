@@ -1,0 +1,20 @@
+{
+  "format": "retention-replay-rr01-closed-ledger-v1",
+  "recorded_utc": "2026-09-10T18:11:28.696054+00:00",
+  "decision": "qualification_failed_inspection_unrun",
+  "prior_ledger_sha256": "73a53b63e23870b32ae82e289f7031ba88e243f4b2bf0d56379a888959055357",
+  "registration_sha256": "44a0e8ab5d667bd709c3e758c0c10c5e90675317227a5c9f2ea51f9dbeada8c3",
+  "analysis_sha256": "185a01c8555b1c675e1e27f65159d9c667155d40e6ec900063f4f63e6279fb6a",
+  "admitted_search_frames": 0,
+  "known_auxiliary_frames": 929,
+  "runtime_receipted_auxiliary_frames": 0,
+  "source_inferred_inspector_setup_frames": 929,
+  "cumulative_since_user_resumption_admitted_search_frames": 2982484247,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 67879266,
+  "accounting_note": "929 is inferred from the pinned caller reaching its first foreign-root restore after the setup-clock equality check. The failure report did not persist that counter; do not call this a runtime frame receipt. No replay target is constructed on this path. Historical unmeasured costs remain unknown.",
+  "inspection": "unrun",
+  "service_invocation": "628120c3542d44a5bd41cf743a623ec4",
+  "service_cpu_nanoseconds": 84333000,
+  "service_memory_peak_bytes": 70709248,
+  "next_decision": "RR01 closed without retry. Same-build raw replay is the supported contract. Any cross-build diagnostic must regenerate from the exact searched action prefix under a distinct prospective protocol; no policy or native allocation is earned here."
+}

@@ -1,0 +1,17 @@
+{
+  "format": "action-persistence-p01-closed-ledger-v1",
+  "recorded_utc": "2026-09-10T01:42:47.446843+00:00",
+  "p01_nominal_search_ceiling": 400000000,
+  "p01_known_auxiliary_ceiling": 4000000,
+  "p01_actual_admitted_search_frames": 195200111,
+  "p01_known_auxiliary_frames": 430820,
+  "p01_analysis_sha256": "a97496b5f29f9d6d2a5780e425ae5ccef0cda7c58ae419d832c4bfad605e1cde",
+  "prior_block_ledger_sha256": "e9f1db1d33c5da6e1579343e5d5169f7807670bd68c89867a4cbfd4935b7faa7",
+  "prior_block_admitted_search_frames": 647118811,
+  "prior_block_known_auxiliary_frames": 44909399,
+  "cumulative_since_user_resumption_admitted_search_frames": 842318922,
+  "cumulative_since_user_resumption_known_auxiliary_frames": 45340219,
+  "unrun": "P01 pairs 2/3, whole-persistence transfer, later-depth comparison and untouched validation remain unrun after the failed confirmation gate. D01 unrun cells remain unchanged.",
+  "unknown": "Setup and unadmitted physical work remain additional unknowns. Compilation, local tests and hosted CI are separate.",
+  "old_expired_tranche": "489,962,470 admitted search and 30,112,297 known auxiliary frames remain frozen and excluded from these renewed totals."
+}

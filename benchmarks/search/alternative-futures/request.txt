@@ -1,0 +1,131 @@
+Here’s the consolidated version. It gives the agent concrete scientific starting points, freedom to reject them, and limits on uninformative work.
+
+```text
+/goal Make significant, evidence-backed progress on Dissonance’s ability to preserve useful alternative futures and turn them into deeper fresh search. Use Metroid as the primary development target and Mega Man 2 as the transfer test.
+
+Run an initial 12-hour research tranche on the dedicated ms02 machine. Work through diagnosis, implementation, controlled experiments, and verification. Reserve the final 90 minutes for consolidating results and checking the best candidate. End the tranche with an explicit assessment of what was achieved and what remains; do not silently extend it.
+
+The desired breakthroughs are fresh Metroid boss defeats and fresh recovery of MM2 Wily 4 reach with all eight weapons. Better archive retention is the leading hypothesis, not an established explanation. Investigate narrowly related selection or local-exploration mechanisms when evidence shows that retention alone is insufficient.
+
+SUCCESS AND EVIDENCE
+
+Pursue repeatable improvement at matched work and memory:
+- Metroid: at least one boss defeated on at least 3 of 10 untouched validation seeds.
+- MM2: Wily 4 reached with all eight weapons on at least 3 of 5 untouched validation seeds.
+
+A breakthrough requires at least one of these repeated results plus an improvement over the matched control in attainment or work to attainment. These thresholds demonstrate repeated empirical success, not statistical certainty. Preserve failures and uncertainty.
+
+Evaluate both games, even if only one reaches its target. Establish the contribution of the changed mechanism through ablation. Larger budgets, a lucky seed, more archive cells, or replaying a historical solution do not establish an algorithmic improvement.
+
+The research tranche can end without achieving a breakthrough. Its minimum useful result is a reproducible causal diagnosis plus either a tested improvement or convincing evidence rejecting a leading hypothesis. Benchmark infrastructure and a report alone are insufficient. Clearly separate “tranche finished,” “implementation verified,” and “breakthrough achieved.”
+
+FOUNDATION AND RESOURCES
+
+Start from current main containing PR #268. Preserve unrelated work and use an isolated branch/worktree. Read its benchmark synthesis, retained results, current searcher and workload READMEs, and issues #270, #271, and #279.
+
+Inspect ms02’s CPU topology, RAM, available storage, tools, and existing licensed assets. Use available capacity with explicit allocations and headroom for verification. Preserve existing artifacts and processes unrelated to this work.
+
+Reuse trustworthy frozen evidence and builds. Reproduce a representative baseline and verify compatibility; do not rerun the entire historical matrix before testing a hypothesis.
+
+For Metroid, retain the existing 4-worker, 8 GiB, 3-million-execution / 400-million-admitted-frame condition as an anchor. Register larger exploratory budgets separately.
+
+For MM2, establish fresh chained search under the recovered, frozen historical stage order. Label this separately from unrestricted whole-game search. Each chain may carry only states and inputs discovered within that fresh chain. Record the cost of all attempts, failed stages, restarts, and prefix reconstruction. Historical tapes are diagnostic or replay fixtures, never starting inputs for fresh validation.
+
+SCIENTIFIC STARTING POINTS
+
+Maintain four competing explanations:
+
+1. Representation collisions:
+States with different useful futures compete under the same archive identity. Metroid’s equal-count/different-capability states are a concrete lead.
+
+First probe: capture a bounded sample of replacement pairs and execute the same sampled action suffixes from both states. Look for useful continuations produced by the discarded state that the survivor misses under equal probe work. Simple endpoint differences alone are insufficient, and matching finite probes do not prove equivalence.
+
+2. Destructive retention:
+One representative loses useful alternatives even after capability identity is corrected.
+
+Compare the existing representative rule with small bounded sets preserving resource tradeoffs or distinct observed continuation behavior. Resource dominance does not prove behavioral dominance. Keep total memory equal and account for the cost of retaining alternatives.
+
+3. Selection starvation:
+Useful alternatives survive but receive too little exploration.
+
+Trace discovered → admitted → selectable → selected → extended. Measure exposure before replacement or eviction. If states already survive but are rarely sampled, adding representatives may worsen dilution; test selection separately.
+
+4. Ineffective local exploration:
+The search reaches useful states but its action generation rarely advances from them.
+
+From development-discovered states, compare ordinary suffix sampling with narrowly varied action durations or campaign-learned continuations at equal frame work. Keep these diagnostic starts separate from fresh-genesis validation.
+
+Keep at most two implementation candidate families active at once. Choose experiments that distinguish these explanations before expanding the search space of algorithms.
+
+LITERATURE SEEDS
+
+Read relevant methods and ablations, concentrating the initial literature pass into at most 45 minutes:
+- First return, then explore — arXiv:2004.12919.
+- Time-Myopic Go-Explore — arXiv:2301.05635.
+- Cell-Free Latent Go-Explore — ICML 2023, arXiv:2208.14928.
+- Multi-Objective Quality Diversity Optimization / MOME — arXiv:2202.03057.
+- Multi-Stage Episodic Control for Strategic Exploration in Text Games / XTX — arXiv:2201.01251.
+
+Extract mechanisms, assumptions, relevant negative results, and the smallest transferable experiment. Distinguish published results, Harmony observations, and proposed extrapolations.
+
+Treat learned representations, Pareto archives, and learned local exploration as hypotheses. Prefer a simple diagnostic or implementation when it tests the same principle. Account for Harmony’s reliable snapshot return when judging the relevance of methods that learn how to return.
+
+Consult further literature only to answer a specific unresolved question. Do not turn this tranche into an open-ended survey.
+
+IMPLEMENTATION AND COMPARISON
+
+Keep capability decoding and game mechanics in workload adapters; place reusable retention and search mechanisms in the generic searcher.
+
+Separate capability-identity corrections from retention changes. Where relevant, compare baseline, identity-only, retention-only, and combined variants. Do not require every variant to receive a full long campaign before smaller experiments establish its relevance.
+
+Hold selection, continuation policy, action vocabulary, worker count, and budgets fixed when isolating retention. Version intentional semantic changes and preserve historical replay behavior.
+
+Use common reporting measurements independent of the candidate’s archive keys. Distinguish capabilities observed anywhere, capabilities retained, and capabilities achieved on a single verified trajectory.
+
+Keep diagnostic memory, probe work, maintenance, and additional snapshots visible in resource accounting. A method cannot obtain its improvement through unreported extra storage or execution.
+
+EXECUTION DISCIPLINE
+
+Before every expensive command, record:
+- The question it answers.
+- Why existing evidence or a cheaper check cannot answer it.
+- Its expected progress signal and wall-time bound.
+- How each plausible outcome changes the next decision.
+
+Use staged validation:
+- Focused tests of affected behavior.
+- Small campaigns exercising the mechanism and replay.
+- Paired development experiments.
+- Long-horizon probes for qualified candidates or hypotheses requiring late behavior.
+- Broad regression checks at candidate checkpoints.
+
+Default execution limits, excluding initial compilation:
+- Focused tests: 10 minutes.
+- Small campaign qualification: 5 minutes per cell.
+- Development comparisons: 20 minutes per cell.
+- Deliberate long-horizon probes: 90 minutes per cell.
+
+Apply host-level watchdogs that terminate child processes and preserve logs and partial artifacts. If a necessary check exceeds its bound, inspect where time went before choosing a new bound or a targeted alternative. Never rerun an expensive command unchanged merely hoping it finishes. An incomplete check is not a pass.
+
+Monitor execution health through completed work, throughput, memory, and phase transitions. A milestone plateau is not a hung process, and CPU activity alone is not scientific progress.
+
+Short experiments test mechanisms; long experiments test depth. Do not reject a plausible long-horizon mechanism merely because a short run has no new boss or score milestone.
+
+After two experiments fail to distinguish explanations, redesign the experiment before spending more compute. A clear negative result should update the hypothesis, not trigger an automatic budget increase.
+
+Every two hours, record the new facts, rejected explanations, candidate status, compute spent, and the next decision. If only additional test output has accumulated, change approach.
+
+VALIDATION AND DELIVERY
+
+Freeze the candidate, comparison rules, resource limits, and untouched seed panel before final validation. Exclude previously observed seeds. Once inspected, validation seeds become regression references; further tuning requires a new panel.
+
+Replay every claimed deep witness twice from ordinary genesis on independent targets. Qualify full campaign/checkpoint replay on bounded runs that exercise actual replacement, alternative retention, eviction, and any changed continuation behavior.
+
+Preserve the qualified SMB reference and run Nova/STB companion checks. Investigate material regressions and keep a policy experimental when evidence does not support a general default.
+
+No supplied solutions, route hints, waypoints, item-order rewards, boss advice, curated controller sequences, or game-specific searcher exceptions. The declared historical MM2 stage order is the explicit qualification condition.
+
+Keep licensed assets and large artifacts on ms02. Preserve compact evidence, exact provenance, manifests, implementation history, and necessary documentation in the repository.
+
+Deliver the best supported implementation as reviewable commits and a PR when ready, with appropriate checks passing. If checks or breakthrough targets remain incomplete, say so precisely. Record rejected hypotheses and follow-up work so the next tranche starts from what was learned.
+```

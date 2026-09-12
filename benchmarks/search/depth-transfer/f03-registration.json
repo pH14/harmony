@@ -1,0 +1,67 @@
+{
+  "format": "depth-transfer-f03-saved-status-registration-v1",
+  "registered_utc": "2026-09-09T22:15:57.228016+00:00",
+  "question": "Can state-dependent decoding of the saved status/attribute byte identify a boss during hit and death states without pre-restore route history?",
+  "publication": "https://tasvideos.org/1320M",
+  "author": "Lord Tom",
+  "movie_format_reference": "https://fceux.com/web/help/fm2.html",
+  "lua_api_reference": "https://fceux.com/web/help/LuaFunctionsList.html",
+  "movie_sha256": "471b441cb2368c95cd450f53b5d5d24d061c0ad43465d61bc410a76d4117f7eb",
+  "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+  "rom_payload_md5": "b2d2d9ed68b3e5e0d29053ea525bd37c",
+  "emulator_package": "2.6.5+dfsg1-2+b2",
+  "host": "ms02",
+  "cpus": "16",
+  "lua_sha256": "ca398179d6d9ac4b5402da56ba9d6f1fefd2d6db998e102187647a07054bd454",
+  "frames_per_run": 120540,
+  "max_runs": 2,
+  "auxiliary_frame_ceiling": 250000,
+  "max_wall_seconds_per_run": 300,
+  "memory_max": "2G",
+  "trace_limit_bytes": 33554432,
+  "decision": "First run must reproduce F02 frame counts and defeat times, and removing the added saved_status columns must reproduce F02 trace bytes. Only then independently repeat. Full expanded traces must match. Evaluate the source-derived predicate without any search/input change; a disagreement is a falsifier, not grounds to modify the movie.",
+  "limits": [
+    "External reference movie is observer qualification only; its inputs, states and routes never enter fresh search or controller learning.",
+    "FCEUX is an independent reference emulator, not QuickNES replay qualification.",
+    "Loader and attribute agreement do not by themselves establish damage or a stable enemy identity.",
+    "Only the script-advanced frames are counted exactly; any frontend setup before movie reset is additional and unmeasured."
+  ],
+  "emulator_sha256": "3985f3ab05b5cd34d7aab2c03780e06622676abba8722cf61adc721cc26bd1cb",
+  "defeat_transition": "A previously live clear flag must rise in the matching boss area; power-on set bits do not count.",
+  "correction": "Add one raw read per enemy slot: CPU $040C+offset. Bank07 LF536 stores prior status OR original attributes before status 6 and tag overwrite; LF4EE restores the attributes and status. Preserve every earlier field and movie setting.",
+  "additional_auxiliary_ceiling": 250000,
+  "hypothesis": {
+    "live_area": [
+      18,
+      20
+    ],
+    "gameplay_mode": 3,
+    "normal_statuses": [
+      1,
+      2
+    ],
+    "normal_attribute_source": "special",
+    "transient_statuses": [
+      3,
+      6
+    ],
+    "transient_attribute_source": "saved_status",
+    "saved_prior_statuses": [
+      1,
+      2
+    ],
+    "boss_bit": 64,
+    "limitations": "State classification is distinct from identity continuity and new HP change across reset/restore; those require separate baseline and boundary checks."
+  },
+  "source": {
+    "commit": "4270d57f9468daebdeea485686e31e26218a780c",
+    "file": "Source_Files/Bank07.asm",
+    "routines": [
+      "LF536",
+      "LF4EE",
+      "GetEnemyType",
+      "LEB4D",
+      "IsSlotTaken"
+    ]
+  }
+}

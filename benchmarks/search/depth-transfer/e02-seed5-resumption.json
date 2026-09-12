@@ -1,0 +1,29 @@
+{
+  "format": "depth-transfer-e02-seed5-resumption-v1",
+  "registered_utc": "2026-09-09T20:26:21.870755+00:00",
+  "original_protocol": "../retention-theory/README.md#e02-inspect-two-already-completed-late-area-development-witnesses",
+  "authorization": "User explicitly authorized all transfers among local, msr1 and ms02 and resumed experimentation.",
+  "input_sha256": "03e1adf0185bb5dc0bbb5cdf6519eac669a794730e460319e82d0833d0b5d2c1",
+  "source_summary_sha256": "c00f7015323a100a923fef2acd9ffae865c9f1dc1e00352145fa972207669571",
+  "binary_sha256": "c50518427f4b69841e7dbad667fe71f9d6af55152688ea56efacd5b9e27b8fc8",
+  "host": "msr1",
+  "cpus": "4",
+  "max_route_frames": 250000,
+  "max_actions": 8192,
+  "max_wall_seconds": 300,
+  "memory_max": "4G",
+  "max_trace_bytes": 33554432,
+  "cadences": [
+    "ordinary chords",
+    "one-frame sample",
+    "independent one-frame repeat"
+  ],
+  "failed_launch": {
+    "unit": "harmony-depth-e02-seed5-20260909",
+    "exit_code": 127,
+    "reason": "taskset could not execute absent /usr/bin/time; target process was never launched",
+    "new_emulator_frames": 0,
+    "service_cpu_seconds": 0.029465
+  },
+  "correction": "Remove the unavailable timing wrapper, use systemd resource accounting, and keep the unchanged native binary/input/limits."
+}

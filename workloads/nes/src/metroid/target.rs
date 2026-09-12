@@ -70,8 +70,8 @@ const POSE_AIRBORNE: u8 = 0x02;
 pub const POSTURE_GROUNDED: u8 = 0;
 pub const POSTURE_AIRBORNE: u8 = 1;
 /// Posture for any pose the decoder does not name, such as rolling as a
-/// morph ball or climbing into a door. Each is a distinct way to occupy a
-/// position, so the pose byte itself separates them.
+/// morph ball or climbing into a door. The legacy archive collapses these
+/// poses into one posture; the optional refined key records the raw pose.
 pub const POSTURE_OTHER: u8 = 2;
 
 /// Health, as binary-coded decimal digits of a fixed-point `###.#` value.
@@ -80,6 +80,44 @@ const HEALTH_HIGH: usize = 0x107;
 const HEALTH_LOW: usize = 0x106;
 /// Health the game grants at the start of a new game, in tenths.
 pub const STARTING_HEALTH_TENTHS: u16 = 300;
+
+/// Versioned terminal interpretation; legacy replay keeps its original predicate.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MetroidTerminalPolicy {
+    /// The historical predicate considers only zero health.
+    #[default]
+    Legacy,
+    /// Reject the intermediate BCD borrow value exposed during lethal damage.
+    BcdUnderflow,
+}
+
+impl MetroidTerminalPolicy {
+    /// Stable game-policy identity carried in campaign streams.
+    #[must_use]
+    pub fn identifier(self) -> &'static str {
+        match self {
+            Self::Legacy => "death_or_ending_v2",
+            Self::BcdUnderflow => "death_or_bcd_underflow_or_ending_v3",
+        }
+    }
+
+    /// Resolve only explicitly supported semantics.
+    pub fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
+        match value {
+            "death_or_ending_v2" => Ok(Self::Legacy),
+            "death_or_bcd_underflow_or_ending_v3" => Ok(Self::BcdUnderflow),
+            _ => Err("unknown Metroid terminal policy".into()),
+        }
+    }
+
+    fn is_dead(self, state: MetroidMechanicalState) -> bool {
+        // Bank07 $CED7 stores the BCD subtraction before $CEE4 checks borrow
+        // and $CEEB clears health. A frame boundary can expose this intermediate
+        // negative value. Six tanks cap normal health at 6999; the >=8000 sign
+        // range is not a resource advantage. Keep raw health for forensic replay.
+        state.is_dead() || (self == Self::BcdUnderflow && state.health >= 8000)
+    }
+}
 
 /// First address of the cartridge work RAM window, where the game keeps the
 /// progress that survives leaving a room.
@@ -265,6 +303,11 @@ pub struct MetroidObservations {
     pub mother_brain_status: u8,
     /// Tourian transitions latched across frames of this action, reporting-only.
     pub tourian_events: TourianEvents,
+    /// Same-boundary classification for a completed live action endpoint.
+    /// None means this observation is not an eligible endpoint; Some(0) is a
+    /// sampled endpoint without a classified boss. Never used by search policy.
+    #[cfg(feature = "metroid-boss-context-audit")]
+    pub endpoint_boss_slots: Option<u8>,
     /// Sorted work-RAM indices changed since the prior emitted event.
     pub changed_indices: Vec<u16>,
     /// Whether Samus is dead at this event.
@@ -350,6 +393,7 @@ pub struct MetroidTarget {
     action_observations: Vec<MetroidObservations>,
     failed: bool,
     genesis_prefix: Vec<ButtonChord>,
+    terminal_policy: MetroidTerminalPolicy,
 }
 
 impl MetroidTarget {
@@ -418,6 +462,8 @@ impl MetroidTarget {
             boss_defeats: decode_boss_defeats(&cartridge)?,
             mother_brain_status: read_byte(&wram, 0x98)?,
             tourian_events: TourianEvents::default(),
+            #[cfg(feature = "metroid-boss-context-audit")]
+            endpoint_boss_slots: None,
             changed_indices: Vec::new(),
             dead: false,
             log_line: "frame=0 changed=[]".to_owned(),
@@ -432,7 +478,18 @@ impl MetroidTarget {
             observation,
             failed: false,
             genesis_prefix,
+            terminal_policy: MetroidTerminalPolicy::Legacy,
         })
+    }
+
+    /// Select terminal semantics without changing execution or raw observations.
+    #[must_use]
+    pub fn with_terminal_policy(mut self, policy: MetroidTerminalPolicy) -> Self {
+        self.terminal_policy = policy;
+        self.observation.dead = policy.is_dead(self.observation.decoded);
+        self.genesis_observation.dead = policy.is_dead(self.genesis_observation.decoded);
+        self.action_observations = vec![self.observation.clone()];
+        self
     }
 
     /// Every input from power-on to sealed genesis; the same chords replay
@@ -488,6 +545,142 @@ impl MetroidTarget {
         &self.action_observations
     }
 
+    /// Read raw boss-related bytes for standalone replay diagnostics. Search
+    /// never invokes this method; it changes no clocks, observations or policy.
+    pub fn diagnostic_boss_memory(&self) -> Result<super::boss_probe::BossMemory, MachineError> {
+        super::boss_probe::decode(&self.machine.read_wram()?, &self.cartridge()?)
+    }
+
+    /// Read both RAM regions at the same paused frame boundary. This standalone
+    /// diagnostic must not combine endpoint cartridge RAM with earlier WRAM.
+    pub fn diagnostic_boss_context(&self) -> Result<super::boss_probe::BossContext, MachineError> {
+        super::boss_probe::decode_context(&self.machine.read_wram()?, &self.cartridge()?)
+    }
+
+    /// Apply an explicit, artificial resource intervention at a paused live
+    /// boundary for standalone causal diagnostics. This is never a search
+    /// action or a generated witness: replay must record and repeat the operation.
+    /// Earned capacities, all other machine bytes and the physical clock stay fixed.
+    pub fn diagnostic_set_resources(
+        &mut self,
+        health: u16,
+        missiles: u8,
+    ) -> Result<(), Box<dyn Error>> {
+        let state = self.mechanical_state();
+        if self.failed
+            || !state.in_play()
+            || self.is_dead()
+            || self.is_victory()
+            || state.energy_tanks > 6
+            || state.health == 0
+            || state.health > (u16::from(state.energy_tanks) + 1) * 1000 - 1
+            || state.missiles > state.missile_capacity
+            || health == 0
+            || health > (u16::from(state.energy_tanks) + 1) * 1000 - 1
+            || missiles > state.missile_capacity
+        {
+            return Err("resource intervention exceeds the live state's earned capacities".into());
+        }
+        let wram = self.machine.read_wram()?;
+        let cartridge = self.cartridge()?;
+        if decode_state(&wram, &cartridge)? != state || wram != self.current_wram {
+            return Err("resource intervention requires a consistent paused boundary".into());
+        }
+        let before = self
+            .snapshot()
+            .ok_or("resource intervention snapshot failed")?;
+        let clock = self.frames_clocked();
+        let bcd = |n: u16| -> u8 { ((n / 10) * 16 + n % 10) as u8 };
+        let mut expected_wram = wram;
+        expected_wram[HEALTH_LOW] = bcd(health % 100);
+        expected_wram[HEALTH_HIGH] = bcd(health / 100);
+        let mut expected_cartridge = cartridge.clone();
+        expected_cartridge[MISSILES] = missiles;
+        let changes = [
+            (wram[HEALTH_LOW], expected_wram[HEALTH_LOW]),
+            (wram[HEALTH_HIGH], expected_wram[HEALTH_HIGH]),
+            (cartridge[MISSILES], missiles),
+        ];
+        let applied = (|| -> Result<(), Box<dyn Error>> {
+            self.machine
+                .poke_wram(HEALTH_LOW, expected_wram[HEALTH_LOW]);
+            self.machine
+                .poke_wram(HEALTH_HIGH, expected_wram[HEALTH_HIGH]);
+            self.machine.write_save_ram(MISSILES, &[missiles])?;
+            if self.machine.read_wram()? != expected_wram
+                || self.cartridge()? != expected_cartridge
+                || self.frames_clocked() != clock
+            {
+                return Err("resource intervention changed another RAM byte or the clock".into());
+            }
+            let mut expected_state = state;
+            expected_state.health = health;
+            expected_state.missiles = missiles;
+            if decode_state(&expected_wram, &expected_cartridge)? != expected_state {
+                return Err("resource intervention changed another mechanical field".into());
+            }
+            let after = self.snapshot().ok_or("intervened snapshot failed")?;
+            if !only_resource_bytes_changed(&before.emulator_state, &after.emulator_state, &changes)
+            {
+                return Err("resource intervention changed unexpected serialized bytes".into());
+            }
+            self.current_wram = expected_wram;
+            self.observation.decoded = expected_state;
+            self.action_observations = vec![self.observation.clone()];
+            Ok(())
+        })();
+        if let Err(error) = applied {
+            // Restore the exact three writes as well as the full snapshot. This
+            // also handles a test core that omits cartridge RAM from serialization.
+            self.machine.poke_wram(HEALTH_LOW, wram[HEALTH_LOW]);
+            self.machine.poke_wram(HEALTH_HIGH, wram[HEALTH_HIGH]);
+            self.machine
+                .write_save_ram(MISSILES, &[cartridge[MISSILES]])?;
+            self.restore(&before)?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Read motion bytes for standalone replay diagnostics. This does not
+    /// change clocks, observations, snapshots, archive keys or search policy.
+    pub fn diagnostic_kinematics(
+        &self,
+    ) -> Result<super::kinematics_probe::Kinematics, MachineError> {
+        Ok(super::kinematics_probe::decode(&self.machine.read_wram()?))
+    }
+
+    /// Motion context derived from the already captured endpoint RAM. No
+    /// extra emulator read or observation/snapshot field is needed.
+    #[must_use]
+    pub fn cached_motion_context(&self) -> u16 {
+        super::kinematics_probe::decode(&self.current_wram).coarse_context()
+    }
+
+    /// Opt-in snapshot-local policy evidence. Read already captured WRAM and
+    /// same-boundary cartridge RAM; never use interval totals or observer output.
+    /// The cartridge read adds host work, but advances no emulator frames.
+    #[cfg(feature = "metroid-retention-progress")]
+    pub fn qualified_retention_progress(
+        &self,
+    ) -> Result<Option<crate::search::archive::ScopedProgress>, MachineError> {
+        if self.failed {
+            return Err(MachineError::Backend(
+                "progress key on failed emulator".into(),
+            ));
+        }
+        let state = self.mechanical_state();
+        if self.is_dead()
+            || self.is_victory()
+            || !matches!(state.area, 0x12 | 0x14)
+            || state.mode != 3
+        {
+            return Ok(None);
+        }
+        let context = super::boss_probe::decode_context(&self.current_wram, &self.cartridge()?)?;
+        Ok(super::retention_progress::from_context(&context, state))
+    }
+
     /// Read the cartridge work RAM window the decoder needs.
     fn cartridge(&self) -> Result<Vec<u8>, MachineError> {
         self.machine.read_save_ram()
@@ -517,6 +710,8 @@ impl MetroidTarget {
             boss_defeats,
             mother_brain_status: wram[0x98],
             tourian_events,
+            #[cfg(feature = "metroid-boss-context-audit")]
+            endpoint_boss_slots: None,
             changed_indices: changed_indices.clone(),
             dead: state.is_dead(),
             log_line: format!("frame={frame_count} changed={changed_indices:?}"),
@@ -539,6 +734,66 @@ impl MetroidTarget {
         let frames = self.machine.frames().to_vec();
         (!frames.is_empty()).then_some(frames)
     }
+}
+
+// Diagnostic-only parser for the pinned Harmony/QuickNES snapshot wrapper.
+// Addresses stay in this adapter; production snapshot import remains backend-owned.
+fn resource_ram_payload(bytes: &[u8], cartridge: bool) -> Option<usize> {
+    if bytes.get(..8)? != b"HQNESST2"
+        || bytes.get(120..128)? != b"NESS\xff\xff\xff\xff"
+        || u64::from_le_bytes(bytes.get(112..120)?.try_into().ok()?) != (bytes.len() - 120) as u64
+    {
+        return None;
+    }
+    let mut offset = 128_usize;
+    let mut found = None;
+    while offset < bytes.len() {
+        let end = offset.checked_add(8)?;
+        let tag = bytes.get(offset..offset.checked_add(4)?)?;
+        let size = usize::try_from(u32::from_le_bytes(
+            bytes.get(offset + 4..end)?.try_into().ok()?,
+        ))
+        .ok()?;
+        let next = end.checked_add(size)?;
+        if next > bytes.len() {
+            return None;
+        }
+        // WRAM is the deterministic loopback core's equivalent of native LRAM.
+        let matches = if cartridge {
+            tag == b"SRAM"
+        } else {
+            tag == b"LRAM" || tag == b"WRAM"
+        };
+        if matches {
+            if found.is_some() || size != if cartridge { 8192 } else { WRAM_SIZE } {
+                return None;
+            }
+            found = Some(end);
+        }
+        offset = next;
+    }
+    found
+}
+
+fn only_resource_bytes_changed(before: &[u8], after: &[u8], changes: &[(u8, u8)]) -> bool {
+    if before.len() != after.len() || changes.len() != 3 {
+        return false;
+    }
+    let mut expected = before.to_vec();
+    for (index, &(old, new)) in changes.iter().enumerate() {
+        if old == new {
+            continue;
+        }
+        let Some(payload) = resource_ram_payload(before, index == 2) else {
+            return false;
+        };
+        let address = payload + [HEALTH_LOW, HEALTH_HIGH, MISSILES][index];
+        if expected[address] != old {
+            return false;
+        }
+        expected[address] = new;
+    }
+    expected == after
 }
 
 impl Target for MetroidTarget {
@@ -568,8 +823,13 @@ impl Target for MetroidTarget {
             self.failed = true;
             return;
         };
-        match decode_action_observations(&frames, &cartridge, &self.observation, self.current_wram)
-        {
+        match decode_action_observations_with_policy(
+            &frames,
+            &cartridge,
+            &self.observation,
+            self.current_wram,
+            self.terminal_policy,
+        ) {
             Ok((observations, wram)) => {
                 if let Some(last) = observations.last() {
                     self.observation = last.clone();
@@ -630,6 +890,7 @@ impl Target for MetroidTarget {
             .read_wram()
             .map_err(|error| error.to_string())?;
         self.observation = snapshot.observation.clone();
+        self.observation.dead = self.terminal_policy.is_dead(self.observation.decoded);
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
         Ok(())
@@ -638,11 +899,28 @@ impl Target for MetroidTarget {
 
 /// Decode the held action without adding reporting transitions to the search
 /// event stream. The endpoint carries every live Tourian event in the action.
+#[cfg(test)]
 fn decode_action_observations(
     frames: &[[u8; WRAM_SIZE]],
     cartridge: &[u8],
     initial: &MetroidObservations,
+    prior_wram: [u8; WRAM_SIZE],
+) -> Result<(Vec<MetroidObservations>, [u8; WRAM_SIZE]), MachineError> {
+    decode_action_observations_with_policy(
+        frames,
+        cartridge,
+        initial,
+        prior_wram,
+        MetroidTerminalPolicy::Legacy,
+    )
+}
+
+fn decode_action_observations_with_policy(
+    frames: &[[u8; WRAM_SIZE]],
+    cartridge: &[u8],
+    initial: &MetroidObservations,
     mut prior_wram: [u8; WRAM_SIZE],
+    policy: MetroidTerminalPolicy,
 ) -> Result<(Vec<MetroidObservations>, [u8; WRAM_SIZE]), MachineError> {
     let boss_defeats = decode_boss_defeats(cartridge)?;
     let mut prior_state = initial.decoded;
@@ -653,20 +931,32 @@ fn decode_action_observations(
         let frame_count = initial.frame_count + u64::try_from(offset).unwrap_or(u64::MAX) + 1;
         tourian_events.observe(state, wram[0x98]);
         let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
-            || state.is_dead() != prior_state.is_dead();
+            || policy.is_dead(state) != policy.is_dead(prior_state);
         if boundary || offset + 1 == frames.len() {
-            observations.push(MetroidTarget::make_observation(
+            let mut observation = MetroidTarget::make_observation(
                 frame_count,
                 state,
                 wram,
                 &prior_wram,
                 boss_defeats,
                 tourian_events,
-            ));
+            );
+            observation.dead = policy.is_dead(state);
+            #[cfg(feature = "metroid-boss-context-audit")]
+            if offset + 1 == frames.len() && !observation.dead {
+                // Only here do WRAM and cartridge RAM describe the same paused
+                // boundary. Earlier events use endpoint cartridge bytes too.
+                let context = super::boss_probe::decode_context(wram, cartridge)?;
+                observation.endpoint_boss_slots = Some((0..6).fold(0, |mask, slot| {
+                    mask | (u8::from(super::boss_interval::classify(&context, slot).is_some())
+                        << slot)
+                }));
+            }
+            observations.push(observation);
             prior_wram = *wram;
         }
         prior_state = state;
-        if state.is_dead() {
+        if policy.is_dead(state) {
             break;
         }
     }
@@ -728,6 +1018,239 @@ pub fn spatial_bucket(state: MetroidMechanicalState) -> (u8, u8, u8, u8, u8, u8,
 mod observation_tests {
     use super::*;
     use crate::metroid::progress::NamedProgress;
+
+    fn resource_fixture() -> MetroidTarget {
+        let mut machine = QuickNesMachine::loopback_for_tests(&[0]).unwrap();
+        machine.write_save_ram(0, &[0; 8192]).unwrap();
+        machine.poke_wram(GAME_MODE, GAME_MODE_PLAYING);
+        machine.poke_wram(HEALTH_HIGH, 3);
+        machine.write_save_ram(ENERGY_TANKS, &[1]).unwrap();
+        machine.write_save_ram(MISSILE_CAPACITY, &[20]).unwrap();
+        let mut target = MetroidTarget::from_machine(machine, &[]).unwrap();
+        target.diagnostic_set_resources(79, 0).unwrap();
+        target
+    }
+
+    #[test]
+    fn resource_intervention_preserves_noop_and_rejects_unserialized_changes() {
+        let mut target = resource_fixture();
+        let before = target.snapshot().unwrap();
+        let clock = target.frames_clocked();
+        target.diagnostic_set_resources(79, 0).unwrap();
+        assert_eq!(target.snapshot().unwrap(), before);
+        target.diagnostic_set_resources(1999, 0).unwrap();
+        let mut expected = before.state();
+        expected.health = 1999;
+        assert_eq!(target.mechanical_state(), expected);
+        assert_eq!(target.frames_clocked(), clock);
+        target.restore(&before).unwrap();
+        // The loopback intentionally serializes only WRAM. A missile write is
+        // therefore absent from its snapshot; reject and roll back both regions.
+        assert!(target.diagnostic_set_resources(1999, 20).is_err());
+        assert_eq!(target.snapshot().unwrap(), before);
+        assert_eq!(target.cartridge().unwrap()[MISSILES], 0);
+        for (health, missiles) in [(0, 0), (2000, 0), (1999, 21)] {
+            assert!(target.diagnostic_set_resources(health, missiles).is_err());
+            assert_eq!(target.snapshot().unwrap(), before);
+        }
+        target.machine.poke_wram(HEALTH_LOW, 0);
+        target.machine.poke_wram(HEALTH_HIGH, 0x20);
+        target.current_wram = target.machine.read_wram().unwrap();
+        target.observation.decoded.health = 2000;
+        let invalid = target.snapshot().unwrap();
+        assert!(target.diagnostic_set_resources(1999, 0).is_err());
+        assert_eq!(target.snapshot().unwrap(), invalid);
+    }
+
+    #[test]
+    fn resource_snapshot_guard_rejects_extra_missing_or_malformed_bytes() {
+        let mut target = resource_fixture();
+        let before = target.snapshot().unwrap().emulator_state;
+        target.diagnostic_set_resources(1999, 0).unwrap();
+        let after = target.snapshot().unwrap().emulator_state;
+        let changes = [(0x79, 0x99), (0, 0x19), (0, 0)];
+        assert!(only_resource_bytes_changed(&before, &after, &changes));
+        assert!(!only_resource_bytes_changed(&before, &before, &changes));
+        assert!(!only_resource_bytes_changed(
+            &before,
+            &after[..after.len() - 1],
+            &changes
+        ));
+        let mut wrong_address = after.clone();
+        let payload = resource_ram_payload(&before, false).unwrap();
+        // Moving the same value change to a neighboring byte defeats a count
+        // or value-multiset guard, but must fail the exact-address contract.
+        wrong_address[payload + HEALTH_HIGH] = 0;
+        wrong_address[payload + HEALTH_HIGH + 1] = 0x19;
+        assert!(!only_resource_bytes_changed(
+            &before,
+            &wrong_address,
+            &changes
+        ));
+        let mut malformed = before.clone();
+        malformed[112] ^= 1;
+        assert!(resource_ram_payload(&malformed, false).is_none());
+    }
+
+    #[test]
+    fn bcd_underflow_is_terminal_without_rewriting_raw_health() {
+        let cartridge = [0; 8192];
+        let mut start = [0; WRAM_SIZE];
+        start[GAME_MODE] = GAME_MODE_PLAYING;
+        start[HEALTH_LOW] = 0x37;
+        let initial = MetroidTarget::make_observation(
+            0,
+            decode_state(&start, &cartridge).unwrap(),
+            &start,
+            &start,
+            BossDefeats::default(),
+            TourianEvents::default(),
+        );
+        let mut underflow = start;
+        underflow[HEALTH_LOW] = 0;
+        underflow[HEALTH_HIGH] = 0x98;
+        let mut cleared = underflow;
+        cleared[HEALTH_HIGH] = 0;
+        let (legacy, _) = decode_action_observations_with_policy(
+            &[underflow],
+            &cartridge,
+            &initial,
+            start,
+            MetroidTerminalPolicy::Legacy,
+        )
+        .unwrap();
+        assert!(!legacy[0].dead);
+        let (corrected, stopped_wram) = decode_action_observations_with_policy(
+            &[underflow, cleared],
+            &cartridge,
+            &initial,
+            start,
+            MetroidTerminalPolicy::BcdUnderflow,
+        )
+        .unwrap();
+        assert_eq!(corrected.len(), 1);
+        assert!(corrected[0].dead);
+        assert_eq!(corrected[0].frame_count, 1);
+        assert_eq!(corrected[0].decoded.health, 9800);
+        // An early terminal observation is not the completed chord's RAM.
+        assert_eq!(stopped_wram, underflow);
+        assert_ne!(stopped_wram, cleared);
+        #[cfg(feature = "metroid-boss-context-audit")]
+        assert_eq!(corrected[0].endpoint_boss_slots, None);
+        for (high, low) in [(0x69, 0x99), (0x19, 0x99), (0, 0x12)] {
+            let mut live = start;
+            live[HEALTH_HIGH] = high;
+            live[HEALTH_LOW] = low;
+            let (observations, _) = decode_action_observations_with_policy(
+                &[live],
+                &cartridge,
+                &initial,
+                start,
+                MetroidTerminalPolicy::BcdUnderflow,
+            )
+            .unwrap();
+            assert!(!observations[0].dead, "valid health was rejected");
+        }
+    }
+
+    #[test]
+    fn terminal_policy_identifiers_are_strict() {
+        for policy in [
+            MetroidTerminalPolicy::Legacy,
+            MetroidTerminalPolicy::BcdUnderflow,
+        ] {
+            assert_eq!(
+                MetroidTerminalPolicy::parse(policy.identifier()).unwrap(),
+                policy
+            );
+        }
+        assert!(MetroidTerminalPolicy::parse("death_or_ending_v999").is_err());
+    }
+
+    #[test]
+    fn endpoint_context_must_not_pair_earlier_wram_with_final_cartridge() {
+        use crate::metroid::{boss_interval::classify, boss_probe::decode_context};
+
+        let mut earlier = [0; WRAM_SIZE];
+        earlier[GAME_MODE] = GAME_MODE_PLAYING;
+        earlier[HEALTH_HIGH] = 3;
+        earlier[AREA] = 0x14;
+        earlier[0x40f] = 0x40; // Stale boss attribute in an inactive slot.
+        let inactive = [0; 8192];
+        let initial = MetroidTarget::make_observation(
+            100,
+            decode_state(&earlier, &inactive).unwrap(),
+            &earlier,
+            &earlier,
+            BossDefeats::default(),
+            TourianEvents::default(),
+        );
+        let prior_wram = earlier;
+        earlier[SAMUS_X] = 32;
+        let mut final_wram = earlier;
+        final_wram[0x40f] = 0; // A different, ordinary enemy now occupies it.
+        final_wram[SAMUS_X] = 64;
+        let mut final_cartridge = inactive;
+        final_cartridge[0xaf4] = 1;
+
+        assert!(classify(&decode_context(&earlier, &inactive).unwrap(), 0).is_none());
+        assert!(classify(&decode_context(&final_wram, &final_cartridge).unwrap(), 0).is_none());
+        // Neither real boundary has a boss, but the mixed-time pair fabricates one.
+        assert!(classify(&decode_context(&earlier, &final_cartridge).unwrap(), 0).is_some());
+
+        let (observations, cached_wram) = decode_action_observations_with_policy(
+            &[earlier, final_wram],
+            &final_cartridge,
+            &initial,
+            prior_wram,
+            MetroidTerminalPolicy::BcdUnderflow,
+        )
+        .unwrap();
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0].frame_count, 101);
+        assert_eq!(observations.last().unwrap().frame_count, 102);
+        assert!(!observations.last().unwrap().dead);
+        assert_eq!(cached_wram, final_wram);
+        assert!(classify(&decode_context(&cached_wram, &final_cartridge).unwrap(), 0).is_none());
+        #[cfg(feature = "metroid-boss-context-audit")]
+        {
+            assert_eq!(observations[0].endpoint_boss_slots, None);
+            assert_eq!(observations[1].endpoint_boss_slots, Some(0));
+            let mut boss_endpoint = final_wram;
+            boss_endpoint[0x40f] = 0x40;
+            let (positive, _) = decode_action_observations_with_policy(
+                &[earlier, boss_endpoint],
+                &final_cartridge,
+                &initial,
+                prior_wram,
+                MetroidTerminalPolicy::BcdUnderflow,
+            )
+            .unwrap();
+            assert_eq!(positive[0].endpoint_boss_slots, None);
+            assert_eq!(positive[1].endpoint_boss_slots, Some(1));
+        }
+
+        let (empty, unchanged) = decode_action_observations_with_policy(
+            &[],
+            &final_cartridge,
+            &initial,
+            prior_wram,
+            MetroidTerminalPolicy::BcdUnderflow,
+        )
+        .unwrap();
+        assert!(empty.is_empty());
+        assert_eq!(unchanged, prior_wram); // No newly sampled endpoint exists.
+        assert!(
+            decode_action_observations_with_policy(
+                &[final_wram],
+                &[],
+                &initial,
+                prior_wram,
+                MetroidTerminalPolicy::BcdUnderflow,
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn transient_escape_survives_stationary_held_action_without_extra_events() {

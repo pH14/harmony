@@ -1,0 +1,9 @@
+{
+  "format": "motion-development-figure-v1",
+  "matplotlib": "3.11.1",
+  "inputs": {
+    "r04b-development-analysis.json": "dc4f3f9f2c2c64c7c2e02d6040002aafe23e56f8cd968b81d40b8577cb4f40c0",
+    "r05-analysis.json": "8a5687750ae417a29a09cd92a6418224c1e47688f633a07ee0ac7294d623236b"
+  },
+  "scope": "selected named development milestones; telemetry intervals, not confidence intervals"
+}
