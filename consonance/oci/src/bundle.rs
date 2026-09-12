@@ -42,6 +42,8 @@ pub enum BundleError {
     ExternalInputConflict { path: String, other: String },
     #[error("external input destination is not UTF-8")]
     ExternalInputUtf8,
+    #[error("mount destination {path:?} crosses an image symlink")]
+    MountSymlink { path: String },
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -131,6 +133,24 @@ pub fn prepare(
 ) -> Result<PreparedExecution, BundleError> {
     image.config.validate()?;
     let external_inputs = validate_external_inputs(&request.external_inputs)?;
+    for destination in [
+        "/proc",
+        "/dev",
+        "/dev/pts",
+        "/dev/shm",
+        "/sys",
+        "/run",
+        "/tmp",
+        SUPERVISOR_PATH,
+        EXECUTION_DESTINATION,
+        HARMONY_DEVICE,
+        PARK_DEVICE,
+    ] {
+        validate_mount_path(&image.rootfs, destination)?;
+    }
+    for input in &external_inputs {
+        validate_mount_path(&image.rootfs, &input.destination)?;
+    }
     let credentials = image.config.resolve_process_credentials(&image.rootfs)?;
     let execution = ExecutionSpec {
         version: VERSION,
@@ -154,7 +174,31 @@ pub fn prepare(
     })
 }
 
-pub fn build_rootfs_segment(rootfs: &Path, owners: &Ownership) -> Result<Vec<u8>, BundleError> {
+fn validate_mount_path(rootfs: &Path, destination: &str) -> Result<(), BundleError> {
+    let mut path = rootfs.to_path_buf();
+    for component in Path::new(destination).components() {
+        let Component::Normal(component) = component else {
+            continue;
+        };
+        path.push(component);
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(BundleError::MountSymlink {
+                    path: destination.to_owned(),
+                });
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn build_rootfs_segment(
+    rootfs: &Path,
+    owners: &Ownership,
+) -> Result<Vec<u8>, BundleError> {
     let mut writer = Writer::new();
     writer.dir("harmony-oci", 0o755);
     writer.dir("harmony-oci/rootfs", 0o755);
@@ -162,7 +206,8 @@ pub fn build_rootfs_segment(rootfs: &Path, owners: &Ownership) -> Result<Vec<u8>
     gzip(&writer.finish())
 }
 
-pub fn build_control_segment(
+#[cfg(test)]
+fn build_control_segment(
     execution: &ExecutionSpec,
     external_inputs: &[ExternalInput],
 ) -> Result<Vec<u8>, BundleError> {
@@ -387,28 +432,11 @@ fn validate_external_inputs_owned(
             });
         }
         validate_destination(&input.destination)?;
-        if index != 0 {
-            let previous = &sorted[index - 1];
-            if input.destination == previous.destination {
-                return Err(BundleError::ExternalInputConflict {
-                    path: input.destination.clone(),
-                    other: previous.destination.clone(),
-                });
-            }
-            if input
-                .destination
-                .starts_with(&format!("{}/", previous.destination))
-            {
-                return Err(BundleError::ExternalInputConflict {
-                    path: input.destination.clone(),
-                    other: previous.destination.clone(),
-                });
-            }
-        }
         for previous in &sorted[..index] {
-            if previous
-                .destination
-                .starts_with(&format!("{}/", input.destination))
+            if input.destination == previous.destination
+                || input
+                    .destination
+                    .starts_with(&format!("{}/", previous.destination))
             {
                 return Err(BundleError::ExternalInputConflict {
                     path: input.destination.clone(),
@@ -675,6 +703,35 @@ mod tests {
         assert!(matches!(
             validate_external_inputs(&ancestor),
             Err(BundleError::ExternalInputConflict { .. })
+        ));
+        let non_adjacent = [
+            ExternalInput::new("/a/b", b"child"),
+            ExternalInput::new("/a-foo", b"sibling"),
+            ExternalInput::new("/a", b"parent"),
+        ];
+        assert!(matches!(
+            validate_external_inputs(&non_adjacent),
+            Err(BundleError::ExternalInputConflict { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mount_destinations_require_symlink_free_image_paths() {
+        let staged = image();
+        std::os::unix::fs::symlink("/data", staged.rootfs.join("input")).unwrap();
+        let request = LaunchRequest::default()
+            .with_external_inputs(vec![ExternalInput::new("/input/file", b"data")]);
+        assert!(matches!(
+            prepare(&staged, &request),
+            Err(BundleError::MountSymlink { .. })
+        ));
+
+        let staged = image();
+        std::os::unix::fs::symlink("/opt", staged.rootfs.join("usr")).unwrap();
+        assert!(matches!(
+            prepare(&staged, &LaunchRequest::default()),
+            Err(BundleError::MountSymlink { .. })
         ));
     }
 

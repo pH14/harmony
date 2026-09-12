@@ -79,6 +79,7 @@ CONFIG_RD_GZIP=y
 # the ordinary proc/sys/dev view plus the namespace and cgroup facilities that
 # runc configures for each application.
 CONFIG_PROC_FS=y
+CONFIG_PROC_CHILDREN=y
 CONFIG_SYSFS=y
 CONFIG_DEVTMPFS=y
 CONFIG_DEVTMPFS_MOUNT=y

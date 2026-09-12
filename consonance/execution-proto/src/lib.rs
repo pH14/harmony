@@ -109,11 +109,6 @@ impl ExecutionSpec {
         Ok(serde_json::from_slice(bytes)?)
     }
 
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(text: &str) -> Result<Self, SpecError> {
-        Ok(serde_json::from_str(text)?)
-    }
-
     pub fn read(path: &Path) -> Result<Self, SpecError> {
         Self::from_slice(&std::fs::read(path)?)
     }
@@ -133,7 +128,7 @@ impl std::str::FromStr for ExecutionSpec {
     type Err = SpecError;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        ExecutionSpec::from_str(text)
+        Ok(serde_json::from_str(text)?)
     }
 }
 
@@ -197,6 +192,7 @@ fn validate_path(field: &'static str, path: &str) -> Result<(), SpecError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     fn spec() -> ExecutionSpec {
         ExecutionSpec {

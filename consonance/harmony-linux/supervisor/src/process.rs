@@ -153,34 +153,42 @@ pub fn enable_subreaper() -> io::Result<()> {
     Ok(())
 }
 
-pub fn reap_available() -> io::Result<usize> {
+pub fn reap_available_except(tracked: &[u32]) -> io::Result<usize> {
     #[cfg(target_os = "linux")]
     {
+        let children = std::fs::read_to_string("/proc/thread-self/children")?;
         let mut reaped = 0;
-        loop {
-            let mut status = 0;
-            // SAFETY: `status` is a valid writable status word for this call;
-            // the supervisor owns all children returned by this wait operation.
-            let result = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
-            if result > 0 {
-                reaped += 1;
+        for pid in children.split_whitespace() {
+            let pid: libc::pid_t = pid.parse().map_err(io::Error::other)?;
+            if pid <= 0 || tracked.contains(&(pid as u32)) {
                 continue;
             }
-            if result == 0 {
-                return Ok(reaped);
+            loop {
+                let mut status = 0;
+                // SAFETY: status is writable, and pid names an untracked child
+                // of this thread. A vanished child returns ECHILD.
+                let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+                if result > 0 {
+                    reaped += 1;
+                    break;
+                }
+                if result == 0 {
+                    break;
+                }
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ECHILD) {
+                    break;
+                }
+                if error.kind() != io::ErrorKind::Interrupted {
+                    return Err(error);
+                }
             }
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ECHILD) {
-                return Ok(reaped);
-            }
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error);
         }
+        Ok(reaped)
     }
     #[cfg(not(target_os = "linux"))]
     {
+        let _ = tracked;
         Ok(0)
     }
 }
@@ -313,9 +321,9 @@ mod tests {
 
     #[test]
     fn a_readiness_probe_does_not_wait_for_other_nodes() {
-        let node_spec = spec(&["/bin/sleep", "1"]);
+        let node_spec = spec(&["/bin/sh", "-c", "exec sleep 10"]);
         let mut node = spawn(&node_spec, &node_spec.argv).unwrap();
-        let ready = run_once(&spec(&["/bin/true"])).unwrap();
+        let ready = run_once(&spec(&["/bin/sh", "-c", "exit 0"])).unwrap();
         let still_running = node.try_wait().unwrap().is_none();
         signal_group(node.id(), libc::SIGKILL).unwrap();
         let _ = node.wait();
@@ -328,5 +336,39 @@ mod tests {
         let command_spec = spec(&["/bin/sh", "-c", "sleep 0.02 & exit 0"]);
         let status = run_once(&command_spec).unwrap();
         assert_eq!(status.code(), Some(0));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn orphan_reaping_preserves_tracked_node_and_finished_hook_status() {
+        fn await_exit(pid: u32) {
+            for _ in 0..100 {
+                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+                if stat.split_once(") ").unwrap().1.starts_with("Z ") {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("child did not exit");
+        }
+
+        let node_spec = spec(&["/bin/sh", "-c", "exec sleep 10"]);
+        let mut node = spawn(&node_spec, &node_spec.argv).unwrap();
+        let hook_spec = spec(&["/bin/sh", "-c", "exit 7"]);
+        let mut hook = spawn(&hook_spec, &hook_spec.argv).unwrap();
+        let orphan_spec = spec(&["/bin/true"]);
+        let mut orphan = spawn(&orphan_spec, &orphan_spec.argv).unwrap();
+        await_exit(hook.id());
+        await_exit(orphan.id());
+
+        assert_eq!(reap_available_except(&[node.id(), hook.id()]).unwrap(), 1);
+        assert!(node.try_wait().unwrap().is_none());
+        assert_eq!(hook.try_wait().unwrap().unwrap().code(), Some(7));
+        assert_eq!(
+            orphan.wait().unwrap_err().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+        signal_group(node.id(), libc::SIGKILL).unwrap();
+        node.wait().unwrap();
     }
 }

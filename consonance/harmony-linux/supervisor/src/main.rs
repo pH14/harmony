@@ -175,6 +175,13 @@ mod runtime {
             }
             watch_parks(nodes, &mut supervisor, tick)?;
             drain_hooks(&mut hooks, &mut supervisor, sdk, tick)?;
+            let tracked: Vec<_> = nodes
+                .iter()
+                .filter_map(|node| node.child.as_ref().map(Child::id))
+                .chain(hooks.iter().map(|hook| hook.child.id()))
+                .collect();
+            process::reap_available_except(&tracked)
+                .map_err(|error| format!("reap descendants: {error}"))?;
             for (register, value) in registers.updates(supervisor.snapshot()) {
                 sdk.state_set(register, value)
                     .map_err(|error| format!("state_set({register}): {error}"))?;
@@ -214,7 +221,6 @@ mod runtime {
                 deaths.push(id as u16);
             }
         }
-        process::reap_available().map_err(|error| format!("reap descendants: {error}"))?;
         Ok(deaths)
     }
 
@@ -409,7 +415,6 @@ mod runtime {
         for index in finished.into_iter().rev() {
             hooks.remove(index);
         }
-        process::reap_available().map_err(|error| format!("reap hook descendants: {error}"))?;
         Ok(())
     }
 

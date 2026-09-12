@@ -26,15 +26,15 @@ application process.
 
 External destinations are absolute normalized paths with bounded count and
 payload size. Platform-owned paths, duplicate destinations, and file/parent
-conflicts are rejected. External files and the execution specification are
+conflicts are rejected. Platform and external mount destinations must have
+symlink-free paths in the staged image, so image aliases cannot redirect a
+mount over platform control files. External files and the execution specification are
 read-only mounts; `/dev/harmony` and the supervisor-only `/dev/harmony-park`
 are the only Harmony device mounts. Guest startup invokes the pinned
 `/usr/bin/runc` once with the initramfs `--no-pivot` arrangement.
 
-`bundle::build_rootfs_segment` places an image under `/harmony-oci/rootfs`.
-`bundle::build_control_segment` is available when a caller already has an
-`ExecutionSpec`; most callers should use `bundle::prepare`. Other packages
-append their own platform segment using `guest-image::Writer`.
+Rootfs and control-segment assembly are internal to `bundle::prepare`, which
+validates their combined mount layout before producing executable bytes.
 
 Layers are extracted with `tar -p --no-same-owner`: each entry takes the mode
 its header recorded, whatever the host umask, and belongs to the staging user

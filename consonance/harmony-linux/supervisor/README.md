@@ -15,6 +15,12 @@ platform device operations. `/dev/harmony` is accessed through the shared
 transport. Parking uses the required `/dev/harmony-park` interface. Device errors fail
 execution rather than silently omitting a requested process action.
 
+Tracked node and hook children retain their exit status until their owning
+`Child` consumes it. Orphan cleanup enumerates the supervising thread's other
+children and reaps them individually, so a finished hook cannot lose its status
+to the node reaper.
+The canonical kernels require `CONFIG_PROC_CHILDREN` for this enumeration.
+
 `bundle`, `directive`, `reconcile`, and `supervise` are portable library
 modules. Linux device and process wiring is isolated to the binary. The
 standalone crate can be checked on a development host with:
