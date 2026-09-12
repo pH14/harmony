@@ -17,11 +17,14 @@ MUSL_VERSION=1.2.6
 MUSL_URL=https://musl.libc.org/releases/musl-1.2.6.tar.gz
 MUSL_SHA256=d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a
 
-# runc is the only OCI runtime shipped in the platform guest. These are the
-# upstream release's architecture-specific static assets, pinned by digest;
-# workload packages may use their own tools but cannot replace this binary.
+# runc is the only OCI runtime shipped in the platform guest. The x86_64
+# release asset remains pinned below; arm64 is built from the pinned source with
+# the pinned Go bootstrap and local LSE-only runtime patch series.
 RUNC_VERSION=1.5.0
 RUNC_X86_64_URL=https://github.com/opencontainers/runc/releases/download/v1.5.0/runc.amd64
 RUNC_X86_64_SHA256=0363e69bebd3a027d1239364ab9b4f4873f6bc4e7a7878e94b4ea59f08551297
-RUNC_AARCH64_URL=https://github.com/opencontainers/runc/releases/download/v1.5.0/runc.arm64
-RUNC_AARCH64_SHA256=1f6d8c553add066a6aaf838d3172d4c5ed3c6b065b6f7eed2f4a4aa4af261e59
+RUNC_SOURCE_URL=https://github.com/opencontainers/runc/archive/refs/tags/v1.5.0.tar.gz
+RUNC_SOURCE_SHA256=1bcd55af6081cf080557b148d906f64e6e4ca886d8345fe4b5510a90b52815d1
+GO_BOOTSTRAP_VERSION=1.25.0
+GO_BOOTSTRAP_URL=https://dl.google.com/go/go1.25.0.linux-arm64.tar.gz
+GO_BOOTSTRAP_SHA256=05de75d6994a2783699815ee553bd5a9327d8b79991de36e38b66862782f54ae

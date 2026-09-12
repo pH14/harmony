@@ -37,6 +37,15 @@ supervisor through `HARMONY_RUNTIME_INIT` and `HARMONY_RUNTIME_SUPERVISOR`.
 It fails when a required input is missing. Every ARM executable must satisfy
 the existing LSE and counter reachability gates.
 
+The arm64 runtime uses `build-arm64-runc.sh` to build runc 1.5.0 from the
+source and Go bootstrap pins in `versions.lock`. The script exports UAPI
+headers from the pinned kernel, builds a fresh LSE-only musl toolchain, applies
+the two Go runtime patches under `patches/go`, and publishes the scan-checked
+binary as `build/aarch64/runc`. Its vendored build uses Go 1.25.0 locally with
+`netgo`, `osusergo`, and `urfave_cli_no_docs`; `seccomp` and `libpathrs` are
+omitted because their native ARM dependencies are not part of the platform
+closure, and the generated runtime requests neither feature.
+
 ## Direct platform fixtures
 
 These targets remain direct substrate checks and are independent of the OCI
@@ -58,7 +67,7 @@ the standard OCI runtime configuration.
 Workload image recipes and their pins live under `workloads/guest-images` and
 own their fetch entrypoint. Other workload packages own their inputs in the
 same way. The platform fetch entrypoint downloads only the kernel, BusyBox,
-arm64 musl source, and static `runc` assets.
+arm64 musl source, the runc source, and the Go arm64 bootstrap archive.
 
 The reproducibility manifest records the patch series, configuration inputs,
 and generated artifact hashes. Build transcripts are evidence, not inputs.

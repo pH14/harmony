@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Download and verify the platform sources and the pinned static OCI runtime.
+# Download and verify the platform sources and pinned platform tools.
 # Workload package inputs are fetched by their package-owned entrypoints.
 set -euo pipefail
 
@@ -70,6 +70,7 @@ fetch_one "$BUSYBOX_URL" "$BUSYBOX_SHA256" \
     "https://ftp.gwdg.de/pub/linux/gentoo/distfiles/e3/busybox-1.38.0.tar.bz2"
 fetch_one "$MUSL_URL" "$MUSL_SHA256"
 fetch_one "$RUNC_X86_64_URL" "$RUNC_X86_64_SHA256"
-fetch_one "$RUNC_AARCH64_URL" "$RUNC_AARCH64_SHA256"
+fetch_one "$RUNC_SOURCE_URL" "$RUNC_SOURCE_SHA256"
+fetch_one "$GO_BOOTSTRAP_URL" "$GO_BOOTSTRAP_SHA256"
 
-echo "PASS: platform sources and static OCI runtime inputs are ready in $PWD/dl"
+echo "PASS: platform sources and build inputs are ready in $PWD/dl"
