@@ -622,7 +622,8 @@ fn run() -> Result<(), String> {
     .map_err(|error| format!("prepare NES OCI execution: {error}"))?;
     let initramfs = prepared.initramfs(&platform_initramfs);
     let config = SessionConfig::new(RAM, SEED, RUN_BUDGET, CMDLINE)
-        .with_identity_tag(prepared.identity_hex());
+        .with_identity_tag(prepared.identity_hex())
+        .with_deferred_virtual_time_checkpoint_hashes();
     let setup_payloads = vec![vec![0, 1]; 16];
     let mut session =
         Session::new_with_config_and_payloads(&kernel, &initramfs, config, setup_payloads)

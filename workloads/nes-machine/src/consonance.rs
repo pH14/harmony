@@ -317,7 +317,8 @@ impl Drop for ConsonanceMachine {
 impl ConsonanceMachine {
     pub fn new(kernel: &[u8], initramfs: &[u8]) -> Result<Self, MachineError> {
         let config = SessionConfig::new(RAM, SEED, RUN_BUDGET, CMDLINE)
-            .with_identity_tag("consonance-nes-execution-v2");
+            .with_identity_tag("consonance-nes-execution-v2")
+            .with_deferred_virtual_time_checkpoint_hashes();
         let setup_payloads = vec![vec![0, 1]; 16];
         let mut session =
             Session::new_with_config_and_payloads(kernel, initramfs, config, setup_payloads)

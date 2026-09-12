@@ -36,6 +36,9 @@ The consonance adapter delegates boot, setup, branch, replay, run, read, SDK
 catalog, and sparse snapshot operations to `consonance-client::Session`. Its
 public evidence remains the action observations and portable snapshot state;
 host-only control traces are not part of the machine contract. The adapter
+defers virtual-time checkpoint hashes until requested, avoiding full-memory
+hashing for unused trace entries while preserving explicit state-hash checks.
+It
 discovers the kernel-owned NES observation by its opaque SDK handle, reads it
 through `Session::read_observation` at stopped action boundaries, and keeps
 only billboard decoding, cached observation state, and the workload-specific
