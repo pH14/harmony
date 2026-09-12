@@ -6,12 +6,462 @@
     not(miri)
 ))]
 fn main() -> std::process::ExitCode {
-    match run() {
+    let result =
+        if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--control-child")) {
+            run_control_child()
+        } else {
+            run()
+        };
+    match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("NOVA_CONSONANCE_PROBE_FAIL: {error}");
             std::process::ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const PROBE_RAM: usize = 128 * 1024 * 1024;
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const PROBE_RAM: usize = 128 * 1024 * 1024;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const PROBE_SEED: u64 = 0x4e4f_5641_5f43_4931;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const PROBE_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
+    no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
+    nox2apic hpet=disable harmony_pvclock rdinit=/init";
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const PROBE_CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt";
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+type ProbeVmm = vmm_core::vmm::Vmm<Box<dyn vmm_backend::Backend<A = vmm_backend::X86>>>;
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+type ProbeVmm = vmm_core::vmm::Vmm<Box<dyn vmm_backend::Backend<A = vmm_backend::Arm64>>>;
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+fn boot_probe(kernel: &[u8], initramfs: &[u8]) -> Result<ProbeVmm, vmm_core::vmm::VmmError> {
+    #[cfg(target_arch = "x86_64")]
+    let mut vmm = vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time(
+        kernel,
+        initramfs,
+        PROBE_RAM,
+        PROBE_CMDLINE,
+        PROBE_SEED,
+    )?;
+    #[cfg(target_arch = "aarch64")]
+    let mut vmm = vmm_core::vendor::arm64::bringup::boot_selected_control(
+        kernel,
+        initramfs,
+        PROBE_CMDLINE,
+        PROBE_RAM,
+    )?;
+    vmm.wire_snapshot_hashing();
+    Ok(vmm)
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+struct StdioDuplex {
+    input: std::io::Stdin,
+    output: std::io::Stdout,
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+impl std::io::Read for StdioDuplex {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        std::io::Read::read(&mut self.input, buffer)
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+impl std::io::Write for StdioDuplex {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        std::io::Write::write(&mut self.output, buffer)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(&mut self.output)
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+fn run_control_child() -> Result<(), String> {
+    use control_proto::SnapId;
+    use std::io::BufReader;
+    use vmm_backend::Backend;
+    use vmm_core::control::{ControlServer, RestoreMode, VmmFactory};
+
+    #[cfg(target_arch = "x86_64")]
+    type HostArch = vmm_backend::X86;
+    #[cfg(target_arch = "aarch64")]
+    type HostArch = vmm_backend::Arm64;
+
+    let mut args = std::env::args_os().skip(2);
+    let (Some(kernel_path), Some(initramfs_path), None) = (args.next(), args.next(), args.next())
+    else {
+        return Err("control child requires <bzImage> <initramfs-nova.cpio.gz>".to_owned());
+    };
+    let kernel = std::fs::read(&kernel_path)
+        .map_err(|error| format!("control child cannot read {kernel_path:?}: {error}"))?;
+    let initramfs = std::fs::read(&initramfs_path)
+        .map_err(|error| format!("control child cannot read {initramfs_path:?}: {error}"))?;
+
+    let live = boot_probe(&kernel, &initramfs)
+        .map_err(|error| format!("control child boot: {error:?}"))?;
+    let factory_kernel = kernel;
+    let factory_initramfs = initramfs;
+    let factory: VmmFactory<Box<dyn Backend<A = HostArch>>> =
+        Box::new(move || boot_probe(&factory_kernel, &factory_initramfs));
+    let mut server = ControlServer::new(live, factory);
+    server.set_restore_mode(RestoreMode::Memcpy);
+
+    let import = std::env::var_os("HARMONY_PORTABLE_IMPORT")
+        .ok_or("control child requires HARMONY_PORTABLE_IMPORT")?;
+    let import_file = std::fs::File::open(&import)
+        .map_err(|error| format!("control child cannot open import {import:?}: {error}"))?;
+    server
+        .import_portable_snapshot(BufReader::new(import_file))
+        .map_err(|error| format!("control child portable import failed: {error}"))?;
+
+    server
+        .serve(StdioDuplex {
+            input: std::io::stdin(),
+            output: std::io::stdout(),
+        })
+        .map_err(|error| format!("control child serve failed: {error}"))?;
+    if server.in_place_fallbacks() != 0 {
+        return Err(format!(
+            "control child used {} in-place fallbacks",
+            server.in_place_fallbacks()
+        ));
+    }
+
+    let export = std::env::var_os("HARMONY_PORTABLE_EXPORT")
+        .ok_or("control child requires HARMONY_PORTABLE_EXPORT")?;
+    let handle = std::env::var_os("HARMONY_PORTABLE_EXPORT_HANDLE")
+        .ok_or("control child requires HARMONY_PORTABLE_EXPORT_HANDLE")?;
+    let handle = if handle == "last" {
+        server
+            .latest_snapshot()
+            .ok_or("control child has no snapshot to export")?
+    } else {
+        SnapId(
+            handle
+                .to_string_lossy()
+                .parse::<u64>()
+                .map_err(|error| format!("control child export handle is malformed: {error}"))?,
+        )
+    };
+    let export_file = std::fs::File::create(&export)
+        .map_err(|error| format!("control child cannot create export {export:?}: {error}"))?;
+    server
+        .export_portable_snapshot(handle, export_file)
+        .map_err(|error| format!("control child portable export failed: {error}"))?;
+    if let Some(state_path) = std::env::var_os("HARMONY_CONSONANCE_ORACLE_STATE_BLOB") {
+        let state = server
+            .vmm()
+            .ok_or("control child VM unavailable for state export")?
+            .state_blob()
+            .map_err(|error| format!("control child raw state export failed: {error}"))?;
+        std::fs::write(&state_path, state)
+            .map_err(|error| format!("control child cannot write state {state_path:?}: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+type ChildReply = Result<(u32, Result<control_proto::Reply, String>), String>;
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+struct ChildSession {
+    child: std::process::Child,
+    input: Option<std::process::ChildStdin>,
+    replies: std::sync::mpsc::Receiver<ChildReply>,
+    reader: Option<std::thread::JoinHandle<()>>,
+    next_seq: u32,
+    finished: bool,
+    pid: u32,
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+impl ChildSession {
+    fn spawn(
+        kernel: &std::path::Path,
+        initramfs: &std::path::Path,
+        import: &std::path::Path,
+        export: &std::path::Path,
+        state: Option<&std::path::Path>,
+    ) -> Result<Self, String> {
+        use std::process::Stdio;
+
+        let mut command = std::process::Command::new(
+            std::env::current_exe()
+                .map_err(|error| format!("cannot locate probe executable: {error}"))?,
+        );
+        command
+            .arg("--control-child")
+            .arg(kernel)
+            .arg(initramfs)
+            .env("HARMONY_PORTABLE_IMPORT", import)
+            .env("HARMONY_PORTABLE_EXPORT", export)
+            .env("HARMONY_PORTABLE_EXPORT_HANDLE", "last")
+            .env_remove("HARMONY_CONSONANCE_ORACLE_STATE_BLOB")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        if let Some(state) = state {
+            command.env("HARMONY_CONSONANCE_ORACLE_STATE_BLOB", state);
+        }
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("cannot spawn probe control child: {error}"))?;
+        let pid = child.id();
+        let input = match child.stdin.take() {
+            Some(input) => input,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("probe control child stdin was not piped".to_owned());
+            }
+        };
+        let output = match child.stdout.take() {
+            Some(output) => output,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("probe control child stdout was not piped".to_owned());
+            }
+        };
+        let (sender, replies) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut output = output;
+            let mut buffer = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                loop {
+                    match control_proto::decode_reply(&buffer) {
+                        Ok(Some((seq, reply, consumed))) => {
+                            buffer.drain(..consumed);
+                            let reply = reply.map_err(|error| format!("{error:?}"));
+                            if sender.send(Ok((seq, reply))).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(error) => {
+                            let _ = sender
+                                .send(Err(format!("control child reply decode failed: {error:?}")));
+                            return;
+                        }
+                    }
+                }
+                match std::io::Read::read(&mut output, &mut chunk) {
+                    Ok(0) => {
+                        let message = if buffer.is_empty() {
+                            "control child closed stdout".to_owned()
+                        } else {
+                            "control child closed stdout with a partial reply".to_owned()
+                        };
+                        let _ = sender.send(Err(message));
+                        return;
+                    }
+                    Ok(count) => buffer.extend_from_slice(&chunk[..count]),
+                    Err(error) => {
+                        let _ =
+                            sender.send(Err(format!("control child stdout read failed: {error}")));
+                        return;
+                    }
+                }
+            }
+        });
+        Ok(Self {
+            child,
+            input: Some(input),
+            replies,
+            reader: Some(reader),
+            next_seq: 1,
+            finished: false,
+            pid,
+        })
+    }
+
+    fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    fn request(
+        &mut self,
+        request: &control_proto::Request,
+    ) -> Result<control_proto::Reply, String> {
+        let seq = self.next_seq;
+        self.next_seq = self
+            .next_seq
+            .checked_add(1)
+            .ok_or("control child request sequence exhausted")?;
+        let mut frame = Vec::new();
+        control_proto::encode_request(seq, request, &mut frame)
+            .map_err(|error| format!("control child request encode failed: {error:?}"))?;
+        if frame.len() > 4096 {
+            return Err(format!(
+                "control child request frame is unexpectedly large: {} bytes",
+                frame.len()
+            ));
+        }
+        let input = self.input.as_mut().ok_or("control child stdin is closed")?;
+        std::io::Write::write_all(input, &frame)
+            .map_err(|error| format!("control child request write failed: {error}"))?;
+        std::io::Write::flush(input)
+            .map_err(|error| format!("control child request flush failed: {error}"))?;
+        let (reply_seq, reply) = self
+            .replies
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .map_err(|error| format!("control child reply timed out or closed: {error}"))??;
+        if reply_seq != seq {
+            return Err(format!(
+                "control child reply sequence mismatch: expected {seq}, got {reply_seq}"
+            ));
+        }
+        reply
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    fn finish(mut self) -> Result<u32, String> {
+        self.input.take();
+        let pid = self.pid;
+        let start = std::time::Instant::now();
+        let status = loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if start.elapsed() < std::time::Duration::from_secs(30) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Ok(None) => {
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    return Err(format!(
+                        "control child {pid} did not exit within 30 seconds"
+                    ));
+                }
+                Err(error) => {
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    return Err(format!("control child {pid} wait failed: {error}"));
+                }
+            }
+        };
+        self.finished = true;
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+        if !status.success() {
+            return Err(format!("control child {pid} exited with {status}"));
+        }
+        Ok(pid)
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+impl Drop for ChildSession {
+    fn drop(&mut self) {
+        if !self.finished {
+            if self.child.try_wait().ok().flatten().is_none() {
+                let _ = self.child.kill();
+            }
+            let _ = self.child.wait();
+        }
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+struct OracleArtifacts {
+    directory: std::path::PathBuf,
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+impl OracleArtifacts {
+    #[allow(clippy::disallowed_methods)]
+    fn new() -> Result<Self, String> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| format!("oracle artifact clock failed: {error}"))?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "harmony-nova-oracle-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory)
+            .map_err(|error| format!("cannot create private oracle artifact directory: {error}"))?;
+        #[cfg(unix)]
+        if let Err(error) = std::fs::set_permissions(
+            &directory,
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        ) {
+            let _ = std::fs::remove_dir_all(&directory);
+            return Err(format!("cannot protect oracle artifact directory: {error}"));
+        }
+        Ok(Self { directory })
+    }
+
+    fn file(&self, name: &str) -> std::path::PathBuf {
+        self.directory.join(name)
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+impl Drop for OracleArtifacts {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.directory);
     }
 }
 
@@ -92,11 +542,9 @@ fn run() -> Result<(), String> {
     #[cfg(target_arch = "x86_64")]
     use vmm_backend::X86 as HostArch;
     #[cfg(target_arch = "aarch64")]
-    use vmm_core::vendor::arm64::{board, bringup::boot_selected_control};
+    use vmm_core::vendor::arm64::board;
     #[cfg(target_arch = "x86_64")]
-    use vmm_core::vendor::x86::bringup::{
-        boot_linux_stock_virtual_time, compose_stock_virtual_time_restore_target,
-    };
+    use vmm_core::vendor::x86::bringup::compose_stock_virtual_time_restore_target;
     use vmm_core::{
         control::{ControlServer, RestoreMode, VmmFactory, host_minor_faults, server_caps},
         portable_snapshot::compare_portable_execution_state,
@@ -117,13 +565,6 @@ fn run() -> Result<(), String> {
     const DEADLINE: u64 = 2_000_000_000;
     #[cfg(target_arch = "aarch64")]
     const DEADLINE: u64 = 20_000_000_000;
-    #[cfg(target_arch = "x86_64")]
-    const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
-        no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
-        nox2apic hpet=disable harmony_pvclock rdinit=/init";
-    #[cfg(target_arch = "aarch64")]
-    const CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt";
-
     #[derive(Clone, Copy)]
     enum ProfileVerb {
         Branch,
@@ -691,6 +1132,8 @@ fn run() -> Result<(), String> {
         base: SnapId,
         profile: &mut ProbeProfile,
         cold_factory: &dyn Fn() -> Result<Server, String>,
+        kernel_path: &std::path::Path,
+        initramfs_path: &std::path::Path,
     ) -> Result<(), String> {
         const CONTROL_AT: [u64; 8] = [1, 2, 4, 8, 16, 32, 64, 199];
 
@@ -755,6 +1198,30 @@ fn run() -> Result<(), String> {
                 offset = offset
                     .checked_add(page_len)
                     .ok_or("SDK event stream exceeds its offset range")?;
+                events.extend(page);
+            }
+            let frame = latest_frame(&events);
+            Ok((format!("{events:?}").into_bytes(), frame, events.len()))
+        }
+
+        fn child_sdk_events(
+            child: &mut ChildSession,
+        ) -> Result<(Vec<u8>, Option<u64>, usize), String> {
+            let mut events = Vec::new();
+            let mut offset = 0u32;
+            loop {
+                let page = match child.request(&Request::SdkEvents { offset })? {
+                    Reply::SdkEvents(page) => page,
+                    other => return Err(format!("child SDK event fetch returned {other:?}")),
+                };
+                if page.is_empty() {
+                    break;
+                }
+                let page_len = u32::try_from(page.len())
+                    .map_err(|_| "child SDK event page is too large".to_owned())?;
+                offset = offset
+                    .checked_add(page_len)
+                    .ok_or("child SDK event stream exceeds its offset range")?;
                 events.extend(page);
             }
             let frame = latest_frame(&events);
@@ -1240,33 +1707,57 @@ fn run() -> Result<(), String> {
         let c_trace = compare_different_history_endpoint("c", &a_endpoint, &c_endpoint, RAM)?;
         drop(c_endpoint);
 
+        let artifacts = OracleArtifacts::new()?;
+        let parent_path = artifacts.file("parent.bin");
+        let source_path = artifacts.file("source-s.bin");
+        let destination_path = artifacts.file("destination.bin");
+        let destination_state_path = artifacts.file("destination-state.bin");
         let parent_artifact = export_snapshot(server, ab_edge.parent)?;
-        let mut source = cold_factory()?;
-        let mut source_profile = ProbeProfile::new(true);
-        match drive(
-            &mut source,
-            &Request::Hello(server_caps()),
-            &mut source_profile,
-        )? {
+        std::fs::write(&parent_path, &parent_artifact)
+            .map_err(|error| format!("destroyed-source parent export failed: {error}"))?;
+        drop(parent_artifact);
+
+        fn child_run_to_boundary(child: &mut ChildSession) -> Result<Moment, String> {
+            let request = Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(DEADLINE)),
+                    on: StopMask::NONE.arm(control_proto::class_bit::SNAPSHOT_POINT),
+                },
+                resolve: None,
+            };
+            match child.request(&request)? {
+                Reply::Stop(StopReason::SnapshotPoint { vtime }) => Ok(vtime),
+                other => Err(format!(
+                    "child expected Nova snapshot point, received {other:?}"
+                )),
+            }
+        }
+
+        let mut source = ChildSession::spawn(
+            kernel_path,
+            initramfs_path,
+            &parent_path,
+            &source_path,
+            None,
+        )?;
+        match source.request(&Request::Hello(server_caps()))? {
             Reply::Hello(caps) if caps == server_caps() => {}
             other => return Err(format!("destroyed-source hello returned {other:?}")),
         }
-        let source_parent = source
-            .import_portable_snapshot(parent_artifact.as_slice())
-            .map_err(|error| format!("destroyed-source parent import failed: {error}"))?;
-        drop(parent_artifact);
-        let source_s_at = branch_to_boundary(
-            &mut source,
-            source_parent.id,
-            ab_edge.payload.clone(),
-            &mut source_profile,
-        )?;
+        match source.request(&Request::Branch {
+            snap: SnapId(1),
+            env: payload_env(vec![ab_edge.payload.clone(), vec![0, 1]]),
+        })? {
+            Reply::Unit => {}
+            other => return Err(format!("destroyed-source branch returned {other:?}")),
+        }
+        let source_s_at = child_run_to_boundary(&mut source)?;
         if source_s_at != b1_s_at {
             return Err(format!(
                 "destroyed-source boundary differed: source={source_s_at:?} B1={b1_s_at:?}"
             ));
         }
-        let source_s_snapshot = match drive(&mut source, &Request::Snapshot, &mut source_profile)? {
+        let source_s_snapshot = match source.request(&Request::Snapshot)? {
             Reply::Snapshot { id, at, .. } if at == source_s_at => id,
             Reply::Snapshot { at, .. } => {
                 return Err(format!(
@@ -1275,47 +1766,93 @@ fn run() -> Result<(), String> {
             }
             other => return Err(format!("destroyed-source snapshot returned {other:?}")),
         };
-        let source_s_artifact = export_snapshot(&source, source_s_snapshot)?;
-        if source.in_place_fallbacks() != 0 {
+        if source_s_snapshot.0 <= 1 {
             return Err(format!(
-                "restore-oracle destroyed-source used {} fresh-VM fallbacks",
-                source.in_place_fallbacks()
+                "destroyed-source snapshot reused imported id {}",
+                source_s_snapshot.0
             ));
         }
-        drop(source);
+        let (source_s_events, source_s_frame, source_s_events_len) = child_sdk_events(&mut source)?;
+        if source_s_at != b1_s_at
+            || source_s_frame != _b1_s_frame
+            || source_s_events_len != b1_s_events_len
+            || source_s_events != b1_s_events
+        {
+            retain_oracle_mismatch(
+                "destroyed-source-boundary-events",
+                &b1_s_events,
+                &source_s_events,
+            )?;
+            return Err("restore-oracle destroyed-source boundary evidence differed".to_owned());
+        }
+        let source_process = source.finish()?;
+        let source_s_artifact = std::fs::read(&source_path)
+            .map_err(|error| format!("destroyed-source export was not readable: {error}"))?;
         if source_s_artifact != b1_s_artifact {
             retain_oracle_mismatch("destroyed-source-s", &b1_s_artifact, &source_s_artifact)?;
             return Err("restore-oracle destroyed-source S differed".to_owned());
         }
         drop(b1_s_artifact);
 
-        let mut destination = cold_factory()?;
-        let mut destination_profile = ProbeProfile::new(true);
-        match drive(
-            &mut destination,
-            &Request::Hello(server_caps()),
-            &mut destination_profile,
-        )? {
+        let mut destination = ChildSession::spawn(
+            kernel_path,
+            initramfs_path,
+            &source_path,
+            &destination_path,
+            Some(&destination_state_path),
+        )?;
+        let destination_process = destination.pid();
+        if destination_process == source_process || destination_process == std::process::id() {
+            return Err(format!(
+                "restore-oracle child process identity was not distinct: source={source_process} destination={destination_process} parent={}",
+                std::process::id()
+            ));
+        }
+        match destination.request(&Request::Hello(server_caps()))? {
             Reply::Hello(caps) if caps == server_caps() => {}
             other => return Err(format!("destroyed-destination hello returned {other:?}")),
         }
-        let destination_s = destination
-            .import_portable_snapshot(source_s_artifact.as_slice())
-            .map_err(|error| format!("destroyed-destination S import failed: {error}"))?;
-        drop(source_s_artifact);
-        match drive(
-            &mut destination,
-            &Request::Replay(destination_s.id),
-            &mut destination_profile,
-        )? {
+        match destination.request(&Request::Replay(SnapId(1)))? {
             Reply::Unit => {}
             other => return Err(format!("destroyed-destination replay returned {other:?}")),
         }
-        let d_endpoint = endpoint_after_continuation(&mut destination, &mut destination_profile)?;
-        if destination.in_place_fallbacks() != 0 {
+        let d_at = child_run_to_boundary(&mut destination)?;
+        let (d_events, d_frame, d_events_len) = child_sdk_events(&mut destination)?;
+        let d_hash = match destination.request(&Request::Hash {
+            scope: HashScope::Whole,
+        })? {
+            Reply::Hash(hash) => hash,
+            other => return Err(format!("destroyed-destination hash returned {other:?}")),
+        };
+        let d_snapshot = match destination.request(&Request::Snapshot)? {
+            Reply::Snapshot { id, .. } if id.0 > 1 => id,
+            Reply::Snapshot { id, .. } => {
+                return Err(format!(
+                    "destroyed-destination snapshot reused imported id {}",
+                    id.0
+                ));
+            }
+            other => return Err(format!("destroyed-destination snapshot returned {other:?}")),
+        };
+        let destination_process = destination.finish()?;
+        let d_state = std::fs::read(&destination_state_path)
+            .map_err(|error| format!("destroyed-destination state was not readable: {error}"))?;
+        let d_artifact = std::fs::read(&destination_path)
+            .map_err(|error| format!("destroyed-destination export was not readable: {error}"))?;
+        let d_endpoint = EndpointEvidence {
+            at: d_at,
+            frame: d_frame,
+            events_len: d_events_len,
+            events: d_events,
+            state: d_state,
+            hash: d_hash,
+            artifact: d_artifact,
+            snapshot: d_snapshot,
+        };
+        if source_process == destination_process || source_process == std::process::id() {
             return Err(format!(
-                "restore-oracle destroyed-destination used {} fresh-VM fallbacks",
-                destination.in_place_fallbacks()
+                "restore-oracle child process identity was not distinct: source={source_process} destination={destination_process} parent={}",
+                std::process::id()
             ));
         }
         assert_endpoint_progress("d-destroyed-source", b1_s_at, b1_s_events_len, &d_endpoint)?;
@@ -1327,7 +1864,6 @@ fn run() -> Result<(), String> {
         )?;
 
         drop(d_endpoint);
-        drop(destination);
         drop(a_endpoint);
 
         enum EWork {
@@ -1438,6 +1974,10 @@ fn run() -> Result<(), String> {
         let b3_captures = 3u64;
         let c_controls = 1u64;
         let d_controls = 1u64;
+        let d_processes = std::collections::BTreeSet::from([source_process, destination_process]);
+        if d_processes.len() != 2 {
+            return Err("restore-oracle D did not use two child processes".to_owned());
+        }
 
         for snap in temporary_snapshots {
             match drive(server, &Request::Drop(snap), profile)? {
@@ -1455,7 +1995,7 @@ fn run() -> Result<(), String> {
         let mut samples = profile.branch_wall_samples_ns[sample_start..].to_vec();
         samples.sort_unstable();
         println!(
-            "NOVA_CONSONANCE_RESTORE_ORACLE_OK equal={} tree_actions={} fresh_equal={} full_state_equal={} a_controls={} b1_controls={} b3_controls={} b3_captures={} c_controls={} d_controls={} e_controls={} e_reordered_positions={} c_trace_events_left={} c_trace_events_right={} c_trace_schedules_left={} c_trace_schedules_right={} d_trace_events_left={} d_trace_events_right={} d_trace_schedules_left={} d_trace_schedules_right={} tree_seed={} branch_median_ns={} branch_p99_ns={} restore_bytes={} fallbacks={}",
+            "NOVA_CONSONANCE_RESTORE_ORACLE_OK equal={} tree_actions={} fresh_equal={} full_state_equal={} a_controls={} b1_controls={} b3_controls={} b3_captures={} c_controls={} d_controls={} d_processes={} d_source_pid={} d_destination_pid={} e_controls={} e_reordered_positions={} c_trace_events_left={} c_trace_events_right={} c_trace_schedules_left={} c_trace_schedules_right={} d_trace_events_left={} d_trace_events_right={} d_trace_schedules_left={} d_trace_schedules_right={} tree_seed={} branch_median_ns={} branch_p99_ns={} restore_bytes={} fallbacks={}",
             equal,
             edges.len(),
             fresh_equal,
@@ -1466,6 +2006,9 @@ fn run() -> Result<(), String> {
             b3_captures,
             c_controls,
             d_controls,
+            d_processes.len(),
+            source_process,
+            destination_process,
             e_controls,
             e_reordered_positions,
             c_trace.0,
@@ -1502,14 +2045,7 @@ fn run() -> Result<(), String> {
     let initramfs = std::fs::read(&initramfs_path)
         .map_err(|error| format!("cannot read {initramfs_path:?}: {error}"))?;
 
-    let boot = |kernel: &[u8], initramfs: &[u8]| {
-        #[cfg(target_arch = "x86_64")]
-        let mut vmm = boot_linux_stock_virtual_time(kernel, initramfs, RAM, CMDLINE, SEED)?;
-        #[cfg(target_arch = "aarch64")]
-        let mut vmm = boot_selected_control(kernel, initramfs, CMDLINE, RAM)?;
-        vmm.wire_snapshot_hashing();
-        Ok(vmm)
-    };
+    let boot = |kernel: &[u8], initramfs: &[u8]| boot_probe(kernel, initramfs);
     let live = boot(&kernel, &initramfs).map_err(|error| format!("boot compose: {error:?}"))?;
     let factory_kernel = kernel.clone();
     let factory_initramfs = initramfs.clone();
@@ -1612,7 +2148,14 @@ fn run() -> Result<(), String> {
             cold.set_restore_mode(RestoreMode::Memcpy);
             Ok(cold)
         };
-        run_restore_oracle(&mut server, base, &mut profile, &cold_factory)?;
+        run_restore_oracle(
+            &mut server,
+            base,
+            &mut profile,
+            &cold_factory,
+            std::path::Path::new(&kernel_path),
+            std::path::Path::new(&initramfs_path),
+        )?;
     }
     let first = endpoint(&mut server, base, &mut profile)?;
     let second = endpoint(&mut server, base, &mut profile)?;

@@ -6,7 +6,7 @@ workloads. Build with `cargo build --manifest-path workloads/tools/Cargo.toml
 startup and evidence conventions live here.
 
 The `kvm_x86_nova_probe` restore oracle builds a 50-action branching snapshot
-tree first checks the original 200 in-place restored continuations without
+tree, first checks the original 200 in-place restored continuations without
 inserting cold restores into that history. Eight subsequent controls, including
 the historical comparison-16 edge, import portable snapshots into independent
 servers and compare their continuations, requiring zero in-place fallbacks.
@@ -22,9 +22,11 @@ active, then captures only the continuation endpoint. B1 captures the boundary
 once before the same continuation. B3 rebranches to the
 same boundary, captures it three times, and takes the same continuation. C runs
 a different branch before replaying B1's boundary snapshot, and D exports that
-boundary from a temporary source, destroys that source in the same process,
-and imports it into a new server before continuing. All five endpoints compare
-their moment, SDK events, raw state, and whole-state hash. Same-history
+boundary to a private artifact from a source child process, waits for that
+process to exit, then imports it into a separately spawned destination child
+before continuing. D records both child PIDs and requires them to be distinct
+from each other and the probe process. All five endpoints compare their
+moment, SDK events, raw state, and whole-state hash. Same-history
 captures require identical portable bytes; differing-history C and D
 comparisons use the portable execution-state comparator and report both trace
 counters. E then traverses the same 50-edge tree in reverse-sibling depth-first
@@ -37,8 +39,9 @@ Set `HARMONY_CONSONANCE_ORACLE_REPORT_DIR` to retain expected and actual raw
 artifacts on a mismatch. The PR smoke enforces a 240-second execution bound and
 requires all 200 history comparisons, eight complete-state cold controls, and
 the single A/B1/B3/C/D/E postpass (`a_controls=1 b1_controls=1 b3_controls=1
-b3_captures=3 c_controls=1 d_controls=1 e_controls=50
-e_reordered_positions>0`).
+b3_captures=3 c_controls=1 d_controls=1 d_processes=2 e_controls=50
+e_reordered_positions>0`, with the two D child PIDs recorded in the success
+line).
 For extended qualification, `HARMONY_CONSONANCE_ORACLE_TREE_SEED` selects a
 fixed decimal seed for tree construction and edge replay. Leaving it unset
 preserves the historical sequence; every success report records the seed.

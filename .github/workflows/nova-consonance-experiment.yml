@@ -150,7 +150,7 @@ jobs:
               nix-guest-output/x86_64/bzImage \
               consonance/harmony-linux/build/initramfs-nova.cpio.gz \
             2>&1 | tee nova-consonance-report/restore-oracle.txt
-          grep -Eq 'NOVA_CONSONANCE_RESTORE_ORACLE_OK equal=200 tree_actions=50 fresh_equal=8 full_state_equal=8 a_controls=1 b1_controls=1 b3_controls=1 b3_captures=3 c_controls=1 d_controls=1 e_controls=50 e_reordered_positions=[1-9][0-9]* .* fallbacks=0$' \
+          grep -Eq 'NOVA_CONSONANCE_RESTORE_ORACLE_OK equal=200 tree_actions=50 fresh_equal=8 full_state_equal=8 a_controls=1 b1_controls=1 b3_controls=1 b3_captures=3 c_controls=1 d_controls=1 d_processes=2 d_source_pid=[0-9]+ d_destination_pid=[0-9]+ e_controls=50 e_reordered_positions=[1-9][0-9]* .* fallbacks=0$' \
             nova-consonance-report/restore-oracle.txt
       - name: Compare direct and whole-VM Nova observations
         run: |
@@ -631,7 +631,7 @@ jobs:
               nix-guest-output/x86_64/bzImage \
               consonance/harmony-linux/build/initramfs-nova.cpio.gz \
             2>&1 | tee nova-consonance-pr-smoke/restore-oracle.txt
-          grep -Eq 'NOVA_CONSONANCE_RESTORE_ORACLE_OK equal=200 tree_actions=50 fresh_equal=8 full_state_equal=8 a_controls=1 b1_controls=1 b3_controls=1 b3_captures=3 c_controls=1 d_controls=1 e_controls=50 e_reordered_positions=[1-9][0-9]* .* fallbacks=0$' \
+          grep -Eq 'NOVA_CONSONANCE_RESTORE_ORACLE_OK equal=200 tree_actions=50 fresh_equal=8 full_state_equal=8 a_controls=1 b1_controls=1 b3_controls=1 b3_captures=3 c_controls=1 d_controls=1 d_processes=2 d_source_pid=[0-9]+ d_destination_pid=[0-9]+ e_controls=50 e_reordered_positions=[1-9][0-9]* .* fallbacks=0$' \
             nova-consonance-pr-smoke/restore-oracle.txt
       - name: Run Nova search through Consonance
         run: |
