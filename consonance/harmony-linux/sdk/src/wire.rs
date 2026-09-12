@@ -13,8 +13,8 @@ pub const NS_BUGGIFY: u8 = 3;
 pub const NS_LIFECYCLE: u8 = 4;
 
 pub const CATALOG_EVENT_ID: u32 = 0;
-pub const SETUP_COMPLETE_EVENT_ID: u32 = (NS_LIFECYCLE as u32) << NS_SHIFT;
-pub const FRAME_COMPLETE_EVENT_ID: u32 = ((NS_LIFECYCLE as u32) << NS_SHIFT) | 1;
+pub const SETUP_COMPLETE_EVENT_ID: u32 = event_id(NS_LIFECYCLE, 0);
+pub const FRAME_COMPLETE_EVENT_ID: u32 = event_id(NS_LIFECYCLE, 1);
 
 pub const CATALOG_MAGIC: u32 = u32::from_le_bytes(*b"SDKC");
 
@@ -39,4 +39,18 @@ pub const fn event_id(ns: u8, local: u32) -> u32 {
 #[inline]
 pub const fn split(event_id: u32) -> (u8, u32) {
     ((event_id >> NS_SHIFT) as u8, event_id & LOCAL_MASK)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_id_encoding_is_pinned() {
+        assert_eq!(NS_SHIFT, 24);
+        assert_eq!(LOCAL_MASK, 0x00FF_FFFF);
+        assert_eq!(SETUP_COMPLETE_EVENT_ID, 0x0400_0000);
+        assert_eq!(FRAME_COMPLETE_EVENT_ID, 0x0400_0001);
+        assert_eq!(split(FRAME_COMPLETE_EVENT_ID), (NS_LIFECYCLE, 1));
+    }
 }

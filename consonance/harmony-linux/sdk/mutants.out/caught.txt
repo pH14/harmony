@@ -1,0 +1,5 @@
+src/wire.rs:6:45: replace - with +
+src/wire.rs:6:45: replace - with /
+src/wire.rs:16:64: replace << with >>
+src/wire.rs:17:78: replace | with &
+src/wire.rs:17:65: replace << with >>

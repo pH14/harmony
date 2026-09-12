@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![no_std]
-#![doc = "The harmony guest SDK: assertions, IJON state registers, and lifecycle points a cooperating in-guest workload emits over the deterministic hypercall channel."]
 pub mod wire;
 
 use hypercall_proto::{Client, ClientError, MAX_PAYLOAD, Transport};
@@ -289,5 +288,16 @@ impl<T: Transport> Sdk<T> {
 
     fn emit(&mut self, id: u32, data: &[u8]) -> Result<(), SdkError<T::Error>> {
         self.client.event_emit(id, data).map_err(SdkError::Client)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_buffer_leaves_room_for_the_four_byte_header() {
+        assert_eq!(MAX_PAYLOAD, 4072);
+        assert_eq!(CATALOG_BUF, 4068);
     }
 }
