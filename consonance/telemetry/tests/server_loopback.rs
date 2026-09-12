@@ -65,7 +65,7 @@ fn serves_html_and_streams_a_scripted_run_in_order() {
             10,
             5,
             EventKind::Console {
-                text: "PostgreSQL init\n".to_string(),
+                text: "guest init\n".to_string(),
             },
         ),
         Event::new(2, 20, 10, EventKind::Inject { vector: 32 }),

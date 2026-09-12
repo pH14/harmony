@@ -39,5 +39,5 @@ the exact saved special registers, without entering the guest between writes.
 This forces KVM to reset its MMU context after the caller replaces page-table
 memory while retaining the same paging registers. Linux performs this reset
 conditionally in [`__set_sregs2`](https://github.com/torvalds/linux/blob/v6.12/arch/x86/kvm/x86.c#L11986). Synthetic tests check the
-write sequence and error handling; the Nova restore oracle checks 200 restored
-continuations across a branching snapshot tree on KVM.
+write sequence and error handling; KVM integration coverage exercises restored
+continuations across a branching snapshot tree.

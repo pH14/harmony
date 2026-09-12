@@ -7,11 +7,6 @@
     ".github/workflows/search-eval.yml:0",
     ".github/workflows/x86-virtual-time.yml:0"
   ],
-  "consonance-no-workload-names": [
-    "consonance/telemetry/src/event.rs:137",
-    "consonance/telemetry/tests/server_loopback.rs:68",
-    "consonance/vmm-backend/README.md:42"
-  ],
   "guest-linux-no-workload-names": [
     "consonance/harmony-linux/linux/README.md:68",
     "consonance/harmony-linux/linux/bridge-probe.c:21",
