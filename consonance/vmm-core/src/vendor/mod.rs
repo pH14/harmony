@@ -241,7 +241,10 @@ pub trait Vendor: Arch + Sized {
 
     /// The complete canonical byte encoding of the vCPU record set for the engine's
     /// `VCPU` hash chunk. Deterministic; canonicalizes exactly what the snapshot
-    /// records canonicalize, so a restored VM hashes like a never-restored one.
+    /// records canonicalize. A restored VM and its source are intended to hash
+    /// alike when their encoded records describe the same guest continuation;
+    /// that continuation equivalence is validated by hardware coverage rather
+    /// than guaranteed unconditionally by this encoding.
     /// Every field that can affect the future guest state belongs in this encoding;
     /// representation details retained by snapshot records are not omitted from
     /// the identity.

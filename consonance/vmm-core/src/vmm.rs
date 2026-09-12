@@ -6388,9 +6388,9 @@ mod tests {
         v3.report_stream = vec![0xDEAD_BEEF];
         assert_eq!(v.state_components(), v3.state_components());
 
-        // Restore provenance is an optional diagnostic field, kept separate
-        // from the canonical XSAVE header so a raw init-state spelling cannot
-        // masquerade as a canonical-header divergence.
+        // The restore bitmap is optional restore/identity state. Report it in
+        // its own component, separate from the canonical XSAVE header, so a raw
+        // init-state spelling cannot masquerade as a canonical-header divergence.
         let mut raw_backend = configured_mock(vec![]);
         let raw_state = VcpuState {
             xsave_restore_bv: Some(3),

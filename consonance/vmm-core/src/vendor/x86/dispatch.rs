@@ -1395,8 +1395,9 @@ pub(crate) fn vcpu_components(s: &VcpuState, out: &mut Vec<(&'static str, [u8; 3
     let header_start = 512.min(xs.len());
     let header_end = 576.min(xs.len());
     out.push(("xsave-header", dig(&xs[header_start..header_end])));
-    // Keep restore provenance visible to the diagnostic localizer without
-    // conflating it with the canonical XSAVE header digest used by the hash.
+    // Keep the raw restore bitmap visible as a separate diagnostic component.
+    // The canonical XSAVE header digest remains normalized, while this bitmap
+    // participates separately in the authoritative VCPU and VMST identities.
     if let Some(value) = s.xsave_restore_bv {
         out.push(("xsave-restore-bv", dig(&value.to_le_bytes())));
     }
