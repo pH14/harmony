@@ -15,7 +15,7 @@ The per-thread instruction breakpoint is architecture-native.
 +	depends on HAVE_HW_BREAKPOINT
 +	default n
 +	help
-+	  Expose /dev/harmony-park, through which the Harmony fault agent
++	  Expose /dev/harmony-park, through which the Harmony supervisor
 +	  holds one thread of a workload process group at a user instruction
 +	  on that instruction's k-th execution, for a length of guest time.
 +	  The breakpoint is a per-thread perf event, the count is kept in the
@@ -84,7 +84,7 @@ The per-thread instruction breakpoint is architecture-native.
 +/* Threads one park can watch; a debug register slot is taken on each. */
 +#define HARMONY_PARK_MAX_TASKS 256U
 +
-+/* Mirrored by the fault agent; fixed-width so the layout is the same everywhere. */
++/* Mirrored by the supervisor; fixed-width so the layout is the same everywhere. */
 +struct harmony_park_arm {
 +	__u32 pgid;
 +	__u32 reserved;
