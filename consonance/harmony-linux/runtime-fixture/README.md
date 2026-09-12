@@ -14,3 +14,10 @@ The external file `/input/data` must contain `platform-input` followed by newlin
 
 The fixture requires a real platform guest. Building it or checking archive
 contents does not constitute SDK, time, or snapshot qualification.
+
+The same binary also provides the lifecycle commands used by the process
+platform smoke: `ready` exits successfully, `hook` emits a `@sometimes 7`
+directive, and `node` maps an architecture-specific executable return stub at
+`0x40000000` before looping through it. The supervisor can therefore exercise
+pause, kill, restart, and park against a real process. Packaging creates
+`/etc/harmony` so the host can mount the external execution bundle there.

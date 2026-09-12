@@ -23,7 +23,7 @@ def package(binary, architecture, output):
         raise ValueError("fixture ELF architecture does not match the image platform")
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w", format=tarfile.USTAR_FORMAT) as archive:
-        for name in ["app", "input", "tmp", "work"]:
+        for name in ["app", "etc", "etc/harmony", "input", "tmp", "work"]:
             entry = tarfile.TarInfo(name)
             entry.type = tarfile.DIRTYPE
             entry.mode = 0o1777 if name == "tmp" else 0o755

@@ -2,6 +2,17 @@
 
 #[cfg(target_os = "linux")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    match std::env::args().collect::<Vec<_>>().as_slice() {
+        [path, mode] if path == "/app/runtime-fixture" && mode == "verify" => run_verify(),
+        [path, mode] if path == "/app/runtime-fixture" && mode == "node" => run_node(),
+        [path, mode] if path == "/app/runtime-fixture" && mode == "ready" => run_ready(),
+        [path, mode] if path == "/app/runtime-fixture" && mode == "hook" => run_hook(),
+        _ => Err("runtime fixture received an unsupported command".into()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_verify() -> Result<(), Box<dyn std::error::Error>> {
     use harmony_sdk::{Point, Sdk};
     use hypercall_doorbell::{linux::DeviceTransport, observation::Observation};
     use std::{
@@ -28,7 +39,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .lines()
         .find(|line| line.starts_with("Groups:"))
         .ok_or("missing process groups")?;
-    if groups.split_whitespace().skip(1).next().is_some() {
+    if groups.split_whitespace().nth(1).is_some() {
         return Err("application inherited supplementary groups".into());
     }
     let mut sdk = Sdk::init(
@@ -88,6 +99,84 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     sdk.assert_reachable(2).map_err(|e| e.to_string())?;
     println!("platform fixture completed");
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn run_ready() -> Result<(), Box<dyn std::error::Error>> {
+    println!("fixture ready");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn run_hook() -> Result<(), Box<dyn std::error::Error>> {
+    println!("@sometimes 7");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn run_node() -> Result<(), Box<dyn std::error::Error>> {
+    use std::{io::Write, time::Duration};
+
+    let park = install_park_stub()?;
+    println!("fixture node started at {PARK_STUB_ADDRESS:#x}");
+    std::io::stdout().flush()?;
+    loop {
+        // SAFETY: `park` is an RX mapping containing one architecture-specific
+        // return instruction installed by `install_park_stub`.
+        unsafe { park() };
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const PARK_STUB_ADDRESS: usize = 0x4000_0000;
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const PARK_STUB_ADDRESS: usize = 0x4000_0000;
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const PARK_STUB_CODE: &[u8] = &[0xc3];
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const PARK_STUB_CODE: &[u8] = &[0xc0, 0x03, 0x5f, 0xd6];
+
+#[cfg(target_os = "linux")]
+type ParkStub = unsafe extern "C" fn();
+
+#[cfg(target_os = "linux")]
+fn install_park_stub() -> Result<ParkStub, Box<dyn std::error::Error>> {
+    use std::{io, ptr};
+
+    const PAGE_SIZE: usize = 4096;
+    // SAFETY: The requested address is a fixed page reserved for this fixture;
+    // map_fixed_noreplace prevents replacing an existing guest mapping.
+    let mapped = unsafe {
+        libc::mmap(
+            PARK_STUB_ADDRESS as *mut libc::c_void,
+            PAGE_SIZE,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED_NOREPLACE,
+            -1,
+            0,
+        )
+    };
+    if mapped == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error().into());
+    }
+    // SAFETY: `mapped` is the writable page returned by mmap and the source
+    // fits within its fixed page.
+    unsafe {
+        ptr::copy_nonoverlapping(PARK_STUB_CODE.as_ptr(), mapped.cast(), PARK_STUB_CODE.len())
+    };
+    // SAFETY: `mapped` names the page just allocated by this function.
+    if unsafe { libc::mprotect(mapped, PAGE_SIZE, libc::PROT_READ | libc::PROT_EXEC) } != 0 {
+        let error = io::Error::last_os_error();
+        // SAFETY: `mapped` is still the page allocated above and no other code
+        // has been given its address.
+        unsafe { libc::munmap(mapped, PAGE_SIZE) };
+        return Err(error.into());
+    }
+    // SAFETY: The mapping is executable, contains a valid return instruction
+    // for the target architecture, and remains live for the node's lifetime.
+    Ok(unsafe { std::mem::transmute::<*mut libc::c_void, unsafe extern "C" fn()>(mapped) })
 }
 
 #[cfg(not(target_os = "linux"))]

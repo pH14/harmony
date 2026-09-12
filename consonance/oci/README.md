@@ -99,3 +99,16 @@ The fixture layout is built by `consonance/harmony-linux/runtime-fixture/package
 Kernel, runtime, and fixture must target the host architecture. The test currently
 uses the Linux in-process session backend; compilation alone is not a hardware
 qualification result.
+
+The structured process smoke uses the same preparation path with an external
+`/etc/harmony/bundle`, installs a standing process-window service through the
+session service factory, and checks supervisor registers and console markers
+for ready, hook completion, pause, kill, restart, and park. It also restores a
+portable snapshot and requires identical continuation evidence:
+
+```sh
+HARMONY_PLATFORM_KERNEL=/path/to/kernel \
+HARMONY_PLATFORM_INITRAMFS=/path/to/initramfs-oci.cpio.gz \
+HARMONY_PLATFORM_FIXTURE=/path/to/fixture-layout \
+cargo test -p oci-support --test process_platform -- --ignored --nocapture
+```

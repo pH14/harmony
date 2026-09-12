@@ -16,6 +16,8 @@ thiserror = "2"
 [dev-dependencies]
 consonance-client = { path = "../client", version = "=0.1.0", features = ["in-process"] }
 control-proto = { path = "../control-proto", version = "=0.1.0" }
+environment = { path = "../environment", version = "=0.1.0" }
+process-proto = { path = "../process-proto", version = "=0.1.0" }
 
 [lints]
 workspace = true
