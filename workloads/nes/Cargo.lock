@@ -80,6 +80,7 @@ version = "0.1.0"
 dependencies = [
  "control-proto",
  "environment",
+ "hypercall-proto",
  "libc",
  "serde",
  "sha2",
@@ -166,6 +167,15 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys",
+]
+
+[[package]]
+name = "execution-proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -305,11 +315,27 @@ version = "0.1.0"
 dependencies = [
  "guest-image",
  "machine",
+ "oci-support",
  "postcard",
  "searcher",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "oci-support"
+version = "0.1.0"
+dependencies = [
+ "execution-proto",
+ "guest-image",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

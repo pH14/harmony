@@ -522,11 +522,14 @@ version = "0.1.0"
 dependencies = [
  "guest-image",
  "machine",
+ "oci-support",
  "postcard",
  "searcher",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

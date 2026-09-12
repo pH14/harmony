@@ -9,7 +9,7 @@ pub const REG_X_BUCKET: u32 = 4;
 pub const REG_POWERUP: u32 = 5;
 pub const REG_DEPTH: u32 = 6;
 pub const REG_FRAME: u32 = 7;
-pub const REG_BILLBOARD_GPA: u32 = 8;
+pub const REG_BILLBOARD_HANDLE: u32 = 8;
 pub const REG_BILLBOARD_LEN: u32 = 9;
 
 pub const POINT_LEVEL_CLEARED: u32 = 1;
@@ -23,7 +23,7 @@ pub const CATALOG: &[Point] = &[
     Point::state(REG_POWERUP, "smb_powerup"),
     Point::state(REG_DEPTH, "smb_depth"),
     Point::state(REG_FRAME, "smb_frame"),
-    Point::state(REG_BILLBOARD_GPA, "smb_billboard_gpa"),
+    Point::state(REG_BILLBOARD_HANDLE, "smb_billboard_handle"),
     Point::state(REG_BILLBOARD_LEN, "smb_billboard_len"),
     Point::reachable(POINT_LEVEL_CLEARED, "smb_level_cleared"),
     Point::reachable(POINT_WORLD_TWO, "smb_world_two"),
@@ -43,7 +43,7 @@ mod tests {
             REG_POWERUP,
             REG_DEPTH,
             REG_FRAME,
-            REG_BILLBOARD_GPA,
+            REG_BILLBOARD_HANDLE,
             REG_BILLBOARD_LEN,
         ] {
             assert!(reg < (1 << 16), "reg {reg} would alias in pack_state");

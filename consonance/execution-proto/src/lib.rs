@@ -172,21 +172,17 @@ fn validate_path(field: &'static str, path: &str) -> Result<(), SpecError> {
             path: path.to_string(),
         });
     }
-    if candidate.components().any(|component| {
-        matches!(
-            component,
-            Component::CurDir | Component::ParentDir | Component::Prefix(_)
-        )
-    }) {
-        return Err(SpecError::UnnormalizedPath {
-            field,
-            path: path.to_string(),
-        });
-    }
     let mut normalized = std::path::PathBuf::from("/");
     for component in candidate.components() {
-        if let Component::Normal(part) = component {
-            normalized.push(part);
+        match component {
+            Component::RootDir => {}
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
+                return Err(SpecError::UnnormalizedPath {
+                    field,
+                    path: path.to_string(),
+                });
+            }
         }
     }
     if normalized.to_str() != Some(path) {
@@ -279,6 +275,10 @@ mod tests {
                 "normalized",
             ),
             (
+                r#"{"version":1,"argv":["/bin/true"],"env":[],"cwd":"/a/./b","uid":0,"gid":0,"additional_gids":[],"bundle":null}"#,
+                "normalized",
+            ),
+            (
                 r#"{"version":1,"argv":["/bin/true"],"env":[],"cwd":"/a/","uid":0,"gid":0,"additional_gids":[],"bundle":null}"#,
                 "normalized",
             ),
@@ -298,6 +298,15 @@ mod tests {
         assert!(ExecutionSpec::from_str(&duplicate_slash).is_err());
         let mut invalid = spec();
         invalid.cwd = "relative".into();
+        assert!(invalid.to_vec().is_err());
+        invalid.cwd = "/a/./b".into();
+        assert!(invalid.to_vec().is_err());
+        invalid.cwd = format!("{}/{}", "/a/", "b");
+        assert!(invalid.to_vec().is_err());
+        invalid.cwd = "/a/".into();
+        assert!(invalid.to_vec().is_err());
+        invalid.cwd = "/work".into();
+        invalid.bundle = Some(format!("{}/{}", "/etc/harmony/", "bundle"));
         assert!(invalid.to_vec().is_err());
     }
 

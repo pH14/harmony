@@ -12,16 +12,19 @@ to the artifact directory when using an external build.
 harmony search --package nes smb.nes --core quicknes_libretro.so
 harmony search --package nes --backend native smb.nes --core quicknes_libretro.so
 harmony search --package nes --backend consonance smb.nes \
-  --kernel bzImage --base-initramfs initramfs-nes.cpio.gz
+  --kernel bzImage --base-initramfs initramfs-oci.cpio.gz \
+  --image nes.oci
 harmony search --package faults foo.oci --kernel bzImage \
   --base-initramfs initramfs.cpio.gz --out run
 ```
 
 NES identifies SMB or Nova by ROM hash and defaults to `native`. Supply the
 pinned host QuickNES library with `--core` or `HARMONY_QUICKNES_CORE`. Consonance
-execution uses a controlled kernel and the ROM-free image produced by
-[`build-base-image.sh`](../workloads/nes-guest/build-base-image.sh); preparation
-adds the ROM and launch command. It requires a supported Linux KVM host.
+execution uses a controlled kernel, the platform runtime initramfs, and an OCI
+image containing the static play-agent and QuickNES core. Preparation adds the
+ROM as a validated read-only external input and launches the generic payload
+through the platform supervisor. Pass the image with `--image` or
+`HARMONY_NES_IMAGE`; it requires a supported Linux KVM host.
 
 The faults package defaults to `consonance`. Its OCI image supplies
 `/etc/harmony/bundle`, which names the workload's nodes, hooks, setup and

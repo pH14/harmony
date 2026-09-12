@@ -36,16 +36,18 @@ The consonance adapter delegates boot, setup, branch, replay, run, read, SDK
 catalog, and sparse snapshot operations to `consonance-client::Session`. Its
 public evidence remains the action observations and portable snapshot state;
 host-only control traces are not part of the machine contract. The adapter
-keeps only NES publication discovery, billboard decoding, cached observation
-state, and the workload-specific action payload codec.
+discovers the kernel-owned NES observation by its opaque SDK handle, reads it
+through `Session::read_observation` at stopped action boundaries, and keeps
+only billboard decoding, cached observation state, and the workload-specific
+action payload codec.
 
 
 ## Consonance adapter
 
 With the `consonance` feature on Linux x86-64 or arm64, the NES driver runs a
-prepared ROM and QuickNES agent in one single-vCPU Consonance guest. It discovers
-the publication by SDK names, validates the shared `nes-protocol` codec, and reads
-RAM observations at stopped action boundaries. Game initialization and evaluation
+prepared OCI ROM and QuickNES agent in one single-vCPU Consonance guest. It discovers
+the publication handle by SDK names, validates the shared `nes-protocol` codec, and reads
+observations at stopped action boundaries. Game initialization and evaluation
 belong to the adapters in `nes-workload`.
 
 Setup and each action allow 2 seconds of virtual time on x86-64 and 20 seconds

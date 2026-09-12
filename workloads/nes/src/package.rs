@@ -207,21 +207,35 @@ pub fn search_native(
 pub fn search_consonance(
     rom: &[u8],
     kernel: &[u8],
-    initramfs: &[u8],
+    prepared: &oci_support::PreparedExecution,
+    platform_initramfs: &[u8],
     options: &SearchOptions,
 ) -> Result<(), Box<dyn Error>> {
     validate_output(options)?;
+    let initramfs = prepared.initramfs(platform_initramfs);
+    let prepared_identity = prepared.identity_hex();
     record_identity(
         rom,
         ExecutionIdentity {
             backend: "consonance".into(),
             isa: std::env::consts::ARCH.into(),
-            core_contract: machine::consonance::identity(kernel, initramfs),
+            core_contract: format!(
+                "{};prepared-execution={prepared_identity}",
+                machine::consonance::identity(kernel, &initramfs),
+            ),
             artifacts: [
                 ("kernel".into(), format!("{:x}", Sha256::digest(kernel))),
                 (
-                    "initramfs".into(),
-                    format!("{:x}", Sha256::digest(initramfs)),
+                    "platform-initramfs".into(),
+                    format!("{:x}", Sha256::digest(platform_initramfs)),
+                ),
+                (
+                    "prepared-rootfs".into(),
+                    format!("{:x}", Sha256::digest(&prepared.rootfs_segment)),
+                ),
+                (
+                    "prepared-control".into(),
+                    format!("{:x}", Sha256::digest(&prepared.control_segment)),
                 ),
             ]
             .into(),
@@ -230,12 +244,12 @@ pub fn search_consonance(
     )?;
     match RomKind::identify(rom)? {
         RomKind::Smb => search(
-            SmbGame::new_consonance(rom, kernel, initramfs),
+            SmbGame::new_consonance(rom, kernel, &initramfs),
             smb_run(),
             options,
         ),
         RomKind::Nova => search(
-            NovaGame::new_consonance(rom, kernel, initramfs),
+            NovaGame::new_consonance(rom, kernel, &initramfs),
             NovaCampaignRun,
             options,
         ),

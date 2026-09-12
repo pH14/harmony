@@ -36,6 +36,8 @@ pub struct Args {
     kernel: Option<PathBuf>,
     #[arg(long)]
     base_initramfs: Option<PathBuf>,
+    #[arg(long)]
+    image: Option<PathBuf>,
     #[arg(long, default_value_t = 500)]
     horizon_ms: u64,
     #[arg(long, default_value_t = 1024)]
@@ -82,9 +84,13 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
                 .ok_or("native NES search requires --core or HARMONY_QUICKNES_CORE")?;
             search_native(&std::fs::read(args.input)?, &core, &options)?;
         }
-        (Package::Nes, Backend::Consonance) => {
-            run_nes_consonance(&args.input, args.kernel, args.base_initramfs, &options)?
-        }
+        (Package::Nes, Backend::Consonance) => run_nes_consonance(
+            &args.input,
+            args.kernel,
+            args.base_initramfs,
+            args.image,
+            &options,
+        )?,
         (Package::Faults, Backend::Native) => {
             return Err("the faults package requires --backend consonance".into());
         }
@@ -162,7 +168,8 @@ fn require_supported_linux(is_linux: bool) -> Result<(), Box<dyn Error>> {
 fn run_nes_consonance(
     input: &std::path::Path,
     kernel: Option<PathBuf>,
-    base: Option<PathBuf>,
+    platform_initramfs: Option<PathBuf>,
+    image: Option<PathBuf>,
     options: &SearchOptions,
 ) -> Result<(), Box<dyn Error>> {
     #[cfg(all(
@@ -175,40 +182,33 @@ fn run_nes_consonance(
         let kernel = kernel
             .or(installed.kernel)
             .ok_or("controlled guest kernel missing: use --kernel or HARMONY_GUEST_DIR")?;
-        let base = base
-            .or_else(|| select_nes_base_initramfs(&installed.initramfs))
+        let platform_initramfs = platform_initramfs
+            .or_else(|| crate::oci::select_base_initramfs(&installed.initramfs).cloned())
             .ok_or(
-                "NES base image missing: use --base-initramfs or install initramfs-nes.cpio.gz",
+                "platform initramfs missing: use --base-initramfs or install initramfs-oci.cpio.gz",
             )?;
+        let image = image
+            .or_else(|| std::env::var_os("HARMONY_NES_IMAGE").map(PathBuf::from))
+            .ok_or("NES OCI image missing: use --image or HARMONY_NES_IMAGE")?;
         let rom = std::fs::read(input)?;
-        let image = nes_workload::prepare::prepare(&rom, &std::fs::read(base)?)?;
-        nes_workload::package::search_consonance(&rom, &std::fs::read(kernel)?, &image, options)
+        let image = image.to_str().ok_or("NES OCI image path must be UTF-8")?;
+        let prepared = nes_workload::prepare::stage_and_prepare(image, &rom)?;
+        nes_workload::package::search_consonance(
+            &rom,
+            &std::fs::read(kernel)?,
+            &prepared,
+            &std::fs::read(platform_initramfs)?,
+            options,
+        )
     }
     #[cfg(not(all(
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64")
     )))]
     {
-        let _ = (input, kernel, base, options);
+        let _ = (input, kernel, platform_initramfs, image, options);
         Err("NES Consonance execution requires a supported Linux KVM host".into())
     }
-}
-
-#[cfg(any(
-    test,
-    all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64")
-    )
-))]
-fn select_nes_base_initramfs(paths: &[PathBuf]) -> Option<PathBuf> {
-    paths
-        .iter()
-        .find(|path| {
-            path.file_name()
-                .is_some_and(|name| name == "initramfs-nes.cpio.gz")
-        })
-        .cloned()
 }
 
 fn run_faults_consonance(
@@ -295,6 +295,7 @@ mod tests {
             core: None,
             kernel: None,
             base_initramfs: None,
+            image: None,
             horizon_ms: 500,
             ram_mib: 1024,
             knobs: None,
@@ -335,6 +336,7 @@ mod tests {
             std::path::Path::new("missing-rom"),
             Some(PathBuf::from("missing-kernel")),
             Some(PathBuf::from("missing-initramfs")),
+            Some(PathBuf::from("missing-image")),
             &options(),
         )
         .expect_err("missing NES guest artifacts must fail");
@@ -425,16 +427,5 @@ mod tests {
             mismatch.to_string().contains("--horizon-ms 250"),
             "{mismatch}"
         );
-    }
-
-    #[test]
-    fn nes_base_image_selection_requires_the_exact_filename() {
-        let wrong = PathBuf::from("initramfs-other.cpio.gz");
-        let expected = PathBuf::from("initramfs-nes.cpio.gz");
-        assert_eq!(
-            select_nes_base_initramfs(&[wrong.clone(), expected.clone()]),
-            Some(expected)
-        );
-        assert_eq!(select_nes_base_initramfs(&[wrong]), None);
     }
 }
