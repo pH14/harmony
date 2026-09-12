@@ -827,6 +827,10 @@ pub trait Arm64Kvm {
     fn complete_mmio_exit(&mut self) -> Result<()>;
 
     fn run(&mut self) -> Result<KvmRunView>;
+
+    fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        None
+    }
 }
 
 pub struct Arm64KvmBackend<K: Arm64Kvm> {
@@ -1103,6 +1107,10 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     fn run(&mut self) -> Result<Exit<Arm64>> {
         self.ensure_runnable()?;
         self.enter_guest()
+    }
+
+    fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        self.kvm.cancellation_flag()
     }
 
     fn inject(&mut self, event: crate::arch::arm64::Arm64Injection) -> Result<()> {
