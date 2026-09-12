@@ -6,9 +6,9 @@
 # ///
 """Fit per-exit-class V-time durations from calibration logs.
 
-A calibration log is the per-event wall-clock series emitted by
-`hvf_postgres ... [calibration-log]` or the x86 boot lane under
-`X2_CALIBRATION_LOG`. Each line is:
+A calibration log is the per-event wall-clock series emitted by a workload's
+calibration harness or the x86 boot lane under `X2_CALIBRATION_LOG`. Each
+line is:
 
     calib event=<index> class=<label> vns_after=<vns> wall_ns=<wall>
 
