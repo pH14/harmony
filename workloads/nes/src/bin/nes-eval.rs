@@ -334,6 +334,7 @@ where
             "preparation_seconds":preparation_seconds, "search_seconds":search_seconds, "executions_per_second":report.executions_completed as f64 / search_seconds,
             "progress":value["archive"]["progress_watermark"], "milestones":value["archive"]["milestones"], "frames_per_second": report.frames_emulated as f64 / search_seconds,
             "export_seconds":export_seconds, "verification_seconds":verification_seconds,
+            "witness_replays":2, "campaign_replay":full,
             "verification":request.verification, "witness":first, "milestone_witnesses":milestone_witnesses,
             "stream_sha256":format!("{:x}",stream.digest.finalize()), "stream_bytes_generated":stream.bytes, "stream_retained":full,
             "stop_reason":if solved {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.frames_emulated >= limit) {"frame_limit"} else {"wall_limit"}
