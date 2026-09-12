@@ -751,6 +751,30 @@ mod tests {
 
     #[test]
     fn external_input_bounds_are_enforced() {
+        assert_eq!(MAX_EXTERNAL_INPUT_BYTES, 67_108_864);
+        let maximum_count: Vec<_> = (0..MAX_EXTERNAL_INPUTS)
+            .map(|index| ExternalInput::new(format!("/input-{index}"), Vec::new()))
+            .collect();
+        assert_eq!(
+            validate_external_inputs(&maximum_count).unwrap().len(),
+            MAX_EXTERNAL_INPUTS
+        );
+        let maximum_path = format!("/{}", "x".repeat(MAX_EXTERNAL_INPUT_PATH_BYTES - 1));
+        assert_eq!(
+            validate_destination(&maximum_path).unwrap(),
+            &maximum_path[1..]
+        );
+        assert!(validate_destination(&format!("{maximum_path}x")).is_err());
+        let maximum_bytes = [ExternalInput::new(
+            "/input",
+            vec![0; MAX_EXTERNAL_INPUT_BYTES],
+        )];
+        assert_eq!(
+            validate_external_inputs(&maximum_bytes).unwrap()[0]
+                .data
+                .len(),
+            MAX_EXTERNAL_INPUT_BYTES
+        );
         let too_many: Vec<_> = (0..=MAX_EXTERNAL_INPUTS)
             .map(|index| ExternalInput::new(format!("/input-{index}"), Vec::new()))
             .collect();
@@ -776,6 +800,42 @@ mod tests {
         assert_eq!(first.control_segment, second.control_segment);
         assert_eq!(first.identity, second.identity);
         assert_eq!(first.initramfs(b"base"), second.initramfs(b"base"));
+        let combined = first.initramfs(b"base");
+        assert_eq!(&combined[..4], b"base");
+        assert_eq!(
+            &combined[4..4 + first.rootfs_segment.len()],
+            first.rootfs_segment
+        );
+        assert_eq!(
+            &combined[4 + first.rootfs_segment.len()..],
+            first.control_segment
+        );
+        assert_eq!(first.identity_hex().len(), 64);
+        for (pair, byte) in first
+            .identity_hex()
+            .as_bytes()
+            .chunks_exact(2)
+            .zip(first.identity)
+        {
+            assert_eq!(
+                u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap(),
+                byte
+            );
+        }
+    }
+
+    #[test]
+    fn mount_validation_accepts_existing_regular_paths_and_reports_non_directory_parents() {
+        let staged = image();
+        std::fs::create_dir(staged.rootfs.join("input")).unwrap();
+        std::fs::write(staged.rootfs.join("input/file"), b"image file").unwrap();
+        let request = LaunchRequest::default()
+            .with_external_inputs(vec![ExternalInput::new("/input/file", b"external file")]);
+        assert!(prepare(&staged, &request).is_ok());
+        assert!(matches!(
+            validate_mount_path(&staged.rootfs, "/input/file/child"),
+            Err(BundleError::Io(error)) if error.kind() == std::io::ErrorKind::NotADirectory
+        ));
     }
 
     #[test]

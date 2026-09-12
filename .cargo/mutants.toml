@@ -228,7 +228,7 @@ exclude_re = [
     # not controllable from a unit test. The parsing these feed
     # (`parse_runtime_config`, manifest/layout resolution, layer whiteouts)
     # is unit-tested and stays gated.
-    "consonance/oci/src/image\\.rs.*(replace tool|local_image_id|ensure_local|export_from_tool)",
+    "consonance/oci/src/image\\.rs.*(replace tool|local_image_id|export_from_tool)",
     # `cache::key` is the image-ID lookup through docker/podman — same
     # category; the store/load/atomic-write logic it keys is unit-tested.
     "consonance/oci/src/cache\\.rs.*replace key ->",

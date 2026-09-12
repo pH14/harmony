@@ -212,9 +212,6 @@ fn prepare_for(
     image: &str,
     request: &bundle::LaunchRequest,
 ) -> Result<bundle::PreparedExecution, Box<dyn std::error::Error>> {
-    if !std::path::Path::new(image).exists() {
-        image::ensure_local(image);
-    }
     eprintln!("staging {image} ...");
     let staging = tempfile::tempdir()?;
     let staged = image::stage(image, staging.path())?;
@@ -311,6 +308,15 @@ mod tests {
         assert_eq!(
             super::parse_startup_rc(b"HARMONY_OCI_STARTUP_EXIT rc=125\n"),
             Some(125)
+        );
+        assert_eq!(super::parse_runtime_rc(b"unrelated output\n"), None);
+        assert_eq!(
+            super::parse_runtime_rc(b"HARMONY_OCI_RUNTIME_EXIT rc=0\n"),
+            Some(0)
+        );
+        assert_eq!(
+            super::parse_runtime_rc(b"HARMONY_OCI_RUNTIME_EXIT rc=127\n"),
+            Some(127)
         );
     }
 

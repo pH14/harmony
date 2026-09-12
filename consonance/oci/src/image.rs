@@ -193,13 +193,6 @@ pub fn local_image_id(tool: &str, image: &str) -> Option<String> {
     (!id.is_empty()).then_some(id)
 }
 
-pub fn ensure_local(image: &str) {
-    let Some(tool) = tool() else { return };
-    if local_image_id(tool, image).is_none() {
-        let _ = Command::new(tool).args(["pull", image]).status();
-    }
-}
-
 pub fn stage(image: &str, stage_dir: &Path) -> Result<StagedImage, ImageError> {
     let tarball_path = Path::new(image);
     if tarball_path.exists() {
@@ -964,6 +957,23 @@ fn apply_whiteouts(members: &[Member], rootfs: &Path) -> Result<(), ImageError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_credential_resolver_preserves_explicit_ids() {
+        let rootfs = tempfile::tempdir().unwrap();
+        let config = RuntimeConfig {
+            user: Some("123:456".into()),
+            ..RuntimeConfig::default()
+        };
+        assert_eq!(
+            resolve_process_credentials(&config, rootfs.path()).unwrap(),
+            ProcessCredentials {
+                uid: 123,
+                gid: 456,
+                additional_gids: Vec::new()
+            }
+        );
+    }
 
     #[test]
     fn runtime_config_parses_the_config_section() {

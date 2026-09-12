@@ -412,6 +412,54 @@ mod tests {
     }
 
     #[test]
+    fn typed_process_windows_preserve_moment_and_all_actions() {
+        let windows: Vec<_> = actions()
+            .into_iter()
+            .enumerate()
+            .map(|(index, action)| ProcessWindow {
+                node: u16::try_from(index).unwrap(),
+                action,
+                start: 42,
+                end: 100,
+            })
+            .collect();
+        let encoded = encode_process_windows(99, &windows).unwrap();
+        assert_eq!(decode_process_windows(&encoded), Ok((99, windows)));
+    }
+
+    #[test]
+    fn empty_targets_and_empty_window_lists_are_valid() {
+        assert_eq!(decode_windows(&[0, 0, 0, 0]), Ok(Vec::new()));
+        let windows = vec![Window {
+            class: 4,
+            target: Vec::new(),
+            start: 0,
+            end: 1,
+        }];
+        assert_eq!(
+            decode_windows(&encode_windows(&windows).unwrap()),
+            Ok(windows)
+        );
+    }
+
+    #[test]
+    fn wire_errors_describe_the_failed_contract() {
+        for (error, expected) in [
+            (WireError::Malformed, "malformed process wire data"),
+            (
+                WireError::TargetTooLarge,
+                "process target exceeds u16 length",
+            ),
+            (
+                WireError::TooManyWindows,
+                "process window count exceeds u32",
+            ),
+        ] {
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[test]
     fn a_target_larger_than_u16_is_rejected() {
         let window = Window {
             class: PROCESS_CLASS,

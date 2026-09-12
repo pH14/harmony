@@ -1224,6 +1224,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 #[cfg(any(test, feature = "mock"))]
 #[derive(Debug, Default)]
 pub struct FakeKvm {
+    cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     regs: std::collections::BTreeMap<u64, u64>,
     regs32: std::collections::BTreeMap<u64, u32>,
     regs128: std::collections::BTreeMap<u64, [u8; 16]>,
@@ -1283,6 +1284,10 @@ impl FakeKvm {
 
 #[cfg(any(test, feature = "mock"))]
 impl Arm64Kvm for FakeKvm {
+    fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        self.cancellation.clone()
+    }
+
     fn vcpu_init(&mut self) -> Result<()> {
         self.calls.push("vcpu_init");
         self.init_features = vcpu_init_features();
@@ -1518,6 +1523,24 @@ impl Arm64Kvm for FakeKvm {
 mod tests {
     use super::*;
     use crate::arch::arm64::{Arm64Policy, IdRegModel};
+
+    #[test]
+    fn backend_exposes_the_kvm_cancellation_latch() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let latch = Arc::new(AtomicBool::new(false));
+        let backend = Arm64KvmBackend::new(FakeKvm {
+            cancellation: Some(Arc::clone(&latch)),
+            ..FakeKvm::default()
+        });
+        let exposed = Backend::cancellation_flag(&backend).expect("cancellation latch");
+        assert!(Arc::ptr_eq(&exposed, &latch));
+        exposed.store(true, Ordering::Release);
+        assert!(latch.load(Ordering::Acquire));
+        assert!(Backend::cancellation_flag(&Arm64KvmBackend::new(FakeKvm::new())).is_none());
+    }
 
     fn mmio_store(gpa: u64, value: u64, len: u32) -> KvmRunView {
         KvmRunView {
