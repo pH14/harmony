@@ -1,12 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! SMB archive key, room completion, and campaign report shapes.
-//!
-//! The archive mechanism itself is generic ([`crate::search::archive`]);
-//! this module supplies the Super Mario Bros key, its group functions, room
-//! completion against the lineage, and the memory decoders that build keys
-//! from work RAM.
-
 use std::{error::Error, num::NonZeroUsize};
 
 use crate::search::archive::{
@@ -16,12 +9,6 @@ use crate::search::archive::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub use crate::smb::target::ROOM_IDENTITY_BYTES;
 
-/// The parent selector a recorded identifier names, resolved under the SMB
-/// key's pooled depths.
-///
-/// # Errors
-///
-/// Returns an error for an unrecognized identifier.
 pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
     crate::search::archive::selector_policy_from_identifier(
         identifier,
@@ -42,92 +29,41 @@ use crate::{
     target::Target,
 };
 
-/// The SMB archive instantiation of the generic snapshot archive.
 pub type SmbArchive<P = Vec<u8>> =
     Archive<ButtonChord, SmbArchiveKey, SmbMilestones, SmbSnapshot<P>>;
 
-/// The action-duration clock the replacement rule counts: held frames.
 pub(crate) fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
 }
 
-/// Progress-band width in 16-pixel buckets for the band group depth.
 const FRONTIER_PROGRESS_BAND: u16 = 4;
 const STATE_FINGERPRINT_MASK: u8 = 0x3f;
 
-/// Largest bounded action horizon accepted by the completion-only archive.
-/// A ceiling is not an allocation, and every campaign registers its own
-/// explicit per-run action limit that replay retains and validates under.
 pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 
-/// Identifier recorded for the archive key rule.
-///
-/// Rooms follow the area-span rule: a room opens when the area bytes change
-/// or when a lineage moves past every room it knows, and a same-area
-/// backward warp lands in the lineage's room of that area whose arrival page
-/// is the greatest one not past the landing page. On top of the room, the
-/// player's 16-pixel on-screen x bucket joins the key across the full frame
-/// width, computed by [`screen_x_bucket`], and the hundreds digit of the
-/// level clock at [`GAME_TIMER_HUNDREDS_OFFSET`]. The selection cell and the
-/// band read the camera and screen-x buckets summed into the player's
-/// level-x bucket; the band group depth pools [`FRONTIER_PROGRESS_BAND`] of
-/// those buckets.
 pub const KEY_POLICY_IDENTIFIER: &str =
     "frozen_area_span_screen_x_16_clock_100_band_4_player_x_cells_no_engine_state";
 
-/// One room identity: the area bytes at `ROOM_IDENTITY_BYTES` followed by
-/// the level page the lineage arrived in that area at. The arrival page is
-/// part of the identity because a warp can drop the player back into an area
-/// already walked through; the game keeps no settled byte that says so, but
-/// the screen never scrolls backward, so a child standing more than a page
-/// behind its parent inside one level can only have arrived by warp. Looping
-/// through the same warp arrives at the same page and adds no room.
 pub type SmbRoomIdentity = [u8; 3];
 
-/// Smallest backward progress step, in buckets, that only a warp can produce
-/// within one level: one full screen plus one bucket.
 const ROOM_ARRIVAL_SNAP: u16 = 17;
 
-/// Which of a full slot's entries a better candidate displaces.
-///
-/// The archive key locates a state; it says nothing about what reaching that
-/// state cost. Two routes to the same slot therefore collide, and the level
-/// clock is denominated in frames, so the candidate displaces the slot's
-/// costliest entry when it spent strictly fewer frames inside the current
-/// level. Frames-in-level is derived from the recorded action durations and
-/// the recorded level transitions alone.
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_frames_in_level";
 
-/// Fixed masks the admission probe tries, in order, stopping at the first survivor.
 const VIABILITY_PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
-/// Admission-probe horizon in frames.
 const VIABILITY_PROBE_FRAMES: u16 = 45;
 
-/// One bounded quality-diversity key for an action-boundary snapshot.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct SmbArchiveKey {
-    /// Mechanical world number.
     pub world: u8,
-    /// Mechanical level number.
     pub level: u8,
-    /// Current 16-pixel progress bucket.
     pub progress: u16,
-    /// Coarse player vertical-position bucket.
     pub player_y_bucket: u8,
-    /// Six-bit deterministic fingerprint of otherwise-hidden work RAM state.
     pub state_fingerprint: u8,
-    /// One-based 16-pixel screen-x bucket, present only for states inside
-    /// the registered scroll-frozen room; zero and omitted everywhere else.
     #[serde(default, skip_serializing_if = "room_x_bucket_is_absent")]
     pub room_x_bucket: u8,
-    /// Hundreds digit of the level clock, so routes that reach one position
-    /// with different time left are different cells and a faster route to a
-    /// known position counts as a discovery.
     #[serde(default)]
     pub time_bucket: u8,
-    /// The room the entry stands in, see [`SmbRoomIdentity`]. A freshly
-    /// decoded key carries the arrival identity (area bytes plus the current
-    /// page); completion against the parent's key and lineage resolves it.
     #[serde(default, skip_serializing_if = "room_is_absent")]
     pub room: SmbRoomIdentity,
 }
@@ -147,17 +83,6 @@ impl ArchiveKey for SmbArchiveKey {
         5
     }
 
-    /// Depths, finest to coarsest: 0 the retention slot (the full key), 1
-    /// the selection cell (fingerprint pooled, camera and screen-x buckets
-    /// summed into the player's level-x bucket), 2 the progress band within
-    /// a room, 3 the room, 4 the `(world, level)` pair.
-    ///
-    /// The retention slot keeps the camera and the player's screen position
-    /// apart because a pinned camera hides the player's movement from the
-    /// progress coordinate. For selection the sum is the position that
-    /// matters: where the camera stands still while the player crosses the
-    /// screen, one position would otherwise open a cell per screen-x bucket
-    /// and the walk would spread its draws over the copies.
     fn group(self, depth: usize) -> Self::Group {
         let mut group = self;
         if depth >= 1 {
@@ -181,11 +106,6 @@ impl ArchiveKey for SmbArchiveKey {
 
     type Lineage = Vec<SmbRoomIdentity>;
 
-    /// Resolve the room: an area change opens a room; a backward warp inside
-    /// one area lands in the lineage's room of that area with the greatest
-    /// arrival page not past the landing page, or opens a room at the
-    /// landing page when there is none; ordinary forward play keeps the
-    /// parent's room.
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self {
         let arrived_here = self.room;
         let room = match parent {
@@ -220,57 +140,31 @@ impl ArchiveKey for SmbArchiveKey {
     }
 }
 
-/// The SMB progress-curve point instantiation.
 pub type SmbArchiveProgressPoint =
     crate::search::archive::ProgressPoint<SmbMilestones, SmbProgressWatermark>;
 
-/// The SMB entry report instantiation.
 pub type SmbArchiveEntryReport = ArchiveEntryReport<ButtonChord, SmbArchiveKey, SmbMilestones>;
 
-/// Complete deterministic report for one snapshot-backed suffix-search campaign.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbArchiveReport {
-    /// Caller-provided seeded RNG value.
     pub seed: u64,
-    /// Number of suffix target executions.
     pub executions: u64,
-    /// Strongest milestone values reached.
     pub milestones: SmbMilestones,
-    /// Furthest per-frame mechanical position, including action interiors.
     #[serde(default)]
     pub progress_watermark: SmbProgressWatermark,
-    /// First execution reaching each milestone rung.
     pub first_reached: SmbMilestoneTimes,
-    /// First clean-reset input reaching each rung.
     pub first_inputs: SmbMilestoneInputs,
-    /// Current best clean-reset input.
     pub champion_input: SmbInput,
-    /// Insertion and replacement records for retained testcases.
-    ///
-    /// On disk each entry carries only the actions past its parent's input;
-    /// the full inputs are rebuilt on load. Archives written with full inputs
-    /// still load.
     #[serde(with = "entries_by_suffix")]
     pub entries: Vec<SmbArchiveEntryReport>,
-    /// Deterministic multi-resolution progress curve.
     pub progress_curve: Vec<SmbArchiveProgressPoint>,
-    /// Candidate snapshots admitted to the active archive.
     pub retained: u64,
-    /// Candidate snapshots rejected by bounded quality-diversity retention.
     pub rejected: u64,
-    /// Terminal death transitions observed.
     pub deaths: u64,
-    /// Selector accounting.
     #[serde(default)]
     pub selector: SelectorAccounting,
 }
 
-/// Probe whether a candidate stays alive for the admission horizon under any
-/// of the fixed masks; the target is left restored to the candidate.
-///
-/// # Errors
-///
-/// Returns an error when a restore fails.
 pub(crate) fn admission_is_viable<M, P>(
     target: &mut SmbTarget<M, P>,
     snapshot: &SmbSnapshot<P>,
@@ -305,11 +199,6 @@ pub(crate) fn merge_progress_watermark(
     }
 }
 
-/// Decode the archive key from work RAM. Workers leave the room zero so
-/// recorded result digests stay independent of room assignment; the
-/// coordinator stamps the arrival identity with [`stamp_arrival_room`]
-/// before insertion and [`ArchiveKey::complete`] resolves it against the
-/// lineage.
 pub(crate) fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
     let state = smb_mechanical_state_from_wram(wram);
     let digest = Sha256::digest(wram);
@@ -325,17 +214,8 @@ pub(crate) fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
     }
 }
 
-/// SMB level clock hundreds digit, `$07f8`, the first of the three timer
-/// display digits.
 const GAME_TIMER_HUNDREDS_OFFSET: usize = 0x07f8;
 
-/// Stamp the candidate's arrival identity into the key's room field: the
-/// area bytes at [`ROOM_IDENTITY_BYTES`] and the arrival page.
-///
-/// # Errors
-///
-/// Returns an error when the work RAM is too short to hold the identity
-/// bytes.
 pub(crate) fn stamp_arrival_room(
     key: SmbArchiveKey,
     wram: &[u8],
@@ -357,21 +237,8 @@ pub(crate) fn stamp_arrival_room_identity(
     Ok(key)
 }
 
-/// SMB player horizontal page byte, `$006d`, read by the room-x key term.
 const PLAYER_ROOM_X_PAGE_OFFSET: usize = 0x006d;
-/// SMB player horizontal position byte within the page, `$0086`.
 const PLAYER_ROOM_X_LOW_OFFSET: usize = 0x0086;
-/// The player's 16-pixel on-screen x bucket across the full frame width.
-///
-/// Wherever the camera is pinned — a scroll-locked room, a corridor, or
-/// the clamped end of an area — the camera-derived progress coordinate
-/// keeps one value while the player moves, and without this term every
-/// position in the region shares one slot. The bucket covers the whole
-/// width because pinned regions place their exits anywhere on screen,
-/// including left of the camera's follow point. While the camera follows
-/// the player it holds them near the follow point, so ordinary forward
-/// play occupies few buckets and the term stays cheap where the camera
-/// moves.
 fn screen_x_bucket(wram: &[u8; 2_048]) -> u8 {
     let player_x = u32::from(wram[PLAYER_ROOM_X_PAGE_OFFSET]) * 256
         + u32::from(wram[PLAYER_ROOM_X_LOW_OFFSET]);
@@ -379,48 +246,25 @@ fn screen_x_bucket(wram: &[u8; 2_048]) -> u8 {
     u8::try_from(screen_x.min(255) / 16).unwrap_or(15)
 }
 
-/// The original controller vocabulary. Its masks were written in the SMB
-/// disassembly's bit order, but the emulator reads the reverse order, so the
-/// chords it actually presses are: no button, A, B, Left, Right, A+Right,
-/// B+Right, A+B+Right, Up, Down — no leftward jump exists. It is kept only so
-/// recordings made under its identifier keep replaying byte-exact.
 pub const DOWN_TEN_BUTTON_MASKS: [u8; 10] =
     [0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10, 0x20];
 
-/// The earlier vocabulary in the emulator's bit order: no button, Right,
-/// Left, B, A, A+Right, A+Left, A+Left+Right, Up, Down. It has no B+direction
-/// chord, so the player can never run; it is kept only so recordings made
-/// under its identifier keep replaying byte-exact.
 pub const NES_DOWN_TEN_BUTTON_MASKS: [u8; 10] =
     [0x00, 0x80, 0x40, 0x02, 0x01, 0x81, 0x41, 0xc1, 0x10, 0x20];
 
-/// The controller vocabulary in the emulator's bit order: no button, Right,
-/// Left, B, A, and each direction with A, with B, and with A+B, then Up and
-/// Down. Start and Select are excluded because either pauses or leaves the
-/// game, and the pinned QuickNES options filter Left+Right.
 pub const NES_RUN_THIRTEEN_BUTTON_MASKS: [u8; 13] = [
     0x00, 0x80, 0x40, 0x02, 0x01, 0x81, 0x41, 0x82, 0x42, 0x83, 0x43, 0x10, 0x20,
 ];
 
-/// Every physically pressable chord in the emulator's bit order: each of the
-/// nine direction sets (none, Right, Left, Up, Down, and the four diagonals)
-/// with none, A, B, and A+B. Start and Select are excluded because either
-/// pauses or leaves the game, and the pinned QuickNES options filter the
-/// opposing pairs Left+Right and Up+Down. Which chords matter is left to the
-/// chord table to learn.
 pub const NES_PRESSABLE_BUTTON_MASKS: [u8; 36] = [
     0x00, 0x01, 0x02, 0x03, 0x80, 0x81, 0x82, 0x83, 0x40, 0x41, 0x42, 0x43, 0x10, 0x11, 0x12, 0x13,
     0x20, 0x21, 0x22, 0x23, 0x90, 0x91, 0x92, 0x93, 0xa0, 0xa1, 0xa2, 0xa3, 0x50, 0x51, 0x52, 0x53,
     0x60, 0x61, 0x62, 0x63,
 ];
 
-/// Shortest and longest hold of the short stratum, drawn for control.
 pub const SHORT_HOLD_FRAMES: (u8, u8) = (2, 12);
-/// Shortest and longest hold of the long stratum, drawn for time.
 pub const LONG_HOLD_FRAMES: (u8, u8) = (96, 120);
 
-/// Draw one chord: a uniform mask and a hold from one of two strata, short
-/// for control and long for time.
 pub(crate) fn sample_chord_from_masks(
     rand: &mut RomuDuoJrRand,
     masks: &[u8],
@@ -573,13 +417,11 @@ mod tests {
         let back = insert(&mut archive, Some(water), 4, key(260, [3, 5])).expect("back");
         assert_eq!(archive.entry_key(back).expect("back key").room, [3, 5, 16]);
         let tip = insert(&mut archive, Some(back), 5, key(304, [3, 5])).expect("tip");
-        // The page-19 loop returns to page 16: the after-water room covers it.
         let looped = insert(&mut archive, Some(tip), 6, key(258, [3, 5])).expect("loop");
         assert_eq!(
             archive.entry_key(looped).expect("loop key").room,
             [3, 5, 16]
         );
-        // A pipe back to page 1 lands in the start room, which covers page 1.
         let restart = insert(&mut archive, Some(looped), 7, key(20, [3, 5])).expect("restart");
         assert_eq!(
             archive.entry_key(restart).expect("restart key").room,
@@ -613,14 +455,11 @@ mod tests {
         };
         let (land, _) = insert(&mut archive, None, None, 1, key(10, [3, 5]));
         let land = land.expect("land");
-        // Two entries fill the water page-0 slot.
         let (first, _) = insert(&mut archive, Some(land), None, 1, key(3, [0, 2]));
         let first = first.expect("first");
         let (second, _) = insert(&mut archive, Some(land), None, 2, key(3, [0, 2]));
         second.expect("second");
         assert_eq!(archive.entry_key(first).expect("first key").room, [0, 2, 0]);
-        // A third boundary at page 0 is rejected; the boundary after it,
-        // at page 3, stays in the page-0 room instead of opening a room.
         let (rejected, at_page_0) = insert(&mut archive, Some(land), None, 3, key(3, [0, 2]));
         assert!(rejected.is_none());
         assert_eq!(at_page_0.room, [0, 2, 0]);
@@ -634,7 +473,6 @@ mod tests {
         let deep = deep.expect("deep");
         assert_eq!(key_deep.room, [0, 2, 0]);
         assert_eq!(archive.entry_key(deep).expect("deep key").room, [0, 2, 0]);
-        // Without the carried boundary the same candidate opens a page-3 room.
         let (fresh, _) = insert(&mut archive, Some(land), None, 5, key(50, [0, 2]));
         assert_eq!(
             archive

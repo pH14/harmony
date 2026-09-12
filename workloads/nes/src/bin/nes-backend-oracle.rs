@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Backend equivalence through actions, restored continuations, and probes.
 #[cfg(not(all(
     feature = "consonance",
     target_os = "linux",
@@ -120,8 +119,6 @@ mod real {
                 }
                 digest.update(serde_json::to_vec(&expected)?);
                 count += 1;
-                // Restore each backend's own snapshot, probe, and rerun the same action.
-                // Equality covers the probe's RAM, adapter caches and pending-input restoration.
                 native.restore(&ns)?;
                 vm.restore(&vs)?;
                 if n_probe(&mut native) != v_probe(&mut vm) {

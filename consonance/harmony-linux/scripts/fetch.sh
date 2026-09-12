@@ -72,18 +72,18 @@ fetch_one "$BUSYBOX_URL" "$BUSYBOX_SHA256" \
 fetch_one "$MUSL_URL" "$MUSL_SHA256"
 # PostgreSQL source for M3's native arm64 static container payload.
 fetch_one "$PG_SOURCE_URL" "$PG_SOURCE_SHA256"
-# PostgreSQL .debs for the task-37 bare-Postgres workload image.
+# PostgreSQL .debs for the bare-Postgres workload image.
 fetch_one "$PG_SERVER_DEB_URL" "$PG_SERVER_DEB_SHA256"
 fetch_one "$PG_CLIENT_DEB_URL" "$PG_CLIENT_DEB_SHA256"
 fetch_one "$PG_LIBPQ_DEB_URL" "$PG_LIBPQ_DEB_SHA256"
-# Docker's static binary bundle for the task-38 Postgres-in-Docker image
+# Docker's static binary bundle for the Postgres-in-Docker image
 # (sha256-pinned, curl-able anywhere).
 fetch_one "$DOCKER_TGZ_URL" "$DOCKER_TGZ_SHA256"
 
-# The official postgres image for task 38 — pulled by registry digest with the
+# The official postgres image — pulled by registry digest with the
 # box's `ctr` (containerd) and exported to a `docker load`-able tar. This step
 # needs a running containerd + network, so it is Linux/box-only and skipped
-# (with a clear note) elsewhere; the task-38 image build is Linux-root-only
+# (with a clear note) elsewhere; the docker image build is Linux-root-only
 # anyway, and build-docker-image.sh fails loudly if the tar is missing.
 fetch_postgres_image() {
     out="dl/postgres-image.tar"
@@ -95,7 +95,7 @@ fetch_postgres_image() {
     # runners ship a ctr binary the runner user cannot talk to.
     if ! ctr version >/dev/null 2>&1; then
         echo "skip: $out — needs 'ctr' (containerd). Run 'make -C consonance/harmony-linux fetch' on the" >&2
-        echo "      Linux box where the task-38 image is built; the digest is pinned in" >&2
+        echo "      Linux box where the docker image is built; the digest is pinned in" >&2
         echo "      versions.lock so the pull is content-verified there." >&2
         return
     fi
@@ -115,15 +115,15 @@ fetch_postgres_image() {
 }
 fetch_postgres_image
 
-# --- task 86: the commit-pinned libretro NES core (SMB game workload) --------
-# The SMB ROM itself is NEVER fetched by any script in this repo (task 86's
+# --- the commit-pinned libretro NES core (SMB game workload) --------
+# The SMB ROM itself is NEVER fetched by any script in this repo (a
 # hard requirement) — only the open-source emulator core (FCEUmm,
 # GPL-2.0-or-later — see versions.lock for the per-file audit) is pinned
 # here; the ROM enters the image build via the user-supplied HARMONY_SMB_ROM
 # path.
 fetch_one "$FCEUMM_URL" "$FCEUMM_SHA256"
 
-# --- task 49: k3s (lightweight Kubernetes) -----------------------------------
+# --- k3s (lightweight Kubernetes) -----------------------------------
 # The k3s binary + the air-gap images tarball, both URL+sha256-pinned in
 # versions.lock (verified against the release's own sha256sum-amd64.txt).
 fetch_one "$K3S_BIN_URL" "$K3S_BIN_SHA256"

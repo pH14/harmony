@@ -1,35 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![no_std]
-#![doc = "Deterministic guest/host hypercall wire protocol framing, guest client helpers, and host dispatch support for the deterministic VMM."]
-//!
-//! # Services and opcodes (the wire ABI)
-//!
-//! Every request names a [`ServiceId`] and a service-specific `opcode`. The
-//! registered services and their opcodes (mirrored in `docs/ARCHITECTURE.md`):
-//!
-//! | Service | id | opcode(s) |
-//! |---------|----|-----------|
-//! | [`Console`](ServiceId::Console) | 1 | `1` = write bytes |
-//! | [`Entropy`](ServiceId::Entropy) | 2 | `1` = fill from the seeded stream |
-//! | [`Block`](ServiceId::Block)     | 3 | `1` = capacity, `2` = read sectors |
-//! | [`Event`](ServiceId::Event)     | 4 | `1` = emit `(event_id, bytes)` (fire-and-forget) |
-//! | [`Net`](ServiceId::Net)         | 5 | reserved legacy service id |
-//! | [`Sdk`](ServiceId::Sdk)         | 6 | `2` = `coverage_yield`; `3` = opaque package service request |
-//! | [`Pvclock`](ServiceId::Pvclock) | 7 | `1` = `pvclock_register` (publishes the guest clock-page GPA) |
-//! | [`Payload`](ServiceId::Payload) | 8 | `1` = consume one exact-length staged payload entry |
-//!
-//! Id **5** is the task-61 `Net` vertical (the first guest-plane fault path); the
-//! task-73 SDK control service ([`Sdk`](ServiceId::Sdk)) takes id **6**; the
-//! task-110 paravirt virtual-time clock registration ([`Pvclock`](ServiceId::Pvclock))
-//! takes id **7**; the ordered cooperating-workload payload service takes id
-//! **8**. An
-//! unregistered service id or an opcode a service does not implement is a
-//! [`Status::UnknownService`] / [`Status::UnknownOpcode`], never a silent drop.
-//!
-//! Fault packages use SDK opcode 3 for package-defined requests. The namespace,
-//! request identity, and payload are opaque to this crate; a package adapter
-//! owns any catalog or policy encoding. Service id 5 remains reserved so old
-//! frames receive an explicit status rather than being silently reinterpreted.
 
 #[cfg(feature = "host")]
 extern crate std;
@@ -40,11 +10,8 @@ use std::{boxed::Box, collections::BTreeMap, vec::Vec};
 #[cfg(any(feature = "guest", not(feature = "host")))]
 use core::fmt;
 
-/// Maximum bytes in a hypercall frame, including the header.
 pub const MAX_FRAME: usize = 4096;
-/// Size of the fixed wire header in bytes.
 pub const HEADER_LEN: usize = 24;
-/// Maximum bytes in a hypercall frame payload.
 pub const MAX_PAYLOAD: usize = MAX_FRAME - HEADER_LEN;
 const MAGIC: u32 = 0x3150_4348;
 const KIND_REQUEST: u16 = 1;
@@ -52,67 +19,24 @@ const KIND_RESPONSE: u16 = 2;
 const SECTOR_SIZE: usize = 512;
 const BLOCK_READ_MAX_SECTORS: usize = 7;
 
-/// Wire length of an SDK `coverage_yield` request: `thread:u32`,
-/// `observed:u64`, then `ready:u32`, all little-endian.
 pub const SDK_COVERAGE_REQUEST_LEN: usize = 16;
-/// Wire length of an SDK `coverage_yield` response: `next_threshold:u64`, then
-/// `selected:u32`, both little-endian.
 pub const SDK_COVERAGE_RESPONSE_LEN: usize = 12;
-/// Initial per-thread basic-block threshold and the fixed distance between
-/// thresholds. A thread's first callback exits at count one; every successful
-/// exit prescribes the next threshold before the guest resumes.
 pub const SDK_COVERAGE_QUANTUM: u64 = 1;
 #[cfg(feature = "host")]
 const ENTROPY_FALLBACK_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 #[cfg(feature = "host")]
 const ENTROPY_MUL: u64 = 0x2545_F491_4F6C_DD1D;
 
-/// Hypercall service identifiers used on the wire.
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum ServiceId {
-    /// Console output service.
     Console = 1,
-    /// Deterministic entropy service.
     Entropy = 2,
-    /// Read-only block device service.
     Block = 3,
-    /// Test/coverage event service.
     Event = 4,
-    /// Reserved legacy network service id. Fault packages use the generic SDK
-    /// opcode-3 channel and own their request encoding in an optional adapter.
     Net = 5,
-    /// SDK control service (task 73): opcode 2 reaches an instrumented coverage
-    /// threshold and opcode 3 carries an opaque package-defined request.
     Sdk = 6,
-    /// Paravirt virtual-time clock registration (task 110,
-    /// `consonance/vtime/README.md`): the guest publishes the guest-physical
-    /// address of its 4 KiB clock page (op 1, `pvclock_register` — an 8-byte
-    /// little-endian GPA). The host validates the GPA (page-aligned, inside
-    /// guest RAM, clear of the doorbell frame pages and of any device-MMIO
-    /// hole), **records it as pending**, and answers with the 4-byte
-    /// little-endian page-layout ABI version (`HARMONY_PVCLOCK_ABI = 1`).
-    ///
-    /// **Registration is a two-step handshake — the page is NOT stamped by the
-    /// response.** The doorbell `OUT` is a plain PIO exit, not a V-time
-    /// intercept, so the host lays down the first page stamp and arms its
-    /// staleness refresh only at the guest's **required** post-response counter
-    /// read (an `RDTSC`/`RDTSCP` — a genuine exit-boundary variability-free intercept). A conforming
-    /// guest MUST execute that read before reading the page: reading the page
-    /// immediately after the response would observe stale bytes (ABI version
-    /// zero / no `MATERIALIZED` flag). A guest that omits the handshake is out of
-    /// contract — its page is never stamped and never refreshed.
-    ///
-    /// A host not composed with the clock page — or one whose backend has no
-    /// deterministic exit-count clock to derive the stamps from — answers
-    /// [`Status::UnknownService`], and the guest keeps its trap-backstopped time
-    /// paths (the page is pure opt-in on both sides).
     Pvclock = 7,
-    /// Ordered cooperating-workload input service (virtual_time V-time M2).
-    /// Opcode 1 carries a 4-byte little-endian requested length and consumes
-    /// exactly one entry from the branch's recorded payload tape. The response
-    /// is that entry verbatim. Exhaustion is [`Status::OutOfRange`]; a length
-    /// mismatch is [`Status::BadRequest`] and consumes nothing.
     Payload = 8,
 }
 
@@ -122,21 +46,14 @@ impl ServiceId {
     }
 }
 
-/// Hypercall response status codes.
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Status {
-    /// Request completed successfully.
     Ok = 0,
-    /// Request frame or payload was malformed.
     BadRequest = 1,
-    /// No service was registered for the requested service id.
     UnknownService = 2,
-    /// The service does not implement the requested opcode.
     UnknownOpcode = 3,
-    /// The request addressed data outside the service's valid range.
     OutOfRange = 4,
-    /// The service or dispatcher encountered an internal failure.
     Internal = 5,
 }
 
@@ -159,79 +76,40 @@ impl Status {
     }
 }
 
-/// Decoded hypercall frame header fields.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameHeader {
-    /// Wire magic value, always `0x31504348` for decoded frames.
     pub magic: u32,
-    /// Frame kind: `1` request or `2` response.
     pub kind: u16,
-    /// Raw service identifier.
     pub service: u16,
-    /// Service-specific opcode.
     pub opcode: u16,
-    /// Raw status code; requests use zero.
     pub status: u16,
-    /// Request sequence number, echoed by responses.
     pub seq: u32,
-    /// Payload length in bytes.
     pub payload_len: u32,
-    /// Reserved field, always zero for decoded frames.
     pub reserved: u32,
 }
 
-// Host-only (a dispatcher concern): the guest is a client, never routes frames,
-// so gating this keeps the `no_std` guest build — hence the SDK-demo binary and
-// its hashed memory image — byte-identical.
 #[cfg(feature = "host")]
 impl FrameHeader {
-    /// Whether this header is a **structurally valid request** — every
-    /// request-header invariant [`decode`] does NOT already enforce, checked in
-    /// one step so a dispatcher servicing guest bytes validates the whole header
-    /// before routing (not one field per bug report):
-    ///
-    /// - `kind == 1` (request): [`decode`] accepts BOTH request and response
-    ///   frames (the guest client decodes responses), so a response-typed frame
-    ///   is not a valid request.
-    /// - `status == 0`: `status` is a **response-only** field; a request carrying
-    ///   a non-zero status is malformed and must not be serviced.
-    /// - `reserved == 0`: defense in depth — [`decode`] already rejects a
-    ///   non-zero reserved, but re-checking makes this a total request predicate
-    ///   independent of that guarantee.
-    ///
-    /// `magic` and `reserved`/`payload_len` bounds are validated by [`decode`]
-    /// itself, and `seq` is an arbitrary caller value (no invariant). **Service /
-    /// opcode validity is deliberately NOT here** — an unknown service or opcode
-    /// is a routing outcome with its own correlatable status
-    /// ([`Status::UnknownService`] / [`Status::UnknownOpcode`]), not a `BadRequest`.
     pub fn is_request(&self) -> bool {
         self.kind == KIND_REQUEST && self.status == 0 && self.reserved == 0
     }
 }
 
-/// Protocol errors produced by frame, client, and snapshot handling.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "host", derive(thiserror::Error))]
 pub enum ProtoError {
-    /// A caller-provided output buffer is too small.
     #[cfg_attr(feature = "host", error("buffer too small"))]
     BufferTooSmall,
-    /// Payload is larger than the single-page wire format permits.
     #[cfg_attr(feature = "host", error("payload too large"))]
     PayloadTooLarge,
-    /// Input ended before a complete frame or field was available.
     #[cfg_attr(feature = "host", error("truncated frame"))]
     Truncated,
-    /// The frame magic is not `HCP1`.
     #[cfg_attr(feature = "host", error("bad magic"))]
     BadMagic,
-    /// A header field has an invalid value.
     #[cfg_attr(feature = "host", error("invalid header"))]
     InvalidHeader,
-    /// A service payload is malformed.
     #[cfg_attr(feature = "host", error("bad payload"))]
     BadPayload,
-    /// A saved-state blob is malformed or does not match registration.
     #[cfg_attr(feature = "host", error("bad state"))]
     BadState,
 }
@@ -252,7 +130,6 @@ impl fmt::Display for ProtoError {
     }
 }
 
-/// Encode a request frame into `buf`, returning the total frame length.
 pub fn encode_request(
     service: ServiceId,
     opcode: u16,
@@ -263,7 +140,6 @@ pub fn encode_request(
     encode_frame(KIND_REQUEST, service.as_u16(), opcode, 0, seq, payload, buf)
 }
 
-/// Encode a response frame into `buf`, returning the total frame length.
 pub fn encode_response(
     service: ServiceId,
     opcode: u16,
@@ -294,16 +170,6 @@ fn encode_response_raw(
     )
 }
 
-/// Encode an **empty error response** echoing a **raw** `service`/`opcode` (task
-/// 73). A doorbell dispatcher answers an unrecognized `service` id — which no
-/// [`ServiceId`] variant represents, so [`encode_response`] cannot express it —
-/// with a clean [`Status::UnknownService`] frame that echoes the request's raw
-/// `service`/`opcode`/`seq`. The guest transport validates that echo (service +
-/// opcode + seq must match its request), so echoing the raw fields lets it
-/// correlate the frame and surface `ClientError::Status(UnknownService)` instead
-/// of hanging on a missing reply — honoring the module contract ("never a silent
-/// drop"). Mirrors the reference server's dispatch. Returns `0` if `buf` is too
-/// small (the doorbell reads that as "no reply written").
 pub fn encode_error(service: u16, opcode: u16, seq: u32, status: Status, buf: &mut [u8]) -> usize {
     encode_response_raw(service, opcode, seq, status, &[], buf).unwrap_or(0)
 }
@@ -337,7 +203,6 @@ fn encode_frame(
     Ok(total)
 }
 
-/// Write the 24-byte wire header into `buf[..HEADER_LEN]`; callers guarantee capacity.
 fn write_header(
     buf: &mut [u8],
     kind: u16,
@@ -357,7 +222,6 @@ fn write_header(
     put_u32(&mut buf[20..24], 0);
 }
 
-/// Decode and validate a frame, returning its header and a payload slice borrowed from `buf`.
 pub fn decode(buf: &[u8]) -> Result<(FrameHeader, &[u8]), ProtoError> {
     if buf.len() < HEADER_LEN {
         return Err(ProtoError::Truncated);
@@ -446,26 +310,17 @@ fn read_u64(buf: &[u8], offset: usize) -> Result<u64, ProtoError> {
 mod guest {
     use super::*;
 
-    /// Transport implemented by the guest VMCALL shim.
     pub trait Transport {
-        /// Transport-specific error type.
         type Error;
-        /// Submit a request frame and write the response frame into `resp`.
         fn exchange(&mut self, req: &[u8], resp: &mut [u8]) -> Result<usize, Self::Error>;
     }
 
-    /// Errors returned by the guest client.
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub enum ClientError<E> {
-        /// The underlying transport failed.
         Transport(E),
-        /// Frame encoding or decoding failed.
         Protocol(ProtoError),
-        /// The response sequence did not match the request.
         SeqMismatch,
-        /// The response was not an `Ok` status.
         Status(Status),
-        /// The caller supplied an invalid length.
         InvalidLength,
     }
 
@@ -481,19 +336,16 @@ mod guest {
         }
     }
 
-    /// Guest-side client for deterministic hypercall services.
     pub struct Client<T: Transport> {
         transport: T,
         seq: u32,
     }
 
     impl<T: Transport> Client<T> {
-        /// Create a client with sequence counter starting at one.
         pub fn new(transport: T) -> Self {
             Self { transport, seq: 1 }
         }
 
-        /// Write bytes to the console service.
         pub fn console_write(&mut self, bytes: &[u8]) -> Result<(), ClientError<T::Error>> {
             let mut offset = 0;
             while offset < bytes.len() || (bytes.is_empty() && offset == 0) {
@@ -507,7 +359,6 @@ mod guest {
             Ok(())
         }
 
-        /// Fill `out` with deterministic entropy bytes.
         pub fn entropy_fill(&mut self, out: &mut [u8]) -> Result<(), ClientError<T::Error>> {
             let mut offset = 0;
             while offset < out.len() {
@@ -528,7 +379,6 @@ mod guest {
             Ok(())
         }
 
-        /// Return the block device capacity in 512-byte sectors.
         pub fn block_capacity(&mut self) -> Result<u64, ClientError<T::Error>> {
             let mut out = [0_u8; 8];
             let copied = self.call_copy(ServiceId::Block, 1, &[], &mut out)?;
@@ -538,7 +388,6 @@ mod guest {
             read_u64(&out, 0).map_err(ClientError::Protocol)
         }
 
-        /// Read sectors beginning at `lba` into `out`.
         pub fn block_read(
             &mut self,
             mut lba: u64,
@@ -570,11 +419,6 @@ mod guest {
             Ok(())
         }
 
-        /// Emit a deterministic test/coverage event.
-        ///
-        /// One emit is exactly one Emit request: `data` longer than
-        /// `MAX_PAYLOAD - 4` is rejected, never fragmented into multiple
-        /// events (the host counts each frame as a distinct event).
         pub fn event_emit(&mut self, id: u32, data: &[u8]) -> Result<(), ClientError<T::Error>> {
             if data.len() > MAX_PAYLOAD - 4 {
                 return Err(ClientError::InvalidLength);
@@ -585,11 +429,6 @@ mod guest {
             self.call_expect_empty(ServiceId::Event, 1, &payload[..4 + data.len()])
         }
 
-        /// Consume one exact-length entry from the host's staged payload tape.
-        /// The request carries only `out.len()` as a little-endian `u32`; on
-        /// success the response must fill `out` exactly. Empty or over-frame
-        /// requests are rejected locally. Tape exhaustion surfaces as
-        /// [`ClientError::Status`]`(`[`Status::OutOfRange`]`)`.
         pub fn payload_fetch(&mut self, out: &mut [u8]) -> Result<(), ClientError<T::Error>> {
             if out.is_empty() || out.len() > MAX_PAYLOAD {
                 return Err(ClientError::InvalidLength);
@@ -603,15 +442,6 @@ mod guest {
             Ok(())
         }
 
-        /// Surface one crossed instrumented-coverage threshold (SDK op 2).
-        ///
-        /// `thread` is the payload's stable logical-thread id, `observed` is
-        /// that thread's exact basic-block count, and `ready` is the number of
-        /// runnable logical threads. The host validates that `observed` equals
-        /// the threshold it prescribed at this thread's preceding exit, then
-        /// returns `(next_threshold, selected)`. `selected` is an index in
-        /// `0..ready`; the cooperating runtime dispatches that runnable thread.
-        /// The initial prescribed threshold is [`SDK_COVERAGE_QUANTUM`].
         pub fn coverage_yield(
             &mut self,
             thread: u32,
@@ -638,10 +468,6 @@ mod guest {
             Ok((next, selected))
         }
 
-        /// Ask a package-defined service through SDK opcode 3. The namespace and
-        /// request identity are replay coordinates; payload bytes belong to the
-        /// package. A nominal response is `None`; a data response returns the
-        /// number of bytes copied, including zero for an empty data response.
         pub fn service_request(
             &mut self,
             namespace: u16,
@@ -674,21 +500,6 @@ mod guest {
             }
         }
 
-        /// Publish the guest's paravirt clock-page GPA to the host (task 110's
-        /// [`ServiceId::Pvclock`], op 1) and return the host's page-layout ABI
-        /// version (`HARMONY_PVCLOCK_ABI`). One request carries the 8-byte
-        /// little-endian page-aligned `gpa`; the response is exactly the 4-byte
-        /// little-endian ABI version — any other length is a protocol error,
-        /// never trusted. The caller must treat any error (including the
-        /// [`Status::UnknownService`] a clock-page-less host answers) as "no
-        /// page offered" and keep its trap-backstopped time paths.
-        ///
-        /// **The response only records a pending registration — it does NOT
-        /// stamp the page (see [`ServiceId::Pvclock`]).** After a successful
-        /// response the caller MUST perform the registration handshake — a
-        /// single `RDTSC`/`RDTSCP` — before reading the page; that counter read
-        /// is the intercept at which the host writes the first stamp. Reading the
-        /// page between the response and the handshake observes stale bytes.
         pub fn pvclock_register(&mut self, gpa: u64) -> Result<u32, ClientError<T::Error>> {
             let mut payload = [0_u8; 8];
             put_u64(&mut payload, gpa);
@@ -754,7 +565,6 @@ mod guest {
                 .transport
                 .exchange(&req[..req_len], &mut resp)
                 .map_err(ClientError::Transport)?;
-            // `len` ultimately comes from the host (RAX); never trust it to be in bounds.
             let frame = resp
                 .get(..len)
                 .ok_or(ClientError::Protocol(ProtoError::Truncated))?;
@@ -796,22 +606,17 @@ pub use guest::{Client, ClientError, Transport};
 mod host {
     use super::*;
 
-    /// Host-side implementation of one service.
     pub trait Service {
-        /// Handle one request payload and write the response payload into `resp_payload`.
         fn handle(
             &mut self,
             opcode: u16,
             payload: &[u8],
             resp_payload: &mut [u8],
         ) -> (Status, usize);
-        /// Serialize all state that influences future responses.
         fn save_state(&self) -> Vec<u8>;
-        /// Restore state produced by `save_state`.
         fn restore_state(&mut self, state: &[u8]) -> Result<(), ProtoError>;
     }
 
-    /// Host dispatcher that routes request frames to registered services.
     pub struct Dispatcher {
         services: BTreeMap<u16, Box<dyn Service>>,
     }
@@ -823,19 +628,16 @@ mod host {
     }
 
     impl Dispatcher {
-        /// Create an empty dispatcher.
         pub fn new() -> Self {
             Self {
                 services: BTreeMap::new(),
             }
         }
 
-        /// Register or replace a service implementation for `id`.
         pub fn register(&mut self, id: ServiceId, svc: Box<dyn Service>) {
             let _old = self.services.insert(id.as_u16(), svc);
         }
 
-        /// Decode, route, and encode exactly one response frame.
         pub fn dispatch(&mut self, req_buf: &[u8], resp_buf: &mut [u8]) -> usize {
             if resp_buf.len() < HEADER_LEN {
                 return 0;
@@ -846,9 +648,6 @@ mod host {
                 Err(ProtoError::BadMagic) => {
                     return encode_error(0, 0, 0, Status::BadRequest, resp_buf);
                 }
-                // Any other failure (truncated payload, bad reserved/len/kind) means the
-                // 24-byte header itself was readable, so its raw fields must be echoed;
-                // only a header shorter than 24 bytes (None) takes the all-zeros path.
                 Err(_) => {
                     let (service, opcode, seq) = raw_header_fields(req_buf).unwrap_or((0, 0, 0));
                     return encode_error(service, opcode, seq, Status::BadRequest, resp_buf);
@@ -887,8 +686,6 @@ mod host {
                     resp_buf,
                 );
             }
-            // The service already wrote its payload at resp_buf[HEADER_LEN..]; finish
-            // the frame by writing the header in front of it.
             write_header(
                 resp_buf,
                 KIND_RESPONSE,
@@ -901,7 +698,6 @@ mod host {
             HEADER_LEN + payload_len
         }
 
-        /// Snapshot registered services in ascending service-id order.
         pub fn save_state(&self) -> Vec<u8> {
             let mut out = Vec::new();
             for (id, service) in &self.services {
@@ -913,15 +709,9 @@ mod host {
             out
         }
 
-        /// Restore a snapshot into an identically registered dispatcher.
-        ///
-        /// On error the dispatcher is left in the state it had on entry; a failed
-        /// restore never leaves services partially overwritten.
         pub fn restore_state(&mut self, state: &[u8]) -> Result<(), ProtoError> {
             let backup = self.save_state();
             self.try_restore(state).inspect_err(|_| {
-                // Rolling back replays each service's own save_state output, which
-                // the Service contract obliges restore_state to accept.
                 let _ = self.try_restore(&backup);
             })
         }
@@ -963,19 +753,16 @@ mod host {
         encode_response_raw(service, opcode, seq, status, &[], resp_buf).unwrap_or_default()
     }
 
-    /// Reference console service that collects all written bytes.
     #[derive(Clone, Debug, Default, Eq, PartialEq)]
     pub struct ConsoleSink {
         bytes: Vec<u8>,
     }
 
     impl ConsoleSink {
-        /// Create an empty console sink.
         pub fn new() -> Self {
             Self { bytes: Vec::new() }
         }
 
-        /// Return all bytes written so far.
         pub fn bytes(&self) -> &[u8] {
             &self.bytes
         }
@@ -1006,14 +793,12 @@ mod host {
         }
     }
 
-    /// Reference deterministic entropy service using the specified xorshift64* stream.
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct SeededEntropy {
         state: u64,
     }
 
     impl SeededEntropy {
-        /// Create a deterministic entropy stream from `seed`.
         pub fn new(seed: u64) -> Self {
             Self {
                 state: normalize_seed(seed),
@@ -1067,8 +852,6 @@ mod host {
                 return Err(ProtoError::BadState);
             }
             let value = read_u64(state, 0)?;
-            // save_state can never produce 0 (seed 0 is remapped and xorshift64 is a
-            // bijection on nonzero states); accepting it would pin the stream at zero.
             if value == 0 {
                 return Err(ProtoError::BadState);
             }
@@ -1085,14 +868,12 @@ mod host {
         }
     }
 
-    /// Reference read-only in-memory block device with 512-byte sectors.
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct MemBlockDevice {
         data: Vec<u8>,
     }
 
     impl MemBlockDevice {
-        /// Create a block device; `data.len()` must be a multiple of 512.
         pub fn new(data: Vec<u8>) -> Result<Self, ProtoError> {
             if !data.len().is_multiple_of(SECTOR_SIZE) {
                 return Err(ProtoError::BadPayload);
@@ -1100,7 +881,6 @@ mod host {
             Ok(Self { data })
         }
 
-        /// Return capacity in 512-byte sectors.
         pub fn sector_count(&self) -> u64 {
             (self.data.len() / SECTOR_SIZE) as u64
         }
@@ -1177,19 +957,16 @@ mod host {
         }
     }
 
-    /// Reference event service that records emitted events.
     #[derive(Clone, Debug, Default, Eq, PartialEq)]
     pub struct EventSink {
         events: Vec<(u32, Vec<u8>)>,
     }
 
     impl EventSink {
-        /// Create an empty event sink.
         pub fn new() -> Self {
             Self { events: Vec::new() }
         }
 
-        /// Return recorded events in arrival order.
         pub fn events(&self) -> &[(u32, Vec<u8>)] {
             &self.events
         }
@@ -1260,9 +1037,6 @@ mod host {
         }
     }
 
-    /// Deterministic reference implementation of the generic SDK coverage
-    /// handshake. Package-specific request decoding belongs outside this crate;
-    /// this service only owns the opcode-2 scheduling protocol.
     #[derive(Clone, Debug, Default, Eq, PartialEq)]
     pub struct CoverageService {
         coverage_thresholds: BTreeMap<u32, u64>,
@@ -1270,12 +1044,10 @@ mod host {
     }
 
     impl CoverageService {
-        /// Create an empty coverage service.
         pub fn new() -> Self {
             Self::default()
         }
 
-        /// Coverage asks in call order as `(thread, observed, ready, selected)`.
         pub fn asked(&self) -> &[(u32, u64, u32, u32)] {
             &self.coverage_asked
         }
@@ -1379,14 +1151,6 @@ mod host {
         }
     }
 
-    /// Deterministic **reference** paravirt-clock registrar for loopback tests
-    /// (task 110, [`ServiceId::Pvclock`]): validates the 8-byte little-endian
-    /// GPA payload of a `pvclock_register` (op 1) against a fixed guest-RAM
-    /// size and page alignment, records it, and answers the 4-byte ABI
-    /// version. The production host is `vmm-core`'s doorbell dispatch, which
-    /// additionally stamps the page and gates on its V-time wiring; this
-    /// reference exists so the guest `Client::pvclock_register` verb and the
-    /// frame shape are loopback-testable with no VM.
     pub struct PvclockRegistrar {
         ram_len: u64,
         abi_version: u32,
@@ -1394,8 +1158,6 @@ mod host {
     }
 
     impl PvclockRegistrar {
-        /// A registrar validating GPAs against `ram_len` bytes of guest RAM
-        /// and answering `abi_version`.
         pub fn new(ram_len: u64, abi_version: u32) -> Self {
             Self {
                 ram_len,
@@ -1404,17 +1166,10 @@ mod host {
             }
         }
 
-        /// The registered page GPA, if the guest has published one.
         pub fn registered(&self) -> Option<u64> {
             self.registered
         }
 
-        /// A GPA is a valid clock-page target iff it is 4 KiB-aligned and its
-        /// whole 4 KiB page lies inside `ram_len` bytes of guest RAM. Both the
-        /// live registration ([`Service::handle`]) and a restored registration
-        /// ([`Service::restore_state`]) MUST agree on this, so both route
-        /// through here — a restore can never resurrect a GPA `handle` would
-        /// have rejected.
         fn gpa_fits(gpa: u64, ram_len: u64) -> bool {
             gpa.is_multiple_of(4096) && gpa.checked_add(4096).is_some_and(|end| end <= ram_len)
         }
@@ -1436,15 +1191,9 @@ mod host {
             if payload.len() != 8 {
                 return (Status::BadRequest, 0);
             }
-            // One-shot (the frozen ABI, mirroring the production host): the
-            // first accepted registration pins the target for the machine's
-            // life; ANY second register — same GPA or not — is a guest fault,
-            // rejected before the range check exactly as production orders it,
-            // so loopback tests exercise the semantics real guests will hit.
             if self.registered.is_some() {
                 return (Status::BadRequest, 0);
             }
-            // Page-aligned and wholly inside guest RAM, else OutOfRange.
             if !Self::gpa_fits(gpa, self.ram_len) {
                 return (Status::OutOfRange, 0);
             }
@@ -1479,13 +1228,6 @@ mod host {
                 0 => None,
                 1 => {
                     let gpa = take_u64(state, &mut offset)?;
-                    // Re-validate the decoded registration with the SAME
-                    // alignment + RAM-containment rule `handle` enforces,
-                    // against the blob's own `ram_len` (the size the source
-                    // validated against). A malformed state blob
-                    // therefore cannot restore a registration `handle` would
-                    // have rejected — an unaligned or out-of-RAM GPA that would
-                    // later stamp outside the page window (cross-model r12 P2).
                     if !Self::gpa_fits(gpa, ram_len) {
                         return Err(ProtoError::BadState);
                     }

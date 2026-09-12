@@ -1,10 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Property test: the NDJSON wire is a lossless codec.
-//!
-//! For every `Event` — across every `EventKind` variant, including the additive
-//! `Dropped` notice and the `[u8; 32]` checkpoint hash — `from_ndjson(to_ndjson(ev))`
-//! reproduces it exactly, and the encoding is a single line (NDJSON framing). This
-//! is the lossless-recording guarantee the replay path depends on.
 
 use proptest::prelude::*;
 use telemetry::{Event, EventKind, ExitCounts, from_ndjson, to_ndjson};
@@ -28,8 +22,6 @@ fn exit_counts() -> impl Strategy<Value = ExitCounts> {
 
 fn event_kind() -> impl Strategy<Value = EventKind> {
     prop_oneof![
-        // `any::<String>()` exercises arbitrary UTF-8 incl. control chars and
-        // non-ASCII — JSON must escape and recover them byte-for-byte.
         any::<String>().prop_map(|text| EventKind::Console { text }),
         (any::<u32>(), proptest::collection::vec(any::<u8>(), 0..48))
             .prop_map(|(id, data)| EventKind::GuestEvent { id, data }),
@@ -89,8 +81,6 @@ proptest! {
         prop_assert_eq!(back, ev);
     }
 
-    /// A whole stream of events round-trips line-by-line (the recorder/replay
-    /// shape: one JSON object per line, decoded independently).
     #[test]
     fn ndjson_stream_roundtrips(evs in proptest::collection::vec(event(), 0..64)) {
         let mut buf = String::new();

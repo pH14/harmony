@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Task 110 r21 P2 proof: build-kernel.sh must run the counter-opcode SCAN and
+# Proof that build-kernel.sh must run the counter-opcode SCAN and
 # pass it BEFORE it publishes the bzImage to the canonical `consonance/harmony-linux/build/bzImage`
 # that campaign-runner consumes. Otherwise a kernel the gate REJECTS is left at
 # that path (the scan used to run after the install).

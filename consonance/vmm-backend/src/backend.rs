@@ -1,18 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The `Backend` trait — the trap apparatus decoupled from the deterministic VMM
-//! above it (ruling R-Backend), generic over the ISA it traps
-//! (`docs/ARCHITECTURE.md`).
-//!
-//! One impl per (substrate, arch) pair; **nothing above this trait may branch on
-//! which substrate is in use, and nothing above the arch seam may branch on
-//! which ISA is in use**. The trait is **object-safe / dyn-compatible** so the
-//! binary's composition root can hold a `Box<dyn Backend<A = X86>>` and inject
-//! the platform backend at `fn main` — no generic methods, no
-//! `Self`-by-value returns. The composition root is the one place a concrete
-//! `(Backend impl, Arch vendor)` pair is named.
-//!
-//! **Designed, NOT frozen.** This trait's shape is the ruled §A design. Do not
-//! treat compiles-for-x86 as frozen-for-every-vendor.
 
 use std::sync::{Arc, atomic::AtomicBool};
 
@@ -21,35 +7,11 @@ use crate::error::Result;
 use crate::exit::{Capabilities, Exit, ExitCounts};
 use crate::types::Gpa;
 
-/// The trap apparatus, decoupled from the deterministic VMM above it.
-///
-/// See the crate docs for the run-loop / completion contract. Implementations:
-/// [`MockBackend`](crate::MockBackend) (portable, deterministic, for tests) and
-/// `KvmBackend` (Linux-only, the bring-up stock-KVM impl), both over the
-/// [`X86`](crate::arch::x86::X86) vendor.
 pub trait Backend {
-    /// The ISA this backend traps ([`Arch`]); the vendor is a zero-sized type.
     type A: Arch;
 
-    // --- configuration (installed once, before the first run) ----------------
-
-    /// Install the frozen guest-visible CPU-contract policy — on x86 the CPUID
-    /// model (`KVM_SET_CPUID2`) **then** the default-deny MSR filter
-    /// (`KVM_CAP_X86_USER_SPACE_MSR` with the full mask
-    /// `FILTER | UNKNOWN | INVAL`, then `KVM_X86_SET_MSR_FILTER`), so a
-    /// denied/unknown/invalid MSR access surfaces as an exit (loud) instead of
-    /// a silent in-kernel `#GP`. MUST be called before the first
-    /// `run`; otherwise the guest would see the host-derived
-    /// defaults (boot- and determinism-breaking).
     fn set_policy(&mut self, policy: &<Self::A as Arch>::Policy) -> Result<()>;
 
-    // --- memory ---------------------------------------------------------------
-
-    /// Map a guest-physical region to host-owned, pinned, pre-populated backing
-    /// store (no demand paging — a determinism choice). `gpa` and `host.len()`
-    /// MUST be 4 KiB-aligned. Bring-up uses a single memslot;
-    /// overlapping/duplicate maps error.
-    ///
     /// # Safety
     /// The caller MUST guarantee that `host`'s backing (a) stays live at a fixed
     /// address — pinned, never reallocated or moved — until the backend is
@@ -66,207 +28,55 @@ pub trait Backend {
     /// every later `run`.
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()>;
 
-    /// Drain-and-reset the backend's **guest-write dirty-page log** (task 95
-    /// M2.1): return the guest frame numbers dirtied *by guest execution* since
-    /// the previous drain (or since the region was mapped), **sorted ascending
-    /// and deduplicated**, and atomically reset the log so the next drain
-    /// covers exactly the span from this call. On KVM this is `KVM_GET_DIRTY_LOG`
-    /// (retrieve-and-reset) per RAM memslot, decoded and translated back to
-    /// absolute gfns.
-    ///
-    /// **A cost hint, never a correctness input.** Callers use the result only
-    /// to bound how much memory a snapshot capture re-reads; on `Err` they MUST
-    /// fall back to a full scan (which is correct-by-dedup), never fail the
-    /// operation, and never trust a set they cannot prove complete. An
-    /// over-report (superset) is harmless — capture-side dedup discards no-op
-    /// writes; an implementation must never under-report a guest write.
-    /// **Host-side writes through the mapped backing are invisible to this log**
-    /// (KVM tracks sptes, not the userspace mapping) — the layer that writes
-    /// guest RAM from the host must track those itself.
-    ///
-    /// The default returns [`Unsupported`](crate::BackendError::Unsupported): a
-    /// backend without dirty tracking simply makes every caller take the
-    /// full-scan path.
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
         Err(crate::error::BackendError::Unsupported {
             what: "drain_dirty_pages",
         })
     }
 
-    // --- run loop -------------------------------------------------------------
-
-    /// Run the vCPU until an exit needs the VMM. Blocking. The returned `Exit` is
-    /// the ONLY channel by which the guest becomes observable. Before resuming a
-    /// read-style, MSR, `Hypercall`, or `Cpuid` exit, the VMM MUST call the
-    /// matching completion method; calling `run` again with such an exit
-    /// un-serviced is [`PendingCompletion`](crate::BackendError::PendingCompletion)
-    /// (fail closed). Increments the per-reason counter for the exit it returns.
-    /// Returns [`NotConfigured`](crate::BackendError::NotConfigured) if called
-    /// before `set_policy` has succeeded.
     fn run(&mut self) -> Result<Exit<Self::A>>;
 
-    /// Inject an event immediately (x86: an **NMI** via `KVM_NMI`), or set the
-    /// pending maskable-IRQ identity (equivalent to
-    /// [`set_pending_irq`](Backend::set_pending_irq)`(Some(id))`). The VMM
-    /// decides WHEN (a V-time boundary). For the V-time timer the VMM drives
-    /// the maskable path through [`set_pending_irq`](Backend::set_pending_irq)
-    /// directly (re-arbitrated each entry); `inject` exists for the
-    /// non-maskable path and as a one-shot maskable convenience.
     fn inject(&mut self, event: <Self::A as Arch>::Injection) -> Result<()>;
 
-    /// Set (overwrite) the single pending **maskable** interrupt identity
-    /// ([`Arch::IntId`]) to inject at the next injectable VM-entry — `None`
-    /// clears it (and disarms the interrupt window). The backend holds **one**
-    /// identity, not a queue: the VMM owns the userspace interrupt fabric,
-    /// whose pending-register file *is* the multi-IRQ queue, and
-    /// **re-arbitrates** (re-peeks the current highest-priority deliverable
-    /// identity) at **every** entry, overwriting this slot. So an identity is
-    /// never injected stale — if the guest raised its priority threshold or a
-    /// higher-priority IRQ arrived since (any fabric access exits to the VMM),
-    /// the next entry's call passes the re-arbitrated identity (or `None`) —
-    /// and a second/lower IRQ is never dropped (it stays pending in the
-    /// fabric).
-    ///
-    /// The backend delivers the set identity at the next entry: `KVM_INTERRUPT`
-    /// when the guest can take it, else it arms the interrupt window and
-    /// retries on `KVM_EXIT_IRQ_WINDOW_OPEN`. An identity becomes observable as
-    /// *accepted* only once `KVM_INTERRUPT` is actually issued — see
-    /// [`take_accepted_interrupt`].
-    ///
-    /// [`take_accepted_interrupt`]: Backend::take_accepted_interrupt
     fn set_pending_irq(&mut self, id: Option<<Self::A as Arch>::IntId>) -> Result<()>;
 
-    /// Drain (and return) the next maskable interrupt identity the backend has
-    /// **accepted** into the guest — i.e. for which `KVM_INTERRUPT` was actually
-    /// issued — since the last call; `None` when none is pending report.
-    ///
-    /// The VMM models its userspace fabric's pending→in-service transition as
-    /// *interrupt acceptance*, which happens inside the backend on VM-entry. So
-    /// the VMM leaves an identity pending in the fabric when it sets it via
-    /// [`set_pending_irq`](Backend::set_pending_irq), and completes the
-    /// transition only when this method reports the identity accepted — keeping
-    /// the register file (and any snapshot taken while one waits on the
-    /// interrupt window) showing it pending, not prematurely in-service.
-    /// Backends that never accept a maskable IRQ return `None`.
     fn take_accepted_interrupt(&mut self) -> Option<<Self::A as Arch>::IntId>;
 
-    // --- exit completion (the read/write/hypercall round-trip) ----------------
-
-    /// Supply the value for a pending **read-style** exit: an MMIO load, or an
-    /// arch read-style exit (x86: `Io` IN, `Rdmsr`, `Rdtsc`, `Rdtscp`,
-    /// `Rdrand`, `Rdseed`). The low `size`/`width` bytes are delivered to the
-    /// guest's destination. Errors
-    /// [`NoPendingRead`](crate::BackendError::NoPendingRead) if no read-style
-    /// exit is pending. (Stock `KvmBackend` never surfaces the instruction-read
-    /// exits, so it completes only IO/MMIO/MSR reads; the instruction-read
-    /// completions exist for a backend with userspace instruction emulation.)
     fn complete_read(&mut self, value: u64) -> Result<()>;
 
-    /// The contract's `deny-gp` disposition for a pending MSR exit: inject
-    /// `#GP` into the guest (on KVM, set `kvm_run.msr.error != 0`). Errors
-    /// [`BadCompletion`](crate::BackendError::BadCompletion) if the pending exit
-    /// is not an MSR exit.
     fn complete_fault(&mut self) -> Result<()>;
 
-    /// Resolve a pending `Wrmsr` whose contract disposition is **not** `deny-gp`:
-    /// `allow` (the write is acknowledged) or `deny-ignore` (the write is
-    /// dropped). On KVM both resume with `kvm_run.msr.error == 0`; the
-    /// apply-vs-drop distinction is the VMM's own bookkeeping. Errors
-    /// [`BadCompletion`](crate::BackendError::BadCompletion) if the pending exit
-    /// is not a `Wrmsr`.
     fn complete_ok(&mut self) -> Result<()>;
 
-    /// Set the hypercall return slot (the response-frame length per
-    /// docs/ARCHITECTURE.md, or 0 on transport error) for a pending `Hypercall`.
-    /// Which guest register carries the return is the backend's per-arch
-    /// knowledge (x86: `RAX`). Errors if none pending.
     fn complete_hypercall(&mut self, ret: u64) -> Result<()>;
 
-    /// Resolve a pending arch exit whose completion carries an **arch payload**
-    /// ([`Arch::Completion`]; x86: the CPUID result quad). Errors
-    /// [`BadCompletion`](crate::BackendError::BadCompletion) if the pending exit
-    /// does not match the completion.
     fn complete_arch(&mut self, completion: <Self::A as Arch>::Completion) -> Result<()>;
 
-    /// Retire a completion that has already been staged in the backend's
-    /// userspace-exit buffer, without executing the next guest instruction.
-    ///
-    /// Implementations that support retirement return success without doing
-    /// anything when no completion is staged. The default implementation does
-    /// not know whether anything is staged and therefore returns
-    /// [`Unsupported`](crate::BackendError::Unsupported) unconditionally. On a
-    /// backend that cannot retire a staged subtype without guest execution,
-    /// this method fails closed and leaves the completion staged. This
-    /// operation is used when restoring a snapshot in place: the stale
-    /// completion must be consumed before the restored architectural state is
-    /// installed, but the restored guest must not advance.
     fn retire_pending_completion(&mut self) -> Result<()> {
         Err(crate::error::BackendError::Unsupported {
             what: "retire_pending_completion",
         })
     }
 
-    /// Finish the serviced exit without executing its successor instruction.
-    /// Returns another device access when the same instruction needs a further
-    /// userspace response (for example, a fragmented MMIO load or read/modify/write).
-    /// The caller must service that access and call this again before exposing a
-    /// stopped execution. This is completion processing, never a normal guest run.
-    ///
-    /// The default is for backends whose completed exit state is already fully
-    /// represented by save and needs no further userspace device access.
     fn finish_exit(&mut self) -> Result<Option<Exit<Self::A>>> {
         Ok(None)
     }
 
-    // --- snapshot / restore ---------------------------------------------------
-
-    /// Full guest-visible vCPU state for snapshot/restore. `[refinement]`:
-    /// fallible here — the underlying `KVM_GET_*` ioctls can fail and library
-    /// code must not `unwrap` (rule #4).
     fn save(&self) -> Result<<Self::A as Arch>::VcpuState>;
 
-    /// Restore a vCPU state produced by `save`. Fails with
-    /// [`PendingCompletion`](crate::BackendError::PendingCompletion) before
-    /// mutation when an exit is awaiting service or a completed userspace exit
-    /// is still armed in the substrate; callers must complete and retire it
-    /// first. On success the restored record is authoritative: transient
-    /// pending-injection, interrupt-window, and accepted-interrupt bookkeeping
-    /// from the displaced timeline is cleared. Validates internal consistency;
-    /// [`InvalidState`](crate::BackendError::InvalidState) on a
-    /// malformed/incompatible blob (never a panic).
     fn restore(&mut self, state: &<Self::A as Arch>::VcpuState) -> Result<()>;
 
-    // --- observability (R-Backend normative) ----------------------------------
-
-    /// Per-exit-reason trap counts since the last reset. **Recorded every run**
-    /// and surfaced in the unison report; the empirical input that gates the
-    /// deferred RDTSC optimization. Cheap, always on. Deterministic order.
     fn exit_counts(&self) -> ExitCounts;
 
-    /// Reset every per-reason counter to zero.
     fn reset_exit_counts(&mut self);
 
-    /// What determinism this backend can and cannot honestly provide. The
-    /// unison report reads this to refuse to *claim* determinism for a
-    /// payload that needs a capability the backend lacks.
     fn capabilities(&self) -> Capabilities<<Self::A as Arch>::Caps>;
 
-    /// Host-only latch for abandoning a run whose vCPU thread stops returning
-    /// to the host. A watchdog sets it and then interrupts the vCPU thread with
-    /// a signal; every guest entry checks it, so cancellation never becomes a
-    /// guest event and never advances virtual time. A canceled VM must be
-    /// discarded rather than resumed. `None` when the backend cannot be
-    /// interrupted mid-run.
     fn cancellation_flag(&self) -> Option<Arc<AtomicBool>> {
         None
     }
 }
 
-/// Blanket forward so the composition root can inject a concrete backend as a
-/// `Box<dyn Backend<A = …>>` and run a `Vmm` over it (R-Backend / task-21 P5:
-/// the one place a concrete backend is named is `fn main`; everything above the
-/// trait is backend-agnostic). `Backend` is dyn-compatible (no generic methods,
-/// no `Self`-by-value returns), so `Box<dyn Backend<A = …>>` is a `Backend` too.
 impl<B: Backend + ?Sized> Backend for Box<B> {
     type A = B::A;
 
@@ -281,8 +91,6 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
     }
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
-        // Explicit forward: without this the default (Unsupported) body would
-        // shadow the boxed backend's real dirty log.
         (**self).drain_dirty_pages()
     }
 
@@ -367,10 +175,6 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// A deliberately minimal implementor that relies on the trait's default
-    /// retirement behavior. Keeping this separate from the mocks makes the
-    /// default fail-closed contract, and the boxed forward to that default,
-    /// directly observable.
     #[derive(Default)]
     struct DefaultRetireBackend {
         finish_calls: Arc<AtomicUsize>,

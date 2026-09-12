@@ -1,17 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Minimal deterministic cpio "newc" writer.
-//!
-//! The staged container bundle is injected into the guest by appending a
-//! second initramfs segment to the stock guest initramfs: the kernel accepts
-//! concatenated cpio archives (and concatenated gzip members decompress to
-//! their concatenation), and later entries override earlier ones. Entries are
-//! written in sorted order with zeroed mtimes so the same bundle always
-//! produces the same bytes — the segment participates in the run digest.
-//!
-//! Ownership is the caller's to supply: a staged tree on the host was written
-//! by whoever ran the staging, so its on-disk owners say nothing about the
-//! image, while the kernel's initramfs unpacker honors the owner recorded in
-//! each entry. Entries default to root.
 
 use std::io::Write;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
@@ -25,8 +12,6 @@ pub enum CpioError {
     Io(#[from] std::io::Error),
 }
 
-/// The owner recorded in one archive entry, which the kernel applies when it
-/// unpacks the initramfs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Owner {
     pub uid: u32,
@@ -53,9 +38,6 @@ impl Writer {
     fn header(&mut self, name: &str, mode: u32, owner: Owner, filesize: usize) {
         let ino = self.ino;
         self.ino += 1;
-        // 070701 magic + 13 fields of 8 hex digits: ino, mode, uid, gid,
-        // nlink, mtime, filesize, devmajor, devminor, rdevmajor, rdevminor,
-        // namesize, check. mtime is pinned to 0 for byte stability.
         let namesize = name.len() + 1;
         let Owner { uid, gid } = owner;
         let _ = write!(
@@ -102,15 +84,10 @@ impl Writer {
         self.pad4();
     }
 
-    /// Recursively add `dir`'s contents under archive path `prefix`, in
-    /// sorted order, every entry owned by root.
     pub fn tree(&mut self, dir: &Path, prefix: &str) -> Result<(), CpioError> {
         self.tree_owned(dir, prefix, &|_| Owner::ROOT)
     }
 
-    /// Recursively add `dir`'s contents under archive path `prefix`, in
-    /// sorted order. `owner_of` names each entry's owner by its path relative
-    /// to `dir`.
     pub fn tree_owned(
         &mut self,
         dir: &Path,
@@ -148,8 +125,6 @@ impl Writer {
                 let data = std::fs::read(&path)?;
                 self.file_owned(&archive_name, meta.permissions().mode(), owner, &data);
             } else if ftype.is_fifo() || ftype.is_socket() || meta.rdev() != 0 {
-                // Images occasionally carry stray sockets/devices; the guest
-                // gets fresh /dev and /run mounts, so skipping is safe.
                 continue;
             } else {
                 return Err(CpioError::Unsupported(path));
@@ -158,7 +133,6 @@ impl Writer {
         Ok(())
     }
 
-    /// Close the archive and return its bytes (uncompressed cpio).
     pub fn finish(mut self) -> Vec<u8> {
         self.header("TRAILER!!!", 0, Owner::ROOT, 0);
         self.out
@@ -175,8 +149,6 @@ impl Default for Writer {
 mod tests {
     use super::{Owner, Writer};
 
-    /// Same logical contents, same bytes: the segment participates in the
-    /// run digest, so the writer must be a pure function of the tree.
     #[test]
     fn identical_input_identical_bytes() {
         let build = || {
@@ -199,8 +171,6 @@ mod tests {
         assert!(bytes.windows(10).any(|win| win == b"TRAILER!!!"));
     }
 
-    /// One parsed newc entry: (name, ino, mode, filesize, data), plus the
-    /// offset just past the entry.
     fn parse_entry(bytes: &[u8], at: usize) -> (String, u32, u32, usize, Vec<u8>, usize) {
         let field = |i: usize| {
             let s = std::str::from_utf8(&bytes[at + 6 + 8 * i..at + 6 + 8 * (i + 1)]).unwrap();
@@ -219,13 +189,9 @@ mod tests {
         (name, ino, mode, filesize as usize, data, next)
     }
 
-    /// The header fields are what the kernel's newc parser reads: exact type
-    /// bits, permission masking, NUL-counted namesize, sequential inodes.
     #[test]
     fn header_fields_parse_back_exactly() {
         let mut w = Writer::new();
-        // High bits beyond 0o7777 must be masked off (tree() passes the raw
-        // st_mode, which carries the file-type bits).
         w.dir("d", 0o040755);
         w.file("d/f", 0o100640, b"12345");
         w.symlink("d/l", b"f");
@@ -250,7 +216,6 @@ mod tests {
         assert_eq!(next, bytes.len());
     }
 
-    /// The uid and gid fields of one parsed newc entry.
     fn parse_owner(bytes: &[u8], at: usize) -> Owner {
         let field = |i: usize| {
             let s = std::str::from_utf8(&bytes[at + 6 + 8 * i..at + 6 + 8 * (i + 1)]).unwrap();
@@ -262,9 +227,6 @@ mod tests {
         }
     }
 
-    /// Every entry names its own owner, and the plain entry points record
-    /// root. The kernel applies these fields when it unpacks the archive, so
-    /// they are what decides which guest user can read a staged file.
     #[test]
     fn entries_record_the_owner_they_were_given() {
         let postgres = Owner { uid: 70, gid: 70 };
@@ -296,8 +258,6 @@ mod tests {
         );
     }
 
-    /// tree_owned() asks for each entry's owner by its path relative to the
-    /// walked root, and tree() is the same walk with every entry root's.
     #[test]
     fn tree_owned_looks_up_each_entry_by_relative_path() {
         let dir = tempfile::tempdir().unwrap();
@@ -344,8 +304,6 @@ mod tests {
         assert_eq!(parse_owner(&plain, 0), Owner::ROOT);
     }
 
-    /// tree() walks a real directory in sorted order, following the same
-    /// entry encodings; fifos and sockets are skipped, not errors.
     #[test]
     fn tree_archives_sorted_recursive_contents() {
         let dir = tempfile::tempdir().unwrap();
@@ -360,9 +318,6 @@ mod tests {
                 .unwrap()
                 .success()
         );
-        // Some restricted test sandboxes disallow AF_UNIX bind even inside a
-        // private temporary directory. The FIFO still exercises the other
-        // skipped-file branch; when sockets are available, keep covering it.
         let _listener = match std::os::unix::net::UnixListener::bind(dir.path().join("sock")) {
             Ok(listener) => Some(listener),
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => None,

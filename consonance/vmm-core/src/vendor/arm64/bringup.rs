@@ -1,20 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The arm64 boot composition (`tasks/112` M3) — the arm64 analogue of x86's
-//! `bringup::compose`: install the CPU-contract policy **through the trait**,
-//! allocate RAM, flat-load the `Image`, build + place the DTB, build + restore
-//! the entry state, map the RAM, and return a [`Vmm`] ready to `run()`.
-//!
-//! [`compose`] takes the `Backend` **by value** (constructed bare at the
-//! composition root; policy goes in through [`Backend::set_policy`], not a
-//! concrete constructor), so the composition — including the `unsafe`
-//! `map_memory` pointer seam — is unit-testable with the `MockArm64Backend` on
-//! every platform (and under Miri). The one place a concrete
-//! `(Arm64KvmBackend, Arm64)` pair is named is the M4 `boot_selected`
-//! (Linux+aarch64-gated) — not here.
-//!
-//! HVF composes the userspace GICv3. KVM/arm64 instead owns an in-kernel
-//! GICv3, so its boot root leaves the userspace model unwired and drives the
-//! clockevent PPI through the backend's level-input seam.
 
 use vmm_backend::{Arm64, Backend, Gpa};
 
@@ -22,10 +6,6 @@ use super::board::{PAGE, RAM_BASE, align_up};
 use super::{contract, dtb, entry, image_loader};
 use crate::vmm::{GuestRam, Vmm, VmmError};
 
-/// Boot an arm64 `Image` with the shared guest policy via [`compose`].
-/// Takes the `Backend` by value (constructed bare at the composition root),
-/// mirroring x86's `boot`. The one place a concrete `(Arm64KvmBackend, Arm64)`
-/// pair is named is the M4 `boot_selected` (Linux+aarch64-gated).
 pub fn boot<B: Backend<A = Arm64>>(
     backend: B,
     image: &[u8],
@@ -35,16 +15,6 @@ pub fn boot<B: Backend<A = Arm64>>(
     compose(backend, image, bootargs, guest_ram_len)
 }
 
-/// Compose a ready [`Vmm`] for an arm64 `Image` boot with a backend supplied
-/// by the caller. This is testable with mocks on every platform. Order is
-/// load-bearing:
-/// policy **before** the first run; map **before** restore; `ram` moves into
-/// the `Vmm` so the mapped pointer stays valid.
-///
-/// # Errors
-/// [`VmmError::vendor_boot`] wrapping an [`image_loader::ImageLoadError`] (a
-/// malformed image or one that does not fit alongside the DTB), or a
-/// [`VmmError::Backend`] from policy install / map / restore.
 pub(crate) fn compose<B: Backend<A = Arm64>>(
     backend: B,
     image: &[u8],
@@ -54,11 +24,6 @@ pub(crate) fn compose<B: Backend<A = Arm64>>(
     compose_inner(backend, image, None, bootargs, guest_ram_len, true)
 }
 
-/// Shared arm64 composition with an explicit control-channel mapping choice.
-/// The control mapping is a canonical 16-KiB low-GPA region, matching Apple
-/// HVF's measured mapping granule while retaining the fixed request/response
-/// page GPAs in its upper half. The M1 boot omits it because that milestone has
-/// no SDK control channel; M2 opts in through [`boot_hvf_control`].
 fn compose_inner<B: Backend<A = Arm64>>(
     mut backend: B,
     image: &[u8],
@@ -67,22 +32,11 @@ fn compose_inner<B: Backend<A = Arm64>>(
     guest_ram_len: usize,
     map_doorbell: bool,
 ) -> Result<Vmm<B>, VmmError> {
-    // 1. Install the contract policy skeleton through the trait, before the
-    //    first run (the arm64 `ID_AA64*` freeze + trapped-sysreg table; rows
-    //    TODO(AA-6)).
     backend.set_policy(&contract::policy())?;
 
-    // 2. Allocate RAM and flat-load the Image.
     let mut ram = GuestRam::new(guest_ram_len)?;
     let loaded = image_loader::load(image, ram.as_mut_bytes()).map_err(VmmError::vendor_boot)?;
 
-    // 3. Lay out RAM above the loaded image, page-aligned: an optional external
-    //    initramfs, the **reserved pvclock page** (the hm-rk5 seam), then the
-    //    DTB. Placing
-    //    pvclock before the DTB makes its GPA depend only on the kernel extent —
-    //    not the DTB length — so the DTB (whose `/reserved-memory` child's
-    //    node name is `pvclock@<hex(gpa)>`, a variable-length unit-address) is
-    //    built **once**, with no circular size↔name dependency.
     let ram_len = u64::try_from(guest_ram_len)
         .map_err(|_| VmmError::ContractViolation("arm64 guest RAM length exceeds u64".into()))?;
     let (initrd_layout, post_initrd_off) = if let Some(bytes) = initramfs {
@@ -146,32 +100,15 @@ fn compose_inner<B: Backend<A = Arm64>>(
     }
     ram_bytes[dtb_start..dtb_end].copy_from_slice(&dtb_bytes);
 
-    // 4. Map the RAM into the backend; it retains a pointer into `ram`.
-    // SAFETY (granted purpose 2, mirroring x86 `compose`): `ram` is moved into
-    // the returned `Vmm` in step 6 and its mmap/Vec backing does not move, so
-    // the pointer stays valid for the backend's lifetime; the run loop holds
-    // `&mut self`, so the backing is never aliased while a run is in flight;
-    // GuestRam's off-Miri backing is a page-aligned mmap as
-    // KVM_SET_USER_MEMORY_REGION requires. The guest RAM is mapped at RAM_BASE
-    // (arm64 RAM is high; device frames sit below it, so no memslot split).
     unsafe {
         backend.map_memory(Gpa(RAM_BASE), ram.as_mut_bytes())?;
     }
 
-    // 5. Build + restore the entry state, overlaid onto a live `save()`
-    //    template (keeping the backend's valid EL1 sysreg shape — the arm64
-    //    get→modify→set pattern).
     let entry_state = entry::boot_entry(loaded.entry_gpa, dtb_gpa);
     let mut state = backend.save()?;
     entry::apply_entry(&mut state, &entry_state);
     backend.restore(&state)?;
 
-    // 6. Hand the configured backend + owned RAM to the Vmm, record the high RAM
-    //    base, and map the hypercall-transport ABI pages as a dedicated low-GPA
-    //    memslot. arm64 RAM is high (RAM_BASE), so the absolute ABI GPAs
-    //    (REQ_GPA/RESP_GPA) fall below it and cannot be the main RAM's offset —
-    //    tasks/112 keeps the transport magic unchanged, which favors mapping the
-    //    absolute pages over per-arch GPA translation (see Vmm::map_doorbell_pages).
     let mut vmm = Vmm::new(backend, ram);
     vmm.ram_base_gpa = RAM_BASE;
     if map_doorbell {
@@ -192,15 +129,6 @@ fn layout_fits(
         && initrd_end.is_none_or(|end| end <= ram_len)
 }
 
-/// Compose the measured macOS/arm64 Hypervisor.framework backend for the M1
-/// Linux boot. The userspace GICv3 is wired because HVF surfaces its CPU
-/// interface sysregs and accepts pending IRQ injection at the vCPU boundary.
-/// The legacy 8-KiB doorbell mapping is intentionally absent; M1 has no SDK
-/// control channel and HVF requires 16-KiB guest mappings on this host.
-///
-/// # Errors
-/// Returns HVF construction, image, mapping, state, or GIC
-/// composition error without falling back to a different execution path.
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
 pub fn boot_hvf(
     image: &[u8],
@@ -226,18 +154,10 @@ pub fn boot_hvf(
         },
         0,
     )?);
-    // Virtual-time mode stamps the page at serviced exits.
     vmm.enable_pvclock();
     Ok(vmm)
 }
 
-/// Compose the measured macOS/arm64 backend with the canonical 16-KiB control
-/// memslot required by the M2 cooperating payload. All other wiring is exactly
-/// [`boot_hvf`]'s: userspace GICv3, assigned-at-exit V-time, and pvclock.
-///
-/// # Errors
-/// Returns the same fail-closed composition errors as [`boot_hvf`], including
-/// any HVF rejection of the measured control mapping.
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
 pub fn boot_hvf_control(
     image: &[u8],
@@ -267,23 +187,6 @@ pub fn boot_hvf_control(
     Ok(vmm)
 }
 
-/// **The composition root** (`tasks/112` M4): the one place the concrete
-/// `(Arm64KvmBackend, Arm64)` pair is named — Linux+aarch64-gated, mirroring
-/// x86's stock-KVM virtual-time boot. Constructs the stock KVM/arm64 backend
-/// (`KVM_CREATE_VM` → `KVM_CREATE_VCPU` → `KVM_ARM_VCPU_INIT` in
-/// `LiveKvm::new`), boxes it as `Box<dyn Backend<A = Arm64>>`, composes the
-/// same Image + initramfs bytes as the HVF oracle, and wires exit-assigned
-/// V-time plus the paravirtual clock. The in-kernel GICv3 owns guest GIC MMIO
-/// and ICC system registers; no userspace GIC model is composed.
-///
-/// The real `KVM_RUN` boot to a console marker and the same-seed `state_hash`
-/// determinism gate over this pair run natively on msr1 during M4; there is no
-/// local KVM loop (`hm-8l3` REFUSE), so this root has no
-/// local oracle — only the aarch64-linux cross-check compiles it.
-///
-/// # Errors
-/// [`VmmError::Backend`] if `/dev/kvm` is unavailable or an init ioctl fails;
-/// any [`boot`] error thereafter.
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub fn boot_selected(
     image: &[u8],
@@ -294,14 +197,6 @@ pub fn boot_selected(
     boot_selected_inner(image, initramfs, bootargs, guest_ram_len, false)
 }
 
-/// Compose the Linux/aarch64 KVM backend with the canonical retained control
-/// slot used by the cooperating NES payload. The in-kernel GICv3, assigned
-/// V-time, pvclock, image, initramfs, and entry state are otherwise identical
-/// to [`boot_selected`].
-///
-/// # Errors
-/// Returns the same fail-closed construction and composition errors as
-/// [`boot_selected`], including any KVM rejection of the control memslot.
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub fn boot_selected_control(
     image: &[u8],
@@ -347,35 +242,26 @@ mod tests {
     use super::*;
     use vmm_backend::MockArm64Backend;
 
-    /// A tiny valid Image with a nonzero text_offset, so the load + DTB
-    /// placement path is exercised end to end.
     fn tiny_image() -> Vec<u8> {
-        // 256 bytes of "code" behind the header, page-aligned load.
         image_loader::wrap_image(&[0x42u8; 256], 0, 0xA)
     }
 
     #[test]
     fn compose_loads_image_places_dtb_and_sets_entry() {
-        // 16 MiB RAM: room for the tiny image + DTB + reserved page.
         let ram_len = 16 * 1024 * 1024;
         let backend = MockArm64Backend::new();
         let vmm = compose(backend, &tiny_image(), "console=ttyAMA0", ram_len).unwrap();
 
-        // The composed vCPU entered at RAM_BASE with x0 pointing at a DTB in RAM.
         let vcpu = vmm.inspect_vcpu();
         assert_eq!(vcpu.core.pc, RAM_BASE);
         assert_eq!(vcpu.core.pstate, entry::PSTATE_EL1H_DAIF);
         let dtb_gpa = vcpu.core.x[0];
         assert!(dtb_gpa > RAM_BASE && dtb_gpa < RAM_BASE + ram_len as u64);
 
-        // The DTB actually landed at x0 and parses back.
         let off = (dtb_gpa - RAM_BASE) as usize;
         let mem = vmm.guest_memory();
         let parsed = dtb::parse(&mem[off..]).unwrap();
         assert!(parsed.nodes.iter().any(|n| n == "pl011@9000000"));
-        // The reserved pvclock node's name is its `reg` address as unit-address
-        // (`pvclock@<hex>`); its GPA is real, page-aligned RAM, and — with the
-        // single-pass layout — sits below the DTB.
         let pvclock_node = parsed
             .nodes
             .iter()
@@ -441,7 +327,6 @@ mod tests {
 
     #[test]
     fn compose_rejects_an_image_that_does_not_fit() {
-        // 4 KiB RAM cannot hold even the header + a DTB.
         let backend = MockArm64Backend::new();
         assert!(compose(backend, &tiny_image(), "", 0x1000).is_err());
     }

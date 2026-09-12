@@ -1,15 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Stock-KVM Go runtime acceptance for #276. The same uninstrumented workload
-//! runs with default Go settings on both production kernel profiles. Repeated
-//! boots must agree on the execution trace and full-state checkpoints, including
-//! a checkpoint at the workload's success marker. The corresponding traps-off
-//! kernel is a planted control: it must expose differing host-counter values in
-//! the full guest state, preventing a production pass from masking disabled
-//! counter confinement.
-//!
-//! Build with `nix run .#guest-images -- --output OUT`, stage OUT/x86_64 under
-//! consonance/harmony-linux/build, then run this ignored test on Linux/x86 KVM.
-//! An external timeout is required: a stuck KVM_RUN cannot poll a Rust watchdog.
 
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
@@ -51,7 +40,6 @@ fn final_state_hash(log: &NormalizedLog, label: &str) -> [u8; 32] {
 fn boot(kernel: &[u8], initramfs: &[u8], label: &str) -> (NormalizedLog, [u8; 32]) {
     let mut vmm = boot_linux_stock_virtual_time(kernel, initramfs, RAM, CMDLINE, SEED)
         .expect("stock-KVM virtual-time boot");
-    // not order-observable: host watchdog bounds the test, never guest state.
     #[allow(clippy::disallowed_methods)]
     let start = Instant::now();
     let mut printed = 0;
@@ -124,11 +112,6 @@ fn uninstrumented_go_repeats_on_production_kernels_and_rejects_traps_off() {
         }
     }
 
-    // This is a planted control for the proof above. With CR4.TSD disabled,
-    // Go's ordinary runtime counter reads expose the host TSC. The workload
-    // still completes, but the full guest state and therefore the normalized
-    // trace must not repeat. A passing production-profile run cannot be
-    // credited unless this kernel is observably different.
     let traps_off = artifact("bzImage-n6-traps-off");
     let (first, first_digest) = boot(&traps_off, &initramfs, "bzImage-n6-traps-off-1");
     let (second, second_digest) = boot(&traps_off, &initramfs, "bzImage-n6-traps-off-2");

@@ -72,16 +72,17 @@ repository checks live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Repository map
 
-- `consonance/` contains the deterministic VMM, machine models, snapshots,
-  guest protocols, Linux guest environment, and snapshot/control runtime.
-- `dissonance/` contains the campaign engine, search archive, and target
-  interfaces.
+- [`consonance/`](consonance/README.md) contains the deterministic VMM, machine
+  models, snapshots, guest protocols, Linux guest environment, and
+  snapshot/control runtime.
+- [`dissonance/`](dissonance/README.md) contains the campaign engine, search
+  archive, and target interfaces.
 - `workloads/` contains NES adapters, guest payloads, fault tooling, and package
   preparation.
 - `scripts/` contains repository-level development and validation helpers.
 
 Consonance and Dissonance build independently. Standalone workload crates consume
-their interfaces; the CLI composes them. The [Cargo dependency policy](docs/dependency-boundaries.toml)
+their interfaces; the CLI composes them. The [Cargo dependency policy](scripts/dependency-boundaries.toml)
 and its required CI check enforce the direction of dependencies, including
 optional, target-specific, build, and development dependencies. Consonance owns
 opaque input transport and deterministic state. Fault definitions and policies

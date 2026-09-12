@@ -1,190 +1,68 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Determinism test harness and divergence bisector.
-//!
-//! The project's central invariant is *same seed ⇒ bit-identical execution*.
-//! This crate checks that invariant for any [`Subject`] implementation and,
-//! when it breaks, finds the exact unit of work at which two supposedly
-//! identical runs first diverge: [`compare_runs`] detects and brackets a
-//! divergence by hashing state at periodic checkpoints, and
-//! [`bisect_divergence`] binary-searches re-executions from scratch to pin
-//! down the first divergent work count. "Work" is an abstract monotonic
-//! counter (VM exits for the real VM, instructions executed for the
-//! bundled [`toy`] machine); all harness logic treats it as opaque ticks. The
-//! [`toy`] interpreter plus the divergence-injecting [`flaky`] wrapper let the
-//! harness be developed and fully tested before the real VMM exists.
-
-#![warn(missing_docs)]
 
 pub mod flaky;
 pub mod toy;
 
 use serde::{Deserialize, Serialize};
 
-/// Errors surfaced by machines and by the harness itself.
-///
-/// (The spec sketches this as `struct SubjectError(/* String or enum */)`;
-/// the enum form is used so callers can distinguish failure classes.)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SubjectError {
-    /// Canonical state could not be captured by the execution backend.
     #[error("state capture failed: {0}")]
     StateCapture(String),
-    /// `run_to` was asked to rewind; machines cannot run backwards.
     #[error("run_to target {target} is behind the current work count {current}")]
-    TargetBehind {
-        /// The requested target work count.
-        target: u64,
-        /// The machine's current work count.
-        current: u64,
-    },
-    /// [`compare_runs`] was called with `checkpoint_every == 0`.
+    TargetBehind { target: u64, current: u64 },
     #[error("checkpoint_every must be at least 1")]
     ZeroCheckpointInterval,
-    /// [`bisect_divergence`] was called with an empty interval (`lo >= hi`).
     #[error("bisection interval is empty: lo {lo} >= hi {hi}")]
-    EmptyInterval {
-        /// Lower bound as passed in.
-        lo: u64,
-        /// Upper bound as passed in.
-        hi: u64,
-    },
-    /// [`bisect_divergence`] found equal state hashes at `hi`: the runs do
-    /// not diverge in `(lo, hi]`, so there is no divergence point to report.
+    EmptyInterval { lo: u64, hi: u64 },
     #[error("state hashes are equal at hi = {hi}: no divergence to bisect")]
-    NoDivergence {
-        /// The upper bound that was probed.
-        hi: u64,
-    },
-    /// [`bisect_divergence`] found differing state hashes at `lo > 0`: the
-    /// interval does not bracket the *first* divergence.
+    NoDivergence { hi: u64 },
     #[error(
         "state hashes already differ at lo = {lo}: interval does not bracket the first divergence"
     )]
-    DivergesAtLo {
-        /// The lower bound that was probed.
-        lo: u64,
-    },
+    DivergesAtLo { lo: u64 },
 }
 
-/// Why a [`Subject::run_to`] call stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunOutcome {
-    /// `work() == target` and the machine can continue.
     ReachedTarget,
-    /// The machine is halted (possibly at exactly `target`, possibly before).
     Halted,
 }
 
-/// A deterministic machine under test. Implementations must guarantee that two
-/// instances created with the same seed behave identically — that is the property
-/// this harness exists to check.
 pub trait Subject {
-    /// Run until `work() == target` or the machine halts, whichever first.
-    /// `target < work()` is an error (machines cannot run backwards); this is
-    /// checked before anything else, even on a halted machine.
-    ///
-    /// Returns [`RunOutcome::Halted`] whenever the machine is halted on
-    /// return — including when it halted exactly at `target` — and
-    /// [`RunOutcome::ReachedTarget`] only if `work() == target` and the
-    /// machine could continue. Calling `run_to` on a halted machine with
-    /// `target >= work()` is a no-op returning `Halted`.
     fn run_to(&mut self, target: u64) -> Result<RunOutcome, SubjectError>;
-    /// Current value of the monotonic work counter.
     fn work(&self) -> u64;
-    /// Canonical hash of ALL architectural state (registers, memory, output log…).
-    /// Must be a pure function of state — calling it twice changes nothing.
-    /// Capture failures are errors, so comparisons never accept a partial hash.
     fn state_hash(&self) -> Result<[u8; 32], SubjectError>;
-    /// Canonical hash of only the **guest-observable output** — the bytes the
-    /// guest deliberately emits (serial / output log + event log), carrying
-    /// **no** latent device or PRNG state. This is deliberately distinct from
-    /// [`Subject::state_hash`], which folds in latent state such as a
-    /// seed-derived entropy stream.
-    ///
-    /// The seed-sensitivity oracle compares this, never
-    /// `state_hash`: a payload that consumes RNG without branching on it must
-    /// keep an identical work count across seeds while its *observable output*
-    /// diverges — yet its `state_hash` would diverge regardless via the latent
-    /// seeded PRNG, so the oracle is unsound on `state_hash`.
-    ///
-    /// **Required, deliberately.** This accessor once defaulted to
-    /// [`Subject::state_hash`], which made O3 pass *vacuously* for every machine
-    /// that did not override it: two different seeds always diverge `state_hash`
-    /// through the latent entropy stream, so the oracle answered "seed-sensitive"
-    /// without ever consulting the guest's output. An implementor must now say
-    /// what its observable output is — and a machine whose observable output
-    /// genuinely is its whole state says so explicitly, in one line, on the
-    /// record.
     fn observable_digest(&self) -> [u8; 32];
 }
 
-/// Creates fresh machines. Bisection re-executes from scratch many times, so
-/// spawning must be cheap and, above all, deterministic. Freshly spawned
-/// machines start at `work() == 0`.
 pub trait SubjectFactory {
-    /// The machine type this factory spawns.
     type M: Subject;
-    /// Create a fresh machine whose behaviour is a pure function of `seed`.
     fn spawn(&self, seed: u64) -> Self::M;
 }
 
-/// Result of [`compare_runs`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompareReport {
-    /// What the comparison concluded.
     pub verdict: Verdict,
-    /// Number of checkpoints at which both state hashes were compared
-    /// (including the mismatching checkpoint of a `Diverged` verdict).
     pub checkpoints_compared: u64,
-    /// `Some(w)` iff both machines halted at the same work count `w`.
-    /// `None` for `HaltMismatch` (the mismatch carries its own counts) and
-    /// whenever the comparison stopped before both machines halted.
     pub halted_at: Option<u64>,
-    /// True if the comparison stopped because `limit` was reached rather than
-    /// because both machines halted. An `Identical` verdict with `limit_reached`
-    /// means "no divergence observed up to limit", NOT "the runs are identical
-    /// forever" — callers (and the CLI JSON output) must surface the distinction.
     pub limit_reached: bool,
 }
 
-/// Conclusion of a [`compare_runs`] comparison.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
-    /// No difference observed (see [`CompareReport::limit_reached`] for
-    /// whether this is "proven to halt identically" or only "identical up
-    /// to the limit").
     Identical,
-    /// Hashes matched at `last_match` and differed at `first_mismatch` — the
-    /// divergence lies in (last_match, first_mismatch]. `last_match: None`
-    /// means the *first* compared checkpoint already differed; since
-    /// [`compare_runs`] never hashes at work 0, that only brackets the
-    /// divergence to (0, first_mismatch] — machines that already differ at
-    /// spawn land here too (bisection then reports work count 1, the smallest
-    /// value in the half-open bracket).
     Diverged {
-        /// Last checkpoint at which the hashes still matched; `None` if the
-        /// first compared checkpoint already differed.
         last_match: Option<u64>,
-        /// First checkpoint at which the hashes differed.
         first_mismatch: u64,
     },
-    /// One machine halted at a different work count than the other.
-    /// `None` means "had not halted when the mismatch was established".
     HaltMismatch {
-        /// Work count at which machine A halted, if it did.
         a: Option<u64>,
-        /// Work count at which machine B halted, if it did.
         b: Option<u64>,
     },
 }
 
-/// Run a fresh machine from each factory with the same seed, hashing state every
-/// `checkpoint_every` work units (and at halt), until both halt or `limit` is reached.
-///
-/// `checkpoint_every == 0` is an error. `limit == 0` compares nothing and
-/// reports `Identical` with `limit_reached: true`. The final checkpoint is
-/// clamped to `limit`, so divergence at `limit` itself is still observed.
 pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
     a: &FA,
     b: &FB,
@@ -249,9 +127,6 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                     limit_reached: false,
                 });
             }
-            // One machine halted while the other ran past that halt point
-            // without halting — it can never halt there anymore, so the
-            // mismatch is already established.
             (RunOutcome::Halted, RunOutcome::ReachedTarget) => {
                 return Ok(CompareReport {
                     verdict: Verdict::HaltMismatch {
@@ -284,33 +159,16 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
     })
 }
 
-/// The exact point where two runs first diverge, found by [`bisect_divergence`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DivergencePoint {
-    /// Smallest work count w in (lo, hi] where state hashes differ.
     pub first_divergent_work: u64,
-    /// Subject A's state hash at `first_divergent_work` (hex in JSON).
     #[serde(with = "hex32")]
     pub hash_a: [u8; 32],
-    /// Subject B's state hash at `first_divergent_work` (hex in JSON).
     #[serde(with = "hex32")]
     pub hash_b: [u8; 32],
-    /// Individual machine executions (spawn + run) performed, for the
-    /// efficiency gate: at most `2 * (ceil(log2(hi - lo)) + 2)`.
     pub runs_executed: u64,
 }
 
-/// Binary-search the exact divergence point, given a bracketing interval from
-/// [`compare_runs`]: hashes match at `lo` (or lo == 0), differ at `hi`. Each probe
-/// spawns fresh machines and runs to the midpoint — O(log(hi-lo)) probes total.
-///
-/// Both endpoints are verified before searching: equal hashes at `hi` yield
-/// [`SubjectError::NoDivergence`], differing hashes at `lo > 0` yield
-/// [`SubjectError::DivergesAtLo`] (`lo == 0` is trusted as the start of time:
-/// if the machines already differ at spawn, the smallest divergent work count
-/// in `(0, hi]` — i.e. 1 — is reported). The result is the true *first*
-/// divergence provided divergence is persistent within the bracket, which
-/// holds for any state difference that later execution cannot erase.
 pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
     a: &FA,
     b: &FB,
@@ -342,7 +200,6 @@ pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
         }
     }
     let (mut lo, mut hi) = (lo, hi);
-    // Invariant: hashes match at lo (or lo == 0), differ at hi.
     while hi - lo > 1 {
         let mid = lo + (hi - lo) / 2;
         let (ha, hb) = probe(mid)?;
@@ -362,7 +219,6 @@ pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
     })
 }
 
-/// Serde adapter: `[u8; 32]` as a lowercase 64-char hex string.
 mod hex32 {
     use serde::de::Error as _;
     use serde::{Deserialize, Deserializer, Serializer};
@@ -416,9 +272,6 @@ mod tests {
         }
     }
 
-    /// A machine with no latent state at all: everything it holds is observable,
-    /// so its two digests coincide — stated explicitly, which is the point of
-    /// `observable_digest` having no default.
     struct WhollyObservableMachine {
         hash: [u8; 32],
     }
@@ -433,9 +286,6 @@ mod tests {
             Ok(self.hash)
         }
         fn observable_digest(&self) -> [u8; 32] {
-            // This machine has no latent device or PRNG state, so its whole
-            // state IS its observable output. Written out rather than inherited:
-            // the claim is deliberate, not an oversight.
             self.hash
         }
     }
@@ -531,7 +381,6 @@ mod tests {
             diverge_at: 5,
             perturb: Perturbation::XorPrng { mask: 0xABCD },
         };
-        // Hashes already differ at lo = 10 > 5.
         assert_eq!(
             bisect_divergence(&f, &flaky, 3, 10, 20),
             Err(SubjectError::DivergesAtLo { lo: 10 })

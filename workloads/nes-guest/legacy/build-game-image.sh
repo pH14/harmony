@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the **SMB game workload initramfs** (task 86): a static busybox, the
+# Build the **SMB game workload initramfs**: a static busybox, the
 # commit-pinned FCEUmm libretro core (GPL-2.0-or-later, built here from the
 # never vendored), the play-agent (a dynamic glibc binary: it dlopens the core,
 # which a fully-static musl build cannot do — its ldd closure is copied in, the
 # build-postgres-image.sh pattern), the user-supplied ROM, and game-init.sh as
 # /init. Produces consonance/harmony-linux/build/initramfs-game.cpio.gz.
 #
-# ROM discipline (task 86, hard requirement): the SMB ROM is copyrighted and is
+# ROM discipline (hard requirement): the SMB ROM is copyrighted and is
 # never committed, vendored, or fetched. It enters ONLY via HARMONY_SMB_ROM=
 # <path> (a user-supplied dump); when unset the image builds WITHOUT the game
 # workload and prints a loud SKIP — game-init.sh then reports GAME_SKIP at boot.
@@ -105,7 +105,7 @@ if [ -n "${HARMONY_SMB_ROM:-}" ]; then
     echo "== game image: ROM baked in (sha256 $ROM_SHA — record this in the campaign report)"
 else
     echo "== game image: SKIP — HARMONY_SMB_ROM unset; building WITHOUT the game ROM." >&2
-    echo "   The image boots and reports GAME_SKIP; every task-86 box gate reports" >&2
+    echo "   The image boots and reports GAME_SKIP; every game-workload box gate reports" >&2
     echo "   SKIP until a user-supplied ROM is provided (a skipped gate is not green)." >&2
 fi
 
@@ -118,8 +118,8 @@ find "$GAMEROOT" -mindepth 1 -exec touch -hcd @0 {} +
     | cpio --null -o -H newc --owner=0:0 --quiet ) | gzip -n -9 >"$ART_DIR/initramfs-game.cpio.gz"
 echo "ok: $ART_DIR/initramfs-game.cpio.gz ($(du -h "$ART_DIR/initramfs-game.cpio.gz" | cut -f1))"
 
-# --- 7. the film-renderer core copy (task 87 shares the pin) ------------------
+# --- 7. the film-renderer core copy (shares the pin) ------------------
 # The host-side film renderer dlopens the SAME built core (HARMONY_SMB_CORE=);
 # export it beside the initramfs so the box gate uses one artifact for both.
 install -m 0644 "$CORE_SO" "$ART_DIR/fceumm_libretro.so"
-echo "ok: $ART_DIR/fceumm_libretro.so (the shared task-86/87 core pin)"
+echo "ok: $ART_DIR/fceumm_libretro.so (the shared core pin)"

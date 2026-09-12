@@ -1,19 +1,19 @@
 #!/bin/sh
-# /init of the **Postgres-via-real-`runc` workload image** (task 48). Selected by
-# the kernel `rdinit=/runc-init` cmdline param; the task-38 `unshare` path stays
+# /init of the **Postgres-via-real-`runc` workload image**. Selected by
+# the kernel `rdinit=/runc-init` cmdline param; the `unshare` path stays
 # baked as the default `/init` (`docker-init.sh`) for comparison. Brings up the
 # kernel filesystems + cgroup-v2, then runs the **official postgres OCI image** as
-# a real container with the **actual `runc` binary** (`runc run`) — NOT the task-38
+# a real container with the **actual `runc` binary** (`runc run`) — NOT the
 # `unshare`/`chroot`/`setpriv` shim — and waits while the container drives the
-# task-42 `gen_random_uuid()`/`clock_timestamp()` workload over its local unix
+# `gen_random_uuid()`/`clock_timestamp()` workload over its local unix
 # socket, streaming its stdout/stderr to ttyS0, to a clean terminal.
 #
-# **Why this works now where task 38 had to use `unshare` (the unlock — see
+# **Why this works now where the unshare path had to use `unshare` (see
 # consonance/harmony-linux/linux/README.md + consonance/vtime/README.md).**
 # `runc`/its Go container-init busy-spin (`procyield`/`osyield`) with no natural
-# VM-exit; under task 38's single-vCPU / V-time model that froze V-time → the LAPIC
+# VM-exit; under that single-vCPU / V-time model that froze V-time → the LAPIC
 # tick never fired → the Go scheduler never ran → the container reached "created"
-# but its init never execed the command (a deadlock). Task 47 made the V-time LAPIC
+# but its init never execed the command (a deadlock). A later fix made the V-time LAPIC
 # timer **preempt** a busy-spinning thread at the seed-deterministic V-time deadline
 # (`run_with_deadline` = exit-count advancement to the next VM-exit boundary), which
 # the VMM run-loop now drives automatically on the patched Linux boot. So the Go
@@ -21,7 +21,7 @@
 # completes, and the **real `runc`** runs the container — deterministically, because
 # the preemption instant is a pure function of the seed.
 #
-# Two VMM realities (from task 37/38) still shape the control flow:
+# Two VMM realities (from the other Postgres images) still shape the control flow:
 #   * Never go idle on a blocking wait that needs a wakeup the VMM won't deliver
 #     and never busy-spin without RDTSC. The container is the only runnable work and
 #     is busy throughout (runc setup → postgres + the cooperative psql loop); the
@@ -56,7 +56,7 @@ $BB chmod 0666 /dev/console      # let the container reopen the console
 # systemd) then creates `/sys/fs/cgroup/<cgroupsPath>` (config.json's
 # `linux.cgroupsPath = pg-container`) ITSELF and places the container there — we do
 # NOT create it here (unlike docker-init.sh, where the unshared container inherited
-# init's cgroup). cpuset is absent (depends on SMP, off per the task-36 audit); the
+# init's cgroup). cpuset is absent (depends on SMP, off per the capability audit); the
 # others give real cgroup isolation.
 $BB mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
 $BB mkdir -p /sys/fs/cgroup/init
@@ -75,7 +75,7 @@ log "OCI runtime: real runc $(runc --version 2>/dev/null | $BB head -1)"
 # the bare `runc spec` default-deny eBPF filter kills PID 1 at exec on this kernel),
 # applies the seccomp profile (CONFIG_SECCOMP_FILTER is on in the Kata base), and
 # execs the container's `/run-workload.sh` (pg-container-run.sh): start postgres →
-# the cooperative psql readiness loop → the task-42 UUID/time workload → cooperative
+# the cooperative psql readiness loop → the UUID/time workload → cooperative
 # shutdown. `--bundle /oci` points at the baked bundle; the `runc` on PATH is the
 # `--no-pivot` wrapper (the rootfs sits on the initramfs ramdisk, whose root mount
 # has no parent, so runc's default pivot_root EINVALs — `--no-pivot` switches to the

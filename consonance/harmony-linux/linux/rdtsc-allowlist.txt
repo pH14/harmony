@@ -1,4 +1,4 @@
-# Reviewed raw-counter-read sites in the built guest kernel (task 110, the
+# Reviewed raw-counter-read sites in the built guest kernel (the
 # paravirtual clock interface reachability gate, x86 half — see
 # scan-counter-opcodes.sh). One `artifact:symbol+0xOFFSET` entry per line — the
 # artifact, containing function, and the rdtsc/rdtscp instruction's byte OFFSET

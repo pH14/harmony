@@ -1,12 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Super Tilt Bro memory decoder and machine-backed target.
-//!
-//! The source-built game keeps both fighters in system RAM. This module is
-//! the only place that knows those labels; the generic searcher receives a
-//! bounded controller vocabulary, compact mechanical observations, and
-//! restorable snapshots.
-
 use std::{error::Error, io::Write, path::Path};
 
 use machine::{
@@ -19,13 +12,10 @@ use crate::target::{ExitKind, Target};
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
-/// A Super Tilt Bro input replayed from the sealed local-match genesis.
 pub type StbInput = crate::search::archive::Input<ButtonChord>;
 
-/// Initial raw stock counter; zero still denotes the final live stock.
 pub const INITIAL_STOCKS: u8 = 4;
 
-/// Built-in autonomous AI levels from the normal configuration menu.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StbAi {
     Easy = 1,
@@ -66,7 +56,6 @@ const GAME_STATE_GAMEOVER: u8 = 0x02;
 const GAME_MODE_LOCAL: u8 = 0x00;
 const PLAYER_STATE_INNEXISTANT: u8 = 0x02;
 
-// Labels from game/mem_labels.asm at the pinned upstream revision.
 const PLAYER_A_STATE: usize = 0x00;
 const PLAYER_B_STATE: usize = 0x01;
 const PLAYER_A_HITSTUN: usize = 0x02;
@@ -98,103 +87,74 @@ const CONFIG_AI_LEVEL: usize = 0xda;
 const CONFIG_SELECTED_STAGE: usize = 0xdb;
 const CONFIG_GAME_MODE: usize = 0xe2;
 
-/// Player RAM that is meaningful only while both fighters are active in the
-/// in-game state. Keeping this payload optional prevents menu/game-over RAM
-/// reuse from becoming a fabricated damage, stock, location, or capability
-/// observation.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct StbGameplayState {
-    /// Player state-machine values.
     pub player_a_state: u8,
     pub player_b_state: u8,
-    /// Signed world coordinates in whole pixels. The source stores each as
-    /// a pixel byte plus a signed screen/page byte.
     pub player_a_x: i16,
     pub player_b_x: i16,
     pub player_a_y: i16,
     pub player_b_y: i16,
-    /// Screen/page components distinguish scroll from a wrapped pixel byte.
     pub player_a_x_screen: i8,
     pub player_b_x_screen: i8,
     pub player_a_y_screen: i8,
     pub player_b_y_screen: i8,
-    /// Facing direction bytes from the source state.
     pub player_a_direction: u8,
     pub player_b_direction: u8,
-    /// Damage percentages and remaining stocks.
     pub player_a_damage: u8,
     pub player_b_damage: u8,
     pub player_a_stocks: u8,
     pub player_b_stocks: u8,
-    /// State-machine clocks and hitstun counters.
     pub player_a_state_clock: u8,
     pub player_b_state_clock: u8,
     pub player_a_hitstun: u8,
     pub player_b_hitstun: u8,
-    /// Mechanical contact flags (zero means no contact).
     pub player_a_grounded: bool,
     pub player_b_grounded: bool,
     pub player_a_walled: bool,
     pub player_b_walled: bool,
 }
 
-/// Source-grounded mechanical state at one emulator frame.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct StbMechanicalState {
-    /// Global state (`0` is in-game and `2` is the game-over screen).
     pub game_state: u8,
-    /// Configured game mode (`0` is local).
     pub game_mode: u8,
-    /// Configured autonomous opponent level (`1` is Easy in the config UI).
     pub ai_level: u8,
-    /// Selected versus stage index.
     pub stage: u8,
-    /// Player RAM decoded only in the source phase where it has gameplay
-    /// meaning. This is `None` on menus and game-over screens.
     pub gameplay: Option<StbGameplayState>,
-    /// Winner byte is meaningful only once `game_state == 2`.
     pub game_winner: u8,
 }
 
 impl StbMechanicalState {
-    /// Whether the source has entered the game-over screen.
     #[must_use]
     pub fn match_over(self) -> bool {
         self.game_state == GAME_STATE_GAMEOVER
     }
 
-    /// Whether player A won the local match.
     #[must_use]
     pub fn player_a_won(self) -> bool {
         self.match_over() && self.game_winner == 0
     }
 
-    /// Whether the optional player payload is valid for gameplay use.
     #[must_use]
     pub fn gameplay_valid(self) -> bool {
         self.gameplay.is_some()
     }
 }
 
-/// Mechanical evidence emitted at a changed state boundary.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbObservations {
     pub frame_count: u64,
     pub decoded: StbMechanicalState,
     pub changed_indices: Vec<u16>,
-    /// Whether player A or B lost one stock at this event.
     #[serde(default)]
     pub player_a_ko: bool,
     #[serde(default)]
     pub player_b_ko: bool,
-    /// Cumulative validated stock-loss counts at this observation. The
-    /// terminal underflow loss is included even though the source resets its
-    /// terminal stock byte to zero before entering the game-over screen.
     #[serde(default)]
     pub player_a_ko_count: u8,
     #[serde(default)]
     pub player_b_ko_count: u8,
-    /// Whether this event is the terminal match state.
     #[serde(default)]
     pub terminal: bool,
     pub log_line: String,
@@ -208,7 +168,6 @@ struct StbStockEvidence {
     player_b_ko_count: u8,
 }
 
-/// Geometry and frame count of one rendered replay.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbVideoMetadata {
     pub width: u32,
@@ -220,18 +179,14 @@ pub struct StbVideoMetadata {
     pub input_endpoint: StbMechanicalState,
 }
 
-/// Complete state needed to resume one STB prefix exactly.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbSnapshot<P = machine::SharedState> {
     pub(crate) emulator_state: P,
     pub(crate) observation: StbObservations,
     pub(crate) wram: Vec<u8>,
     pub(crate) failed: bool,
-    /// Last phase-valid gameplay payload used to carry stock evidence across
-    /// the source's invalid fighter-RAM transition into game over.
     #[serde(default)]
     pub(crate) last_valid_gameplay: Option<StbGameplayState>,
-    /// Cumulative stock-loss evidence at this exact snapshot endpoint.
     #[serde(default)]
     pub(crate) player_a_ko_count: u8,
     #[serde(default)]
@@ -239,14 +194,12 @@ pub struct StbSnapshot<P = machine::SharedState> {
 }
 
 impl<P> StbSnapshot<P> {
-    /// Decoded endpoint state carried by this snapshot.
     #[must_use]
     pub fn state(&self) -> StbMechanicalState {
         self.observation.decoded
     }
 }
 
-/// Machine-backed target used by STB campaigns.
 #[derive(Debug)]
 pub struct StbTarget<M: Machine = QuickNesMachine> {
     machine: M,
@@ -262,15 +215,14 @@ pub struct StbTarget<M: Machine = QuickNesMachine> {
     player_b_ko_count: u8,
     failed: bool,
     snapshot_base: Option<M::Portable>,
+    execution_work: u64,
 }
 
 impl<M: Machine> StbTarget<M> {
-    /// Seal a machine that is already stopped at a valid local-match genesis.
     pub fn from_machine(machine: M) -> Result<Self, MachineError> {
         Self::from_machine_with_ai(machine, StbAi::Easy)
     }
 
-    /// Validate the requested native opponent before sealing gameplay genesis.
     pub fn from_machine_with_ai(mut machine: M, ai: StbAi) -> Result<Self, MachineError> {
         let wram = read_wram(&machine)?;
         let state = decode_state(&wram)?;
@@ -301,40 +253,35 @@ impl<M: Machine> StbTarget<M> {
             player_b_ko_count: 0,
             failed: false,
             snapshot_base: None,
+            execution_work: 0,
         })
     }
 
-    /// Current decoded state.
     #[must_use]
     pub fn mechanical_state(&self) -> StbMechanicalState {
         self.observation.decoded
     }
 
-    /// Whether the local match is over (win or loss).
     #[must_use]
     pub fn is_match_over(&self) -> bool {
         self.observation.decoded.match_over()
     }
 
-    /// Whether player A won after the game-over transition.
     #[must_use]
     pub fn player_a_won(&self) -> bool {
         self.observation.decoded.player_a_won()
     }
 
-    /// Total deterministic frames clocked by this instance.
     #[must_use]
-    pub fn frames_clocked(&self) -> u64 {
-        self.machine.now().0
+    pub fn execution_work(&self) -> u64 {
+        self.execution_work
     }
 
-    /// Observer events emitted by the most recent action.
     #[must_use]
     pub fn last_action_observations(&self) -> &[StbObservations] {
         &self.action_observations
     }
 
-    /// Test a fixed continuation and restore the caller's state afterward.
     pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
         if self.failed || self.is_match_over() || frames == 0 {
             return false;
@@ -374,8 +321,6 @@ impl<M: Machine> StbTarget<M> {
 }
 
 impl StbTarget<QuickNesMachine> {
-    /// Load the pinned UNROM image and walk ordinary title/mode/config/
-    /// character/stage menus to the local AI match genesis.
     pub fn from_rom_bytes_headless(
         rom: &[u8],
         core_path: &Path,
@@ -384,7 +329,6 @@ impl StbTarget<QuickNesMachine> {
         Self::from_rom_bytes_headless_with_ai(rom, core_path, core_sha256, StbAi::Easy)
     }
 
-    /// Reach the selected native AI match using ordinary menu inputs.
     pub fn from_rom_bytes_headless_with_ai(
         rom: &[u8],
         core_path: &Path,
@@ -404,8 +348,6 @@ impl StbTarget<QuickNesMachine> {
         Self::from_machine_with_ai(machine, ai)
     }
 
-    /// Replay a searched input while writing packed RGB24 frames and S16LE
-    /// stereo audio. Capture is never enabled by workers.
     pub fn render_input(
         &mut self,
         input: &StbInput,
@@ -592,6 +534,9 @@ impl<M: Machine> StbTarget<M> {
             self.failed = true;
             return;
         }
+        self.execution_work = self
+            .execution_work
+            .saturating_add(u64::try_from(produced_frames).unwrap_or(u64::MAX));
         let terminal_index = self
             .machine
             .frames()
@@ -636,10 +581,6 @@ impl<M: Machine> StbTarget<M> {
                     self.failed = true;
                     return;
                 };
-                // Keep the last valid live payload while the source clears
-                // fighter RAM for one or more frames before setting the
-                // global game-over state. A live zero-stock frame is valid;
-                // the terminal underflow is the next loss event.
                 let (player_a_ko, player_b_ko) = if let Some(gameplay) = state.gameplay {
                     let player_a_ko = last_valid_gameplay
                         .is_some_and(|prior| gameplay.player_a_stocks < prior.player_a_stocks);
@@ -737,10 +678,6 @@ impl<M: Machine> StbTarget<M> {
         self.last_valid_gameplay = last_valid_gameplay;
         self.player_a_ko_count = player_a_ko_count;
         self.player_b_ko_count = player_b_ko_count;
-        // A terminal frame can occur before a held action's requested end.
-        // Re-run only the exact prefix through that frame before taking the
-        // current snapshot. This keeps the emulator handle, decoded endpoint,
-        // and recorded action prefix on one executed frame.
         let next = if let Some(terminal_index) = terminal_index {
             let terminal_hold = match u8::try_from(terminal_index.saturating_add(1)) {
                 Ok(hold) => hold,
@@ -949,15 +886,10 @@ impl<M: Machine> Drop for StbTarget<M> {
     }
 }
 
-/// Ordinary controller tape from power-on to the selected local-AI match.
-///
-/// The probe binary exposes this tape's state boundaries so a changed ROM or
-/// emulator backend cannot silently turn a menu input into gameplay genesis.
 pub fn setup_tape() -> Vec<ButtonChord> {
     setup_tape_with_ai(StbAi::Easy)
 }
 
-/// Select difficulty with ordinary menu input, preserving the Easy setup tape.
 pub fn setup_tape_with_ai(ai: StbAi) -> Vec<ButtonChord> {
     let mut tape = Vec::new();
     let press_release = |tape: &mut Vec<ButtonChord>, button| {
@@ -967,23 +899,11 @@ pub fn setup_tape_with_ai(ai: StbAi) -> Vec<ButtonChord> {
     let wait = |tape: &mut Vec<ButtonChord>, frames: usize| {
         tape.extend((0..frames).map(|_| ButtonChord::new(0, 1)));
     };
-    // The title animation and each screen transition can consume frames while
-    // rendering is disabled. Keep a generous fixed settle interval so an A
-    // edge is never delivered to a transition initializer rather than the
-    // intended menu. Local is the default mode and the following screens keep
-    // four stocks unchanged and select the requested AI below.
     wait(&mut tape, 180);
-    // Title -> mode selection.
-    // ButtonChord uses the NES serial/input layout consumed by QuickNES:
-    // A=0x01, B=0x02, Select=0x04, Start=0x08, Up=0x10, Down=0x20,
-    // Left=0x40, Right=0x80. STB's fetched RAM byte is bit-reversed, so
-    // this A input appears as source CONTROLLER_BTN_A ($80) in RAM.
     press_release(&mut tape, 0x01);
     wait(&mut tape, 180);
-    // Mode selection -> config.
     press_release(&mut tape, 0x01);
     wait(&mut tape, 180);
-    // Config options are music, stocks, then AI. Changes trigger on release.
     if ai != StbAi::Easy {
         press_release(&mut tape, 0x20);
         press_release(&mut tape, 0x20);
@@ -991,19 +911,13 @@ pub fn setup_tape_with_ai(ai: StbAi) -> Vec<ButtonChord> {
             press_release(&mut tape, 0x80);
         }
     }
-    // Config -> character selection.
     press_release(&mut tape, 0x01);
     wait(&mut tape, 180);
-    // One-player character selection: P1 ready, then P2 ready through the
-    // game's own one-controller flow. Touching controller B would disable AI.
     press_release(&mut tape, 0x01);
     wait(&mut tape, 180);
     press_release(&mut tape, 0x01);
     wait(&mut tape, 240);
-    // Stage selection -> local match.
     press_release(&mut tape, 0x01);
-    // Let the spawn/countdown settle, then seal before the autonomous match
-    // can consume a stock while waiting in the menu setup.
     wait(&mut tape, 90);
     tape
 }
@@ -1018,8 +932,6 @@ fn byte(wram: &[u8], address: usize) -> Result<u8, MachineError> {
         .ok_or_else(|| MachineError::Backend(format!("STB RAM address {address:#x} is absent")))
 }
 
-/// Decode the source-labelled STB state from the 2 KiB QuickNES system-RAM
-/// window.
 pub fn decode_state(wram: &[u8]) -> Result<StbMechanicalState, MachineError> {
     let game_state = byte(wram, GLOBAL_GAME_STATE)?;
     let game_mode = byte(wram, CONFIG_GAME_MODE)?;
@@ -1124,8 +1036,6 @@ fn validate_genesis(
     Ok(())
 }
 
-/// Coarse paired fighter location. The signed world coordinate keeps camera
-/// scroll and off-screen movement distinct from a wrapped low byte.
 #[must_use]
 pub fn spatial_bucket(state: StbMechanicalState) -> Option<(i16, i16, i16, i16)> {
     state.gameplay.map(|gameplay| {
@@ -1138,8 +1048,6 @@ pub fn spatial_bucket(state: StbMechanicalState) -> Option<(i16, i16, i16, i16)>
     })
 }
 
-/// Equality-only fields that trigger observation boundaries. This tuple is
-/// not an ordering: the archive owns progress and capability preferences.
 pub type StbBoundaryFields = (u8, u8, u8, u8, u8, u8, bool, bool);
 
 #[must_use]
@@ -1211,7 +1119,6 @@ mod tests {
             invalid[PLAYER_A_STOCKS] = 103;
             invalid[PLAYER_B_STOCKS] = 89;
             timeline.push(invalid.clone());
-            // A post-terminal frame must not become the saved endpoint.
             invalid[GAME_WINNER] = 1;
             timeline.push(invalid);
             Self {
@@ -1238,7 +1145,7 @@ mod tests {
     }
 
     impl Machine for ScriptedMachine {
-        type Portable = FakeState;
+        type Portable = machine::SharedState;
         fn snapshot(&mut self) -> Result<SnapId, MachineError> {
             Ok(self.save(self.state.clone()))
         }
@@ -1302,23 +1209,68 @@ mod tests {
                 .map(ToOwned::to_owned)
                 .ok_or(MachineError::ReadOutOfBounds)
         }
-        fn export(&mut self, id: SnapId, _: Option<&FakeState>) -> Result<FakeState, MachineError> {
-            self.snapshots
+        fn export(
+            &mut self,
+            id: SnapId,
+            _: Option<&Self::Portable>,
+        ) -> Result<Self::Portable, MachineError> {
+            let state = self
+                .snapshots
                 .get(&id.0)
-                .cloned()
-                .ok_or(MachineError::UnknownSnapshot)
+                .ok_or(MachineError::UnknownSnapshot)?;
+            let bytes = serde_json::to_vec(state).unwrap();
+            Ok(serde_json::from_value(serde_json::json!(bytes)).unwrap())
         }
-        fn import(&mut self, state: &FakeState) -> Result<SnapId, MachineError> {
-            Ok(self.save(state.clone()))
+        fn import(&mut self, state: &Self::Portable) -> Result<SnapId, MachineError> {
+            Ok(self.save(decode_portable(state)))
         }
-        fn portable_memory_charge(state: &FakeState) -> usize {
-            state.wram.len() + size_of::<usize>()
+        fn portable_memory_charge(state: &Self::Portable) -> usize {
+            QuickNesMachine::portable_memory_charge(state)
         }
         fn now(&self) -> machine::Moment {
             machine::Moment(self.clock)
         }
         fn frames(&self) -> &[[u8; WRAM_SIZE]] {
             &self.frames
+        }
+    }
+
+    fn decode_portable(state: &machine::SharedState) -> FakeState {
+        let bytes: Vec<u8> = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn campaign_suffix_continues_through_respawn_without_a_terminal_endpoint() {
+        use crate::search::{archive::RetentionPolicy, rollout::ExecutionDisposition};
+        for stop_on_objective in [false, true] {
+            let mut machine = ScriptedMachine::match_timeline();
+            let mut respawn = live_wram();
+            respawn[PLAYER_B_STATE] = PLAYER_STATE_INNEXISTANT;
+            respawn[PLAYER_B_STOCKS] = INITIAL_STOCKS - 1;
+            let mut resumed = live_wram();
+            resumed[PLAYER_B_STOCKS] = INITIAL_STOCKS - 1;
+            machine.timeline = vec![live_wram(), respawn, resumed];
+            let mut target = StbTarget::from_machine(machine).unwrap();
+            let result = crate::stb::campaign::execute_suffix(
+                &mut target,
+                0,
+                crate::stb::archive::StbMilestones::default(),
+                &[ButtonChord::new(1, 1), ButtonChord::new(2, 1)],
+                8,
+                RetentionPolicy::Unprobed,
+                stop_on_objective,
+            )
+            .expect("respawn suffix");
+            assert_eq!(result.actions.len(), 2);
+            assert!(result.actions.iter().all(|action| {
+                action.outcome.disposition == ExecutionDisposition::Runnable
+                    && !action.outcome.objective_reached
+            }));
+            assert!(result.actions[0].candidate.is_none());
+            assert!(result.actions[1].candidate.is_some());
+            assert_eq!(result.actions[1].milestones.opponent_kos, 1);
+            assert_eq!(target.observe().frame_count, 2);
         }
     }
 
@@ -1343,8 +1295,9 @@ mod tests {
                 .any(|o| o.decoded.gameplay.is_none() && !o.terminal)
         );
         let snapshot = target.snapshot().unwrap();
-        assert_eq!(snapshot.emulator_state.cursor, 7);
-        assert_eq!(snapshot.emulator_state.wram, snapshot.wram);
+        let portable = decode_portable(&snapshot.emulator_state);
+        assert_eq!(portable.cursor, 7);
+        assert_eq!(portable.wram, snapshot.wram);
         assert_eq!(snapshot.wram, target.machine.state.wram);
         assert_eq!(snapshot.observation, observed);
         target.apply(&ButtonChord::new(2, 3));
@@ -1355,6 +1308,8 @@ mod tests {
     fn restore_across_invalid_phase_and_another_worker_preserves_stock_evidence() {
         let mut target = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
         target.apply(&ButtonChord::new(1, 5));
+        let first_work = target.execution_work();
+        assert!(first_work > 0);
         let saved = target.snapshot().unwrap();
         assert_eq!(saved.observation.decoded.gameplay, None);
         assert_eq!(saved.player_b_ko_count, 4);
@@ -1362,10 +1317,18 @@ mod tests {
         target.apply(&continuation);
         let expected = target.observe();
         let expected_events = target.last_action_observations().to_vec();
+        let second_work = target.execution_work();
+        assert!(second_work > first_work);
         target.restore(&saved).unwrap();
+        assert_eq!(target.execution_work(), second_work);
         target.apply(&ButtonChord::new(4, 1));
+        let discarded_work = target.execution_work();
+        assert!(discarded_work > second_work);
         target.restore(&saved).unwrap();
+        assert_eq!(target.execution_work(), discarded_work);
         target.apply(&continuation);
+        let final_work = target.execution_work();
+        assert!(final_work > discarded_work);
         assert_eq!(target.observe(), expected);
         assert_eq!(target.last_action_observations(), expected_events);
         assert_eq!(expected.player_b_ko_count, 5);
@@ -1374,6 +1337,10 @@ mod tests {
         other.apply(&continuation);
         assert_eq!(other.observe(), expected);
         assert_eq!(other.fingerprint(), target.fingerprint());
+        target.reset();
+        assert_eq!(target.execution_work(), final_work);
+        target.apply(&ButtonChord::new(1, 5));
+        assert!(target.execution_work() > discarded_work);
         target.reset();
         assert_eq!(target.observe().frame_count, 0);
         assert_eq!(target.observe().player_b_ko_count, 0);

@@ -1,7 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 3 — `VcpuState` round-trip proptest. Arbitrary state through
-//! `MockBackend::restore` → `save` must reproduce `==`, and equal states must
-//! save equal (`BTreeMap` order, no float). Portable; no `/dev/kvm`.
 #![cfg(feature = "mock")]
 
 use proptest::prelude::*;
@@ -10,7 +7,6 @@ use vmm_backend::{
     VcpuSregs, VcpuState,
 };
 
-/// 16 cases under Miri (slow interpreter), full count natively.
 fn cases(native: u32) -> ProptestConfig {
     let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { native });
     if cfg!(miri) {
@@ -163,9 +159,6 @@ fn arb_vcpu_state() -> impl Strategy<Value = VcpuState> {
 proptest! {
     #![proptest_config(cases(256))]
 
-    /// `restore(&s)` then `save()` reproduces `s` exactly, and a second backend
-    /// restored from the same `s` saves an identical `VcpuState` (determinism:
-    /// sorted MSR map, no float).
     #[test]
     fn restore_save_round_trips(s in arb_vcpu_state()) {
         let mut a = MockBackend::new();

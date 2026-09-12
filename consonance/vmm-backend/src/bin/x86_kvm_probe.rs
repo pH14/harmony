@@ -1,11 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Empirical probe for the stock-KVM x86 surface on shared hosts (the
-//! GitHub-hosted runners of the X0 milestone): CPU identity, `/dev/kvm`
-//! access, the KVM capability table, and one minimal real-mode guest run
-//! through the public `KvmBackend`.
-//!
-//! Output is `KEY=VALUE` lines so a watcher can parse results by name; the
-//! final line is `PROBE=PASS`, or `PROBE=FAIL` plus `FAIL_REASON=`.
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
 mod x86 {
@@ -17,12 +10,8 @@ mod x86 {
         X86Policy,
     };
 
-    /// `KVM_CHECK_EXTENSION` (`_IO(KVMIO, 0x03)`), issued per capability id so
-    /// the table covers ids the `kvm-ioctls` `Cap` enum does not name.
     const KVM_CHECK_EXTENSION: libc::c_ulong = 0xAE03;
 
-    /// Capability ids the backend uses today plus the ones the x86 bring-up
-    /// decisions read (delivery shape, clock control, state save size).
     const CAPS: &[(&str, u32)] = &[
         ("IRQCHIP", 0),
         ("HLT", 1),
@@ -48,8 +37,6 @@ mod x86 {
         ("X86_DETERMINISTIC_INTERCEPTS", 245),
     ];
 
-    /// One identity-mapped guest RAM region, page-aligned (the `map_memory`
-    /// host alignment invariant), reached by the backend through a raw pointer.
     struct GuestMem {
         ptr: *mut u8,
         layout: std::alloc::Layout,
@@ -133,12 +120,8 @@ mod x86 {
         }
         drop(kvm);
 
-        // One minimal guest through the public backend, exactly the
-        // `kvm_smoke` bring-up shape:
-        //   mov dx, 0x3f8 ; mov al, 0x42 ; out dx, al ; hlt
         let code: &[u8] = &[0xBA, 0xF8, 0x03, 0xB0, 0x42, 0xEE, 0xF4];
 
-        // Declared before `backend` so the mapped RAM outlives it.
         let mut mem = GuestMem::new(0x10000);
         let mut backend = KvmBackend::new().map_err(|e| {
             println!("BACKEND_NEW=err:{e}");
@@ -154,7 +137,6 @@ mod x86 {
             .set_policy(&X86Policy {
                 cpuid: CpuidModel::default(),
                 msr_filter: MsrFilter {
-                    // SYSENTER MSRs (0x174..0x177) — present, harmless, in-kernel.
                     allow_inkernel: vec![MsrRange {
                         base: 0x174,
                         count: 3,

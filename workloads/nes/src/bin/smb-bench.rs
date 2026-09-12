@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Per-operation cost of the SMB target: raw frames, snapshot and restore,
-//! action application with observations, the admission probe, and the
-//! archive key. Numbers are wall-clock and machine-specific; the binary
-//! exists to find which operation bounds campaign throughput.
 
 use std::{env, error::Error, fs, time::Instant};
 
@@ -13,7 +9,7 @@ use nes_workload::{
 };
 use sha2::{Digest, Sha256};
 
-#[allow(clippy::disallowed_methods)] // wall time is the measurement here.
+#[allow(clippy::disallowed_methods)]
 fn main() -> Result<(), Box<dyn Error>> {
     let rom =
         fs::read(env::var_os("HARMONY_SMB_ROM").ok_or("HARMONY_SMB_ROM must name the SMB ROM")?)?;

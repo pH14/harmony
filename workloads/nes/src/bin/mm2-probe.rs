@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Print selected work-RAM bytes per frame while a chord schedule runs from
-//! power-on. Used to establish a game's boot walk and memory decoders.
-
 use std::{env, error::Error, fs, path::PathBuf};
 
 use machine::nes::ButtonChord;
@@ -46,8 +43,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut prior = [0u8; 2048];
     for step in schedule.split(',') {
         if step == "play" {
-            // Step single frames until the player stands in play with full
-            // health, the same genesis condition the target seals.
             for _ in 0..1_200 {
                 let w = machine.read_wram()?;
                 if w[0x2c] == 0x03 && w[0x6c0] == 28 {

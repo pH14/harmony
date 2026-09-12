@@ -1,25 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Fixed-layout POD wire records.
-//!
-//! Each is a `#[repr(C)]` struct of `zerocopy` little-endian fields. Because the
-//! `little_endian::U16/U32/U64` types have alignment 1, every record is
-//! alignment-1 with **no padding**, so the `IntoBytes` derive accepts it and the
-//! encoded bytes are fully deterministic with no reserved/pad bytes to differ.
-//! These private types carry the byte layout; the public structs in
-//! [`crate::types`] carry the contract. Conversions between them are total.
 
 use zerocopy::little_endian::{U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::types::{DebugRegs, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VtimeState, Xcrs};
 
-/// The 10-byte container header: magic, version, arch tag, section count. The
-/// v4/v5 engine-state extensions are trailing TLVs and do not change this
-/// header. X86 v5 also selects extended fixed-layout CPU records.
-///
-/// The **arch tag** (v2) names the architecture whose record set the sections
-/// carry — which registers a `REGS`/`SREGS` section holds is per-arch, so a blob
-/// is only ever decoded under its own tag.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub(crate) struct HeaderWire {
@@ -29,7 +14,6 @@ pub(crate) struct HeaderWire {
     pub section_count: U16,
 }
 
-/// `KVM_GET_REGS` — 18 little-endian `u64`s in `kvm_regs` field order.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub(crate) struct RegsWire {
@@ -103,7 +87,6 @@ impl From<&RegsWire> for VcpuRegs {
     }
 }
 
-/// One segment-descriptor cache entry (17 bytes, no padding).
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub(crate) struct SegmentWire {
@@ -141,7 +124,6 @@ impl From<&SegmentWire> for Segment {
     }
 }
 
-/// `KVM_GET_SREGS2` — eight segments then the system/control registers.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub(crate) struct SregsWire {
@@ -220,9 +202,6 @@ impl From<&SregsWire> for VcpuSregs {
     }
 }
 
-/// X86 v5 `KVM_GET_SREGS2` record. The legacy fields retain their exact order;
-/// the additional `flags` and `pdptrs` fields are appended so v3/v4 payloads
-/// remain byte-identical.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub(crate) struct SregsWireV5 {
@@ -305,7 +284,6 @@ impl From<&SregsWireV5> for VcpuSregs {
     }
 }
 
-/// `KVM_GET_XCRS` — the single captured `XCR0`.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub(crate) struct XcrsWire {
@@ -326,9 +304,6 @@ impl From<&XcrsWire> for Xcrs {
     }
 }
 
-/// X86 v6 tag 15: the original XSAVE `XSTATE_BV` used when restoring the
-/// normalized image. The fixed eight-byte payload is intentionally separate
-/// from the opaque XSAVE image section.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub(crate) struct XsaveRestoreBvWire {
@@ -349,7 +324,6 @@ impl From<&XsaveRestoreBvWire> for u64 {
     }
 }
 
-/// `KVM_GET_DEBUGREGS` — `DR0..DR3`, `DR6`, `DR7`.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub(crate) struct DebugRegsWire {
@@ -385,8 +359,6 @@ impl From<&DebugRegsWire> for DebugRegs {
     }
 }
 
-/// X86 v5 `KVM_GET_DEBUGREGS` record. The new flags field is appended to keep
-/// the v3/v4 payload bytes unchanged.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub(crate) struct DebugRegsWireV5 {
@@ -424,8 +396,6 @@ impl From<&DebugRegsWireV5> for DebugRegs {
     }
 }
 
-/// `KVM_GET_VCPU_EVENTS`. Booleans are encoded as `u8` (0/1) and validated on
-/// decode — `bool` is not `FromBytes` because not every byte pattern is valid.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub(crate) struct EventsWire {
@@ -451,7 +421,6 @@ impl From<&VcpuEvents> for EventsWire {
 }
 
 impl EventsWire {
-    /// Convert to the public type, validating the boolean bytes.
     pub(crate) fn to_events(&self) -> Option<VcpuEvents> {
         Some(VcpuEvents {
             exception_pending: byte_to_bool(self.exception_pending)?,
@@ -472,7 +441,6 @@ fn byte_to_bool(b: u8) -> Option<bool> {
     }
 }
 
-/// The virtual-time block: guest-counter configuration plus current time.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub(crate) struct VtimeWire {
@@ -501,7 +469,6 @@ impl From<&VtimeWire> for VtimeState {
     }
 }
 
-/// One MSR `(index, value)` pair (12 bytes).
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub(crate) struct MsrPairWire {
@@ -509,7 +476,6 @@ pub(crate) struct MsrPairWire {
     pub value: U64,
 }
 
-/// One timer-queue entry (32 bytes).
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub(crate) struct TimerEntryWire {

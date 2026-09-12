@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! VirtualTime V-time advancement, normalized logging, and delivery checking.
-//!
-//! In this mode the run loop assigns V-time at VM exits. The [`vtime::VClock`] is
-//! always queried at work zero; every increment is applied to its `vns_base`
-//! through [`vtime::VClock::advance_idle`]. A deadline is raised at the first exit
-//! whose post-advance V-time reaches it.  This module is architecture-neutral:
-//! a vendor dispatcher classifies the backend's exit and supplies only the
-//! normalized event payload needed by the clock contract.
 
 use std::collections::BTreeMap;
 
@@ -14,67 +6,32 @@ use sha2::{Digest, Sha256};
 use vmm_backend::{Backend, ExitReason};
 use vtime::{IdlePlanner, TimerQueue, TimerToken, VClock, VClockConfig};
 
-/// Placeholder duration for an interrupt-controller MMIO exit.
-///
-/// M1 replaces this clearly non-normative value when the arm64 determinism
-/// contract gains its measured per-device constants.
 pub const PLACEHOLDER_INTERRUPT_CONTROLLER_MMIO_VNS: u64 = 1;
 
-/// Placeholder duration for a serial-device MMIO exit.
 pub const PLACEHOLDER_SERIAL_MMIO_VNS: u64 = 1;
 
-/// Placeholder duration for a paravirtual-device MMIO exit.
 pub const PLACEHOLDER_PARAVIRTUAL_DEVICE_MMIO_VNS: u64 = 1;
 
-/// Placeholder duration for a trapped guest time read.
 pub const PLACEHOLDER_TRAPPED_TIME_READ_VNS: u64 = 1;
 
-/// Placeholder duration for a trapped architectural-control access.
 pub const PLACEHOLDER_ARCHITECTURAL_CONTROL_VNS: u64 = 1;
 
-/// Placeholder duration for the guest kernel's execution tick.
 pub const PLACEHOLDER_EXECUTION_TICK_VNS: u64 = 1;
 
-/// Device classes whose contract constants advance virtual_time V-time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DeviceClass {
-    /// Interrupt-controller distributor, redistributor, or CPU-interface access.
     InterruptController,
-    /// Guest serial device access.
     Serial,
-    /// A paravirtual device other than the doorbell transport itself.
     Paravirtual,
 }
 
-/// The per-exit constants used by virtual_time advancement.
-///
-/// The default contains deliberately named placeholders.  A production
-/// composition must pass the normative values from its determinism contract
-/// (`vendor::arm64::contract::virtual_time_timing`,
-/// `vendor::x86::contract::virtual_time_timing`).
-///
-/// Not every row fires on every architecture: arm64 confines
-/// interrupt-controller and sysreg exits (no portable ordinal, no advance),
-/// so its interrupt-controller, time-read, and architectural-control rows are
-/// unreachable in production.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VirtualTimeTiming {
-    /// V-ns assigned to interrupt-controller MMIO.
     pub interrupt_controller_mmio_vns: u64,
-    /// V-ns assigned to serial MMIO.
     pub serial_mmio_vns: u64,
-    /// V-ns assigned to paravirtual-device MMIO.
     pub paravirtual_device_mmio_vns: u64,
-    /// V-ns assigned to a trapped time read.
     pub trapped_time_read_vns: u64,
-    /// V-ns assigned to a trapped deterministic architectural control.
     pub architectural_control_vns: u64,
-    /// V-ns assigned to the guest kernel's execution tick (one emitted per
-    /// syscall entry, context switch, and idle-poll iteration). Must stay
-    /// strictly below the guest's programmed timer period: a timer interrupt
-    /// can itself cause a context switch, and advancing by a full period there
-    /// would immediately mature its successor and create a self-sustaining
-    /// interrupt loop.
     pub execution_tick_vns: u64,
 }
 
@@ -101,26 +58,17 @@ impl VirtualTimeTiming {
     }
 }
 
-/// The guest-visible event classes carried by a normalized log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NormalizedEventClass {
-    /// SDK yield, input fetch, or paravirtual tick doorbell.
     Doorbell,
-    /// Device MMIO access.
     DeviceMmio(DeviceClass),
-    /// Counter-shaped sysreg read or pvclock refresh.
     TimeRead,
-    /// Deterministic architectural-control trap outside a device model.
     ArchitecturalControl,
-    /// Guest WFI/HLT idle exit.
     Idle,
-    /// A terminal exit, which advances by zero.
     Terminal,
 }
 
 impl NormalizedEventClass {
-    /// Stable class label for calibration logs, parsed by
-    /// `scripts/fit-vtime-costs.py`.
     pub fn label(self) -> &'static str {
         match self {
             Self::Doorbell => "doorbell",
@@ -158,10 +106,6 @@ enum AdvanceRule {
     None,
 }
 
-/// One backend exit after vendor classification.
-///
-/// Constructors bind each normalized class to its only legal advancement rule,
-/// so a caller cannot label an MMIO exit while applying a doorbell duration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClassifiedExit {
     class: NormalizedEventClass,
@@ -171,7 +115,6 @@ pub struct ClassifiedExit {
 }
 
 impl ClassifiedExit {
-    /// A doorbell whose request declares or implies `duration_vns`.
     pub fn doorbell(payload: Vec<u8>, duration_vns: u64) -> Self {
         Self {
             class: NormalizedEventClass::Doorbell,
@@ -181,7 +124,6 @@ impl ClassifiedExit {
         }
     }
 
-    /// A device MMIO exit, advanced by the constant for `class`.
     pub fn device_mmio(class: DeviceClass, payload: Vec<u8>) -> Self {
         Self {
             class: NormalizedEventClass::DeviceMmio(class),
@@ -191,7 +133,6 @@ impl ClassifiedExit {
         }
     }
 
-    /// A trapped guest time read.
     pub fn time_read(payload: Vec<u8>) -> Self {
         Self {
             class: NormalizedEventClass::TimeRead,
@@ -201,7 +142,6 @@ impl ClassifiedExit {
         }
     }
 
-    /// A deterministic architectural-control trap.
     pub fn architectural_control(payload: Vec<u8>) -> Self {
         Self {
             class: NormalizedEventClass::ArchitecturalControl,
@@ -211,7 +151,6 @@ impl ClassifiedExit {
         }
     }
 
-    /// A WFI/HLT exit.  The clock jumps to the earliest scheduled deadline.
     pub fn idle(payload: Vec<u8>) -> Self {
         Self {
             class: NormalizedEventClass::Idle,
@@ -221,8 +160,6 @@ impl ClassifiedExit {
         }
     }
 
-    /// A terminal exit.  It advances by zero but still delivers anything that
-    /// was already due, because it is an exit boundary.
     pub fn terminal(payload: Vec<u8>) -> Self {
         Self {
             class: NormalizedEventClass::Terminal,
@@ -233,35 +170,19 @@ impl ClassifiedExit {
     }
 }
 
-/// One interrupt deadline recorded when it is scheduled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScheduledInterrupt {
-    /// Absolute V-time deadline.
     pub deadline_vns: u64,
-    /// FIFO insertion sequence, unique within a run.
     pub schedule_index: u64,
-    /// First event index at which this deadline exists and may be delivered.
-    ///
-    /// A guest may arm an already-due timer between exits.  Recording this
-    /// boundary prevents the independent checker from requiring delivery at an
-    /// earlier event, before the timer existed.
     pub armed_for_event: u64,
-    /// Exit that canceled/replaced this deadline before post-exit delivery, or
-    /// closed one delivery-eligibility epoch while the guest IRQ mask was set.
-    /// `None` means this epoch remains live until delivered.
     pub canceled_at_event: Option<u64>,
-    /// Vendor-neutral wire interrupt identity.
     pub interrupt_id: u32,
 }
 
-/// One deadline raised into the interrupt fabric at an exit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InterruptDelivery {
-    /// The deadline that became due.
     pub deadline_vns: u64,
-    /// The deadline's FIFO insertion sequence.
     pub schedule_index: u64,
-    /// Vendor-neutral wire interrupt identity.
     pub interrupt_id: u32,
 }
 
@@ -275,41 +196,26 @@ impl From<ScheduledInterrupt> for InterruptDelivery {
     }
 }
 
-/// Backend-local debugging record.  Raw logs are never compared across substrates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawEvent {
-    /// Zero-based exit index.
     pub event_index: u64,
-    /// Portable event ordinal produced by this exit, or `None` when the exit is
-    /// a substrate-private implementation detail that consumes no V-time.
     pub portable_event_index: Option<u64>,
-    /// Payload-free backend exit reason.
     pub reason: ExitReason,
-    /// Backend's debug rendering of the complete exit.
     pub backend_debug: String,
 }
 
-/// Guest-visible record for one VM exit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NormalizedEvent {
-    /// Zero-based exit index.
     pub event_index: u64,
-    /// Normalized event class.
     pub class: NormalizedEventClass,
-    /// Domain-separated digest of the class and complete guest-visible payload.
     pub payload_digest: [u8; 32],
-    /// V-time after this exit's advancement.
     pub vns_after: u64,
-    /// Interrupts raised at this exit, in deadline/FIFO order.
     pub interrupts: Vec<InterruptDelivery>,
-    /// Full-state hash at the checkpoint interval and at terminal.
     pub state_hash: Option<[u8; 32]>,
 }
 
-/// Complete normalized run log.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NormalizedLog {
-    /// Ordered exit records.
     pub events: Vec<NormalizedEvent>,
 }
 
@@ -320,13 +226,6 @@ struct PendingLiveEvent {
     payload: Vec<u8>,
 }
 
-/// Full virtual_time trace captured by the production VMM run loop.
-///
-/// The trace is host-side evidence only: it is excluded from snapshots and
-/// state hashes. It retains every raw exit for local diagnosis, every
-/// normalized exit for cross-run comparison, and the immutable deadline
-/// schedule (including cancellation events) for the independent placement
-/// checker.
 #[derive(Clone, Debug, Default)]
 pub struct LiveVirtualTimeTrace {
     raw: Vec<RawEvent>,
@@ -339,26 +238,20 @@ pub struct LiveVirtualTimeTrace {
 }
 
 impl LiveVirtualTimeTrace {
-    /// Backend-local raw exits. Never compare this across substrates.
     pub fn raw_log(&self) -> &[RawEvent] {
         &self.raw
     }
 
-    /// Complete guest-visible normalized exit log.
     pub fn normalized_log(&self) -> &NormalizedLog {
         &self.normalized
     }
 
-    /// Immutable deadline schedule consumed by [`check_delivery_placement`].
     pub fn schedule(&self) -> &[ScheduledInterrupt] {
         &self.schedule
     }
 
-    /// SHA-256 of the complete normalized log and deadline schedule in a fixed,
-    /// domain-separated little-endian encoding.
     pub fn normalized_digest(&self) -> [u8; 32] {
         let mut h = Sha256::new();
-        // Frozen v1 log-domain identifier: changing it would invalidate N1 byte fixtures.
         h.update(b"consonance.live-prescriptive-log.v1\0");
         h.update(
             u64::try_from(self.normalized.events.len())
@@ -443,8 +336,6 @@ impl LiveVirtualTimeTrace {
             .ok_or("virtual_time trace operation outside an active event")
     }
 
-    /// Retain a substrate-private exit in the raw diagnostic stream without
-    /// assigning portable V-time or a normalized event ordinal.
     pub(crate) fn record_raw_only(
         &mut self,
         reason: ExitReason,
@@ -485,12 +376,6 @@ impl LiveVirtualTimeTrace {
         Ok(())
     }
 
-    /// Rebase the host-only clockevent schedule at a restored VM boundary.
-    ///
-    /// Restore starts a new control-session trace segment but can reinstate an
-    /// armed guest timer. The timer record is snapshot state; this trace index
-    /// is not. Seed a fresh eligibility epoch so the first post-restore delivery
-    /// is still checked against the restored deadline.
     pub(crate) fn restore_clockevent_schedule(
         &mut self,
         restored: Option<(u64, u32)>,
@@ -524,14 +409,7 @@ impl LiveVirtualTimeTrace {
         self.cancel_clockevent_at(event)
     }
 
-    /// Close the active delivery-eligibility epoch at this masked exit and
-    /// carry the same deadline into the next event. The immutable schedule
-    /// therefore gives the independent placement checker explicit evidence
-    /// that delivery was not legal at this boundary, without changing the
-    /// frozen normalized-event surface.
     pub(crate) fn defer_clockevent(&mut self) -> Result<(), &'static str> {
-        // Substrate-private raw exits do not consume a portable event ordinal,
-        // so they cannot create an eligibility epoch in the normalized schedule.
         if self.pending.is_none() {
             return Ok(());
         }
@@ -655,53 +533,33 @@ impl LiveVirtualTimeTrace {
     }
 }
 
-/// State supplied to the full-state checkpoint callback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VirtualTimeCheckpoint {
-    /// Post-advance V-time; the underlying clock is queried at work zero.
     pub vns: u64,
-    /// Number of deadlines not yet delivered.
     pub pending_interrupts: u64,
-    /// Current event index.
     pub event_index: u64,
 }
 
-/// Failure from the virtual_time run loop.
 #[derive(Debug, thiserror::Error)]
 pub enum VirtualTimeError {
-    /// Backend operation failed.
     #[error(transparent)]
     Backend(#[from] vmm_backend::BackendError),
-    /// Clock configuration failed.
     #[error(transparent)]
     Clock(#[from] vtime::VtimeError),
-    /// A zero checkpoint interval would make the oracle vacuous.
     #[error("checkpoint interval must be at least one event")]
     ZeroCheckpointInterval,
-    /// WFI cannot make progress without a scheduled wakeup.
     #[error("idle exit has no scheduled interrupt deadline")]
     IdleWithoutDeadline,
-    /// No more unique event or schedule indices can be represented.
     #[error("{counter} index exhausted")]
-    IndexExhausted {
-        /// Name of the exhausted counter.
-        counter: &'static str,
-    },
-    /// The caller tried to continue after a terminal event.
+    IndexExhausted { counter: &'static str },
     #[error("cannot run after a terminal event")]
     AlreadyTerminal,
-    /// Internal timer metadata and `TimerQueue` disagreed.
     #[error("timer queue returned unknown token {token}")]
-    UnknownTimerToken {
-        /// Token returned by the queue.
-        token: u64,
-    },
-    /// Vendor classification or completion failed closed.
+    UnknownTimerToken { token: u64 },
     #[error("exit classification failed: {0}")]
     Classification(String),
 }
 
-/// Run-loop state for virtual_time V-time.
 pub struct VirtualTimeRunLoop<B: Backend> {
     backend: B,
     timing: VirtualTimeTiming,
@@ -719,10 +577,6 @@ pub struct VirtualTimeRunLoop<B: Backend> {
 }
 
 impl<B: Backend> VirtualTimeRunLoop<B> {
-    /// Construct a run loop over an already configured backend.
-    ///
-    /// `clock_config.vns_base` is the initial V-time.  Work remains zero for
-    /// the lifetime of this loop.
     pub fn new(
         backend: B,
         clock_config: VClockConfig,
@@ -749,32 +603,26 @@ impl<B: Backend> VirtualTimeRunLoop<B> {
         })
     }
 
-    /// Current V-time.  This is always `VClock::vns(0)`.
     pub fn vns(&self) -> u64 {
         self.clock.vns()
     }
 
-    /// Immutable access to the backend, primarily for reports and tests.
     pub fn backend(&self) -> &B {
         &self.backend
     }
 
-    /// The backend-local raw exit log.
     pub fn raw_log(&self) -> &[RawEvent] {
         &self.raw
     }
 
-    /// The guest-visible normalized log.
     pub fn normalized_log(&self) -> &NormalizedLog {
         &self.normalized
     }
 
-    /// The immutable deadline schedule consumed by the placement checker.
     pub fn schedule(&self) -> &[ScheduledInterrupt] {
         &self.schedule
     }
 
-    /// Schedule a one-shot interrupt and return its immutable schedule record.
     pub fn schedule_interrupt(
         &mut self,
         deadline_vns: u64,
@@ -801,15 +649,6 @@ impl<B: Backend> VirtualTimeRunLoop<B> {
         Ok(scheduled)
     }
 
-    /// Run the backend to its next exit, classify/service that exit, advance
-    /// V-time, raise every due interrupt, and append both logs.
-    ///
-    /// `classify` is the vendor dispatch seam. It may complete a read-style
-    /// backend exit before returning the normalized classification. `deliver`
-    /// raises every due identity into the userspace interrupt fabric before the
-    /// next entry. `hash` must return the canonical hash of all observable
-    /// state; it is called at every configured checkpoint and unconditionally
-    /// for a terminal event.
     pub fn run_backend_once<C, D, H>(
         &mut self,
         classify: C,
@@ -914,7 +753,6 @@ impl<B: Backend> VirtualTimeRunLoop<B> {
 
 pub(crate) fn digest_payload(class: NormalizedEventClass, payload: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    // Frozen v1 event-domain identifier: N1 fixtures bind these digest bytes.
     hasher.update(b"consonance.prescriptive-event.v1\0");
     hasher.update([class.tag()]);
     hasher.update(
@@ -926,36 +764,24 @@ pub(crate) fn digest_payload(class: NormalizedEventClass, payload: &[u8]) -> [u8
     hasher.finalize().into()
 }
 
-/// Which normalized-log field first diverged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogField {
-    /// One log ended before the other.
     Length,
-    /// Event indices differ.
     EventIndex,
-    /// Event classes differ.
     Class,
-    /// Payload digests differ.
     PayloadDigest,
-    /// Post-advance V-time differs.
     VnsAfter,
-    /// Interrupt placement or order differs.
     Interrupts,
-    /// Full-state checkpoint hashes differ.
     StateHash,
 }
 
-/// Exact first divergence between normalized logs.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("normalized logs diverged at event {event_index} in {field:?}")]
 pub struct LogDivergence {
-    /// Exact first divergent event (or the shorter length for a length mismatch).
     pub event_index: u64,
-    /// First field that differs at that event.
     pub field: LogField,
 }
 
-/// Compare complete normalized logs and report their exact first divergence.
 pub fn compare_normalized_logs(
     left: &NormalizedLog,
     right: &NormalizedLog,
@@ -991,55 +817,29 @@ pub fn compare_normalized_logs(
     Ok(())
 }
 
-/// A delivery-placement contract violation.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PlacementViolation {
-    /// Log event indices are not a contiguous sequence from zero.
     #[error("normalized log event index {actual} appeared at position {position}")]
-    BadEventIndex {
-        /// Vector position.
-        position: u64,
-        /// Recorded index.
-        actual: u64,
-    },
-    /// V-time moved backwards.
+    BadEventIndex { position: u64, actual: u64 },
     #[error("normalized log V-time moved backwards at event {event_index}: {before} -> {after}")]
     VtimeRegressed {
-        /// Event carrying the regression.
         event_index: u64,
-        /// Previous post-advance V-time.
         before: u64,
-        /// Regressed post-advance V-time.
         after: u64,
     },
-    /// The set/order delivered at an event differs from the independent schedule oracle.
     #[error("interrupt placement differs at event {event_index}")]
     WrongDelivery {
-        /// Exact divergent event.
         event_index: u64,
-        /// Deadlines that must be delivered here.
         expected: Vec<InterruptDelivery>,
-        /// Deadlines the run actually delivered here.
         actual: Vec<InterruptDelivery>,
     },
-    /// A scheduled deadline was never reached/delivered by the complete log.
     #[error("scheduled interrupt {schedule_index} at {deadline_vns} vns was not delivered")]
     Undelivered {
-        /// FIFO schedule identity.
         schedule_index: u64,
-        /// Deadline left outstanding.
         deadline_vns: u64,
     },
 }
 
-/// Independently verify the §2.1 delivery contract against one complete log.
-///
-/// This deliberately does not reuse [`TimerQueue`].  It sorts the immutable
-/// effective schedule by `(deadline, insertion sequence)` and derives the
-/// expected deliveries from only the log's post-advance V-time values. Masked
-/// exits appear as closed schedule epochs, so the checker sees exactly where
-/// delivery was ineligible without reading backend state. Therefore a run loop
-/// that is consistently one exit late cannot make this oracle agree with itself.
 pub fn check_delivery_placement(
     schedule: &[ScheduledInterrupt],
     log: &NormalizedLog,
@@ -1095,11 +895,6 @@ pub fn check_delivery_placement(
         }
     }
 
-    // A milestone log is a finite prefix ending at its observation marker
-    // (`/init` for M1), not necessarily a terminal VM state. A still-armed
-    // deadline strictly beyond the prefix's final V-time is not late and must
-    // remain in the schedule so the state/checkpoint is honest. Reject only a
-    // live deadline that had become eligible within the observed prefix.
     if let Some(last) = log.events.last()
         && let Some((_, missing)) = ordered.iter().enumerate().find(|(index, scheduled)| {
             !delivered[*index]
@@ -1286,9 +1081,6 @@ mod live_trace_tests {
         trace.schedule_clockevent(4, 27).unwrap();
         trace.finish(1, None).unwrap();
 
-        // Deadline reached, but the architectural IRQ mask is set. Production
-        // records this eligibility-epoch boundary before returning without a
-        // delivery.
         trace
             .begin(
                 ExitReason::Mmio,
@@ -1376,8 +1168,6 @@ mod live_trace_tests {
             Err(PlacementViolation::WrongDelivery { event_index: 0, .. })
         ));
 
-        // A schedule whose eligibility epoch begins after this finite prefix
-        // is not missing, even when its deadline value is already small.
         let future_epoch = [ScheduledInterrupt {
             deadline_vns: 0,
             armed_for_event: 1,

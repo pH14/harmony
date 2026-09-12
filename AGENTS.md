@@ -19,6 +19,12 @@ deterministic execution.
 - Record follow-up work in GitHub issues and preserve implementation history in
   commits and pull requests.
 - For code-review work, use the applicable lenses in `REVIEWING.md`.
+- Backwards compatibility is not a goal. Do not preserve old code paths to
+  avoid breaking changes.
+- Rust code carries no comments, doc comments included. `scripts/strip-comments.py`
+  removes them and CI enforces it. The exceptions are the SPDX header and the
+  safety invariant beside every `unsafe` block. Component knowledge belongs in
+  the nearest README.
 
 ## Maintaining these instructions
 

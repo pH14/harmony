@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Package-owned ROM identification and search composition.
 use crate::{
     nova::campaign::{NovaCampaignRun, NovaGame},
     smb::campaign::{SmbCampaignRun, SmbGame},
@@ -7,7 +6,7 @@ use crate::{
 use searcher::search::{
     archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy, SelectorPolicy},
     campaign::{
-        CampaignConfig, CampaignOrigin, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Game,
+        CampaignConfig, CampaignOrigin, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Workload,
         run_campaign_checkpointed,
     },
     draw::{DrawMixture, SuffixShape},
@@ -21,7 +20,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Supported ROM semantics, selected by content rather than filename.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RomKind {
@@ -29,7 +27,6 @@ pub enum RomKind {
     Nova,
 }
 impl RomKind {
-    /// Identify a supported, exact ROM revision.
     pub fn identify(rom: &[u8]) -> Result<Self, Box<dyn Error>> {
         let digest = format!("{:x}", Sha256::digest(rom));
         match digest.as_str() {
@@ -39,7 +36,6 @@ impl RomKind {
         }
     }
 }
-/// Logical search limits shared by every NES adapter.
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SearchOptions {
     pub seed: u64,
@@ -48,7 +44,6 @@ pub struct SearchOptions {
     pub actions: usize,
     pub output: PathBuf,
 }
-/// Deterministic search settings independent of artifact placement.
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SearchIdentity {
     pub seed: u64,
@@ -66,7 +61,6 @@ impl From<&SearchOptions> for SearchIdentity {
         }
     }
 }
-/// Semantic identity shared by equivalent native and guest executions.
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct WorkloadIdentity {
     pub package: String,
@@ -74,7 +68,6 @@ pub struct WorkloadIdentity {
     pub rom_sha256: String,
     pub semantics: String,
 }
-/// Artifacts and snapshot contract required for exact backend restoration.
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ExecutionIdentity {
     pub backend: String,
@@ -82,7 +75,6 @@ pub struct ExecutionIdentity {
     pub core_contract: String,
     pub artifacts: std::collections::BTreeMap<String, String>,
 }
-/// Preparation evidence: semantic, execution, and search choices are separate.
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct PreparedIdentity {
     pub workload: WorkloadIdentity,
@@ -91,7 +83,6 @@ pub struct PreparedIdentity {
     pub search_policy: String,
 }
 impl PreparedIdentity {
-    /// Exact replay accepts only the recorded semantic and execution contracts.
     pub fn validate_execution(&self, candidate: &Self) -> Result<(), Box<dyn Error>> {
         if self.workload != candidate.workload || self.execution != candidate.execution {
             return Err("prepared workload or execution identity mismatch".into());
@@ -131,7 +122,7 @@ fn record_identity(
     )?;
     Ok(())
 }
-fn search<G: Game>(game: G, run: G::Run, options: &SearchOptions) -> Result<(), Box<dyn Error>>
+fn search<G: Workload>(game: G, run: G::Run, options: &SearchOptions) -> Result<(), Box<dyn Error>>
 where
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
 {
@@ -144,7 +135,8 @@ where
         action_limit: options.actions,
         host: "harmony-search".into(),
         wall_budget: None,
-        continue_after_victory: false,
+        stop_rollout_on_objective: true,
+        stop_campaign_on_objective: true,
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         reservations_per_worker: DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
         memory_budget_mib: None,
@@ -152,9 +144,9 @@ where
         run,
         suffix: SuffixShape::default(),
         mixture: DrawMixture::default(),
-        retention: RetentionPolicy::AdmitAlive,
+        retention: RetentionPolicy::Unprobed,
         selector: SelectorPolicy::GroupUniform,
-        victory_input_path: Some(options.output.join("victory.json")),
+        objective_witness_path: Some(options.output.join("victory.json")),
     };
     let (report, checkpoint) =
         run_campaign_checkpointed(&game, &config, &CampaignOrigin::Genesis, &mut stream, None)?;
@@ -175,7 +167,6 @@ fn smb_run() -> SmbCampaignRun {
         terminal: None,
     }
 }
-/// Search directly against the pinned native emulator.
 pub fn search_native(
     rom: &[u8],
     core: &Path,
@@ -208,7 +199,6 @@ pub fn search_native(
         ),
     }
 }
-/// Search with the same workload semantics inside one single-vCPU Consonance VM per worker.
 #[cfg(all(
     feature = "consonance",
     target_os = "linux",

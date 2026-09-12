@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Compare per-action Nova observations from direct QuickNES and Consonance.
-
 #[cfg(all(
     feature = "consonance",
     target_os = "linux",

@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Explicit compatibility adapter from the supported historical fault vocabulary
-//! to Consonance's generic service and memory/interrupt mechanisms.
 use crate::{
     Answer, DecisionPoint, EnvSpec, Environment, Fault, FaultPolicy, HostFault, Outcome,
     RecordedEnv,
@@ -14,9 +12,6 @@ use environment::{
 };
 
 const IDENTITY: &[u8] = b"harmony-fault-policy-v1";
-// These are package namespaces carried by generic SDK opcode 3. The generic
-// protocol never decodes the payload; this adapter owns both namespaces and
-// their request shapes.
 const BUGGIFY_NAMESPACE: u16 = 7;
 const NET_FLOW_NAMESPACE: u16 = 4;
 #[derive(Clone)]
@@ -115,8 +110,6 @@ impl ServiceHandler for Handler {
         Box::new(self.clone())
     }
 }
-/// Install this factory explicitly on a client-composed control server.
-/// The nominal service contract remains available for fault-free branches.
 pub fn service_factory() -> ServiceFactory {
     let nominal = nominal_factory();
     std::sync::Arc::new(move |config| {
@@ -133,8 +126,6 @@ pub fn service_factory() -> ServiceFactory {
         Ok(Box::new(Handler::new(policy)))
     })
 }
-/// Translate a supported historical reproducer without linking its vocabulary
-/// into the execution core. Unsupported historical actions remain explicit errors.
 pub fn translate(spec: &EnvSpec) -> Result<InputSpec, ChannelError> {
     if !spec.policy().is_enforceable_only()
         || matches!(spec, EnvSpec::Recorded { standing, .. } if !standing.is_empty())
@@ -164,7 +155,6 @@ pub fn translate(spec: &EnvSpec) -> Result<InputSpec, ChannelError> {
     result.set_payloads(spec.payloads().map(<[Vec<u8>]>::to_vec));
     Ok(result)
 }
-/// Convert one fault meaning to a generic operation applied at the same moment.
 pub fn effect(fault: &HostFault) -> Result<Effect, ChannelError> {
     match fault {
         HostFault::CorruptMemory { gpa, mask } => Ok(Effect::XorMemory {

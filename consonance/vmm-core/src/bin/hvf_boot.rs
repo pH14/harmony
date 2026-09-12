@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Event-count-bounded live arm64 Linux boot on Hypervisor.framework.
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64", not(miri))))]
 fn contains_complete_ready_line(serial: &[u8], ready: &[u8]) -> bool {
@@ -76,8 +75,6 @@ fn main() -> std::process::ExitCode {
     use vmm_core::vendor::arm64::bringup;
     use vmm_core::vmm::Step;
 
-    // Kernel-console newline translation inserts `\r` before `\n`. Match the
-    // complete semantic marker rather than one transport's line ending.
     const DEFAULT_READY: &[u8] = b"HARMONY_AA5_READY";
     const DEFAULT_RAM: usize = 128 * 1024 * 1024;
     const DEFAULT_MAX_EVENTS: u64 = 1_000_000;
@@ -172,9 +169,6 @@ fn main() -> std::process::ExitCode {
         }
     };
 
-    // Host wall time is a kill condition only. It never advances V-time or
-    // enters guest state: expiry asks HVF to return from the current entry and
-    // the run fails loudly with the event index.
     let exit_handle = vmm.hvf_exit_handle();
     let (watchdog_tx, watchdog_rx) = mpsc::channel();
     let watchdog_fired = Arc::new(AtomicU64::new(u64::MAX));
@@ -207,10 +201,6 @@ fn main() -> std::process::ExitCode {
         let _ = thread.join();
     };
 
-    // not order-observable: calibration rows pair each portable event with the
-    // host wall clock for the per-class duration fit. Diagnostic output only;
-    // nothing reads it back into the run. The epoch starts at the event loop so
-    // the fitted totals cover event execution, not image reads and VM setup.
     #[allow(clippy::disallowed_methods)]
     let calibration_start = std::time::Instant::now();
     let mut calibration_emitted = 0usize;
@@ -354,10 +344,6 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::FAILURE;
             }
 
-            // Required negative oracle on the exact production workload: move
-            // every delivered tick one exit late. Two identically late logs
-            // agree with each other, but both independent oracles must reject
-            // them at the first genuine delivery boundary.
             let original = trace.normalized_log();
             let mut late = original.clone();
             for logged in &mut late.events {

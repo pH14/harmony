@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 4 — object-safety / dyn-compatibility **and** the `impl Backend for
-//! Box<B>` blanket-forward (task 21). The composition root holds a
-//! `Box<dyn Backend<A = X86>>` and injects the concrete backend at `fn main`; this test
-//! constructs one and drives **every** trait method through it, so each blanket
-//! forward is exercised with a trait-observable assertion (a mutant that drops a
-//! forward is caught: a skipped completion leaves the exit pending, so the next
-//! `run` fails `PendingCompletion`; a skipped config makes `run` fail
-//! `NotConfigured`; etc.). Compilation is itself the object-safety assertion.
 #![cfg(feature = "mock")]
 
 use vmm_backend::{
@@ -14,16 +6,10 @@ use vmm_backend::{
     VcpuState, X86, X86Completion, X86Exit, X86Policy,
 };
 
-/// Compiles only while `Backend` is dyn-compatible (no generic methods, no
-/// `Self`-by-value returns). `Box<dyn Backend<A = X86>>: Backend` is proven by the test
-/// body, which drives the blanket impl directly.
 fn _assert_object_safe(_: &dyn Backend<A = X86>) {}
 
 #[test]
 fn boxed_backend_forwards_every_method() {
-    // A scripted run that needs one of each completion, so every `Box<B>` forward
-    // is driven and observed. Each exit is followed by another op, so a dropped
-    // completion forward surfaces as a `PendingCompletion` on the next `run`.
     let script = [
         Exit::Arch(X86Exit::Cpuid {
             leaf: 1,
@@ -47,8 +33,6 @@ fn boxed_backend_forwards_every_method() {
     ];
     let mut backend: Box<dyn Backend<A = X86>> = Box::new(MockBackend::with_exits(script));
 
-    // set_cpuid / set_msr_filter forwards: if either is dropped, `run` below fails
-    // `NotConfigured`.
     backend
         .set_policy(&X86Policy {
             cpuid: CpuidModel::default(),
@@ -56,9 +40,6 @@ fn boxed_backend_forwards_every_method() {
         })
         .unwrap();
 
-    // map_memory forward (an `unsafe fn` even through `dyn`): a valid map succeeds,
-    // and a misaligned one errors — a dropped forward would skip the mock's
-    // validation and wrongly return `Ok`.
     let mut mem = vec![0u8; 4096];
     // SAFETY: `mem` outlives the backend and is not aliased; the mock only records.
     unsafe { backend.map_memory(Gpa(0), &mut mem) }.unwrap();
@@ -66,8 +47,6 @@ fn boxed_backend_forwards_every_method() {
     // SAFETY: as above; this call is expected to error (misaligned gpa).
     assert!(unsafe { backend.map_memory(Gpa(1), &mut bad) }.is_err());
 
-    // Each exit → its matching completion → the next `run` must succeed (proving
-    // the completion forward landed).
     assert_eq!(
         backend.run().unwrap(),
         Exit::Arch(X86Exit::Cpuid {
@@ -83,8 +62,6 @@ fn boxed_backend_forwards_every_method() {
             edx: 0xD,
         })
         .unwrap();
-    // The explicit completion-retirement operation is also object-safe and
-    // forwarded through the boxed backend. It must not consume the next exit.
     backend.retire_pending_completion().unwrap();
 
     assert_eq!(
@@ -128,21 +105,14 @@ fn boxed_backend_forwards_every_method() {
     backend.complete_read(0x55).unwrap();
     backend.retire_pending_completion().unwrap();
 
-    // inject forward: exercised through the box (its effect is not trait-observable
-    // — see `.cargo/mutants.toml` exclude for the forward).
     backend.inject(Injection::Nmi).unwrap();
 
-    // exit_counts forward: 6 exits delivered. reset_exit_counts forward: back to 0.
     assert_eq!(backend.exit_counts().total(), 6);
     backend.reset_exit_counts();
     assert_eq!(backend.exit_counts().total(), 0);
 
-    // capabilities forward.
     assert_eq!(backend.capabilities().name, "mock");
 
-    // save / restore forwards: restore a distinctive state through the box, then
-    // save it back and confirm it round-trips (a dropped restore leaves the prior
-    // state; a dropped/Default save returns the wrong value).
     let mut state = VcpuState::default();
     state.regs.rax = 0xDEAD_BEEF;
     backend.restore(&state).unwrap();
@@ -151,11 +121,6 @@ fn boxed_backend_forwards_every_method() {
 
 #[test]
 fn injection_forwards_through_box() {
-    // `set_pending_irq` + `take_accepted_interrupt` forwards through `Box<dyn
-    // Backend>`: a dropped `set_pending_irq` leaves nothing pending (so the entry
-    // accepts nothing and `take_accepted_interrupt` → `None`); a dropped/Defaulted
-    // `take_accepted_interrupt` returns the wrong value. Both are trait-observable
-    // here, so the box forwards are killable (unlike the effect-only `inject`).
     let mut backend: Box<dyn Backend<A = X86>> =
         Box::new(MockBackend::with_exits(vec![Exit::Common(
             CommonExit::Idle,
@@ -168,7 +133,7 @@ fn injection_forwards_through_box() {
         .unwrap();
 
     backend.set_pending_irq(Some(0x40)).unwrap();
-    assert_eq!(backend.run().unwrap(), Exit::Common(CommonExit::Idle)); // mock accepts the pending IRQ
+    assert_eq!(backend.run().unwrap(), Exit::Common(CommonExit::Idle));
     assert_eq!(backend.take_accepted_interrupt(), Some(0x40));
     assert_eq!(backend.take_accepted_interrupt(), None);
 }

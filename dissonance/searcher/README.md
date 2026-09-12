@@ -6,7 +6,7 @@
 `search::` modules own archive retention, parent selection, input mutation,
 campaign coordination, worker execution, seeded draws, checkpoints, stream
 recording, and replay. Workloads supply associated types through `CampaignTypes`
-and implement four contracts. `Game` composes those contracts for a full campaign.
+and implement four contracts. `Workload` composes those contracts for a full campaign.
 
 The archive groups entries at several ordered depths. A workload provides the
 key and any same-location state preference; the generic archive uses only the
@@ -18,8 +18,14 @@ for replay. Reserved jobs pin the snapshot they actually restore, including a
 parent's keyframe. If retention removes that snapshot from the active population,
 its memory stays charged until the last reservation is admitted. Live execution
 and serial replay release these pins at the same recorded boundary, independent
-of worker completion timing. Budgeted streams before schedule version 3 are
-rejected because they used different snapshot accounting.
+of worker completion timing. Campaign streams require schedule policy version 3
+and the current bounded progress policy; recordings from superseded policy
+namespaces are rejected before replay because their snapshot accounting differs.
+
+Empirical step tables fold retained suffixes into an incremental hash and a
+deterministic frequency map capped at 4,096 distinct steps. The compact table
+is the only supported representation. Workloads identify their input policies
+and reject unknown or retired identifiers during replay.
 
 Physical executors default to at most one running or completed-but-unadmitted
 job each. `run_campaign_checkpointed_with_options` can explicitly allow two
@@ -39,15 +45,27 @@ campaign and target contracts:
 
 | Contract | Workload responsibility |
 | --- | --- |
-| `TargetExecution` | Construct, drive, restore, and snapshot targets; capture observations and account for execution cost. |
+| `TargetExecution` | Construct, drive, restore, and snapshot targets; capture observations and account for deterministic execution work. |
 | `InputPolicy` | Define the action vocabulary, draw suffixes, retain policy history, and checkpoint draw state. |
 | `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
 
 Each contract depends on `CampaignTypes` and can be implemented independently.
-A complete adapter receives the aggregate `Game` implementation automatically.
+A complete adapter receives the aggregate `Workload` implementation automatically.
 The `tests/interfaces.rs` fixture implements execution alone and exercises it
 through a function bounded only by `TargetExecution`.
+
+Stateful input policies provide a serializable `DrawCheckpoint` and optional
+`DrawHeader`. Campaign records carry those types directly; the coordinator
+only asks the policy for a checkpoint's history version when retaining replay
+state. It does not interpret the checkpoint payload. Stateless policies use
+`()`. Policy state and retained checkpoint history must fit the declared memory
+reserve.
+
+Streams require the current engine `schema_version` in addition to the
+workload's format identifier. Missing or unsupported engine versions are
+rejected before replay. The stateful resource fixture uses a distinct checkpoint
+shape and checks that corrupted checkpoint evidence is rejected.
 
 Workloads can expose bounded observation counters through `Reporting::diagnostics`.
 The engine places them only in the live progress sidecar. They never influence
@@ -61,9 +79,20 @@ The shared `search::rollout` loop owns suffix
 limits, action evidence capture, candidate creation, retention probe placement,
 and stopping; a workload provides action execution and state evaluation.
 
-The NES package lives in `../../workloads/nes`. It owns game adapters, emulator
+Workload packages live in `../../workloads`. They own adapters, execution
 integration, and campaign binaries. A probe must restore candidate state before
 returning, including adapter caches and pending input.
+
+`TargetExecution::execution_work` is a monotonic logical lifetime counter. It
+starts at the workload's search genesis after setup, survives reset and
+snapshot restore, and excludes probe work. The campaign records this measured
+work separately from the declared per-action cost used by archive paths and
+suffix bounds. Each workload declares both unit labels; the stream header and
+report carry them, and replay rejects a workload whose identity or units do not
+match. A work budget stops new admissions after the measured total reaches the
+budget; already reserved jobs drain and can overshoot it. Physical cache or
+backend counters remain workload diagnostics and never replace the logical
+counter.
 
 Run the core checks with:
 
@@ -74,10 +103,10 @@ cargo clippy --manifest-path dissonance/searcher/Cargo.toml --all-targets -- -D 
 
 ## Search evaluation policies
 
-The legacy selector identifiers retain their exact behavior. Search experiments
-use independent versioned identifiers:
+Selector identifiers describe the generic hierarchy and retain their exact
+selection behavior. Search experiments use independent versioned identifiers:
 
-- `room_cell_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides
+- `hierarchy_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides
   each within-cell cost weight by one plus that entry's admitted selections.
   Cheap members get early attempts, while repeatedly sampled members yield some
   probability to alternatives. No workload field is added.
@@ -112,14 +141,14 @@ cannot change serial replay. Only same-slot `preference_cmp` is consulted;
 preferences are never compared between unrelated locations. A workload that
 reports no preference improvements gets no continuation attempts.
 
-These are experiments, not new defaults. Promote policies based on paired game
-panels, fresh SMB completion, and resource costs through
+These are experiments, not new defaults. Promote policies based on paired workload
+panels, fresh completion results, and resource costs through
 [`benchmarks/search`](../../benchmarks/search/README.md). The generic resource
 fixture exercises actual continuation dispatch, snapshot eviction, concurrent
 reservations, exact report/checkpoint replay, and planted recording corruption
-without an emulator or ROM.
+without a workload runtime or external artifact.
 
-`room_cell_uniform_128_energy_frontier_cheapest_key_count_v1:<thresholds>` is a
+`hierarchy_uniform_128_energy_frontier_cheapest_key_count_v1:<thresholds>` is a
 separate count-history experiment. It uses the larger of an entry's selection
 count and the remembered count of its depth-0 retention key. A cache of 16,384
 recently selected keys survives entry replacement and metadata compaction within
@@ -132,17 +161,31 @@ new campaign, including an archive-origin run, and never pins old entries.
 
 This tests whether archive churn repeatedly gives an already-sampled state a
 fresh sampling count. It also carries history across same-slot resource
-improvements, which may reduce their ordinary draw share; the companion game
+improvements, which may reduce their ordinary draw share; the companion workload
 panels must check that tradeoff. No default change is implied by the mechanism.
 
 Progress sidecars carry objective workload evidence, actual admitted execution
-frames, final totals, logical memory categories, and monotonic host time. With
+work, terminal endpoint and execution-failure totals, final totals, logical
+memory categories, and monotonic host time. With
 `HARMONY_COORDINATOR_PROFILE=1`, they also contain coordinator phase durations
-and dispatched replay/suffix action budgets. Those action budgets are requested
-time, not actual emulator frames. Profiling values and clocks never enter
+and dispatched replay/suffix action costs. Those costs are declared path cost,
+not measured execution work. Profiling values and clocks never enter
 search decisions or the deterministic campaign stream.
 
-`room_cell_uniform_128_energy_progress_cheapest_count_v1:<thresholds>` is a
+Each recorded action carries an objective event and an execution disposition.
+`Runnable` states can produce retained candidates even when the rollout stops
+after observing an objective; `Terminal` and `Failed` states cannot. The rollout
+stop flag controls that suffix, while the campaign stop flag controls new
+reservations. A latched objective inherited from a retained parent is not
+reported again, so continued suffixes can still be evaluated without duplicate
+objective counts.
+Archive-origin campaigns preserve workload evidence while objective totals and
+witnesses count objectives evaluated during the new campaign.
+Genesis and snapshot-root bootstrap still require a current key and retained
+snapshot; a terminal target without a snapshot is reported as an execution
+error.
+
+`hierarchy_uniform_128_energy_progress_cheapest_count_v1:<thresholds>` is a
 separate experiment that uses `ArchiveKey::progress_cmp` for class preference
 and frontier weighting. Equivalent/incomparable coarsest classes share draws;
 identity still orders maps, never the potentially partial progress relation.
@@ -155,17 +198,18 @@ bias in the legacy control. This policy changes parent selection; ordinary
 splice donor ranking retains its historical key ordering and remains a separate
 ablation concern for nonlinear workloads.
 
-`run_campaign_checkpointed_with_frame_budget` adds an optional deterministic
-admitted-frame cutoff without changing existing `CampaignConfig` callers. The
-stream and report record that budget only when present. Already reserved jobs
-drain normally; evaluators must score first-victory cost against the threshold,
-not treat a later victory from the drained window as a budgeted success.
+`run_campaign_checkpointed_with_options` accepts an optional deterministic work
+budget without changing existing `CampaignConfig` callers. The stream and
+report record that budget only when present. Already reserved jobs drain
+normally; evaluators must score first-objective work against the threshold and
+account for any drained overshoot. Omitting the option leaves the campaign
+without a work-budget cutoff.
 
-`room_cell_uniform_128_energy_progress_cheapest_v1:<thresholds>` isolates semantic
+`hierarchy_uniform_128_energy_progress_cheapest_v1:<thresholds>` isolates semantic
 progress weighting from entry-count weighting. It uses the same progress walk
 and cheapest-cell preference as the count variant, with the original per-entry
 weights. This recovers the location-neutral frontier behavior of the historical
-Metroid Pareto experiment: within an inventory class, its declared progress
+Pareto experiment: within an inventory class, its declared progress
 relation considers map cells equal, so no map cell can dominate another. It is
 not the full historical cross-location preference/Pareto implementation, and
 it does not restore the prototype's improvement-replay queues. Its separate

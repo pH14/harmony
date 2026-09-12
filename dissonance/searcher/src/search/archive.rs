@@ -1,13 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Generic snapshot archive: retention, parent selection, and retire counters.
-//!
-//! The archive never names a game concept. Everything game-specific arrives
-//! through [`ArchiveKey`]: the key locates a state, its groups pool entries
-//! for selection and retirement, and its lineage carries whatever ancestry
-//! the key needs to complete itself (for Super Mario Bros, the visited-room
-//! list).
-
 use std::{
     cell::Cell,
     cmp::{Ordering, Reverse},
@@ -34,84 +26,35 @@ fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
         .collect()
 }
 
-/// A quality-diversity archive key.
-///
-/// Group depths run from finest to coarsest: depth 0 is the retention slot
-/// (the slot a candidate competes for under [`MAX_ENTRIES_PER_KEY`]), depth 1
-/// is the selection cell the recency window samples inside, and higher depths
-/// pool entries into ever-coarser selection classes up to `groups() - 1`, the
-/// coarsest class whose deepest member starts the selection walk.
-///
-/// A key may declare any `groups() >= 1`. Selection reads the coarsest depth
-/// as its walk class and `min(1, groups() - 1)` as its selection cell, so a
-/// one-group key collapses class, cell, and retention slot onto depth 0 and a
-/// two-group key collapses class onto the cell. Depths past the coarsest are
-/// never read, and `group` is never called with a depth at or past `groups()`.
 pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
-    /// One pooled identity at some depth.
     type Group: Copy + Ord;
-    /// Count of group depths, pinned by the recorded key policy. At least one.
     fn groups() -> usize;
-    /// The key's pooled identity at `depth`; depth 0 is the retention slot.
-    /// Only depths below [`groups`](Self::groups) are ever passed.
     fn group(self, depth: usize) -> Self::Group;
-    /// Maximum active representatives retained in one depth-0 slot.
-    ///
-    /// The default preserves the established two-route archive. A game may
-    /// choose one when its key supplies a deterministic per-location state
-    /// preference and superseded representatives should stop receiving work.
     fn slot_capacity() -> usize {
         MAX_ENTRIES_PER_KEY
     }
-    /// Workload progress relation, independent of map identity. Equal may
-    /// represent incomparability; this relation must never order a map.
     fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
         left.cmp(&right)
     }
-    /// Compare two keys that map to the same depth-0 slot by game-owned state
-    /// preference. The archive treats the result as opaque and falls back to
-    /// its route-cost replacement rule on equality.
     fn preference_cmp(self, _other: Self) -> Ordering {
         Ordering::Equal
     }
-    /// Ancestry state a key needs to complete itself.
     type Lineage: Clone + Default;
-    /// Complete a freshly decoded key against its parent's key and lineage.
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self;
-    /// Fold a completed key into a lineage.
     fn record(lineage: &mut Self::Lineage, key: Self);
 }
 
-/// Compiled ceiling on archive entries. A ceiling is not an allocation:
-/// memory tracks actual retention, and a whole-tree resume inherits the
-/// source population in full. At the ceiling the archive rejects every
-/// admission, freezing the search, so the ceiling must exceed a full
-/// campaign's retention. Campaign runs register their own per-run bound at
-/// or below this.
 pub const MAX_ARCHIVE_ENTRIES: usize = 4_194_304;
-/// Entries one retention slot holds before candidates must displace.
 pub const MAX_ENTRIES_PER_KEY: usize = 2;
-/// Dead metadata reclaimed per compaction. A fixed batch bounds physical
-/// slack while keeping the linear pack operation off the per-job hot path.
 #[cfg(not(test))]
 const HISTORY_COMPACTION_MIN_DROPS: usize = 4_096;
-// Keep the same threshold semantics while making corruption of compaction
-// control flow fail well inside the mutation-test timeout.
 #[cfg(test)]
 const HISTORY_COMPACTION_MIN_DROPS: usize = 16;
-/// Every lineage keeps a resident keyframe snapshot within this many actions
-/// of each active entry: the entry whose input length first enters each
-/// bucket of this width is the keyframe for the rest of the bucket. Expanding
-/// an entry whose own snapshot was released costs at most this much replay.
 pub const REPLAY_DISTANCE_ACTIONS: usize = 8;
-/// Sweep visits one admission may spend releasing snapshots and dropping
-/// entries under a memory budget, so maintenance never bursts.
 const MAINTENANCE_QUANTUM: usize = 32;
 
-/// One recorded input: actions in execution order.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Input<A: Ord> {
-    /// Actions in execution order.
     pub actions: Vec<A>,
 }
 
@@ -123,113 +66,55 @@ impl<A: Ord> Default for Input<A> {
     }
 }
 
-/// Identifier recorded for the admission rule: the 45-frame probe under
-/// three masks.
-pub const RETENTION_IDENTIFIER: &str = "probe_at_admission_45";
+pub const RETENTION_PROBE_IDENTIFIER: &str = "probe_at_admission";
 
-/// Identifier recorded for the no-screening admission rule: an alive
-/// endpoint is admitted under the normal slot rules and the probe never
-/// runs.
-pub const RETENTION_ADMIT_ALIVE_IDENTIFIER: &str = "admit_alive";
+pub const RETENTION_UNPROBED_IDENTIFIER: &str = "unprobed";
 
-/// Per-run admission rule, recorded in the stream header; replay validates
-/// under the recorded value. The probe mechanism itself is game-owned; the
-/// generic layer only records and resolves the identifier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RetentionPolicy {
-    /// Admit an alive endpoint only if one of the game's fixed input
-    /// continuations survives the probe horizon from its snapshot.
-    ProbeAtAdmission45,
-    /// Admit every alive endpoint; the probe never runs on this path.
-    AdmitAlive,
+    ProbeAtAdmission,
+    Unprobed,
 }
 
-/// The recorded identifier of an admission rule.
 #[must_use]
 pub fn retention_policy_identifier(policy: RetentionPolicy) -> &'static str {
     match policy {
-        RetentionPolicy::ProbeAtAdmission45 => RETENTION_IDENTIFIER,
-        RetentionPolicy::AdmitAlive => RETENTION_ADMIT_ALIVE_IDENTIFIER,
+        RetentionPolicy::ProbeAtAdmission => RETENTION_PROBE_IDENTIFIER,
+        RetentionPolicy::Unprobed => RETENTION_UNPROBED_IDENTIFIER,
     }
 }
 
-/// The admission rule a recorded identifier names.
-///
-/// # Errors
-///
-/// Returns an error when the identifier names no compiled admission rule.
 pub fn retention_policy_from_identifier(
     identifier: &str,
 ) -> Result<RetentionPolicy, Box<dyn Error>> {
     match identifier {
-        RETENTION_IDENTIFIER => Ok(RetentionPolicy::ProbeAtAdmission45),
-        RETENTION_ADMIT_ALIVE_IDENTIFIER => Ok(RetentionPolicy::AdmitAlive),
+        RETENTION_PROBE_IDENTIFIER => Ok(RetentionPolicy::ProbeAtAdmission),
+        RETENTION_UNPROBED_IDENTIFIER => Ok(RetentionPolicy::Unprobed),
         _ => Err(format!("retention policy {identifier} is not recognized").into()),
     }
 }
 
-/// Identifier recorded for the parent selector: the group walk from the
-/// deepest coarsest class down to one selection cell, then the
-/// recency-concentrated draw within it. The string is pinned by every stream
-/// already written.
-pub const SELECTOR_IDENTIFIER: &str = "room_cell_uniform_128";
+pub const SELECTOR_IDENTIFIER: &str = "hierarchy_uniform_128";
 
-/// Give-up thresholds for the retiring selector: consecutive barren draws at
-/// which a class is skipped in selection exactly as exhausted classes are
-/// skipped.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetireThresholds {
-    /// One entry's own draws since its last retained descendant.
     pub entry: u64,
-    /// Pooled thresholds for group depths `1..groups() - 1`, finest first.
     pub groups: Vec<u64>,
 }
 
-/// Per-run parent selector, recorded in the stream header; replay validates
-/// under the recorded value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SelectorPolicy {
-    /// The compiled group walk with the recency window.
     GroupUniform,
-    /// The same walk with barren classes retired at the given thresholds.
-    /// Retirement is soft: entries stay serialized and replayable, and the
-    /// deterministic all-exhausted reset also clears the barren counters,
-    /// so the search can never seal itself out.
     Retire(RetireThresholds),
-    /// The same walk with barren groups down-weighted instead of retired: a
-    /// group's draw weight halves every `scale` barren selections at its
-    /// depth and floors at 1/256 of a fresh group, so a hard frontier keeps
-    /// receiving draws instead of falling back to shallower classes. The
-    /// entry threshold still retires single entries hard.
     Energy(RetireThresholds),
-    /// The energy walk with a second weight factor biasing each pooled group
-    /// draw toward the frontier: a group's weight also halves for each rank
-    /// it sits below the deepest (greatest) group value at its depth, with a
-    /// floor of 1 so shallow groups keep a live tail. Both factors multiply;
-    /// the entry threshold still retires single entries hard.
     EnergyFrontier(RetireThresholds),
-    /// The frontier walk with a cost-weighted cell draw: within the recency
-    /// window, entries are ranked by frames spent in their group, and an
-    /// entry's weight halves per `CHEAPEST_RANK_SCALE` ranks above the
-    /// cheapest, flooring at 1. Cheap entries hold the most unspent budget
-    /// under any workload clock, so they take most of the cell's draws.
     EnergyFrontierCheapest(RetireThresholds),
-    /// The cost-ranked frontier walk, dividing each member's draw weight by
-    /// one plus its admitted selections. Cheap members start ahead without
-    /// permanently monopolizing a cell's exploration budget.
     EnergyFrontierCheapestCount(RetireThresholds),
-    /// Count-weighted cost selection using the workload's progress relation
-    /// instead of interpreting location identity as progress.
     EnergyProgressCheapestCount(RetireThresholds),
-    /// Count weighting backed by bounded retention-key history, surviving
-    /// entry replacement and metadata compaction.
     EnergyFrontierCheapestKeyCount(RetireThresholds),
-    /// Cost selection using semantic progress without entry-count weighting.
-    /// Equal-progress locations share frontier rank regardless of map identity.
     EnergyProgressCheapest(RetireThresholds),
 }
 
-/// The recorded identifier of a parent selector.
 #[must_use]
 pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
     match policy {
@@ -282,13 +167,6 @@ fn threshold_values(thresholds: &RetireThresholds) -> String {
         .join(",")
 }
 
-/// The parent selector a recorded identifier names, under a key with
-/// `pooled_depths` pooled group depths (`groups() - 2`).
-///
-/// # Errors
-///
-/// Returns an error when the identifier names no compiled selector or its
-/// thresholds do not parse, miscount, or contain a zero.
 pub fn selector_policy_from_identifier(
     identifier: &str,
     pooled_depths: usize,
@@ -369,135 +247,69 @@ pub fn selector_policy_from_identifier(
     })
 }
 
-/// Selections since the last retained descendant at which a parent is exhausted.
 pub(crate) const SELECTION_EXHAUSTION_THRESHOLD: u64 = 64;
 
-/// A concentrated cell draw samples only this many of the cell's
-/// greatest-id members.
 const CONCENTRATION_WINDOW: usize = 128;
 
-/// Cost ranks per halving of a cell entry's draw weight under the cheapest
-/// concentration, and of a cell's draw weight within its band by its
-/// cheapest offered member, so a band's draws follow the routes that reach
-/// it with the most time left; a compiled property of the recorded
-/// identifier, like the window itself.
 const CHEAPEST_RANK_SCALE: usize = 4;
 
-/// Selections after which a cell stops counting as new and competes on
-/// energy and cost alone, so a fresh cell that keeps failing cannot hold
-/// the front of its band's novelty order.
 const CELL_NOVELTY_DRAWS: u64 = 4;
 
-/// Newer live cells per halving of a cell's draw weight within its band
-/// under the energy frontier selectors, so a cell opened moments ago is
-/// tried before the band's older cells dilute it.
 const CELL_NOVELTY_RANK_SCALE: usize = 8;
 
-/// Which selection path one recorded draw took.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectorPath {
-    /// A discovered continuation retried from a stronger same-slot state.
     Continuation,
-    /// The one-in-four uniform draw over all active entries.
     Uniform,
-    /// The group walk: deepest coarsest class first, one unexhausted group
-    /// chosen uniformly at each depth, then the concentrated recency draw
-    /// within the chosen selection cell. The recorded value is pinned by
-    /// every stream already written.
-    #[serde(rename = "room_cell_uniform")]
-    GroupWalk,
+    #[serde(rename = "hierarchy_uniform")]
+    HierarchyWalk,
 }
 
-/// One selector draw, recorded so selection-time state is checkable.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SelectorDraw {
-    /// Path this draw took.
     pub path: SelectorPath,
-    /// Fully exhausted classes skipped before this draw found its cell.
-    /// Semantic selectors inspect one sampled class; legacy walks may inspect
-    /// several. Counts describe each policy's traversal, not a shared work unit.
     pub classes_skipped: u64,
-    /// Whether this draw found every active entry exhausted and reset the
-    /// exhaustion counters.
     pub counter_reset: bool,
-    /// Sampled-set state, present only on cell draws.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concentration: Option<ConcentrationDraw>,
 }
 
-/// Concentrated sampled-set state at one cell draw.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ConcentrationDraw {
-    /// Members of the concentrated sampled set at this draw.
     pub window_size: u64,
-    /// Sampled-set members at this draw that were never members before.
     pub entered_window: u64,
 }
 
-/// Per-campaign accounting for the selector.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SelectorAccounting {
-    /// Bounded selection history by retention key; absent for legacy policies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_counts: Option<KeyCountAccounting>,
-    /// Admitted attempts at learned continuations, absent in historical policies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation_selections: Option<u64>,
-    /// Parent selections drawn through the uniform path.
     pub uniform_selections: u64,
-    /// Parent selections drawn through the cell path.
-    #[serde(default, alias = "tie_class_selections")]
     pub cell_selections: u64,
-    /// Selections that produced at least one retained descendant.
     pub productive_selections: u64,
-    /// Fully exhausted classes skipped across all draws.
     pub classes_skipped: u64,
-    /// Deterministic all-exhausted counter resets.
     pub counter_resets: u64,
-    /// Concentrated-window accounting.
     pub concentration: ConcentrationAccounting,
-    /// Retirement accounting, present only under a retiring selector so
-    /// reports recorded under the compiled selector keep their exact bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement: Option<RetirementAccounting>,
 }
 
-/// Resource accounting for persistent retention-key selection counts.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct KeyCountAccounting {
-    /// Maximum distinct keys remembered.
     pub capacity: usize,
-    /// Keys currently remembered.
     pub keys: usize,
-    /// Recorded selections (including skips) with a remembered key.
     pub hits: u64,
-    /// Least-recently-selected keys evicted from the bounded history.
     pub evictions: u64,
-    /// Fixed conservative reserve included in logical history memory.
     pub reserve_bytes: usize,
 }
 
-/// Retirement state at report time under a retiring selector.
-///
-/// Reports recorded before the archive went generic froze the three-depth
-/// wire names `cells_over_threshold`, `bands_over_threshold`, and
-/// `rooms_over_threshold`; a three-depth value keeps those exact bytes and
-/// any other depth count serializes the vector directly. Both forms load.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RetirementAccounting {
-    /// Entries whose own barren streak is at or over the entry threshold.
     pub entries_over_threshold: u64,
-    /// Pooled classes at or over their depth's threshold, finest depth first.
     pub groups_over_threshold: Vec<u64>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct RetirementWireNamed {
-    entries_over_threshold: u64,
-    cells_over_threshold: u64,
-    bands_over_threshold: u64,
-    rooms_over_threshold: u64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -508,123 +320,68 @@ struct RetirementWireGeneric {
 
 impl Serialize for RetirementAccounting {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if let [cells, bands, rooms] = self.groups_over_threshold[..] {
-            RetirementWireNamed {
-                entries_over_threshold: self.entries_over_threshold,
-                cells_over_threshold: cells,
-                bands_over_threshold: bands,
-                rooms_over_threshold: rooms,
-            }
-            .serialize(serializer)
-        } else {
-            RetirementWireGeneric {
-                entries_over_threshold: self.entries_over_threshold,
-                groups_over_threshold: self.groups_over_threshold.clone(),
-            }
-            .serialize(serializer)
+        RetirementWireGeneric {
+            entries_over_threshold: self.entries_over_threshold,
+            groups_over_threshold: self.groups_over_threshold.clone(),
         }
+        .serialize(serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for RetirementAccounting {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Wire {
-            Named(RetirementWireNamed),
-            Generic(RetirementWireGeneric),
-        }
-        Ok(match Wire::deserialize(deserializer)? {
-            Wire::Named(wire) => Self {
-                entries_over_threshold: wire.entries_over_threshold,
-                groups_over_threshold: vec![
-                    wire.cells_over_threshold,
-                    wire.bands_over_threshold,
-                    wire.rooms_over_threshold,
-                ],
-            },
-            Wire::Generic(wire) => Self {
-                entries_over_threshold: wire.entries_over_threshold,
-                groups_over_threshold: wire.groups_over_threshold,
-            },
+        let wire = RetirementWireGeneric::deserialize(deserializer)?;
+        Ok(Self {
+            entries_over_threshold: wire.entries_over_threshold,
+            groups_over_threshold: wire.groups_over_threshold,
         })
     }
 }
 
-/// Per-campaign accounting for the concentrated recency window.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ConcentrationAccounting {
-    /// Fixed cap on the sampled set.
     pub window_cap: u64,
-    /// Sampled-set size at the most recent cell draw.
     pub final_window_size: u64,
-    /// Cell draws taken through the concentrated window.
     pub window_draws: u64,
-    /// Distinct parents that were ever sampled-set members.
     pub distinct_window_parents: u64,
-    /// Draws per parent through the window, in thousandths:
-    /// `window_draws * 1000 / distinct_window_parents`, floored.
     pub draws_per_parent_milli: u64,
 }
 
-/// Deterministic progress sample from one archive campaign.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "M: Serialize + DeserializeOwned, P: Serialize + DeserializeOwned")]
 pub struct ProgressPoint<M, P = ()> {
-    /// Completed target executions.
     pub executions: u64,
-    /// Strongest milestone state observed so far.
     pub milestones: M,
-    /// Strongest route-agnostic mechanical progress observed so far.
-    ///
-    /// The default keeps reports written before mechanical progress was added
-    /// readable without assigning them target-specific meaning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<P>,
-    /// Number of active retained archive entries.
     pub active_entries: usize,
-    /// Number of occupied quality-diversity slots.
     pub occupied_cells: usize,
-    /// Number of terminal death transitions seen so far.
-    pub deaths: u64,
+    pub terminal_endpoints: u64,
+    pub execution_failures: u64,
 }
 
-/// Per-entry selection counters.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EntrySelectorCounters {
-    /// Times this entry was selected as a parent.
     pub selected: u64,
-    /// Selections of this entry that produced at least one retained descendant.
     pub productive: u64,
 }
 
-/// Serializable lineage and retention record for one archived testcase.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     bound = "A: Serialize + DeserializeOwned + Ord + Clone, K: ArchiveKey, M: Serialize + \
                  DeserializeOwned + Clone"
 )]
 pub struct ArchiveEntryReport<A: Ord, K, M> {
-    /// Stable insertion-order archive identifier.
     pub id: u64,
-    /// Archive parent selected for the suffix execution.
     pub parent_id: Option<u64>,
-    /// Target execution that created the entry; zero denotes bootstrap.
     pub created_execution: u64,
-    /// Complete clean-reset input represented by this snapshot.
     pub input: Input<A>,
-    /// Route-agnostic quality-diversity key.
     pub key: K,
-    /// Strongest milestones observed along this input.
     pub milestones: M,
-    /// Selection counters, absent on an entry the search has not run over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<EntrySelectorCounters>,
 }
 
-/// Serialized form of an entry list: every entry extends its parent, so the
-/// actions past the parent's length identify the input once the parent is
-/// rebuilt, at a small fraction of the size of the full input.
 pub mod entries_by_suffix {
     use serde::de::DeserializeOwned;
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
@@ -650,11 +407,6 @@ pub mod entries_by_suffix {
         selector: Option<EntrySelectorCounters>,
     }
 
-    /// Serialize entries with parent-relative input suffixes.
-    ///
-    /// # Errors
-    ///
-    /// Returns any serializer error.
     pub fn serialize<S, A, K, M>(
         entries: &[ArchiveEntryReport<A, K, M>],
         serializer: S,
@@ -697,11 +449,6 @@ pub mod entries_by_suffix {
         wires.serialize(serializer)
     }
 
-    /// Rebuild full inputs from parent-relative suffixes.
-    ///
-    /// # Errors
-    ///
-    /// Returns a deserializer error for malformed entries.
     pub fn deserialize<'de, D, A, K, M>(
         deserializer: D,
     ) -> Result<Vec<ArchiveEntryReport<A, K, M>>, D::Error>
@@ -752,10 +499,6 @@ pub mod entries_by_suffix {
     }
 }
 
-/// One retained entry in compact live form.
-///
-/// Full inputs are a reporting surface. The live archive stores only the
-/// actions added after the parent so historical lineage remains compact.
 #[derive(Clone, Debug)]
 pub(crate) struct ArchiveEntry<A: Ord, K, M, S> {
     pub(crate) id: u64,
@@ -763,181 +506,89 @@ pub(crate) struct ArchiveEntry<A: Ord, K, M, S> {
     pub(crate) created_execution: u64,
     pub(crate) input_suffix: Vec<A>,
     pub(crate) input_len: usize,
-    /// Leaf in the live prefix tree. Unlike `parent_id`, this path remains
-    /// self-contained when older archive metadata is compacted away.
     input_node: usize,
     pub(crate) key: K,
     pub(crate) milestones: M,
-    /// The restorable machine snapshot while this entry can still be selected.
-    ///
-    /// Replaced entries keep their immutable report but release this payload;
-    /// already-dispatched jobs own their own [`Arc`] and remain unaffected.
     pub(crate) snapshot: Option<Arc<S>>,
 }
 
-/// One dispatch-time splice resolution and the exact tail it selected.
 pub(crate) struct CampaignSpliceTail<A> {
     pub(crate) donor_id: usize,
     pub(crate) leaf_id: usize,
     pub(crate) actions: Vec<A>,
 }
 
-/// One candidate offered to retention.
 pub struct ArchiveCandidate<A: Ord, K, M> {
-    /// Actions added after the named parent (the complete input for genesis).
     pub suffix: Vec<A>,
-    /// Decoded key; its lineage-dependent parts are completed at insert.
     pub key: K,
-    /// Strongest milestones observed along the input.
     pub milestones: M,
 }
 
-/// The generic snapshot archive.
 pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
-    /// Retention stops when the entry count reaches this bound; campaign
-    /// runs record their bound in the stream header and replay under it.
     pub max_entries: usize,
-    /// Retained entries in insertion order.
     pub(crate) entries: Vec<ArchiveEntry<A, K, M, S>>,
-    /// Stable stream id to current compact in-memory slot.
     id_to_index: BTreeMap<u64, usize>,
-    /// Next stable stream id. Slots may be compacted; this id never rewinds.
     next_entry_id: u64,
-    /// Whether each entry is still active (not displaced).
     pub active: Vec<bool>,
-    /// Number of active retained entries, maintained as admissions displace
-    /// and append so progress reporting never scans historical entries.
     active_count: usize,
-    /// Retention slots: active entry ids per depth-0 group.
     pub slots: BTreeMap<K::Group, Vec<usize>>,
-    /// Prefix-sharing index of already-retained inputs.
     input_index: InputIndex<A>,
-    /// Action elements the former complete per-entry inputs would have held.
-    /// This diagnostic counter owns no actions and never scans history.
     historical_input_actions: usize,
-    /// Action elements physically retained as parent-relative suffixes.
     stored_input_actions: usize,
-    /// Deterministic conservative charge for compact history and indexes.
     history_memory_bytes: usize,
-    /// Candidates admitted to the active archive.
     pub retained: u64,
-    /// Candidates rejected by bounded quality-diversity retention.
     pub rejected: u64,
     selected: Vec<u64>,
     productive: Vec<u64>,
     since_retained: Vec<u64>,
     in_window_ever: Vec<bool>,
-    /// Per entry: whether its retention slot was empty when it arrived.
     opened_slot: Vec<bool>,
     opened_cell: Vec<bool>,
     cells_seen: BTreeSet<K::Group>,
     selector_accounting: SelectorAccounting,
-    /// Time each retained entry spent inside its own coarsest group, in
-    /// entry-id order, in the game's action-duration unit.
-    time_in_group: Vec<u64>,
-    replacement_time_displaced: u64,
-    /// Per-entry lineage, aligned with `entries`.
+    cost_in_group: Vec<u64>,
+    replacement_cost_displaced: u64,
     lineages: Vec<K::Lineage>,
-    /// Per entry: the greatest key in its subtree and the entry holding it,
-    /// maintained on insert so splice draws find a stored tail without a
-    /// scan.
     deepest_leaf: Vec<(K, usize)>,
-    /// Parent selector this archive selects under.
     pub selector_policy: SelectorPolicy,
-    /// Pooled barren streak per group, one map per depth `1..groups() - 1`,
-    /// finest first.
     group_barren: Vec<BTreeMap<K::Group, u64>>,
-    /// Duration of one action in the cost unit the replacement rule uses.
-    action_time: fn(&A) -> u64,
-    /// Deepest retained key and its cheapest group time for the live sidecar.
-    /// Both are monotone over append-only history, so reporting is constant
-    /// time instead of rescanning every historical entry once per minute.
+    action_cost: fn(&A) -> u64,
     live_progress: Option<(K, u64)>,
-    /// Action bound the selector index was built for; `None` until the first
-    /// selection. The index is derived state: rebuilding it from `entries`
-    /// and `active` yields the same draws, so it is never serialized.
     frontier_cap: Option<usize>,
-    /// Active entry ids under the frontier cap, ranked by ascending id.
     active_ids: ActiveIds,
-    /// Active entries under the cap, pooled by walk class (deepest first)
-    /// and, inside each class, by selection cell.
     classes: BTreeMap<Reverse<K::Group>, ClassCells<K>>,
-    /// Live child groups beneath each selected parent group, indexed by the
-    /// child depth. These are derived selector state and preserve the exact
-    /// ordered group sets the walk previously rebuilt on every draw.
     live_children: LiveChildren<K>,
-    /// Number of live selection cells in each pooled group, indexed by depth.
-    /// The cell depth itself is represented by `CellMembers::sampleable`.
     live_group_cells: LiveGroupCells<K>,
-    /// Active and live progress-band groups per walk class. Their key counts
-    /// reproduce `classes_skipped` without rescanning every cell.
     active_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
     live_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
-    /// Whole-tree import may need a replaced ancestor again before all source
-    /// descendants have been rebuilt. Normal live search releases replaced
-    /// snapshots immediately because only active entries are selectable.
     preserve_inactive_snapshots: bool,
-    /// Replay-only remaining recorded job uses per parent snapshot. When
-    /// present, an inactive payload is preserved only until its final use.
-    preserved_snapshot_uses: Option<BTreeMap<u64, u32>>,
-    /// Non-selectable metadata still referenced by dispatched jobs. These
-    /// pins never affect selection or logical-budget decisions; they only
-    /// defer physical reclamation until a bounded in-flight use completes.
     metadata_pins: BTreeMap<u64, u32>,
-    // The deterministic reservation window owns these snapshots until ordered
-    // admission, even when retention has replaced their archive entries.
     inflight_snapshot_pins: BTreeMap<u64, u32>,
     inflight_snapshot_charges: BTreeMap<u64, usize>,
     inflight_snapshot_bytes: usize,
-    /// Number of entry snapshots still resident, maintained in constant time.
     resident_snapshots: usize,
-    /// Whether each entry's snapshot belongs to the selectable breeding
-    /// population. Replay may temporarily keep a non-selectable payload for
-    /// an already-dispatched job without changing this logical state.
     snapshot_selectable: Vec<bool>,
-    /// Whether each entry is the keyframe of its replay bucket.
     keyframe: Vec<bool>,
-    /// Stable id of the nearest keyframe on each entry's lineage (its own id
-    /// for a keyframe). Its snapshot stays resident while any active entry
-    /// depends on it.
     keyframe_id: Vec<u64>,
-    /// Number of active entries depending on each keyframe, itself included.
     keyframe_dependents: Vec<usize>,
-    /// CLOCK reference bit: set when the entry is selected, cleared when a
-    /// sweep passes it. An unreferenced entry loses its snapshot first and
-    /// its active status second.
     referenced: Vec<bool>,
-    /// Position of the entry-drop sweep.
     drop_hand: usize,
-    /// Active entries the budget sweeps deactivated.
     entry_drops: u64,
-    /// Deterministic logical-byte ceiling for history plus selectable snapshots.
     memory_limit: Option<usize>,
-    /// Stable id of the one executable snapshot retained as a bounded liveness
-    /// anchor. This is present only for memory-budgeted campaigns.
     liveness_anchor: Option<u64>,
     #[cfg(test)]
     liveness_anchor_reactivations: u64,
-    /// Logical bytes charged to snapshots still resident.
     resident_snapshot_bytes: usize,
-    /// Game-owned, deterministic logical-size accounting for one snapshot.
     snapshot_memory_charge: Option<fn(&S) -> usize>,
-    /// Resident ids in insertion order. Dropped ids are harmless tombstones
-    /// until they reach the front; each id is examined at most once.
     resident_snapshot_order: VecDeque<usize>,
-    /// Snapshots displaced solely by the global memory budget.
     snapshot_evictions: u64,
-    /// Deterministic metadata compactions completed by this archive.
     history_compactions: u64,
-    /// Non-selectable historical entries retired from live memory.
     historical_entries_dropped: u64,
-    /// Rare full-input reconstructions from the compact prefix structure.
     input_reconstructions: Cell<u64>,
     continuations: Option<ContinuationBank<K::Group, A>>,
     key_counts: KeyCounts<K::Group>,
 }
 
-/// Members of one walk class, ascending per selection cell.
 type ClassCells<K> = BTreeMap<<K as ArchiveKey>::Group, CellMembers<K>>;
 type GroupPair<K> = (<K as ArchiveKey>::Group, <K as ArchiveKey>::Group);
 type LiveChildren<K> = Vec<BTreeMap<GroupPair<K>, BTreeSet<<K as ArchiveKey>::Group>>>;
@@ -947,11 +598,7 @@ struct CellMembers<K: ArchiveKey> {
     ids: BTreeSet<usize>,
     sampleable: BTreeSet<usize>,
     donors: BTreeSet<DonorRank<K>>,
-    /// Id of the entry that most recently opened the cell; ids are creation
-    /// order, so it orders the band's cells by novelty.
     opened: usize,
-    /// Selections of the cell's current members, so novelty expires once
-    /// the cell has had `CELL_NOVELTY_DRAWS` tries.
     drawn: u64,
 }
 
@@ -970,20 +617,15 @@ impl<K: ArchiveKey> Default for CellMembers<K> {
 }
 
 impl<K: ArchiveKey> CellMembers<K> {
-    /// The id that opened the cell while the cell still counts as new.
     fn novelty(&self) -> Option<usize> {
         (self.drawn < CELL_NOVELTY_DRAWS).then_some(self.opened)
     }
 }
 
-/// Trie over retained action sequences. Entries store parent-relative
-/// suffixes; duplicate lookup shares every prefix and compares one action at
-/// a time without retaining another complete input per entry.
 struct InputNode<A: Ord> {
     parent: Option<usize>,
     action: Option<A>,
     children: BTreeMap<A, usize>,
-    /// Stable archive id of the selectable entry ending at this prefix.
     owner: Option<u64>,
 }
 
@@ -1088,8 +730,6 @@ impl<A: Clone + Ord> InputIndex<A> {
         Some(reversed)
     }
 
-    /// Actions on the path from `ancestor` down to `node`, `distance` edges
-    /// long. `None` when the path does not end at `ancestor`.
     fn actions_between(&self, ancestor: usize, mut node: usize, distance: usize) -> Option<Vec<A>> {
         let mut reversed = Vec::with_capacity(distance);
         for _ in 0..distance {
@@ -1103,8 +743,6 @@ impl<A: Clone + Ord> InputIndex<A> {
         })
     }
 
-    /// Remove a terminal owner and reclaim its now-unreferenced tail. Shared
-    /// ancestors remain until their final selectable descendant disappears.
     fn remove_owner_and_prune(&mut self, mut node: usize, owner: u64) -> usize {
         let current_owner = self.owner(node);
         if current_owner.is_some() && current_owner != Some(owner) {
@@ -1139,10 +777,6 @@ impl<A: Clone + Ord> InputIndex<A> {
         removed
     }
 
-    /// Pack live prefix nodes and return the old-to-new node mapping. This
-    /// releases the high-water Vec allocation after deterministic pruning;
-    /// otherwise logical live-node accounting could fall while RSS retained
-    /// every historical tombstone.
     fn compact(&mut self) -> Vec<Option<usize>> {
         let mut remap = vec![None; self.nodes.len()];
         let mut next = 0_usize;
@@ -1173,12 +807,6 @@ impl<A: Clone + Ord> InputIndex<A> {
     }
 }
 
-/// Append-friendly ordered set over monotonically assigned archive ids.
-///
-/// A bit per id records membership while a Fenwick tree over 64-bit words
-/// maps the selector's uniformly drawn rank back to the same ascending id
-/// that the former compact `Vec` exposed. Inserts, removals, and rank draws
-/// are logarithmic without moving every later id after a displacement.
 #[derive(Default)]
 struct ActiveIds {
     words: Vec<u64>,
@@ -1386,9 +1014,8 @@ where
     M: Clone + Copy + Debug + Eq + Serialize + DeserializeOwned,
     S: Clone,
 {
-    /// An empty archive under the compiled selector.
     #[must_use]
-    pub fn new(action_time: fn(&A) -> u64) -> Self {
+    pub fn new(action_cost: fn(&A) -> u64) -> Self {
         Self {
             max_entries: MAX_ARCHIVE_ENTRIES,
             entries: Vec::new(),
@@ -1417,13 +1044,13 @@ where
                 },
                 ..SelectorAccounting::default()
             },
-            time_in_group: Vec::new(),
-            replacement_time_displaced: 0,
+            cost_in_group: Vec::new(),
+            replacement_cost_displaced: 0,
             lineages: Vec::new(),
             deepest_leaf: Vec::new(),
             selector_policy: SelectorPolicy::GroupUniform,
             group_barren: vec![BTreeMap::new(); K::groups().saturating_sub(2)],
-            action_time,
+            action_cost,
             live_progress: None,
             frontier_cap: None,
             active_ids: ActiveIds::default(),
@@ -1433,7 +1060,6 @@ where
             active_skip_groups: BTreeMap::new(),
             live_skip_groups: BTreeMap::new(),
             preserve_inactive_snapshots: false,
-            preserved_snapshot_uses: None,
             metadata_pins: BTreeMap::new(),
             inflight_snapshot_pins: BTreeMap::new(),
             inflight_snapshot_charges: BTreeMap::new(),
@@ -1462,16 +1088,11 @@ where
         }
     }
 
-    /// Configure the deterministic logical-byte ceiling for compact history
-    /// plus the selectable snapshot population. This is recorded by the
-    /// campaign; wall-clock RSS and allocator behavior never enter eviction.
     pub(crate) fn set_memory_budget(&mut self, bytes: usize, charge: fn(&S) -> usize) {
         self.memory_limit = Some(bytes);
         self.snapshot_memory_charge = Some(charge);
     }
 
-    /// Select the lowest stable-id active executable snapshot as the bounded
-    /// campaign's deterministic liveness anchor.
     pub(crate) fn establish_liveness_anchor(&mut self, max_actions: usize) {
         if self.memory_limit.is_none() {
             return;
@@ -1510,9 +1131,6 @@ where
             && self.liveness_anchor == self.entries.get(id).map(|entry| entry.id)
     }
 
-    /// Make room for an admission by moving the protected anchor out of the
-    /// active population while retaining its selectable snapshot. The anchor
-    /// is reinserted by `select_parent` only if the selector later empties.
     fn deactivate_liveness_anchor_for_admission(&mut self) -> bool {
         let Some(anchor) = self.liveness_anchor else {
             return false;
@@ -1540,34 +1158,23 @@ where
         {
             return;
         }
-        let has_future_use = self
-            .preserved_snapshot_uses
-            .as_ref()
-            .is_none_or(|uses| uses.contains_key(&self.entries[id].id));
         let worker_holds_snapshot = self.entries[id]
             .snapshot
             .as_ref()
             .is_some_and(|snapshot| Arc::strong_count(snapshot) > 1);
-        if (!self.preserve_inactive_snapshots || !has_future_use) && !worker_holds_snapshot {
+        if !self.preserve_inactive_snapshots && !worker_holds_snapshot {
             self.entries[id].snapshot.take();
         }
     }
 
-    /// Replay bucket of one input length.
     fn replay_bucket(input_len: usize) -> usize {
         input_len / REPLAY_DISTANCE_ACTIONS
     }
 
-    /// Whether an entry's snapshot must stay resident: an active keyframe,
-    /// a keyframe some active entry still replays from, or the liveness
-    /// anchor. Every other resident snapshot is a cache the budget may
-    /// release.
     fn snapshot_retained(&self, id: usize) -> bool {
         (self.keyframe[id] && self.keyframe_dependents[id] > 0) || self.is_liveness_anchor(id)
     }
 
-    /// Whether an entry can seed a job: its own snapshot is resident or its
-    /// keyframe's is.
     fn origin_resident(&self, id: usize) -> bool {
         if self.snapshot_selectable[id] {
             return true;
@@ -1576,8 +1183,6 @@ where
             .is_some_and(|keyframe| self.snapshot_selectable[keyframe])
     }
 
-    /// Move an entry out of the active population and release whatever it
-    /// alone kept resident.
     fn deactivate(&mut self, id: usize) -> bool {
         if !self.active.get(id).copied().unwrap_or(false) {
             return false;
@@ -1617,8 +1222,6 @@ where
         true
     }
 
-    /// Release one snapshot from the selectable population. The entry keeps
-    /// its active status; an active entry replays from its keyframe.
     fn release_snapshot(&mut self, id: usize) -> bool {
         if !self.snapshot_selectable.get(id).copied().unwrap_or(false) {
             return false;
@@ -1639,12 +1242,6 @@ where
         true
     }
 
-    /// Bring the logical charge back under the budget with a bounded amount
-    /// of work: release unreferenced cache snapshots in CLOCK order, then
-    /// drop unreferenced active entries in CLOCK order. Work left over is
-    /// finished by later admissions, so being over the budget on return is
-    /// the normal case. Only a budget too small for the anchor itself is an
-    /// error.
     fn enforce_snapshot_memory_budget(&mut self) -> Result<(), &'static str> {
         let Some(limit) = self.memory_limit else {
             return Ok(());
@@ -1687,18 +1284,6 @@ where
         Ok(())
     }
 
-    /// Lower bound on the charge the anchor holds that no maintenance can
-    /// release: its snapshot and its own entry metadata. The compacted
-    /// archive also charges the anchor's action-prefix nodes and the novelty
-    /// and barren counters of its groups, so a budget above this bound can
-    /// still be unaffordable.
-    ///
-    /// A bound is what this check needs. Everything charged above the anchor
-    /// during a run is dead history, and compaction only returns it once
-    /// enough entries are droppable to fill a batch, so testing the total
-    /// would report an unaffordable anchor whenever that batch is filling.
-    /// [`Self::compact_history_for_final_report`] makes the exact comparison,
-    /// where nothing is left to reclaim.
     fn liveness_anchor_memory_bytes(&self) -> usize {
         let Some(index) = self.liveness_anchor.and_then(|id| self.index_of_id(id)) else {
             return 0;
@@ -1714,18 +1299,11 @@ where
             ))
     }
 
-    /// Deactivate the next unreferenced active entry under the drop hand,
-    /// clearing reference bits on the way. Two full passes without a drop
-    /// mean nothing is droppable.
     fn drop_one_entry(&mut self) -> bool {
         let budget = self.entries.len().saturating_mul(2);
         self.drop_one_entry_within(budget).0
     }
 
-    /// [`Self::drop_one_entry`] over at most `budget` entries, reporting how
-    /// many it examined. The budgeted maintenance sweep spends its quantum on
-    /// examinations, because clearing reference bits and skipping inactive
-    /// entries is the work the hand actually does.
     fn drop_one_entry_within(&mut self, budget: usize) -> (bool, usize) {
         let count = self.entries.len();
         if count == 0 {
@@ -1751,44 +1329,17 @@ where
         (false, examined)
     }
 
-    /// Spend one maintenance step on the logical memory budget.
-    ///
-    /// Retention already enforces the budget from every path that adds an
-    /// entry. Selection accounting adds pooled barren counters to the same
-    /// charge without inserting anything, so the coordinator calls this at
-    /// the stream position where live and replay both finish accounting one
-    /// record.
-    ///
-    /// Compaction runs first because it is the only thing that returns
-    /// pooled barren counters and dead entry metadata to the charge, while
-    /// the bounded sweep only releases snapshots and deactivates entries.
-    /// Sweeping first would report the liveness anchor unaffordable while a
-    /// compaction still had room to reclaim.
     pub(crate) fn maintain_memory_budget(&mut self) -> Result<(), &'static str> {
         self.compact_history_if_needed()?;
         self.enforce_snapshot_memory_budget()
     }
 
-    /// Reclaim non-selectable history once its deterministic charge reaches a
-    /// quarter of the campaign budget. The append-only stream remains the
-    /// authoritative history; this rebuild only compacts live acceleration
-    /// structures and preserves stable stream ids.
     pub(crate) fn compact_history_if_needed(&mut self) -> Result<(), &'static str> {
         self.compact_history(false)
     }
 
-    /// Normalize the final acceleration state to the breeding population.
-    ///
-    /// All worker jobs have joined before this is called, so any remaining
-    /// metadata pins came from speculative work beyond the execution ceiling
-    /// and have no recorded future consumer. Both live execution and replay
-    /// perform this forced rebuild, making final artifacts independent of the
-    /// transient parallel dispatch window.
     pub(crate) fn compact_history_for_final_report(&mut self) -> Result<(), &'static str> {
         self.metadata_pins.clear();
-        // Compaction drops what retention released, and the bounded sweep it
-        // ends with can release more. Repeat until a pass advances nothing,
-        // so the charge below is the population the archive actually keeps.
         loop {
             let before = self.maintenance_state();
             self.compact_history(true)?;
@@ -1800,21 +1351,11 @@ where
             .memory_limit
             .is_some_and(|limit| self.resident_memory_bytes() > limit)
         {
-            // Nothing is left to reclaim, so the report would otherwise state
-            // a budget the retained population does not honour.
             return Err("memory budget cannot retain the compacted archive");
         }
         Ok(())
     }
 
-    /// Everything a bounded maintenance step can advance.
-    ///
-    /// Each field is non-increasing across forced compaction passes, so a
-    /// pass that leaves the tuple unchanged did nothing and the next would
-    /// do nothing either. Charged bytes alone are not enough: a quantum
-    /// spent clearing reference bits, and one spent deactivating entries
-    /// whose snapshots are free, both reclaim nothing yet let the following
-    /// pass reclaim.
     fn maintenance_state(&self) -> (usize, usize, usize, usize, usize) {
         let referenced_active = self
             .referenced
@@ -1843,8 +1384,6 @@ where
         if !force && self.history_memory_bytes() <= history_target && !entry_pressure {
             return Ok(());
         }
-        // Only inactive entries can be dropped, so fewer inactive entries than
-        // the batch means the scan below could not reach it either.
         if !force
             && self.entries.len().saturating_sub(self.active_count) < HISTORY_COMPACTION_MIN_DROPS
         {
@@ -1873,11 +1412,6 @@ where
             return Ok(());
         }
 
-        // Snapshot eviction clears a prefix owner immediately, but an
-        // in-flight job pins its entry metadata until ordered admission. Make
-        // every retained entry an owner again before pruning dead branches so
-        // removing a displaced descendant cannot prune an in-flight parent's
-        // still-required path.
         for (index, entry) in self.entries.iter().enumerate() {
             if keep[index] {
                 self.input_index.set_owner(entry.input_node, Some(entry.id));
@@ -1908,7 +1442,7 @@ where
         self.in_window_ever = retain_marked(std::mem::take(&mut self.in_window_ever), &keep);
         self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
         self.opened_cell = retain_marked(std::mem::take(&mut self.opened_cell), &keep);
-        self.time_in_group = retain_marked(std::mem::take(&mut self.time_in_group), &keep);
+        self.cost_in_group = retain_marked(std::mem::take(&mut self.cost_in_group), &keep);
         self.lineages = retain_marked(std::mem::take(&mut self.lineages), &keep);
         self.snapshot_selectable =
             retain_marked(std::mem::take(&mut self.snapshot_selectable), &keep);
@@ -1919,11 +1453,6 @@ where
         self.referenced = retain_marked(std::mem::take(&mut self.referenced), &keep);
         self.drop_hand = 0;
 
-        // Novelty and pooled-barrenness are compact historical metadata, not
-        // reasons to keep snapshots or dead entries resident. Once history is
-        // compacted, keys absent from the selectable breeding population can
-        // be rediscovered deterministically and must not make these maps grow
-        // with the lifetime execution count.
         self.cells_seen = self
             .entries
             .iter()
@@ -1973,9 +1502,6 @@ where
             }
         }
 
-        // Descendant hints are a rebuildable splice cache. Resetting them to
-        // each surviving entry is deterministic; newly admitted descendants
-        // repopulate the hints without retaining dead history.
         self.deepest_leaf = self
             .entries
             .iter()
@@ -2014,14 +1540,12 @@ where
         Ok(())
     }
 
-    /// Preserve replaced snapshots temporarily while rebuilding a source tree.
     pub(crate) fn preserve_inactive_snapshots(
         &mut self,
         preserve: bool,
     ) -> Result<(), &'static str> {
         self.preserve_inactive_snapshots = preserve;
         if !preserve {
-            self.preserved_snapshot_uses = None;
             for id in 0..self.entries.len() {
                 if !self.snapshot_selectable[id] {
                     self.entries[id].snapshot.take();
@@ -2036,17 +1560,14 @@ where
         self.preserve_inactive_snapshots
     }
 
-    /// Resolve one immutable stream id to its current compact live slot.
     pub(crate) fn index_of_id(&self, id: u64) -> Option<usize> {
         self.id_to_index.get(&id).copied()
     }
 
-    /// Immutable stream id of one current compact live slot.
     pub(crate) fn stable_id(&self, index: usize) -> Option<u64> {
         self.entries.get(index).map(|entry| entry.id)
     }
 
-    /// Keep one entry's compact metadata through an in-flight job.
     pub(crate) fn pin_metadata(&mut self, id: u64) -> Result<(), &'static str> {
         if self.index_of_id(id).is_none() {
             return Err("metadata pin names a missing archive id");
@@ -2058,7 +1579,6 @@ where
         Ok(())
     }
 
-    /// Release one in-flight metadata reference.
     pub(crate) fn unpin_metadata(&mut self, id: u64) {
         let remove = if let Some(pins) = self.metadata_pins.get_mut(&id) {
             *pins = pins.saturating_sub(1);
@@ -2068,54 +1588,14 @@ where
         };
         if remove {
             self.metadata_pins.remove(&id);
-            // Budget eviction may have found the worker's Arc still in flight.
-            // Its final metadata unpin is the first deterministic point where
-            // that temporary ownership is guaranteed to have ended.
             if let Some(index) = self.index_of_id(id) {
                 self.reclaim_inactive_snapshot(index);
             }
         }
     }
 
-    /// Install deterministic future metadata uses while replaying serially.
     pub(crate) fn preserve_recorded_metadata_uses(&mut self, uses: BTreeMap<u64, u32>) {
         self.metadata_pins = uses;
-    }
-
-    /// Preserve replay parents only until their final recorded job consumes
-    /// them, instead of retaining every displaced payload for the whole run.
-    pub(crate) fn preserve_recorded_snapshot_uses(&mut self, uses: BTreeMap<u64, u32>) {
-        self.preserve_inactive_snapshots = true;
-        self.preserved_snapshot_uses = Some(uses);
-    }
-
-    /// Consume one replay parent use and release its inactive payload when no
-    /// later recorded job can reference it.
-    pub(crate) fn consume_recorded_snapshot_use(&mut self, id: u64) {
-        let exhausted = if let Some(uses) = self.preserved_snapshot_uses.as_mut() {
-            let Some(remaining) = uses.get_mut(&id) else {
-                return;
-            };
-            *remaining = remaining.saturating_sub(1);
-            if *remaining == 0 {
-                uses.remove(&id);
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-        if exhausted
-            && let Some(index) = self.index_of_id(id)
-            && !self
-                .snapshot_selectable
-                .get(index)
-                .copied()
-                .unwrap_or(false)
-        {
-            self.entries[index].snapshot.take();
-        }
     }
 
     fn input_index_start(&self, parent_id: Option<usize>) -> usize {
@@ -2128,7 +1608,6 @@ where
         node
     }
 
-    /// Rebuild one complete input from compact parent-relative suffixes.
     pub(crate) fn materialize_input(&self, id: usize) -> Result<Input<A>, &'static str> {
         self.input_reconstructions
             .set(self.input_reconstructions.get().saturating_add(1));
@@ -2140,8 +1619,6 @@ where
         Ok(Input { actions })
     }
 
-    /// Reserve the actual restore snapshot, which may belong to the parent's
-    /// keyframe rather than the parent. Stable ids survive history compaction.
     pub(crate) fn pin_job_origin(
         &mut self,
         id: usize,
@@ -2159,8 +1636,6 @@ where
         Ok((snapshot, replay, snapshot_id))
     }
 
-    /// End a reservation at ordered admission, never at physical worker
-    /// completion. Replay releases the same pins at the same logical boundary.
     pub(crate) fn unpin_job_origin(&mut self, id: u64) {
         let remove = if let Some(pins) = self.inflight_snapshot_pins.get_mut(&id) {
             *pins = pins.saturating_sub(1);
@@ -2179,9 +1654,6 @@ where
         }
     }
 
-    /// The snapshot a job for this entry restores and the actions it replays
-    /// before its own suffix: the entry's own resident snapshot and nothing,
-    /// or its keyframe's snapshot and the path between them.
     pub(crate) fn job_origin(&self, id: usize) -> Result<(Arc<S>, Vec<A>), &'static str> {
         let entry = self.entries.get(id).ok_or("job origin entry is missing")?;
         if self.snapshot_selectable[id] {
@@ -2237,7 +1709,6 @@ where
             .saturating_add(size_of::<Option<usize>>())
             .saturating_add(size_of::<A>())
             .saturating_add(size_of::<usize>())
-            // Conservative allocator/B-tree node overhead per unique edge.
             .saturating_add(64)
     }
 
@@ -2248,7 +1719,6 @@ where
             .saturating_add(size_of::<(K, usize)>())
             .saturating_add(4_usize.saturating_mul(size_of::<u64>()))
             .saturating_add(4_usize.saturating_mul(size_of::<usize>()))
-            // Ordered slot/selector nodes and vector slack.
             .saturating_add(128)
             .saturating_add(new_nodes.saturating_mul(Self::prefix_node_memory_charge()))
     }
@@ -2256,7 +1726,6 @@ where
     fn historical_group_memory_charge(value_bytes: usize) -> usize {
         size_of::<K::Group>()
             .saturating_add(value_bytes)
-            // Conservative allocator/B-tree node overhead per remembered key.
             .saturating_add(64)
     }
 
@@ -2265,8 +1734,6 @@ where
             .saturating_add(self.barren_memory_bytes())
     }
 
-    /// Whether every successive action after `parent_id` reaches an input
-    /// already retained in the archive.
     pub(crate) fn all_extensions_retained(&self, parent_id: usize, actions: &[A]) -> bool {
         let Some(mut node) = self.entries.get(parent_id).map(|entry| entry.input_node) else {
             return false;
@@ -2290,19 +1757,14 @@ where
         true
     }
 
-    /// The walk's class depth: the coarsest group.
     fn class_depth() -> usize {
         Self::coarsest_depth()
     }
 
-    /// The selection cell's depth. Depth 1 whenever the key declares one,
-    /// and the coarsest depth otherwise, so a key with fewer than two group
-    /// depths still indexes and walks.
     fn cell_depth() -> usize {
         1.min(Self::coarsest_depth())
     }
 
-    /// Rebuild the selector index for `max_actions`.
     fn rebuild_selector_index(&mut self, max_actions: usize) {
         self.frontier_cap = Some(max_actions);
         self.active_ids = ActiveIds::from_ids(self.active_ids(max_actions));
@@ -2317,8 +1779,6 @@ where
         }
     }
 
-    /// Rebuild the selector around the bounded liveness anchor after a stale
-    /// active-id index was emptied by deterministic archive maintenance.
     fn reactivate_liveness_anchor(&mut self, max_actions: usize) -> bool {
         if !self.active_ids.is_empty() {
             return false;
@@ -2357,7 +1817,7 @@ where
                     .flatten()
                     .copied()
                     .filter(|id| !self.is_liveness_anchor(*id))
-                    .max_by_key(|id| (self.time_in_group[*id], self.entries[*id].id));
+                    .max_by_key(|id| (self.cost_in_group[*id], self.entries[*id].id));
                 let Some(replaced) = replaced else {
                     return false;
                 };
@@ -2389,8 +1849,6 @@ where
         self.liveness_anchor_reactivations
     }
 
-    /// Add a fresh entry to the selector index. Ids only grow, so pushes
-    /// keep every list ascending.
     fn index_insert(&mut self, id: usize) {
         let Some(cap) = self.frontier_cap else {
             return;
@@ -2402,7 +1860,6 @@ where
         self.insert_active_cell_member(id);
     }
 
-    /// Drop a displaced entry from the selector index.
     fn index_remove(&mut self, id: usize) {
         if self.frontier_cap.is_none() {
             return;
@@ -2565,9 +2022,6 @@ where
         else {
             return;
         };
-        // A selected job may finish after an earlier admission displaced its
-        // parent. The cell can still exist for other entries, but that stale
-        // parent must not change their cached live-member count.
         if !members.ids.contains(&id) {
             return;
         }
@@ -2600,73 +2054,50 @@ where
         }
     }
 
-    /// The coarsest group depth: the replacement clock's group, the lineage
-    /// inheritance boundary, and the walk's deepest-first level.
     fn coarsest_depth() -> usize {
         K::groups().saturating_sub(1)
     }
 
-    /// An entry's lineage.
     #[must_use]
     pub fn lineage(&self, id: usize) -> Option<&K::Lineage> {
         self.lineages.get(id)
     }
 
-    /// Return the completed key retained at an entry index.
-    ///
-    /// The archive keeps its entry storage private so callers cannot mutate
-    /// retention state, but workload adapters need read-only access when
-    /// validating game-owned key completion against a generic archive.
     #[must_use]
     pub fn entry_key(&self, id: usize) -> Option<K> {
         self.entries.get(id).map(|entry| entry.key)
     }
 
-    /// Slot collisions the time-in-group rule decided, counted for the report.
     #[must_use]
-    pub fn replacement_time_displaced(&self) -> u64 {
-        self.replacement_time_displaced
+    pub fn replacement_cost_displaced(&self) -> u64 {
+        self.replacement_cost_displaced
     }
 
-    /// Time a retained entry spent inside its own coarsest group.
     #[cfg(test)]
-    pub(crate) fn entry_time_in_group(&self, id: usize) -> u64 {
-        self.time_in_group[id]
+    pub(crate) fn entry_cost_in_group(&self, id: usize) -> u64 {
+        self.cost_in_group[id]
     }
 
-    /// Deepest recorded key, the least time any entry with that key spent
-    /// inside its coarsest group, and the retained total.
-    ///
-    /// Read-only. Nothing here consumes randomness or mutates archive state, so
-    /// calling it cannot change what a run records.
     #[must_use]
     pub fn live_progress(&self) -> Option<(K, u64, u64)> {
         self.live_progress
             .map(|(deepest, cheapest)| (deepest, cheapest, self.retained))
     }
 
-    /// Time a candidate spent inside its own coarsest group.
-    ///
-    /// An input extends its parent's, so the time added since the parent is
-    /// the duration of the actions past the parent's length. A candidate
-    /// whose parent already sits in the same coarsest group inherits the
-    /// parent's count; one whose parent sits elsewhere entered the group
-    /// during those actions and starts the count there. A candidate with no
-    /// parent — genesis, and only genesis — counts its whole input.
-    fn time_in_group_of(&self, parent_id: Option<usize>, suffix: &[A], key: K) -> u64 {
-        let time_of = |actions: &[A]| -> u64 {
+    fn cost_in_group_of(&self, parent_id: Option<usize>, suffix: &[A], key: K) -> u64 {
+        let cost_of = |actions: &[A]| -> u64 {
             actions
                 .iter()
-                .map(|action| (self.action_time)(action))
+                .map(|action| (self.action_cost)(action))
                 .sum()
         };
         let Some(parent) = parent_id.and_then(|id| self.entries.get(id)) else {
-            return time_of(suffix);
+            return cost_of(suffix);
         };
-        let added = time_of(suffix);
+        let added = cost_of(suffix);
         let depth = Self::coarsest_depth();
         if parent.key.group(depth) == key.group(depth) {
-            self.time_in_group
+            self.cost_in_group
                 .get(parent_id.unwrap_or_default())
                 .copied()
                 .unwrap_or(0)
@@ -2676,11 +2107,6 @@ where
         }
     }
 
-    /// Offer a candidate to retention.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on id-space overflow or a missing parent.
     pub fn insert(
         &mut self,
         parent_id: Option<usize>,
@@ -2692,17 +2118,6 @@ where
             .map(|(id, _)| id)
     }
 
-    /// Offer a candidate to retention, completing its key against
-    /// `previous` when given: the completed key of the boundary just before
-    /// this one on the same input, which retention did not keep. A job walks
-    /// many boundaries past its parent, and the ones landing in full slots
-    /// still carry the lineage's position forward, so completion follows the
-    /// last boundary rather than the last retained entry. Returns the
-    /// completed key with the outcome.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on id-space overflow or a missing parent.
     pub fn insert_after(
         &mut self,
         parent_id: Option<usize>,
@@ -2733,10 +2148,7 @@ where
             _ => K::Lineage::default(),
         };
         K::record(&mut lineage, key);
-        let candidate_time_in_group = self.time_in_group_of(parent_id, &suffix, key);
-        // The costliest entry in the group's own clock loses to a candidate
-        // that reached the same slot in strictly less time. The entry id
-        // breaks ties so the choice stays a total order over the slot.
+        let candidate_cost_in_group = self.cost_in_group_of(parent_id, &suffix, key);
         let slot = self.slots.entry(key.group(0)).or_default().clone();
         let new_slot = slot.is_empty();
         let slot_full = slot.len() >= K::slot_capacity().max(1);
@@ -2747,12 +2159,12 @@ where
                 left_entry
                     .key
                     .preference_cmp(right_entry.key)
-                    .then_with(|| self.time_in_group[*right].cmp(&self.time_in_group[*left]))
+                    .then_with(|| self.cost_in_group[*right].cmp(&self.cost_in_group[*left]))
                     .then_with(|| right_entry.id.cmp(&left_entry.id))
             });
             worst.filter(|id| match key.preference_cmp(self.entries[*id].key) {
                 Ordering::Greater => true,
-                Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
+                Ordering::Equal => candidate_cost_in_group < self.cost_in_group[*id],
                 Ordering::Less => false,
             })
         } else {
@@ -2798,7 +2210,7 @@ where
             }
         }
         if let Some(replaced) = replace {
-            self.replacement_time_displaced = self.replacement_time_displaced.saturating_add(1);
+            self.replacement_cost_displaced = self.replacement_cost_displaced.saturating_add(1);
             self.deactivate(replaced);
         }
         let id = self.entries.len();
@@ -2830,10 +2242,6 @@ where
         self.snapshot_selectable.push(true);
         self.resident_snapshots = self.resident_snapshots.saturating_add(1);
         self.resident_snapshot_bytes = self.resident_snapshot_bytes.saturating_add(snapshot_charge);
-        // The first entry of each replay bucket on a lineage is its keyframe.
-        // A lineage whose keyframe is no longer resident, which can happen
-        // when the parent was retired while its job was in flight, restarts
-        // its bucket here.
         let inherited_keyframe = parent_id
             .filter(|parent| {
                 Self::replay_bucket(self.entries[*parent].input_len)
@@ -2858,24 +2266,23 @@ where
         self.active.push(true);
         self.active_count = self.active_count.saturating_add(1);
         self.lineages.push(lineage);
-        self.time_in_group.push(candidate_time_in_group);
+        self.cost_in_group.push(candidate_cost_in_group);
         match &mut self.live_progress {
             Some((deepest, cheapest)) if key > *deepest => {
                 *deepest = key;
-                *cheapest = candidate_time_in_group;
+                *cheapest = candidate_cost_in_group;
             }
             Some((deepest, cheapest)) if key == *deepest => {
-                *cheapest = (*cheapest).min(candidate_time_in_group);
+                *cheapest = (*cheapest).min(candidate_cost_in_group);
             }
             Some(_) => {}
-            None => self.live_progress = Some((key, candidate_time_in_group)),
+            None => self.live_progress = Some((key, candidate_cost_in_group)),
         }
         self.selected.push(0);
         self.productive.push(0);
         self.since_retained.push(0);
         self.in_window_ever.push(false);
         self.opened_slot.push(new_slot);
-        // A one-group key has no pooled cell depth; slot novelty stands in.
         let new_cell = if K::groups() > 1 {
             self.cells_seen.insert(key.group(1))
         } else {
@@ -2905,10 +2312,6 @@ where
         Ok((Some(id), key))
     }
 
-    /// Derive a campaign splice after ensuring the selection-cell index is
-    /// present under the recorded action limit. Live selection normally
-    /// builds this index first; serial replay must establish the same derived
-    /// state without repeating the random parent draw.
     pub(crate) fn splice_tail_for_campaign(
         &mut self,
         parent: usize,
@@ -2941,7 +2344,6 @@ where
         })
     }
 
-    /// Rebuild a recorded dispatch-time splice from append-only archive ids.
     pub(crate) fn recorded_splice_tail(
         &self,
         parent: usize,
@@ -3003,16 +2405,6 @@ where
             .collect()
     }
 
-    /// Choose a parent: one in four draws is uniform over every expandable
-    /// entry; the rest walk the group depths from the deepest coarsest class
-    /// down to one selection cell, then sample the cell's recency window.
-    /// When every entry is exhausted the exhaustion counters reset once and
-    /// the draw repeats.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no expandable entry exists, or when the
-    /// deterministic reset frees nothing.
     pub fn select_parent(
         &mut self,
         rand: &mut RomuDuoJrRand,
@@ -3049,7 +2441,7 @@ where
                 return Ok((
                     id,
                     SelectorDraw {
-                        path: SelectorPath::GroupWalk,
+                        path: SelectorPath::HierarchyWalk,
                         classes_skipped,
                         counter_reset,
                         concentration: Some(concentration),
@@ -3059,22 +2451,10 @@ where
             if counter_reset {
                 return Err("selection counter reset freed no entry".into());
             }
-            // The reset draw selects as if every streak counter were zero;
-            // the durable clear happens when the reset-marked record is
-            // applied, so counter state stays a pure function of the record
-            // stream and live jobs still in flight at shutdown cannot leave
-            // state replay never sees.
             counter_reset = true;
         }
     }
 
-    /// Walk to one unexhausted selection cell. The coarsest classes are
-    /// tried deepest first; within the first class holding an unexhausted
-    /// entry, each finer group depth down to the cell is drawn uniformly
-    /// among the groups still holding an unexhausted entry, so sparse deep
-    /// groups carry the same weight as dense shallow ones. Exhausted groups
-    /// at the pooled threshold depth are counted as skipped. `None` when
-    /// every active entry is exhausted.
     fn walk_to_cell(
         &self,
         rand: &mut RomuDuoJrRand,
@@ -3133,8 +2513,6 @@ where
         }
         let count = NonZeroUsize::new(maximal.len())
             .ok_or("workload progress relation has a dominance cycle")?;
-        // Preserve the old random stream for a unique maximum, including a
-        // conventional totally ordered linear workload.
         let selected = maximal[if maximal.len() == 1 {
             0
         } else {
@@ -3155,12 +2533,6 @@ where
             let mut cells = Vec::new();
             let mut subclass_live = BTreeMap::<K::Group, bool>::new();
             for members in cell_map.values() {
-                // Every member of a cell shares its groups, so the pooled
-                // barren thresholds are checked once per cell; only the
-                // per-entry streak varies inside. Liveness is counted here
-                // and only the finally chosen cell's live members are
-                // materialized, so a draw allocates one member list rather
-                // than one per cell.
                 let Some(member) = members.ids.iter().next().copied() else {
                     continue;
                 };
@@ -3211,8 +2583,6 @@ where
             if cells.is_empty() {
                 return Err("cell draw over an exhausted class".into());
             }
-            // A one-group key collapses the cell onto the retention slot and
-            // has no pooled depth to weight, so its cell draw stays uniform.
             let index = if Self::coarsest_depth() >= 1 {
                 let cell_groups = cells
                     .iter()
@@ -3338,16 +2708,10 @@ where
         Ok(None)
     }
 
-    /// The depth whose groups order the walk's frontier rank: the pooled
-    /// threshold depth, which for a key with a progress band is the band.
     fn frontier_depth() -> usize {
         2.min(Self::class_depth())
     }
 
-    /// The deepest live frontier-depth group under `group` at `depth`
-    /// within `class`. A group's own key orders by whatever its pooled
-    /// fields leave, which for a room is its identity bytes, so the walk
-    /// ranks groups above the frontier depth by their frontier instead.
     fn deepest_live_band(
         &self,
         class: K::Group,
@@ -3376,20 +2740,6 @@ where
         Ok(current)
     }
 
-    /// Draw one index into `groups` at `depth`, where `frontier[i]` is the
-    /// deepest live frontier-depth group under `groups[i]`, or `None` below
-    /// the frontier depth where every group shares one and `cells[i]` is
-    /// instead the id that opened cell `groups[i]` while it still counts as
-    /// new and the frames in group of the cheapest member its draw offers.
-    /// Under the energy selector each group's weight halves every `scale`
-    /// barren selections and floors at 1/256 of a fresh group, then halves
-    /// again for every distinct deeper frontier that still holds energy, down
-    /// to 1/65,536 of the deepest, or for every
-    /// `CELL_NOVELTY_RANK_SCALE` newer cells that still count as new plus
-    /// every `CHEAPEST_RANK_SCALE` cells with a cheaper best member, so the
-    /// rank order survives the energy floor; a cell past its novelty draws
-    /// competes on energy and cost alone; every other selector draws
-    /// uniformly, so their recorded rand streams keep their exact bytes.
     fn draw_group_index(
         &self,
         rand: &mut RomuDuoJrRand,
@@ -3409,17 +2759,9 @@ where
             | SelectorPolicy::EnergyProgressCheapestCount(scales) => (scales, true),
             _ => return Ok(rand.below(count)),
         };
-        // A key with no pooled depth at this position has no barren counter
-        // to weight by; its draw stays uniform.
         let Some(scale) = scales.groups.get(depth - 1).copied() else {
             return Ok(rand.below(count));
         };
-        // Frontier rank depends only on the set of distinct frontiers that
-        // still hold energy: a frontier whose own draws have all faded no
-        // longer pushes the groups behind it down, so a stalled frontier
-        // hands its draws back to the fork it grew from. Build that ordering
-        // once instead of filtering, allocating, sorting, and deduplicating
-        // the complete list once per candidate group.
         let ranked = match frontier {
             Some(frontier) if ranked_by_frontier => {
                 let frontier_depth = Self::frontier_depth();
@@ -3512,7 +2854,6 @@ where
         Err("energy draw exceeded its weight total".into())
     }
 
-    /// The per-entry half of the exhaustion rule.
     fn entry_unexhausted(&self, id: usize) -> bool {
         if self.since_retained[id] >= SELECTION_EXHAUSTION_THRESHOLD {
             return false;
@@ -3532,8 +2873,6 @@ where
         }
     }
 
-    /// The pooled-group half of the exhaustion rule, shared by every member
-    /// of a selection cell.
     fn groups_unexhausted(&self, key: K) -> bool {
         match &self.selector_policy {
             SelectorPolicy::GroupUniform
@@ -3561,9 +2900,6 @@ where
         }
     }
 
-    /// Frames in group of the cheapest member a cell's draw offers, given
-    /// the cell's sampleable ids in ascending order: the draw sees only the
-    /// `CONCENTRATION_WINDOW` greatest of them.
     fn cheapest_offered<'a>(
         &self,
         sampleable: impl DoubleEndedIterator<Item = &'a usize>,
@@ -3571,17 +2907,10 @@ where
         sampleable
             .rev()
             .take(CONCENTRATION_WINDOW)
-            .map(|id| self.time_in_group[*id])
+            .map(|id| self.cost_in_group[*id])
             .min()
     }
 
-    /// Uniform draw within the chosen cell, narrowed to the cell's
-    /// `CONCENTRATION_WINDOW` greatest-id members.
-    ///
-    /// Entry ids are creation order, so the greatest ids are the cell's most
-    /// recently retained members. Membership is recomputed at every draw: a
-    /// member leaves when `CONCENTRATION_WINDOW` newer sampleable cell
-    /// members exist, or immediately when it exhausts.
     fn draw_from_cell(
         &mut self,
         rand: &mut RomuDuoJrRand,
@@ -3605,7 +2934,7 @@ where
         ) {
             let mut ranked = window
                 .iter()
-                .map(|id| (self.time_in_group[*id], *id))
+                .map(|id| (self.cost_in_group[*id], *id))
                 .collect::<Vec<_>>();
             ranked.sort_unstable();
             let count_weighted = matches!(
@@ -3657,99 +2986,79 @@ where
         ))
     }
 
-    /// Whether entry `id` was the first to occupy its retention slot.
     #[must_use]
     pub fn opened_new_slot(&self, id: usize) -> bool {
         self.opened_slot.get(id).copied().unwrap_or(false)
     }
 
-    /// Whether entry `id` was the first to occupy its selection cell. Cell
-    /// novelty pools out the fingerprint bits, so per-pose noise variants do
-    /// not count as discovery.
     #[must_use]
     pub fn opened_new_cell(&self, id: usize) -> bool {
         self.opened_cell.get(id).copied().unwrap_or(false)
     }
 
-    /// Number of entries currently participating in retention.
     #[must_use]
     pub fn active_count(&self) -> usize {
         self.active_count
     }
 
-    /// Number of machine snapshots currently resident for dispatch.
     #[must_use]
     pub fn resident_snapshot_count(&self) -> usize {
         self.resident_snapshots
     }
 
-    /// Deterministic logical bytes charged to resident snapshots.
     #[must_use]
     pub fn resident_snapshot_bytes(&self) -> usize {
         self.resident_snapshot_bytes
             .saturating_add(self.inflight_snapshot_bytes)
     }
 
-    /// Snapshots displaced solely by the global memory budget.
     #[must_use]
     pub fn snapshot_evictions(&self) -> u64 {
         self.snapshot_evictions
     }
 
-    /// Active entries the memory budget's sweep deactivated.
     pub fn entry_drops(&self) -> u64 {
         self.entry_drops
     }
 
-    /// Compact entries currently held by the live acceleration structure.
     #[must_use]
     pub fn live_entry_count(&self) -> usize {
         self.entries.len()
     }
 
-    /// Deterministic history compactions completed so far.
     #[must_use]
     pub fn history_compactions(&self) -> u64 {
         self.history_compactions
     }
 
-    /// Historical entries retired from live memory after their stream record.
     #[must_use]
     pub fn historical_entries_dropped(&self) -> u64 {
         self.historical_entries_dropped
     }
 
-    /// Full inputs lazily reconstructed from the compact prefix structure.
     #[must_use]
     pub fn input_reconstructions(&self) -> u64 {
         self.input_reconstructions.get()
     }
 
-    /// Complete input action elements retained across historical reports.
     #[must_use]
     pub(crate) fn historical_input_actions(&self) -> usize {
         self.historical_input_actions
     }
 
-    /// Parent-relative action elements physically retained by live history.
     #[must_use]
     pub(crate) fn stored_input_actions(&self) -> usize {
         self.stored_input_actions
     }
 
-    /// Enable bounded learned transition reuse. Its full capacity is reserved
-    /// against the campaign budget before bootstrap in both live and replay.
     pub(crate) fn enable_continuations(&mut self, enabled: bool) {
         self.continuations = enabled.then(ContinuationBank::default);
     }
 
-    /// Stale parents are deliberately not pinned by speculative work. The
-    /// coordinator checks liveness and duplicates before dispatch.
     pub(crate) fn pop_continuation(&mut self) -> Option<Continuation<A>> {
         self.continuations.as_mut()?.pop()
     }
 
-    /// Deterministic conservative bytes charged to compact history/indexes.
     #[must_use]
     pub fn history_memory_bytes(&self) -> usize {
         self.history_memory_bytes
@@ -3768,8 +3077,6 @@ where
             })
     }
 
-    /// Deterministic bytes charged to compact entry metadata, excluding its
-    /// action-prefix storage and historical selector maps.
     #[must_use]
     pub(crate) fn entry_metadata_memory_bytes(&self) -> usize {
         self.entries
@@ -3777,7 +3084,6 @@ where
             .saturating_mul(Self::history_entry_memory_charge(0, 0))
     }
 
-    /// Deterministic bytes charged to the shared action-prefix index.
     #[must_use]
     pub(crate) fn input_index_memory_bytes(&self) -> usize {
         self.input_index
@@ -3786,7 +3092,6 @@ where
             .saturating_add(self.stored_input_actions.saturating_mul(size_of::<A>()))
     }
 
-    /// Deterministic bytes charged to remembered novelty cells.
     #[must_use]
     pub(crate) fn novelty_memory_bytes(&self) -> usize {
         self.cells_seen
@@ -3794,7 +3099,6 @@ where
             .saturating_mul(Self::historical_group_memory_charge(0))
     }
 
-    /// Deterministic bytes charged to pooled selector-barrenness counters.
     #[must_use]
     pub(crate) fn barren_memory_bytes(&self) -> usize {
         self.group_barren
@@ -3804,33 +3108,27 @@ where
             .saturating_mul(Self::historical_group_memory_charge(size_of::<u64>()))
     }
 
-    /// Total deterministic bytes charged to live search state.
     #[must_use]
     pub fn resident_memory_bytes(&self) -> usize {
         self.history_memory_bytes()
             .saturating_add(self.resident_snapshot_bytes())
     }
 
-    /// Unique action-prefix nodes retained by duplicate detection.
     #[must_use]
     pub(crate) fn input_index_nodes(&self) -> usize {
         self.input_index.live_nodes
     }
 
-    /// Distinct selection cells remembered for historical novelty accounting.
     #[must_use]
     pub(crate) fn historical_cell_count(&self) -> usize {
         self.cells_seen.len()
     }
 
-    /// Pooled selector groups carrying a live barren counter.
     #[must_use]
     pub(crate) fn barren_group_count(&self) -> usize {
         self.group_barren.iter().map(BTreeMap::len).sum()
     }
 
-    /// A retry under a separately accounted continuation policy is a use for cache
-    /// maintenance, but is not an ordinary exploration draw or barren attempt.
     pub(crate) fn record_isolated_continuation(&mut self, id: usize) {
         self.referenced[id] = true;
         let count = self
@@ -3840,13 +3138,7 @@ where
         *count = count.saturating_add(1);
     }
 
-    /// Account one recorded selection of `id`.
     pub fn record_selection(&mut self, id: usize, draw: &SelectorDraw) {
-        // The reset-marked draw is the only place streak counters clear.
-        // Applying it here, in stream order, keeps counter state a pure
-        // function of the record stream, so live and replay agree at every
-        // stream position. Retirement is soft: the reset also clears the
-        // pooled barren counters, so the search can never seal itself out.
         if draw.counter_reset {
             self.since_retained.fill(0);
             for map in &mut self.group_barren {
@@ -3903,7 +3195,7 @@ where
                     .uniform_selections
                     .saturating_add(1);
             }
-            SelectorPath::GroupWalk => {
+            SelectorPath::HierarchyWalk => {
                 self.selector_accounting.cell_selections =
                     self.selector_accounting.cell_selections.saturating_add(1);
             }
@@ -3931,7 +3223,6 @@ where
         }
     }
 
-    /// Account one selection's discovery outcome.
     pub fn record_selection_outcome(
         &mut self,
         id: usize,
@@ -3948,10 +3239,6 @@ where
         if !was_sampleable && self.entry_unexhausted(id) {
             self.set_entry_sampleable(id, true);
         }
-        // Retire clears its pooled counters on any retained child so
-        // historical streams replay unchanged; energy clears only when a
-        // child opened a new retention slot, because admission that keeps
-        // most results makes plain retention too common to signal anything.
         let clears_groups = match self.selector_policy {
             SelectorPolicy::Retire(_) => true,
             SelectorPolicy::Energy(_) | SelectorPolicy::EnergyFrontier(_) => new_slot_descendant,
@@ -3974,7 +3261,6 @@ where
             .saturating_add(1);
     }
 
-    /// The per-campaign selector accounting for the report.
     #[must_use]
     pub fn selector_report(&self) -> SelectorAccounting {
         let mut accounting = self.selector_accounting.clone();
@@ -4028,9 +3314,7 @@ where
         accounting
     }
 
-    /// Extract entry reports and snapshots together, stamping per-entry
-    /// selection counters without cloning the snapshot set.
-    #[allow(clippy::type_complexity)] // The paired vectors preserve one-pass entry ownership.
+    #[allow(clippy::type_complexity)]
     pub fn take_entry_reports_and_snapshots(
         &mut self,
     ) -> (Vec<ArchiveEntryReport<A, K, M>>, Vec<(u64, S)>) {
@@ -4083,8 +3367,6 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use std::{cmp::Reverse, collections::BTreeMap, sync::Arc};
 
-    /// A small action fixture with the same two dimensions the extracted
-    /// archive tests need: an input identity and a deterministic duration.
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
     struct TestAction {
         buttons: u8,
@@ -4104,10 +3386,6 @@ mod tests {
         }
     }
 
-    /// A game-neutral key fixture that preserves the five-level geometry used
-    /// by the selector tests. The fields intentionally describe only generic
-    /// coordinates, progress, and state partitions; no emulator state is
-    /// involved in exercising the archive.
     #[derive(
         Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize,
     )]
@@ -4287,7 +3565,6 @@ mod tests {
         assert!(!archive.release_snapshot(1));
         assert_eq!(archive.resident_snapshot_bytes(), 33);
         assert_eq!(archive.inflight_snapshot_bytes, 11);
-        // Worker completion is deliberately not an accounting event.
         drop(first);
         drop(second);
         archive.compact_history(true).unwrap();
@@ -4408,23 +3685,28 @@ mod tests {
     }
 
     #[test]
-    fn historical_tie_class_counter_loads_as_cell_selections() {
-        let accounting: SelectorAccounting = serde_json::from_str(
-            r#"{"uniform_selections":1,"tie_class_selections":2,
+    fn selector_accounting_requires_the_current_cell_counter_name() {
+        let current: SelectorAccounting = serde_json::from_str(
+            r#"{"uniform_selections":1,"cell_selections":2,
                 "productive_selections":3,"classes_skipped":4,"counter_resets":5,
                 "concentration":{"window_cap":128,"final_window_size":6,
                 "window_draws":7,"distinct_window_parents":8,
                 "draws_per_parent_milli":9}}"#,
         )
-        .expect("historical selector accounting parses");
-        assert_eq!(accounting.cell_selections, 2);
+        .expect("current selector accounting parses");
+        assert_eq!(current.cell_selections, 2);
+        assert!(
+            serde_json::from_str::<SelectorAccounting>(
+                r#"{"uniform_selections":1,"tie_class_selections":2,
+                "productive_selections":3,"classes_skipped":4,"counter_resets":5,
+                "concentration":{"window_cap":128,"final_window_size":6,
+                "window_draws":7,"distinct_window_parents":8,
+                "draws_per_parent_milli":9}}"#,
+            )
+            .is_err()
+        );
     }
 
-    /// A key of exactly `DEPTHS` group depths over four components, for
-    /// covering geometries no compiled game declares. Depth `d` erases the
-    /// finest `d` components, and `group` asserts its depth is in range so a
-    /// selector that reads past the coarsest depth fails the test rather
-    /// than returning a plausible group.
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
     struct FlatKey<const DEPTHS: usize>([u16; 4]);
 
@@ -4642,9 +3924,6 @@ mod tests {
 
     #[test]
     fn selection_accounting_charge_is_brought_back_under_the_budget() {
-        // `record_selection` grows the pooled barren counters the budget
-        // charges, and it is the last thing an admitted job does. Without
-        // maintenance after it, a run reports a charge above its own budget.
         let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 1);
         archive.selector_policy = SelectorPolicy::Energy(RetireThresholds {
@@ -4671,7 +3950,7 @@ mod tests {
         assert_eq!(archive.barren_group_count(), 0);
 
         let draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -4685,8 +3964,6 @@ mod tests {
             "selection accounting should have pushed the charge over the budget"
         );
 
-        // The maintenance step the coordinator spends at this stream position
-        // is bounded per call, so convergence takes a bounded number of them.
         let mut quanta = 0_usize;
         while archive.resident_memory_bytes() > limit && quanta < 64 {
             archive
@@ -4703,16 +3980,6 @@ mod tests {
 
     #[test]
     fn a_run_of_skips_maintains_the_budget_without_a_false_anchor_error() {
-        // One pre-execution duplicate skip does exactly two things to the
-        // archive: it accounts a selection and it spends one maintenance
-        // step. This loop runs that pair and nothing else, because the order
-        // is what a false "cannot retain the anchor" error depends on.
-        //
-        // The archive holds fewer entries than HISTORY_COMPACTION_MIN_DROPS,
-        // so compaction declines for the whole loop. That is the shape a
-        // production archive has below the far larger production threshold,
-        // and it is the shape in which deferred reclamation must not be
-        // mistaken for an unaffordable anchor.
         let entries = u8::try_from(HISTORY_COMPACTION_MIN_DROPS / 2).expect("half fits u8");
         let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 1);
@@ -4735,8 +4002,6 @@ mod tests {
                 .expect("insert entry")
                 .expect("retain entry");
         }
-        // Half the standing charge, so the sweep must deactivate down to the
-        // anchor and still leave the charge over the budget.
         let limit = archive.resident_memory_bytes() / 2;
         archive.memory_limit = Some(limit);
         archive.establish_liveness_anchor(64);
@@ -4745,7 +4010,7 @@ mod tests {
             .expect("a budgeted run has an anchor");
 
         let draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -4804,11 +4069,6 @@ mod tests {
 
     #[test]
     fn the_final_compaction_refuses_a_budget_the_compacted_archive_exceeds() {
-        // `liveness_anchor_memory_bytes` is a lower bound, so a budget above
-        // it can still be unaffordable. Live maintenance accepts such a
-        // budget, because during a run the excess may be dead history a
-        // later compaction returns. The final forced compaction has nothing
-        // left to return, so it must refuse.
         let anchored = || {
             let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
             archive.set_memory_budget(usize::MAX, |_| 1);
@@ -4831,8 +4091,6 @@ mod tests {
             archive
         };
 
-        // Drive an archive down to the anchor, then compact it unbudgeted.
-        // What remains is the charge a budget must actually hold.
         let sweep = |archive: &mut Archive<u8, FlatKey<3>, (), ()>| {
             for _ in 0..64 {
                 archive
@@ -4872,10 +4130,6 @@ mod tests {
 
     #[test]
     fn the_final_compaction_keeps_passing_while_a_quantum_reclaims_no_bytes() {
-        // Every entry is active, referenced, and holds a free snapshot, so
-        // the first passes spend their quantum clearing reference bits and
-        // releasing snapshots without changing a single charged byte. The
-        // budget is still reachable, and the passes after them reach it.
         let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 0);
         archive.set_memory_budget(usize::MAX, |_| 0);
         let entries = MAINTENANCE_QUANTUM * 4;
@@ -4922,9 +4176,6 @@ mod tests {
 
     #[test]
     fn the_maintenance_quantum_counts_entries_the_clock_examines() {
-        // Every entry is referenced, so the hand clears reference bits and
-        // drops nothing. The sweep must still stop after one quantum of
-        // examinations rather than scanning the whole archive per drop.
         let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 1);
         let entries = MAINTENANCE_QUANTUM * 4;
@@ -4961,8 +4212,6 @@ mod tests {
             archive.drop_hand
         );
 
-        // The bounded helper reports what it examined so the caller can spend
-        // exactly its quantum across repeated calls.
         archive.referenced.fill(true);
         archive.drop_hand = 0;
         let (dropped, examined) = archive.drop_one_entry_within(4);
@@ -5052,7 +4301,6 @@ mod tests {
         archive.release_snapshot(0);
         drop(held);
         assert_eq!(archive.resident_snapshot_bytes(), 1);
-        // Releasing the selected child is not releasing its restore keyframe.
         archive.unpin_job_origin(archive.stable_id(3).unwrap());
         assert!(archive.entries[0].snapshot.is_some());
         archive.unpin_job_origin(keyframe_id);
@@ -5093,7 +4341,7 @@ mod tests {
             .expect("retain root");
         archive.rebuild_selector_index(1);
         archive.establish_liveness_anchor(1);
-        archive.time_in_group[0] = 100;
+        archive.cost_in_group[0] = 100;
         for (id, suffix) in [(1_u64, 1_u8), (2, 2)] {
             archive
                 .insert(
@@ -5246,7 +4494,7 @@ mod tests {
         archive.record_selection(
             id,
             &SelectorDraw {
-                path: SelectorPath::GroupWalk,
+                path: SelectorPath::HierarchyWalk,
                 classes_skipped: 0,
                 counter_reset: false,
                 concentration: None,
@@ -5266,7 +4514,7 @@ mod tests {
             });
         let old = archive.entries[0].key;
         let draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -5785,7 +5033,7 @@ mod tests {
 
             let Some(cached) = cached else {
                 let draw = SelectorDraw {
-                    path: SelectorPath::GroupWalk,
+                    path: SelectorPath::HierarchyWalk,
                     classes_skipped: cached_skipped,
                     counter_reset: true,
                     concentration: None,
@@ -5795,7 +5043,7 @@ mod tests {
             };
             let id = cached[step % cached.len()];
             let draw = SelectorDraw {
-                path: SelectorPath::GroupWalk,
+                path: SelectorPath::HierarchyWalk,
                 classes_skipped: cached_skipped,
                 counter_reset: false,
                 concentration: None,
@@ -5814,12 +5062,10 @@ mod tests {
         });
         archive.rebuild_selector_index(10);
 
-        // Model a result still in flight when an earlier admission displaces
-        // its selected parent. Another entry keeps the same cell present.
         archive.active[0] = false;
         archive.index_remove(0);
         let draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -5858,9 +5104,6 @@ mod tests {
         assert_eq!(cached_rand.next_u64(), scanned_rand.next_u64());
     }
 
-    /// A splice tail is the cell-mate's stored path to its deepest
-    /// descendant, capped, and absent when no cell-mate reaches deeper than
-    /// the parent.
     #[test]
     fn a_splice_tail_extends_past_the_parent_from_a_cell_mate() {
         let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
@@ -5926,9 +5169,6 @@ mod tests {
         );
     }
 
-    /// Selection must run on every geometry the key contract allows, down to
-    /// a single group depth where the walk class, the selection cell, and the
-    /// retention slot are all depth 0.
     #[test]
     fn selection_runs_on_keys_with_fewer_than_three_group_depths() {
         fn draws<const DEPTHS: usize>(seed: u64) {
@@ -5948,14 +5188,11 @@ mod tests {
         draws::<3>(0x5eed_0003);
     }
 
-    /// The retiring selector takes one threshold per pooled depth plus the
-    /// per-entry threshold. A key with fewer than three depths pools nothing,
-    /// so the identifier carries the entry threshold alone.
     #[test]
     fn the_retiring_selector_parses_under_a_shallow_key() {
         for depths in [1_usize, 2] {
             let pooled = depths.saturating_sub(2);
-            let policy = selector_policy_from_identifier("room_cell_uniform_128_retire:3", pooled)
+            let policy = selector_policy_from_identifier("hierarchy_uniform_128_retire:3", pooled)
                 .expect("shallow retiring selector");
             assert_eq!(
                 policy,
@@ -5965,7 +5202,7 @@ mod tests {
                 })
             );
             assert!(
-                selector_policy_from_identifier("room_cell_uniform_128_retire:3,6", pooled)
+                selector_policy_from_identifier("hierarchy_uniform_128_retire:3,6", pooled)
                     .is_err()
             );
         }
@@ -6009,11 +5246,6 @@ mod tests {
 
     #[test]
     fn the_walk_splits_a_class_over_its_unexhausted_cells() {
-        // Two bands of one 8-4 room: 60 entries at (304, y 11) fill band 38
-        // alone; 3 at (303, y 7) and 1 at (300, y 4) share band 37. The
-        // band draw is uniform, so the crowded cell gets half the draws
-        // despite holding 60 of 64 entries, and the band-37 cells split the
-        // other half evenly.
         let mut keys: Vec<(u8, u8, u16)> = Vec::new();
         keys.extend(std::iter::repeat_n((7, 3, 304), 60));
         keys.extend(std::iter::repeat_n((7, 3, 303), 3));
@@ -6034,7 +5266,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("walk selection");
-            if draw.path != SelectorPath::GroupWalk {
+            if draw.path != SelectorPath::HierarchyWalk {
                 continue;
             }
             cell_draws += 1;
@@ -6063,10 +5295,6 @@ mod tests {
 
     #[test]
     fn a_pooled_barren_class_is_retired_and_the_reset_frees_it() {
-        // Two cells in one band at (1, 0) plus one band below. A single
-        // barren draw of entry 0 puts the whole band over a threshold of
-        // one, so cell draws must fall through to the lower band even
-        // though entry 1 was never drawn.
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 145), (1, 0, 124)];
         let mut archive = selector_archive(&keys);
         archive.selector_policy = SelectorPolicy::Retire(RetireThresholds {
@@ -6074,7 +5302,7 @@ mod tests {
             groups: vec![64, 1, 64],
         });
         let barren_draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -6086,7 +5314,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection");
-            if draw.path == SelectorPath::GroupWalk {
+            if draw.path == SelectorPath::HierarchyWalk {
                 assert_eq!(id, 2, "cell draws must fall through to the 124 band");
                 assert_eq!(draw.classes_skipped, 1);
                 assert!(!draw.counter_reset);
@@ -6094,9 +5322,6 @@ mod tests {
             }
         }
         assert!(fell_through > 0);
-        // A retained descendant of the lower band's entry resets nothing in
-        // the retired band; a retained descendant of entry 1 clears the
-        // pooled counter and the band returns to selection.
         archive.record_selection(1, &barren_draw);
         archive.record_selection_outcome(1, true, true, true);
         let mut upper_band_seen = false;
@@ -6104,7 +5329,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection after reset");
-            if draw.path == SelectorPath::GroupWalk && (id == 0 || id == 1) {
+            if draw.path == SelectorPath::HierarchyWalk && (id == 0 || id == 1) {
                 upper_band_seen = true;
             }
         }
@@ -6119,9 +5344,6 @@ mod tests {
 
     #[test]
     fn an_energy_barren_band_fades_but_keeps_receiving_draws() {
-        // Same shape as the retirement test: two cells in one band plus one
-        // band below. Under the energy selector a deeply barren band must
-        // keep a small draw share instead of being skipped outright.
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 145), (1, 0, 124)];
         let mut archive = selector_archive(&keys);
         archive.selector_policy = SelectorPolicy::Energy(RetireThresholds {
@@ -6129,13 +5351,11 @@ mod tests {
             groups: vec![1_024, 1, 1_024],
         });
         let barren_draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
         };
-        // Nine barren selections put the upper band at nine halvings' worth
-        // of barrenness, clamped to the 1/256 floor.
         for _ in 0..9 {
             archive.record_selection(0, &barren_draw);
         }
@@ -6147,7 +5367,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("energy selection");
-            if draw.path != SelectorPath::GroupWalk {
+            if draw.path != SelectorPath::HierarchyWalk {
                 continue;
             }
             assert_eq!(draw.classes_skipped, 0);
@@ -6169,9 +5389,6 @@ mod tests {
 
     #[test]
     fn the_cheapest_concentration_prefers_low_cost_cell_members() {
-        // Forty entries in one cell whose costs rise with their ids: the
-        // cost-weighted draw must concentrate on the cheapest ranks while
-        // the plain frontier window stays uniform.
         let mut archive = TestArchive::new(|_| 1);
         for index in 0..40_u8 {
             let input = Input {
@@ -6215,8 +5432,6 @@ mod tests {
                 cheapest_block += 1;
             }
         }
-        // Sixteen full-weight ranks against halved and quartered tails must
-        // take well over the uniform 40% share.
         assert!(
             cheapest_block > 2_400,
             "cheapest ranks drew {cheapest_block}/4096"
@@ -6238,7 +5453,7 @@ mod tests {
         );
         archive.selector_policy = policy;
         for id in 0..40 {
-            archive.time_in_group[id] = id as u64;
+            archive.cost_in_group[id] = id as u64;
         }
         for id in 0..4 {
             archive.selected[id] = 1000;
@@ -6262,8 +5477,6 @@ mod tests {
 
     #[test]
     fn the_frontier_selector_weights_the_deepest_band_over_a_fresh_shallow_one() {
-        // Two bands with zero barrenness everywhere: energy alone would draw
-        // them evenly, so the frontier factor must be what separates them.
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 145), (1, 0, 124)];
         let mut archive = selector_archive(&keys);
         archive.selector_policy = SelectorPolicy::EnergyFrontier(RetireThresholds {
@@ -6278,7 +5491,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("frontier selection");
-            if draw.path != SelectorPath::GroupWalk {
+            if draw.path != SelectorPath::HierarchyWalk {
                 continue;
             }
             walks += 1;
@@ -6297,9 +5510,6 @@ mod tests {
 
     #[test]
     fn a_retired_coarse_class_falls_to_the_reset_when_nothing_else_lives() {
-        // One room only: a single barren draw retires it at a room
-        // threshold of one, and the deterministic all-exhausted reset must
-        // clear the pooled counters and free it rather than seal the search.
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 124)];
         let mut archive = selector_archive(&keys);
         for entry in &mut archive.entries {
@@ -6310,7 +5520,7 @@ mod tests {
             groups: vec![64, 64, 1],
         });
         let barren_draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -6322,7 +5532,7 @@ mod tests {
             let (_, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection under a retired class");
-            if draw.path == SelectorPath::GroupWalk {
+            if draw.path == SelectorPath::HierarchyWalk {
                 if draw.counter_reset {
                     reset_seen = true;
                     break;
@@ -6338,7 +5548,7 @@ mod tests {
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 124), (1, 0, 123), (0, 0, 100)];
         let mut archive = selector_archive(&keys);
         let exhausting_draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -6352,7 +5562,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection");
-            if draw.path == SelectorPath::GroupWalk {
+            if draw.path == SelectorPath::HierarchyWalk {
                 fell_through += 1;
                 assert!(
                     id == 1 || id == 2,
@@ -6374,7 +5584,7 @@ mod tests {
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (0, 0, 100)];
         let mut archive = selector_archive(&keys);
         let exhausting_draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -6390,7 +5600,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection");
-            if draw.path == SelectorPath::GroupWalk {
+            if draw.path == SelectorPath::HierarchyWalk {
                 assert!(
                     draw.counter_reset,
                     "the first cell draw after full exhaustion must reset"
@@ -6408,7 +5618,6 @@ mod tests {
 
     #[test]
     fn the_cell_draw_samples_only_the_recency_window() {
-        // 140 entries in one cell: the window is the 128 greatest ids.
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 124); 140];
         let mut archive = selector_archive(&keys);
         for entry in &mut archive.entries {
@@ -6421,7 +5630,7 @@ mod tests {
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("concentrated selection");
             match draw.path {
-                SelectorPath::GroupWalk => {
+                SelectorPath::HierarchyWalk => {
                     cell_draws += 1;
                     assert!(
                         id >= 12,
@@ -6441,16 +5650,13 @@ mod tests {
 
     #[test]
     fn concentrated_window_slides_off_exhausted_members() {
-        // 129 members at one progress: the window starts as ids 1..=128; when
-        // all of them exhaust, the sampled set must refill from the
-        // next-most-recent unexhausted member below, not skip the cell.
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 124); 129];
         let mut archive = selector_archive(&keys);
         for entry in &mut archive.entries {
             entry.key.player_y_bucket = 0;
         }
         let exhausting_draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -6466,7 +5672,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("concentrated selection");
-            if draw.path == SelectorPath::GroupWalk {
+            if draw.path == SelectorPath::HierarchyWalk {
                 assert_eq!(id, 0, "the only unexhausted member must be sampled");
                 assert_eq!(draw.classes_skipped, 0);
                 assert!(!draw.counter_reset);
@@ -6493,7 +5699,6 @@ mod tests {
         }
     }
 
-    /// Insert one action onto a parent and report the new entry's identifier.
     fn chain_insert(
         archive: &mut ChordArchive,
         parent: Option<usize>,
@@ -6520,7 +5725,7 @@ mod tests {
     }
 
     #[test]
-    fn time_in_group_counts_from_the_recorded_coarse_transition() {
+    fn cost_in_group_counts_from_the_recorded_coarse_transition() {
         let mut archive = ChordArchive::new(TestAction::duration);
         let genesis = archive
             .insert(
@@ -6535,8 +5740,7 @@ mod tests {
             )
             .expect("genesis insert")
             .expect("genesis retained");
-        assert_eq!(archive.entry_time_in_group(genesis), 0);
-        // Two actions inside the genesis pair accumulate their held frames.
+        assert_eq!(archive.entry_cost_in_group(genesis), 0);
         let (first, input) = chain_insert(
             &mut archive,
             Some(genesis),
@@ -6546,7 +5750,7 @@ mod tests {
             probe_key(0, 0, 4, 0),
         );
         let first = first.expect("first retained");
-        assert_eq!(archive.entry_time_in_group(first), 30);
+        assert_eq!(archive.entry_cost_in_group(first), 30);
         let (second, input) = chain_insert(
             &mut archive,
             Some(first),
@@ -6556,9 +5760,7 @@ mod tests {
             probe_key(0, 0, 8, 0),
         );
         let second = second.expect("second retained");
-        assert_eq!(archive.entry_time_in_group(second), 50);
-        // Crossing into the next pair restarts the count at the crossing
-        // action, and the next action inside the new pair adds to that.
+        assert_eq!(archive.entry_cost_in_group(second), 50);
         let (crossed, input) = chain_insert(
             &mut archive,
             Some(second),
@@ -6568,7 +5770,7 @@ mod tests {
             probe_key(0, 1, 2, 0),
         );
         let crossed = crossed.expect("crossing retained");
-        assert_eq!(archive.entry_time_in_group(crossed), 40);
+        assert_eq!(archive.entry_cost_in_group(crossed), 40);
         let (after, _) = chain_insert(
             &mut archive,
             Some(crossed),
@@ -6577,15 +5779,12 @@ mod tests {
             10,
             probe_key(0, 1, 6, 0),
         );
-        assert_eq!(archive.entry_time_in_group(after.expect("retained")), 50);
+        assert_eq!(archive.entry_cost_in_group(after.expect("retained")), 50);
     }
 
     #[test]
     fn the_time_rule_displaces_a_slower_route_into_a_full_slot() {
         let slot = probe_key(0, 0, 16, 0);
-        // Three routes into one slot. The first two are short in actions and
-        // long in frames; the third is longer in actions and much shorter in
-        // frames, which is exactly the collision the group clock cares about.
         let mut archive = ChordArchive::new(TestAction::duration);
         let genesis = archive
             .insert(
@@ -6622,8 +5821,8 @@ mod tests {
         let admitted = chain_insert(&mut archive, fast, &input, 0x04, 6, slot)
             .0
             .expect("the eleven-frame route displaces a slower one");
-        assert_eq!(archive.entry_time_in_group(admitted), 11);
-        assert_eq!(archive.replacement_time_displaced(), 1);
+        assert_eq!(archive.entry_cost_in_group(admitted), 11);
+        assert_eq!(archive.replacement_cost_displaced(), 1);
         assert_eq!(archive.active_count(), 4);
         let (slower, _) = chain_insert(&mut archive, fast, &input, 0x04, 200, slot);
         assert!(
@@ -6700,7 +5899,7 @@ mod tests {
             let mut counts = [0; 3];
             for _ in 0..12_000 {
                 let (id, draw) = archive.select_parent(&mut rand, 64).unwrap();
-                if draw.path == SelectorPath::GroupWalk {
+                if draw.path == SelectorPath::HierarchyWalk {
                     counts[id] += 1;
                 }
             }

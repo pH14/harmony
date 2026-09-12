@@ -1,271 +1,129 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The live, in-memory vCPU snapshot the backend produces (`save`) and consumes
-//! (`restore`).
-//!
-//! `VcpuState` is the counterpart to task 09's *serialized* `vm_state` blob:
-//! vmm-core marshals a `VcpuState` into a `vm_state::VmState` for the codec. Per
-//! rule #2 this crate **does not depend on `vm-state`**; the field set
-//! deliberately parallels task 09's records and is kept consistent by review.
-//!
-//! Determinism (rule #4): the MSR set is a [`BTreeMap`] (never a `HashMap`), so
-//! equal guest state ⇒ equal `VcpuState`; no floating point; no host-derived
-//! fields (`save` must never launder a host TSC or RNG draw in here). Every
-//! field's KVM-ioctl provenance is documented inline.
 
 use std::collections::BTreeMap;
 
 use crate::error::{BackendError, Result};
 use crate::types::MpState;
 
-/// Full guest-visible vCPU state for snapshot/restore. The per-vCPU input to the
-/// M2 state hash (`docs/ARCHITECTURE.md`).
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct VcpuState {
-    /// GPRs, `RIP`, `RFLAGS` (`KVM_GET_REGS`).
     pub regs: VcpuRegs,
-    /// Segments, descriptor tables, control regs, `EFER`, `APIC_BASE`
-    /// (`KVM_GET_SREGS2`).
     pub sregs: VcpuSregs,
-    /// Live `XCR0` (`KVM_GET_XCRS`). The XSAVE *image* lives in [`Self::xsave`];
-    /// `XCR0` itself is captured separately or restore diverges (R1).
     pub xcr0: u64,
-    /// `DR0..3`, `DR6`, `DR7` (`KVM_GET_DEBUGREGS`).
     pub debugregs: DebugRegs,
-    /// Pending exception/NMI/SMI and interrupt-shadow state
-    /// (`KVM_GET_VCPU_EVENTS`).
     pub events: VcpuEvents,
-    /// Runnable vs halted (`KVM_GET_MP_STATE`).
     pub mp_state: MpState,
-    /// The contract's `allow-stateful` MSR set (`KVM_GET_MSRS` over
-    /// `MsrFilter::allow_inkernel`). Sorted by index (rule #4): equal guest state
-    /// ⇒ equal bytes.
     pub msrs: BTreeMap<u32, u64>,
-    /// FPU/XSAVE state image (`KVM_GET_XSAVE2`). Length is host-XSAVE-area sized;
-    /// the image is canonicalized for deterministic hashing. For a standard-format
-    /// KVM image, [`Self::xsave_restore_bv`] retains the raw header provenance so
-    /// a restore can re-establish the guest-visible encoding without changing the
-    /// canonical image. Short or compacted images retain the legacy behavior.
     pub xsave: Vec<u8>,
-    /// Original `XSTATE_BV` for a standard-format capture, including when
-    /// canonicalization leaves the header unchanged. `None` preserves the
-    /// legacy restore behavior for short or compacted images.
     pub xsave_restore_bv: Option<u64>,
 }
 
-/// General-purpose registers, `RIP`, and `RFLAGS` (`KVM_GET_REGS` /
-/// `kvm_regs`). Flat little-endian POD.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct VcpuRegs {
-    /// `RAX`.
     pub rax: u64,
-    /// `RBX`.
     pub rbx: u64,
-    /// `RCX`.
     pub rcx: u64,
-    /// `RDX`.
     pub rdx: u64,
-    /// `RSI`.
     pub rsi: u64,
-    /// `RDI`.
     pub rdi: u64,
-    /// `RSP`.
     pub rsp: u64,
-    /// `RBP`.
     pub rbp: u64,
-    /// `R8`.
     pub r8: u64,
-    /// `R9`.
     pub r9: u64,
-    /// `R10`.
     pub r10: u64,
-    /// `R11`.
     pub r11: u64,
-    /// `R12`.
     pub r12: u64,
-    /// `R13`.
     pub r13: u64,
-    /// `R14`.
     pub r14: u64,
-    /// `R15`.
     pub r15: u64,
-    /// Instruction pointer.
     pub rip: u64,
-    /// Flags register.
     pub rflags: u64,
 }
 
-/// A segment register descriptor (`kvm_segment`). Flat POD.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Segment {
-    /// Segment base address.
     pub base: u64,
-    /// Segment limit.
     pub limit: u32,
-    /// Selector.
     pub selector: u16,
-    /// Segment type field.
     pub type_: u8,
-    /// Present bit.
     pub present: u8,
-    /// Descriptor privilege level.
     pub dpl: u8,
-    /// Default/Big (`D/B`) bit.
     pub db: u8,
-    /// Descriptor-type (`S`) bit (code/data vs system).
     pub s: u8,
-    /// Long-mode (`L`) bit.
     pub l: u8,
-    /// Granularity bit.
     pub g: u8,
-    /// Available-for-system-use bit.
     pub avl: u8,
-    /// Unusable bit (KVM-specific: segment is not loadable).
     pub unusable: u8,
 }
 
-/// A descriptor-table register (`GDTR`/`IDTR`, `kvm_dtable`). Flat POD.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct DescriptorTable {
-    /// Table base address.
     pub base: u64,
-    /// Table limit (byte count - 1).
     pub limit: u16,
 }
 
-/// Segments, descriptor tables, control registers, `EFER`, and `APIC_BASE`
-/// (`KVM_GET_SREGS2` / `kvm_sregs2`). Flat POD.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct VcpuSregs {
-    /// `CS`.
     pub cs: Segment,
-    /// `DS`.
     pub ds: Segment,
-    /// `ES`.
     pub es: Segment,
-    /// `FS`.
     pub fs: Segment,
-    /// `GS`.
     pub gs: Segment,
-    /// `SS`.
     pub ss: Segment,
-    /// Task register.
     pub tr: Segment,
-    /// Local descriptor table register.
     pub ldt: Segment,
-    /// Global descriptor table register.
     pub gdt: DescriptorTable,
-    /// Interrupt descriptor table register.
     pub idt: DescriptorTable,
-    /// `CR0`.
     pub cr0: u64,
-    /// `CR2`.
     pub cr2: u64,
-    /// `CR3`.
     pub cr3: u64,
-    /// `CR4`.
     pub cr4: u64,
-    /// `CR8` (TPR).
     pub cr8: u64,
-    /// `IA32_EFER`.
     pub efer: u64,
-    /// `IA32_APIC_BASE`.
     pub apic_base: u64,
-    /// `SREGS2` flags (e.g. `KVM_SREGS2_FLAGS_PDPTRS_VALID`).
     pub flags: u64,
-    /// PAE page-directory-pointer-table entries (valid only when `flags`
-    /// marks them so).
     pub pdptrs: [u64; 4],
 }
 
-/// Debug registers (`KVM_GET_DEBUGREGS` / `kvm_debugregs`). Flat POD.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct DebugRegs {
-    /// `DR0..DR3` (linear breakpoint addresses).
     pub db: [u64; 4],
-    /// `DR6` (debug status).
     pub dr6: u64,
-    /// `DR7` (debug control).
     pub dr7: u64,
-    /// KVM `flags` field (currently always 0).
     pub flags: u64,
 }
 
-/// Pending-event and interrupt-shadow state (`KVM_GET_VCPU_EVENTS` /
-/// `kvm_vcpu_events`). A representative subset is modeled; fields KVM may add are
-/// left default on restore. Flat POD.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct VcpuEvents {
-    /// A pending exception is injected.
     pub exception_injected: u8,
-    /// The pending exception vector.
     pub exception_nr: u8,
-    /// The pending exception carries an error code.
     pub exception_has_error_code: u8,
-    /// An exception is **pending** (queued but not yet injected). Distinct from
-    /// `exception_injected`; without it `restore(save())` drops a queued fault.
     pub exception_pending: u8,
-    /// The pending exception error code.
     pub exception_error_code: u32,
-    /// The pending exception carries a payload (`KVM_VCPUEVENT_VALID_PAYLOAD`):
-    /// CR2 for `#PF`, DR6 for `#DB`. Saved/restored with `exception_payload`.
     pub exception_has_payload: u8,
-    /// The exception payload value (CR2 / DR6 for the faulting exception).
     pub exception_payload: u64,
-    /// A maskable interrupt is being injected.
     pub interrupt_injected: u8,
-    /// The injected interrupt vector.
     pub interrupt_nr: u8,
-    /// The injected interrupt is a software interrupt.
     pub interrupt_soft: u8,
-    /// The interrupt shadow (STI / MOV-SS) is active.
     pub interrupt_shadow: u8,
-    /// An NMI is being injected.
     pub nmi_injected: u8,
-    /// An NMI is pending.
     pub nmi_pending: u8,
-    /// NMIs are masked.
     pub nmi_masked: u8,
-    /// Pending `SIPI` vector.
     pub sipi_vector: u32,
-    /// `kvm_vcpu_events` flags field.
     pub flags: u32,
-    /// In system-management mode.
     pub smi_smm: u8,
-    /// An SMI is pending.
     pub smi_pending: u8,
-    /// Inside an NMI within SMM.
     pub smi_inside_nmi: u8,
-    /// A latched `INIT` is pending in SMM.
     pub smi_latched_init: u8,
-    /// A triple fault is **pending** (`KVM_VCPUEVENT_VALID_TRIPLE_FAULT`). Without
-    /// it a snapshot taken with a queued triple fault restores as if none occurred.
     pub triple_fault_pending: u8,
 }
 
-/// `RFLAGS.RF` (resume flag).
 const RFLAGS_RF: u64 = 1 << 16;
 
-/// Canonicalize exit-mechanics residue in the general registers, in place.
-///
-/// At an exit taken mid-instruction (an MMIO access the host emulates), VMX
-/// saves `RFLAGS` with `RF` set — the fault-restart semantics of SDM vol. 3,
-/// "Saving RFLAGS" — while SVM reports it clear. The instruction is completed by the
-/// emulator either way, and `RF` self-clears at the next instruction boundary,
-/// so the bit carries no guest-visible state at a serviced exit. Cleared so
-/// equal guest state hashes equally across vendors.
 pub fn canonicalize_regs(regs: &mut VcpuRegs) {
     regs.rflags &= !RFLAGS_RF;
 }
 
-/// Canonicalize the architecturally-ignored fields of unusable segments, in
-/// place.
-///
-/// For a segment KVM marks unusable, the cached limit and attribute bits carry
-/// no guest-visible state, and the two vendors report different residue there
-/// (SVM returns zeros; VMX returns the stale cached descriptor — limit
-/// `0xFFFFFFFF`, `type`/`D/B`/`G` set — for the null-loaded data segments and
-/// LDT). Base and selector stay: a null selector is readable with `MOV` from
-/// the register, and the FS/GS bases are live state through the base MSRs.
 pub fn canonicalize_sregs(sregs: &mut VcpuSregs) {
     for seg in [
         &mut sregs.cs,
@@ -288,58 +146,19 @@ pub fn canonicalize_sregs(sregs: &mut VcpuSregs) {
     }
 }
 
-/// `XSTATE_BV` in the XSAVE header (Intel SDM vol. 1, XSAVE area layout).
 const XSTATE_BV: usize = 512;
-/// `XCOMP_BV` in the XSAVE header; nonzero selects the compacted format.
 const XCOMP_BV: usize = 520;
-/// The end of the two standard-format header words used by this module.
 const XSAVE_HEADER_END: usize = XCOMP_BV + 8;
-/// x87 control/status/tag/opcode/instruction/operand words in the legacy area.
 const X87_CONTROL: std::ops::Range<usize> = 0..24;
-/// ST0–ST7 in the legacy area.
 const X87_ST: std::ops::Range<usize> = 32..160;
-/// MXCSR in the legacy area (SSE component).
 const SSE_MXCSR: std::ops::Range<usize> = 24..28;
-/// `MXCSR_MASK` in the legacy area: a host capability constant `FXSAVE`/`XSAVE`
-/// write into the image, not guest state, and the restore path ignores it.
 const MXCSR_MASK: std::ops::Range<usize> = 28..32;
-/// The frozen contract's pinned `MXCSR_MASK` (`consonance/vmm-core/contracts/x86/README.md`,
-/// "FPU/XSAVE save-image determinism"). Intel parts report this value; AMD
-/// parts report `0x0002FFFF` (bit 17, misaligned-SSE), so an un-pinned image
-/// diverges across vendors.
 const MXCSR_MASK_PINNED: [u8; 4] = 0x0000FFFFu32.to_le_bytes();
-/// XMM0–XMM15 in the legacy area.
 const SSE_XMM: std::ops::Range<usize> = 160..416;
-/// x87 init state: `FCW = 0x037F`, every other control word and ST register 0.
 const X87_INIT_FCW: [u8; 2] = 0x037Fu16.to_le_bytes();
-/// SSE init state: `MXCSR = 0x1F80`, every XMM register 0.
 const SSE_INIT_MXCSR: [u8; 4] = 0x1F80u32.to_le_bytes();
-/// The legacy area's reserved padding plus software-available tail. Hardware
-/// never writes it; the exporting host kernel stamps its own template there
-/// (`xstate_fx_sw_bytes`: the host's supported-feature mask at byte 464), and
-/// the restore path reads none of it.
 const LEGACY_TAIL: std::ops::Range<usize> = 416..512;
 
-/// Canonicalize the x87 and SSE components of a standard-format XSAVE image to
-/// init-compressed form, in place.
-///
-/// XSAVE's init optimization gives one component state two encodings: a
-/// component can be recorded present (`XSTATE_BV` bit set, area holding the
-/// init values) or absent (bit clear, area architecturally ignored), and which
-/// one hardware writes varies with host scheduling rather than guest behavior
-/// (observed on Xeon Platinum 8573C: the x87 bit flips across same-seed boots
-/// while every state byte matches). `XSTATE_BV` is guest-observable, so this
-/// helper chooses one encoding for the canonical identity image; capture code
-/// that must preserve the guest-visible encoding pairs it with
-/// [`canonicalize_xsave_with_restore_bv`]. A component whose area holds the
-/// init values gets its bit cleared, and a component whose bit is clear gets
-/// the init values written into its ignored area.
-/// `MXCSR_MASK` — a host capability constant the save instruction writes, which
-/// differs across vendors — is pinned to the contract value for the same
-/// reason: it is not guest state, and restore ignores it; the legacy tail —
-/// the exporting host kernel's own template — is zeroed likewise.
-/// Compacted-format images (nonzero `XCOMP_BV`) have a different layout and
-/// are left untouched.
 pub fn canonicalize_xsave(image: &mut [u8]) {
     if image.len() < XSAVE_HEADER_END || image[XCOMP_BV..XSAVE_HEADER_END] != [0u8; 8] {
         return;
@@ -382,16 +201,6 @@ fn standard_xsave_header(image: &[u8]) -> Option<(u64, u64)> {
     Some((xstate_bv, xcomp_bv))
 }
 
-/// Canonicalize a live XSAVE image and retain its raw header when it is in the
-/// standard format.
-///
-/// The image remains the canonical representation used by state hashing. A
-/// standard-format image is identified by a complete header and zero
-/// `XCOMP_BV`; its original `XSTATE_BV` is retained even when canonicalization
-/// leaves that word unchanged. Short or compacted images return `None`, so they
-/// keep the legacy restore behavior. All component bytes remain in the canonical
-/// image and are restored only after the provenance has passed
-/// [`restore_xsave_image`]'s checks.
 pub fn canonicalize_xsave_with_restore_bv(image: &mut [u8]) -> Option<u64> {
     let original = standard_xsave_header(image)
         .filter(|&(_, xcomp_bv)| xcomp_bv == 0)
@@ -400,16 +209,6 @@ pub fn canonicalize_xsave_with_restore_bv(image: &mut [u8]) -> Option<u64> {
     original
 }
 
-/// Reconstruct the guest-visible XSAVE header from capture provenance.
-///
-/// `image` is the canonical image stored in a [`VcpuState`]. With no
-/// provenance, the legacy restore path is preserved exactly and the bytes are
-/// returned without interpreting their header. With provenance, only the x87
-/// and SSE init-state bits may differ from the canonical header. The raw header
-/// may also equal the canonical header when capture did not change it. The
-/// reconstructed image is re-canonicalized before acceptance, proving that it
-/// is the same canonical state that was captured. No live/backend state is
-/// touched by this helper.
 pub fn restore_xsave_image(image: &[u8], restore_bv: Option<u64>) -> Result<Vec<u8>> {
     let Some(restore_bv) = restore_bv else {
         return Ok(image.to_vec());
@@ -425,9 +224,6 @@ pub fn restore_xsave_image(image: &[u8], restore_bv: Option<u64>) -> Result<Vec<
     restored[XSTATE_BV..XSTATE_BV + 8].copy_from_slice(&restore_bv.to_le_bytes());
     let mut canonical = restored.clone();
     canonicalize_xsave(&mut canonical);
-    // Re-canonicalization subsumes the allowed-bit and no-drop checks: bits
-    // outside x87/SSE remain in the header, while dropping a live canonical
-    // component changes its bytes. Keep one exact equality proof for both.
     if canonical != image {
         return Err(BackendError::InvalidState);
     }
@@ -438,8 +234,6 @@ pub fn restore_xsave_image(image: &[u8], restore_bv: Option<u64>) -> Result<Vec<
 mod tests {
     use super::*;
 
-    /// A standard-format image holding the x87+SSE init values with the given
-    /// `XSTATE_BV` — the shape KVM returns for an early-boot guest.
     fn init_image(xstate_bv: u64) -> Vec<u8> {
         let mut image = vec![0u8; 4096];
         image[0..2].copy_from_slice(&X87_INIT_FCW);
@@ -450,8 +244,12 @@ mod tests {
     }
 
     #[test]
+    fn rflags_rf_is_bit_16() {
+        assert_eq!(RFLAGS_RF, 0x1_0000);
+    }
+
+    #[test]
     fn init_state_encodings_collapse_to_one_image() {
-        // The measured Xeon 8573C flip: same bytes, XSTATE_BV 0x3 vs 0x2.
         let mut a = init_image(0x3);
         let mut b = init_image(0x2);
         canonicalize_xsave(&mut a);
@@ -561,8 +359,6 @@ mod tests {
 
     #[test]
     fn ignored_area_bytes_become_the_init_values() {
-        // Bit clear ⇒ the area is architecturally ignored; residue there must
-        // not reach the state hash.
         let mut image = init_image(0x0);
         image[X87_ST.start] = 0xEE;
         image[SSE_XMM.start + 7] = 0xEE;
@@ -572,7 +368,6 @@ mod tests {
 
     #[test]
     fn mxcsr_mask_is_pinned_to_the_contract_value() {
-        // The measured cross-vendor divergence: AMD writes 0x2FFFF, Intel 0xFFFF.
         let mut image = init_image(0x2);
         image[MXCSR_MASK].copy_from_slice(&0x0002FFFFu32.to_le_bytes());
         canonicalize_xsave(&mut image);
@@ -581,8 +376,6 @@ mod tests {
 
     #[test]
     fn legacy_tail_host_template_is_zeroed() {
-        // The measured pair: the exporting kernel stamps its host feature mask
-        // at byte 464 (0x7 on Zen 3, 0x600e7 on Granite Rapids).
         let mut a = init_image(0x2);
         let mut b = init_image(0x2);
         a[464..472].copy_from_slice(&0x7u64.to_le_bytes());
@@ -595,8 +388,6 @@ mod tests {
 
     #[test]
     fn rf_exit_residue_collapses_across_vendors() {
-        // The measured cross-vendor pair at an MMIO exit (run 33127863719):
-        // VMX reports RF set in the exit-time RFLAGS, SVM reports it clear.
         let mut intel = VcpuRegs {
             rflags: 0x10282,
             ..VcpuRegs::default()
@@ -629,8 +420,6 @@ mod tests {
 
     #[test]
     fn unusable_segment_residue_collapses_to_the_zeroed_form() {
-        // The measured cross-vendor pair: VMX reports the stale cached
-        // descriptor for a null-loaded segment, SVM reports zeros.
         let intel = Segment {
             base: 726582208,
             selector: 0x23,
@@ -695,9 +484,6 @@ mod tests {
 
     #[test]
     fn xsave_header_length_boundary_is_fail_closed_and_inclusive() {
-        // One byte short cannot contain XCOMP_BV and must return without an
-        // index panic. Exactly 528 bytes does contain the complete header and
-        // must be canonicalized rather than mistaken for a short image.
         let mut short = vec![0xa5; XCOMP_BV + 7];
         let before = short.clone();
         assert_eq!(canonicalize_xsave_with_restore_bv(&mut short), None);

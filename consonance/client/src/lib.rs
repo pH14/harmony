@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Workload-neutral control clients and SDK observation decoding.
-
 pub mod catalog;
 
 #[cfg(target_os = "linux")]
@@ -12,13 +10,11 @@ pub mod session;
 
 use control_proto::{Caps, ControlError, Reply, Request};
 
-/// One synchronous control exchange. Implementations own transport/session state.
 pub trait Transport {
     type Error: std::error::Error + Send + Sync + 'static;
     fn exchange(&mut self, request: &Request) -> Result<Result<Reply, ControlError>, Self::Error>;
 }
 
-/// A negotiated client; construction establishes the protocol before other verbs.
 pub struct Client<T> {
     transport: T,
     capabilities: Caps,
@@ -44,7 +40,6 @@ impl<T: Transport> Client<T> {
         })
     }
 
-    /// Access implementation-specific snapshot and diagnostic capabilities.
     pub fn transport(&self) -> &T {
         &self.transport
     }

@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Boot the guest with the injected bundle segment and drive it to a
-//! terminal state, streaming the serial console.
-//!
-//! One composition per support-matrix cell: macOS/arm64 boots through HVF,
-//! Linux/x86-64 through stock KVM with assigned-at-exit virtual time. Both
-//! return the same outcome shape, and the run digest is taken over the serial
-//! byte stream — the guest-visible transcript that the determinism contract
-//! makes reproducible.
 
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
@@ -21,15 +13,11 @@ use std::time::Duration;
 ))]
 use std::time::Instant;
 
-/// Whether this build has a drive loop for the host it is running on.
-/// `execute` and `harmony preflight` must agree on the answer, so both read
-/// it here rather than repeating the cfg predicate.
 pub const HOST_SUPPORTED: bool = cfg!(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
 ));
 
-/// The hosts a drive loop exists for, for refusal messages.
 pub const SUPPORTED_HOSTS: &str = "macOS/arm64 (HVF), Linux/x86-64 (KVM)";
 
 #[derive(Debug, thiserror::Error)]
@@ -73,8 +61,6 @@ pub struct Outcome {
     pub reason: String,
 }
 
-// On hosts with no drive loop the unsupported-host stub never reads the
-// spec; the fields still document the run contract there.
 #[cfg_attr(
     not(any(
         all(target_os = "macos", target_arch = "aarch64"),
@@ -89,24 +75,15 @@ pub struct RunSpec<'a> {
     pub guest_ram_len: usize,
     pub seed: u64,
     pub wall_budget: Duration,
-    /// What to stream to stdout while the guest runs.
     pub stream: StreamMode,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum StreamMode {
-    /// The container's own output: everything between the init's start and
-    /// exit markers, with the marker lines themselves elided.
     Container,
-    /// The raw serial byte stream from power-on, kernel log included.
     Full,
 }
 
-/// Incremental filter from the raw serial stream to what `StreamMode`
-/// shows. Holds partial lines until their newline arrives so marker lines
-/// can be elided from a stream that appears in arbitrary-sized chunks.
-/// Compiled only where a drive loop exists (plus tests, which exercise it
-/// on every host).
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
@@ -184,12 +161,6 @@ impl StreamFilter {
     }
 }
 
-/// The per-ISA kernel cmdline: the same determinism line the live gates use,
-/// with `rdinit` selecting the injected init.
-///
-/// x86 adds `printk.time=0`: stock KVM does not intercept RDTSC, so printk's
-/// early sched_clock timestamps measure host time; dropping them keeps the
-/// serial digest over guest-emitted content only.
 pub fn cmdline() -> &'static str {
     if cfg!(target_arch = "x86_64") {
         "console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 \
@@ -212,25 +183,16 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
         spec.guest_ram_len,
     )
     .map_err(|e| RunError::Vmm(e.to_string()))?;
-    // The run digest is the serial stream; checkpoint hashes are unused
-    // evidence here and cost a full-RAM hash per interval on the step path.
     vmm.defer_virtual_time_checkpoint_hashes()
         .map_err(|e| RunError::Vmm(e.to_string()))?;
 
-    // `hv_vcpu_run` blocks indefinitely on a quiescent guest, so the drive
-    // loop's between-steps budget check cannot fire on its own. A watchdog
-    // thread requests a vCPU exit once the budget expires; the loop then sees
-    // the elapsed time and reports the budget, not the forced-exit error.
     let exit_handle = vmm.hvf_exit_handle();
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let watchdog_done = std::sync::Arc::clone(&done);
     let budget = spec.wall_budget;
-    // Host deadline only; never used as guest time.
     #[allow(clippy::disallowed_methods)]
     let start = Instant::now();
     let watchdog = std::thread::spawn(move || {
-        // Wall clock bounds only how long the host waits; nothing here feeds
-        // guest state.
         while !watchdog_done.load(std::sync::atomic::Ordering::Acquire) {
             if start.elapsed() > budget {
                 let _ = exit_handle.request_exit();
@@ -256,7 +218,6 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
     .map_err(|e| RunError::Vmm(e.to_string()))?;
     vmm.defer_virtual_time_checkpoint_hashes()
         .map_err(|e| RunError::Vmm(e.to_string()))?;
-    // Host deadline only; never used as guest time.
     #[allow(clippy::disallowed_methods)]
     let start = Instant::now();
     let cancel = vmm
@@ -310,8 +271,6 @@ where
             Ok(step) => step,
             Err(e) => {
                 filter.push(vmm.serial_output(), &mut stdout);
-                // A forced exit from the budget watchdog surfaces as a step
-                // error; report it as the budget, not a backend fault.
                 if start.elapsed() > spec.wall_budget {
                     return Err(RunError::WallBudget {
                         budget_s: spec.wall_budget.as_secs(),
@@ -374,8 +333,6 @@ mod tests {
         assert_eq!(out, b"hello\nworld\n");
     }
 
-    /// Marker lines split across push chunks must still be recognized, and
-    /// re-pushing a longer buffer must not re-emit consumed bytes.
     #[test]
     fn container_mode_handles_split_lines_without_duplication() {
         let out = filtered(
@@ -390,8 +347,6 @@ mod tests {
         assert_eq!(out, b"abc\n");
     }
 
-    /// The advertised predicate must match the drive loop this build
-    /// actually has, on whichever host the suite runs.
     #[test]
     fn host_supported_matches_the_compiled_drive_loop() {
         let wired = cfg!(any(

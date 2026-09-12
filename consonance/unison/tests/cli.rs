@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Acceptance gate 6: CLI smoke test — invoke both subcommands as real
-//! processes, parse the JSON, and check the divergence point round-trips.
 
 use std::process::Command;
 use unison::DivergencePoint;
@@ -47,7 +45,7 @@ fn toy_compare_identical_with_exit_code_0() {
         "--seed",
         "7",
         "--diverge-at",
-        "18446744073709551615", // u64::MAX = never
+        "18446744073709551615",
         "--checkpoint-every",
         "64",
         "--limit",
@@ -55,7 +53,6 @@ fn toy_compare_identical_with_exit_code_0() {
     ]);
     assert_eq!(code, Some(0));
     assert_eq!(json["verdict"], serde_json::json!("identical"));
-    // Identical-up-to-limit, NOT identical-forever: the caveat must surface.
     assert_eq!(json["limit_reached"], serde_json::json!(true));
 }
 
@@ -72,12 +69,10 @@ fn toy_bisect_point_round_trips() {
     ]);
     assert_eq!(code, Some(2));
 
-    // Typed round-trip: JSON -> DivergencePoint -> JSON is the identity...
     let point: DivergencePoint =
         serde_json::from_value(json["point"].clone()).expect("point must deserialize");
     assert_eq!(serde_json::to_value(&point).unwrap(), json["point"]);
 
-    // ...and the point is the injected ground truth.
     assert_eq!(point.first_divergent_work, 777);
     assert_ne!(point.hash_a, point.hash_b);
     assert!(point.runs_executed > 0);

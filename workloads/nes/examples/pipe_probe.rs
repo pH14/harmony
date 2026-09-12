@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Scratch diagnostic: measure how many kept states at the deepest band die
-//! on a short neutral hold.
-
 use std::{env, error::Error, fs};
 
 use nes_workload::{
@@ -29,7 +26,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|entry| entry.id);
-    // Newest states dominate the recency window; sample those.
     let sample = candidates
         .iter()
         .rev()

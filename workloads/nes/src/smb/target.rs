@@ -1,12 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Super Mario Bros game layer: memory decoders, input encoding, and the
-//! machine-backed target adapter.
-//!
-//! Everything here decodes a few bytes of work RAM read through the machine
-//! boundary or encodes actions as controller inputs; the emulator itself sits
-//! behind [`machine::Machine`].
-
 use std::{error::Error, mem::size_of, path::Path};
 
 use crate::target::ExitKind;
@@ -27,42 +20,29 @@ const SCREEN_PAGE_OFFSET: usize = 0x071a;
 const SCREEN_X_OFFSET: usize = 0x071c;
 const PLAYER_Y_OFFSET: usize = 0x00ce;
 const PLAYER_ENGINE_STATE_OFFSET: usize = 0x000e;
-/// Player engine state the game sets when Mario is killed.
 const PLAYER_KILLED_STATE: u8 = 0x0b;
 const WORLD_NUMBER_OFFSET: usize = 0x075f;
 const LEVEL_NUMBER_OFFSET: usize = 0x075c;
 const FLAG_TASK_OFFSET: usize = 0x0746;
 const LEVEL_ADVANCED_FLAG_TASK: u8 = 0x05;
-/// Work RAM addresses whose byte pair identifies the current area.
 pub const ROOM_IDENTITY_BYTES: [usize; 2] = [0x074e, 0x074f];
 
-/// A Super Mario Bros input replayed from the deterministic power-on state:
-/// controller chords in execution order.
 pub type SmbInput = crate::search::archive::Input<ButtonChord>;
 
-/// Mechanical evidence captured at one NES observer event.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbObservations {
-    /// Number of frames actually emulated since genesis.
     pub frame_count: u64,
-    /// Raw 2 KiB work RAM at a milestone crossing; otherwise empty in stored null-detector traces.
     pub wram: Vec<u8>,
-    /// Route-agnostic decoded state recorded directly in the trace.
     #[serde(default)]
     pub decoded: SmbMechanicalState,
-    /// Campaign milestones decoded at this event.
     #[serde(default)]
     pub milestones: SmbMilestones,
-    /// Sorted work-RAM indices whose bytes changed since the previous observer event.
     pub changed_indices: Vec<u16>,
-    /// Whether this event is the first observed player-death frame.
     #[serde(default)]
     pub dead: bool,
-    /// Compact mechanical log line; it deliberately contains no decoded game fields.
     pub log_line: String,
 }
 
-/// Complete in-memory state needed to resume an NES prefix exactly.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbSnapshot<P = Vec<u8>> {
     emulator_state: P,
@@ -72,9 +52,6 @@ pub struct SmbSnapshot<P = Vec<u8>> {
     failed: bool,
 }
 
-/// Snapshot-owned observation metadata. Work RAM is already present in the
-/// emulator state and is reconstructed after restore instead of being kept a
-/// second time in every archive entry.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct SnapshotObservation {
     frame_count: u64,
@@ -115,7 +92,6 @@ impl<P> SmbSnapshot<P> {
         self.room_area
     }
 
-    /// Number of persisted emulator-state bytes held by this snapshot.
     #[must_use]
     pub fn emulator_state_bytes_len(&self) -> usize
     where
@@ -140,10 +116,6 @@ impl<P> SmbSnapshot<P> {
     }
 }
 
-/// Fixed boot walk from power-on to gameplay genesis, encoded as staged
-/// controller inputs: the title screen settles, Start is pressed once, and
-/// the pre-level sequence plays out. Target setup rather than model-visible
-/// search guidance.
 const BOOT_WALK: [ButtonChord; 2] = [
     ButtonChord {
         buttons: 0,
@@ -155,16 +127,12 @@ const BOOT_WALK: [ButtonChord; 2] = [
     },
 ];
 
-/// Longest wait, in frames, from the Start press to the first frame of play.
 const BOOT_PLAY_WAIT_FRAMES: u32 = 900;
-/// Operating mode byte and the value the game holds during play.
 const OPER_MODE_OFFSET: usize = 0x0770;
 const OPER_MODE_PLAY: u8 = 1;
-/// Operating mode task byte and the value that hands control to the player.
 const OPER_MODE_TASK_OFFSET: usize = 0x0772;
 const OPER_MODE_TASK_PLAY: u8 = 3;
 
-/// Machine-backed target used by the Super Mario Bros campaigns.
 #[derive(Debug)]
 pub struct SmbTarget<M = QuickNesMachine, P = Vec<u8>>
 where
@@ -178,6 +146,7 @@ where
     action_observations: Vec<SmbObservations>,
     dead: bool,
     failed: bool,
+    execution_work: u64,
 }
 
 impl<M, P> SmbTarget<M, P>
@@ -185,12 +154,6 @@ where
     M: NesBackend<P>,
     P: SnapshotState,
 {
-    /// Boot a power-on NES machine and seal the first frame of gameplay.
-    ///
-    /// A backend factory may instead prepare its machine through a guest
-    /// specific setup path and call this constructor once the machine is at
-    /// power-on.  Keeping this seam public lets native and whole-VM callers
-    /// share the exact SMB boot walk.
     pub fn from_machine(machine: M) -> Result<Self, MachineError> {
         if !machine.starts_at_power_on() {
             return Err(MachineError::Backend(
@@ -200,14 +163,8 @@ where
         Self::boot(machine, true)
     }
 
-    /// Emulate the boot walk and seal genesis at the first frame of play.
-    ///
-    /// `require_play` is false only for the loopback core, which has no SMB
-    /// state machine and so never reports the play operating mode.
     fn boot(mut machine: M, require_play: bool) -> Result<Self, MachineError> {
         machine::nes::run_actions(&mut machine, &BOOT_WALK)?;
-        // Genesis is the first frame of play, found by stepping one frame at
-        // a time after Start, so the searcher starts before the game moves.
         let idle = [ButtonChord {
             buttons: 0,
             hold_frames: 1,
@@ -251,14 +208,10 @@ where
             observation,
             dead: false,
             failed: false,
+            execution_work: 0,
         })
     }
 
-    /// Clock one fixed mask for a bounded horizon and report whether the run stays alive.
-    ///
-    /// This is an admission probe: it emits no observer events, consumes no
-    /// randomness, and leaves the caller responsible for restoring the state it
-    /// started from. It reads the same terminal condition execution reads.
     pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
         if self.failed || self.dead {
             return false;
@@ -297,10 +250,6 @@ where
         }
     }
 
-    /// Advance one frame of the staged environment. `Ok(true)` when a frame
-    /// was emulated, `Ok(false)` at quiescence, `Err` on a crash or a machine
-    /// failure. The console produces no cooperating-guest stop, so the run
-    /// arms no class and the remaining reasons are unreachable.
     fn run_one_frame(&mut self) -> Result<bool, ()> {
         let deadline = machine::Moment(self.machine.now().0.saturating_add(1));
         match self.machine.run(
@@ -323,7 +272,6 @@ where
         }
     }
 
-    /// Return the latest raw work RAM without semantic decoding.
     #[must_use]
     pub fn wram(&self) -> [u8; WRAM_SIZE] {
         wram_array(&self.machine).unwrap_or([0; WRAM_SIZE])
@@ -347,17 +295,11 @@ where
             .unwrap_or(0)
     }
 
-    /// Return whether execution reached the first player-death frame.
     #[must_use]
     pub fn is_dead(&self) -> bool {
         self.dead
     }
 
-    /// Return whether the game is in its victory mode.
-    ///
-    /// The latest observation carries the exact work RAM from its boundary,
-    /// so restore answers without another emulator read or a snapshot-format
-    /// field.
     #[must_use]
     pub fn is_victory(&self) -> bool {
         self.observation
@@ -368,17 +310,11 @@ where
             .is_some_and(smb_is_victory)
     }
 
-    /// Return the total frames this instance has emulated since construction.
-    ///
-    /// This is deterministic work accounting over the instance's whole life,
-    /// probes and bootstrap included. It is not campaign state: snapshots do
-    /// not carry it and `restore` does not touch it.
     #[must_use]
-    pub fn frames_clocked(&self) -> u64 {
-        self.machine.now().0
+    pub fn execution_work(&self) -> u64 {
+        self.execution_work
     }
 
-    /// Return every observer event emitted by the most recently applied action.
     #[must_use]
     pub fn last_action_observations(&self) -> &[SmbObservations] {
         &self.action_observations
@@ -476,6 +412,7 @@ where
                 Err(()) => break,
             }
             executed_frames = executed_frames.saturating_add(1);
+            self.execution_work = self.execution_work.saturating_add(1);
             let Ok(wram) = wram_array(&self.machine) else {
                 self.failed = true;
                 break;
@@ -590,10 +527,6 @@ where
 }
 
 impl SmbTarget<QuickNesMachine, Vec<u8>> {
-    /// Load SMB at gameplay genesis through the pinned native QuickNES core.
-    ///
-    /// This constructor is headless by contract. `core_sha256` becomes part
-    /// of every snapshot compatibility header.
     pub fn from_smb_rom_bytes_headless(
         rom: &[u8],
         core_path: &Path,
@@ -603,8 +536,6 @@ impl SmbTarget<QuickNesMachine, Vec<u8>> {
         Self::from_machine(machine)
     }
 
-    /// Load SMB exactly as [`Self::from_smb_rom_bytes_headless`] does, with
-    /// the core's video and audio planes enabled so a replay can be filmed.
     pub fn from_smb_rom_bytes_capturing(
         rom: &[u8],
         core_path: &Path,
@@ -616,20 +547,14 @@ impl SmbTarget<QuickNesMachine, Vec<u8>> {
         Self::from_machine(machine)
     }
 
-    /// Take the video frames emulated since the last drain, in emulation
-    /// order.
     pub fn drain_frames(&mut self) -> Vec<VideoFrame> {
         self.machine.take_video_frames()
     }
 
-    /// Take the interleaved stereo samples emulated since the last drain.
     pub fn drain_audio(&mut self) -> Vec<i16> {
         self.machine.take_audio_samples()
     }
 
-    /// Plant one work-RAM byte in the native loopback core for tests that
-    /// stage a game state.  The Consonance machine deliberately has no test
-    /// mutation hook, so this remains specialized to QuickNES.
     #[cfg(test)]
     pub(crate) fn poke_wram(&mut self, addr: usize, byte: u8) {
         self.machine.poke_wram(addr, byte);
@@ -649,33 +574,22 @@ fn smb_scroll_bucket(wram: &[u8; WRAM_SIZE]) -> u16 {
     u16::from(wram[SCREEN_PAGE_OFFSET]) * 16 + u16::from(wram[SCREEN_X_OFFSET] / 16)
 }
 
-/// Report the recorded camera position in pixels rather than 16-pixel buckets.
 #[must_use]
 pub fn smb_camera_pixels(wram: &[u8; WRAM_SIZE]) -> u32 {
     u32::from(wram[SCREEN_PAGE_OFFSET]) * 256 + u32::from(wram[SCREEN_X_OFFSET])
 }
 
-/// Lowest vertical page value that only occurs below the play area.
 const PLAYER_BELOW_PLAY_AREA_PAGE: u8 = 2;
 
-/// Whether Mario is dead: the kill state, or a fall below the play area,
-/// which the engine state does not report before the life counter drops.
 fn smb_player_is_dead(wram: &[u8; WRAM_SIZE]) -> bool {
     wram[PLAYER_ENGINE_STATE_OFFSET] == PLAYER_KILLED_STATE
         || wram[PLAYER_VERTICAL_PAGE_OFFSET] >= PLAYER_BELOW_PLAY_AREA_PAGE
 }
 
-/// Work-RAM index of the operating mode byte, `$0770`.
 const OPERATING_MODE_OFFSET: usize = 0x0770;
-/// Operating mode the game enters at every castle axe: the between-worlds
-/// sequence everywhere except the final world, the ending there.
 const VICTORY_OPERATING_MODE: u8 = 2;
-/// Zero-based world number of the game's final world.
 const FINAL_WORLD_NUMBER: u8 = 7;
 
-/// Whether work RAM is in the game's victory mode: the axe sequence of the
-/// final world's castle. Earlier castles enter the same operating mode and
-/// then return to play, so the mode byte alone does not decide the game.
 #[must_use]
 pub fn smb_is_victory(wram: &[u8; WRAM_SIZE]) -> bool {
     wram[OPERATING_MODE_OFFSET] == VICTORY_OPERATING_MODE
@@ -689,57 +603,37 @@ fn smb_fingerprint_from_wram(wram: &[u8; WRAM_SIZE]) -> u64 {
     (screen_page << 8) | (screen_x_bucket << 4) | player_y_bucket
 }
 
-/// Campaign milestone ladder, accumulated over every observer event in a run.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbMilestones {
-    /// Greatest 16-pixel scroll bucket observed while the RAM level tuple is 1-1.
     pub max_1_1_scroll_bucket: u16,
-    /// Whether the 1-1 flag-task byte was observed active.
     pub reached_1_1_flag: bool,
-    /// Whether the RAM level tuple reached 1-2.
     pub reached_1_2: bool,
-    /// Whether the RAM level tuple advanced beyond 1-2.
     pub reached_onward: bool,
 }
 
-/// First deterministic execution reaching each milestone.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbMilestoneTimes {
-    /// First execution reaching a nonzero 1-1 scroll bucket.
     pub progress_into_1_1: Option<u64>,
-    /// First execution observing the 1-1 flag task.
     pub flag_1_1: Option<u64>,
-    /// First execution observing level 1-2.
     pub level_1_2: Option<u64>,
-    /// First execution observing a level beyond 1-2.
     pub onward: Option<u64>,
 }
 
-/// First testcase reaching each milestone, retained for films.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbMilestoneInputs {
-    /// First testcase making nonzero progress into 1-1.
     pub progress_into_1_1: Option<SmbInput>,
-    /// First testcase observing the 1-1 flag task.
     pub flag_1_1: Option<SmbInput>,
-    /// First testcase observing level 1-2.
     pub level_1_2: Option<SmbInput>,
-    /// First testcase observing a level beyond 1-2.
     pub onward: Option<SmbInput>,
 }
 
-/// Maximum route-agnostic mechanical position observed at any emulated frame.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct SmbProgressWatermark {
-    /// Zero-based world number.
     pub world: u8,
-    /// Zero-based level number within the world.
     pub level: u8,
-    /// Current 16-pixel horizontal progress bucket.
     pub progress: u16,
 }
 
-/// Decode the milestone metrics from SMB work RAM.
 #[must_use]
 pub fn smb_milestones_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMilestones {
     let world = wram[WORLD_NUMBER_OFFSET];
@@ -754,26 +648,17 @@ pub fn smb_milestones_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMilestones {
     }
 }
 
-/// Route-agnostic mechanical state available to completion search and evaluation.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct SmbMechanicalState {
-    /// Zero-based world number decoded from work RAM.
     pub world: u8,
-    /// Zero-based level number within the current world.
     pub level: u8,
-    /// Current 16-pixel horizontal progress bucket.
     pub progress: u16,
-    /// Coarse player vertical-position bucket.
     pub player_y_bucket: u8,
-    /// Mechanical player engine state, without interpreting a route.
     pub player_engine_state: u8,
-    /// Whether the target's first-death state is active.
     pub dead: bool,
-    /// Whether the level-end flag task is active.
     pub flag_active: bool,
 }
 
-/// Decode the bounded mechanical state used by generic completion search.
 #[must_use]
 pub fn smb_mechanical_state_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMechanicalState {
     SmbMechanicalState {
@@ -787,8 +672,6 @@ pub fn smb_mechanical_state_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMechanicalSt
     }
 }
 
-/// Work-RAM index of the player's vertical page, which rises as `$00ce` wraps
-/// below the play area.
 const PLAYER_VERTICAL_PAGE_OFFSET: usize = 0x00b5;
 
 fn smb_current_level(wram: &[u8; WRAM_SIZE]) -> u8 {
@@ -810,8 +693,6 @@ mod tests {
 
     #[test]
     fn a_core_that_never_reaches_play_is_an_error_rather_than_a_sealed_genesis() {
-        // The loopback core has no SMB state machine, so it stands in for a
-        // production core whose operating mode never reaches play.
         let core = QuickNesMachine::loopback_for_tests(&[0]).expect("loopback core");
         let error = SmbTarget::boot(core, true).expect_err("non-play genesis is refused");
         assert!(
@@ -882,9 +763,9 @@ mod tests {
         let mut restored = SmbTarget::loopback_for_tests(&rom).expect("load target");
         restored.restore(&won).expect("restore victory snapshot");
         assert!(restored.is_victory());
-        let frames_before = restored.frames_clocked();
+        let frames_before = restored.execution_work();
         restored.apply(&ButtonChord::new(0x01, 10));
-        assert_eq!(restored.frames_clocked(), frames_before);
+        assert_eq!(restored.execution_work(), frames_before);
         assert!(restored.last_action_observations().is_empty());
     }
 
@@ -904,7 +785,19 @@ mod tests {
         target.reset();
         let genesis = target.snapshot().expect("snapshot genesis");
         target.apply(&ButtonChord::new(0x01, 10));
+        let first_work = target.execution_work();
+        assert!(first_work > 0);
         assert_ne!(target.snapshot().expect("snapshot advanced"), genesis);
+        let saved = target.snapshot().expect("snapshot after first action");
+        target.apply(&ButtonChord::new(0x02, 10));
+        let second_work = target.execution_work();
+        assert!(second_work > first_work);
+        target.restore(&saved).expect("restore after second action");
+        assert_eq!(target.execution_work(), second_work);
+        target.reset();
+        assert_eq!(target.execution_work(), second_work);
+        target.apply(&ButtonChord::new(0x01, 10));
+        assert!(target.execution_work() > second_work);
         target.reset();
         assert_eq!(target.snapshot().expect("snapshot reset"), genesis);
     }

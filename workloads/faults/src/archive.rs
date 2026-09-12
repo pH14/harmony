@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Fault archive key, milestones, and report shape.
-
 use std::{error::Error, num::NonZeroUsize};
 
 use serde::{Deserialize, Serialize};
@@ -18,19 +16,11 @@ use crate::target::{FaultAction, FaultObservations};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
-/// Recorded archive-key policy.
 pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_sometimes_hooks_alive_v2";
-/// Completed hooks beyond this count stop distinguishing archive cells. A hook
-/// the workload lets re-run cheaply, such as a read-back that finds nothing to
-/// check, would otherwise turn repetition into an endless supply of new cells
-/// and pull the search away from the sites it has not reached.
 pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
-/// Recorded same-slot replacement policy.
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_horizons";
-/// Recorded action-duration policy: every action costs exactly one horizon.
 pub const DURATION_IDENTIFIER: &str = "fixed_horizon_v1";
 
-/// Pooled identity handed to the generic selector.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FaultArchiveGroup {
     sometimes: u64,
@@ -40,29 +30,12 @@ pub struct FaultArchiveGroup {
     parked: u64,
 }
 
-/// Quality-diversity key for one fault-library endpoint: which `sometimes`
-/// sites the workload reached, how much of the workload completed, how many
-/// hooks are still running, and which nodes are running.
-///
-/// Hooks in flight are part of the key because the races a fault library
-/// exists to find live in the overlap of concurrent activities. A hook that
-/// has started and not finished leaves no other trace at its endpoint, so
-/// without this count an endpoint with two hooks overlapping pools with one
-/// where only the second ever ran, and the search keeps the cheaper of the
-/// two.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FaultArchiveKey {
-    /// Bitmap of `sometimes` sites hit.
     pub sometimes: u64,
-    /// Hooks that ran to completion, saturating at [`HOOKS_FINISHED_KEY_CAP`].
     pub hooks_finished: u64,
-    /// Hooks started and not yet finished, saturating at the same cap.
     pub hooks_running: u64,
-    /// Bitmap of live nodes.
     pub alive: u64,
-    /// Threads parked at a place, saturating at [`HOOKS_FINISHED_KEY_CAP`].
-    /// A park that fired and one that never reached its hit are different
-    /// states of the workload.
     pub parked: u64,
 }
 
@@ -73,9 +46,6 @@ impl ArchiveKey for FaultArchiveKey {
         3
     }
 
-    /// Depth 0 is the whole key, depth 1 drops node liveness so the same
-    /// workload progress under different survivor sets pools, and depth 2 is
-    /// the reached-site set alone.
     fn group(self, depth: usize) -> Self::Group {
         let full = FaultArchiveGroup {
             sometimes: self.sometimes,
@@ -107,7 +77,6 @@ impl ArchiveKey for FaultArchiveKey {
     fn record(_lineage: &mut Self::Lineage, _key: Self) {}
 }
 
-/// The archive key of one endpoint.
 #[must_use]
 pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
     FaultArchiveKey {
@@ -122,18 +91,13 @@ pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
     }
 }
 
-/// Strongest rungs a campaign reached.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultMilestones {
-    /// Union of every `sometimes` bitmap observed.
     pub sometimes: u64,
-    /// Greatest completed-hook count.
     pub hooks_finished: u64,
-    /// Whether any endpoint found a bug.
     pub bug: bool,
 }
 
-/// Decode milestones from one endpoint.
 #[must_use]
 pub fn milestones(observations: &FaultObservations) -> FaultMilestones {
     FaultMilestones {
@@ -143,31 +107,24 @@ pub fn milestones(observations: &FaultObservations) -> FaultMilestones {
     }
 }
 
-/// Merge the strongest of each rung.
 pub fn merge_milestones(into: &mut FaultMilestones, from: FaultMilestones) {
     into.sometimes |= from.sometimes;
     into.hooks_finished = into.hooks_finished.max(from.hooks_finished);
     into.bug |= from.bug;
 }
 
-/// Stable champion order: sites reached first, then workload progress.
 #[must_use]
 pub fn milestone_key(value: FaultMilestones) -> (u32, u64) {
     (value.sometimes.count_ones(), value.hooks_finished)
 }
 
-/// Route-agnostic progress watermark.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FaultProgressWatermark {
-    /// Greatest number of distinct `sometimes` sites reached.
     pub sometimes_sites: u32,
-    /// Greatest completed-hook count.
     pub hooks_finished: u64,
-    /// Greatest agent tick count.
     pub ticks: u64,
 }
 
-/// Fold one endpoint's observations into a progress watermark.
 pub fn merge_progress_watermark(
     watermark: &mut FaultProgressWatermark,
     observations: &[FaultObservations],
@@ -181,31 +138,16 @@ pub fn merge_progress_watermark(
     }
 }
 
-/// Every action costs exactly one horizon, so route cost is action count.
 #[must_use]
-pub fn action_time(_action: &FaultAction) -> u64 {
+pub fn action_cost(_action: &FaultAction) -> u64 {
     1
 }
 
-/// Pause durations in agent ticks.
 pub const PAUSE_TICKS: [u32; 4] = [1, 5, 25, 100];
-/// Interrupt vectors the vocabulary may inject.
 pub const VECTORS: [u32; 2] = [0x20, 0x30];
-/// The hit a park waits for. A place is reached a handful of times or
-/// thousands of times per horizon, so the ladder spans both.
 pub const PARK_HITS: [u32; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
-/// Lengths of a park's hold, in microseconds. The guest kernel releases the
-/// thread at the first system call of another task past the deadline, or at
-/// the periodic tick, so a short hold lands within a few milliseconds.
 pub const PARK_HOLD_US: [u32; 3] = [500, 2_000, 10_000];
 
-/// Draw one action from the bundle's vocabulary. A bundle that declares no
-/// hook cannot draw one, so that arm yields `Wait` rather than an action the
-/// guest agent would skip.
-///
-/// # Errors
-///
-/// Returns an error when a draw bound is invalid.
 pub fn sample_action(
     rand: &mut RomuDuoJrRand,
     vocabulary: &FaultVocabulary,
@@ -239,31 +181,20 @@ pub fn sample_action(
     }
 }
 
-/// Progress-curve point.
 pub type FaultProgressPoint = ProgressPoint<FaultMilestones, FaultProgressWatermark>;
-/// Archive entry report.
 pub type FaultArchiveEntryReport =
     ArchiveEntryReport<FaultAction, FaultArchiveKey, FaultMilestones>;
-/// Search input.
 pub type FaultInput = searcher::search::archive::Input<FaultAction>;
 
-/// Largest number of bugs one campaign records in its report, so a run whose
-/// workload asserts on every branch still holds bounded memory.
 pub const MAX_RECORDED_BUGS: usize = 64;
 
-/// One bug an execution found.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultBugRecord {
-    /// Ordered admission position of the execution that found it.
     pub execution: u64,
-    /// The input that reaches it.
     pub input: FaultInput,
-    /// The terminal endpoint's observations.
     pub observations: FaultObservations,
 }
 
-/// The campaign outcome a bug list implies: how many bugs were found and the
-/// admission position of the first.
 #[must_use]
 pub fn bug_outcome(bugs: &[FaultBugRecord]) -> (u64, Option<u64>) {
     (
@@ -272,38 +203,24 @@ pub fn bug_outcome(bugs: &[FaultBugRecord]) -> (u64, Option<u64>) {
     )
 }
 
-/// Complete deterministic report for one fault campaign.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultArchiveReport {
-    /// Campaign seed.
     pub seed: u64,
-    /// The sealed setup `Moment` every action window is measured from; zero
-    /// when the run never booted a target.
     pub root_seal: u64,
-    /// Virtual nanoseconds each action window spans.
     pub horizon_nanos: u64,
-    /// Admitted executions.
     pub executions: u64,
-    /// Strongest milestones.
     pub milestones: FaultMilestones,
-    /// Strongest route-agnostic progress.
     pub progress_watermark: FaultProgressWatermark,
-    /// Best input under the adapter's progress order.
     pub champion_input: FaultInput,
-    /// Retained representatives.
     #[serde(with = "entries_by_suffix")]
     pub entries: Vec<FaultArchiveEntryReport>,
-    /// Fixed-interval progress curve.
     pub progress_curve: Vec<FaultProgressPoint>,
-    /// Candidates admitted.
     pub retained: u64,
-    /// Candidates rejected or superseded.
     pub rejected: u64,
-    /// Terminal endpoints observed.
     pub deaths: u64,
-    /// Bugs found, in admission order, bounded by [`MAX_RECORDED_BUGS`].
+    #[serde(default)]
+    pub watchdog_cutoffs: u64,
     pub bugs: Vec<FaultBugRecord>,
-    /// Generic selector accounting.
     #[serde(default)]
     pub selector: SelectorAccounting,
 }
@@ -541,7 +458,7 @@ mod tests {
 
     #[test]
     fn every_action_costs_one_horizon() {
-        assert_eq!(action_time(&FaultAction::Wait), 1);
-        assert_eq!(action_time(&FaultAction::Kill(4)), 1);
+        assert_eq!(action_cost(&FaultAction::Wait), 1);
+        assert_eq!(action_cost(&FaultAction::Kill(4)), 1);
     }
 }

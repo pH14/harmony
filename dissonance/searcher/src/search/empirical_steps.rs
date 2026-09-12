@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Game-neutral empirical step tables folded deterministically from retained sequences.
-
 use std::{
     collections::{BTreeMap, VecDeque},
     error::Error,
@@ -11,57 +9,19 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Registered rule producing the recorded table hash.
-///
-/// `FullJson` re-serializes both ordered tables on every visible update, so
-/// its cost grows with the never-deleted history and dominates the run once
-/// the source is large. `IncrementalHistory` feeds each appended contribution
-/// into a persistent hasher and re-serializes only the bounded recent window,
-/// keeping every update O(recent). The two rules produce different hashes for
-/// the same tables, so each is bound to its own recorded policy identifier.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub enum EmpiricalStepHashRule {
-    /// Hash the JSON of both complete ordered tables.
-    #[default]
-    FullJson,
-    /// Fold appended history into a running hasher; re-serialize only recent.
-    IncrementalHistory,
-    /// Fold the exact history into a running hash while retaining only bounded
-    /// deterministic frequency counts for future draws.
-    IncrementalCompactHistory,
-}
-
-/// Maximum number of distinct historical steps retained by the compact rule.
-///
-/// The recent-success window remains available when this cap is reached, so a
-/// previously unseen step can still influence draws without growing the live
-/// all-history acceleration structure.
 const MAX_COMPACT_HISTORY_DISTINCT: usize = 4096;
 
-/// Registered parameters for one deterministic empirical-step fold.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EmpiricalStepParameters {
-    /// Ignore this many leading steps in every retained sequence.
     pub prefix_steps: usize,
-    /// Number of most recent retained successes contributing to the recent table.
     pub recent_successes: usize,
-    /// Frequency multiplier for the recent table in biased draws.
     pub recent_weight: usize,
-    /// Frequency multiplier for the never-deleted all-history table.
     pub all_history_weight: usize,
-    /// Recorded-stream interval between visible table updates.
     pub update_every_records: u64,
-    /// Recorded-stream interval between table-hash checkpoints.
     pub hash_every_records: u64,
 }
 
 impl EmpiricalStepParameters {
-    /// Validate the bounded, non-vacuous table configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a zero recent window, zero checkpoint interval, or
-    /// a mixture in which both weights are zero.
     pub fn validate(self) -> Result<(), EmpiricalStepError> {
         if self.recent_successes == 0 {
             return Err(EmpiricalStepError::InvalidParameters(
@@ -82,27 +42,18 @@ impl EmpiricalStepParameters {
     }
 }
 
-/// One reproducible table checkpoint.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EmpiricalStepCheckpoint {
-    /// Recorded stream records folded through this checkpoint.
     pub records: u64,
-    /// Retained success sequences folded through this checkpoint.
     pub retained_successes: u64,
-    /// SHA-256 of the ordered recent and all-history tables.
     pub table_sha256: String,
 }
 
-/// Deterministic empirical-step fold failure.
 #[derive(Debug)]
 pub enum EmpiricalStepError {
-    /// Registered parameters are vacuous or out of bounds.
     InvalidParameters(&'static str),
-    /// Weighted table length overflowed.
     TableLengthOverflow,
-    /// Ordered table serialization failed.
     Serialization(serde_json::Error),
-    /// Internal recent-window accounting diverged.
     RecentWindowDiverged,
 }
 
@@ -137,15 +88,12 @@ impl Error for EmpiricalStepError {
     }
 }
 
-/// Recent and all-history tables derived only from stream-ordered successes.
 #[derive(Clone, Debug)]
 pub struct EmpiricalStepTables<Step> {
     parameters: EmpiricalStepParameters,
-    hash_rule: EmpiricalStepHashRule,
     pending: Vec<Vec<Step>>,
     recent_sequences: VecDeque<Vec<Step>>,
     recent: Vec<Step>,
-    all_history: Vec<Step>,
     compact_history: BTreeMap<Step, usize>,
     compact_history_len: usize,
     history_hasher: Sha256,
@@ -158,32 +106,13 @@ impl<Step> EmpiricalStepTables<Step>
 where
     Step: Clone + Ord + Serialize,
 {
-    /// Start an empty deterministic fold.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the parameters are invalid.
     pub fn new(parameters: EmpiricalStepParameters) -> Result<Self, EmpiricalStepError> {
-        Self::with_hash_rule(parameters, EmpiricalStepHashRule::FullJson)
-    }
-
-    /// Start an empty deterministic fold under the named table-hash rule.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the parameters are invalid.
-    pub fn with_hash_rule(
-        parameters: EmpiricalStepParameters,
-        hash_rule: EmpiricalStepHashRule,
-    ) -> Result<Self, EmpiricalStepError> {
         parameters.validate()?;
         let mut tables = Self {
             parameters,
-            hash_rule,
             pending: Vec::new(),
             recent_sequences: VecDeque::new(),
             recent: Vec::new(),
-            all_history: Vec::new(),
             compact_history: BTreeMap::new(),
             compact_history_len: 0,
             history_hasher: Sha256::new(),
@@ -196,30 +125,13 @@ where
     }
 
     fn hash_current_tables(&self) -> Result<String, EmpiricalStepError> {
-        match self.hash_rule {
-            EmpiricalStepHashRule::FullJson => hash_tables(&self.recent, &self.all_history),
-            EmpiricalStepHashRule::IncrementalHistory
-            | EmpiricalStepHashRule::IncrementalCompactHistory => {
-                let mut hasher = self.history_hasher.clone();
-                if self.hash_rule == EmpiricalStepHashRule::IncrementalCompactHistory {
-                    hasher.update(b"dissonance-empirical-compact-history-v1\0");
-                }
-                let recent =
-                    serde_json::to_vec(&self.recent).map_err(EmpiricalStepError::Serialization)?;
-                hasher.update(&recent);
-                Ok(format!("{:x}", hasher.finalize()))
-            }
-        }
+        let mut hasher = self.history_hasher.clone();
+        hasher.update(b"dissonance-empirical-compact-history-v1\0");
+        let recent = serde_json::to_vec(&self.recent).map_err(EmpiricalStepError::Serialization)?;
+        hasher.update(&recent);
+        Ok(format!("{:x}", hasher.finalize()))
     }
 
-    /// Fold one retained success sequence in stream order.
-    ///
-    /// A sequence at or before the registered prefix contributes no steps and
-    /// is not counted as a useful retained success.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only if internal recent-window accounting diverges.
     pub fn fold_retained(&mut self, sequence: &[Step]) -> Result<(), EmpiricalStepError> {
         let Some(suffix) = sequence.get(self.parameters.prefix_steps..) else {
             return Ok(());
@@ -233,37 +145,24 @@ where
     }
 
     fn apply_contribution(&mut self, contribution: Vec<Step>) -> Result<(), EmpiricalStepError> {
-        if matches!(
-            self.hash_rule,
-            EmpiricalStepHashRule::IncrementalHistory
-                | EmpiricalStepHashRule::IncrementalCompactHistory
-        ) {
-            // Each contribution is a complete JSON array, so the byte stream
-            // fed to the running hasher is framed unambiguously.
-            let bytes =
-                serde_json::to_vec(&contribution).map_err(EmpiricalStepError::Serialization)?;
-            self.history_hasher.update(&bytes);
-        }
-        if self.hash_rule == EmpiricalStepHashRule::IncrementalCompactHistory {
-            for step in &contribution {
-                if let Some(count) = self.compact_history.get_mut(step) {
-                    *count = count
-                        .checked_add(1)
-                        .ok_or(EmpiricalStepError::TableLengthOverflow)?;
-                    self.compact_history_len = self
-                        .compact_history_len
-                        .checked_add(1)
-                        .ok_or(EmpiricalStepError::TableLengthOverflow)?;
-                } else if self.compact_history.len() < MAX_COMPACT_HISTORY_DISTINCT {
-                    self.compact_history.insert(step.clone(), 1);
-                    self.compact_history_len = self
-                        .compact_history_len
-                        .checked_add(1)
-                        .ok_or(EmpiricalStepError::TableLengthOverflow)?;
-                }
+        let bytes = serde_json::to_vec(&contribution).map_err(EmpiricalStepError::Serialization)?;
+        self.history_hasher.update(&bytes);
+        for step in &contribution {
+            if let Some(count) = self.compact_history.get_mut(step) {
+                *count = count
+                    .checked_add(1)
+                    .ok_or(EmpiricalStepError::TableLengthOverflow)?;
+                self.compact_history_len = self
+                    .compact_history_len
+                    .checked_add(1)
+                    .ok_or(EmpiricalStepError::TableLengthOverflow)?;
+            } else if self.compact_history.len() < MAX_COMPACT_HISTORY_DISTINCT {
+                self.compact_history.insert(step.clone(), 1);
+                self.compact_history_len = self
+                    .compact_history_len
+                    .checked_add(1)
+                    .ok_or(EmpiricalStepError::TableLengthOverflow)?;
             }
-        } else {
-            self.all_history.extend_from_slice(&contribution);
         }
         self.recent.extend_from_slice(&contribution);
         self.recent_sequences.push_back(contribution);
@@ -280,14 +179,6 @@ where
         Ok(())
     }
 
-    /// Make every buffered success visible immediately.
-    ///
-    /// Archive source loading calls this once after folding the complete source.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if internal recent-window accounting diverges or the
-    /// updated ordered tables cannot be serialized for their cached hash.
     pub fn flush(&mut self) -> Result<(), EmpiricalStepError> {
         let pending = std::mem::take(&mut self.pending);
         if pending.is_empty() {
@@ -300,17 +191,6 @@ where
         Ok(())
     }
 
-    /// Registered table-hash rule.
-    #[must_use]
-    pub fn hash_rule(&self) -> EmpiricalStepHashRule {
-        self.hash_rule
-    }
-
-    /// Finish one recorded stream record and emit its periodic hash if due.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when table serialization fails.
     pub fn finish_record(&mut self) -> Result<Option<EmpiricalStepCheckpoint>, EmpiricalStepError> {
         self.records = self.records.saturating_add(1);
         if self
@@ -328,12 +208,6 @@ where
         self.checkpoint().map(Some)
     }
 
-    /// Snapshot the table hash at its current fold position.
-    ///
-    /// # Errors
-    ///
-    /// The result remains fallible for API compatibility. Serialization
-    /// failures are reported when a visible generation is created or updated.
     pub fn checkpoint(&self) -> Result<EmpiricalStepCheckpoint, EmpiricalStepError> {
         Ok(EmpiricalStepCheckpoint {
             records: self.records,
@@ -342,84 +216,55 @@ where
         })
     }
 
-    /// Registered fold parameters.
     #[must_use]
     pub fn parameters(&self) -> EmpiricalStepParameters {
         self.parameters
     }
 
-    /// Recorded stream records folded so far.
     #[must_use]
     pub fn records(&self) -> u64 {
         self.records
     }
 
-    /// Retained success sequences that contributed at least one step.
     #[must_use]
     pub fn retained_successes(&self) -> u64 {
         self.retained_successes
     }
 
-    /// Ordered steps from the registered recent-success window.
     #[must_use]
     pub fn recent(&self) -> &[Step] {
         &self.recent
     }
 
-    /// Ordered steps from every success ever folded.
-    #[must_use]
-    pub fn all_history(&self) -> &[Step] {
-        &self.all_history
-    }
-
-    /// Frequency-weighted mixed-table length.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the registered weighted length overflows.
     pub fn mixed_len(&self) -> Result<usize, EmpiricalStepError> {
         self.view().mixed_len()
     }
 
-    /// Resolve one frequency-weighted mixed-table index.
     #[must_use]
     pub fn mixed_step(&self, index: usize) -> Option<&Step> {
         self.view().mixed_step(index)
     }
 
-    /// Borrowed view of the current visible tables.
     #[must_use]
     pub fn view(&self) -> EmpiricalStepTableRef<'_, Step> {
-        if self.hash_rule == EmpiricalStepHashRule::IncrementalCompactHistory {
-            EmpiricalStepTableRef::from_counts(
-                self.parameters,
-                &self.recent,
-                &self.compact_history,
-                self.compact_history_len,
-            )
-        } else {
-            EmpiricalStepTableRef::from_parts(self.parameters, &self.recent, &self.all_history)
-        }
+        EmpiricalStepTableRef::from_counts(
+            self.parameters,
+            &self.recent,
+            &self.compact_history,
+            self.compact_history_len,
+        )
     }
 
-    /// Number of selectable steps represented by the visible all-history table.
     #[must_use]
     pub fn history_len(&self) -> usize {
-        if self.hash_rule == EmpiricalStepHashRule::IncrementalCompactHistory {
-            self.compact_history_len
-        } else {
-            self.all_history.len()
-        }
+        self.compact_history_len
     }
 
-    /// Bounded historical frequency table used by the compact rule.
     #[must_use]
-    pub fn compact_history(&self) -> Option<&BTreeMap<Step, usize>> {
-        (self.hash_rule == EmpiricalStepHashRule::IncrementalCompactHistory)
-            .then_some(&self.compact_history)
+    pub fn compact_history(&self) -> &BTreeMap<Step, usize> {
+        &self.compact_history
     }
 
-    /// Logical live bytes held by the empirical draw acceleration state.
     #[must_use]
     pub fn memory_bytes(&self) -> usize {
         let step = std::mem::size_of::<Step>();
@@ -429,7 +274,6 @@ where
             .len()
             .saturating_add(pending_steps)
             .saturating_add(recent_sequence_steps)
-            .saturating_add(self.all_history.len())
             .saturating_mul(step)
             .saturating_add(
                 self.compact_history
@@ -439,9 +283,6 @@ where
     }
 }
 
-/// Borrowed visible tables for one draw: the current fold state, or a
-/// historical version rebuilt from the append-only history plus a saved
-/// recent window.
 #[derive(Clone, Copy)]
 pub struct EmpiricalStepTableRef<'a, Step> {
     parameters: EmpiricalStepParameters,
@@ -451,26 +292,10 @@ pub struct EmpiricalStepTableRef<'a, Step> {
 
 #[derive(Clone, Copy)]
 enum EmpiricalStepHistoryRef<'a, Step> {
-    Ordered(&'a [Step]),
     Counts(&'a BTreeMap<Step, usize>, usize),
 }
 
 impl<'a, Step> EmpiricalStepTableRef<'a, Step> {
-    /// Assemble a view from borrowed table slices.
-    #[must_use]
-    pub fn from_parts(
-        parameters: EmpiricalStepParameters,
-        recent: &'a [Step],
-        all_history: &'a [Step],
-    ) -> Self {
-        Self {
-            parameters,
-            recent,
-            history: EmpiricalStepHistoryRef::Ordered(all_history),
-        }
-    }
-
-    /// Assemble a view from a bounded deterministic frequency table.
     #[must_use]
     pub fn from_counts(
         parameters: EmpiricalStepParameters,
@@ -487,16 +312,10 @@ impl<'a, Step> EmpiricalStepTableRef<'a, Step> {
 
     fn history_len(&self) -> usize {
         match &self.history {
-            EmpiricalStepHistoryRef::Ordered(history) => history.len(),
             EmpiricalStepHistoryRef::Counts(_, history_len) => *history_len,
         }
     }
 
-    /// Frequency-weighted mixed-table length.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the registered weighted length overflows.
     pub fn mixed_len(&self) -> Result<usize, EmpiricalStepError> {
         self.recent
             .len()
@@ -509,7 +328,6 @@ impl<'a, Step> EmpiricalStepTableRef<'a, Step> {
             .ok_or(EmpiricalStepError::TableLengthOverflow)
     }
 
-    /// Resolve one frequency-weighted mixed-table index.
     #[must_use]
     pub fn mixed_step(&self, index: usize) -> Option<&'a Step> {
         let recent_span = self
@@ -527,7 +345,6 @@ impl<'a, Step> EmpiricalStepTableRef<'a, Step> {
         }
         let base_index = history_index % history_len;
         match self.history {
-            EmpiricalStepHistoryRef::Ordered(history) => history.get(base_index),
             EmpiricalStepHistoryRef::Counts(history, _) => {
                 let mut remaining = base_index;
                 for (step, count) in history {
@@ -540,15 +357,6 @@ impl<'a, Step> EmpiricalStepTableRef<'a, Step> {
             }
         }
     }
-}
-
-fn hash_tables<Step>(recent: &[Step], all_history: &[Step]) -> Result<String, EmpiricalStepError>
-where
-    Step: Serialize,
-{
-    let bytes =
-        serde_json::to_vec(&(recent, all_history)).map_err(EmpiricalStepError::Serialization)?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 #[cfg(test)]
@@ -608,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn fold_keeps_recent_and_never_deletes_history() {
+    fn fold_keeps_recent_and_compact_history() {
         let mut tables = EmpiricalStepTables::new(parameters()).expect("valid parameters");
         tables.fold_retained(&[0, 1, 2]).expect("first success");
         assert!(tables.finish_record().expect("first record").is_none());
@@ -618,7 +426,11 @@ mod tests {
         tables.finish_record().expect("third record");
         tables.flush().expect("final update");
         assert_eq!(tables.recent(), &[3, 4, 5]);
-        assert_eq!(tables.all_history(), &[1, 2, 3, 4, 5]);
+        assert_eq!(tables.history_len(), 5);
+        assert_eq!(
+            tables.compact_history(),
+            &BTreeMap::from([(1, 1), (2, 1), (3, 1), (4, 1), (5, 1)])
+        );
         assert_eq!(tables.retained_successes(), 3);
     }
 
@@ -648,59 +460,14 @@ mod tests {
     }
 
     #[test]
-    fn incremental_rule_folds_identically_and_reproducibly() {
-        use super::{EmpiricalStepHashRule, EmpiricalStepTables as Tables};
-        let run = || {
-            let mut tables =
-                Tables::with_hash_rule(parameters(), EmpiricalStepHashRule::IncrementalHistory)
-                    .expect("valid parameters");
-            for sequence in [vec![0_u8, 1, 2], vec![0, 3], vec![0, 4, 5]] {
-                tables.fold_retained(&sequence).expect("fold success");
-                let _ = tables.finish_record().expect("finish record");
-            }
-            tables.flush().expect("final update");
-            tables
-        };
-        let first = run();
-        let second = run();
-        assert_eq!(first.recent(), &[3, 4, 5]);
-        assert_eq!(first.all_history(), &[1, 2, 3, 4, 5]);
-        assert_eq!(
-            first.checkpoint().expect("first checkpoint"),
-            second.checkpoint().expect("second checkpoint")
-        );
-
-        let mut full = EmpiricalStepTables::new(parameters()).expect("valid parameters");
-        for sequence in [vec![0_u8, 1, 2], vec![0, 3], vec![0, 4, 5]] {
-            full.fold_retained(&sequence).expect("fold success");
-            let _ = full.finish_record().expect("finish record");
-        }
-        full.flush().expect("final update");
-        assert_eq!(full.recent(), first.recent());
-        assert_eq!(full.all_history(), first.all_history());
-        assert_ne!(
-            full.checkpoint()
-                .expect("full-json checkpoint")
-                .table_sha256,
-            first
-                .checkpoint()
-                .expect("incremental checkpoint")
-                .table_sha256,
-        );
-    }
-
-    #[test]
-    fn incremental_hash_ignores_history_reserialization() {
-        use super::{EmpiricalStepHashRule, EmpiricalStepTables as Tables};
+    fn incremental_hash_avoids_history_reserialization() {
         let serializations = Rc::new(Cell::new(0));
         let step = |value| CountingStep {
             value,
             serializations: Rc::clone(&serializations),
         };
-        let mut tables =
-            Tables::with_hash_rule(parameters(), EmpiricalStepHashRule::IncrementalHistory)
-                .expect("valid parameters");
-        let flush_cost = |tables: &mut Tables<CountingStep>, value| {
+        let mut tables = EmpiricalStepTables::new(parameters()).expect("valid parameters");
+        let flush_cost = |tables: &mut EmpiricalStepTables<CountingStep>, value| {
             tables
                 .fold_retained(&[step(0), step(value)])
                 .expect("fold success");
@@ -712,31 +479,24 @@ mod tests {
         for round in 0..6_u8 {
             costs.push(flush_cost(&mut tables, round));
         }
-        // Once the recent window is full, per-flush serialization work is
-        // constant: history growth never re-enters the hash.
         assert_eq!(costs[2], costs[5]);
     }
 
     #[test]
     fn compact_history_preserves_frequencies_in_deterministic_key_order() {
-        use super::{EmpiricalStepHashRule, EmpiricalStepTables as Tables};
+        use super::EmpiricalStepTables as Tables;
 
         let mut compact_parameters = parameters();
         compact_parameters.prefix_steps = 0;
         compact_parameters.recent_weight = 0;
-        let mut tables = Tables::with_hash_rule(
-            compact_parameters,
-            EmpiricalStepHashRule::IncrementalCompactHistory,
-        )
-        .expect("valid parameters");
+        let mut tables = Tables::new(compact_parameters).expect("valid parameters");
         tables
             .fold_retained(&[3_u16, 1, 3, 2])
             .expect("fold success");
         tables.flush().expect("make compact history visible");
 
         assert_eq!(tables.history_len(), 4);
-        assert!(tables.all_history().is_empty());
-        assert_eq!(tables.compact_history().map(BTreeMap::len), Some(3));
+        assert_eq!(tables.compact_history().len(), 3);
         assert_eq!(tables.mixed_len().expect("mixed length"), 4);
         assert_eq!(
             (0..4)
@@ -748,26 +508,17 @@ mod tests {
 
     #[test]
     fn compact_history_has_a_fixed_distinct_step_cap() {
-        use super::{
-            EmpiricalStepHashRule, EmpiricalStepTables as Tables, MAX_COMPACT_HISTORY_DISTINCT,
-        };
+        use super::{EmpiricalStepTables as Tables, MAX_COMPACT_HISTORY_DISTINCT};
 
         let mut compact_parameters = parameters();
         compact_parameters.prefix_steps = 0;
-        let mut tables = Tables::with_hash_rule(
-            compact_parameters,
-            EmpiricalStepHashRule::IncrementalCompactHistory,
-        )
-        .expect("valid parameters");
+        let mut tables = Tables::new(compact_parameters).expect("valid parameters");
         for step in 0..MAX_COMPACT_HISTORY_DISTINCT.saturating_add(257) {
             tables.fold_retained(&[step]).expect("fold success");
         }
         tables.flush().expect("make compact history visible");
 
-        assert_eq!(
-            tables.compact_history().map(BTreeMap::len),
-            Some(MAX_COMPACT_HISTORY_DISTINCT)
-        );
+        assert_eq!(tables.compact_history().len(), MAX_COMPACT_HISTORY_DISTINCT);
         assert_eq!(tables.history_len(), MAX_COMPACT_HISTORY_DISTINCT);
         assert_eq!(
             tables.mixed_step(tables.mixed_len().expect("mixed length")),
@@ -797,25 +548,11 @@ mod tests {
     }
 
     #[test]
-    fn compact_hash_domain_and_memory_charge_are_exact() {
-        use super::{EmpiricalStepHashRule, EmpiricalStepTables as Tables};
+    fn hash_domain_and_memory_charge_are_exact() {
+        use super::EmpiricalStepTables as Tables;
         use sha2::{Digest, Sha256};
 
-        let plain =
-            Tables::<u16>::with_hash_rule(parameters(), EmpiricalStepHashRule::IncrementalHistory)
-                .expect("plain incremental tables");
-        let mut expected_plain = Sha256::new();
-        expected_plain.update(serde_json::to_vec(&Vec::<u16>::new()).expect("encode empty recent"));
-        assert_eq!(
-            plain.checkpoint().expect("plain checkpoint").table_sha256,
-            format!("{:x}", expected_plain.finalize())
-        );
-
-        let mut compact = Tables::<u16>::with_hash_rule(
-            parameters(),
-            EmpiricalStepHashRule::IncrementalCompactHistory,
-        )
-        .expect("compact incremental tables");
+        let mut compact = Tables::<u16>::new(parameters()).expect("compact incremental tables");
         let mut expected_compact = Sha256::new();
         expected_compact.update(b"dissonance-empirical-compact-history-v1\0");
         expected_compact

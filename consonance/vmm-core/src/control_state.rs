@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Snapshot state owned by the control plane, not the guest CPU or service.
 
 use control_proto::ControlError;
 use environment::input_spec::{InputSpec, ServiceConfig};
@@ -22,7 +21,6 @@ impl ScheduleFailure {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ControlState {
     pub recorded: InputSpec,
-    /// Only effects and reseeds are populated; this is not a replacement SDK environment.
     pub pending: InputSpec,
     pub poisoned: Option<ScheduleFailure>,
     pub exec_nonce: u64,
@@ -48,7 +46,7 @@ impl ControlState {
 
     pub fn decode(bytes: &[u8]) -> Result<Option<Self>, &'static str> {
         if bytes.is_empty() {
-            return Ok(None); // legacy portable artifacts did not carry control state
+            return Ok(None);
         }
         let mut input = bytes;
         if take(&mut input, 8)? != b"HCSTATE1" {
@@ -118,8 +116,6 @@ impl ControlState {
         Ok(state)
     }
 
-    /// Hash the complete control state. The consumed prefix also matters:
-    /// it governs duplicate-input rejection and the recorded reproducer reply.
     pub fn append_hash(&self, suffix: &mut Vec<u8>) {
         let state = self.encode();
         suffix.extend_from_slice(b"CPLN");

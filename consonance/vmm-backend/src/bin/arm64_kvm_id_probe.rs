@@ -1,7 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Print the stock KVM/arm64 guest identity-register surface before policy
-//! installation. M5 uses this beside `hvf_probe` to derive the conservative
-//! cross-host register intersection from measured values.
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 fn main() -> std::process::ExitCode {
@@ -136,15 +133,10 @@ fn main() -> std::process::ExitCode {
         }
     }
 
-    // A KVM_SET_ONE_REG/get-one-reg round trip is not sufficient for the
-    // implementation ID registers: without KVM_CAP_ARM_WRITABLE_IMP_ID_REGS,
-    // the guest can still read the physical core's MIDR_EL1. Execute the MRS
-    // and export X0 through an unmapped MMIO store, then repeat the same
-    // guest-visible check for DCZID_EL0 (which has no one-reg entry).
-    page.put(0, 0xd538_0000); // mrs x0, midr_el1
-    page.put(4, 0xf900_0020); // str x0, [x1]
-    page.put(8, 0xd53b_00e0); // mrs x0, dczid_el0
-    page.put(12, 0xf900_0020); // str x0, [x1]
+    page.put(0, 0xd538_0000);
+    page.put(4, 0xf900_0020);
+    page.put(8, 0xd53b_00e0);
+    page.put(12, 0xf900_0020);
     // SAFETY: the aligned allocation is PAGE_SIZE bytes and outlives `kvm`.
     if let Err(error) =
         unsafe { kvm.set_user_memory_region(0, 0, page.ptr.as_ptr(), PAGE_SIZE as u64) }
@@ -153,9 +145,9 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE;
     }
     for (id, value) in [
-        (core_reg(2), 0x1_0000), // X1: unmapped MMIO address
-        (core_reg(64), 0),       // PC
-        (core_reg(66), 0x3c5),   // PSTATE: EL1h, DAIF masked
+        (core_reg(2), 0x1_0000),
+        (core_reg(64), 0),
+        (core_reg(66), 0x3c5),
     ] {
         if let Err(error) = kvm.set_one_reg(id, value) {
             eprintln!("cannot initialize guest identity probe register: {error}");

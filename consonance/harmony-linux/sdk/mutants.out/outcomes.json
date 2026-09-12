@@ -1,0 +1,514 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.277199208,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.513247417,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/lib.rs:10:40: replace - with +",
+          "package": "harmony-sdk",
+          "file": "src/lib.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 10,
+              "column": 40
+            },
+            "end": {
+              "line": 10,
+              "column": 41
+            }
+          },
+          "replacement": "+",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__lib.rs_line_10_col_40.log",
+      "diff_path": "diff/src__lib.rs_line_10_col_40.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.340596708,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.554406333,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/lib.rs:10:40: replace - with /",
+          "package": "harmony-sdk",
+          "file": "src/lib.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 10,
+              "column": 40
+            },
+            "end": {
+              "line": 10,
+              "column": 41
+            }
+          },
+          "replacement": "/",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__lib.rs_line_10_col_40_001.log",
+      "diff_path": "diff/src__lib.rs_line_10_col_40_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.28634575,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.554479792,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/wire.rs:6:45: replace - with +",
+          "package": "harmony-sdk",
+          "file": "src/wire.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 6,
+              "column": 45
+            },
+            "end": {
+              "line": 6,
+              "column": 46
+            }
+          },
+          "replacement": "+",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__wire.rs_line_6_col_45.log",
+      "diff_path": "diff/src__wire.rs_line_6_col_45.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.28169075,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.172555042,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/wire.rs:6:45: replace - with /",
+          "package": "harmony-sdk",
+          "file": "src/wire.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 6,
+              "column": 45
+            },
+            "end": {
+              "line": 6,
+              "column": 46
+            }
+          },
+          "replacement": "/",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__wire.rs_line_6_col_45_001.log",
+      "diff_path": "diff/src__wire.rs_line_6_col_45_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.287689417,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.177096708,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/wire.rs:6:32: replace << with >>",
+          "package": "harmony-sdk",
+          "file": "src/wire.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 6,
+              "column": 32
+            },
+            "end": {
+              "line": 6,
+              "column": 34
+            }
+          },
+          "replacement": ">>",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/src__wire.rs_line_6_col_32.log",
+      "diff_path": "diff/src__wire.rs_line_6_col_32.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.121242833,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/wire.rs:16:64: replace << with >>",
+          "package": "harmony-sdk",
+          "file": "src/wire.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 16,
+              "column": 64
+            },
+            "end": {
+              "line": 16,
+              "column": 66
+            }
+          },
+          "replacement": ">>",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__wire.rs_line_16_col_64.log",
+      "diff_path": "diff/src__wire.rs_line_16_col_64.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.277405542,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.225734209,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/wire.rs:17:78: replace | with &",
+          "package": "harmony-sdk",
+          "file": "src/wire.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 17,
+              "column": 78
+            },
+            "end": {
+              "line": 17,
+              "column": 79
+            }
+          },
+          "replacement": "&",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__wire.rs_line_17_col_78.log",
+      "diff_path": "diff/src__wire.rs_line_17_col_78.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.291685542,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.179329625,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/wire.rs:17:78: replace | with ^",
+          "package": "harmony-sdk",
+          "file": "src/wire.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 17,
+              "column": 78
+            },
+            "end": {
+              "line": 17,
+              "column": 79
+            }
+          },
+          "replacement": "^",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__wire.rs_line_17_col_78_001.log",
+      "diff_path": "diff/src__wire.rs_line_17_col_78_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.283826417,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.52482925,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/wire.rs:17:65: replace << with >>",
+          "package": "harmony-sdk",
+          "file": "src/wire.rs",
+          "function": null,
+          "span": {
+            "start": {
+              "line": 17,
+              "column": 65
+            },
+            "end": {
+              "line": 17,
+              "column": 67
+            }
+          },
+          "replacement": ">>",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__wire.rs_line_17_col_65.log",
+      "diff_path": "diff/src__wire.rs_line_17_col_65.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.286626875,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.17786075,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--profile=mutants",
+            "--verbose",
+            "--package=harmony-sdk@0.1.0"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 9,
+  "missed": 3,
+  "caught": 5,
+  "timeout": 0,
+  "unviable": 1,
+  "success": 0,
+  "start_time": "2026-09-12T12:29:29.267102Z",
+  "end_time": "2026-09-12T12:29:35.089096Z",
+  "cargo_mutants_version": "27.1.0"
+}

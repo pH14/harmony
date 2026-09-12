@@ -1,65 +1,34 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Deterministic V-time deadline queue: [`TimerQueue`].
 
 use std::collections::BTreeMap;
 
 use crate::error::VtimeError;
 
-/// Caller-chosen identifier for a scheduled timer.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub struct TimerToken(pub u64);
 
 #[derive(Debug, Clone, Copy)]
 struct Entry {
     token: TimerToken,
-    /// `None` for one-shots; `Some(period)` (period >= 1) for periodics.
     period: Option<u64>,
 }
 
-/// Deadline queue in V-time. Pure data structure, `BTreeMap`-based.
-///
-/// # Total order (determinism)
-///
-/// Pending timers are ordered by `(deadline_vns, insertion sequence)`: equal
-/// deadlines fire in FIFO order of scheduling. Re-arming a periodic timer
-/// (during [`TimerQueue::pop_due`]) and re-scheduling an existing token both
-/// count as fresh insertions for tie-breaking purposes. This total order is
-/// what makes firing sequences replayable.
-///
-/// # Token semantics
-///
-/// At most one pending entry exists per [`TimerToken`]: scheduling a token
-/// that is already pending **replaces** the previous entry (and moves the
-/// token to the back of its new deadline's FIFO class).
 #[derive(Debug, Clone, Default)]
 pub struct TimerQueue {
-    /// `(deadline_vns, seq)` → entry; the BTreeMap order is the firing order.
     entries: BTreeMap<(u64, u64), Entry>,
-    /// token → its key in `entries`, for O(log n) cancel/replace.
     index: BTreeMap<TimerToken, (u64, u64)>,
     next_seq: u64,
 }
 
 impl TimerQueue {
-    /// Creates an empty queue.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Schedules a one-shot timer at the given V-time deadline. If `token`
-    /// is already pending, the previous entry is replaced.
     pub fn schedule_oneshot(&mut self, deadline_vns: u64, token: TimerToken) {
         self.insert(deadline_vns, token, None);
     }
 
-    /// Schedules a periodic timer first firing at `first_vns`, then every
-    /// `period_vns` nanoseconds of V-time (fixed cadence; see
-    /// [`TimerQueue::pop_due`]). If `token` is already pending, the previous
-    /// entry is replaced.
-    ///
-    /// # Errors
-    ///
-    /// [`VtimeError::ZeroPeriod`] if `period_vns == 0`.
     pub fn schedule_periodic(
         &mut self,
         first_vns: u64,
@@ -73,8 +42,6 @@ impl TimerQueue {
         Ok(())
     }
 
-    /// Cancels the pending timer for `token`. Returns `true` if one was
-    /// pending (periodic timers are removed entirely), `false` otherwise.
     pub fn cancel(&mut self, token: TimerToken) -> bool {
         match self.index.remove(&token) {
             Some(key) => {
@@ -85,24 +52,12 @@ impl TimerQueue {
         }
     }
 
-    /// Earliest pending deadline, if any (ties resolved by the FIFO order).
     pub fn peek_next(&self) -> Option<(u64, TimerToken)> {
         self.entries
             .first_key_value()
             .map(|(&(deadline, _), entry)| (deadline, entry.token))
     }
 
-    /// Pops every deadline with `deadline_vns <= now_vns`, in the
-    /// deterministic `(deadline, FIFO)` order, returning `(deadline, token)`
-    /// pairs. Periodic timers are re-armed at `fired deadline + period` —
-    /// fixed cadence, so firing times are exactly `first + k * period` with
-    /// no drift accumulation even when popped late. A re-armed deadline that
-    /// is still `<= now_vns` fires again in the same call (catch-up: a
-    /// periodic popped `n` periods late returns `n + 1` firings).
-    ///
-    /// If re-arming overflows `u64` V-time (`deadline + period > u64::MAX`,
-    /// i.e. beyond ~584 years of V-time), the periodic timer is dropped:
-    /// its next deadline is unrepresentable.
     pub fn pop_due(&mut self, now_vns: u64) -> Vec<(u64, TimerToken)> {
         let mut fired = Vec::new();
         while let Some((&key, &entry)) = self.entries.first_key_value() {

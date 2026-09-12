@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Assemble the ROM-specific overlay for the generic NES guest image.
-//!
-//! The base image is deliberately ROM-free and carries only the static
-//! QuickNES play-agent plus the small BusyBox command surface it needs. This
-//! function appends a deterministic `newc` archive whose `/game.nes` and
-//! `/init` entries specialize that base for one caller-provided ROM.
 
 use guest_image::Writer;
 use std::{error::Error, fmt};
 
-/// The initramfs entrypoint written by [`prepare`].
 const INIT_SCRIPT: &[u8] = br##"#!/bin/sh
 # The base image supplies BusyBox and the static QuickNES play-agent. This
 # overlay supplies only the ROM and the entrypoint that starts the generic
@@ -46,12 +39,9 @@ fi
 exec $BB halt -f
 "##;
 
-/// Errors returned before any overlay bytes are produced.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PrepareError {
-    /// A payload without a ROM cannot initialize the libretro core.
     EmptyRom,
-    /// A prepared overlay without a base image is not a runnable guest image.
     EmptyBaseInitramfs,
 }
 
@@ -66,19 +56,6 @@ impl fmt::Display for PrepareError {
 
 impl Error for PrepareError {}
 
-/// Append the deterministic ROM and entrypoint overlay to a ROM-free base.
-///
-/// The returned bytes retain `base_initramfs` byte-for-byte as their prefix,
-/// add zero padding to put the overlay on a four-byte boundary, and append one
-/// deterministic `newc` archive. Linux's initramfs parser requires raw cpio
-/// magic after a compressed member to be four-byte aligned; without this
-/// padding the kernel falls back to old-style initrd handling before `/init`
-/// runs. Later entries override the base's `/init` entry. The overlay contains
-/// no host paths, timestamps, or input-dependent metadata beyond the ROM bytes.
-///
-/// # Errors
-///
-/// Returns an error when either input is empty.
 pub fn prepare(rom: &[u8], base_initramfs: &[u8]) -> Result<Vec<u8>, PrepareError> {
     if rom.is_empty() {
         return Err(PrepareError::EmptyRom);
@@ -187,9 +164,6 @@ mod tests {
 
     #[test]
     fn aligns_raw_overlay_after_each_gzip_prefix_length() {
-        // A valid empty gzip member keeps this fixture independent of host
-        // compression tools. The suffixes exercise all four possible prefix
-        // alignment classes while leaving the gzip member itself unchanged.
         const EMPTY_GZIP_MEMBER: &[u8] = &[
             0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x03, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

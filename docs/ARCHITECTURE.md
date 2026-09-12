@@ -157,7 +157,7 @@ the missing artifact or host capability when one is unavailable.
 
 ## Enforcing ownership
 
-The [Cargo dependency policy](dependency-boundaries.toml) classifies every
+The [Cargo dependency policy](../scripts/dependency-boundaries.toml) classifies every
 first-party crate. A required CI check resolves declared dependencies across
 workspaces, including optional, target-specific, build, and development edges.
 Integration crates compose packages and cores without giving core crates reverse

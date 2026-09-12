@@ -1,11 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Measure the host cost of one arm64 KVM doorbell MMIO round trip.
-//!
-//! The payload is deliberately tiny and deterministic: it stores a zero-length
-//! request at the board doorbell GPA forever. The VMM answers that malformed
-//! request with the normal framed transport error, so every timed `step` is a
-//! complete guest-store → `KVM_EXIT_MMIO` → host-dispatch → MMIO-completion
-//! round trip without requiring a Linux image or an initramfs.
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 use sha2::{Digest, Sha256};
@@ -91,16 +84,7 @@ fn arguments() -> Result<(u64, u64, String), String> {
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 fn guest_image() -> Vec<u8> {
-    // The Image loader enters at code0, which branches over the 64-byte Image
-    // header. The payload then sets x0 = 0x0a00_0000, writes w1 == 0 to the
-    // doorbell, and branches back to that store forever. These are fixed
-    // AArch64 encodings; no assembler or host-derived bytes are involved.
-    const CODE: [u32; 4] = [
-        0xd2a1_4000, // movz x0, #0x0a00, lsl #16
-        0x5280_0001, // mov  w1, #0
-        0xb900_0001, // str  w1, [x0]
-        0x17ff_ffff, // b    #-4 (back to str)
-    ];
+    const CODE: [u32; 4] = [0xd2a1_4000, 0x5280_0001, 0xb900_0001, 0x17ff_ffff];
     let mut code = Vec::with_capacity(CODE.len() * 4);
     for word in CODE {
         code.extend_from_slice(&word.to_le_bytes());
@@ -162,8 +146,6 @@ fn main() -> std::process::ExitCode {
     }
     let initial_doorbell_exits = vmm.doorbell_exits();
 
-    // This is host-only measurement. It brackets no composition, state-hash,
-    // or guard work; the wall clock never enters the VMM or guest state.
     #[allow(clippy::disallowed_methods)]
     let started = std::time::Instant::now();
     for iteration in 0..iterations {

@@ -1,18 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Box-only live `KvmBackend` integration tests (gates 6–9).
-//!
-//! `#[cfg(target_os = "linux")]` + `#[ignore]` so the standard gates (which run
-//! `cargo test … --all-features`) **compile but do not run** them — a Cargo
-//! feature would be flipped on by `--all-features` and trip the fail-fast on a
-//! Mac/CI host. Run explicitly on the determinism box, **CPU-pinned** per
-//! `docs/HARDWARE-TESTING.md`; choose an idle core on the qualified host:
-//!
-//! ```sh
-//! ssh <qualified-host> 'taskset -c 1 cargo test -p vmm-backend --test kvm_smoke -- --ignored --test-threads=1'
-//! ```
-//!
-//! **Fail-fast, never skip:** on a host without a usable `/dev/kvm` these panic
-//! with what is missing and where to run them, rather than silently passing.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use vmm_backend::{
@@ -20,8 +6,6 @@ use vmm_backend::{
     VcpuState, X86Exit, X86Policy,
 };
 
-/// One identity-mapped guest RAM region, page-aligned (the `map_memory` host
-/// alignment invariant), reached by the backend through a raw pointer.
 struct GuestMem {
     ptr: *mut u8,
     layout: std::alloc::Layout,
@@ -50,7 +34,6 @@ impl Drop for GuestMem {
     }
 }
 
-/// Fail-fast guard: build a `KvmBackend` or panic with where to run this.
 fn new_backend_or_explain() -> KvmBackend {
     if !std::path::Path::new("/dev/kvm").exists() {
         panic!(
@@ -67,15 +50,11 @@ fn new_backend_or_explain() -> KvmBackend {
     })
 }
 
-/// Minimal frozen CPUID model and a permissive-but-real MSR filter for bring-up.
-/// `allow_inkernel` names a couple of harmless MSR ranges KVM keeps servicing;
-/// every other MSR (including the gate-8 probe) traps to userspace.
 fn configure(backend: &mut KvmBackend) {
     backend
         .set_policy(&X86Policy {
             cpuid: CpuidModel::default(),
             msr_filter: MsrFilter {
-                // SYSENTER MSRs (0x174..0x177) — present, harmless, in-kernel.
                 allow_inkernel: vec![MsrRange {
                     base: 0x174,
                     count: 3,
@@ -85,20 +64,15 @@ fn configure(backend: &mut KvmBackend) {
         .expect("set_policy");
 }
 
-/// Put the vCPU into flat real mode with `rip` at `entry` (linear == GPA, paging
-/// off), via the trait's save/restore. Returns nothing; mutates the vCPU.
 fn enter_real_mode_at(backend: &mut KvmBackend, entry: u64) {
     let mut st = backend.save().expect("save for setup");
     st.sregs.cs.base = 0;
     st.sregs.cs.selector = 0;
     st.regs.rip = entry;
-    st.regs.rflags = 0x2; // reserved bit set, the minimal valid RFLAGS
+    st.regs.rflags = 0x2;
     backend.restore(&st).expect("restore setup state");
 }
 
-/// Map one guest image, install the frozen policy, and place the vCPU at its
-/// real-mode entry point. The backing allocation remains owned by the caller
-/// until the backend is dropped, preserving the raw mapping's lifetime.
 fn setup_real_mode(backend: &mut KvmBackend, mem: &mut GuestMem, code: &[u8]) {
     // SAFETY: mem is page-aligned, remains allocated until after backend is
     // dropped, and no host slice aliases it while the guest runs.
@@ -111,8 +85,6 @@ fn setup_real_mode(backend: &mut KvmBackend, mem: &mut GuestMem, code: &[u8]) {
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
 fn serviced_pio_is_exactly_snapshottable_without_guest_execution() {
-    // Each mode reaches the same I/O boundary. INC BX immediately after I/O
-    // witnesses any guest execution during completion retirement or capture.
     for read in [false, true] {
         let code = [
             0xBA,
@@ -127,7 +99,6 @@ fn serviced_pio_is_exactly_snapshottable_without_guest_execution() {
         let mut snapshot = None;
         let mut endpoints = Vec::new();
         for mode in 0..3 {
-            // RAM outlives the backend mapping, including backend destruction.
             let mut mem = GuestMem::new(0x10000);
             let mut backend = new_backend_or_explain();
             setup_real_mode(&mut backend, &mut mem, &code);
@@ -241,42 +212,30 @@ impl MmioOperation {
     }
 }
 
-/// Build a flat-real-mode instruction stream using 32-bit absolute addressing.
-/// The returned offset is the RIP immediately after the MMIO instruction; the
-/// two-byte `INC BX; HLT` witness follows it.
 fn mmio_guest_code(operation: MmioOperation) -> (Vec<u8>, u64) {
     let mmio_addr = (MMIO_GPA as u32).to_le_bytes();
     let source_addr = (MMIO_SOURCE_GPA as u32).to_le_bytes();
     let mut code = Vec::new();
     match operation {
-        // 67 66 A1 moffs32: MOV EAX, [0xFEE00000].
         MmioOperation::ScalarLoad => {
             code.extend_from_slice(&[0x67, 0x66, 0xA1]);
             code.extend_from_slice(&mmio_addr);
         }
-        // MOV EAX, imm32; 67 66 A3 moffs32: MOV [0xFEE00000], EAX.
         MmioOperation::ScalarStore => {
             code.extend_from_slice(&[0x66, 0xB8]);
             code.extend_from_slice(&SCALAR_STORE_VALUE.to_le_bytes());
             code.extend_from_slice(&[0x67, 0x66, 0xA3]);
             code.extend_from_slice(&mmio_addr);
         }
-        // 67 66 83 /0: ADD dword ptr [0xFEE00000], imm8. KVM must expose the
-        // instruction as a load followed by a store of the updated dword.
         MmioOperation::AddDword => {
             code.extend_from_slice(&[0x67, 0x66, 0x83, 0x05]);
             code.extend_from_slice(&mmio_addr);
             code.push(ADD_IMMEDIATE);
         }
-        // 67 F3 0F 6F /r: MOVDQU XMM0, [0xFEE00000]. KVM's eight-byte MMIO
-        // payload is expected to expose this as two fragments.
         MmioOperation::MovdquLoad => {
             code.extend_from_slice(&[0x67, 0xF3, 0x0F, 0x6F, 0x05]);
             code.extend_from_slice(&mmio_addr);
         }
-        // Load XMM0 from RAM first, then 67 F3 0F 7F /r: MOVDQU
-        // [0xFEE00000], XMM0. The source at 0x3000 is also a RAM endpoint
-        // witness for cold restore.
         MmioOperation::MovdquStore => {
             code.extend_from_slice(&[0x67, 0xF3, 0x0F, 0x6F, 0x05]);
             code.extend_from_slice(&source_addr);
@@ -285,7 +244,7 @@ fn mmio_guest_code(operation: MmioOperation) -> (Vec<u8>, u64) {
         }
     }
     let mmio_end = code.len() as u64;
-    code.extend_from_slice(&[0x43, 0xF4]); // INC BX; HLT
+    code.extend_from_slice(&[0x43, 0xF4]);
     (code, mmio_end)
 }
 
@@ -323,8 +282,6 @@ fn setup_mmio_guest(backend: &mut KvmBackend, mem: &mut GuestMem, operation: Mmi
     let (code, mmio_end) = mmio_guest_code(operation);
     setup_real_mode(backend, mem, &code);
 
-    // Keep an ordinary RAM source/witness mapped beside the code. The MOVDQU
-    // store reads this source, and every mode compares the complete RAM image.
     let source: Vec<u8> = MOVDQU_STORE_WORDS
         .into_iter()
         .flat_map(u64::to_le_bytes)
@@ -333,19 +290,12 @@ fn setup_mmio_guest(backend: &mut KvmBackend, mem: &mut GuestMem, operation: Mmi
         .write_guest(Gpa(MMIO_SOURCE_GPA), &source)
         .expect("load MMIO RAM source");
 
-    // CR4.OSFXSR is required for MOVDQU in this real-mode guest. It is harmless
-    // for the scalar and integer operations and keeps all five cases on the
-    // same setup path.
     let mut initial = backend.save().expect("save MMIO setup state");
     initial.regs.rbx = 0;
-    // The address-size prefix selects a 32-bit offset but does not enlarge
-    // real mode's hidden segment limit. Model a flat unreal-mode data segment
-    // so the access reaches the MMIO page rather than faulting on DS.limit.
     initial.sregs.ds.base = 0;
     initial.sregs.ds.limit = u32::MAX;
-    // A 4 GiB effective limit requires page granularity in the hidden descriptor.
     initial.sregs.ds.g = 1;
-    initial.sregs.cr4 |= 1 << 9; // OSFXSR
+    initial.sregs.cr4 |= 1 << 9;
     backend.restore(&initial).expect("restore MMIO setup state");
     mmio_end
 }
@@ -370,10 +320,6 @@ fn service_mmio(backend: &mut KvmBackend, operation: MmioOperation) -> Vec<Commo
         assert_eq!(access, expected[index], "{}: MMIO access", operation.name());
         observed.push(access);
 
-        // A surfaced MMIO callback is still a transaction: `run` must not
-        // resume the guest before the load is completed or the write is
-        // retired. This also covers writes returned as queued continuations by
-        // `finish_exit`, not only the first exit from KVM.
         let counts_before = backend.exit_counts();
         assert!(matches!(
             backend.run(),
@@ -399,9 +345,6 @@ fn service_mmio(backend: &mut KvmBackend, operation: MmioOperation) -> Vec<Commo
                 .unwrap_or_else(|e| panic!("{}: complete MMIO read failed: {e}", operation.name()));
         }
 
-        // This is the only operation between device accesses. It retires the
-        // current callback with immediate-exit and may return the next fragment
-        // of this same guest instruction. It never runs the successor.
         next = backend
             .finish_exit()
             .unwrap_or_else(|e| panic!("{}: finish MMIO exit failed: {e}", operation.name()));
@@ -537,8 +480,6 @@ fn serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu() {
                 );
                 let counts = backend.exit_counts();
 
-                // Repeated finish/capture at the stopped boundary is a fixpoint:
-                // it cannot enter the guest or add an exit count.
                 assert_eq!(backend.finish_exit().expect("repeat MMIO finish"), None);
                 assert_eq!(backend.exit_counts(), counts);
                 assert_eq!(backend.save().expect("repeat MMIO capture"), boundary);
@@ -550,8 +491,6 @@ fn serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu() {
                 }
             }
 
-            // The only ordinary run is the successor instruction after the full
-            // MMIO instruction has been completed and captured.
             assert_eq!(
                 backend.run().expect("continue MMIO guest to HLT"),
                 Exit::Common(CommonExit::Idle),
@@ -604,28 +543,22 @@ fn msr_guest_code(operation: MsrOperation) -> Vec<u8> {
         MsrOperation::Read => 10,
         MsrOperation::Write => 22,
     });
-    // Real mode defaults to 16-bit operands, so each 32-bit immediate move
-    // needs the 0x66 operand-size override before its opcode.
-    // `mov ecx, MSR_INDEX` makes the userspace filter decision observable.
     code.push(0x66);
     code.push(0xB9);
     code.extend_from_slice(&MSR_INDEX.to_le_bytes());
     match operation {
-        MsrOperation::Read => code.extend_from_slice(&[0x0F, 0x32]), // RDMSR
+        MsrOperation::Read => code.extend_from_slice(&[0x0F, 0x32]),
         MsrOperation::Write => {
-            // `mov eax, WRITE_EAX; mov edx, WRITE_EDX; wrmsr`.
             code.push(0x66);
             code.push(0xB8);
             code.extend_from_slice(&WRITE_EAX.to_le_bytes());
             code.push(0x66);
             code.push(0xBA);
             code.extend_from_slice(&WRITE_EDX.to_le_bytes());
-            code.extend_from_slice(&[0x0F, 0x30]); // WRMSR
+            code.extend_from_slice(&[0x0F, 0x30]);
         }
     }
-    // The witness immediately after the MSR instruction must not run during
-    // completion retirement. A fault instead vectors to the handler below.
-    code.extend_from_slice(&[0x43, 0xF4]); // INC BX; HLT
+    code.extend_from_slice(&[0x43, 0xF4]);
     code
 }
 
@@ -641,9 +574,6 @@ fn setup_msr_guest(backend: &mut KvmBackend, mem: &mut GuestMem, operation: MsrO
     let code = msr_guest_code(operation);
     setup_real_mode(backend, mem, &code);
 
-    // #GP vector 13 points to a handler that increments SI then halts. The
-    // fault arm must reach this handler only after the completion boundary is
-    // captured and resumed.
     backend
         .write_guest(Gpa(4 * GP_VECTOR), &[0x00, 0x20, 0x00, 0x00])
         .expect("load #GP IVT");
@@ -820,12 +750,9 @@ fn continue_msr_guest(
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
 fn serviced_exception_payload_round_trips_and_empty_restore_clears_it() {
-    // Exercise the real GET/SET event ABI independently of the MSR #GP path,
-    // which has no payload. Neither loading nor clearing a pending page fault
-    // may enter guest code or apply its payload to CR2 ahead of delivery.
     let mut mem = GuestMem::new(0x10000);
     let mut backend = new_backend_or_explain();
-    setup_real_mode(&mut backend, &mut mem, &[0x43, 0xF4]); // INC BX; HLT
+    setup_real_mode(&mut backend, &mut mem, &[0x43, 0xF4]);
     let initial = backend.save().expect("initial state");
     let counts = backend.exit_counts();
     let mut pending = initial.clone();
@@ -841,8 +768,6 @@ fn serviced_exception_payload_round_trips_and_empty_restore_clears_it() {
     assert_eq!(backend.save().expect("capture pending payload"), pending);
     assert_eq!(backend.exit_counts(), counts);
 
-    // A fresh backend must preserve the same pending payload, while restoring
-    // an empty record over it must replace (and clear) the displaced exception.
     let mut cold_mem = GuestMem::new(0x10000);
     let mut cold = new_backend_or_explain();
     setup_real_mode(&mut cold, &mut cold_mem, &[0x43, 0xF4]);
@@ -858,16 +783,11 @@ fn serviced_exception_payload_round_trips_and_empty_restore_clears_it() {
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
 fn serviced_msr_is_exactly_snapshottable_without_guest_execution() {
-    // Each operation and response reaches one userspace MSR boundary. The
-    // three continuation modes are uninterrupted, save-and-continue, and cold
-    // restore; the same matrix covers RDMSR/WRMSR success and #GP responses.
     for operation in [MsrOperation::Read, MsrOperation::Write] {
         for response in [MsrResponse::Success, MsrResponse::Fault] {
             let mut snapshot = None;
             let mut endpoints = Vec::new();
             for mode in 0..3 {
-                // RAM outlives the backend mapping, including backend
-                // destruction between save-and-continue and cold restore.
                 let mut mem = GuestMem::new(0x10000);
                 let mut backend = new_backend_or_explain();
                 setup_msr_guest(&mut backend, &mut mem, operation);
@@ -897,9 +817,6 @@ fn serviced_msr_is_exactly_snapshottable_without_guest_execution() {
                 }
                 let counts_before_hlt = backend.exit_counts();
                 let endpoint = continue_msr_guest(&mut backend, response, counts_before_hlt);
-                // Exception delivery also writes the guest stack. Compare RAM
-                // after the vCPU is stopped so a restored fault cannot silently
-                // produce a different frame while matching its final registers.
                 endpoints.push((endpoint, mem.as_mut_slice().to_vec()));
             }
             assert_eq!(
@@ -923,7 +840,6 @@ fn save_restore_round_trips_on_real_kvm() {
     unsafe { backend.map_memory(Gpa(0), mem.as_mut_slice()) }.expect("map_memory");
     configure(&mut backend);
 
-    // Set GPRs via restore, save, then prove restore→save is a fixpoint.
     let mut st = backend.save().expect("save");
     st.regs.rax = 0xDEAD_BEEF_CAFE_F00D;
     st.regs.rbx = 0x0123_4567_89AB_CDEF;
@@ -934,36 +850,21 @@ fn save_restore_round_trips_on_real_kvm() {
     assert_eq!(a.regs.rax, 0xDEAD_BEEF_CAFE_F00D);
     assert_eq!(a.regs.rbx, 0x0123_4567_89AB_CDEF);
 
-    // The full allow-stateful MSR set was captured (get_msrs got == requested):
-    // the 3 SYSENTER MSRs from `configure`, none silently dropped.
     assert_eq!(a.msrs.len(), 3, "all allow-stateful MSRs captured");
-    // The XSAVE image is the host-sized XSAVE2 buffer (>= the 4 KiB legacy size),
-    // not a fixed 4 KiB truncation.
     assert!(a.xsave.len() >= 4096, "host-sized XSAVE2 image");
 
     backend.restore(&a).expect("restore a");
     let b = backend.save().expect("save b");
-    // The fixpoint now spans SREGS2 (incl. flags/PDPTRs) and the full XSAVE2 image.
     assert_eq!(a, b, "restore→save must be a fixpoint on real KVM");
 }
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored"]
 fn msr_filter_is_loud() {
-    // Real-mode stub at 0x1000:
-    //   mov ecx, 0x12345678   (66 b9 ..)   ; denied MSR index
-    //   rdmsr                 (0f 32)
-    //   mov al, 0x99          (b0 99)       ; only reached if rdmsr *silently allowed*
-    //   out 0x10, al          (e6 10)       ; -> X86Exit::Io (the silent-value path)
-    //   hlt                   (f4)
     let code: &[u8] = &[
         0x66, 0xB9, 0x78, 0x56, 0x34, 0x12, 0x0F, 0x32, 0xB0, 0x99, 0xE6, 0x10, 0xF4,
     ];
-    // Real-mode IVT entry for #GP (vector 13) at physical 13*4 = 0x34: offset
-    // 0x2000, segment 0x0000.
     let gp_ivt: &[u8] = &[0x00, 0x20, 0x00, 0x00];
-    // The #GP handler at 0x2000: a single HLT — reached only if the fault is
-    // actually delivered.
     let gp_handler: &[u8] = &[0xF4];
 
     let mut backend = new_backend_or_explain();
@@ -980,15 +881,10 @@ fn msr_filter_is_loud() {
         .expect("load handler");
     enter_real_mode_at(&mut backend, 0x1000);
 
-    // The denied RDMSR surfaces loudly to userspace, not a silent in-kernel value.
     match backend.run().expect("run to RDMSR") {
         Exit::Arch(X86Exit::Rdmsr { index: 0x1234_5678 }) => {}
         other => panic!("expected RDMSR exit for the denied index, got {other:?}"),
     }
-    // Deny it (#GP). The fault vectors through IVT[13] to the HLT handler, so the
-    // next exit is HLT — proving the guest took the fault. A silent in-kernel
-    // value instead would have advanced past RDMSR into the `out 0x10` and
-    // surfaced X86Exit::Io, which would fail this assertion loudly.
     backend.complete_fault().expect("complete_fault");
     match backend.run().expect("run after #GP") {
         Exit::Common(CommonExit::Idle) => {}

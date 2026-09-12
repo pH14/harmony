@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Bounded selection history independent of archive entry lifetimes.
 use std::{
     collections::{BTreeMap, BTreeSet},
     mem::size_of,
@@ -33,8 +32,6 @@ impl<K: Copy + Ord, const CAP: usize> KeyCounts<K, CAP> {
         self.counts.get(&key).map_or(0, |(count, _)| *count)
     }
 
-    /// Record one selection, including a recorded skip. The entry's incremented
-    /// count is a floor if a cache eviction forgot earlier selections.
     pub fn record(&mut self, key: K, entry_count: u64) {
         self.clock = self.clock.saturating_add(1);
         let count = if let Some((count, stamp)) = self.counts.get(&key).copied() {
@@ -57,8 +54,6 @@ impl<K: Copy + Ord, const CAP: usize> KeyCounts<K, CAP> {
         self.counts.len()
     }
 
-    /// Conservative fixed charge for both ordered indexes, including node
-    /// slack. No host allocation timing enters budget enforcement or replay.
     pub fn reserve_bytes() -> usize {
         CAP.saturating_mul(2 * size_of::<K>() + 4 * size_of::<u64>() + 256)
     }
@@ -73,7 +68,6 @@ mod tests {
         let mut counts = KeyCounts::<u8, 2>::default();
         counts.record(10, 1);
         counts.record(20, 1);
-        // A new archive entry for key 10 has a fresh local count of one.
         counts.record(10, 1);
         assert_eq!(counts.get(10), 2);
         counts.record(30, 1);

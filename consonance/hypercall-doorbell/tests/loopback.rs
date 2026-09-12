@@ -1,14 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! End-to-end gate for the hypercall-doorbell transport with **no hypervisor**.
-//!
-//! A `LoopbackHost: IoDoorbell` plays the host: it reaches the two **fixed** shared pages through
-//! the GPAs it was constructed with (exactly as the production host knows them from the ABI, not
-//! from the doorbell — an `OUT` carries no pointer), runs a real `hypercall_proto::Dispatcher` over
-//! the request bytes the guest staged, and writes the response **frame** into the response page.
-//! There is no return value: the response length is folded into the frame header, which is the
-//! single-`OUT`, atomic doorbell the crate ships. The round-trip tests drive the unmodified task-01
-//! `Client` through all five service calls; the bad-length and decode-boundary tests prove the
-//! load-bearing bound check holds for *any* host-written response page.
 
 use core::ptr;
 use std::cell::RefCell;
@@ -22,21 +12,8 @@ use hypercall_proto::{
 };
 use proptest::prelude::*;
 
-/// The wire frame magic (`"HCP1"` little-endian) — `hypercall_proto`'s magic is private, so the
-/// test mirrors it (same value the crate's `FRAME_MAGIC` mirrors). Used to forge response headers.
 const FRAME_MAGIC: u32 = 0x3150_4348;
 
-/// Per-test proptest config. Native runs keep the spec's full case counts (round-trip ≥256, the
-/// bound-check probes 512). **Under Miri** two things change:
-///
-/// * **Cases are cut to 16.** The interpreter is ~10–100× slower, so the full counts would push
-///   the suite into the tens of minutes while re-treading the same handful of `exchange` branches;
-///   16 independent seeds still drive the bound-check and no-panic paths Miri is here to scrutinize
-///   for UB. The reduction is Miri-only (`cfg!(miri)`); the native gate honors the ≥256 convention.
-/// * **Failure persistence is disabled.** proptest's default persistence resolves a regression-file
-///   path via `current_dir()` (getcwd), which Miri runs under filesystem isolation and rejects —
-///   the suite would abort before testing anything. There is no regression-replay workflow under
-///   the Miri gate, so dropping it is free; native runs keep the default file persistence.
 fn config(native_cases: u32) -> ProptestConfig {
     let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { native_cases });
     if cfg!(miri) {
@@ -45,27 +22,12 @@ fn config(native_cases: u32) -> ProptestConfig {
     cfg
 }
 
-/// A page-aligned, `PAGE_SIZE`-byte backing store reached **only** through a raw pointer whose
-/// provenance is exposed — used directly as its GPA (the identity-mapped invariant the transport
-/// requires).
-///
-/// Deliberately *not* a `Box<[u8; PAGE_SIZE]>`: a `Box`/`&mut`-owned page gives the allocation a
-/// unique owner tag that Miri's aliasing model (Stacked **and** Tree Borrows) requires *every*
-/// access — and the final deallocation — to go through. But here two "agents" reach the page
-/// through independently int→ptr-recovered pointers: the guest transport (`self.req_page`/
-/// `resp_page = gpa as *mut u8`) and the loopback host (`resp_gpa as *mut u8`), exactly as
-/// hardware shares one physical page between guest and host. Owning the only path as a raw,
-/// provenance-exposed allocation models that faithfully and lets both writers and the final
-/// `dealloc` coexist — while Miri still catches genuine UB (the injected-OOB non-vacuity check in
-/// README.md confirms an out-of-bounds read past the page is flagged). This is the
-/// production shape too: a real guest page is raw identity-mapped RAM, not a Rust `Box`.
 struct Page {
     ptr: *mut u8,
 }
 
 impl Page {
     fn layout() -> std::alloc::Layout {
-        // PAGE_SIZE is non-zero and 4096 is a power of two, so this is statically valid.
         std::alloc::Layout::from_size_align(PAGE_SIZE, 4096).expect("valid page layout")
     }
 
@@ -76,9 +38,6 @@ impl Page {
         Self { ptr }
     }
 
-    /// The page's address, used directly as its GPA. Casting the raw pointer to an integer
-    /// *exposes its provenance*, so the transport's and host's `gpa as *mut u8` round-trips
-    /// resolve to this allocation under Miri.
     fn gpa(&self) -> u64 {
         self.ptr as u64
     }
@@ -92,14 +51,6 @@ impl Drop for Page {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Loopback host: a faithful stand-in for the vmm-core port-I/O exit handler.
-// ---------------------------------------------------------------------------
-
-/// `IoDoorbell` that emulates the §1 host: validates the doorbell port, then runs a real
-/// `Dispatcher` over the request bytes the guest staged at the fixed request page and writes the
-/// response frame into the fixed response page. It holds the fixed page GPAs out-of-band — exactly
-/// as the production host knows them from the ABI rather than from the (pointer-free) doorbell.
 struct LoopbackHost {
     dispatcher: Dispatcher,
     req_gpa: u64,
@@ -118,10 +69,6 @@ impl LoopbackHost {
 
 impl IoDoorbell for LoopbackHost {
     unsafe fn ring(&mut self, port: u16, req_len: u32) {
-        // A wrong doorbell port, or a `req_len` past one page, is a malformed doorbell the host
-        // does not recognize: write nothing, leaving the (zeroed) response page as the rejection
-        // sentinel `exchange` reads as `HostRejected`. The `req_len > PAGE_SIZE` rejection matches
-        // `Exit::Io { write: Some(len) }` — the host can expose at most one page.
         if port != DOORBELL_PORT || req_len as usize > PAGE_SIZE {
             return;
         }
@@ -136,25 +83,16 @@ impl IoDoorbell for LoopbackHost {
         }
 
         let mut resp_local = [0_u8; PAGE_SIZE];
-        // Dispatch only the **exposed** bytes (`&req_local[..n]`), not the zero-padded page: a
-        // request shorter than its header-encoded frame is then seen as truncated and answered with
-        // an error frame, faithful to the doorbell exposing only `len` bytes.
         let resp_n = self.dispatcher.dispatch(&req_local[..n], &mut resp_local);
-        // `dispatch` never returns more than `PAGE_SIZE` (one frame), but clamp defensively so a
-        // future contract change can never make the copy below run past the page.
         let resp_n = resp_n.min(PAGE_SIZE);
 
         // SAFETY: `resp_gpa` is the fixed response-page address (`PAGE_SIZE` bytes); `resp_n <=
-        // PAGE_SIZE`, so the write stays in-page. Raw pointer write, no borrow held.
         unsafe {
             ptr::copy_nonoverlapping(resp_local.as_ptr(), self.resp_gpa as *mut u8, resp_n);
         }
     }
 }
 
-/// `IoDoorbell` that ignores the request and writes a scripted **raw response page** — the scripted
-/// host used to probe the magic gate and the length bound. Whatever bytes the test crafts (a forged
-/// header that lies about its length, a zeroed page, garbage) land in the fixed response page.
 struct ScriptedHost {
     page: Vec<u8>,
     resp_gpa: u64,
@@ -170,12 +108,8 @@ impl IoDoorbell for ScriptedHost {
     }
 }
 
-/// Build a `PAGE_SIZE` response page whose 24-byte header is a real (magic-correct) frame, then
-/// **forge** its `payload_len` field (wire offset 16) to `payload_len_field` and place `body` after
-/// the header. Lets a test craft a header that lies about its length to drive the bound check.
 fn forged_resp_page(payload_len_field: u32, body: &[u8]) -> Vec<u8> {
     let mut page = vec![0_u8; PAGE_SIZE];
-    // A real response header (correct magic), empty payload — gives us the right magic bytes.
     encode_response(ServiceId::Console, 1, 1, Status::Ok, &[], &mut page).expect("encode header");
     page[16..20].copy_from_slice(&payload_len_field.to_le_bytes());
     let n = body.len().min(PAGE_SIZE - HEADER_LEN);
@@ -183,7 +117,6 @@ fn forged_resp_page(payload_len_field: u32, body: &[u8]) -> Vec<u8> {
     page
 }
 
-/// Copy 4 bytes from the response page and read them as the little-endian frame magic.
 fn resp_magic(resp_gpa: u64) -> u32 {
     let mut m = [0_u8; 4];
     // SAFETY: `resp_gpa` is a `PAGE_SIZE` page; reading 4 bytes stays in-page.
@@ -193,7 +126,6 @@ fn resp_magic(resp_gpa: u64) -> u32 {
     u32::from_le_bytes(m)
 }
 
-/// Copy the response page out and decode its frame header (panics on a malformed frame).
 fn decode_resp_header(resp_gpa: u64) -> FrameHeader {
     let mut page = [0_u8; PAGE_SIZE];
     // SAFETY: `resp_gpa` is a `PAGE_SIZE` page.
@@ -203,11 +135,6 @@ fn decode_resp_header(resp_gpa: u64) -> FrameHeader {
     decode(&page).expect("valid response frame").0
 }
 
-// ---------------------------------------------------------------------------
-// Recording services so the test can observe write-only services after a call.
-// ---------------------------------------------------------------------------
-
-/// Console sink that records into a handle the test keeps a clone of.
 #[derive(Clone, Default)]
 struct SharedConsole(Rc<RefCell<Vec<u8>>>);
 
@@ -228,10 +155,8 @@ impl Service for SharedConsole {
     }
 }
 
-/// Recorded `(event-id, data)` pairs, shared between the host service and the test.
 type EventLog = Rc<RefCell<Vec<(u32, Vec<u8>)>>>;
 
-/// Event sink that records `(id, data)` into a handle the test keeps a clone of.
 #[derive(Clone, Default)]
 struct SharedEvent(EventLog);
 
@@ -255,12 +180,6 @@ impl Service for SharedEvent {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Harness wiring pages + transport + the real task-01 Client together.
-// ---------------------------------------------------------------------------
-
-/// A live `Client<VmcallTransport<LoopbackHost>>` plus observation handles. The pages are
-/// retained so their addresses (used as GPAs) stay valid for the client's lifetime.
 struct Harness {
     client: Client<VmcallTransport<LoopbackHost>>,
     console: Rc<RefCell<Vec<u8>>>,
@@ -304,8 +223,6 @@ impl Harness {
     }
 }
 
-/// Independent reference for the deterministic entropy stream, mirroring the client's
-/// `MAX_PAYLOAD` chunking so the stream advances identically.
 fn entropy_reference(seed: u64, len: usize) -> Vec<u8> {
     let mut svc = SeededEntropy::new(seed);
     let mut out = vec![0_u8; len];
@@ -323,36 +240,27 @@ fn entropy_reference(seed: u64, len: usize) -> Vec<u8> {
     out
 }
 
-// ---------------------------------------------------------------------------
-// The required end-to-end gate: all five client calls round-trip with no KVM.
-// ---------------------------------------------------------------------------
-
 #[test]
 fn five_client_calls_round_trip_through_loopback() {
     let block_data: Vec<u8> = (0..16 * 512).map(|i| (i % 251) as u8).collect();
     let seed = 0xC0FF_EE12_3456_789A;
     let mut h = Harness::new(seed, block_data.clone());
 
-    // console_write (guest -> host)
     let msg = b"hello, harmony \x00\x01\x02 end";
     h.client.console_write(msg).expect("console_write");
     assert_eq!(h.console.borrow().as_slice(), msg);
 
-    // entropy_fill (host -> guest), length spanning >1 frame to exercise chunking
     let mut entropy = vec![0_u8; MAX_PAYLOAD + 37];
     h.client.entropy_fill(&mut entropy).expect("entropy_fill");
     assert_eq!(entropy, entropy_reference(seed, entropy.len()));
 
-    // block_capacity (host -> guest)
     let capacity = h.client.block_capacity().expect("block_capacity");
     assert_eq!(capacity, 16);
 
-    // block_read spanning >BLOCK_READ_MAX_SECTORS to exercise multi-call chunking
     let mut sectors = vec![0_u8; 11 * 512];
     h.client.block_read(2, &mut sectors).expect("block_read");
     assert_eq!(sectors.as_slice(), &block_data[2 * 512..(2 + 11) * 512]);
 
-    // event_emit (guest -> host)
     h.client
         .event_emit(0xABCD, b"payload-bytes")
         .expect("event_emit");
@@ -362,10 +270,6 @@ fn five_client_calls_round_trip_through_loopback() {
     );
 }
 
-/// The loopback writes a frame only for the right doorbell port; a wrong port leaves the response
-/// page unwritten (magic stays 0 → `exchange` maps it to `HostRejected`). Proves the gate would
-/// catch a transport that rang the wrong port rather than rubber-stamp it. (The doorbell carries no
-/// GPAs, so there is no GPA-mispassing failure mode to guard — the pages are fixed ABI constants.)
 #[test]
 fn loopback_rejects_bad_port() {
     let mut dispatcher = Dispatcher::new();
@@ -374,7 +278,6 @@ fn loopback_rejects_bad_port() {
     let resp = Page::zeroed();
     let (req_gpa, resp_gpa) = (req.gpa(), resp.gpa());
 
-    // Stage a complete console_write request frame.
     let mut frame = [0_u8; PAGE_SIZE];
     let n = encode_request(ServiceId::Console, 1, 1, b"hi", &mut frame).expect("encode request");
     // SAFETY: `req_gpa` is a `PAGE_SIZE` page; `n <= PAGE_SIZE`.
@@ -385,11 +288,9 @@ fn loopback_rejects_bad_port() {
 
     // SAFETY: the host only reads/writes within the fixed pages it holds.
     unsafe {
-        // Wrong port: nothing written, the zeroed response page keeps magic 0.
         host.ring(DOORBELL_PORT ^ 0x1, n as u32);
         assert_eq!(resp_magic(resp_gpa), 0, "wrong port writes nothing");
 
-        // Correct port: a real response frame is written (magic present).
         host.ring(DOORBELL_PORT, n as u32);
         assert_eq!(
             resp_magic(resp_gpa),
@@ -400,9 +301,6 @@ fn loopback_rejects_bad_port() {
     drop((req, resp));
 }
 
-/// Fidelity: the loopback dispatches only the **exposed** request bytes, so a request whose rung
-/// length is shorter than its encoded frame is seen as truncated (answered `BadRequest`), not
-/// zero-padded into a valid-looking call — keeping the gate as strict as the ABI.
 #[test]
 fn loopback_dispatches_only_exposed_request_bytes() {
     let mut dispatcher = Dispatcher::new();
@@ -425,12 +323,9 @@ fn loopback_dispatches_only_exposed_request_bytes() {
 
     // SAFETY: the host only reads/writes within the fixed pages it holds.
     unsafe {
-        // Full length: the frame decodes and the service runs (Status::Ok).
         host.ring(DOORBELL_PORT, n as u32);
         assert_eq!(decode_resp_header(resp_gpa).status, Status::Ok as u16);
 
-        // Truncated length (n-1): the host sees one byte too few, so the frame decodes as
-        // truncated -> BadRequest, NOT a zero-padded valid call.
         ptr::write_bytes(resp_gpa as *mut u8, 0, PAGE_SIZE);
         host.ring(DOORBELL_PORT, (n - 1) as u32);
         assert_eq!(
@@ -442,12 +337,6 @@ fn loopback_dispatches_only_exposed_request_bytes() {
     drop((req, resp));
 }
 
-// ---------------------------------------------------------------------------
-// Malformed-response rejection: the magic check and length bound, fixed cases.
-// ---------------------------------------------------------------------------
-
-/// Drive one `exchange` against a `ScriptedHost` that writes `page` into the response page.
-/// `resp_buf_len` is the caller buffer size.
 fn run_scripted(page: Vec<u8>, resp_buf_len: usize) -> Result<(usize, Vec<u8>), TransportError> {
     let req = Page::zeroed();
     let resp = Page::zeroed();
@@ -457,25 +346,19 @@ fn run_scripted(page: Vec<u8>, resp_buf_len: usize) -> Result<(usize, Vec<u8>), 
     let mut transport = unsafe { VmcallTransport::with_doorbell(req_gpa, resp_gpa, host) };
     let mut out = vec![0_u8; resp_buf_len];
     let r = transport.exchange(&[], &mut out).map(|len| (len, out));
-    drop((req, resp)); // keep pages alive across the call
+    drop((req, resp));
     r
 }
 
 #[test]
 fn malformed_response_is_rejected_without_panic_or_overcopy() {
-    // No frame magic (zeroed page = what a rejecting host leaves behind): HostRejected.
     assert_eq!(
         run_scripted(vec![0_u8; PAGE_SIZE], 64).unwrap_err(),
         TransportError::HostRejected
     );
 
-    // Valid magic but a header lying about its length — all bounded out, nothing copied.
     let max_payload = (PAGE_SIZE - HEADER_LEN) as u32;
-    for &plen in &[
-        max_payload + 1, // total = PAGE_SIZE + 1 > PAGE_SIZE
-        u32::MAX,        // total = u32::MAX + HEADER_LEN, overflows u32 but fits u64
-        0xFFFF_FFFF,
-    ] {
+    for &plen in &[max_payload + 1, u32::MAX, 0xFFFF_FFFF] {
         assert_eq!(
             run_scripted(forged_resp_page(plen, &[0xAB; 8]), PAGE_SIZE).unwrap_err(),
             TransportError::BadResponseLength,
@@ -483,22 +366,17 @@ fn malformed_response_is_rejected_without_panic_or_overcopy() {
         );
     }
 
-    // Within the page but the frame is larger than the caller's buffer: rejected, not over-written.
-    // total = HEADER_LEN + 50 = 74 > 64.
     assert_eq!(
         run_scripted(forged_resp_page(50, &[0xCD; 50]), 64).unwrap_err(),
         TransportError::BadResponseLength,
     );
 
-    // Exactly at the caller-buffer boundary: accepted, exact frame bytes copied.
-    // total = HEADER_LEN + 40 = 64 == buffer 64.
     let body: Vec<u8> = (0..40).map(|i| i as u8).collect();
     let page = forged_resp_page(40, &body);
     let (len, out) = run_scripted(page.clone(), 64).unwrap();
     assert_eq!(len, 64);
     assert_eq!(out, page[..64]);
 
-    // Upper boundary: a full-page frame (total == PAGE_SIZE) with a full-page buffer.
     let body = vec![0x5A_u8; PAGE_SIZE - HEADER_LEN];
     let page = forged_resp_page(max_payload, &body);
     let (len, out) = run_scripted(page.clone(), PAGE_SIZE).unwrap();
@@ -525,16 +403,9 @@ fn request_larger_than_page_is_rejected() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Property tests — the spec's required ≥256-case round-trip, plus boundary
-// coverage of the magic-gate / length-bound boundary (green gate is the floor).
-// ---------------------------------------------------------------------------
-
 proptest! {
     #![proptest_config(config(256))]
 
-    /// Round-trip arbitrary payloads through `Client<VmcallTransport<LoopbackHost>>` and assert the
-    /// bytes returned equal what the stub services produced.
     #[test]
     fn round_trip_arbitrary_payloads(
         seed in any::<u64>(),
@@ -548,20 +419,16 @@ proptest! {
             (0..total_sectors * 512).map(|i| (i.wrapping_mul(31) % 256) as u8).collect();
         let mut h = Harness::new(seed, block_data.clone());
 
-        // console (guest -> host)
         h.client.console_write(&console).unwrap();
         let recorded_console = h.console.borrow().clone();
         prop_assert_eq!(recorded_console.as_slice(), console.as_slice());
 
-        // entropy (host -> guest) vs independent reference stream
         let mut got = vec![0_u8; entropy_len];
         h.client.entropy_fill(&mut got).unwrap();
         prop_assert_eq!(&got, &entropy_reference(seed, entropy_len));
 
-        // capacity (host -> guest)
         prop_assert_eq!(h.client.block_capacity().unwrap(), total_sectors as u64);
 
-        // block_read of a random in-range span (host -> guest)
         let lba = (seed as usize) % total_sectors;
         let max_sectors = total_sectors - lba;
         let read_sectors = 1 + (event_id as usize % max_sectors);
@@ -572,7 +439,6 @@ proptest! {
             &block_data[lba * 512..(lba + read_sectors) * 512]
         );
 
-        // event (guest -> host)
         h.client.event_emit(event_id, &event_data).unwrap();
         let recorded_events = h.events.borrow().clone();
         prop_assert_eq!(recorded_events.as_slice(), &[(event_id, event_data)]);
@@ -582,11 +448,6 @@ proptest! {
 proptest! {
     #![proptest_config(config(512))]
 
-    /// For ANY host-written response page, `exchange` classifies exactly per spec, never panics,
-    /// and never over-copies. `payload_len_field` ranges over the full `u32` domain (so
-    /// `HEADER_LEN + payload_len` can exceed `u32::MAX`, exercising the `u64`
-    /// bound-check-before-cast beyond any 32-bit value), and `valid_magic` toggles the rejection
-    /// gate.
     #[test]
     fn exchange_classifies_any_response_page(
         valid_magic in any::<bool>(),
@@ -596,12 +457,11 @@ proptest! {
     ) {
         let mut page = forged_resp_page(payload_len_field, &body);
         if !valid_magic {
-            page[0] ^= 0xFF; // flip the low magic byte -> guaranteed != FRAME_MAGIC
+            page[0] ^= 0xFF;
         }
         let result = run_scripted(page.clone(), resp_buf_len);
 
         if !valid_magic {
-            // No frame magic -> always rejected, regardless of the (unread) length.
             prop_assert_eq!(result.unwrap_err(), TransportError::HostRejected);
         } else {
             let total = HEADER_LEN as u64 + payload_len_field as u64;
@@ -623,9 +483,6 @@ proptest! {
 proptest! {
     #![proptest_config(config(512))]
 
-    /// Decode-boundary fuzz: a misbehaving host writes an arbitrary response page (optionally with a
-    /// valid magic + forged length); every task-01 `Client` call must yield `Ok` or a clean
-    /// `ClientError` — never a panic/UB.
     #[test]
     fn client_survives_garbage_host(
         force_magic in any::<bool>(),
@@ -647,7 +504,6 @@ proptest! {
         let transport = unsafe { VmcallTransport::with_doorbell(req_gpa, resp_gpa, host) };
         let mut client = Client::new(transport);
 
-        // Each call decodes host-controlled bytes; assert it returns (Ok or Err) without panic.
         let mut scratch = [0_u8; 512];
         let _: Result<(), ClientError<TransportError>> = client.console_write(b"x");
         let _: Result<(), ClientError<TransportError>> = client.entropy_fill(&mut scratch[..8]);
@@ -656,6 +512,6 @@ proptest! {
         let _: Result<(), ClientError<TransportError>> = client.event_emit(1, b"y");
 
         drop((req, resp));
-        prop_assert!(true); // reaching here without panic is the property
+        prop_assert!(true);
     }
 }

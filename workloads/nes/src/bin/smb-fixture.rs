@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Evaluator-private extraction and replay certification for snapshot-root fixtures.
-
 use std::{
     env,
     error::Error,
@@ -309,11 +307,6 @@ fn verify(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box
         return Err("challenge terminal predicate disagrees with the private manifest".into());
     }
 
-    // The extraction archive is provenance, not a fixture input. Certification
-    // replays the hashed prefix and checks the resulting trace and checkpoint,
-    // so requiring the archive at its extraction-time absolute path would make
-    // an otherwise self-contained fixture impossible to move between evaluator
-    // hosts.
     let rom = read_rom()?;
     let game = selected_game(&rom)?;
     if sha256(&rom) != manifest.rom_sha256 {

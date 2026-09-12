@@ -1,26 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Deterministic exit-count virtual clock.
 
 use crate::VtimeError;
 
 const NS_PER_SEC: u128 = 1_000_000_000;
 
-/// Configuration for a [`VClock`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VClockConfig {
-    /// Virtual counter frequency in Hz.
     pub guest_hz: u64,
-    /// Guest counter value corresponding to virtual time zero.
     pub guest_base: u64,
-    /// Initial virtual time in nanoseconds.
     pub vns_base: u64,
 }
 
-/// An integer-only virtual clock advanced explicitly by the VMM.
-///
-/// The clock has no host-time or instruction-count input. Each serviced VM
-/// exit contributes its normalized, deterministic duration through
-/// [`VClock::advance`]. Idle skipping uses the same operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VClock {
     cfg: VClockConfig,
@@ -28,11 +18,6 @@ pub struct VClock {
 }
 
 impl VClock {
-    /// Builds a clock from deterministic configuration.
-    ///
-    /// This constructor remains fallible so callers can propagate one stable
-    /// initialization shape alongside [`TimerQueue`](crate::TimerQueue). The
-    /// current configuration has no invalid bit pattern.
     pub fn new(cfg: VClockConfig) -> Result<Self, VtimeError> {
         Ok(Self {
             current_vns: cfg.vns_base,
@@ -40,18 +25,15 @@ impl VClock {
         })
     }
 
-    /// Current virtual time in nanoseconds.
     pub fn vns(&self) -> u64 {
         self.current_vns
     }
 
-    /// Current guest-visible counter value.
     pub fn guest_ticks(&self) -> u64 {
         let ticks = u128::from(self.current_vns) * u128::from(self.cfg.guest_hz) / NS_PER_SEC;
         saturate(u128::from(self.cfg.guest_base) + ticks)
     }
 
-    /// Advances virtual time by a deterministic delta, saturating at `u64::MAX`.
     pub fn advance(&mut self, delta_vns: u64) {
         self.current_vns = self.current_vns.saturating_add(delta_vns);
     }

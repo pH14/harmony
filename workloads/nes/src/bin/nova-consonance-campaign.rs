@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Run the game-blind Nova campaign with QuickNES inside Consonance.
-
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64"),
@@ -54,20 +52,8 @@ mod real {
     use serde_json::json;
     use sha2::{Digest, Sha256};
 
-    // Each worker keeps one guest VM resident for the campaign. This backing
-    // is outside the archive's logical snapshot charge and belongs in the
-    // whole-process reserve.
     const PERSISTENT_VM_MEMORY_MIB: usize = 128;
-    // Reserve a conservative, deterministic amount for non-archive process
-    // allocations, rounded up from measured campaign overhead.
     const NON_ARCHIVE_PROCESS_OVERHEAD_MIB: usize = 448;
-    // Sparse snapshots share page allocations, so reducing their conservative
-    // full-footprint charge does not reduce RSS byte for byte. Four exact-head
-    // hardware replicas with a 1,088 MiB archive converged at 2,290--2,291 MiB
-    // peak RSS. Cap this whole-VM campaign's archive at the already accepted
-    // twelve-worker size and reserve the remainder for VM backing, allocator
-    // retention, and other process state. The cap is deterministic: host RSS
-    // never influences search or eviction decisions.
     const ARCHIVE_MEMORY_BUDGET_MIB: usize = 64;
 
     struct MemoryBudget {
@@ -116,8 +102,6 @@ mod real {
             let mut args = values.into_iter();
             while let Some(flag) = args.next() {
                 if flag == "--fixed-execution-soak" {
-                    // A throughput acceptance run must reach its exact budget
-                    // even when the ordinary search finds a victory first.
                     fixed_execution_soak = true;
                     continue;
                 }
@@ -269,7 +253,7 @@ mod real {
             archive_entry_limit: MAX_ARCHIVE_ENTRIES,
             memory_budget_mib: Some(memory_budget.archive_memory_budget_mib),
             materialize_final_artifacts: true,
-            retention: RetentionPolicy::AdmitAlive,
+            retention: RetentionPolicy::Unprobed,
             selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
                 entry: 3,
                 groups: vec![6, 12, 2],
@@ -293,7 +277,7 @@ mod real {
         drop(progress);
         drop(checkpoint);
         let best_input = report
-            .victory_input
+            .objective_witness
             .as_ref()
             .unwrap_or(&report.archive.champion_input);
         fs::write(
@@ -322,13 +306,13 @@ mod real {
             "peak_rss_mib": bytes_to_mib_ceil(peak_rss_bytes),
             "execution_budget": report.execution_budget,
             "executions": report.executions_completed,
-            "frames_emulated": report.frames_emulated,
+            "frames_emulated": report.execution_work,
             "stream_sha256": report.stream_sha256,
             "archive_entries": report.archive.entries.len(),
             "retained": report.archive.retained,
             "rejected": report.archive.rejected,
             "deaths": report.archive.deaths,
-            "victories": report.victories,
+            "victories": report.objectives_reached,
             "progress": report.archive.progress_watermark,
             "milestones": report.archive.milestones,
             "first_reached": report.archive.first_reached,

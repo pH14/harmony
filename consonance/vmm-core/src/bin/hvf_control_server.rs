@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Unix-socket control server for the virtual_time arm64 Apple-HVF workload.
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
 fn main() -> std::process::ExitCode {

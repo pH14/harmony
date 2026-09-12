@@ -2,8 +2,6 @@
 
 #![recursion_limit = "256"]
 
-//! Run a bounded Super Tilt Bro campaign and render one retained witness.
-
 use std::{
     env,
     error::Error,
@@ -33,9 +31,6 @@ use nes_workload::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-/// Safe defaults for a first local qualification run. Larger explicit values
-/// remain available for sustained evaluation under the generic campaign
-/// limits. These defaults do not cap explicitly supplied run budgets.
 const DEFAULT_EXECUTIONS: u64 = 2_000;
 const DEFAULT_WORKERS: u32 = 2;
 
@@ -174,9 +169,7 @@ fn campaign_config(args: &Args) -> StbCampaignConfig {
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
-        // The control probe found no setup or admission failure. Keep the
-        // primary run on ordinary live admission with no hidden lookahead.
-        retention: RetentionPolicy::AdmitAlive,
+        retention: RetentionPolicy::Unprobed,
         selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
             entry: 3,
             groups: vec![6, 12, 2],
@@ -232,11 +225,8 @@ fn run_qualified_campaign(
     )?;
     fs::write(output.join("snapshots.bin"), &checkpoint_bytes)?;
 
-    // Use the actual champion (or the first verified victory input) for
-    // qualification. Render every recorded action, including the ending when
-    // reached; an unsolved champion remains explicitly an unfinished match.
     let champion = live
-        .victory_input
+        .objective_witness
         .clone()
         .unwrap_or_else(|| live.archive.champion_input.clone());
     let champion_endpoint = write_headless_observation(game, &champion, output, "champion")?;
@@ -253,7 +243,7 @@ fn run_qualified_campaign(
         } else {
             "qualified_campaign"
         },
-        "rom_sha256": game.image_sha256(),
+        "rom_sha256": game.workload_identity_sha256(),
         "ai": game.ai().name(),
         "ai_level": game.ai().level(),
         "match_completed": champion_endpoint.match_over(),
@@ -263,7 +253,7 @@ fn run_qualified_campaign(
         "execution_budget": live.execution_budget,
         "executions": live.executions_completed,
         "execution_budget_exact": live.executions_completed == live.execution_budget,
-        "frames_emulated": live.frames_emulated,
+        "frames_emulated": live.execution_work,
         "stream_sha256": live.stream_sha256,
         "stream_file_sha256": sha256(&stream_bytes),
         "report_sha256": sha256(&report_bytes),
@@ -275,7 +265,7 @@ fn run_qualified_campaign(
         "deaths": live.archive.deaths,
         "duplicates_skipped": live.duplicates_skipped,
         "probe_refused": live.probe_refused,
-        "victories": live.victories,
+        "victories": live.objectives_reached,
         "progress": live.archive.progress_watermark,
         "milestones": live.archive.milestones,
         "first_reached": live.archive.first_reached,
@@ -350,9 +340,6 @@ fn render_video(
     output: &Path,
     tail_frames: u32,
 ) -> Result<RenderedMedia, Box<dyn Error>> {
-    // Encode frames as they arrive: full matches must not accumulate raw RGB
-    // in RAM or on disk. The pinned QuickNES configuration crops vertical
-    // overscan and emits 256x224 RGB24.
     let encoded_path = output.join("witness-video.mp4");
     let audio_path = output.join("witness.s16le");
     let mut target = game
@@ -391,7 +378,7 @@ fn render_video(
     let mut video_output = BufWriter::new(encoder.stdin.take().ok_or("missing encoder input")?);
     let rendered = target.render_input(input, tail_frames, &mut video_output, &mut audio_output);
     let flushed = video_output.flush();
-    drop(video_output); // Close stdin even on a rendering error so ffmpeg exits.
+    drop(video_output);
     let status = encoder.wait()?;
     let video = rendered?;
     flushed?;
@@ -509,7 +496,7 @@ mod tests {
         assert!(campaign_config(&args).continue_after_victory);
         assert!(matches!(
             campaign_config(&args).retention,
-            nes_workload::search::archive::RetentionPolicy::AdmitAlive
+            nes_workload::search::archive::RetentionPolicy::Unprobed
         ));
     }
 

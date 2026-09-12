@@ -1,11 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 2 — override semantics. For every overridden `Moment` a **guest**
-//! override wins **iff** its `Answer` is admissible for the decision surfacing at
-//! that `Moment`; an inadmissible (or host-plane) override is deterministically
-//! ignored (the seeded base answers); every other decision is the seeded base.
-//! The general property checks the implementation against an independent
-//! restatement of the rule ([`ref_admissible`]); targeted cases pin each
-//! inadmissibility class.
 
 mod common;
 
@@ -18,8 +11,6 @@ use fault_policy::{
 };
 use proptest::prelude::*;
 
-/// Build a materialized env from a seed/policy and a single **guest** override at
-/// `Moment` `at`.
 fn one_guest_override(seed: u64, policy: FaultPolicy, at: Moment, ans: Answer) -> RecordedEnv {
     EnvSpec::Recorded {
         seed,
@@ -35,19 +26,11 @@ fn one_guest_override(seed: u64, policy: FaultPolicy, at: Moment, ans: Answer) -
 proptest! {
     #![proptest_config(config(256))]
 
-    /// The public `DecisionPoint::admits` (the single source of truth the
-    /// `RecordedEnv` and the frontier both use) agrees with the independent
-    /// restatement of the rule for every point/answer pairing.
     #[test]
     fn admits_matches_reference(p in arb_point(), ans in common::arb_answer()) {
         prop_assert_eq!(p.admits(&ans), ref_admissible(&p, &ans));
     }
 
-    /// The general rule, cross-checked against `ref_admissible` and an
-    /// independently-advanced seeded base. Each decision `i` runs at `Moment i`;
-    /// overrides (host or guest) are keyed by `Moment`. A guest override fires
-    /// iff admissible (consuming no PRNG); a host override or an inadmissible one
-    /// falls through to the base.
     #[test]
     fn override_wins_iff_admissible(
         seed in any::<u64>(),
@@ -66,13 +49,10 @@ proptest! {
             reseeds: std::collections::BTreeMap::new(), payloads: None,
         };
         let mut env = spec.materialize();
-        // The reference base advances only when the base actually answers.
         let mut base = SeededEnv::new(seed, policy);
 
         for (i, p) in seq.iter().enumerate() {
             let at = i as u64;
-            // Only an admissible *guest* override fires; a host action at this
-            // Moment is filtered out of `decide`.
             let guest = overrides.get(&at).and_then(Action::guest_answer);
             let expected = match guest {
                 Some(a) if ref_admissible(p, a) => a.clone(),
@@ -87,15 +67,12 @@ proptest! {
     }
 }
 
-/// An admissible guest override fires at exactly its `Moment` and nowhere else —
-/// and consumes no PRNG, so the base stays in lockstep for every other Moment.
 #[test]
 fn override_fires_at_its_moment_only() {
     let seed = 42;
     let policy = FaultPolicy::none();
     let seq: Vec<P> = (0..10).map(|_| P::Scheduler { ready: 8 }).collect();
 
-    // A recognizable admissible scheduler selection (index 3) at Moment 5.
     let marker = Answer::Supply(3u32.to_le_bytes().to_vec());
     let mut env = one_guest_override(seed, policy.clone(), 5, marker.clone());
     let mut base = SeededEnv::new(seed, policy);
@@ -104,8 +81,6 @@ fn override_fires_at_its_moment_only() {
         env.set_moment(i as u64);
         let got = env.decide(p);
         if i == 5 {
-            // The override fires here and does NOT advance the base, so `base`
-            // stays in lockstep with `env`'s base for the remaining decisions.
             assert_eq!(
                 got,
                 Outcome::Resolved(marker.clone()),
@@ -117,10 +92,6 @@ fn override_fires_at_its_moment_only() {
     }
 }
 
-// ---- targeted inadmissibility cases (override at Moment 0, no prior shift) ----
-
-/// Run `point` at `Moment 0` with a single guest `override0` installed, and a
-/// parallel bare `SeededEnv`; return `(env answer, base answer)`.
 fn first(point: &P, seed: u64, policy: FaultPolicy, override0: Answer) -> (Answer, Answer) {
     let mut env = one_guest_override(seed, policy.clone(), 0, override0);
     env.set_moment(0);
@@ -136,7 +107,6 @@ fn first(point: &P, seed: u64, policy: FaultPolicy, override0: Answer) -> (Answe
 
 #[test]
 fn supply_length_mismatch_is_ignored() {
-    // Entropy{32} with a 1-byte Supply override → ignored, base answers (32 bytes).
     let (got, base) = first(
         &P::Entropy { bytes: 32 },
         7,
@@ -195,7 +165,6 @@ fn scheduler_in_range_index_is_admissible() {
 
 #[test]
 fn wrong_class_fault_is_ignored() {
-    // A BlockEio fault on a NetFlow point → wrong class → ignored.
     let net = P::NetFlow {
         src: NodeId(0),
         dst: NodeId(1),
@@ -243,11 +212,9 @@ fn block_torn_within_bounds_is_admissible_oversize_ignored() {
         lba: 0,
         len: 512,
     };
-    // n <= len wins.
     let small = Answer::Fault(Fault::BlockTorn(256));
     let (got, _b) = first(&io, 7, FaultPolicy::none(), small.clone());
     assert_eq!(got, small);
-    // n > len is ignored.
     let big = Answer::Fault(Fault::BlockTorn(1024));
     let (got2, base2) = first(&io, 7, FaultPolicy::none(), big);
     assert_eq!(got2, base2);
@@ -255,8 +222,6 @@ fn block_torn_within_bounds_is_admissible_oversize_ignored() {
 
 #[test]
 fn nominal_on_fault_class_is_admissible() {
-    // A Nominal override on a fault class forces the happy path even under a
-    // fault-heavy policy.
     let mut policy = FaultPolicy::none();
     policy
         .set_class(DecisionClass::Process, 1, 1, &[Fault::ProcKill])
@@ -267,8 +232,6 @@ fn nominal_on_fault_class_is_admissible() {
 
 #[test]
 fn host_action_at_a_decision_moment_is_ignored_by_decide() {
-    // A host-plane override sharing a Moment with a guest decision is never
-    // surfaced as a guest answer — the base answers, exactly as if absent.
     let seed = 7;
     let at = 3u64;
     let mut env = EnvSpec::Recorded {

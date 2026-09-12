@@ -1,132 +1,47 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Live VM snapshot / branch: the wiring that joins `snapshot-store` (the layered
-//! copy-on-write guest-memory page store) and `vm-state` (the versioned codec for
-//! the non-memory machine blob) to the live VM in [`crate::vmm`].
-//!
-//! This module is "the elsewhere" both sibling crates defer their KVM side to
-//! (their docs say the KVM integration "lives elsewhere"). It holds:
-//!
-//! - **[`SnapshotEngine`]** — a thin owner of a [`snapshot_store::Store`] that turns
-//!   a full guest-memory image + a sealed `vm_state` blob into a content-addressed
-//!   snapshot (`begin_base` → `write_page` per frame → `seal`), derives later
-//!   snapshots from the pages dirtied since a parent (`derive`), and materializes a
-//!   snapshot back into a private CoW [`Mapping`]. Capture is **dirty-set-
-//!   proportional**: the store discards a written page whose content already
-//!   resolves through the parent chain, so a derived snapshot's `owned_pages` counts
-//!   only genuinely-changed frames, and identical page contents are stored **once
-//!   store-wide** — so N VMs forked from one boot share a single resident base.
-//!
-//! The **record set** a snapshot carries is per-vendor, so it lives with the
-//! vendor ([`crate::vendor::x86::records`]): the conversions between the live
-//! machine's register file and `vm-state`'s plain-data records, plus the
-//! vmm-core-owned device blob (the `vm_state::DeviceBlob` payload). The engine
-//! here owns the memory half and the opaque blob container, and never interprets
-//! a record.
-//!
-//! The KVM-specific mechanics this builds on — the dirty-log drain that yields the
-//! per-snapshot dirty set, and the memslot remap that makes restore O(dirty) rather
-//! than O(image) — live **below the `Backend` trait** in `vmm-backend` (task 08's
-//! measured mechanism). The engine here is portable and
-//! Mac/Miri-testable against plain memory, exactly as `snapshot-store` is.
 
 use snapshot_store::{Mapping, PAGE_SIZE, SnapStats, SnapshotId, Store, StoreConfig, StoreStats};
 use vm_state::SnapshotRecords;
 
-/// Errors from the snapshot/branch path: a store failure, a `vm_state` codec
-/// failure, a malformed vmm-core device blob, a guest-image size mismatch, a
-/// vendor device model rejecting its restored state, or a snapshot taken under a
-/// different CPU/MSR contract.
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
-    /// An underlying [`snapshot_store::Store`] operation failed.
     #[error("snapshot-store error")]
     Store(#[from] snapshot_store::StoreError),
-    /// The `vm_state` blob failed to encode or decode (strict, total codec).
     #[error("vm_state codec error")]
     Codec(#[from] vm_state::VmStateError),
-    /// A guest-memory image's length is not the configured image size.
     #[error("guest image is {got} bytes, expected {expected} ({pages} pages × {PAGE_SIZE})")]
     MemorySize {
-        /// The offending image length in bytes.
         got: usize,
-        /// The configured image length in bytes (`pages * PAGE_SIZE`).
         expected: usize,
-        /// The configured image size in pages.
         pages: u64,
     },
-    /// The vmm-core-owned device blob (inside `vm_state::DeviceBlob`) was malformed
-    /// — truncated, a bad magic/version, or an out-of-range field. Total, never a
-    /// panic (Convention rule #4).
     #[error("device blob malformed: {0}")]
     DeviceBlob(&'static str),
-    /// The architecture-neutral engine lifecycle record was malformed.
     #[error("engine state malformed: {0}")]
     EngineState(&'static str),
-    /// A drained dirty-page gfn lies outside the configured guest image.
     #[error("dirty gfn {gfn} out of range: guest image is {pages} pages")]
-    DirtyGfnOutOfRange {
-        /// The offending guest frame number.
-        gfn: u64,
-        /// The configured guest image size in pages.
-        pages: u64,
-    },
-    /// A sparse snapshot page list was not sorted by guest frame number.
+    DirtyGfnOutOfRange { gfn: u64, pages: u64 },
     #[error("sparse snapshot pages are not sorted: {previous} then {current}")]
-    SparsePagesNotSorted {
-        /// The preceding page's guest frame number.
-        previous: u64,
-        /// The page that appeared after `previous`.
-        current: u64,
-    },
-    /// A sparse snapshot page list contained a guest frame more than once.
+    SparsePagesNotSorted { previous: u64, current: u64 },
     #[error("sparse snapshot page {gfn} is duplicated")]
-    SparsePageDuplicate {
-        /// The repeated guest frame number.
-        gfn: u64,
-    },
-    /// A sparse snapshot page lies outside this engine's configured image.
+    SparsePageDuplicate { gfn: u64 },
     #[error("sparse snapshot page {gfn} out of range: guest image is {pages} pages")]
-    SparsePageOutOfRange {
-        /// The offending guest frame number.
-        gfn: u64,
-        /// The configured guest image size in pages.
-        pages: u64,
-    },
-    /// The userspace xAPIC rejected a restored [`LapicState`].
+    SparsePageOutOfRange { gfn: u64, pages: u64 },
     #[error("device restore rejected: {0}")]
     DeviceRestore(&'static str),
-    /// The snapshot was taken under a different ratified CPU/MSR contract than the
-    /// one this VMM enforces, so its CPUID/MSR behavior would silently diverge on
-    /// restore. Refused loudly (docs/ARCHITECTURE.md `contract_hash`).
     #[error("contract hash mismatch: snapshot taken under a different CPU/MSR contract")]
     ContractMismatch,
 }
 
-/// The live-VM snapshot / branch engine: a [`snapshot_store::Store`] sized to the
-/// guest image, plus the page count.
-///
-/// One engine backs a whole exploration tree: a single base layer holds the booted
-/// image, every later snapshot records only its dirtied pages, and identical page
-/// contents are interned once store-wide so N branches from one boot do not cost N
-/// copies. `vm_state` blobs are sealed verbatim (the canonical `vm_state::VmState`
-/// encoding), opaque to the store.
 pub struct SnapshotEngine {
     store: Store,
     mem_pages: u64,
     max_chain_len: u32,
 }
 
-/// Default [`SnapshotEngine::max_chain_len`]: `materialize` is O(chain), so a
-/// dirty-log derive chain (task 95 M2.1) is bounded — at this depth a seal
-/// flattens through the chain's page sets and dirty window instead of deriving
-/// deeper. 32 sits well below the flat region of the M1 depth-sweep (materialize
-/// was depth-flat at 1/8/32 on the bench machine).
 pub const DEFAULT_MAX_CHAIN_LEN: u32 = 32;
 
 impl SnapshotEngine {
-    /// Create an engine for guest images of `mem_bytes` bytes. `mem_bytes` must be a
-    /// non-zero multiple of [`PAGE_SIZE`]; otherwise the engine still works but the
-    /// final partial page is simply never addressable.
     pub fn new(mem_bytes: usize) -> SnapshotEngine {
         let mem_pages = (mem_bytes / PAGE_SIZE) as u64;
         SnapshotEngine {
@@ -136,49 +51,30 @@ impl SnapshotEngine {
         }
     }
 
-    /// The configured guest image size in pages.
     pub fn mem_pages(&self) -> u64 {
         self.mem_pages
     }
 
-    /// The configured derive-chain bound (task 95 M2.1): a capture whose parent
-    /// already has `chain_len >= max_chain_len` must seal as a fresh base using
-    /// the chain-flattening page-set walk instead of deriving deeper — keeping
-    /// `materialize` O(bounded chain). Default [`DEFAULT_MAX_CHAIN_LEN`].
     pub fn max_chain_len(&self) -> u32 {
         self.max_chain_len
     }
 
-    /// Override the derive-chain bound (a config knob, not a magic number).
-    /// `0` disables deriving entirely (every seal is a base).
     pub fn set_max_chain_len(&mut self, max_chain_len: u32) {
         self.max_chain_len = max_chain_len;
     }
 
-    /// Read-only access to the underlying store (for `store_stats` / `stats`).
     pub fn store(&self) -> &Store {
         &self.store
     }
 
-    /// Store-wide statistics — the **N-VMs-share-one-base** evidence: a base plus N
-    /// derived snapshots that touched nothing keep `stored_unique_pages` at the base's
-    /// distinct-content count, never `N ×` it (gate 3).
     pub fn store_stats(&self) -> StoreStats {
         self.store.store_stats()
     }
 
-    /// Per-snapshot statistics (`owned_pages` = pages this layer provides that no
-    /// ancestor provides identically — the dirty set actually retained).
     pub fn stats(&self, snap: SnapshotId) -> Result<SnapStats, SnapshotError> {
         Ok(self.store.stats(snap)?)
     }
 
-    /// Build the **base** layer from a full guest-memory image and a sealed blob:
-    /// `begin_base` → `write_page` per guest frame → `seal(vm_state)`. Pages whose
-    /// content is the all-zero page cost nothing (sparse images are free).
-    ///
-    /// `vm_state` is the canonical [`vm_state::VmState::encode`] bytes (opaque to the
-    /// store). `memory` must be exactly `mem_pages * PAGE_SIZE` bytes.
     pub fn snapshot_base(
         &mut self,
         memory: &[u8],
@@ -192,14 +88,6 @@ impl SnapshotEngine {
         Ok(builder.seal(vm_state.to_vec()))
     }
 
-    /// Flatten the chain ending at `parent` into a fresh base, reading only the
-    /// union of page sets in that chain and the supplied `dirty` set.
-    ///
-    /// This is the bounded-chain seal path. The store walks the chain's owned page
-    /// keys, adds frames dirtied since `parent`, and lets the ordinary base builder
-    /// perform its zero-page check. Consequently a page changed back to zero is not
-    /// retained in the flat base, while a zero-to-nonzero write is retained. The
-    /// resulting base has `chain_len == 1` and is independent of `parent`.
     pub fn snapshot_flatten(
         &mut self,
         parent: SnapshotId,
@@ -213,14 +101,6 @@ impl SnapshotEngine {
             .flatten_base(parent, memory, dirty, vm_state.to_vec())?)
     }
 
-    /// Derive a child snapshot of `parent` from the current full image.
-    ///
-    /// When `dirty` is `Some(gfns)`, only those frames are written — the **dirty-set-
-    /// proportional** path the KVM dirty-log drain feeds (each later snapshot pays
-    /// only for what changed). When `dirty` is `None`, every frame is written and the
-    /// store's seal-time dedup keeps the result equally cheap (a frame whose content
-    /// already resolves through the parent chain is discarded), so capture is correct
-    /// even without a drained dirty set — only the capture *cost* differs.
     pub fn snapshot_derive(
         &mut self,
         parent: SnapshotId,
@@ -239,8 +119,6 @@ impl SnapshotEngine {
                             pages: self.mem_pages,
                         });
                     }
-                    // gfn < mem_pages and the image length was checked == mem_pages *
-                    // PAGE_SIZE, so this frame is always fully in range (no panic).
                     let off = gfn as usize * PAGE_SIZE;
                     builder.write_page(gfn, &memory[off..off + PAGE_SIZE])?;
                 }
@@ -254,12 +132,6 @@ impl SnapshotEngine {
         Ok(builder.seal(vm_state.to_vec()))
     }
 
-    /// Derive a child snapshot directly from a sorted sparse page list.
-    ///
-    /// Every page is the target-resolved content relative to `parent`; absent
-    /// pages therefore remain inherited from the parent. Validation completes
-    /// before the store builder is created, and the builder is only committed
-    /// by `seal`, so malformed input cannot partially mutate the store.
     pub fn snapshot_sparse_derive(
         &mut self,
         parent: SnapshotId,
@@ -298,18 +170,10 @@ impl SnapshotEngine {
         Ok(builder.seal(vm_state.to_vec()))
     }
 
-    /// Materialize `snap`'s full logical image as a private copy-on-write
-    /// [`Mapping`] — the host backing the restore points the KVM memslot at (the
-    /// remap mechanism task 08 chose; below the trait). Resolving the chain is
-    /// O(chain) per gfn, memoized; only non-zero pages touch the sparse tempfile.
     pub fn materialize(&self, snap: SnapshotId) -> Result<Mapping, SnapshotError> {
         Ok(self.store.materialize(snap)?)
     }
 
-    /// Return the target contents for every page that may differ between two
-    /// snapshots. The result is sorted by guest frame number and is resolved
-    /// against `to`, including all-zero pages that are implicit in that image.
-    /// When `from` is `None`, the complete resolved target image is returned.
     pub fn diff_pages(
         &self,
         from: Option<SnapshotId>,
@@ -318,51 +182,32 @@ impl SnapshotEngine {
         Ok(self.store.diff_pages(from, to)?)
     }
 
-    /// Resolve one integrity-checked page from `snap`'s logical image.
-    ///
-    /// This is the in-place restore path's narrow lookup for a page dirtied by
-    /// the live VM after its last sealed image but absent from the store-side
-    /// snapshot diff.
     pub fn read_page(&self, snap: SnapshotId, gfn: u64) -> Result<[u8; PAGE_SIZE], SnapshotError> {
         let mut page = [0u8; PAGE_SIZE];
         self.store.read_page(snap, gfn, &mut page)?;
         Ok(page)
     }
 
-    /// Decode the sealed `vm_state` blob of `snap` back into a vendor record
-    /// set `S` (x86: [`vm_state::VmState`]; arm64: the arm64 record set). The
-    /// engine never reads a record: `S::decode` is the vendor codec, and its
-    /// arch-tag gate rejects a foreign blob loudly
-    /// ([`vm_state::VmStateError::UnsupportedArch`]) rather than
-    /// reinterpreting it — the `docs/ARCHITECTURE.md` snapshot seam.
     pub fn vm_state<S: SnapshotRecords>(&self, snap: SnapshotId) -> Result<S, SnapshotError> {
         Ok(S::decode(self.store.vm_state(snap)?)?)
     }
 
-    /// Borrow the integrity-checked canonical vendor VM-state bytes verbatim.
-    /// Portable snapshot export must preserve these exact bytes rather than
-    /// decode/re-encode them through a host-specific intermediate.
     pub fn vm_state_bytes(&self, snap: SnapshotId) -> Result<&[u8], SnapshotError> {
         Ok(self.store.vm_state(snap)?)
     }
 
-    /// Increment `snap`'s refcount (an explorer holding a fork alive). See
-    /// [`snapshot_store::Store::retain`].
     pub fn retain(&mut self, snap: SnapshotId) -> Result<(), SnapshotError> {
         Ok(self.store.retain(snap)?)
     }
 
-    /// Decrement `snap`'s refcount. See [`snapshot_store::Store::release`].
     pub fn release(&mut self, snap: SnapshotId) -> Result<(), SnapshotError> {
         Ok(self.store.release(snap)?)
     }
 
-    /// Reap layers unreachable from any live snapshot; returns bytes freed.
     pub fn gc(&mut self) -> u64 {
         self.store.gc()
     }
 
-    /// Deliberately corrupt one stored RAM byte for a restore integrity oracle.
     #[cfg(test)]
     pub(crate) fn corrupt_page_for_test(
         &mut self,
@@ -374,7 +219,6 @@ impl SnapshotEngine {
         Ok(self.store.corrupt_page_for_test(snap, gfn, byte, mask)?)
     }
 
-    /// Deliberately corrupt one stored vCPU/device byte for an integrity oracle.
     #[cfg(test)]
     pub(crate) fn corrupt_vm_state_for_test(
         &mut self,
@@ -406,8 +250,6 @@ mod tests {
 
     use super::*;
 
-    // --- engine: base / derive / sharing ------------------------------------
-
     const PG: usize = PAGE_SIZE;
 
     fn img(pages: &[(usize, u8)], total_pages: usize) -> Vec<u8> {
@@ -426,8 +268,6 @@ mod tests {
         assert_eq!(eng.stats(base).unwrap().owned_pages, 3);
         assert_eq!(eng.store_stats().stored_unique_pages, 3);
 
-        // Dirty only page 1; the derive (full image, no dirty hint) must store ONE
-        // owned page (the store's seal-time dedup drops the unchanged frames).
         let mut child_mem = base_mem.clone();
         child_mem[PG..2 * PG].fill(0xFF);
         let child = eng
@@ -438,8 +278,6 @@ mod tests {
             1,
             "derive is dirty-set-proportional even without a drained dirty set"
         );
-        // Store-wide: the 3 base contents + the 1 new content = 4 (page 1's old
-        // 0xB is still referenced by the base).
         assert_eq!(eng.store_stats().stored_unique_pages, 4);
     }
 
@@ -549,13 +387,10 @@ mod tests {
         let mut mem = base_mem.clone();
         mem[3 * PG..4 * PG].fill(0x99);
         mem[7 * PG..8 * PG].fill(0x77);
-        // Drained dirty set {3, 7}: capture only those frames.
         let child = eng
             .snapshot_derive(base, &mem, Some(&[3, 7]), b"c")
             .unwrap();
         assert_eq!(eng.stats(child).unwrap().owned_pages, 2);
-        // Materialize and confirm the dirtied frames read back the new content and
-        // an untouched frame reads the base.
         let map = eng.materialize(child).unwrap();
         assert_eq!(map.as_slice()[3 * PG], 0x99);
         assert_eq!(map.as_slice()[7 * PG], 0x77);
@@ -568,17 +403,12 @@ mod tests {
         ignore = "materialize uses mmap, which Miri cannot execute; the parse/convert logic is covered by the non-mmap tests"
     )]
     fn n_views_share_one_read_only_base() {
-        // Gate 3: materialize N independent CoW views from one base; the base's
-        // distinct contents are stored ONCE store-wide, not N×.
         let mut eng = SnapshotEngine::new(64 * PG);
-        // 40 pages with DISTINCT non-zero content (byte i+1), so each is a distinct
-        // store-wide content address (no incidental dedup masking the sharing claim).
         let base_mem = img(&(0..40).map(|i| (i, (i as u8) + 1)).collect::<Vec<_>>(), 64);
         let base = eng.snapshot_base(&base_mem, b"boot").unwrap();
         let unique_after_base = eng.store_stats().stored_unique_pages;
         assert_eq!(unique_after_base, 40);
 
-        // Eight branches that each touch nothing: pure shared base.
         let mut views = Vec::new();
         for _ in 0..8 {
             let v = eng
@@ -591,7 +421,6 @@ mod tests {
             unique_after_base,
             "N branches that touched nothing add NO unique pages — the base is shared"
         );
-        // Every view sees the same base image.
         for v in &views {
             assert_eq!(v.as_slice()[0], base_mem[0]);
             assert_eq!(v.as_slice()[39 * PG], base_mem[39 * PG]);
@@ -613,7 +442,6 @@ mod tests {
 
     #[test]
     fn vm_state_blob_seals_and_decodes() {
-        // The engine seals the canonical vm_state bytes and hands them back to decode.
         let mut eng = SnapshotEngine::new(4 * PG);
         let s = VmState {
             contract_hash: [7u8; 32],
@@ -636,15 +464,13 @@ mod tests {
     #[test]
     fn engine_mem_pages_retain_release_gc() {
         let mut eng = SnapshotEngine::new(8 * PG);
-        assert_eq!(eng.mem_pages(), 8); // exact: kills mem_pages -> 0 / 1
+        assert_eq!(eng.mem_pages(), 8);
 
-        // One non-zero page + a non-empty blob, so gc has bytes to free.
         let mut mem = vec![0u8; 8 * PG];
         mem[..PG].fill(0xAB);
-        let base = eng.snapshot_base(&mem, b"blob").unwrap(); // refcount 1
+        let base = eng.snapshot_base(&mem, b"blob").unwrap();
         assert_eq!(eng.store_stats().snapshots, 1);
 
-        // retain → refcount 2; one release → still live (kills retain -> Ok(())).
         eng.retain(base).unwrap();
         eng.release(base).unwrap();
         assert_eq!(
@@ -652,12 +478,9 @@ mod tests {
             1,
             "retain must have taken effect: one release of two refs leaves it live"
         );
-        // Second release → refcount 0 (kills release -> Ok(())).
         eng.release(base).unwrap();
         assert_eq!(eng.store_stats().snapshots, 0, "released after both refs");
 
-        // gc reaps the dead layer, freeing the one stored page + the 4-byte blob.
-        // The exact value kills gc -> 0 and gc -> 1.
         assert_eq!(eng.gc(), PAGE_SIZE as u64 + 4);
     }
 
@@ -666,12 +489,10 @@ mod tests {
         let mut eng = SnapshotEngine::new(4 * PG);
         let mem = vec![0u8; 4 * PG];
         let base = eng.snapshot_base(&mem, b"").unwrap();
-        // gfn 4 is one past the 4-page (gfns 0..=3) image.
         assert!(matches!(
             eng.snapshot_derive(base, &mem, Some(&[4]), b""),
             Err(SnapshotError::DirtyGfnOutOfRange { gfn: 4, pages: 4 })
         ));
-        // The in-range boundary gfn 3 is accepted.
         assert!(eng.snapshot_derive(base, &mem, Some(&[3]), b"").is_ok());
     }
 

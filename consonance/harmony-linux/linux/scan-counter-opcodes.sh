@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Static counter-opcode scan of the built guest kernel — the x86 half of the
-# paravirtual clock interface reachability gate (the task-100 LL/SC-scan discipline
+# paravirtual clock interface reachability gate (the LL/SC-scan discipline
 # transposed to counter reads: rdtsc `0F 31`, rdtscp `0F 01 F9`).
 #
 # WHAT IT PROVES on x86: every raw counter read left in the image is a KNOWN,
@@ -28,8 +28,8 @@
 # baseline present — the gate armed. The self-test proves the armed mode can
 # fail on every invocation regardless of the marker.
 #
-# RUNTIME HALF — SPECCED AND STUBBED (stated per the task-110 evidence bar,
-# not faked; accepted as such by the PR #110 foreman ruling): the §3.3
+# RUNTIME HALF — SPECCED AND STUBBED (stated per the evidence bar,
+# not faked; accepted as such by the PR #110 ruling): the §3.3
 # ladder's third rung, W^X + rescan-on-exec (re-scanning any page the guest
 # makes executable at runtime, so a JIT cannot mint a counter read the static
 # scan never saw) needs vmm-side executable-page tracking — contract work

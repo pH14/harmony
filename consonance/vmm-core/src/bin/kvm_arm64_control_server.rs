@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Unix-socket control server for the virtual_time Linux/aarch64 KVM workload.
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 fn main() -> std::process::ExitCode {

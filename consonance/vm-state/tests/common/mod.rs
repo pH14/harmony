@@ -1,7 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Shared proptest strategies and a fixed fully-populated `VmState` for the
-//! integration tests. Each `tests/*.rs` file pulls in only what it needs, so
-//! some helpers are unused per binary.
 #![allow(dead_code)]
 
 use proptest::prelude::*;
@@ -10,18 +7,6 @@ use vm_state::{
     VcpuRegs, VcpuSregs, VmState, VtimeState, Xcrs, XsaveImage,
 };
 
-/// Per-test proptest config. Native runs keep the spec's case counts. **Under
-/// Miri** two things change so `cargo +nightly miri test -p vm-state` stays
-/// usable:
-///
-/// * **Cases are cut to 16.** The interpreter is ~10–100× slower; 16 independent
-///   seeds still drive the byte-parsing and zerocopy-read paths Miri is here to
-///   scrutinize for UB. The reduction is Miri-only (`cfg!(miri)`); native runs
-///   honor the ≥256 convention.
-/// * **Failure persistence is disabled.** proptest's default resolves a
-///   regression-file path via `current_dir()` (getcwd), which Miri rejects under
-///   filesystem isolation. There is no regression-replay workflow under Miri, so
-///   dropping it is free; native runs keep the default file persistence.
 pub fn config(native_cases: u32) -> ProptestConfig {
     let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { native_cases });
     if cfg!(miri) {
@@ -188,17 +173,13 @@ pub fn arb_vtime() -> impl Strategy<Value = VtimeState> {
 }
 
 pub fn arb_timers() -> impl Strategy<Value = TimerQueueState> {
-    // A faithful restored TimerQueue: distinct seqs (assigned 0..n), distinct
-    // tokens, arbitrary deadlines/periods, `next_seq` strictly above every seq,
-    // entries in canonical (deadline_vns, seq) order — all the invariants the
-    // codec enforces (see `validate_timers`).
     (0usize..16)
         .prop_flat_map(|n| {
             (
-                proptest::collection::vec(any::<u64>(), n), // deadlines
-                proptest::collection::vec(any::<u64>(), n), // periods
-                proptest::collection::btree_set(any::<u64>(), n..=n), // distinct tokens
-                any::<u64>(),                               // next_seq slack
+                proptest::collection::vec(any::<u64>(), n),
+                proptest::collection::vec(any::<u64>(), n),
+                proptest::collection::btree_set(any::<u64>(), n..=n),
+                any::<u64>(),
             )
         })
         .prop_map(|(deadlines, periods, tokens, slack)| {
@@ -213,7 +194,6 @@ pub fn arb_timers() -> impl Strategy<Value = TimerQueueState> {
                 })
                 .collect();
             entries.sort_by_key(|e| (e.deadline_vns, e.seq));
-            // next_seq strictly above every seq (max seq is n-1), with slack.
             let next_seq = (n as u64).saturating_add(slack % 4096);
             TimerQueueState { entries, next_seq }
         })
@@ -288,9 +268,6 @@ pub fn arb_vm_state() -> impl Strategy<Value = VmState> {
         )
 }
 
-/// A fixed, fully-populated `VmState` with a non-trivial value in every field —
-/// the input for the golden-stability, version-rejection, and ratio-rejection
-/// tests. Deterministic and small.
 pub fn fully_populated() -> VmState {
     let seg = |n: u64| Segment {
         base: 0x1000 * n,
@@ -301,9 +278,9 @@ pub fn fully_populated() -> VmState {
         flags: 0x20,
     };
     let mut msrs = std::collections::BTreeMap::new();
-    msrs.insert(0x0000_0010u32, 0x1122_3344_5566_7788u64); // IA32_TSC
-    msrs.insert(0x0000_0174u32, 0x0000_0000_0000_0008u64); // IA32_SYSENTER_CS
-    msrs.insert(0xC000_0080u32, 0x0000_0000_0000_0501u64); // IA32_EFER
+    msrs.insert(0x0000_0010u32, 0x1122_3344_5566_7788u64);
+    msrs.insert(0x0000_0174u32, 0x0000_0000_0000_0008u64);
+    msrs.insert(0xC000_0080u32, 0x0000_0000_0000_0501u64);
 
     VmState {
         regs: VcpuRegs {
@@ -373,7 +350,7 @@ pub fn fully_populated() -> VmState {
         vtime: VtimeState {
             guest_hz: 2_000_000_000,
             guest_base: 0,
-            snapshot_vns: 0x0000_0000_075b_cd15, // 123_456_789
+            snapshot_vns: 0x0000_0000_075b_cd15,
         },
         timers: TimerQueueState {
             entries: vec![

@@ -1,25 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Oracle property test (the core gate): drive the store and a naive model — one full
-//! `Vec<u8>` image per snapshot — with arbitrary operation sequences and assert
-//! byte-equality on every read and materialize. Deep-chain (>= 64) and wide-fan-out
-//! (>= 32) shapes get dedicated oracle-checked tests below the proptest.
 
 use proptest::prelude::*;
 use snapshot_store::{PAGE_SIZE, SnapshotId, Store, StoreConfig, StoreError};
 
-/// Small logical image so full-image models stay cheap across many snapshots.
 const MEM_PAGES: u64 = 24;
 
-/// Page content derived from a one-byte seed. The tiny content space (256 values,
-/// including the all-zero page at seed 0) makes store-wide dedup and zero-page
-/// handling constantly exercised.
 fn page(seed: u8) -> [u8; PAGE_SIZE] {
     [seed; PAGE_SIZE]
 }
 
-/// The naive model: a full image per snapshot plus the refcount bookkeeping needed to
-/// know which ops are valid. A snapshot with refcount 0 is dead: the store must treat
-/// its id as unknown from that point on.
 struct ModelSnap {
     id: SnapshotId,
     image: Vec<u8>,
@@ -28,7 +17,7 @@ struct ModelSnap {
 }
 
 struct Model {
-    snaps: Vec<ModelSnap>, // creation order; indexes are stable
+    snaps: Vec<ModelSnap>,
 }
 
 impl Model {
@@ -38,9 +27,6 @@ impl Model {
             .collect()
     }
 
-    /// Distinct non-zero page contents across all live images. Every one of these is
-    /// returned by some `read_page`, so the store must hold at least this many unique
-    /// pages; and at most the number of distinct non-zero contents ever written.
     fn live_distinct_nonzero_pages(&self) -> usize {
         let zero = [0u8; PAGE_SIZE];
         let mut set = std::collections::BTreeSet::new();
@@ -57,8 +43,6 @@ impl Model {
 
 #[derive(Debug, Clone)]
 enum Op {
-    /// Derive from a live snapshot (selector reduced modulo the live count), write a
-    /// batch of pages, seal with the given vm_state.
     Derive {
         parent_sel: usize,
         writes: Vec<(u64, u8)>,
@@ -68,8 +52,6 @@ enum Op {
         snap_sel: usize,
         gfn_sel: u64,
     },
-    /// Full-image compare, plus a copy-on-write probe: scribble on the mapping and
-    /// confirm the store still reads the original bytes.
     Materialize {
         snap_sel: usize,
     },
@@ -125,7 +107,7 @@ fn apply(store: &mut Store, model: &mut Model, op: Op) {
         } => {
             let live = model.live_indices();
             let Some(&pidx) = live.get(parent_sel % live.len().max(1)) else {
-                return; // nothing live to derive from
+                return;
             };
             let parent_id = model.snaps[pidx].id;
             let mut image = model.snaps[pidx].image.clone();
@@ -162,7 +144,6 @@ fn apply(store: &mut Store, model: &mut Model, op: Op) {
             let mut mapping = store.materialize(snap.id).unwrap();
             assert_eq!(mapping.len(), snap.image.len());
             assert_eq!(mapping.as_slice(), &snap.image[..], "materialize diverged");
-            // CoW probe: scribbling on the mapping must never reach the store.
             mapping.as_mut_slice()[..PAGE_SIZE].fill(0x5C);
             assert_page_eq(store, snap, 0);
         }
@@ -182,7 +163,6 @@ fn apply(store: &mut Store, model: &mut Model, op: Op) {
             store.release(model.snaps[idx].id).unwrap();
             model.snaps[idx].refcount -= 1;
             if model.snaps[idx].refcount == 0 {
-                // Dead means unobservable, immediately.
                 let id = model.snaps[idx].id;
                 let mut out = [0u8; PAGE_SIZE];
                 assert!(matches!(
@@ -197,12 +177,10 @@ fn apply(store: &mut Store, model: &mut Model, op: Op) {
         }
         Op::Gc => {
             store.gc();
-            // gc is idempotent: an immediate second pass finds nothing more.
             assert_eq!(store.gc(), 0, "second gc in a row freed bytes");
         }
     }
 
-    // Store-wide invariants, cheap enough to hold after every op.
     let stats = store.store_stats();
     assert_eq!(stats.snapshots, model.live_indices().len() as u64);
     assert_eq!(
@@ -227,7 +205,6 @@ proptest! {
         let mut store = Store::new(StoreConfig { mem_pages: MEM_PAGES });
         let mut model = Model { snaps: Vec::new() };
 
-        // Base with random sparse pages.
         let mut builder = store.begin_base();
         let mut image = vec![0u8; (MEM_PAGES as usize) * PAGE_SIZE];
         for (gfn_sel, seed) in base_writes {
@@ -244,8 +221,6 @@ proptest! {
             apply(&mut store, &mut model, op);
         }
 
-        // Final sweep: every live snapshot still matches the model, page by page and
-        // through a fresh materialize.
         store.gc();
         for idx in model.live_indices() {
             let snap = &model.snaps[idx];
@@ -257,15 +232,13 @@ proptest! {
     }
 }
 
-/// Deterministic page content for the shaped tests: a function of (layer, gfn) with
-/// enough repetition to exercise dedup.
 fn shaped_page(layer: usize, gfn: u64) -> [u8; PAGE_SIZE] {
     page((layer as u8).wrapping_mul(31).wrapping_add(gfn as u8) % 13)
 }
 
 #[test]
 fn oracle_deep_chain() {
-    const DEPTH: usize = 80; // >= 64 per the gate
+    const DEPTH: usize = 80;
     const PAGES: u64 = 16;
     let mut store = Store::new(StoreConfig { mem_pages: PAGES });
     let mut images: Vec<(SnapshotId, Vec<u8>)> = Vec::new();
@@ -283,7 +256,6 @@ fn oracle_deep_chain() {
         let (parent_id, parent_image) = &images[layer - 1];
         let mut builder = store.derive(*parent_id).unwrap();
         let mut image = parent_image.clone();
-        // 1-3 writes per layer, sliding across the gfn space.
         for k in 0..=(layer % 3) {
             let gfn = ((layer + 5 * k) as u64) % PAGES;
             let content = shaped_page(layer, gfn);
@@ -297,7 +269,6 @@ fn oracle_deep_chain() {
     let (leaf_id, _) = images[DEPTH - 1];
     assert_eq!(store.stats(leaf_id).unwrap().chain_len, DEPTH as u32);
 
-    // Every snapshot in the chain matches its model image, every page.
     let mut out = [0u8; PAGE_SIZE];
     for (id, image) in &images {
         for gfn in 0..PAGES {
@@ -312,7 +283,7 @@ fn oracle_deep_chain() {
 
 #[test]
 fn oracle_wide_fanout() {
-    const CHILDREN: usize = 40; // >= 32 per the gate
+    const CHILDREN: usize = 40;
     const PAGES: u64 = 16;
     let mut store = Store::new(StoreConfig { mem_pages: PAGES });
 
@@ -330,8 +301,6 @@ fn oracle_wide_fanout() {
     for c in 1..=CHILDREN {
         let mut builder = store.derive(base).unwrap();
         let mut image = base_image.clone();
-        // Two pages distinct per child, one rewritten identical to the base (must be
-        // dropped at seal and not counted as owned).
         for (slot, gfn) in [(0u64, (c as u64) % PAGES), (1, (c as u64 + 7) % PAGES)] {
             let content = page((c as u8).wrapping_mul(2).wrapping_add(slot as u8 + 100));
             builder.write_page(gfn, &content).unwrap();

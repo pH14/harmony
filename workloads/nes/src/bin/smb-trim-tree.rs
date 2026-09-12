@@ -1,16 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Trim a recorded whole-tree checkpoint to one (world, level) pair's
-//! subtree: the archive report keeps only that pair's entries (optionally
-//! bounded by creation execution), and the snapshot checkpoint keeps only
-//! their snapshots. A campaign resuming the trimmed pair starts from the
-//! bootstrap state plus exactly that subtree, imported through the normal
-//! whole-tree path, which re-roots entries whose parents were trimmed away.
-//!
-//! The snapshot checkpoint may be piped on stdin (`-`) so a remote copy can
-//! stream through without landing whole on disk; the report prints the
-//! SHA-256 of the bytes it consumed for verification against the source.
-
 use std::{
     env,
     error::Error,
@@ -65,10 +54,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(|entry| entry.id)
         .collect();
     archive.entries.retain(|entry| kept_ids.contains(&entry.id));
-    // A kept entry whose parent was trimmed away must carry its full input
-    // on the wire, which the suffix encoder already does when the parent is
-    // not in the serialized list; parent ids are cleared so the import
-    // re-roots them explicitly rather than chasing missing ids.
     for entry in &mut archive.entries {
         if let Some(parent) = entry.parent_id
             && !kept_ids.contains(&parent)

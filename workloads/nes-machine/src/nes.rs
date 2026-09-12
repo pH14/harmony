@@ -1,43 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Backend-neutral NES controller actions and environment encoding.
-//!
-//! The environment is a controller action suffix: each action is one button
-//! mask held for a bounded frame count, applied during [`Machine::run`] and
-//! released at the end of its hold. It travels as an opaque [`Reproducer`]
-//! blob so the generic searcher never parses controller input.
-
 use serde::{Deserialize, Serialize};
 
 use crate::{Machine, MachineError, Reproducer, StopConditions};
 
-/// Size of the NES CPU work RAM, the low mirror-free window of the address
-/// space [`Machine::read`] serves.
 pub const WRAM_SIZE: usize = 2 * 1024;
-/// Bytes the NES CPU can address. Backends may expose a smaller readable
-/// window through [`Machine::read`]; QuickNES exposes only [`WRAM_SIZE`].
 pub const ADDRESS_SPACE_SIZE: u64 = 64 * 1024;
-/// Longest controller hold accepted from an input.
 pub const MAX_HOLD_FRAMES: u8 = 120;
 
-/// Length of an iNES header.
 const INES_HEADER_LEN: usize = 16;
-/// iNES header byte holding the low mapper nibble and the cartridge flags.
 const INES_FLAGS6: usize = 6;
-/// Flag 6 bit that declares battery-backed cartridge work RAM at `$6000`.
 const INES_BATTERY: u8 = 0x02;
 
-/// Copy a ROM image with its cartridge work RAM declared present.
-///
-/// Mappers that map RAM at `$6000` allocate it whatever the header says, but
-/// a backend publishes that region through its memory interface only for an
-/// image that declares it. Games without a battery keep durable progress
-/// there — items collected, equipment carried — so an observation decoder
-/// cannot see their progress until the region is published.
-///
-/// # Errors
-///
-/// Returns an error when the bytes are not an iNES image.
 pub fn with_cartridge_ram(rom: &[u8]) -> Result<Vec<u8>, MachineError> {
     if rom.len() < INES_HEADER_LEN || &rom[..4] != b"NES\x1a" {
         return Err(MachineError::Backend(
@@ -49,11 +23,8 @@ pub fn with_cartridge_ram(rom: &[u8]) -> Result<Vec<u8>, MachineError> {
     Ok(image)
 }
 
-/// Blob format version of a NES [`Reproducer`]: a flat sequence of
-/// `(buttons, hold_frames)` byte pairs in execution order.
 pub const ENV_BLOB_VERSION: u16 = 1;
 
-/// Mint the environment blob for one controller action suffix.
 #[must_use]
 pub fn reproducer(actions: &[ButtonChord]) -> Reproducer {
     let mut bytes = Vec::with_capacity(actions.len() * 2);
@@ -67,14 +38,6 @@ pub fn reproducer(actions: &[ButtonChord]) -> Reproducer {
     }
 }
 
-/// Execute a fixed controller walk one chord at a time, retaining only the
-/// current continuation snapshot between chords.
-///
-/// Native machines can consume an opaque multi-chord reproducer to quiescence.
-/// The guest NES agent instead emits a lifecycle snapshot point after each
-/// chord, so staging the whole walk in one branch would make a generic `run`
-/// stop after its first chord. This helper gives both backends the same walk
-/// semantics while keeping the action wire format unchanged.
 pub fn run_actions<M: Machine>(
     machine: &mut M,
     actions: &[ButtonChord],
@@ -96,8 +59,6 @@ pub fn run_actions<M: Machine>(
             }
         };
         if let Err(error) = machine.drop_snapshot(current) {
-            // The next snapshot is independent from the failed release. Do a
-            // best-effort cleanup before returning the primary backend error.
             let _ = machine.drop_snapshot(next);
             return Err(error);
         }
@@ -106,11 +67,6 @@ pub fn run_actions<M: Machine>(
     machine.drop_snapshot(current)
 }
 
-/// Parse an environment blob back into its controller action suffix.
-///
-/// # Errors
-///
-/// Returns an error for another format version or a truncated blob.
 pub fn actions_of(env: &Reproducer) -> Result<Vec<ButtonChord>, MachineError> {
     if env.blob_version != ENV_BLOB_VERSION {
         return Err(MachineError::BadEnvVersion);
@@ -127,17 +83,13 @@ pub fn actions_of(env: &Reproducer) -> Result<Vec<ButtonChord>, MachineError> {
         .collect())
 }
 
-/// One total NES input action: an eight-button mask held for a bounded frame count.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct ButtonChord {
-    /// Standard NES controller bits: A, B, Select, Start, Up, Down, Left, Right.
     pub buttons: u8,
-    /// Requested hold duration. Execution clamps this to `1..=MAX_HOLD_FRAMES`.
     pub hold_frames: u8,
 }
 
 impl ButtonChord {
-    /// Construct a chord, normalizing its duration into the machine's total domain.
     #[must_use]
     pub fn new(buttons: u8, hold_frames: u8) -> Self {
         Self {
@@ -146,7 +98,6 @@ impl ButtonChord {
         }
     }
 
-    /// Return the normalized hold duration used by execution.
     #[must_use]
     pub fn bounded_hold_frames(self) -> u8 {
         self.hold_frames.clamp(1, MAX_HOLD_FRAMES)

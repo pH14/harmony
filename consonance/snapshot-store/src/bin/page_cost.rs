@@ -1,11 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Measure the host cost of copying, hashing, and zero-checking one guest page.
-//!
-//! This is an informational benchmark for the item-0 Consonance cost projection. It
-//! deliberately measures wall-clock time only around the hot loops; none of the values
-//! participate in snapshot state or deterministic execution.
 
-// not order-observable: wall time is printed as benchmark evidence only.
 #![allow(clippy::disallowed_methods)]
 
 use std::hint::black_box;
@@ -13,9 +7,7 @@ use std::time::{Duration, Instant};
 
 use snapshot_store::PAGE_SIZE;
 
-/// Repetitions are large enough to amortize timer and loop overhead on the target host.
 const REPETITIONS: u64 = 100_000;
-/// Warm the instruction and data paths before starting each timed interval.
 const WARMUP_REPETITIONS: u64 = 2_000;
 
 #[derive(Debug)]
@@ -24,7 +16,6 @@ struct Measurement {
     guard: u64,
 }
 
-/// Build deterministic, non-zero page contents without using host entropy.
 fn fixed_page() -> [u8; PAGE_SIZE] {
     let mut page = [0u8; PAGE_SIZE];
     for (index, byte) in page.iter_mut().enumerate() {
@@ -36,13 +27,11 @@ fn fixed_page() -> [u8; PAGE_SIZE] {
     page
 }
 
-/// Format elapsed time as truncated microseconds per page with three decimals.
 fn micros_per_page(elapsed: Duration, pages: u64) -> String {
     let nanos_per_page = elapsed.as_nanos() / u128::from(pages);
     format!("{}.{:03}", nanos_per_page / 1_000, nanos_per_page % 1_000)
 }
 
-/// Return a compact guard derived from a completed page operation.
 fn guard_from_digest(digest: &blake3::Hash) -> u64 {
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&digest.as_bytes()[..8]);

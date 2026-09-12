@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# /init of the **SMB game workload image** (task 86). Bring up the kernel
+# /init of the **SMB game workload image**. Bring up the kernel
 # filesystems, reserve the hugetlb page the play-agent pins its billboard in,
 # then run the play-agent — a headless libretro frontend driving Super Mario
 # Bros. as the single supervised process. The agent draws chord inputs from the
@@ -8,7 +8,7 @@
 # billboard, and calls `setup_complete` (the SnapshotPoint the campaign seals
 # its base at) — see workloads/nes-guest/.
 #
-# ROM discipline (task 86, hard requirement): the ROM is user-supplied at image
+# ROM discipline (hard requirement): the ROM is user-supplied at image
 # build via HARMONY_SMB_ROM and never fetched. An image built without one still
 # boots; this init then reports **GAME_SKIP loudly** and halts — a skipped gate
 # is never a green gate.

@@ -1,23 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Frozen public-API snapshot guard — see `CONTRIBUTING.md`
-//!
-//! Regenerates this crate's public surface with `cargo public-api` on the
-//! pinned nightly toolchain and asserts it byte-matches the committed
-//! `tests/public-api.txt`. Any drift in the frozen public contract becomes a
-//! failing test and a reviewable diff.
-//!
-//! Refresh after an intentional, reviewed API change:
-//!   `UPDATE_PUBLIC_API=1 cargo test -p vtime --test public_api`
-//!
-//! Requires the pinned nightly toolchain and `cargo-public-api`
-//! (`scripts/install-quality-tools.sh`). When either is absent the test skips
-//! loudly rather than failing, so a plain `cargo nextest` on a stable-only box
-//! stays green; CI installs both, so the gate runs for real there.
 
 use std::process::Command;
 
-/// Pinned nightly — `cargo-public-api` needs rustdoc-JSON, which is
-/// nightly-only. Keep in sync with `CONTRIBUTING.md`.
 const PINNED_NIGHTLY: &str = "nightly-2026-06-16";
 const CRATE: &str = "vtime";
 
@@ -31,8 +15,6 @@ fn public_api_matches_snapshot() {
             "public-api",
             "-p",
             CRATE,
-            // Freeze the full surface (all features), so a public item gated
-            // behind a non-default feature can never drift unnoticed.
             "--all-features",
             "-sss",
             "--color",
@@ -49,7 +31,6 @@ fn public_api_matches_snapshot() {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Missing tool / toolchain -> skip; a real build error -> fail.
         let absent = stderr.contains("no such command")
             || stderr.contains("is not installed")
             || stderr.contains("toolchain may not be installed")

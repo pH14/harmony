@@ -1,20 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **x86-64 vendor** (`docs/ARCHITECTURE.md`): everything in the
-//! deterministic VMM that names the x86 ISA — the CPU/MSR contract and its
-//! installed policy ([`contract`]), the exit dispatch and dispositions
-//! ([`dispatch`]), the boot loaders and entry state ([`linux_loader`], [`entry`]), the interrupt fabric and platform device models
-//! ([`devices`] + the `lapic` crate), and the
-//! `vm_state` record set ([`records`]).
-//!
-//! The engine ([`crate::vmm`]) reaches all of it through [`Vendor`] alone. x86
-//! is the sole vendor today; an ARM vendor is a sibling module here (the §D
-//! pre-build wave), not an edit to the engine.
 
-// The x86 **boot composition root** — the one place the concrete
-// `(Backend impl, Arch vendor)` pair is named (R-Backend; the §B composition-root
-// discipline). A *vendor* module, not an engine one: it installs the x86
-// CPU-contract policy, runs the Linux bzImage loaders, and builds
-// the x86 entry state.
 pub mod bringup;
 pub mod contract;
 pub mod devices;
@@ -43,9 +28,6 @@ impl Vendor for X86 {
     }
 
     fn mmio_holes() -> &'static [(u64, u64)] {
-        // The xAPIC page: `KvmBackend::map_memory` splits the RAM memslots around
-        // exactly this range (`split_around_hole`, vmm-backend), so it is device
-        // MMIO, never RAM — the one hole the x86 machine model punches today.
         &[(LAPIC_MMIO_PAGE, LAPIC_MMIO_PAGE_LEN)]
     }
 
@@ -53,8 +35,6 @@ impl Vendor for X86 {
         vmm: &mut Vmm<B>,
         exit: X86Exit,
     ) -> Result<Step, VmmError> {
-        // Exhaustive over `X86Exit` — no wildcard arm (default-deny stays
-        // structural; `docs/ARCHITECTURE.md`).
         match exit {
             X86Exit::Io {
                 port,
@@ -85,9 +65,6 @@ impl Vendor for X86 {
         if !vmm.completion_staged {
             return Ok(None);
         }
-        // Keep the conservative in-place-restore latch: finish_exit need not
-        // retire a backend's host-only bookkeeping when save already captures
-        // the completed state. Restore owns clearing that displaced latch.
         Ok(vmm.backend.finish_exit()?)
     }
 
@@ -121,14 +98,12 @@ impl Vendor for X86 {
     }
 
     fn guest_interruptible<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Result<bool, VmmError> {
-        // `RFLAGS.IF` — the guest's own "I can take an interrupt" signal.
         Ok(vmm.backend().save()?.regs.rflags & dispatch::RFLAGS_IF != 0)
     }
 
     fn pending_deliverable_interrupt<B: Backend<A = Self>>(
         vmm: &mut Vmm<B>,
     ) -> Result<bool, VmmError> {
-        // `peek_interrupt` does the vector-validity + TPR/PPR arbitration.
         Ok(vmm
             .devices()
             .lapic
@@ -149,10 +124,6 @@ impl Vendor for X86 {
     }
 
     fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64> {
-        // An *armed* timer can still be **undeliverable** — a reserved vector
-        // (`< 16`), or masked by TPR/PPR — in which case it fires into the IRR but
-        // never injects, so a one-shot leaves no future wake. Such a timer is no
-        // wake at all.
         let lapic = vmm.devices().lapic.as_ref()?;
         lapic
             .next_timer_deadline()
@@ -163,17 +134,12 @@ impl Vendor for X86 {
         vmm: &Vmm<B>,
         vector: u32,
     ) -> Result<(), InterruptReject> {
-        // No userspace xAPIC ⇒ no IRQ arbitration path to assert a vector through.
         if vmm.devices().lapic.is_none() {
             return Err(InterruptReject::NoFabric);
         }
-        // The xAPIC's identity space is 8 bits wide.
         let Ok(vector) = u8::try_from(vector) else {
             return Err(InterruptReject::OutOfRange);
         };
-        // Vectors 0..16 are architecturally reserved on x86 and the LAPIC will not
-        // raise them. (An ARM vendor would NOT reject its 0..16 — those are SGIs,
-        // and they deliver.)
         if vector < 16 {
             return Err(InterruptReject::Reserved { vector });
         }
@@ -206,11 +172,6 @@ impl Vendor for X86 {
     }
 
     fn encode_device_state(devices: &Self::Devices) -> Vec<u8> {
-        // The UART register shadows (offsets 0..=7) + the latched `LCR.DLAB`
-        // window — the device's residual state, so two runs that drive the UART
-        // into a different register/DLAB configuration hash differently even with
-        // byte-identical serial output. (The engine appends the terminal-reason
-        // bytes after this.)
         let mut v = Vec::new();
         v.extend_from_slice(devices.uart.shadow_regs());
         v.push(u8::from(devices.uart.dlab()));
@@ -222,10 +183,6 @@ impl Vendor for X86 {
         devices: &Self::Devices,
         out: &mut Vec<u8>,
     ) {
-        // The xAPIC chunk is present **only** on the Linux boot path (`lapic`
-        // wired); M1/M2/corpus emit none, so their hash is byte-for-byte
-        // unchanged. It captures the register file + timer bookkeeping that
-        // governs future interrupt delivery.
         if let Some(lapic) = &devices.lapic {
             crate::vmm::put_chunk(
                 out,
@@ -233,9 +190,6 @@ impl Vendor for X86 {
                 &dispatch::encode_lapic_state(&lapic.snapshot()),
             );
         }
-        // Legacy-platform state (the PCI CONFIG_ADDRESS latch + the 8259 master/
-        // slave IMR) — Linux path only. The IMR governs which IRQ lines deliver,
-        // so two same-seed runs that leave it different hash differently.
         if let Some(legacy) = &devices.legacy {
             let mut legy = legacy.config_address().to_le_bytes().to_vec();
             legy.extend_from_slice(&legacy.pic_imr());
@@ -244,9 +198,6 @@ impl Vendor for X86 {
     }
 
     fn regs_view(vcpu: &vmm_backend::VcpuState) -> RegsView {
-        // The GPRs and segment selectors go in the view's canonical order
-        // (`rax rbx rcx rdx rsi rdi rbp rsp r8..r15` — note **rbp before rsp** —
-        // and `cs ss ds es fs gs`). The engine fills the `Moment`/`vtime` half.
         let r = &vcpu.regs;
         RegsView {
             version: RegsView::VERSION,

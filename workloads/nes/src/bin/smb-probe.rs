@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Print selected work-RAM bytes after each chord of a schedule run from power-on.
-
 use std::{env, error::Error, fs, path::PathBuf};
 
 use machine::nes::ButtonChord;

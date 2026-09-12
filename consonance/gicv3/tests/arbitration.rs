@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Arbitration property test: [`Gicv3::peek_interrupt`] agrees with a naive
-//! reference model over arbitrary register-file programs — the gicv3 sibling
-//! of `lapic/tests/delivery.rs`.
 
 use gicv3::{GicConfig, GicFrame, Gicv3};
 use proptest::prelude::*;
 
-const IMPL_SPIS: u32 = 64; // INTIDs 0..96
+const IMPL_SPIS: u32 = 64;
 const LIMIT: u32 = 32 + IMPL_SPIS;
 
 const SGI_FRAME: u64 = 0x1_0000;
@@ -16,7 +13,6 @@ const ICENABLER: u64 = 0x0180;
 const IPRIORITYR: u64 = 0x0400;
 const GICD_CTLR: u64 = 0x0000;
 
-/// One programmed interrupt line in the reference model.
 #[derive(Clone, Copy, Debug, Default)]
 struct Line {
     group1: bool,
@@ -26,7 +22,6 @@ struct Line {
     priority: u8,
 }
 
-/// The naive reference arbitration: filter, then min by `(priority, intid)`.
 fn reference_peek(lines: &[Line], pmr: u8, grp1_enabled: bool) -> Option<u32> {
     if !grp1_enabled {
         return None;
@@ -47,9 +42,6 @@ fn reference_peek(lines: &[Line], pmr: u8, grp1_enabled: bool) -> Option<u32> {
         .map(|(i, _)| i as u32)
 }
 
-/// Program `lines` into a fresh model through the real MMIO surface (the
-/// distributor for SPIs, the redistributor SGI frame for SGIs/PPIs), raise
-/// the pending set, and acknowledge the active set directly.
 fn program(lines: &[Line], pmr: u8, grp1_enabled: bool) -> Gicv3 {
     let mut g = Gicv3::new(GicConfig {
         impl_spis: IMPL_SPIS,
@@ -66,10 +58,6 @@ fn program(lines: &[Line], pmr: u8, grp1_enabled: bool) -> Gicv3 {
     .unwrap();
     g.set_group1_enabled(grp1_enabled);
     g.set_pmr(pmr);
-    // Replace the reset register files word-for-word. The GICv3 reset state
-    // intentionally starts all implemented INTIDs in Group 1 and all SGIs
-    // enabled, so a generated `false` must actively clear that bit rather
-    // than rely on zero initialization.
     for w in 0..(LIMIT / 32) {
         let (frame, base) = if w == 0 {
             (GicFrame::Redist, SGI_FRAME)
@@ -117,9 +105,6 @@ fn program(lines: &[Line], pmr: u8, grp1_enabled: bool) -> Gicv3 {
             g.raise(intid).unwrap();
         }
     }
-    // Actives last, through the acknowledge path where the reference agrees a
-    // take is legal; otherwise via the ISACTIVER bank (a snapshot-shaped
-    // state, still architecturally reachable).
     for (i, l) in lines.iter().enumerate() {
         if l.active {
             let intid = i as u32;
@@ -156,7 +141,6 @@ fn line_strategy() -> impl Strategy<Value = Line> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
-    /// The model's arbitration equals the reference for every programmed file.
     #[test]
     fn peek_matches_the_reference_model(
         lines in proptest::collection::vec(line_strategy(), LIMIT as usize),
@@ -167,9 +151,6 @@ proptest! {
         prop_assert_eq!(g.peek_interrupt(), reference_peek(&lines, pmr, grp1));
     }
 
-    /// Acknowledge/EOI walk-down: repeatedly taking the arbitrated INTID and
-    /// EOI-ing it drains the deliverable set in strictly non-decreasing
-    /// priority order, mirroring the reference at every step.
     #[test]
     fn take_eoi_drains_in_reference_order(
         lines in proptest::collection::vec(line_strategy(), LIMIT as usize),
@@ -178,7 +159,6 @@ proptest! {
         let mut g = program(&lines, pmr, true);
         let mut model = lines.clone();
         let mut last_prio: Option<u8> = None;
-        // Bounded: each take clears one pending bit, so LIMIT is a hard cap.
         for _ in 0..LIMIT {
             let expect = reference_peek(&model, pmr, true);
             let got = g.take_interrupt();
@@ -186,7 +166,7 @@ proptest! {
             let Some(intid) = got else { break };
             let l = &mut model[intid as usize];
             l.pending = false;
-            l.active = false; // model take + immediate EOI
+            l.active = false;
             g.eoi(intid).unwrap();
             if let Some(p) = last_prio {
                 prop_assert!(l.priority >= p, "priority order violated");
@@ -195,7 +175,6 @@ proptest! {
         }
     }
 
-    /// A snapshot round-trip preserves arbitration exactly.
     #[test]
     fn snapshot_preserves_arbitration(
         lines in proptest::collection::vec(line_strategy(), LIMIT as usize),
@@ -203,7 +182,6 @@ proptest! {
         grp1 in any::<bool>(),
     ) {
         let g = program(&lines, pmr, grp1);
-        // The timer is not exercised here (no latch), so any V-time restores.
         let restored = Gicv3::restore(&g.snapshot(), u64::MAX).unwrap();
         prop_assert_eq!(restored.peek_interrupt(), g.peek_interrupt());
         prop_assert_eq!(restored.snapshot(), g.snapshot());

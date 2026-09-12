@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Mine reproducible recent and all-history chord tables from any SMB archive.
-
 use std::{
     collections::BTreeMap,
     env,
@@ -71,17 +69,30 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let source_bytes = fs::read(&source)?;
     let archive: SmbArchiveReport = serde_json::from_slice(&source_bytes)?;
+    let parent_lengths = archive
+        .entries
+        .iter()
+        .map(|entry| (entry.id, entry.input.actions.len()))
+        .collect::<BTreeMap<_, _>>();
     let mut tables = EmpiricalStepTables::new(parameters)?;
+    let mut all_history = Vec::new();
     let mut entries_used = 0_u64;
     let mut success_executions = Vec::new();
     for entry in &archive.entries {
         if (entry.key.world, entry.key.level) == (filter.world, filter.level)
             && entry.key.progress >= filter.minimum_progress
-            && entry.input.actions.len() > parameters.prefix_steps
         {
-            tables.fold_retained(&entry.input.actions)?;
-            entries_used = entries_used.saturating_add(1);
-            success_executions.push(entry.created_execution);
+            let prefix = entry
+                .parent_id
+                .and_then(|parent| parent_lengths.get(&parent).copied())
+                .unwrap_or(0);
+            let suffix = entry.input.actions.get(prefix..).unwrap_or(&[]);
+            tables.fold_retained(suffix)?;
+            all_history.extend_from_slice(suffix.get(parameters.prefix_steps..).unwrap_or(&[]));
+            if !suffix.is_empty() {
+                entries_used = entries_used.saturating_add(1);
+                success_executions.push(entry.created_execution);
+            }
         }
     }
     tables.flush()?;
@@ -89,7 +100,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mixed_len = tables.mixed_len()?;
     let mut mask_histogram = BTreeMap::<u8, u64>::new();
     let mut hold_histogram_by_12s = BTreeMap::<u8, u64>::new();
-    for chord in tables.all_history() {
+    for chord in &all_history {
         *mask_histogram.entry(chord.buttons).or_insert(0) += 1;
         *hold_histogram_by_12s
             .entry(chord.hold_frames / 12)
@@ -112,7 +123,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .or_else(|| success_executions.first().copied()),
         last_success_execution: success_executions.last().copied(),
         recent: tables.recent().to_vec(),
-        all_history: tables.all_history().to_vec(),
+        all_history,
         mixed_chords: mixed_len,
         mask_histogram,
         hold_histogram_by_12s,

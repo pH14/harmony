@@ -69,6 +69,13 @@ over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
 which pairs the sometimes-assertion set with the live-node bitmap and the
 hook-completion count.
 
+The generic `execution_work` counter is the number of successfully applied
+logical horizons after setup. It is monotonic across target reset and snapshot
+restore, so replay and the current search budget charge each accepted action
+once. The separate `guest_horizons` diagnostic measures physical guest runs;
+cache reuse can change it and reset clears it. Setup, prefix reconstruction,
+and failed actions are outside the logical counter.
+
 ## Running it
 
 ```
@@ -90,6 +97,11 @@ lowercase hex and mark it with `state_hash_encoding: "engine_digest"`.
 Reports written by earlier versions omit that marker and contain SHA-256 of
 the digest; readers default a missing marker to the legacy interpretation.
 The marker is additive, so older readers continue to parse the report shape.
+
+The search report and `campaign-summary.json` also record
+`watchdog_cutoffs`, the number of guest action runs ended by the session's
+host watchdog. A completed CLI with such cutoffs remains a measured campaign;
+an outer CLI timeout is an infrastructure failure.
 
 Every replay run boots a session no earlier run has touched, so no snapshot
 another run cached can stand in for guest execution: each run reaches the

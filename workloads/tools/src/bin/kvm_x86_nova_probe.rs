@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Experimental end-to-end Nova payload probe on stock x86 or arm64 KVM.
-//!
-//! Boots Linux + QuickNES + Nova, waits for the guest SDK's setup boundary,
-//! seals that whole-VM state, then branches twice with the same seeded
-//! environment. In each branch the guest fetches one opaque two-byte input
-//! payload and yields after executing it. Equal endpoint hashes and SDK event
-//! pages establish the intended Consonance-owned snapshot/input path without
-//! claiming the stock runner is a production determinism host.
 
 #[cfg(all(
     target_os = "linux",
@@ -122,14 +114,8 @@ fn run() -> Result<(), String> {
     const SEED: u64 = 0x4e4f_5641_5f43_4931;
     #[cfg(target_arch = "x86_64")]
     const DEADLINE: u64 = 2_000_000_000;
-    // The arm64 game kernel reaches `/init` at roughly 2 billion modeled
-    // nanoseconds on msr1. Leave a bounded 10x envelope for QuickNES setup;
-    // this is a host-independent V-time limit, not wall-clock time.
     #[cfg(target_arch = "aarch64")]
     const DEADLINE: u64 = 20_000_000_000;
-    // Keep the proven stock-x86 virtual-time boot contract from
-    // `x86_kvm_linux_virtual_time`: one CPU, xAPIC, no HPET, and no raw timer
-    // calibration. `rdinit` selects the Nova image's dedicated init.
     #[cfg(target_arch = "x86_64")]
     const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
         no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
@@ -206,9 +192,6 @@ fn run() -> Result<(), String> {
             Self {
                 enabled,
                 ram_gpa_base: RAM_GPA_BASE,
-                // Guest-agent mappings must come from a guest setup report;
-                // reading this host process's maps would classify unrelated
-                // host virtual addresses as guest GPAs.
                 agent_ranges: Vec::new(),
                 ..Self::default()
             }
@@ -250,8 +233,6 @@ fn run() -> Result<(), String> {
                 return;
             };
             self.dirty_available_seals = self.dirty_available_seals.saturating_add(1);
-            // A one-layer seal with a complete dirty drain is the bounded-chain
-            // flatten path. The initial full base has no drained parent window.
             if chain_len == Some(1) {
                 self.flatten_wall_samples_ns
                     .push(self.last_snapshot_wall_ns);
@@ -483,10 +464,10 @@ fn run() -> Result<(), String> {
         request: &Request,
         profile: &mut ProbeProfile,
     ) -> Result<Reply, String> {
-        #[allow(clippy::disallowed_methods)] // not order-observable: live profiling only.
+        #[allow(clippy::disallowed_methods)]
         let started = profile.enabled.then(Instant::now);
         let result = server.handle(request);
-        #[allow(clippy::disallowed_methods)] // not order-observable: live profiling only.
+        #[allow(clippy::disallowed_methods)]
         if let Some(started) = started {
             profile.record_verb(request, started.elapsed().as_nanos());
         }
@@ -558,9 +539,6 @@ fn run() -> Result<(), String> {
         base: SnapId,
         profile: &mut ProbeProfile,
     ) -> Result<([u8; 32], Vec<u8>), String> {
-        // The first chord is the experiment's opaque controller input. A neutral
-        // tail keeps the service offered while the deferred frame-complete point
-        // reaches its first sealable re-entry boundary.
         let env = payload_env(vec![vec![0x81, 12], vec![0, 1]]);
         let before_faults = profile.enabled.then(host_minor_faults).flatten();
         let before_frame = profile.last_frame;
@@ -646,9 +624,6 @@ fn run() -> Result<(), String> {
             Reply::Unit => {}
             other => return Err(format!("restore-oracle branch returned {other:?}")),
         }
-        // Retain the actual first restore image. Retrying the same restore
-        // after a divergent continuation can repair an incomplete dirty-page
-        // window, so post-failure retries are not evidence of that first image.
         let vmm = server.vmm().ok_or("oracle VM unavailable")?;
         let initial = OracleInitial {
             components: vmm.state_components(),
@@ -699,8 +674,6 @@ fn run() -> Result<(), String> {
         let mut nodes = vec![base];
         let mut edges = Vec::with_capacity(50);
 
-        // The named A→B oracle: seal S1 after A, seal S2 after B, then restore
-        // S1 in place and re-run B to reproduce S2 exactly.
         let action_a = vec![0x81, 12];
         let (s1, _, initial) = oracle_action(server, base, action_a.clone(), true, profile)?;
         let s1 = s1.ok_or("restore-oracle action A did not seal S1")?;
@@ -743,7 +716,6 @@ fn run() -> Result<(), String> {
         }
         let mut equal = 1u64;
 
-        // Grow a deterministic 50-action tree from arbitrary existing nodes.
         let mut rng = SEED ^ 0x4954_454d_325f_5452;
         while edges.len() < 50 {
             let word = oracle_word(&mut rng);
@@ -769,8 +741,6 @@ fn run() -> Result<(), String> {
             });
         }
 
-        // Re-run 199 selected tree edges plus the named B edge above: 200
-        // restore-target hash equalities in total.
         while equal < 200 {
             let word = oracle_word(&mut rng);
             let edge = &edges[(word as usize) % edges.len()];
@@ -798,9 +768,6 @@ fn run() -> Result<(), String> {
                         "{:?}",
                         server.vmm().ok_or("oracle VM unavailable")?.sdk_snapshot()
                     );
-                // Compare the same sealed parent through a fresh owned-RAM VM
-                // to distinguish in-place restore errors from shared snapshot
-                // or execution errors. Either diagnostic outcome still fails.
                 let first_restore_changed: Vec<_> = initial
                     .components
                     .iter()
@@ -908,10 +875,6 @@ fn run() -> Result<(), String> {
     let factory: VmmFactory<Box<dyn Backend<A = HostArch>>> =
         Box::new(move || boot(&factory_kernel, &factory_initramfs));
     let mut server = ControlServer::new(live, factory);
-    // Item 2's reset inventory is empirical per architecture: retain the
-    // component digests of the freshly composed VM, then report exactly which
-    // components a used setup VM changed.  The restore hash oracle below proves
-    // that the in-place path puts every one back to the sealed target value.
     let fresh_components = server
         .vmm()
         .ok_or("fresh composed VM is unavailable")?
@@ -930,10 +893,6 @@ fn run() -> Result<(), String> {
         other => return Err(format!("hello returned {other:?}")),
     }
 
-    // The live constructor intentionally starts with a bare seeded SDK channel,
-    // where the ordered payload service is unavailable. Seal the unstarted VM,
-    // then use the normal branch reproducer to offer a bootstrap tape. The
-    // resulting setup point is the gameplay base used by both measured branches.
     let genesis = match drive(&mut server, &Request::Snapshot, &mut profile)? {
         Reply::Snapshot { id, .. } => id,
         other => return Err(format!("genesis snapshot returned {other:?}")),
@@ -952,8 +911,6 @@ fn run() -> Result<(), String> {
     }
     let setup_at = run_to_snapshot(&mut server, &mut profile)?;
     if profile.enabled {
-        // Make the measured setup image a base layer so `owned_pages` is the
-        // full image's non-zero-page count, not merely one delta layer.
         server.set_max_chain_len(0);
     }
     let base = match drive(&mut server, &Request::Snapshot, &mut profile)? {
@@ -970,9 +927,6 @@ fn run() -> Result<(), String> {
     let setup_console = console(&mut server, &mut profile);
     let (mem_total_kib, boot_available_kib) = boot_memory_kib(&setup_console)
         .map_err(|error| format!("{error}\n--- guest console ---\n{setup_console}"))?;
-    // `/init` fails closed unless its two 2 MiB hugepage reservations succeed.
-    // The kernel reports availability before that reservation and before it
-    // frees the initramfs, so subtracting 4 MiB is a conservative setup floor.
     const BILLBOARD_RESERVE_KIB: u64 = 2 * 2 * 1024;
     let setup_available_floor_kib = boot_available_kib.saturating_sub(BILLBOARD_RESERVE_KIB);
     println!(

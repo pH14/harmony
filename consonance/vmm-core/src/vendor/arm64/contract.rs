@@ -1,57 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The arm64 CPU-contract policy shared by the HVF and KVM compositions.
-//!
-//! The x86 contract (`consonance/vmm-core/contracts/x86/guest.toml`, the `vendor::x86::contract`
-//! module) is the rigor template, not the content. M5 measured both live hosts,
-//! selected a conservative common feature surface, and validated every row
-//! through KVM's config-time writable-ID-register API. Values KVM does not
-//! permit userspace to reduce (ASID/VMID width and EL2-only fields) retain the
-//! KVM value; they are harmless to the EL1 payload and are installed into HVF
-//! as part of the same synthetic identity.
-//!
-//! The runtime trap table remains empty because stock KVM has no userspace
-//! sysreg-exit surface; the cooperative-image and audit closures remain the
-//! enforcement posture for those instructions.
 
 use sha2::{Digest, Sha256};
 use vmm_backend::{Arm64Policy, IdRegModel, SysregTrapPolicy};
 
 use crate::virtual_time::VirtualTimeTiming;
 
-/// Assigned duration of one interrupt-controller access.
-///
-/// The row is unreachable on arm64: stock KVM consumes GIC distributor,
-/// redistributor, and CPU-interface accesses inside the in-kernel vGIC, while
-/// HVF surfaces them to userspace, so they remain raw diagnostics with no
-/// portable ordinal or V-time. The value is carried anyway so both vendors
-/// share one row set.
 pub const INTERRUPT_CONTROLLER_EXIT_VNS: u64 = 10_000;
-/// Assigned duration of one PL011 access.
 pub const SERIAL_EXIT_VNS: u64 = 10_000;
-/// Assigned duration of one pvclock/clockevent MMIO access.
 pub const PARAVIRTUAL_EXIT_VNS: u64 = 10_000;
-/// Assigned duration of the kernel's deterministic execution tick.
-///
-/// The guest emits one tick on every syscall entry, context switch, and
-/// idle-poll iteration. 100 µs is the calibrated median wall gap around a
-/// tick on the PostgreSQL M3 reference run. The value must remain strictly
-/// below Linux's 100 Hz clockevent period: a timer interrupt can itself
-/// cause a context switch, and advancing by a full period there would
-/// immediately mature its successor and create a self-sustaining interrupt
-/// loop.
 pub(crate) const EXECUTION_TICK_VNS: u64 = 100_000;
 pub(crate) const LINUX_CLOCKEVENT_PERIOD_VNS: u64 = 10_000_000;
 const _: () = assert!(EXECUTION_TICK_VNS < LINUX_CLOCKEVENT_PERIOD_VNS);
-/// Assigned duration of a trapped counter-shaped time read. Instruction
-/// scale, so trapped-read delay loops still measure a fast clock.
 pub const TRAPPED_TIME_READ_VNS: u64 = 1;
-/// Assigned duration of a deterministic architectural-control trap that is
-/// neither a device access nor a time read (for example Linux clearing the
-/// OS debug lock at boot).
 pub const ARCH_CONTROL_EXIT_VNS: u64 = 10_000;
 
-/// The normative arm64 virtual_time timing row set. Production composition
-/// never uses `VirtualTimeTiming::default()`'s M0 placeholders.
 pub fn virtual_time_timing() -> VirtualTimeTiming {
     VirtualTimeTiming {
         interrupt_controller_mmio_vns: INTERRUPT_CONTROLLER_EXIT_VNS,
@@ -63,46 +25,32 @@ pub fn virtual_time_timing() -> VirtualTimeTiming {
     }
 }
 
-/// Canonical packed system-register encodings and M5 cross-host baseline.
-///
-/// The values were read independently by `hvf_probe` and
-/// `arm64_kvm_id_probe`. The latter also writes and reads back each selected
-/// value before first entry, proving that stock KVM accepts the complete set.
 pub const IDENTITY_BASELINE: [(u32, u64); 21] = [
-    (0xc000, 0x0000_0000_410f_d811), // MIDR_EL1
-    (0xc005, 0x0000_0000_8000_0000), // MPIDR_EL1
-    (0xc020, 0x1101_0000_1111_0011), // ID_AA64PFR0_EL1
-    (0xc021, 0x0000_0000_0000_0000), // ID_AA64PFR1_EL1
-    (0xc022, 0x0000_0000_0000_0000), // ID_AA64PFR2_EL1
-    (0xc024, 0x0000_0000_0000_0000), // ID_AA64ZFR0_EL1
-    (0xc025, 0x0000_0000_0000_0000), // ID_AA64SMFR0_EL1
-    (0xc027, 0x0000_0000_0000_0000), // ID_AA64FPFR0_EL1
-    (0xc028, 0x0000_00f0_1030_5006), // ID_AA64DFR0_EL1
-    (0xc029, 0x0000_0000_0000_0000), // ID_AA64DFR1_EL1
-    (0xc02a, 0x0000_0000_0000_0000), // ID_AA64DFR2_EL1
-    (0xc030, 0x0221_1001_1021_2120), // ID_AA64ISAR0_EL1
-    (0xc031, 0x0000_0111_0021_1002), // ID_AA64ISAR1_EL1
-    (0xc032, 0x0000_0000_0000_0000), // ID_AA64ISAR2_EL1
-    (0xc033, 0x0000_0000_0000_0000), // ID_AA64ISAR3_EL1
-    (0xc038, 0x0000_0111_0f10_0022), // ID_AA64MMFR0_EL1
-    (0xc039, 0x0000_0000_1121_2120), // ID_AA64MMFR1_EL1
-    (0xc03a, 0x1201_0111_0000_1011), // ID_AA64MMFR2_EL1
-    (0xc03b, 0x0000_0000_0000_0000), // ID_AA64MMFR3_EL1
-    (0xc03c, 0x0000_0000_0000_0000), // ID_AA64MMFR4_EL1
-    (0xd801, 0x0000_0000_8444_c004), // CTR_EL0
+    (0xc000, 0x0000_0000_410f_d811),
+    (0xc005, 0x0000_0000_8000_0000),
+    (0xc020, 0x1101_0000_1111_0011),
+    (0xc021, 0x0000_0000_0000_0000),
+    (0xc022, 0x0000_0000_0000_0000),
+    (0xc024, 0x0000_0000_0000_0000),
+    (0xc025, 0x0000_0000_0000_0000),
+    (0xc027, 0x0000_0000_0000_0000),
+    (0xc028, 0x0000_00f0_1030_5006),
+    (0xc029, 0x0000_0000_0000_0000),
+    (0xc02a, 0x0000_0000_0000_0000),
+    (0xc030, 0x0221_1001_1021_2120),
+    (0xc031, 0x0000_0111_0021_1002),
+    (0xc032, 0x0000_0000_0000_0000),
+    (0xc033, 0x0000_0000_0000_0000),
+    (0xc038, 0x0000_0111_0f10_0022),
+    (0xc039, 0x0000_0000_1121_2120),
+    (0xc03a, 0x1201_0111_0000_1011),
+    (0xc03b, 0x0000_0000_0000_0000),
+    (0xc03c, 0x0000_0000_0000_0000),
+    (0xd801, 0x0000_0000_8444_c004),
 ];
 
-/// Guest-visible identity that neither substrate exposes as writable state.
-///
-/// Both live instruction probes read this exact value. It is bound into the
-/// contract hash even though it cannot be installed through either substrate's
-/// configuration API; a host with a different value is not M5-qualified.
-pub const READ_ONLY_IDENTITY_BASELINE: [(u32, u64); 1] = [
-    (0xd807, 0x0000_0000_0000_0004), // DCZID_EL0
-];
+pub const READ_ONLY_IDENTITY_BASELINE: [(u32, u64); 1] = [(0xd807, 0x0000_0000_0000_0004)];
 
-/// The installable arm64 policy: the frozen cross-host identity and the empty
-/// stock-substrate trap table.
 pub fn policy() -> Arm64Policy {
     Arm64Policy {
         id_regs: IdRegModel {
@@ -112,19 +60,10 @@ pub fn policy() -> Arm64Policy {
     }
 }
 
-/// SHA-256 over the canonical encoding of the installed policy and the
-/// virtual_time timing row set — the arm64 snapshot's `contract_hash` anchor.
-/// Two builds whose policy or timing rows differ
-/// stamp different hashes, so a snapshot taken under one contract baseline is
-/// refused by a VMM enforcing another (the same anti-drift role as the x86
-/// `contract_hash`, docs/ARCHITECTURE.md). The domain-separation prefix names this
-/// baseline explicitly so it cannot collide with the earlier empty skeleton.
 pub fn contract_hash() -> [u8; 32] {
     let p = policy();
     let mut h = Sha256::new();
     h.update(b"harmony-arm64-cross-host-baseline-v3\0");
-    // Canonical encoding: sorted (BTreeMap/BTreeSet) rows, little-endian
-    // fixed-width fields, length-prefixed sections — deterministic (rule #4).
     h.update((p.id_regs.regs.len() as u64).to_le_bytes());
     for (enc, val) in &p.id_regs.regs {
         h.update(enc.to_le_bytes());
@@ -180,13 +119,10 @@ mod tests {
         assert_eq!(frozen, contract_hash());
         assert_ne!(frozen, [0; 32]);
         assert_ne!(frozen, [1; 32]);
-        // One changed row must hash differently — the anti-drift property the
-        // snapshot check relies on.
         let mut p = policy();
         p.id_regs.regs.insert(0xc020, 0x1122);
         let with_row = recompute(&p, virtual_time_timing());
         assert_ne!(contract_hash(), with_row);
-        // A changed timing row must hash differently too.
         let mut timing = virtual_time_timing();
         timing.serial_mmio_vns += 1;
         let with_timing = recompute(&policy(), timing);
@@ -236,11 +172,6 @@ mod tests {
         assert_eq!(timing.execution_tick_vns, 100_000);
     }
 
-    /// The shared set is seven rows: the six [`VirtualTimeTiming`] durations plus
-    /// the clockevent period, which is carried outside the struct because no exit
-    /// is charged with it. Comparing the struct alone would let the x86 contract's
-    /// parsed `vtime-clockevent-period-vns` drift from the arm64 constant while
-    /// staying green.
     #[test]
     fn both_architectures_share_one_timing_row_set() {
         assert_eq!(

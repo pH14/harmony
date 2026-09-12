@@ -12,9 +12,10 @@ cd "$(dirname "$0")"
 require_linux_aarch64
 require_tools cc make flex bison bc xz gzip patch objdump python3
 
-# The canonical M1 build remains the default. M2's std/TetaNES payload needs a
-# separate kernel profile with userspace/proc/devmem facilities; keeping its
-# object tree and output distinct preserves the sealed M1 artifact byte-for-byte.
+# The canonical M1 build remains the default. Other profiles need a separate
+# kernel profile with additional userspace/proc/devmem facilities; keeping
+# their object tree and output distinct preserves the sealed M1 artifact
+# byte-for-byte.
 arm64_profile=${ARM64_KERNEL_PROFILE:-minimal}
 case "$arm64_profile" in
     minimal)
@@ -23,17 +24,11 @@ case "$arm64_profile" in
         arm64_output=Image
         arm64_extra_fragment=
         ;;
-    game)
-        arm64_source_root=$BUILD_ROOT/arm64-game-src
-        arm64_object_root=$BUILD_ROOT/kernel-build-arm64-game
-        arm64_output=Image-game
-        arm64_extra_fragment=$LINUX_DIR/arm64-game-config-fragment
-        ;;
     postgres)
         arm64_source_root=$BUILD_ROOT/arm64-postgres-src
         arm64_object_root=$BUILD_ROOT/kernel-build-arm64-postgres
         arm64_output=Image-postgres
-        arm64_extra_fragment=$LINUX_DIR/arm64-postgres-config-fragment
+        arm64_extra_fragment=$GUEST_DIR/../../workloads/guest-images/arm64-postgres-config-fragment
         ;;
     n6-traps-off)
         arm64_source_root=$BUILD_ROOT/arm64-n6-traps-off-src
@@ -42,7 +37,7 @@ case "$arm64_profile" in
         arm64_extra_fragment=$LINUX_DIR/arm64-n6-traps-off-config-fragment
         ;;
     *)
-        echo "FAIL: unknown ARM64_KERNEL_PROFILE=$arm64_profile (want minimal, game, or postgres)" >&2
+        echo "FAIL: unknown ARM64_KERNEL_PROFILE=$arm64_profile (want minimal or postgres)" >&2
         exit 1
         ;;
 esac
@@ -173,11 +168,6 @@ assert_off HOTPLUG_CPU CPU_FREQ CPU_IDLE MODULES HIGH_RES_TIMERS NO_HZ_COMMON \
 case "$arm64_profile" in
     minimal|n6-traps-off)
         assert_off BINFMT_SCRIPT PROC_FS FUTEX DEVMEM
-        ;;
-    game)
-        assert_y BINFMT_SCRIPT PROC_FS PROC_PAGE_MONITOR FUTEX DEVMEM MMU SHMEM TMPFS \
-            HUGETLBFS
-        assert_off STRICT_DEVMEM
         ;;
     postgres)
         assert_y BINFMT_SCRIPT PROC_FS FUTEX MMU SHMEM TMPFS FILE_LOCKING MULTIUSER \

@@ -1,65 +1,33 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The mock-core seam: the agent's decision and decode logic runs against this
-//! trait, so the portable tests never cross the libretro FFI, need a ROM, or
-//! need an emulator (task 86 §Environment). The binary's `LibretroCore`
-//! (Linux-only, dlopen'd) is the only other implementor.
 
 use crate::ram::{WORK_RAM_LEN, addr};
 
-/// The frame-stepped console core, as the agent drives it. A deliberate
-/// minimum: serialize (the billboard's savestate region), one frame of
-/// emulation under a held joypad byte, and the console work RAM (the
-/// billboard's second region and the RAM-map decode source).
 pub trait Core {
-    /// The core's savestate size in bytes (stable for a run; queried once at
-    /// init to freeze the billboard layout).
     fn serialize_size(&mut self) -> usize;
 
-    /// Serialize the core's full savestate into `out` (exactly
-    /// [`serialize_size`](Self::serialize_size) bytes). Returns `false` on
-    /// core failure — the agent treats that as fatal (a torn billboard is
-    /// worse than a dead agent).
     fn serialize(&mut self, out: &mut [u8]) -> bool;
 
-    /// Run exactly one frame with `joypad` held (NES shift order, see
-    /// [`crate::chord::joypad`]).
     fn run_frame(&mut self, joypad: u8);
 
-    /// Copy the 2 KiB console work RAM into `out` (at least [`WORK_RAM_LEN`]
-    /// bytes). Returns `false` if the core cannot expose it.
     fn read_work_ram(&mut self, out: &mut [u8]) -> bool;
 
-    /// Copy cartridge-backed save RAM into `out`, returning the number of
-    /// bytes copied. Workloads without save RAM may return `None`.
     fn read_save_ram(&mut self, _out: &mut [u8]) -> Option<usize> {
         None
     }
 }
 
-/// The fake core for portable tests and the `--smoke` mode: synthetic console
-/// RAM the test plants fixtures in, a toy movement model (RIGHT advances the
-/// player's absolute X, with page carry), and a deterministic fake savestate
-/// derived from the frame counter.
 #[derive(Clone, Debug)]
 pub struct MockCore {
     ram: [u8; WORK_RAM_LEN],
     save_ram: [u8; 8 * 1024],
     frame: u32,
     savestate_len: usize,
-    /// Frames left until a latched `START` press finishes "loading" 1-1
-    /// (`None` = no press latched) — the title→gameplay model the start
-    /// script is tested against.
     start_countdown: Option<u8>,
-    /// Last frame's joypad byte, for edge detection (SMB latches button
-    /// edges on its per-frame poll — a held `START` registers once).
     prev_joypad: u8,
 }
 
-/// The default fake savestate size — NES-shaped (~20–32 KiB real cores; small
-/// here so tests stay fast while still exercising multi-region layouts).
 pub const MOCK_SAVESTATE_LEN: usize = 96;
 
-/// Frames the mock "loads" 1-1 for after a latched `START` edge.
 const MOCK_START_LOAD_FRAMES: u8 = 3;
 
 impl Default for MockCore {
@@ -69,7 +37,6 @@ impl Default for MockCore {
 }
 
 impl MockCore {
-    /// A mock core at the title screen with zeroed RAM.
     pub fn new() -> Self {
         MockCore {
             ram: [0u8; WORK_RAM_LEN],
@@ -81,7 +48,6 @@ impl MockCore {
         }
     }
 
-    /// A mock core already in gameplay (OperMode 1, World 1-1, X = 40).
     pub fn in_gameplay() -> Self {
         let mut core = MockCore::new();
         core.ram[addr::OPER_MODE] = crate::ram::OPER_MODE_GAMEPLAY;
@@ -90,18 +56,14 @@ impl MockCore {
         core
     }
 
-    /// Mutable access to the synthetic console RAM, for planting fixtures
-    /// (level transitions, powerups) between steps.
     pub fn ram_mut(&mut self) -> &mut [u8; WORK_RAM_LEN] {
         &mut self.ram
     }
 
-    /// Mutable synthetic save RAM for Nova payload-agent fixtures.
     pub fn save_ram_mut(&mut self) -> &mut [u8; 8 * 1024] {
         &mut self.save_ram
     }
 
-    /// The frames run so far.
     pub fn frames_run(&self) -> u32 {
         self.frame
     }
@@ -113,9 +75,6 @@ impl Core for MockCore {
     }
 
     fn serialize(&mut self, out: &mut [u8]) -> bool {
-        // Deterministic fake savestate: a function of the frame counter and
-        // the player position, so distinct moments serialize distinct bytes
-        // (the render-determinism tests key on this).
         let frame = self.frame.to_le_bytes();
         for (i, b) in out.iter_mut().enumerate() {
             *b = frame[i % 4]
@@ -128,10 +87,6 @@ impl Core for MockCore {
     fn run_frame(&mut self, joypad: u8) {
         use crate::chord::joypad::{LEFT, RIGHT, START};
         self.frame = self.frame.wrapping_add(1);
-        // The title→gameplay model (the start-script seam): a `START` *edge*
-        // on the title screen latches a short "load", after which the mock
-        // enters gameplay at 1-1 — mirroring SMB's edge-latched per-frame
-        // poll. Directional input on the title stays ignored.
         if self.ram[addr::OPER_MODE] == crate::ram::OPER_MODE_TITLE {
             if joypad & START != 0
                 && self.prev_joypad & START == 0
@@ -151,8 +106,6 @@ impl Core for MockCore {
             }
         }
         self.prev_joypad = joypad;
-        // The toy movement model, only during gameplay: RIGHT advances 2 px
-        // per frame with page carry; LEFT retreats 1 px within the page.
         if self.ram[addr::OPER_MODE] == crate::ram::OPER_MODE_GAMEPLAY {
             if joypad & RIGHT != 0 {
                 let x = u16::from(self.ram[addr::PLAYER_X_POSITION]) + 2;
@@ -207,15 +160,12 @@ mod tests {
         assert_eq!(core.ram[addr::OPER_MODE], crate::ram::OPER_MODE_TITLE);
     }
 
-    /// A `START` edge on the title latches the load and enters gameplay after
-    /// the mock's load frames; a continuously-held `START` latches only once
-    /// (edge semantics, like the real game's per-frame poll).
     #[test]
     fn start_edge_enters_gameplay_after_the_load() {
         use crate::chord::joypad::START;
         let mut core = MockCore::new();
         for _ in 0..MOCK_START_LOAD_FRAMES {
-            core.run_frame(START); // held: one edge, then the countdown
+            core.run_frame(START);
             assert_eq!(core.ram[addr::OPER_MODE], crate::ram::OPER_MODE_TITLE);
         }
         core.run_frame(START);

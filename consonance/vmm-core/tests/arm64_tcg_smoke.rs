@@ -1,29 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! M3 TCG smoke (`tasks/112`) — **liveness/shape only, no counts**.
-//!
-//! Boots the `Image`+DTB **boot artifacts this vendor produces** on QEMU's own
-//! emulated aarch64 machine (`-M virt,gic-version=3`) to a console marker,
-//! proving the guest image is well-formed and boots. It is `#[ignore]`d by
-//! default and runs only via `cargo test -- --ignored` (like the public-api
-//! harness), because it needs `clang` + `llvm-objcopy` + `qemu-system-aarch64`;
-//! when any is absent it **skips loudly** rather than failing, so a plain
-//! `cargo nextest` on a stable-only box stays green.
-//!
-//! What this proves, and what it does **not**:
-//! - it proves the arm64 `Image` header ([`image_loader`]) is recognized and
-//!   booted by a real aarch64 boot loader (QEMU), that the entry lands at the
-//!   image's first instruction, and that the [`dtb`] this vendor emits is a
-//!   structurally valid FDT QEMU accepts;
-//! - it does **not** exercise `Arm64KvmBackend` (QEMU is its *own* VMM, not our
-//!   backend — that path talks to `/dev/kvm` and is M4's, arrival-day) and it
-//!   says **nothing** about `BR_RETIRED` counts, PMIs, or exit-boundary variability — those require
-//!   independent native evidence.
-//!
-//! Evidence integrity (`docs/DETERMINISM.md`): every constituent RC is
-//! propagated — a nonzero assemble/objcopy/QEMU status, a missing marker, or a
-//! non-clean poweroff fails the test. A done-marker is never a success
-//! condition; the success condition is `marker present AND QEMU exited 0` (the
-//! payload's PSCI `SYSTEM_OFF`).
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -32,20 +7,10 @@ use std::process::Command;
 use vmm_core::vendor::arm64::board;
 use vmm_core::vendor::arm64::{dtb, image_loader};
 
-/// The console marker the payload prints; its presence in QEMU's serial output
-/// is half of the success condition (the other half is a clean PSCI poweroff).
 const MARKER: &str = "HARMONY-ARM64-BOOT";
 
-/// The **body** of the boot payload — everything *after* the 64-byte `Image`
-/// header. It writes [`MARKER`] to the PL011 console at the board's UART address
-/// and powers off via PSCI `SYSTEM_OFF`. The header (magic, sizes, and the
-/// `code0` branch over itself) is prepended by the production
-/// [`image_loader::wrap_image`], so this smoke boots the **exact** header the
-/// vendor emits — one hand-rolled header fewer to drift from [`image_loader`]'s
-/// field layout. The board PL011 address is spliced in as a literal so the
-/// payload and [`board::PL011`] can never disagree.
 fn payload_body_source() -> String {
-    let uart_hi = (board::PL011.0 >> 16) as u16; // 0x0900 for 0x0900_0000
+    let uart_hi = (board::PL011.0 >> 16) as u16;
     assert_eq!(
         u64::from(uart_hi) << 16,
         board::PL011.0,
@@ -74,8 +39,6 @@ msg:
     )
 }
 
-/// Locate `llvm-objcopy`: on PATH, else the rustlib `llvm-tools` component next
-/// to the active toolchain. Returns `None` if neither is found.
 fn find_objcopy() -> Option<PathBuf> {
     if Command::new("llvm-objcopy")
         .arg("--version")
@@ -104,9 +67,6 @@ fn tool_present(name: &str) -> bool {
     Command::new(name).arg("--version").output().is_ok()
 }
 
-/// The `timeout`/`gtimeout` binary, if present (coreutils). The payload
-/// self-exits via PSCI in well under a second, so this is a belt-and-braces
-/// hang guard, not the primary exit.
 fn timeout_cmd() -> Option<&'static str> {
     ["timeout", "gtimeout"]
         .into_iter()
@@ -116,7 +76,6 @@ fn timeout_cmd() -> Option<&'static str> {
 #[test]
 #[ignore = "needs clang + llvm-objcopy + qemu-system-aarch64; runs via `cargo test -- --ignored`"]
 fn image_and_dtb_boot_on_qemu_tcg() {
-    // --- skip loudly if the local oracle's toolchain is absent -------------
     if !tool_present("clang") {
         eprintln!("SKIP: arm64 TCG smoke — clang not found");
         return;
@@ -139,7 +98,6 @@ fn image_and_dtb_boot_on_qemu_tcg() {
     let image_path = dir.path().join("harmony.Image");
     let dtb_path = dir.path().join("harmony.dtb");
 
-    // --- assemble the payload BODY (no header) -----------------------------
     std::fs::write(&s_path, payload_body_source()).expect("write payload.s");
     let asm = Command::new("clang")
         .args(["--target=aarch64-linux-gnu", "-c"])
@@ -166,24 +124,14 @@ fn image_and_dtb_boot_on_qemu_tcg() {
     );
     let body = std::fs::read(&body_path).expect("read payload body");
 
-    // --- prepend the PRODUCTION Image header with the vendor's own helper ---
-    // wrap_image builds the 64-byte header (magic, sizes) and the `code0` branch
-    // over the header onto the body — so QEMU boots the *exact* artifact the M4
-    // KVM path will produce, code0 branch included (review r7: the branch is the
-    // whole point — without it the entry executes the header word, not the body).
-    let image = image_loader::wrap_image(&body, 0, 0xA /* 4K page bits */);
+    let image = image_loader::wrap_image(&body, 0, 0xA);
     std::fs::write(&image_path, &image).expect("write wrapped Image");
 
-    // --- cross-check: OUR loader accepts the exact artifact QEMU will boot --
     let hdr = image_loader::parse_header(&image)
         .expect("the vendor's own Image loader must accept the boot artifact");
     assert_eq!(hdr.text_offset, 0);
     assert_eq!(hdr.image_size, image.len() as u64);
 
-    // --- build the DTB this vendor emits, and cross-check it round-trips ----
-    // (QEMU virt places RAM at RAM_BASE with 512 MiB; the reserved pvclock page
-    // GPA is nominal for the smoke — the payload does not read the DTB, it
-    // proves the DTB is a valid FDT QEMU accepts.)
     let dtb_bytes = dtb::build(
         512 * 1024 * 1024,
         board::RAM_BASE + 0x0100_0000,
@@ -194,7 +142,6 @@ fn image_and_dtb_boot_on_qemu_tcg() {
     f.write_all(&dtb_bytes).expect("write dtb");
     drop(f);
 
-    // --- boot on QEMU's own machine (NOT our backend) ----------------------
     let mut cmd;
     if let Some(t) = timeout_cmd() {
         cmd = Command::new(t);
@@ -220,7 +167,6 @@ fn image_and_dtb_boot_on_qemu_tcg() {
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
 
-    // --- the success condition: marker present AND clean PSCI poweroff -----
     assert!(
         stdout.contains(MARKER),
         "the guest never reached the console marker {MARKER:?} — the Image+DTB did not boot.\n\

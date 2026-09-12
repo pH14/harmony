@@ -42,10 +42,44 @@ env:
   HARMONY_RUST_TOOLCHAIN: 1.97.0
 
 jobs:
+  safety-scope:
+    name: select formal safety checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      kani: ${{ steps.select.outputs.kani }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Select checks from changed inputs
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == pull_request ]]; then
+            git diff --name-only "${BASE_SHA}"...HEAD >changed-files.txt
+          elif [[ "${EVENT_NAME}" == push && "${BEFORE_SHA}" != 0000000000000000000000000000000000000000 ]]; then
+            git diff --name-only "${BEFORE_SHA}" HEAD >changed-files.txt
+          else
+            git ls-files >changed-files.txt
+          fi
+
+          kani=$(python3 scripts/quality_scope.py <changed-files.txt)
+          echo "kani=${kani}" >>"${GITHUB_OUTPUT}"
+          echo "Kani selected: ${kani}"
+          if [[ "${kani}" == true ]]; then
+            sed 's/^/  /' changed-files.txt
+          fi
+
   # Gating: fmt, clippy (enforces clippy.toml), cargo-deny, and the test suite.
   gates:
     name: gates
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,9 +87,15 @@ jobs:
           # first-parent diff (base -> PR merge, or previous -> pushed commit).
           fetch-depth: 2
       - name: Benchmark report checks
-        run: node --test .github/scripts/benchmark-report.test.cjs
+        run: node --test scripts/benchmark-report.test.cjs
       - name: Historical-bug oracle checks
-        run: .github/scripts/historical-oracle.test.sh
+        run: scripts/historical-oracle.test.sh
+      - name: Historical-bug replay budget checks
+        run: scripts/historical-replay.test.sh
+      - name: Historical-bug search status checks
+        run: scripts/historical-search.test.sh
+      - name: Historical-bug manifest checks
+        run: scripts/historical-manifest.test.sh
       - name: Kernel patch-series checks
         run: bash consonance/harmony-linux/linux/test-patch-series.sh
       - name: Install stable toolchain
@@ -71,6 +111,10 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts -p test_check_dependency_boundaries.py
           python3 scripts/check-dependency-boundaries.py
+      - name: Custom lints
+        run: |
+          python3 scripts/custom-lints.py
+          python3 scripts/strip-comments.py --check
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
@@ -80,7 +124,7 @@ jobs:
       # The root `cargo deny check` only sees the root workspace. License-check the
       # out-of-workspace manifests too (the cargo-fuzz harnesses), so
       # their deps — e.g. libfuzzer-sys's NCSA-licensed LLVM runtime — are asserted
-      # AGPL-compatible against the same allow-list (task 91).
+      # AGPL-compatible against the same allow-list.
       - name: cargo deny (guest + fuzz manifests)
         run: |
           cargo deny --manifest-path consonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses
@@ -89,8 +133,6 @@ jobs:
       - name: N6 instruction sweep generators and negative controls
         run: |
           python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
-          python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py listing > /tmp/n6-listing.tsv
-          cmp /tmp/n6-listing.tsv consonance/harmony-linux/scripts/instruction-contract.generated.tsv
           python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
       - name: V-time cost fitter self-test
         run: python3 scripts/fit-vtime-costs.py --self-test
@@ -132,7 +174,7 @@ jobs:
           # std leak). Fails the gate if anything pulls in std.
           rustup target add x86_64-unknown-none
           cargo build --manifest-path consonance/harmony-linux/sdk/Cargo.toml --lib --target x86_64-unknown-none
-      # workloads/nes-guest (task 86) is out-of-workspace (its own manifest).
+      # workloads/nes-guest is out-of-workspace (its own manifest).
       # Gate it explicitly or it rots green. The portable brain
       # (chord decode, RAM map, billboard, mock-core agent loop) tests everywhere;
       # the native bin build compiles the cfg(linux) libretro-FFI + hugetlb +
@@ -152,18 +194,6 @@ jobs:
           cargo test --manifest-path workloads/nes-guest/Cargo.toml --no-default-features --test agent --bin play-agent
           cargo deny --manifest-path workloads/nes-guest/Cargo.toml check --config deny.toml licenses
           cargo build --manifest-path workloads/nes-guest/Cargo.toml --bin play-agent
-      # M2's arm64 TetaNES agent is another standalone guest workspace. Its
-      # portable loop tests prove exact chord consumption, frame reports, WRAM
-      # mirrors, and an independent TetaNES deck differential. The cross-target
-      # check compiles the live /dev/mem + MMIO composition without executing it.
-      - name: workloads/tetanes-guest gates (out-of-workspace manifest)
-        run: |
-          cargo fmt --manifest-path workloads/tetanes-guest/Cargo.toml --all -- --check
-          cargo clippy --locked --manifest-path workloads/tetanes-guest/Cargo.toml --all-targets -- -D warnings
-          cargo test --locked --manifest-path workloads/tetanes-guest/Cargo.toml
-          cargo deny --manifest-path workloads/tetanes-guest/Cargo.toml check --config deny.toml licenses
-          rustup target add aarch64-unknown-linux-gnu
-          cargo check --locked --manifest-path workloads/tetanes-guest/Cargo.toml --target aarch64-unknown-linux-gnu
       # consonance/harmony-linux/libvoidstar is a C subtree with its own Makefile — the
       # root cargo gates never see it, and nothing else in CI builds it, so a change
       # that broke the clean-room ABI shim would merge green. `make test-libvoidstar`
@@ -182,27 +212,15 @@ jobs:
           cargo test --locked --release --manifest-path dissonance/Cargo.toml --all-features
           cargo deny --manifest-path dissonance/Cargo.toml check
 
-      - name: Workload support gates
+      - name: Workload support and fault toolkit gates
         run: |
-          for package in oci guest-image nes-protocol fault-policy tools; do
+          for package in oci guest-image nes-protocol fault-policy faults tools; do
             manifest="workloads/$package/Cargo.toml"
             cargo fmt --manifest-path "$manifest" --all -- --check
             cargo clippy --locked --manifest-path "$manifest" --all-features --all-targets -- -D warnings
             cargo test --locked --manifest-path "$manifest" --all-features
             cargo deny --manifest-path "$manifest" check --config deny.toml
           done
-
-      # workloads/faults is an excluded standalone workspace. Keep its
-      # portable report and replay contracts visible as their own gate so a
-      # change to #294/#300 cannot hide behind the heterogeneous workload loop.
-      # This intentionally exercises no CLI, evaluator, guest image, or KVM
-      # path; the package's all-feature tests are host-portable.
-      - name: workloads/faults portable gates (out-of-workspace manifest)
-        run: |
-          cargo fmt --manifest-path workloads/faults/Cargo.toml --all -- --check
-          cargo clippy --locked --manifest-path workloads/faults/Cargo.toml --all-features --all-targets -- -D warnings
-          cargo test --locked --manifest-path workloads/faults/Cargo.toml --all-features
-          cargo deny --manifest-path workloads/faults/Cargo.toml check --config deny.toml
 
       # workloads/fault-agent is out-of-workspace (its own manifest). Its
       # portable bundle, reconcile, and directive logic tests on any host; the
@@ -235,6 +253,7 @@ jobs:
   coverage:
     name: coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
@@ -250,7 +269,7 @@ jobs:
       - name: cargo llvm-cov (region floor 90%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
-            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|hvf\.rs|bin/(hvf_probe|hvf_state_oracle|arm64_kvm_id_probe)\.rs)|consonance/vmm-core/src/bin/(hvf_boot|hvf_control_probe|hvf_control_server|hvf_postgres_m3|kvm_arm64_boot|kvm_arm64_control_server)\.rs|consonance/client/src/session/live\.rs' \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|hvf\.rs|bin/(hvf_probe|hvf_state_oracle|arm64_kvm_id_probe)\.rs)|consonance/vmm-core/src/bin/(hvf_boot|hvf_control_probe|hvf_control_server|kvm_arm64_boot|kvm_arm64_control_server)\.rs|consonance/client/src/session/live\.rs' \
             --fail-under-regions 90
       - uses: actions/upload-artifact@v4
         if: always()
@@ -295,13 +314,16 @@ jobs:
   #                   this runner up to the bound, then fail with that code.
   # Host preemption tears down the whole runner VM, so no in-job retry can
   # survive it; that residual is covered by the sharding above plus the
-  # self-hosted option in the task-139 write-up.
+  # self-hosted option in the runner-preemption write-up.
   mutants:
     name: mutants (${{ matrix.shard }}/16)
     runs-on: ubuntu-latest
     # Comfortably above the observed ~59-min preemption window and far below the
     # 6h hosted-runner job ceiling; the 16-way split keeps even large diffs well
     # below this tripwire. See the header comment (hm-y53x).
+    # ci-pr-job-timeout-exception: mutants -- per-PR mutation coverage is required;
+    # sixteen in-diff shards keep each bounded while the 90-minute ceiling covers
+    # the measured hosted-runner preemption window.
     timeout-minutes: 90
     if: github.event_name == 'pull_request'
     strategy:
@@ -401,7 +423,10 @@ jobs:
   # — every crate with proofs must appear below.
   kani:
     name: kani
+    needs: safety-scope
+    if: needs.safety-scope.outputs.kani == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
@@ -441,6 +466,7 @@ jobs:
   public-api:
     name: public-api
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       # cargo-public-api needs rustdoc-JSON, which is nightly-only. Pin it so
       # the snapshot output is reproducible across runs and machines.

@@ -149,11 +149,11 @@ class EvaluationTests(unittest.TestCase):
         path = self.root / 'progress.jsonl'
         tail = eval.Tail(path)
         self.assertEqual(tail.read(), {})
-        path.write_text('{"frames_emulated":12')
+        path.write_text('{"execution_work":12')
         self.assertEqual(tail.read(), {})
-        with path.open('a') as stream: stream.write('}\n{"frames_emulated":24}\n')
-        self.assertEqual(tail.read(), {'frames_emulated': 24})
-        self.assertEqual(tail.read(), {'frames_emulated': 24})
+        with path.open('a') as stream: stream.write('}\n{"execution_work":24}\n')
+        self.assertEqual(tail.read(), {'execution_work': 24})
+        self.assertEqual(tail.read(), {'execution_work': 24})
 
     def fake_run(self, body, require_solved=False, finish=30, disk=1):
         # Ordinary fixtures test exit semantics, not interpreter startup latency.
@@ -172,10 +172,10 @@ class EvaluationTests(unittest.TestCase):
         return eval.run_one(job, job['request'], args, [], {}, {'hostname': 'test'})
 
     def test_failure_keeps_observed_progress(self):
-        result = self.fake_run('(p/"progress.jsonl").write_text(\'{"executions":7,"frames_emulated":123}\\n\')\nsys.exit(9)\n')
+        result = self.fake_run('(p/"progress.jsonl").write_text(\'{"executions":7,"execution_work":123}\\n\')\nsys.exit(9)\n')
         self.assertEqual(result['status'], 'error')
         self.assertEqual(result['exit_code'], 9)
-        self.assertEqual(result['last_progress']['frames_emulated'], 123)
+        self.assertEqual(result['last_progress']['execution_work'], 123)
         self.assertIsNone(result['result'])
         self.assertTrue(result['runner']['coordinator_profile'])
 
@@ -243,7 +243,33 @@ class EvaluationTests(unittest.TestCase):
             if path.is_file(): self.assertNotIn('DO NOT PUBLISH', path.read_text())
         checksums = eval.read_json(public/'checksums.json')
         self.assertIn('index.html', checksums)
+        self.assertIn('roster.json', checksums)
         for path, expected in checksums.items(): self.assertEqual(eval.digest(public/path), expected)
+
+    def test_roster_keeps_mechanism_budgets_outcome_replay_and_resources(self):
+        item = self.matrix(self.root/'matrix')
+        item['origin'] = 'power-on stage genesis'
+        item['identity'] = {'backend': 'native', 'policies': {'key': 'fixed-v1'}}
+        item['search_request'].update({
+            'game': 'mm2', 'seed': 7, 'executions': 123, 'actions': 456,
+            'frames': 789, 'wall_seconds': 42, 'workers': 2, 'memory_mib': 64,
+            'selector': 'selector-v1', 'suffix': 'suffix-v1', 'mixture': 'mixture-v1',
+            'verification': 'witness'})
+        item['result'].update({
+            'progress': {'stage_clear': 1}, 'verification': 'witness',
+            'witness': {'snapshot_sha256': 'a' * 64}, 'victory_observed': True,
+            'stop_reason': 'victory'})
+        item['last_progress'] = {'resident_memory_bytes': 2 * 1048576}
+        row = eval.roster_row(item)
+        self.assertEqual(row['game'], 'mm2')
+        self.assertEqual(row['budgets']['frames'], 789)
+        self.assertEqual(row['mechanism']['selector'], 'selector-v1')
+        self.assertEqual(row['outcome'], 'victory within declared frame budget')
+        self.assertEqual(row['replay']['confirmation'], 'bounded witness replay ×2 confirmed')
+        self.assertEqual(row['resources']['last_logical_memory_bytes'], 2 * 1048576)
+        report = eval.report_html([item], 'Roster')
+        for value in ('mm2', 'power-on stage genesis', 'selector-v1', 'bounded witness replay ×2 confirmed'):
+            self.assertIn(value, report)
 
     def test_changed_affinity_keeps_quality_comparable_but_flags_timing(self):
         a, b = self.root/'a', self.root/'b'

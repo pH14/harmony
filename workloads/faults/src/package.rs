@@ -1,13 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The package's two entry points and the report both write.
-//!
-//! Search runs a campaign over the workload's action alphabet until it finds a
-//! bug or spends its budget. Replay runs one recorded action list a fixed
-//! number of times, which is how a reported bug is confirmed. Both write
-//! `report.json` into the output directory with the same fields, so one reader
-//! serves both.
-
 use std::{error::Error, fs, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -15,46 +7,27 @@ use sha2::{Digest, Sha256};
 
 use crate::target::{FaultAction, FaultObservations, FaultStop};
 
-/// Package name recorded in every report.
 pub const PACKAGE: &str = "faults";
-/// What one campaign or replay was asked to do.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Options {
-    /// Campaign seed. A replay records it but does not draw from it.
     pub seed: u64,
-    /// Evaluator threads, each owning one guest.
     pub workers: u32,
-    /// Executions the campaign may admit.
     pub executions: u64,
-    /// Maximum actions in one input.
     pub actions: usize,
-    /// Milliseconds of guest time one action runs for.
     pub horizon_ms: u64,
-    /// Guest RAM in MiB.
     pub ram_mib: u32,
-    /// Extra guest command-line words.
     pub knobs: Vec<String>,
-    /// Execution places the Park action may hold a node at.
     pub places: Vec<u64>,
-    /// Optional wall-clock cutoff on a search.
     pub wall_minutes: Option<u64>,
-    /// Artifact destination.
     pub output: PathBuf,
 }
 
 impl Options {
-    /// Virtual nanoseconds one action runs for.
     #[must_use]
     pub fn horizon_nanos(&self) -> u64 {
         self.horizon_ms.saturating_mul(1_000_000)
     }
 
-    /// Reject settings that cannot produce a run before a guest boots.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a bound is zero or the output directory already
-    /// holds artifacts.
     pub fn validate(&self) -> Result<(), Box<dyn Error>> {
         if self.workers == 0 || self.actions == 0 || self.executions == 0 {
             return Err("workers, actions, and executions must be positive".into());
@@ -69,78 +42,43 @@ impl Options {
     }
 }
 
-/// One bug the run found, with the action list that reproduces it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BugSummary {
-    /// Ordered admission position of the execution that found it.
     pub execution: u64,
-    /// The action list, in execution order.
     pub actions: Vec<FaultAction>,
-    /// How the guest stopped.
     pub stop: FaultStop,
-    /// `assert_always` ids the guest reported violated.
     pub violations: Vec<u32>,
-    /// `assert_sometimes` ids the guest reported hit.
     pub sometimes: Vec<u32>,
-    /// Whole-VM state hash at the terminal endpoint, lowercase hex. Its
-    /// encoding is identified by [`state_hash_encoding`](Self::state_hash_encoding).
     pub state_hash: String,
-    /// How [`Self::state_hash`] was encoded. Missing in legacy JSON reports,
-    /// which the deserializer treats as [`StateHashEncoding::LegacySha256OfDigest`].
     #[serde(default)]
     pub state_hash_encoding: StateHashEncoding,
-    /// Whether replaying the action list reproduced this bug's evidence.
     pub confirmed: bool,
-    /// The confirming replay run, absent when the replay could not run.
     pub replay: Option<ReplaySummary>,
 }
 
-/// How a report `state_hash` string was encoded.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StateHashEncoding {
-    /// The engine's SHA-256 digest was encoded directly as lowercase hex.
     EngineDigest,
-    /// Legacy reports hashed the engine's digest with SHA-256 once more.
     #[default]
     LegacySha256OfDigest,
 }
 
-/// One run of a replayed action list.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ReplaySummary {
-    /// One-based run ordinal.
     pub run: u32,
-    /// Whether this run reproduced the bug.
     pub bug: bool,
-    /// How the guest stopped.
     pub stop: FaultStop,
-    /// Whole-VM state hash at the endpoint, lowercase hex. Its encoding is
-    /// identified by [`state_hash_encoding`](Self::state_hash_encoding).
     pub state_hash: String,
-    /// How [`Self::state_hash`] was encoded. Missing in legacy JSON reports,
-    /// which the deserializer treats as [`StateHashEncoding::LegacySha256OfDigest`].
     #[serde(default)]
     pub state_hash_encoding: StateHashEncoding,
-    /// `assert_always` ids the guest reported violated.
     pub violations: Vec<u32>,
-    /// `assert_sometimes` and `assert_reachable` ids the guest reported hit.
-    /// A workload's oracle publishes one of these when it reached a verdict,
-    /// so a run with none of them checked nothing.
     pub sometimes: Vec<u32>,
-    /// Actions this run applied. A run that stops at a bug applies no more.
     pub actions_applied: u64,
-    /// Action horizons this run executed in the guest. It equals
-    /// `actions_applied` when every applied action ran in the guest rather
-    /// than being answered from a cached snapshot of an earlier run.
     pub guest_horizons: u64,
 }
 
 impl ReplaySummary {
-    /// Build a report summary for one terminal endpoint.
-    ///
-    /// The execution engine already returns a state digest. It is encoded
-    /// directly here; artifact bytes take the separate SHA-256 path below.
     #[must_use]
     pub fn from_observation(
         observation: &FaultObservations,
@@ -162,12 +100,6 @@ impl ReplaySummary {
     }
 }
 
-/// Whether `replay` reproduced the evidence a campaign recorded for one bug.
-///
-/// A campaign hit counts as a rediscovery only when running its action list
-/// again shows the same evidence: every assertion the campaign saw violated,
-/// and the same stop when the stop was the only evidence the campaign had. A
-/// run that reported no bug, or a different one, confirms nothing.
 #[must_use]
 pub fn replay_confirms_bug(
     recorded_stop: FaultStop,
@@ -181,10 +113,6 @@ pub fn replay_confirms_bug(
         && (!recorded_violations.is_empty() || replay.stop == recorded_stop)
 }
 
-/// The admission position of the first campaign hit a replay confirmed.
-///
-/// A run's verdict rests on this: a campaign that recorded hits none of which
-/// replayed found nothing it can hand to a reader.
 #[must_use]
 pub fn first_confirmed_bug(bugs: &[BugSummary]) -> Option<u64> {
     bugs.iter()
@@ -193,47 +121,30 @@ pub fn first_confirmed_bug(bugs: &[BugSummary]) -> Option<u64> {
         .min()
 }
 
-/// The report both modes write to `report.json`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Report {
-    /// Always [`PACKAGE`].
     pub package: String,
-    /// `search` or `replay`.
     pub mode: String,
-    /// SHA-256 of the prepared guest initramfs.
     pub image_sha256: String,
-    /// SHA-256 of the guest kernel.
     pub kernel_sha256: String,
-    /// SHA-256 of the static fault agent installed in the image.
     pub fault_agent_sha256: String,
-    /// The execution identity the run pinned.
     pub identity: String,
-    /// Campaign seed.
     pub seed: u64,
-    /// Evaluator threads.
     pub workers: u32,
-    /// Milliseconds of guest time one action ran for.
     pub horizon_ms: u64,
-    /// Guest RAM in MiB.
     pub ram_mib: u32,
-    /// Executions the campaign completed; zero in replay mode.
     pub executions: u64,
-    /// Whether the run found or reproduced a bug.
     pub bug_found: bool,
-    /// Admission position of the first bug-finding execution.
     pub first_bug_execution: Option<u64>,
-    /// Bugs the search recorded; empty in replay mode.
     pub bugs: Vec<BugSummary>,
-    /// Replay runs; empty in search mode.
     pub replays: Vec<ReplaySummary>,
-    /// Action horizons the run clocked.
     pub horizons_clocked: u64,
-    /// Wall-clock seconds the run took.
     pub wall_seconds: u64,
+    #[serde(default)]
+    pub watchdog_cutoffs: u64,
 }
 
 impl Report {
-    /// A report with everything the run knows before it boots a guest.
     #[must_use]
     pub fn new(mode: &str, artifacts: &Artifacts, identity: String, options: &Options) -> Self {
         Self {
@@ -254,14 +165,10 @@ impl Report {
             replays: Vec::new(),
             horizons_clocked: 0,
             wall_seconds: 0,
+            watchdog_cutoffs: 0,
         }
     }
 
-    /// Write the report into `directory`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the directory or the file cannot be written.
     pub fn write(&self, directory: &std::path::Path) -> Result<(), Box<dyn Error>> {
         fs::create_dir_all(directory)?;
         serde_json::to_writer_pretty(fs::File::create(directory.join("report.json"))?, self)?;
@@ -269,18 +176,12 @@ impl Report {
     }
 }
 
-/// The three byte artifacts one run pins.
 pub struct Artifacts {
-    /// The controlled guest kernel.
     pub kernel: Vec<u8>,
-    /// The prepared guest initramfs.
     pub initramfs: Vec<u8>,
-    /// The static fault agent installed in the image.
     pub agent: Vec<u8>,
 }
 
-/// A recorded action list, read from `--replay`. A bug report written by a
-/// search parses directly, and so does a bare action array.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(untagged)]
 enum RecordedInput {
@@ -291,23 +192,12 @@ enum RecordedInput {
     },
 }
 
-/// A recorded action list and the window length it was recorded under, when
-/// the record says.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecordedActions {
-    /// The action list, in execution order.
     pub actions: Vec<FaultAction>,
-    /// Virtual nanoseconds each action window spanned when the list was
-    /// recorded. A replay under another horizon times its faults differently,
-    /// so a run must not take the list without the horizon.
     pub horizon_nanos: Option<u64>,
 }
 
-/// Read a recorded action list from a bug report or a bare action array.
-///
-/// # Errors
-///
-/// Returns an error when the text is neither shape or names no actions.
 pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error>> {
     let (actions, horizon_nanos) = match serde_json::from_str::<RecordedInput>(text)? {
         RecordedInput::Actions(actions) => (actions, None),
@@ -329,7 +219,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-/// Encode an engine-produced state digest without hashing it again.
 fn state_digest_hex(digest: &[u8; 32]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -351,23 +240,19 @@ mod live {
     use serde_json::json;
 
     use super::{
-        Artifacts, BugSummary, Options, ReplaySummary, Report, StateHashEncoding,
-        first_confirmed_bug, replay_confirms_bug,
+        Artifacts, BugSummary, Options, ReplaySummary, Report, first_confirmed_bug,
+        replay_confirms_bug,
     };
     use crate::{
         bundle::FaultVocabulary,
-        campaign::{FaultCampaignConfig, FaultGame, run_fault_campaign_checkpointed},
+        campaign::{FaultCampaignConfig, FaultWorkload, run_fault_campaign_checkpointed},
         consonance::{FaultConfig, FaultTarget, identity},
         report::{BugReport, write_bug_reports},
         target::{ActionWindows, FaultAction},
     };
 
-    /// Logical memory the live search structures may hold. A worker's guest
-    /// RAM dwarfs this, so the search side is bounded well below it.
     const MEMORY_BUDGET_MIB: usize = 512;
 
-    /// Draws one entry takes without a retained descendant before it retires,
-    /// and the pooled thresholds for the group depths above it.
     fn retire_thresholds() -> RetireThresholds {
         RetireThresholds {
             entry: 3,
@@ -383,12 +268,6 @@ mod live {
         }
     }
 
-    /// Search the workload's action alphabet for a bug.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the campaign cannot run or its artifacts cannot
-    /// be written.
     pub fn search(
         artifacts: &Artifacts,
         vocabulary: &FaultVocabulary,
@@ -399,7 +278,7 @@ mod live {
         let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
         let mut report = Report::new("search", artifacts, identity, options);
         std::fs::create_dir_all(&options.output)?;
-        let game = FaultGame::new(&artifacts.kernel, &artifacts.initramfs, &config);
+        let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config);
         let campaign = FaultCampaignConfig {
             campaign_seed: options.seed,
             vocabulary: vocabulary.clone(),
@@ -413,15 +292,12 @@ mod live {
             archive_entry_limit: MAX_ARCHIVE_ENTRIES,
             memory_budget_mib: Some(MEMORY_BUDGET_MIB),
             materialize_final_artifacts: true,
-            retention: RetentionPolicy::AdmitAlive,
+            retention: RetentionPolicy::Unprobed,
             selector: SelectorPolicy::EnergyFrontierCheapest(retire_thresholds()),
             suffix: SuffixShape::OneToSix,
             mixture: DrawMixture::AlphabetOnly,
-            victory_input_path: Some(options.output.join("first-bug-input.json")),
+            objective_witness_path: Some(options.output.join("first-bug-input.json")),
         };
-        // not order-observable: the elapsed wall time is reported to the
-        // operator and never reaches a search decision, an archive key, or a
-        // recorded byte.
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         let mut stream =
@@ -450,7 +326,7 @@ mod live {
             "workers": campaign_report.campaign.workers,
             "execution_budget": campaign_report.campaign.execution_budget,
             "executions": campaign_report.campaign.executions_completed,
-            "horizons": campaign_report.campaign.frames_emulated,
+            "horizons": campaign_report.campaign.execution_work,
             "stream_sha256": campaign_report.campaign.stream_sha256,
             "archive_entries": archive.entries.len(),
             "progress": archive.progress_watermark,
@@ -458,18 +334,15 @@ mod live {
             "bugs_found": campaign_report.bugs_found,
             "executions_to_first_bug": campaign_report.executions_to_first_bug,
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),
+            "watchdog_cutoffs": archive.watchdog_cutoffs,
         });
         std::fs::write(
             options.output.join("campaign-summary.json"),
             serde_json::to_vec_pretty(&summary)?,
         )?;
         report.executions = campaign_report.campaign.executions_completed;
-        report.horizons_clocked = campaign_report.campaign.frames_emulated;
+        report.horizons_clocked = campaign_report.campaign.execution_work;
         for bug in &written {
-            // A campaign hit is a claim about an action list, so each one is
-            // replayed from a fresh session: the replay both supplies the
-            // guest state hash the campaign never recorded and decides whether
-            // the hit is a rediscovery.
             let violations: Vec<u32> = bug.observations.violations.iter().copied().collect();
             let witness = match replay_once(artifacts, &config, &bug.actions) {
                 Ok(summary) => Some(summary),
@@ -506,20 +379,14 @@ mod live {
                 replay: witness,
             });
         }
-        // A campaign hit no replay reproduced is not a rediscovery, so the
-        // run's verdict and its first hit both come from the confirmed bugs.
         report.first_bug_execution = first_confirmed_bug(&report.bugs);
         report.bug_found = report.first_bug_execution.is_some();
         report.wall_seconds = started.elapsed().as_secs();
+        report.watchdog_cutoffs = archive.watchdog_cutoffs;
         report.write(&options.output)?;
         Ok(report)
     }
 
-    /// Run one recorded action list `repeat` times.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a run cannot reach its guest.
     pub fn replay(
         artifacts: &Artifacts,
         actions: &[FaultAction],
@@ -532,8 +399,6 @@ mod live {
         let config = config(options);
         let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
         let mut report = Report::new("replay", artifacts, identity, options);
-        // not order-observable: the elapsed wall time is reported to the
-        // operator and never reaches a replay's inputs or its state hash.
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         for run in 1..=repeat {
@@ -550,13 +415,6 @@ mod live {
         Ok(report)
     }
 
-    /// Apply one action list to a session no earlier run has touched and
-    /// observe the endpoint.
-    ///
-    /// The session is fresh so that no snapshot an earlier run cached can
-    /// stand in for guest execution: the run boots, reaches the sealed setup
-    /// point, and executes every action of the list. `run` is set by the
-    /// caller that ordered the runs.
     fn replay_once(
         artifacts: &Artifacts,
         config: &FaultConfig,
@@ -566,8 +424,6 @@ mod live {
         for action in actions {
             target.apply(*action);
         }
-        // A host-side failure leaves the rest of the list unapplied, so the
-        // endpoint is no verdict on the recorded actions.
         if target.failed() {
             return Err(format!(
                 "the replay failed after {} of {} actions",

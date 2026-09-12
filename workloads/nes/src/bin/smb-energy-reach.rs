@@ -1,18 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Classify every active archive entry of a recorded campaign by what its
-//! selections produced — keepers, only rejected children, only dead
-//! children, or never picked — and compute the selector's exact draw
-//! shares with and without the barren classes skipped.
-//!
-//! Reads recorded artifacts only; no emulation. The active entry set is
-//! reconstructed from the archive report by replaying the cell-displacement
-//! rule in insertion order, which is deterministic. Draw shares are exact
-//! probabilities of the recorded selector structure with fresh exhaustion
-//! counters: one in four draws is uniform over active entries, the rest
-//! walk room, band, and cell uniformly within the deepest (world, level)
-//! pair that has an unexhausted entry.
-
 use std::{
     collections::BTreeMap,
     env,
@@ -29,24 +16,16 @@ use nes_workload::smb::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-/// Progress-band width in buckets, matching the selector's band classes.
 const BAND_WIDTH: u16 = 8;
-/// Cell capacity, matching the archive's per-key entry bound.
 const ENTRIES_PER_KEY: usize = 2;
-/// Odds of the cell path, matching the selector's one-in-four uniform draw.
 const CELL_PATH_SHARE: f64 = 0.75;
 
-/// What an entry's recorded selections produced.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum EntryClass {
-    /// At least one selection retained a child.
     Keepers,
-    /// Selections produced admission decisions but never a retained child.
     AllRejected,
-    /// Every selection ended with no candidate at all: the children died.
     AllDied,
-    /// The entry was never selected.
     Unpicked,
 }
 
@@ -80,13 +59,9 @@ struct Report {
     archive_sha256: String,
     active_entries: u64,
     displaced_entries: u64,
-    /// Streak thresholds simulated, in entry, cell, band, room order.
     thresholds: [u64; 4],
     classes: ClassCounts,
-    /// Class counts per (world, level, band), sorted by the key string.
     classes_by_pair_band: BTreeMap<String, ClassCounts>,
-    /// Draw shares per (room, band) of the deepest pair, baseline and with
-    /// the barren classes skipped.
     rooms: Vec<RoomShare>,
 }
 
@@ -115,8 +90,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let archive: SmbArchiveReport = serde_json::from_slice(&archive_bytes)?;
     drop(archive_bytes);
 
-    // Reconstruct frames-in-level and the active set by replaying the
-    // displacement rule over entries in insertion order.
     let index_of: BTreeMap<u64, usize> = archive
         .entries
         .iter()
@@ -169,9 +142,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         cell.push(index);
     }
 
-    // Classify every entry by its recorded selections, and track each
-    // pooling level's trailing barren streak — consecutive picks since the
-    // last retained child — which is the counter retirement would run.
     let mut picked = vec![false; archive.entries.len()];
     let mut kept = vec![false; archive.entries.len()];
     let mut saw_decision = vec![false; archive.entries.len()];
@@ -189,7 +159,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut lines = reader.split(b'\n');
     let header_line = lines.next().ok_or("stream is empty")??;
     let header: SmbCampaignStreamHeader = serde_json::from_slice(&header_line)?;
-    if header.parent_scheduler != "room_cell_uniform_128" {
+    if header.parent_scheduler != "hierarchy_uniform_128" {
         return Err(format!("unexpected parent scheduler {}", header.parent_scheduler).into());
     }
     for line in lines {
@@ -244,7 +214,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    // Class counts, total and per (world, level, band).
     let mut classes = ClassCounts {
         keepers: 0,
         all_rejected: 0,
@@ -278,10 +247,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // Exact draw shares per (room, band). `live` marks the entries the cell
-    // path may sample: all active ones at baseline, the non-barren ones in
-    // the skip variant. The uniform quarter of draws ignores exhaustion, so
-    // it is identical in both variants.
     let share_by_band = |live: &dyn Fn(usize) -> bool| -> BTreeMap<(RoomClass, u16), f64> {
         let mut shares = BTreeMap::<(RoomClass, u16), f64>::new();
         let total_active = active.iter().filter(|a| **a).count() as f64;
@@ -293,8 +258,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     (1.0 - CELL_PATH_SHARE) / total_active;
             }
         }
-        // The cell path: deepest pair with a live entry, room uniform, band
-        // uniform within the room.
         let mut pairs = BTreeMap::<(u8, u8), BTreeMap<SmbRoomIdentity, Vec<usize>>>::new();
         for (index, entry) in archive.entries.iter().enumerate() {
             if active[index] && live(index) {
@@ -327,9 +290,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let skip_barren = share_by_band(&|index| {
         matches!(class_of(index), EntryClass::Keepers | EntryClass::Unpicked)
     });
-    // Retirement as built: an entry is skipped when its own trailing barren
-    // streak, or any enclosing class's pooled streak, is at or over that
-    // level's measured threshold.
     let retired = |index: usize| -> bool {
         let key = archive.entries[index].key;
         let room = (key.world, key.level, key.room);
@@ -341,7 +301,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let retire_streak = share_by_band(&|index| !retired(index));
 
-    // Per-(room, band) statistics over active entries.
     let mut band_stats = BTreeMap::<(RoomClass, u16), (u64, u64, u16, u16)>::new();
     for (index, entry) in archive.entries.iter().enumerate() {
         if !active[index] {

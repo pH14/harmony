@@ -1,0 +1,47 @@
+# bugs — the end-to-end bug collection
+
+Workloads with **known bugs** that Harmony's finder (dissonance) is expected to catch. This is
+the finder-validation corpus: prove the finder against
+seeded bugs with known ground truth before investing in search cleverness. A single planted bug is
+the first consumer; this directory generalizes it into a permanent regression
+suite for the *finder* — when consonance/dissonance improve, the collection measures whether
+finding actually got better.
+
+## Layout
+
+| dir | what lives here | named after |
+|---|---|---|
+| `category/` | minimal single-fault tests — one canonical bug *type* each (missing fsync, torn write, missed wakeup, …) | the **fault** |
+| `toys/` | small but real systems with planted bugs (buggy Raft, 2PC with a crash window, …) | the **system** |
+| `historical/` | real FOSS software at a pinned pre-fix version, reproducing a documented real-world bug | the **system + bug** |
+
+## Every entry is a triple
+
+A bug that cannot be expressed this way does not belong in the collection:
+
+1. **Workload** — what runs in the guest (payload, container image, or init script; reuse the
+   `consonance/harmony-linux/linux/` conventions).
+2. **Fault surface** — which Harmony dimension triggers it: timing/interrupt perturbation
+   (vtime), entropy values, host-plane faults, kill/restart at a Moment
+   (snapshot/branch), block-layer faults (future), net faults (future).
+3. **Oracle** — how a hit is detected: crash marker on serial, integrity
+   check after restart, invariant-checker process, isolation checker. No
+   human-in-the-loop oracles.
+
+## Entry conventions
+
+Each entry is a directory containing:
+
+- `README.md` — the spec: the bug (mechanism-level), the triple above, trigger conditions,
+  **expected difficulty** (order-of-magnitude branches-to-find), the
+  **tunable knob** if difficulty is adjustable, and provenance links for `historical/` entries.
+- The workload source / image recipe, once implemented.
+- A **nominal control**: every entry must define a no-fault configuration under which the bug
+  never fires. False-positive rate is measured, not assumed.
+
+Harnesses use portable gates where their logic is portable and hardware gates
+for checks that require `/dev/kvm`.
+
+Ground truth is sacred: for `historical/` entries, affected versions, trigger, and fix commit
+must be verified against primary sources (the issue, the fixing commit, the postmortem) and
+cited in the entry README — never from memory.

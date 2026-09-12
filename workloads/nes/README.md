@@ -16,6 +16,10 @@ The Consonance backend uses the `consonance` feature and requires Linux/KVM
 and matching guest artifacts; `harmony search --package nes --backend
 consonance ROM` selects it through the shared CLI.
 
+Campaign recordings use the current Dissonance schedule policy version 3 and
+bounded progress policy. Replay rejects recordings from superseded policy
+namespaces before constructing a replay target.
+
 ## Backend acceptance matrix
 
 The native/Consonance backend oracle covers SMB and Nova, but the available
@@ -28,7 +32,7 @@ oracle and CLI entry point. The larger Nova experiment in
 `initramfs-nova.cpio.gz` image and its specialized campaign/oracle binaries;
 that experiment does not provide SMB acceptance evidence.
 
-| Game/backend | Current evidence | Required artifacts and platform |
+| Workload/backend | Current evidence | Required artifacts and platform |
 | --- | --- | --- |
 | Nova/native | CI package acceptance and the Nova Consonance experiment exercise the pinned ROM and QuickNES core. | Host QuickNES core; the CI ROM is built from the pinned source recipe. |
 | Nova/Consonance | Real VM campaign and backend checks run in `.github/workflows/nova-consonance-experiment.yml`. | Linux/KVM, pinned kernel, generic NES base image, and the pinned Nova ROM/core. |
@@ -36,7 +40,7 @@ that experiment does not provide SMB acceptance evidence.
 | SMB/Consonance | `nes-backend-oracle` supports the path; no repository CI VM result is claimed here. | Linux/KVM, a capable NES base image, pinned core, and a caller-supplied licensed SMB ROM. |
 | Mega Man 2/native | All eight independent stage origins pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
 | Metroid/native | New-game origin passes local full-campaign replay qualification through `nes-eval`; this is not an ending claim. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Metroid ROM. |
-| Super Tilt Bro/native | `search-eval.yml` (bounded checks) and `nova-nightly.yml` (nightly NES benchmark) build the pinned ROM, probes controls/restoration, evaluates Easy/Fair/Hard AI and verifies replay/full-champion video; Hard must win within its execution ceiling. | Host QuickNES core and the pinned source-built offline UNROM game. |
+| Super Tilt Bro/native | `search-eval.yml` (bounded checks) and the scheduled/manual `nova-nightly.yml` capability panel build the pinned ROM and evaluate Easy/Fair/Hard AI through the common `nes-eval` runner. Hard retains its victory requirement in the public panel. | Host QuickNES core and the pinned source-built offline UNROM game. |
 
 On Linux/KVM, the shared oracle is invoked as:
 
@@ -80,6 +84,13 @@ ROM/core hashes, origin definitions, complete adapter policy identities,
 resource budgets, verification, and immutable export are shared across games.
 Licensed ROMs stay in a private host inventory. Source-built games and generic
 runner/engine tests can run in ordinary CI.
+
+The scheduled/manual public capability panel is registered in
+`benchmarks/search/nightly.json` and reports isolated Nova levels, whole-game
+Nova, and STB in one common roster. It intentionally does not include licensed
+SMB, Mega Man 2, or Metroid. Run the full private evaluation and the separate
+SMB reference manifest with `benchmarks/search/run-private.sh` on a Linux host
+that already has the caller's asset inventory; those reports remain local.
 
 Nova's `NovaGame::with_whole_game()` changes the recorded terminal predicate to
 all 40 cleared-level flags, continues execution through intermediate clears, and

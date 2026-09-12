@@ -1,22 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **arm64 record set** ([`Arm64VmState`]) — the second implementor of
-//! [`SnapshotRecords`](crate::SnapshotRecords), under
-//! [`ARCH_AARCH64`](crate::ARCH_AARCH64) in the same TLV container.
-//!
-//! **A minimal, skeleton record set** (`tasks/112` M1): the core registers, a
-//! small named EL1 system-register file, and the arch-neutral engine blocks —
-//! enough to encode/decode a trivial vCPU state and round-trip it through the
-//! container. **Which sysregs an arm64 snapshot must carry is M4's measured
-//! decision** (`docs/DETERMINISM.md`); the full record set is
-//! `TODO(AA-6)` and
-//! lands under a bumped section layout, never guessed here.
-//! designed-not-frozen (AA-3).
-//!
-//! The section tags below are the *arm64* record set's own tag space — tags
-//! are meaningful only under this container arch tag, exactly why the v2
-//! header carries one (`docs/ARCHITECTURE.md`). A blob with a foreign
-//! arch tag is rejected loudly ([`VmStateError::UnsupportedArch`]), never
-//! reinterpreted.
 
 use zerocopy::little_endian::U64;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
@@ -31,8 +13,6 @@ use crate::types::{DeviceBlob, MpState, TimerQueueState, VtimeState};
 use crate::wire::{HeaderWire, VtimeWire};
 use crate::{ARCH_AARCH64, VM_STATE_ENGINE_VERSION, VM_STATE_LEGACY_VERSION, VM_STATE_MAGIC};
 
-// Section tags, in their canonical ascending order. Every legacy arm64 blob
-// carries all of them exactly once; v4 adds one trailing engine-state section.
 const TAG_REGS: u16 = 1;
 const TAG_SYSREGS: u16 = 2;
 const TAG_MP_STATE: u16 = 3;
@@ -46,66 +26,32 @@ const TAG_DEBUG: u16 = 10;
 const TAG_VTIMER: u16 = 11;
 const TAG_INTERRUPTS: u16 = 12;
 
-/// The number of sections in the legacy arm64 blob.
 const LEGACY_SECTION_COUNT: u16 = 12;
 
-/// The number of sections in a v4 arm64 blob carrying engine state.
 const ENGINE_SECTION_COUNT: u16 = LEGACY_SECTION_COUNT + 1;
 
-/// The engine-owned state section follows every existing arm64 section.
 const TAG_ENGINE_STATE: u16 = 13;
 
-/// Length of the fixed container header (shared with the x86 record set).
-/// Version 4 adds a TLV section and does not change this 10-byte header. The
-/// arm64 record set remains on v3/v4 even though x86's latest version is v6.
 const HEADER_LEN: usize = 10;
 
-/// The complete non-memory arm64 machine snapshot (skeleton record set).
-///
-/// The vmm-core arm64 vendor fills this from the live machine; this crate
-/// encodes it ([`Arm64VmState::encode`]) and decodes it back
-/// ([`Arm64VmState::decode`]). Equal values encode to identical bytes.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Arm64VmState {
-    /// Core registers (`x0..x30`, `SP`, `PC`, `PSTATE`, the EL1 banked
-    /// exception registers).
     pub regs: Arm64Regs,
-    /// The skeleton EL1 system-register file (full set `TODO(AA-6)`).
     pub sysregs: Arm64Sysregs,
-    /// SIMD/FP register file.
     pub simd_fp: Arm64SimdFp,
-    /// Debug register file and trap controls.
     pub debug: Arm64Debug,
-    /// Virtual-timer register and framework offset/mask state.
     pub vtimer: Arm64Vtimer,
-    /// Pending interrupt levels.
     pub interrupts: Arm64Interrupts,
-    /// Runnable vs halted (WFI-halted on arm64).
     pub mp_state: MpState,
-    /// V-time clock snapshot (`snapshot_vns` + ratio config) — the engine's
-    /// arch-neutral block, identical in shape to the x86 record set's.
     pub vtime: VtimeState,
-    /// Absolute-V-time timer-queue contents (a vmm-core snapshot always seals
-    /// it empty; the fabric timer rides the device blob).
     pub timers: TimerQueueState,
-    /// The engine's entropy-stream / hypercall-dispatcher state bytes.
     pub hypercall: Vec<u8>,
-    /// The arm64 vendor's device blob (PL011 + GIC state; opaque here).
     pub devices: DeviceBlob,
-    /// SHA-256 of the ratified ARM CPU contract this snapshot was taken under
-    /// (the contract document is port work / AA-6; the skeleton stamps its
-    /// policy-skeleton hash). Compared by vmm-core, not here.
     pub contract_hash: [u8; 32],
-    /// Opaque state owned by the architecture-neutral engine. Empty preserves
-    /// the legacy v3 wire shape; nonempty state is carried by the v4 trailing
-    /// engine-state section. The codec does not interpret these bytes.
     pub engine_state: Vec<u8>,
 }
 
-/// The arm64 core register record — mirrors `vmm-backend`'s `Arm64CoreRegs`
-/// as plain data (rule #2: no sibling dependency; consistency by review).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[allow(missing_docs)] // the register names are self-documenting
 pub struct Arm64Regs {
     pub x: [u64; 31],
     pub sp: u64,
@@ -116,10 +62,7 @@ pub struct Arm64Regs {
     pub spsr_el1: u64,
 }
 
-/// The skeleton EL1 system-register record — mirrors `vmm-backend`'s
-/// `Arm64SysregFile` (full record set `TODO(AA-6)`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[allow(missing_docs)] // the system-register names are self-documenting
 pub struct Arm64Sysregs {
     pub sctlr_el1: u64,
     pub ttbr0_el1: u64,
@@ -135,59 +78,38 @@ pub struct Arm64Sysregs {
     pub cntkctl_el1: u64,
 }
 
-/// SIMD/FP snapshot record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Arm64SimdFp {
-    /// `Q0..Q31` in architectural byte order.
     pub q: [[u8; 16]; 32],
-    /// Floating-point control register.
     pub fpcr: u64,
-    /// Floating-point status register.
     pub fpsr: u64,
 }
 
-/// Debug snapshot record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Arm64Debug {
-    /// `DBGBVR0_EL1..DBGBVR15_EL1`.
     pub breakpoint_value: [u64; 16],
-    /// `DBGBCR0_EL1..DBGBCR15_EL1`.
     pub breakpoint_control: [u64; 16],
-    /// `DBGWVR0_EL1..DBGWVR15_EL1`.
     pub watchpoint_value: [u64; 16],
-    /// `DBGWCR0_EL1..DBGWCR15_EL1`.
     pub watchpoint_control: [u64; 16],
-    /// `MDSCR_EL1`.
     pub mdscr_el1: u64,
-    /// Whether guest debug exceptions trap.
     pub trap_debug_exceptions: bool,
-    /// Whether guest debug-register accesses trap.
     pub trap_debug_reg_accesses: bool,
 }
 
-/// Hypervisor.framework virtual-timer snapshot record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Arm64Vtimer {
-    /// `CNTV_CTL_EL0`.
     pub cntv_ctl_el0: u64,
-    /// `CNTV_CVAL_EL0`.
     pub cntv_cval_el0: u64,
-    /// Framework automatic-timer-exit mask.
     pub masked: bool,
-    /// Framework host-counter offset.
     pub offset: u64,
 }
 
-/// Pending interrupt-level snapshot record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Arm64Interrupts {
-    /// Pending IRQ level.
     pub irq: bool,
-    /// Pending FIQ level.
     pub fiq: bool,
 }
 
-/// `Arm64Regs` on the wire: 37 little-endian `u64`s in declaration order.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 struct Arm64RegsWire {
@@ -228,7 +150,6 @@ impl From<&Arm64RegsWire> for Arm64Regs {
     }
 }
 
-/// `Arm64Sysregs` on the wire: 12 little-endian `u64`s in declaration order.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 struct Arm64SysregsWire {
@@ -426,15 +347,6 @@ fn decode_interrupts(w: &Arm64InterruptsWire) -> Result<Arm64Interrupts, VmState
 }
 
 impl Arm64VmState {
-    /// Encode to the versioned TLV blob under [`ARCH_AARCH64`]. Deterministic:
-    /// equal `Arm64VmState` ⇒ equal bytes. An empty engine-state field retains
-    /// the legacy v3 bytes; a nonempty field selects v4 and appends one TLV.
-    ///
-    /// # Errors
-    ///
-    /// - [`VmStateError::InvalidField`] for a timer queue violating the
-    ///   canonical-order/unique-token/`seq < next_seq` invariants, or a
-    ///   variable-length section exceeding `u32::MAX` bytes.
     pub fn encode(&self) -> Result<Vec<u8>, VmStateError> {
         let (version, section_count) = if self.engine_state.is_empty() {
             (VM_STATE_LEGACY_VERSION, LEGACY_SECTION_COUNT)
@@ -446,8 +358,6 @@ impl Arm64VmState {
             HeaderWire {
                 magic: VM_STATE_MAGIC.into(),
                 version: version.into(),
-                // The record set below is arm64's; the tag says so, so a
-                // decoder can never reinterpret it as another architecture's.
                 arch: ARCH_AARCH64.into(),
                 section_count: section_count.into(),
             }
@@ -497,15 +407,6 @@ impl Arm64VmState {
         Ok(out)
     }
 
-    /// Decode a blob produced by [`Arm64VmState::encode`]. Strict and total:
-    /// validates magic, version, **arch tag**, section count, ordering, and
-    /// every field; never panics on arbitrary input.
-    ///
-    /// # Errors
-    ///
-    /// The matching [`VmStateError`] — notably
-    /// [`VmStateError::UnsupportedArch`] for a blob whose header names another
-    /// record set (e.g. an x86 blob), which must never be reinterpreted.
     pub fn decode(bytes: &[u8]) -> Result<Arm64VmState, VmStateError> {
         let header = HeaderWire::read_from_prefix(bytes)
             .map_err(|_| VmStateError::Truncated)?
@@ -546,8 +447,6 @@ impl Arm64VmState {
             let len = r.u32()? as usize;
             let payload = r.take(len)?;
 
-            // Strictly ascending tags: equal is a duplicate, smaller is out of
-            // order (the same folded comparison the x86 decoder uses).
             if let Some(prev) = last_tag
                 && tag <= prev
             {
@@ -667,9 +566,9 @@ mod tests {
 
     fn sample() -> Arm64VmState {
         let mut s = Arm64VmState::default();
-        s.regs.x[0] = 0x4000_0000; // x0 = the DTB GPA, per the boot protocol
+        s.regs.x[0] = 0x4000_0000;
         s.regs.pc = 0x0020_0000;
-        s.regs.pstate = 0x3c5; // EL1h, DAIF masked
+        s.regs.pstate = 0x3c5;
         s.sysregs.sctlr_el1 = 0x30d0_0800;
         s.sysregs.cntkctl_el1 = 0;
         s.simd_fp.q[0] = [0x5A; 16];
@@ -695,7 +594,6 @@ mod tests {
         s
     }
 
-    /// Return the payload start and length for `tag` in a known-valid blob.
     fn section(blob: &[u8], wanted: u16) -> (usize, usize) {
         let mut pos = HEADER_LEN;
         while pos < blob.len() {
@@ -710,7 +608,6 @@ mod tests {
         panic!("section {wanted} not present in valid arm64 blob");
     }
 
-    /// Split a valid blob into its `(section_count_field, [(tag, payload)])`.
     fn split(blob: &[u8]) -> (u16, Vec<(u16, Vec<u8>)>) {
         let count = u16::from_le_bytes(blob[8..10].try_into().unwrap());
         let mut sections = Vec::new();
@@ -725,7 +622,6 @@ mod tests {
         (count, sections)
     }
 
-    /// Re-pack a header with an explicit version, section count, and sections.
     fn pack(version: u16, count: u16, sections: &[(u16, Vec<u8>)]) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&crate::VM_STATE_MAGIC.to_le_bytes());
@@ -826,14 +722,12 @@ mod tests {
 
     #[test]
     fn foreign_arch_tags_are_rejected_both_ways() {
-        // An x86 blob must never decode as arm64 records…
         let x86 = VmState::default();
         let x86_bytes = x86.encode().unwrap();
         assert_eq!(
             Arm64VmState::decode(&x86_bytes),
             Err(VmStateError::UnsupportedArch(crate::ARCH_X86_64))
         );
-        // …and an arm64 blob must never decode as x86 records.
         let arm = sample().encode().unwrap();
         assert_eq!(
             VmState::decode(&arm),
@@ -874,7 +768,6 @@ mod tests {
     fn strict_decode_rejects_malformed_blobs() {
         let good = sample().encode().unwrap();
 
-        // Truncated header / body.
         assert_eq!(
             Arm64VmState::decode(&good[..4]),
             Err(VmStateError::Truncated)
@@ -884,7 +777,6 @@ mod tests {
             Err(VmStateError::Truncated)
         );
 
-        // Trailing bytes after the final section.
         let mut trailing = good.clone();
         trailing.push(0);
         assert_eq!(
@@ -892,7 +784,6 @@ mod tests {
             Err(VmStateError::TrailingBytes)
         );
 
-        // Bad magic.
         let mut bad_magic = good.clone();
         bad_magic[0] ^= 0xFF;
         assert!(matches!(
@@ -900,7 +791,6 @@ mod tests {
             Err(VmStateError::BadMagic(_))
         ));
 
-        // Unsupported version.
         let mut bad_version = good.clone();
         bad_version[4] = 0xEE;
         assert!(matches!(
@@ -913,7 +803,6 @@ mod tests {
     fn retained_state_sections_reject_noncanonical_boolean_and_reserved_bytes() {
         let good = sample().encode().unwrap();
 
-        // Debug: four 16-entry u64 arrays + MDSCR precede the two booleans.
         let (debug, debug_len) = section(&good, TAG_DEBUG);
         assert_eq!(debug_len, size_of::<Arm64DebugWire>());
         for offset in [debug + 520, debug + 521, debug + 522] {
@@ -925,7 +814,6 @@ mod tests {
             );
         }
 
-        // Vtimer: three u64s, then the boolean and seven reserved bytes.
         let (vtimer, vtimer_len) = section(&good, TAG_VTIMER);
         assert_eq!(vtimer_len, size_of::<Arm64VtimerWire>());
         for offset in [vtimer + 24, vtimer + 25] {
@@ -937,7 +825,6 @@ mod tests {
             );
         }
 
-        // Interrupts: IRQ, FIQ, then six reserved bytes.
         let (interrupts, interrupts_len) = section(&good, TAG_INTERRUPTS);
         assert_eq!(interrupts_len, size_of::<Arm64InterruptsWire>());
         for offset in [interrupts, interrupts + 1, interrupts + 2] {
@@ -952,7 +839,6 @@ mod tests {
 
     #[test]
     fn decode_never_panics_on_arbitrary_prefixes() {
-        // Totality over every truncation point of a valid blob (rule #4).
         let good = sample().encode().unwrap();
         for n in 0..good.len() {
             let _ = Arm64VmState::decode(&good[..n]);

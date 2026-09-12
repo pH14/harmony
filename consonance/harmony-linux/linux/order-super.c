@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// order-super — benchmark bug (ii): an ORDERING / INTERRUPT-TIMING bug (task 69).
-// The second planted bug of the seeded-bug benchmark, beside task 60's
+// order-super — benchmark bug (ii): an ORDERING / INTERRUPT-TIMING bug.
+// The second planted bug of the seeded-bug benchmark, beside
 // campaign-super.c (bug i). See the benchmark manifest (BugClass::OrderingInterrupt).
 //
 // The bug in one sentence: a supervised process maintains a two-word invariant
@@ -24,13 +24,13 @@
 // task; `ru_nivcsw` stays 0 (0/512 fires on the box, confirmed). The reachable,
 // single-task-observable effect of a delivered interrupt is that the kernel
 // SERVICES it: a serviced-interrupt COUNTER moves — the sum of /proc/interrupts'
-// per-CPU counts (task-59's injected vectors are unregistered, so they land on the
+// per-CPU counts (the injected vectors are unregistered, so they land on the
 // spurious/APIC lines that /proc/stat's `intr` total omits — box-confirmed: a
 // probe firing on ANY counter change since ORDER_READY hit 16/16, so the vector
 // IS delivered + counted). The process samples that count across the update
 // window; a change means an interrupt was serviced INSIDE it, i.e. the
 // injected vector at the vulnerable Moment. No preemption, reschedule, or signal
-// plumbing required. (KVM still delivers the task-59 `InjectInterrupt` to the
+// plumbing required. (KVM still delivers the `InjectInterrupt` to the
 // guest kernel IDT, not as a userspace signal — the milestone-1 SIGUSR1 draft was
 // wrong — but we now observe the *delivery* via the counter, not via a handler.)
 // This is only sound because the detection loop is interrupt-QUIET nominally: the
@@ -76,7 +76,7 @@
 #define FAIL_CODE 0x62
 // The normal-work cycle length that drives the bug-agnostic operational logging
 // (see the loop). Mirrors campaign-super.c's `BUDGET_MAX/2` so all three supers
-// emit the SAME log cadence — the apples-to-apples signal workload (task 69 M2).
+// emit the SAME log cadence — the apples-to-apples signal workload.
 #define WORK_CYCLE 500000L
 // The vulnerable-window width (busy iterations mirror is held stale) — the dial on
 // bug-2's expected time-to-find. 0 ⇒ the tiny implicit window (0 fires on the box);
@@ -221,10 +221,10 @@ int main(void)
             report_and_die();
         }
 
-        // Realistic operational logging (task 69 M2 — see IMPLEMENTATION
+        // Realistic operational logging (see IMPLEMENTATION
         // §"guest logging"): a supervised worker emits the periodic
         // health/progress lines a real service would, so the log-template signal
-        // (task 67) has a workload to read. Every line is **bug-agnostic by
+        // has a workload to read. Every line is **bug-agnostic by
         // construction** — its content is a function of the worker's NORMAL work
         // counter `i`, chosen WITHOUT reference to the planted trigger (the
         // involuntary-preemption check above); none encodes proximity to the

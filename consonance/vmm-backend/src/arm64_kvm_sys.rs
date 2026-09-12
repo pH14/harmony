@@ -1,17 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **box-only** half of the stock KVM/arm64 backend (`tasks/112` M4): the
-//! real ioctls behind the [`Arm64Kvm`] syscall seam, gated
-//! `all(target_os = "linux", target_arch = "aarch64")`.
-//!
-//! It **has no local oracle** — the Mac has no `/dev/kvm` (`hm-8l3` REFUSE), so
-//! this module is only ever *compiled* locally (the CI aarch64-linux
-//! cross-check) and run natively on msr1 during M4 (`hm-7pb`). Its shape (ioctl
-//! ordering, the register-ID set, the exit decode) is asserted portably against
-//! [`FakeKvm`](crate::FakeKvm); this module wires that shape to the documented
-//! kvm/arm64 ABI (`KVM_CREATE_VM` → `KVM_CREATE_VCPU` → `KVM_ARM_VCPU_INIT` with
-//! `KVM_ARM_PREFERRED_TARGET`; `KVM_GET_ONE_REG`/`KVM_SET_ONE_REG`;
-//! `KVM_SET_USER_MEMORY_REGION`; `KVM_RUN`). Like the x86 `kvm_sys`, it is
-//! excluded from the coverage/mutation gates (it cannot run without the box).
 
 use std::os::fd::AsRawFd;
 
@@ -25,10 +12,6 @@ use crate::arm64_kvm::{Arm64Kvm, KvmRunView, RunOffsets, RunPage};
 use crate::error::{BackendError, Result};
 use crate::types::MpState;
 
-/// The byte offsets of the `kvm_run` fields the decode reads, computed from the
-/// **arch-specific** `kvm_run` layout via `offset_of!` (so the portable
-/// `RunPage` seam never hard-codes the layout). The MMIO sub-fields and
-/// `system_event.type` live in the exit-info union `__bindgen_anon_1`.
 const RUN_OFFSETS: RunOffsets = RunOffsets {
     exit_reason: core::mem::offset_of!(kvm_run, exit_reason),
     mmio_phys_addr: core::mem::offset_of!(kvm_run, __bindgen_anon_1.mmio.phys_addr),
@@ -38,16 +21,6 @@ const RUN_OFFSETS: RunOffsets = RunOffsets {
     system_event_type: core::mem::offset_of!(kvm_run, __bindgen_anon_1.system_event.type_),
 };
 
-// --- compile-time UAPI pin ---------------------------------------------------
-// `docs/DETERMINISM.md`: verify knowable UAPI surfaces against
-// the pinned kernel, never take a constant on faith. The portable `arm64_kvm`
-// exit-reason and register-class constants MUST equal the pinned kernel's
-// `uapi/linux/kvm.h` (reached here through `kvm-bindings`, generated from those
-// headers). This block is **compile-checked** on the aarch64-linux cross-check,
-// so a drift — the r3 class-shift (`<< 48` vs `<< 16`) and hypercall-reason
-// (`13` = `S390_SIEIC` vs `3`) errors, or any future one — fails the build here
-// rather than EINVAL-ing on the box. (The register-class bindings are `u32`;
-// widen for the `u64` ID space.)
 const _UAPI_PIN: () = {
     assert!(crate::arm64_kvm::KVM_EXIT_MMIO == kvm_bindings::KVM_EXIT_MMIO);
     assert!(crate::arm64_kvm::KVM_EXIT_SYSTEM_EVENT == kvm_bindings::KVM_EXIT_SYSTEM_EVENT);
@@ -82,30 +55,14 @@ const _UAPI_PIN: () = {
 
 const GICD_BASE: u64 = 0x0800_0000;
 const GICR_BASE: u64 = 0x080a_0000;
-/// Unused PPI to which KVM's host-time virtual timer is quarantined. The DTB
-/// deliberately advertises only PPI27 for the guest virtual timer, and the
-/// Harmony clockevent owns that line through `KVM_IRQ_LINE`; PPI20 is therefore
-/// unregistered and masked in the guest.
 const QUARANTINED_VTIMER_PPI: u32 = 20;
 
-/// Build a Linux ioctl request number (`_IOC` encoding): direction bits 30-31,
-/// size bits 16-29, type bits 8-15, and number bits 0-7.
 const fn ioc(dir: u64, typ: u64, nr: u64, size: u64) -> u64 {
     (dir << 30) | (size << 16) | (typ << 8) | nr
 }
 
-/// `_IOW(KVMIO, 0xa3, struct kvm_enable_cap)` from `linux/kvm.h`.
-///
-/// `kvm-ioctls` 0.25 exposes `VmFd::enable_cap` only on architectures which
-/// used this ioctl when that crate's cfg list was written; arm64's newer
-/// writable-implementation-ID capability is nevertheless a VM capability and
-/// uses the same UAPI ioctl. Keep the request derived from the pinned 104-byte
-/// binding, and compile-time-pin both the capability number and structure size.
 const KVM_ENABLE_CAP_IOCTL: libc::c_ulong = 0x4068_aea3;
 
-/// `_IOWR(KVMIO, 0xc0, struct kvm_clear_dirty_log)` from `linux/kvm.h`.
-/// `kvm-ioctls` 0.25 does not expose this newer VM ioctl on arm64, so keep the
-/// request derived from and pinned to the generated 24-byte UAPI structure.
 const KVM_CLEAR_DIRTY_LOG_IOCTL: libc::c_ulong =
     ioc(3, 0xAE, 0xC0, size_of::<kvm_clear_dirty_log>() as u64) as libc::c_ulong;
 
@@ -116,18 +73,11 @@ const _: () = {
     assert!(KVM_CLEAR_DIRTY_LOG_IOCTL == 0xc018_aec0);
 };
 
-/// Map a `kvm-ioctls` error to the crate's portable [`BackendError`].
 fn kvm_err(e: kvm_ioctls::Error) -> BackendError {
     BackendError::Io(std::io::Error::from_raw_os_error(e.errno()))
 }
 
-/// The live KVM/arm64 syscall seam: the VM/vCPU fds and the retained pointer to
-/// the mmap'd `kvm_run` shared page (so an MMIO-load completion can be written
-/// back into `kvm_run.mmio.data` before the next `KVM_RUN`, exactly as the x86
-/// `KvmBackend` does).
 pub struct LiveKvm {
-    // Field order matters for `Drop`: the vCPU must outlive nothing that borrows
-    // it; `kvm` is kept alive so its fd outlives the VM/vCPU.
     vcpu: VcpuFd,
     vgic: Option<DeviceFd>,
     _vm: VmFd,
@@ -137,27 +87,11 @@ pub struct LiveKvm {
 }
 
 impl LiveKvm {
-    /// `KVM_CREATE_VM` → `KVM_CREATE_VCPU` (single vCPU) → mmap `kvm_run` →
-    /// `KVM_ARM_PREFERRED_TARGET` + `KVM_ARM_VCPU_INIT`.
-    ///
-    /// # Errors
-    /// [`BackendError::Capability`] when the host lacks immediate-exit, manual
-    /// dirty-log protection, or writable implementation-ID registers;
-    /// [`BackendError::Io`] wraps a failing KVM syscall.
     pub fn new() -> Result<Self> {
-        // KVM dirty-log bitmaps are indexed in host pages, while the portable
-        // backend contract and all GFN arithmetic are fixed at 4 KiB. Reject a
-        // 16/64-KiB arm64 host before opening/configuring a VM rather than
-        // silently decode its bitmap with the wrong geometry.
         // SAFETY: `sysconf` has no pointer arguments or memory-safety contract.
         let host_page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
         crate::arm64_kvm::require_4k_host_page_size(host_page_size as i64)?;
         let kvm = Kvm::new().map_err(kvm_err)?;
-        // MMIO loads are completed with one `KVM_RUN` whose
-        // `kvm_run.immediate_exit` bit prevents execution of the following
-        // guest instruction.  Kernels without this capability ignore that bit,
-        // so accepting them would make restore boundaries depend on host signal
-        // timing instead of the deterministic exit stream.
         if !kvm.check_extension(Cap::ImmediateExit) {
             return Err(BackendError::Capability {
                 cap: "KVM_CAP_IMMEDIATE_EXIT",
@@ -203,10 +137,6 @@ impl LiveKvm {
         Ok(this)
     }
 
-    /// Require manual dirty-log protection and enable only the manual mode
-    /// bit in `kvm_enable_cap.args[0]`. In particular, do not request
-    /// `KVM_DIRTY_LOG_INITIALLY_SET`: snapshots begin from the bitmap KVM
-    /// actually reports after registration.
     fn enable_manual_dirty_log(vm: &VmFd) -> Result<()> {
         let capability = kvm_bindings::KVM_CAP_MANUAL_DIRTY_LOG_PROTECT2;
         if vm.check_extension_raw(libc::c_ulong::from(capability)) <= 0 {
@@ -236,10 +166,6 @@ impl LiveKvm {
         }
     }
 
-    /// Make MIDR_EL1, REVIDR_EL1, and AIDR_EL1 VM-scoped writable values
-    /// before the vCPU exists. Without this capability, KVM can accept a
-    /// `KVM_SET_ONE_REG` whose value happens to equal the boot CPU while an
-    /// in-guest `MRS` still exposes whichever physical CPU runs the vCPU.
     fn enable_writable_imp_id_regs(vm: &VmFd) -> Result<()> {
         let capability = kvm_bindings::KVM_CAP_ARM_WRITABLE_IMP_ID_REGS;
         if vm.check_extension_raw(libc::c_ulong::from(capability)) <= 0 {
@@ -264,9 +190,6 @@ impl LiveKvm {
         }
     }
 
-    /// Move KVM's host-time-backed EL1 virtual-timer output away from PPI27,
-    /// which is exclusively owned by Harmony's virtual-time clockevent. This
-    /// attribute is write-once before the first `KVM_RUN`.
     fn quarantine_host_vtimer(&self) -> Result<()> {
         let irq = QUARANTINED_VTIMER_PPI;
         self.vcpu
@@ -279,8 +202,6 @@ impl LiveKvm {
             .map_err(kvm_err)
     }
 
-    /// Create the in-kernel GICv3 at the MMIO addresses advertised in the
-    /// arm64 board DTB, then finalise it after vCPU initialisation.
     fn create_vgic(&mut self) -> Result<()> {
         let mut device = kvm_create_device {
             type_: kvm_bindings::kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3,
@@ -317,9 +238,6 @@ impl LiveKvm {
             addr: std::ptr::from_ref(&nr_irqs) as u64,
         })
         .map_err(kvm_err)?;
-        // Migration compatibility handshake: acknowledge this KVM vGIC
-        // implementation revision before mutable state and before CTRL_INIT
-        // makes the field read-only.
         let mut iidr = 0u32;
         let mut iidr_attr = kvm_device_attr {
             flags: 0,
@@ -335,8 +253,6 @@ impl LiveKvm {
             ..iidr_attr
         })
         .map_err(kvm_err)?;
-        // KVM accepts the per-vCPU timer routing only after the irqchip device
-        // and its address windows exist, but before CTRL_INIT finalises it.
         self.quarantine_host_vtimer()?;
         vgic.set_device_attr(&kvm_device_attr {
             flags: 0,
@@ -355,9 +271,6 @@ impl LiveKvm {
             .ok_or(BackendError::Internal("vGICv3 is not initialised"))
     }
 
-    /// Read the current `kvm_run` into the portable [`KvmRunView`] through the
-    /// [`RunPage`] seam (whose unsafe pointer logic is Miri-tested in
-    /// `arm64_kvm`; this box wiring just supplies the real pointer + offsets).
     fn read_run_view(&self) -> Result<KvmRunView> {
         // SAFETY: `self.run` came from a successful `mmap` of `mmap_size` bytes
         // (≥ `size_of::<kvm_run>()`), live until `Drop`, and `RUN_OFFSETS` names
@@ -370,19 +283,11 @@ impl Arm64Kvm for LiveKvm {
     fn vcpu_init(&mut self) -> Result<()> {
         let mut kvi = kvm_vcpu_init::default();
         self._vm.get_preferred_target(&mut kvi).map_err(kvm_err)?;
-        // Advertise PSCI 0.2 so KVM's in-kernel PSCI services the guest's HVC
-        // PSCI calls (SYSTEM_OFF/RESET/CPU_ON) — the DTB advertises arm,psci-1.0
-        // over HVC, and without this bit KVM runs legacy PSCI and returns
-        // NOT_SUPPORTED (the guest could never cleanly power off). Set AFTER
-        // get_preferred_target, which fills `features` (typically zero).
         kvi.features = crate::arm64_kvm::vcpu_init_features();
         debug_assert!(
             kvi.features[0] & (1 << crate::arm64_kvm::KVM_ARM_VCPU_PSCI_0_2) != 0,
             "vcpu_init must request PSCI 0.2"
         );
-        // KVM_ARM_VCPU_INIT returns EINVAL for an unsupported feature, so a
-        // successful init is the kernel's confirmation the bit took. (Live PSCI
-        // conformance is an M4/msr1 gate; no /dev/kvm oracle on the Mac.)
         self.vcpu.vcpu_init(&kvi).map_err(kvm_err)?;
         Ok(())
     }
@@ -514,10 +419,6 @@ impl Arm64Kvm for LiveKvm {
 
     fn get_mp_state(&self) -> Result<MpState> {
         let mp = self.vcpu.get_mp_state().map_err(kvm_err)?;
-        // arm64 uses RUNNABLE / STOPPED (a WFI-halted vCPU stays RUNNABLE — KVM
-        // blocks it in-kernel; STOPPED is a PSCI power-off). Map STOPPED to the
-        // engine's `Halted`. (The exact MP-state contract is AA-6's; this is the
-        // skeleton mapping.)
         Ok(if mp.mp_state == kvm_bindings::KVM_MP_STATE_STOPPED {
             MpState::Halted
         } else {
@@ -612,10 +513,6 @@ impl Arm64Kvm for LiveKvm {
     }
 
     fn complete_mmio_exit(&mut self) -> Result<()> {
-        // KVM consumes the prior MMIO exit before checking `immediate_exit`.
-        // The resulting EINTR therefore means the load/store instruction and
-        // PC are architecturally complete while no following guest instruction
-        // has executed.
         // SAFETY: `self.run` is this vCPU's live shared `kvm_run` mapping and
         // the vCPU is not concurrently running.
         unsafe { (*self.run).immediate_exit = 1 };
@@ -633,11 +530,6 @@ impl Arm64Kvm for LiveKvm {
     }
 
     fn run(&mut self) -> Result<KvmRunView> {
-        // Issue `KVM_RUN` through kvm-ioctls' safe wrapper (it uses the mmap'd
-        // `kvm_run` we also hold a pointer to), then read the shared page through
-        // the `RunPage` seam. kvm-ioctls decodes into `VcpuExit`; we ignore that
-        // decode and read the raw fields ourselves so the completion write-back
-        // and the pure `decode_exit` stay the single source of truth.
         self.vcpu.run().map_err(kvm_err)?;
         self.read_run_view()
     }

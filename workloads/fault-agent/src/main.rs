@@ -1,20 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The harmony in-guest fault agent: the guest half of the standing-fault
-//! mechanism.
-//!
-//! It reads the workload bundle, runs the bundle's setup command, starts every
-//! node in its own process group, waits for the readiness probe and reports
-//! `setup_complete()`, then polls the host once per tick for the standing
-//! faults whose window contains the current `Moment` and applies the difference
-//! against the previous answer. The searcher branches by changing the standing
-//! list on the host; the guest never decides anything.
-//!
-//! Everything that decides lives in the library (`harmony_fault_agent`); this
-//! binary is the Linux glue — the `/dev/harmony` ioctl transport, the
-//! `/dev/harmony-park` ioctls, process spawning, process-group signalling, and
-//! the hook output files. Off x86-64
-//! Linux only `--check-bundle` runs, which is how an image build validates a
-//! bundle on the dev host.
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -25,21 +9,14 @@ use std::path::PathBuf;
     about = "harmony in-guest fault agent: standing-fault poll and process supervision"
 )]
 struct Args {
-    /// The workload bundle to supervise.
     #[arg(long, default_value = "/etc/harmony/bundle")]
     bundle: PathBuf,
-    /// Directory for the hook output files the agent reads directives from.
-    /// A file rather than a pipe so a chatty hook can never block on a full
-    /// pipe while the agent is between ticks.
     #[arg(long, default_value = "/run/fault-agent")]
     hook_dir: PathBuf,
-    /// Stop after this many ticks; `0` runs until the host stops the guest.
     #[arg(long, default_value_t = 0)]
     max_ticks: u64,
-    /// How many ticks the readiness probe may fail before the agent gives up.
     #[arg(long, default_value_t = 6000)]
     ready_ticks: u32,
-    /// Parse the bundle, print what it declares, and exit. Runs on any host.
     #[arg(long)]
     check_bundle: bool,
 }
@@ -57,8 +34,6 @@ fn main() {
     }
 }
 
-/// Validate a bundle and describe it, including the node ids the host must use
-/// in a `DecisionClass::Process` target.
 fn check_bundle(args: &Args) -> Result<(), String> {
     let text = std::fs::read_to_string(&args.bundle)
         .map_err(|error| format!("{}: {error}", args.bundle.display()))?;
@@ -102,17 +77,10 @@ mod real {
     use std::path::Path;
     use std::process::{Child, Command, Stdio};
 
-    /// The assertion point a hook's exit code 42 reports, and the point a
-    /// workload's own `@always` line conventionally uses.
     const HOOK_FAILURE_POINT: u32 = 1;
 
-    /// The exit code a hook uses to report a failed assertion without writing a
-    /// directive line.
     const HOOK_FAILURE_STATUS: i32 = 42;
 
-    /// The points the agent declares for itself. A hook's own assertion ids are
-    /// workload-owned and are not declared here; they still fire, they just
-    /// carry no name in the host's never-fired report.
     const CATALOG: [Point; 9] = [
         Point::always(HOOK_FAILURE_POINT, "fault_agent.hook_assertion"),
         Point::state(REG_TICKS, "fault_agent.ticks"),
@@ -127,10 +95,6 @@ mod real {
 
     type GuestSdk = Sdk<doorbell::DeviceTransport>;
 
-    /// The poll loop's pacer: an ordinary `nanosleep`. The guest timer rounds
-    /// the request up to its own granularity, which is deterministic under
-    /// `harmony_pvclock` but is not the requested 10 ms, so nothing downstream
-    /// treats a tick count as a duration.
     struct SleepClock;
 
     impl Clock for SleepClock {
@@ -139,7 +103,6 @@ mod real {
         fn wait(&mut self) -> Result<(), String> {
             let request = libc::timespec {
                 tv_sec: 0,
-                // `TICK_NANOS` is a compile-time constant below one second.
                 tv_nsec: TICK_NANOS as i64,
             };
             let mut remaining = request;
@@ -158,16 +121,12 @@ mod real {
         }
     }
 
-    /// A supervised node process.
     struct Node {
         spec: NodeSpec,
         child: Option<Child>,
-        /// The park armed on the node's process group, while its window is
-        /// open.
         park: Option<park::Handle>,
     }
 
-    /// A launched hook and the output file it writes directives to.
     struct Hook {
         id: u32,
         child: Child,
@@ -211,11 +170,6 @@ mod real {
         poll_loop(args, &bundle, &mut nodes, &mut sdk, &mut clock)
     }
 
-    /// Run the bundle's setup command to completion. The image's init mounts
-    /// `/proc`, `/sys` and `/dev` and nothing else, so this is where a workload
-    /// prepares whatever else its nodes need. A non-zero exit stops the agent:
-    /// nodes started on an unprepared filesystem produce failures that are the
-    /// image's, not the workload's.
     fn run_setup(bundle: &Bundle) -> Result<(), String> {
         let Some(argv) = &bundle.setup else {
             return Ok(());
@@ -230,8 +184,6 @@ mod real {
         Ok(())
     }
 
-    /// Run the readiness probe until it exits 0. A bundle without one is ready
-    /// as soon as its nodes are spawned.
     fn await_ready(
         bundle: &Bundle,
         ready_ticks: u32,
@@ -300,11 +252,6 @@ mod real {
         }
     }
 
-    /// Ask the host which standing faults are in force now, over the generic
-    /// SDK opaque service request under [`STANDING_NAMESPACE`]. The request
-    /// body is empty and the poll tick is its request id, so a recorded run
-    /// replays the same sequence of requests. A host that offers no standing
-    /// service answers nothing, which reads as no fault in force.
     fn poll_standing(
         sdk: &mut GuestSdk,
         tick: u64,
@@ -320,20 +267,15 @@ mod real {
         ActiveFaults::from_answer(&buf[..len]).map_err(|error| format!("standing answer: {error}"))
     }
 
-    /// Collect the nodes that exited since the last tick, reaping them.
     fn reap_nodes(nodes: &mut [Node]) -> Vec<u16> {
         let mut deaths = Vec::new();
         for (id, node) in nodes.iter_mut().enumerate() {
             let Some(child) = node.child.as_mut() else {
                 continue;
             };
-            // A stopped child is not reported here: `try_wait` does not ask for
-            // stop notifications, so a paused node stays alive.
             let exited = match child.try_wait() {
                 Ok(Some(_)) => true,
                 Ok(None) => false,
-                // The child cannot be waited on at all; treat it as gone rather
-                // than retrying a broken handle forever.
                 Err(_) => true,
             };
             if exited {
@@ -355,8 +297,6 @@ mod real {
     ) -> Result<(), String> {
         match action {
             Action::Kill(node) => {
-                // The park's tasks die with the group; the kernel keeps the
-                // breakpoints harmlessly until the handle drops.
                 if let Some(entry) = nodes.get_mut(usize::from(node)) {
                     entry.park = None;
                 }
@@ -422,7 +362,6 @@ mod real {
         Ok(())
     }
 
-    /// Log each park's hit and release once, and count the hits.
     fn watch_parks(nodes: &mut [Node], supervisor: &mut Supervisor, tick: u64) {
         for (id, node) in nodes.iter_mut().enumerate() {
             let Some(handle) = node.park.as_mut() else {
@@ -459,14 +398,10 @@ mod real {
         }
     }
 
-    /// Send `signal` to a node's whole process group, so a node that forks
-    /// children goes down with them.
     fn signal_node(nodes: &mut [Node], node: u16, signal: libc::c_int) {
         let Some(child) = nodes.get(usize::from(node)).and_then(|n| n.child.as_ref()) else {
             return;
         };
-        // Each node is spawned into a fresh process group whose id is its own
-        // pid, so the negated pid names the group.
         let Ok(pid) = libc::pid_t::try_from(child.id()) else {
             return;
         };
@@ -480,19 +415,12 @@ mod real {
 
     fn spawn_node(spec: &NodeSpec) -> Result<Child, String> {
         command(&spec.argv)
-            // Its own group, so one fault reaches the node's whole process
-            // tree and never the agent.
             .process_group(0)
             .spawn()
             .map_err(|error| format!("node {:?}: {error}", spec.name))
     }
 
-    /// Launch a hook with its stdout in a file of its own. `launch` counts
-    /// launches across the run, so two launches of one hook in a single tick
-    /// never share a file.
     fn spawn_hook(spec: &HookSpec, hook_dir: &Path, launch: u64) -> Result<Hook, String> {
-        // A workload's setup command may mount a fresh filesystem over the
-        // directory's parent, so it is made again at every spawn.
         std::fs::create_dir_all(hook_dir)
             .map_err(|error| format!("{}: {error}", hook_dir.display()))?;
         let path = hook_dir.join(format!("hook-{}-{launch}.out", spec.id));
@@ -511,8 +439,6 @@ mod real {
         })
     }
 
-    /// Forward every directive the running hooks have written, and retire the
-    /// ones that exited.
     fn drain_hooks(
         hooks: &mut Vec<Hook>,
         supervisor: &mut Supervisor,
@@ -530,7 +456,6 @@ mod real {
                 Ok(None) => continue,
                 Err(error) => return Err(format!("hook {}: {error}", hook.id)),
             };
-            // Anything written between the last read and the exit.
             for line in read_lines(&mut hook.output, &mut hook.reader) {
                 forward(&line, hook.id, supervisor, sdk, tick)?;
             }
@@ -553,8 +478,6 @@ mod real {
         Ok(())
     }
 
-    /// Read whatever the hook has appended since the last read. A short read or
-    /// an error is not fatal: the next tick reads again from the same offset.
     fn read_lines(output: &mut File, reader: &mut LineReader) -> Vec<String> {
         let mut lines = Vec::new();
         let mut chunk = [0_u8; 4096];
@@ -566,7 +489,6 @@ mod real {
         }
     }
 
-    /// Turn one hook output line into an SDK emission.
     fn forward(
         line: &str,
         hook: u32,
@@ -578,8 +500,6 @@ mod real {
             Ok(Some(directive)) => directive,
             Ok(None) => return Ok(()),
             Err(error) => {
-                // A malformed directive is the workload's bug, not the agent's;
-                // it is surfaced on serial and the run continues.
                 log(tick, &format!("hook {hook}: {error}"));
                 return Ok(());
             }
@@ -601,39 +521,28 @@ mod real {
     }
 
     fn command(argv: &[String]) -> Command {
-        // `parse_bundle` rejects an empty argv, so the first word exists.
         let mut command = Command::new(&argv[0]);
         command.args(&argv[1..]);
         command
     }
 
-    /// One serial line per applied fault, the agent's human-readable trace.
     fn log(tick: u64, what: &str) {
         let mut out = std::io::stdout().lock();
-        // Serial logging must never take the agent down, so a closed console is
-        // simply not logged to.
         let _ = writeln!(out, "FA: {tick} {what}");
         let _ = out.flush();
     }
 
-    /// The guest kernel's park: `/dev/harmony-park`, one park per open file.
     mod park {
         use harmony_fault_agent::faults::Park;
         use std::fs::File;
         use std::os::fd::AsRawFd;
 
         const DEVICE: &str = "/dev/harmony-park";
-        // _IOW('P', 1, struct harmony_park_arm) and
-        // _IOR('P', 2, struct harmony_park_status); the structures are
-        // fixed-width so the numbers are the same on every Linux target.
         const IOC_ARM: libc::Ioctl = 0x4020_5001_u32 as libc::Ioctl;
         const IOC_STATUS: libc::Ioctl = 0x8030_5002_u32 as libc::Ioctl;
 
-        /// The breakpoints are in place and no thread has taken the hit.
         pub const ARMED: u32 = 1;
-        /// A thread took the hit and is being held.
         pub const PARKED: u32 = 2;
-        /// The held thread has been let go.
         pub const RELEASED: u32 = 3;
 
         #[repr(C)]
@@ -645,7 +554,6 @@ mod real {
             hold_ns: u64,
         }
 
-        /// What the kernel reports about a park.
         #[repr(C)]
         #[derive(Clone, Copy, Debug, Default)]
         pub struct Status {
@@ -659,8 +567,6 @@ mod real {
             pub released_ns: u64,
         }
 
-        /// An armed park. Dropping it disarms a park that has not fired; a
-        /// hold in progress runs to its end.
         pub struct Handle {
             file: File,
             tasks: u32,
@@ -669,7 +575,6 @@ mod real {
         }
 
         impl Handle {
-            /// Threads the breakpoint was placed on.
             pub fn tasks(&self) -> u32 {
                 self.tasks
             }
@@ -686,7 +591,6 @@ mod real {
             }
         }
 
-        /// Arm `park` on the process group `pgid`.
         pub fn arm(pgid: libc::pid_t, park: &Park) -> Result<Handle, String> {
             let file = File::options()
                 .read(true)
@@ -717,7 +621,6 @@ mod real {
         }
     }
 
-    /// The kernel-owned synchronous hypercall transport.
     mod doorbell {
         use std::fs::File;
         use std::io;
@@ -725,10 +628,6 @@ mod real {
 
         const DEVICE: &str = "/dev/harmony";
         const MAX_FRAME: usize = hypercall_proto::MAX_FRAME;
-        // _IOWR('H', 1, struct harmony_ioc_exchange), whose fixed-width UAPI
-        // structure is 32 bytes on both 32- and 64-bit Linux. The request is
-        // written as a `u32` bit pattern and cast, because `libc::Ioctl` is a
-        // signed `c_int` against musl and an unsigned `c_ulong` against glibc.
         const HARMONY_IOC_EXCHANGE: libc::Ioctl = 0xc020_4801_u32 as libc::Ioctl;
 
         #[repr(C)]
@@ -741,13 +640,10 @@ mod real {
             reserved: u32,
         }
 
-        /// An open handle to the kernel-owned synchronous transport.
         pub struct DeviceTransport {
             file: File,
         }
 
-        /// Open `/dev/harmony`; no raw-I/O privilege or physical mapping is
-        /// granted to the agent.
         pub fn open() -> Result<DeviceTransport, String> {
             let file = File::options()
                 .read(true)
@@ -803,8 +699,6 @@ mod real {
     }
 }
 
-/// Off the box target the supervision path has no transport and no processes to
-/// supervise; `--check-bundle` is the mode that runs on the dev host.
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 mod real {
     use super::Args;

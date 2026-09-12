@@ -1,21 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The versioned, length-delimited wire codec.
-//!
-//! A frame is `magic(4) · version(2) · seq(4) · len(4) · body[len]`, all integers
-//! little-endian. The body is a tagged encoding of a [`Request`] or a
-//! `Result<Reply, ControlError>`; every variable-length field is `u32`-length
-//! prefixed.
-//!
-//! Encoding is **bit-deterministic and canonical**: each value has exactly one
-//! byte form (fixed field order, no maps, no padding), and the declared `len`
-//! always equals the body's natural size — so `encode(decode(x)) == x` for any
-//! frame `decode` accepts. Decoding is **strict and total**: it bounds-checks
-//! every length and tag against the *actual* buffer before use, rejects an
-//! over-cap `len` from the header alone (before buffering the body), rejects a
-//! body that does not consume exactly `len` bytes, and never panics or reads out
-//! of bounds on arbitrary input (conventions rule 4). A frame that is merely
-//! not-yet-fully-received yields `Ok(None)` ("need more"), distinct from a loud
-//! [`ProtocolError`].
 
 use crate::error::ProtocolError;
 use crate::types::{
@@ -25,12 +8,9 @@ use crate::types::{
 };
 use crate::{MAX_FRAME_LEN, PROTO_VERSION};
 
-/// Frame magic: `b"CTL1"` read little-endian. Pins the on-wire byte order.
 const MAGIC: u32 = u32::from_le_bytes(*b"CTL1");
-/// The fixed frame header: magic(4) + version(2) + seq(4) + len(4).
 const HEADER_LEN: usize = 14;
 
-// ---- Request body discriminants. Stable; the wire format depends on them. ----
 const REQ_HELLO: u8 = 1;
 const REQ_SNAPSHOT: u8 = 2;
 const REQ_DROP: u8 = 3;
@@ -44,18 +24,12 @@ const REQ_READ: u8 = 10;
 const REQ_REGS: u8 = 11;
 const REQ_EXEC: u8 = 12;
 const REQ_RECORDED_ENV: u8 = 13;
-// task 69 M2 Console scrape verb — assigned 14 (10–13 taken by tasks 80/81 read/
-// regs/exec/recorded_env on the merge) so the wire tags stay collision-free.
 const REQ_CONSOLE: u8 = 14;
 
-// ---- Reply-body top-level result discriminants. ----
 const RESULT_OK: u8 = 0;
 const RESULT_ERR: u8 = 1;
 
-// ---- Reply variant discriminants. ----
 const REPLY_HELLO: u8 = 1;
-// 2 was REPLY_SNAPID, the bare-handle snapshot reply — RETIRED by task 127 (the
-// cut-carrying REPLY_SNAPSHOT is the one snapshot reply); never reuse the tag.
 const REPLY_UNIT: u8 = 3;
 const REPLY_STOP: u8 = 4;
 const REPLY_HASH: u8 = 5;
@@ -65,11 +39,8 @@ const REPLY_REGS: u8 = 8;
 const REPLY_EXEC_RESULT: u8 = 9;
 const REPLY_SNAPSHOT: u8 = 10;
 const REPLY_RECORDED: u8 = 11;
-// task 69 M2 Console scrape reply — assigned 12 (7–11 taken by tasks 80/81) so the
-// wire tags stay collision-free.
 const REPLY_CONSOLE: u8 = 12;
 
-// ---- StopReason variant discriminants. ----
 const SR_DEADLINE: u8 = 1;
 const SR_QUIESCENT: u8 = 2;
 const SR_CRASH: u8 = 3;
@@ -77,17 +48,14 @@ const SR_DECISION: u8 = 4;
 const SR_SNAPSHOT_POINT: u8 = 5;
 const SR_ASSERTION: u8 = 6;
 
-// ---- CrashKind discriminants. ----
 const CK_PANIC: u8 = 0;
 const CK_UNRECOVERABLE_FAULT: u8 = 1;
 const CK_SHUTDOWN: u8 = 2;
 
-// ---- HashScope discriminants. ----
 const HS_WHOLE: u8 = 0;
 const HS_DISK: u8 = 1;
 const HS_REGION: u8 = 2;
 
-// ---- ControlError discriminants. ----
 const CE_UNKNOWN_SNAPSHOT: u8 = 1;
 const CE_RESTORE_FAILED: u8 = 2;
 const CE_SNAPSHOT_WHILE_ARMED: u8 = 3;
@@ -102,39 +70,26 @@ const CE_PERTURB_OUT_OF_RANGE: u8 = 11;
 const CE_PERTURB_PAST_MOMENT: u8 = 12;
 const CE_PERTURB_MOMENT_TAKEN: u8 = 13;
 const CE_SCHEDULE_UNSATISFIABLE: u8 = 14;
-// Discriminant 15 retired with the instruction-count clock. Never reuse it.
 const CE_PERTURB_RESERVED_VECTOR: u8 = 16;
 const CE_READ_OUT_OF_RANGE: u8 = 17;
 const CE_READ_TOO_LARGE: u8 = 18;
 const CE_TAINTED: u8 = 19;
 const CE_SNAPSHOT_REFUSED: u8 = 20;
-// Discriminant 20 retired with exact-stop branch-clock scheduling. Never reuse it.
 
-// ---- ProtocolError discriminants (carried inside CE_PROTOCOL). ----
 const PE_SHORT_FRAME: u8 = 0;
 const PE_BAD_MAGIC: u8 = 1;
 const PE_BAD_VERSION: u8 = 2;
 const PE_BAD_LENGTH: u8 = 3;
 
-// ---- Option present-flag. ----
 const ABSENT: u8 = 0;
 const PRESENT: u8 = 1;
 
-// ========================= public codec entry points =========================
-
-/// Encode a [`Request`] into a length-delimited frame appended to `buf`.
-///
-/// Fallible only on size: a body that would exceed [`MAX_FRAME_LEN`] returns
-/// [`ProtocolError::BadLength`] and leaves `buf` unchanged — never a panic, a
-/// truncation, or a frame the decoder's cap would reject.
 pub fn encode_request(seq: u32, req: &Request, buf: &mut Vec<u8>) -> Result<(), ProtocolError> {
     let mut body = Vec::new();
     write_request(&mut body, req);
     finish_frame(seq, &body, buf)
 }
 
-/// Encode a `Result<Reply, ControlError>` into a length-delimited frame appended
-/// to `buf`. Same size contract as [`encode_request`].
 pub fn encode_reply(
     seq: u32,
     reply: &Result<Reply, crate::error::ControlError>,
@@ -145,10 +100,6 @@ pub fn encode_reply(
     finish_frame(seq, &body, buf)
 }
 
-/// Decode exactly one [`Request`] frame from the front of `buf`, returning
-/// `(seq, request, bytes_consumed)`.
-///
-/// A partial frame yields `Ok(None)` ("need more"). Never panics on any input.
 pub fn decode_request(buf: &[u8]) -> Result<Option<(u32, Request, usize)>, ProtocolError> {
     let Some((seq, body, consumed)) = decode_frame(buf)? else {
         return Ok(None);
@@ -159,12 +110,6 @@ pub fn decode_request(buf: &[u8]) -> Result<Option<(u32, Request, usize)>, Proto
     Ok(Some((seq, req, consumed)))
 }
 
-/// Decode exactly one reply frame from the front of `buf`, returning
-/// `(seq, Result<Reply, ControlError>, bytes_consumed)`.
-///
-/// A partial frame yields `Ok(None)` ("need more"). Never panics on any input.
-// The nested-`Result` return type is the spec's pinned public signature
-// (conventions rule 3), not a candidate for factoring.
 #[allow(clippy::type_complexity)]
 pub fn decode_reply(
     buf: &[u8],
@@ -178,10 +123,6 @@ pub fn decode_reply(
     Ok(Some((seq, reply, consumed)))
 }
 
-// ============================== framing layer ===============================
-
-/// Append a complete frame (header + body) to `buf`, or fail with
-/// [`ProtocolError::BadLength`] leaving `buf` untouched.
 fn finish_frame(seq: u32, body: &[u8], buf: &mut Vec<u8>) -> Result<(), ProtocolError> {
     if body.len() > MAX_FRAME_LEN {
         return Err(ProtocolError::BadLength);
@@ -189,23 +130,17 @@ fn finish_frame(seq: u32, body: &[u8], buf: &mut Vec<u8>) -> Result<(), Protocol
     buf.extend_from_slice(&MAGIC.to_le_bytes());
     buf.extend_from_slice(&PROTO_VERSION.to_le_bytes());
     buf.extend_from_slice(&seq.to_le_bytes());
-    // body.len() <= MAX_FRAME_LEN (16 MiB) always fits in u32.
     buf.extend_from_slice(&(body.len() as u32).to_le_bytes());
     buf.extend_from_slice(body);
     Ok(())
 }
 
-/// A framed body sliced from the input: `(seq, body, bytes_consumed)`.
 type Framed<'a> = (u32, &'a [u8], usize);
 
-/// Parse the frame header and slice out the body, validating magic/version and
-/// rejecting an over-cap length **from the header alone** — before any body is
-/// buffered. Returns `Ok(None)` when the header or body is not yet fully present.
 fn decode_frame(buf: &[u8]) -> Result<Option<Framed<'_>>, ProtocolError> {
     if buf.len() < HEADER_LEN {
         return Ok(None);
     }
-    // Indexing is in bounds: we have at least HEADER_LEN bytes.
     if u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) != MAGIC {
         return Err(ProtocolError::BadMagic);
     }
@@ -215,19 +150,14 @@ fn decode_frame(buf: &[u8]) -> Result<Option<Framed<'_>>, ProtocolError> {
     let seq = u32::from_le_bytes([buf[6], buf[7], buf[8], buf[9]]);
     let len = u32::from_le_bytes([buf[10], buf[11], buf[12], buf[13]]) as usize;
     if len > MAX_FRAME_LEN {
-        // Rejected before reading/allocating the body: an untrusted length can
-        // never force unbounded buffering.
         return Err(ProtocolError::BadLength);
     }
-    // No overflow: len <= MAX_FRAME_LEN (16 MiB) and HEADER_LEN == 14.
     let end = HEADER_LEN + len;
     if buf.len() < end {
         return Ok(None);
     }
     Ok(Some((seq, &buf[HEADER_LEN..end], end)))
 }
-
-// ============================== request body ================================
 
 fn write_request(w: &mut Vec<u8>, req: &Request) {
     match req {
@@ -318,8 +248,6 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
         },
         REQ_REGS => Request::Regs,
         REQ_EXEC => Request::Exec {
-            // A non-UTF-8 command is a malformed frame body, not a panic
-            // (conventions rule 4): the codec is a Tier-1 fuzz target.
             cmd: String::from_utf8(r.bytes()?.to_vec()).map_err(|_| ProtocolError::ShortFrame)?,
             deadline: Moment(r.u64()?),
         },
@@ -327,8 +255,6 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
         _ => return Err(ProtocolError::ShortFrame),
     })
 }
-
-// =============================== reply body =================================
 
 fn write_reply_result(w: &mut Vec<u8>, reply: &Result<Reply, crate::error::ControlError>) {
     match reply {
@@ -395,9 +321,6 @@ fn write_reply(w: &mut Vec<u8>, reply: &Reply) {
             put_bytes(w, output);
             w.push(u8::from(*ok));
         }
-        // The seal-bound reply (task 127): handle · cut (Moment + included
-        // SDK-event count) · taint, in that fixed order — the cut fields sit
-        // between the handle and the task-81 taint byte.
         Reply::Snapshot {
             id,
             at,
@@ -425,9 +348,6 @@ fn read_reply(r: &mut Reader) -> Result<Reply, ProtocolError> {
         REPLY_HASH => Reply::Hash(read_array32(r)?),
         REPLY_SDK_EVENTS => {
             let count = r.u32()?;
-            // Do NOT pre-allocate on the untrusted `count` (conventions rule 4):
-            // the per-element reads are bounds-checked and simply run out of
-            // buffer (→ `ShortFrame`) if `count` over-claims.
             let mut events = Vec::new();
             for _ in 0..count {
                 let moment = r.u64()?;
@@ -458,12 +378,6 @@ fn read_reply(r: &mut Reader) -> Result<Reply, ProtocolError> {
     })
 }
 
-/// The `RegsView` wire layout — fixed field order, no padding, all little-endian
-/// (canonical). The `gpr`/`seg` arrays are written element-by-element in their
-/// canonical order; growing the view (an additive `VERSION` bump) appends fields
-/// after `vtime`, so an older decoder still consumes the prefix it knows and a
-/// newer one reads the extension. Every element is a fixed-width integer, so the
-/// body length is constant for a given version.
 fn write_regs_view(w: &mut Vec<u8>, v: &RegsView) {
     put_u16(w, v.version);
     for g in &v.gpr {
@@ -507,8 +421,6 @@ fn read_regs_view(r: &mut Reader) -> Result<RegsView, ProtocolError> {
     })
 }
 
-// ============================ component encoders =============================
-
 fn write_caps(w: &mut Vec<u8>, c: &Caps) {
     put_u16(w, c.protocol_version);
     put_u16(w, c.env_version_min);
@@ -536,8 +448,6 @@ fn write_env(w: &mut Vec<u8>, env: &Reproducer) {
     put_bytes(w, &env.bytes);
 }
 
-/// `blob_version` is carried verbatim and never validated here — an off-version
-/// blob still decodes, so the backend can answer `BadEnvVersion` (gate 4).
 fn read_env(r: &mut Reader) -> Result<Reproducer, ProtocolError> {
     Ok(Reproducer {
         blob_version: r.u16()?,
@@ -797,8 +707,6 @@ fn read_control_error(r: &mut Reader) -> Result<crate::error::ControlError, Prot
     })
 }
 
-// =============================== option helpers =============================
-
 fn write_opt_vtime(w: &mut Vec<u8>, v: &Option<Moment>) {
     match v {
         Some(Moment(t)) => {
@@ -848,8 +756,6 @@ fn read_opt_resolution(r: &mut Reader) -> Result<Option<Resolution>, ProtocolErr
     })
 }
 
-// =============================== byte helpers ===============================
-
 fn put_u16(w: &mut Vec<u8>, v: u16) {
     w.extend_from_slice(&v.to_le_bytes());
 }
@@ -862,18 +768,11 @@ fn put_u64(w: &mut Vec<u8>, v: u64) {
     w.extend_from_slice(&v.to_le_bytes());
 }
 
-/// Append a `u32`-length-prefixed byte blob. The length saturates at `u32::MAX`,
-/// which is unreachable for an emitted frame: the whole body is capped at
-/// [`MAX_FRAME_LEN`] (16 MiB) by [`finish_frame`], so any sub-blob is far smaller.
 fn put_bytes(w: &mut Vec<u8>, b: &[u8]) {
     put_u32(w, u32::try_from(b.len()).unwrap_or(u32::MAX));
     w.extend_from_slice(b);
 }
 
-/// A forward-only cursor over a frame body. Every read past the end is
-/// [`ProtocolError::ShortFrame`]; byte blobs are sliced (bounds-checked against
-/// the actual body) before any copy, so an untrusted length can never force an
-/// out-of-bounds read or an unbounded allocation.
 struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
@@ -884,8 +783,6 @@ impl<'a> Reader<'a> {
         Self { buf, pos: 0 }
     }
 
-    /// Require that the whole body was consumed — rejects trailing bytes inside
-    /// the declared frame length, which keeps the encoding canonical.
     fn finish(&self) -> Result<(), ProtocolError> {
         if self.pos == self.buf.len() {
             Ok(())
@@ -925,8 +822,6 @@ impl<'a> Reader<'a> {
         ]))
     }
 
-    /// Read a canonical boolean: `0` → `false`, `1` → `true`, anything else a
-    /// malformed frame (keeps the encoding one-to-one — no spurious `true` bytes).
     fn bool(&mut self) -> Result<bool, ProtocolError> {
         match self.u8()? {
             0 => Ok(false),
@@ -935,13 +830,11 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// Read a `u32`-length-prefixed byte blob, borrowed from the body.
     fn bytes(&mut self) -> Result<&'a [u8], ProtocolError> {
         let len = self.u32()? as usize;
         self.take(len)
     }
 
-    /// Read a fixed 32-byte array (the hash digest).
     fn array32(&mut self) -> Result<[u8; 32], ProtocolError> {
         let b = self.take(32)?;
         let mut out = [0u8; 32];

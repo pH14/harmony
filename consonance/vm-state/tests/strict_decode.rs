@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 3 — strict decode / fuzz robustness. Every malformed blob yields the
-//! matching `VmStateError`, never a panic.
 
 mod common;
 
@@ -10,13 +8,10 @@ use vm_state::{
     ARCH_X86_64, VM_STATE_LEGACY_VERSION, VM_STATE_MAGIC, VM_STATE_VERSION, VmState, VmStateError,
 };
 
-/// magic:u32 + version:u16 + arch:u16 + section_count:u16 (10 bytes; the v2
-/// arch tag did not add padding).
 const HEADER_LEN: usize = 10;
 const ENGINE_VERSION: u16 = 4;
 const XSAVE_RESTORE_BV_TAG: u16 = 15;
 
-/// Split a valid blob into its `(section_count_field, [(tag, payload)])`.
 fn split(blob: &[u8]) -> (u16, Vec<(u16, Vec<u8>)>) {
     let count = u16::from_le_bytes([blob[8], blob[9]]);
     let mut secs = Vec::new();
@@ -32,12 +27,10 @@ fn split(blob: &[u8]) -> (u16, Vec<(u16, Vec<u8>)>) {
     (count, secs)
 }
 
-/// Re-pack a header with the given section count and section list.
 fn pack(count: u16, secs: &[(u16, Vec<u8>)]) -> Vec<u8> {
     pack_version(VM_STATE_LEGACY_VERSION, count, secs)
 }
 
-/// Re-pack a header with an explicit version, section count, and section list.
 fn pack_version(version: u16, count: u16, secs: &[(u16, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&VM_STATE_MAGIC.to_le_bytes());
@@ -438,9 +431,6 @@ fn legacy_v3_rejects_a_well_formed_engine_state_section() {
     assert_eq!(legacy_count, 13);
     assert_eq!(legacy_sections.len(), usize::from(legacy_count));
 
-    // TLV 14 belongs only to v4. Both an empty payload and an opaque nonempty
-    // payload are otherwise well-formed sections, so the v3 reader must reject
-    // them instead of accepting and discarding the field.
     for payload in [Vec::new(), vec![0xA5]] {
         let mut sections = legacy_sections.clone();
         sections.push((14, payload));
@@ -454,14 +444,9 @@ fn legacy_v3_rejects_a_well_formed_engine_state_section() {
     }
 }
 
-/// The v2 arch tag is a **hard gate on the record set**: a blob whose sections are
-/// byte-perfect but whose arch tag is another architecture's is REJECTED, never
-/// decoded into this build's x86 fields (`docs/ARCHITECTURE.md` — versioned
-/// wire evolution, never silent reinterpretation).
 #[test]
 fn foreign_arch_tag_is_rejected_not_reinterpreted() {
     let mut blob = valid();
-    // Sanity: it decodes under its own tag.
     assert!(VmState::decode(&blob).is_ok());
     let foreign = ARCH_X86_64 + 1;
     blob[6..8].copy_from_slice(&foreign.to_le_bytes());
@@ -483,7 +468,6 @@ fn truncated_header() {
 #[test]
 fn truncated_body() {
     let blob = valid();
-    // Drop the final byte: the last section's len now claims more than remains.
     assert_eq!(
         VmState::decode(&blob[..blob.len() - 1]),
         Err(VmStateError::Truncated)
@@ -500,7 +484,6 @@ fn trailing_bytes() {
 #[test]
 fn duplicate_tag() {
     let (count, secs) = split(&valid());
-    // Insert a second copy of the first section right after it: tags 1,1,2,...
     let mut dup = secs.clone();
     dup.insert(1, secs[0].clone());
     let blob = pack(count + 1, &dup);
@@ -514,7 +497,7 @@ fn duplicate_tag() {
 fn out_of_order_tags() {
     let (count, secs) = split(&valid());
     let mut swapped = secs.clone();
-    swapped.swap(0, 1); // tags 2,1,3,... — the 1 is now out of order
+    swapped.swap(0, 1);
     let blob = pack(count, &swapped);
     assert_eq!(
         VmState::decode(&blob),
@@ -524,16 +507,8 @@ fn out_of_order_tags() {
 
 #[test]
 fn tag_ordering_boundary() {
-    // Pin the exact `tag <= prev` boundary in decode's section-ordering check so
-    // neither the `<=` guard nor the `==` split has an untested (equivalent)
-    // mutant — `< vs <=` is only observable right AT equality:
-    //   tag == prev → DuplicateTag  (the boundary; `<=` accepts it, a `<` mutant
-    //                                would let the duplicate through)
-    //   tag <  prev → SectionOrder  (distinguishes the inner `==`)
-    //   tag >  prev → accepted      (strictly ascending)
     let (count, secs) = split(&valid());
 
-    // tag == prev: duplicate the first section adjacently (tags 1,1,2,...).
     let mut equal = secs.clone();
     equal.insert(1, secs[0].clone());
     assert_eq!(
@@ -541,7 +516,6 @@ fn tag_ordering_boundary() {
         Err(VmStateError::DuplicateTag(secs[0].0)),
     );
 
-    // tag < prev: swap the first two sections (tags 2,1,3,...).
     let mut less = secs.clone();
     less.swap(0, 1);
     assert_eq!(
@@ -549,15 +523,12 @@ fn tag_ordering_boundary() {
         Err(VmStateError::SectionOrder(secs[0].0)),
     );
 
-    // tag > prev (strictly ascending): the untouched valid blob decodes.
     assert!(VmState::decode(&valid()).is_ok());
 }
 
 #[test]
 fn dropped_required_section() {
     let (count, secs) = split(&valid());
-    // Drop the V-time section (tag 9) and decrement the count so the loop reads
-    // a clean, in-order set that is simply missing one required tag.
     let dropped_tag = 9;
     let kept: Vec<(u16, Vec<u8>)> = secs
         .iter()
@@ -574,7 +545,6 @@ fn dropped_required_section() {
 
 #[test]
 fn section_count_zero_is_missing_section() {
-    // A header-only blob: count 0, no sections. The first required tag is absent.
     let blob = pack(0, &[]);
     assert_eq!(VmState::decode(&blob), Err(VmStateError::MissingSection(1)));
 }
@@ -582,7 +552,6 @@ fn section_count_zero_is_missing_section() {
 #[test]
 fn oversized_section_len() {
     let mut blob = valid();
-    // The first section's len field lives at offset 8+2..8+6. Make it enormous.
     blob[10..14].copy_from_slice(&u32::MAX.to_le_bytes());
     assert_eq!(VmState::decode(&blob), Err(VmStateError::Truncated));
 }
@@ -590,7 +559,6 @@ fn oversized_section_len() {
 #[test]
 fn unknown_tag() {
     let (count, mut secs) = split(&valid());
-    // Append a section with a tag past the v1 set; bump count so it is read.
     secs.push((9999, vec![0xde, 0xad]));
     let blob = pack(count + 1, &secs);
     assert_eq!(VmState::decode(&blob), Err(VmStateError::UnknownTag(9999)));
@@ -599,7 +567,6 @@ fn unknown_tag() {
 #[test]
 fn bad_mp_state_byte() {
     let (count, mut secs) = split(&valid());
-    // MP-state is tag 6; force an out-of-range byte.
     for (tag, payload) in &mut secs {
         if *tag == 6 {
             *payload = vec![0x07];
@@ -612,16 +579,12 @@ fn bad_mp_state_byte() {
 proptest! {
     #![proptest_config(config(1024))]
 
-    /// Arbitrary bytes never panic decode or peek_version.
     #[test]
     fn arbitrary_bytes_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..512)) {
         let _ = VmState::decode(&bytes);
         let _ = VmState::peek_version(&bytes);
     }
 
-    /// A single-byte mutation of a valid blob never panics, and never silently
-    /// decodes to a state that re-encodes to *different* bytes (decode only ever
-    /// accepts canonical blobs).
     #[test]
     fn mutated_valid_blob_never_panics(
         idx in any::<prop::sample::Index>(),

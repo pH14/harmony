@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Acceptance gates 2-5 from the task spec: dedup, zero pages (including the sparse
-//! 1 GiB materialize), mapping copy-on-write, and gc, plus error-path coverage.
 
 use snapshot_store::{PAGE_SIZE, SnapshotId, Store, StoreConfig, StoreError};
 
@@ -12,7 +10,6 @@ fn page(seed: u8) -> [u8; PAGE_SIZE] {
     [seed; PAGE_SIZE]
 }
 
-/// Base of N distinct pages plus children whose writes don't change anything.
 fn base_of_n(store: &mut Store, n: u8) -> SnapshotId {
     let mut b = store.begin_base();
     for i in 0..n {
@@ -21,8 +18,6 @@ fn base_of_n(store: &mut Store, n: u8) -> SnapshotId {
     b.seal(b"base-vm-state".to_vec())
 }
 
-/// Gate 2: a base of N distinct pages, plus 10 children each rewriting the same pages
-/// with identical content => stored_unique_pages stays N and children own nothing.
 #[test]
 fn dedup_identical_rewrites() {
     const N: u8 = 8;
@@ -34,7 +29,7 @@ fn dedup_identical_rewrites() {
     for _ in 0..10 {
         let mut d = s.derive(base).unwrap();
         for i in 0..N {
-            d.write_page(u64::from(i), &page(i + 1)).unwrap(); // identical rewrite
+            d.write_page(u64::from(i), &page(i + 1)).unwrap();
         }
         let child = d.seal(vec![]);
         assert_eq!(s.stats(child).unwrap().owned_pages, 0);
@@ -42,22 +37,19 @@ fn dedup_identical_rewrites() {
     }
     assert_eq!(s.store_stats().snapshots, 11);
 
-    // Sanity check the other direction: one genuinely new content is stored once.
     let mut d = s.derive(base).unwrap();
     d.write_page(0, &page(200)).unwrap();
     let child = d.seal(vec![]);
     assert_eq!(s.stats(child).unwrap().owned_pages, 1);
     assert_eq!(s.store_stats().stored_unique_pages, u64::from(N) + 1);
 
-    // And identical content across *different* gfns is also stored once store-wide.
     let mut d = s.derive(base).unwrap();
-    d.write_page(20, &page(1)).unwrap(); // same bytes the base has at gfn 0
+    d.write_page(20, &page(1)).unwrap();
     let child = d.seal(vec![]);
-    assert_eq!(s.stats(child).unwrap().owned_pages, 1); // gfn 20 wasn't provided before
+    assert_eq!(s.stats(child).unwrap().owned_pages, 1);
     assert_eq!(s.store_stats().stored_unique_pages, u64::from(N) + 1);
 }
 
-/// Gate 3a: never-written pages read as zeros at every chain depth and in materialize.
 #[test]
 fn zero_pages_at_every_depth() {
     let mut s = store(16);
@@ -90,12 +82,10 @@ fn zero_pages_at_every_depth() {
     }
 }
 
-/// Gate 3b: a sparse 1 GiB-logical base with 10 written pages materializes without
-/// allocating ~1 GiB of resident memory (asserted via bytes_resident).
 #[test]
 fn sparse_one_gib_materialize_stays_sparse() {
     const GIB: u64 = 1 << 30;
-    const MEM_PAGES: u64 = GIB / PAGE_SIZE as u64; // 262,144 pages
+    const MEM_PAGES: u64 = GIB / PAGE_SIZE as u64;
     let mut s = store(MEM_PAGES);
     let mut b = s.begin_base();
     let written: Vec<u64> = (0..10).map(|i| i * 26_000 + 13).collect();
@@ -114,14 +104,12 @@ fn sparse_one_gib_materialize_stays_sparse() {
 
     let mapping = s.materialize(base).unwrap();
     assert_eq!(mapping.len() as u64, GIB);
-    // Materializing must not have inflated the store either.
     assert!(
         s.store_stats().bytes_resident < 1 << 20,
         "materialize inflated bytes_resident to {}",
         s.store_stats().bytes_resident
     );
 
-    // Spot-check written pages and holes through the mapping.
     let image = mapping.as_slice();
     for (i, &gfn) in written.iter().enumerate() {
         let off = gfn as usize * PAGE_SIZE;
@@ -133,16 +121,14 @@ fn sparse_one_gib_materialize_stays_sparse() {
     }
 }
 
-/// Gate 4: write to a materialized mapping, then re-read via read_page and a fresh
-/// materialize => original content intact.
 #[test]
 fn mapping_writes_never_reach_the_store() {
     let mut s = store(8);
     let base = base_of_n(&mut s, 4);
 
     let mut mapping = s.materialize(base).unwrap();
-    mapping.as_mut_slice().fill(0xEE); // scribble over everything, holes included
-    assert_eq!(&mapping.as_slice()[..PAGE_SIZE], &page(0xEE)[..]); // visible locally
+    mapping.as_mut_slice().fill(0xEE);
+    assert_eq!(&mapping.as_slice()[..PAGE_SIZE], &page(0xEE)[..]);
 
     let mut out = page(0);
     for i in 0..4u8 {
@@ -163,8 +149,6 @@ fn mapping_writes_never_reach_the_store() {
     assert_eq!(&fresh.as_slice()[7 * PAGE_SIZE..], &page(0)[..]);
 }
 
-/// Gate 5: chain A->B->C; releasing B frees nothing C needs; releasing C then gc
-/// shrinks stats accordingly; releasing everything frees everything.
 #[test]
 fn gc_preserves_live_chains_then_reclaims() {
     let mut s = store(8);
@@ -187,7 +171,6 @@ fn gc_preserves_live_chains_then_reclaims() {
     assert_eq!(s.store_stats().snapshots, 2);
     assert_eq!(s.store_stats().stored_unique_pages, 3);
 
-    // C still resolves pages provided by A, by the released B, and by itself.
     let mut out = page(0);
     for (gfn, seed) in [(0u64, 1u8), (1, 2), (2, 3)] {
         s.read_page(c, gfn, &mut out).unwrap();
@@ -195,7 +178,6 @@ fn gc_preserves_live_chains_then_reclaims() {
     }
 
     s.release(c).unwrap();
-    // B's and C's layers are now unreachable: their unique pages and vm blobs go.
     let freed = s.gc();
     assert_eq!(freed, 2 * PAGE_SIZE as u64 + 2);
     let stats = s.store_stats();
@@ -203,7 +185,6 @@ fn gc_preserves_live_chains_then_reclaims() {
     assert_eq!(stats.stored_unique_pages, 1);
     assert_eq!(stats.bytes_resident, PAGE_SIZE as u64 + 1);
 
-    // A still reads fine on its own.
     s.read_page(a, 0, &mut out).unwrap();
     assert_eq!(out, page(1));
 
@@ -216,7 +197,6 @@ fn gc_preserves_live_chains_then_reclaims() {
     assert_eq!(stats.logical_pages_total, 0);
 }
 
-/// gc keeps shared structure alive while any branch needs it (tree shape, not chain).
 #[test]
 fn gc_with_shared_ancestor_fanout() {
     let mut s = store(8);
@@ -233,7 +213,7 @@ fn gc_with_shared_ancestor_fanout() {
     let mut out = page(0);
     for (k, &kid) in kids.iter().enumerate() {
         s.read_page(kid, 0, &mut out).unwrap();
-        assert_eq!(out, page(1)); // inherited from the released base
+        assert_eq!(out, page(1));
         s.read_page(kid, 6, &mut out).unwrap();
         assert_eq!(out, page(100 + k as u8));
     }
@@ -276,7 +256,6 @@ fn error_paths() {
     ));
     drop(b);
 
-    // A fully released id is unknown to every entry point.
     let mut d = s.derive(base).unwrap();
     d.write_page(0, &page(50)).unwrap();
     let child = d.seal(vec![]);
@@ -310,12 +289,9 @@ fn error_paths() {
         Err(StoreError::UnknownSnapshot(_))
     ));
 
-    // Errors render without panicking.
     assert!(!StoreError::UnknownSnapshot(base).to_string().is_empty());
 }
 
-/// Immutability under everything at once: later snapshots, gc, dedup, and mapping
-/// writes leave a sealed snapshot's logical image bit-identical.
 #[test]
 fn sealed_images_are_immutable() {
     let mut s = store(8);
@@ -327,7 +303,6 @@ fn sealed_images_are_immutable() {
         before.push(out);
     }
 
-    // Churn: children overwriting everything, retain/release cycles, gc, CoW writes.
     let mut kids = Vec::new();
     for k in 0..6u8 {
         let mut d = s.derive(base).unwrap();

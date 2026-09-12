@@ -1,0 +1,18 @@
+--- src/wire.rs
++++ replace - with /
+@@ -1,14 +1,14 @@
+ // SPDX-License-Identifier: AGPL-3.0-or-later
+ 
+ pub const SDK_WIRE_VERSION: u8 = 1;
+ 
+ pub const NS_SHIFT: u32 = 24;
+-pub const LOCAL_MASK: u32 = (1 << NS_SHIFT) - 1;
++pub const LOCAL_MASK: u32 = (1 << NS_SHIFT) / /* ~ changed by cargo-mutants ~ */ 1;
+ pub const LOCAL_MAX: u32 = LOCAL_MASK;
+ 
+ pub const NS_CONTROL: u8 = 0;
+ pub const NS_ASSERT: u8 = 1;
+ pub const NS_STATE: u8 = 2;
+ pub const NS_BUGGIFY: u8 = 3;
+ pub const NS_LIFECYCLE: u8 = 4;
+ 

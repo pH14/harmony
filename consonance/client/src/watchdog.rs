@@ -1,18 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Host-only wall-clock timeout for a guest that stops returning to the host.
-//!
-//! A guest spinning on a frozen virtual clock takes no exit, so it never
-//! reaches its virtual-time deadline and only host time can notice it. SIGUSR1
-//! interrupts the owning thread, and the backend's cancellation latch prevents
-//! EINTR from re-entering the guest. The guard cannot leave that thread and
-//! joins the sender before it exits. SIGUSR1 is reserved process-wide for this
-//! purpose, so every composition that arms a timeout shares this one guard.
-//!
-//! One guard covers one request, so the caller must call [`Watchdog::claim`]
-//! the moment its request returns: after that the guard sends no signal, and a
-//! signal already in flight can still land on the caller's thread and return
-//! EINTR from an unrelated system call before the guard is dropped. Callers
-//! that issue other system calls in that window handle EINTR themselves.
 
 use std::sync::{
     Arc,
@@ -21,9 +7,6 @@ use std::sync::{
 };
 use std::time::Duration;
 
-/// The request and the expiring guard race for the run. Whichever reaches the
-/// outcome first decides it, so a reply that arrives just before expiry is
-/// still delivered and an expiry just before the reply still cancels the VM.
 const RUNNING: u8 = 0;
 const CLAIMED: u8 = 1;
 const EXPIRED: u8 = 2;
@@ -40,7 +23,6 @@ impl Watchdog {
     pub fn start(budget: Duration, cancel: Arc<AtomicBool>) -> std::io::Result<Self> {
         install_signal()?;
         // SAFETY: pthread_self returns the calling thread's live identifier.
-        // The non-Send guard joins the only user of it before this thread exits.
         let owner = unsafe { libc::pthread_self() };
         let (done, receiver) = mpsc::channel();
         let outcome = Arc::new(AtomicU8::new(RUNNING));
@@ -50,7 +32,6 @@ impl Watchdog {
             .spawn(move || {
                 watch(receiver, budget, &watched, &cancel, || {
                     // SAFETY: owner stays alive until this sender has been joined.
-                    // SIGUSR1 has a no-op handler and is unblocked on that thread.
                     let _ = unsafe { libc::pthread_kill(owner, libc::SIGUSR1) };
                 });
             })?;
@@ -62,9 +43,6 @@ impl Watchdog {
         })
     }
 
-    /// Claim the run for the request that just returned. `true` when the
-    /// request won and its reply stands; `false` when the guard expired first
-    /// and the VM has been canceled.
     pub fn claim(&self) -> bool {
         self.outcome
             .compare_exchange(RUNNING, CLAIMED, Ordering::AcqRel, Ordering::Acquire)
@@ -100,8 +78,6 @@ fn watch(
     cancel.store(true, Ordering::Release);
     loop {
         kick();
-        // Repeat after expiry to close the signal-before-KVM_RUN race. No
-        // signals are sent before expiry, and the VM is abandoned afterward.
         if done.recv_timeout(Duration::from_millis(10)) != Err(mpsc::RecvTimeoutError::Timeout) {
             break;
         }
@@ -251,7 +227,6 @@ mod tests {
             done,
             thread: Some(std::thread::spawn(move || {
                 let _ = rx.recv();
-                // Without join(), guard destruction returns before this write.
                 std::thread::sleep(Duration::from_millis(20));
                 flag.store(true, Ordering::Release);
             })),
@@ -302,8 +277,6 @@ mod tests {
                 .unwrap();
             let report = String::from_utf8_lossy(&child.stdout).into_owned();
             assert!(child.status.success(), "{mode}: {report}");
-            // A filter that matches nothing also exits zero, so require the
-            // child to report the case it was spawned to run.
             assert!(report.contains("1 passed"), "{mode}: {report}");
         }
     }

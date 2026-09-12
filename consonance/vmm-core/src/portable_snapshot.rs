@@ -1,18 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Host-neutral control-snapshot artifacts.
-//!
-//! A snapshot-store layer is not portable by itself: the control server keeps
-//! the SDK stream, remaining ordered payloads, generic service configuration,
-//! evidence cut, and lineage taint in handle-keyed side tables.
-//! This module serializes that complete replay state together with materialized
-//! RAM and the canonical vendor VM-state blob. The format is fixed-order,
-//! little-endian, length-bounded, and protected by a trailing SHA-256 digest
-//! for complete artifacts. Version 5 conditionally carries an opaque
-//! control-plane state section after the existing body; empty control state
-//! retains the byte layout of v4. Version 6 keeps the v5 field order while
-//! allowing sections beyond the legacy fixed bounds. Readers also retain
-//! v3/v4/v5 compatibility, and SDK pending-stop fields remain available in
-//! every format from v4 onward.
 
 use std::{
     collections::BTreeMap,
@@ -53,36 +39,19 @@ const MAX_SPARSE_SIDECAR_LEN: usize = MAX_VM_STATE_LEN
     .saturating_add(MAX_SUFFIX_LEN)
     .saturating_add(128);
 
-/// In-process sparse portable snapshot data.
-///
-/// pages contains only the target-resolved pages that differ from the
-/// export base, in strictly increasing GFN order. The sidecar is an opaque,
-/// versioned byte vector containing the non-memory replay state; it never
-/// contains guest RAM or a whole-state hash. Keeping pages in Arcs lets a
-/// search worker pass the sparse image between layers without eagerly copying
-/// each 4-KiB frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SparsePortableSnapshot {
-    /// Target-resolved changed pages, sorted by GFN and unique.
     pub pages: Vec<(u64, Arc<[u8; PAGE_SIZE]>)>,
-    /// Versioned sidecar containing vendor and control-plane replay state.
     pub sidecar: Vec<u8>,
 }
 
-/// Metadata returned after importing an in-process sparse snapshot.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SparsePortableSnapshotReceipt {
-    /// Newly minted session-local snapshot handle.
     pub id: control_proto::SnapId,
-    /// Exact synchronized V-time at the imported seal.
     pub at: control_proto::Moment,
-    /// SDK event-prefix length included in the snapshot.
     pub sdk_events: u64,
-    /// Portable normalized-event prefix length at the seal.
     pub trace_events: u64,
-    /// Portable deadline-schedule prefix length at the seal.
     pub trace_schedules: u64,
-    /// Whether the sealed lineage was tainted by improvisation.
     pub tainted: bool,
 }
 
@@ -96,8 +65,6 @@ pub(crate) struct SparsePortableSidecar {
     pub(crate) trace_schedules: u64,
     pub(crate) tainted: bool,
     pub(crate) state_blob_suffix: Vec<u8>,
-    /// Opaque control-server state. Empty keeps the v4 sidecar layout; a
-    /// nonempty value selects the v5 extension.
     pub(crate) control_state: Vec<u8>,
 }
 
@@ -111,12 +78,9 @@ pub(crate) struct SparsePortableSidecarRef<'a> {
     pub(crate) trace_schedules: u64,
     pub(crate) tainted: bool,
     pub(crate) state_blob_suffix: &'a [u8],
-    /// Opaque control-server state. Empty keeps the v4 sidecar layout; a
-    /// nonempty value selects the v5 extension.
     pub(crate) control_state: &'a [u8],
 }
 
-/// A complete decoded portable snapshot.
 pub(crate) struct PortableSnapshot {
     pub(crate) memory: Vec<u8>,
     pub(crate) vm_state: Vec<u8>,
@@ -128,12 +92,9 @@ pub(crate) struct PortableSnapshot {
     pub(crate) trace_schedules: u64,
     pub(crate) tainted: bool,
     pub(crate) state_hash: [u8; 32],
-    /// Opaque control-server state. Empty keeps the v4 artifact layout; a
-    /// nonempty value selects the v5 extension.
     pub(crate) control_state: Vec<u8>,
 }
 
-/// Borrowed form used while streaming an existing store layer to disk.
 pub(crate) struct PortableSnapshotRef<'a> {
     pub(crate) memory: &'a [u8],
     pub(crate) vm_state: &'a [u8],
@@ -145,49 +106,33 @@ pub(crate) struct PortableSnapshotRef<'a> {
     pub(crate) trace_schedules: u64,
     pub(crate) tainted: bool,
     pub(crate) state_hash: [u8; 32],
-    /// Opaque control-server state. Empty keeps the v4 artifact layout; a
-    /// nonempty value selects the v5 extension.
     pub(crate) control_state: &'a [u8],
 }
 
-/// Strict portable-snapshot encode/decode failure.
 #[derive(Debug, thiserror::Error)]
 pub enum PortableSnapshotError {
-    /// Artifact I/O failed.
     #[error("portable snapshot I/O error")]
     Io(#[from] std::io::Error),
-    /// The container magic is not the portable-snapshot magic.
     #[error("portable snapshot has bad magic")]
     BadMagic,
-    /// The format version is not supported by this build.
     #[error("portable snapshot version {0} is unsupported")]
     BadVersion(u16),
-    /// An unknown flag or a presence/length contradiction was found.
     #[error("portable snapshot flags are malformed")]
     BadFlags,
-    /// A section length is not admissible.
     #[error("portable snapshot {section} length {got} exceeds {max}")]
     Length {
-        /// Stable section name.
         section: &'static str,
-        /// Encoded length.
         got: u64,
-        /// Maximum accepted length.
         max: u64,
     },
-    /// A section has an invalid tag, count, truncation, or trailing byte.
     #[error("portable snapshot section malformed: {0}")]
     Malformed(&'static str),
-    /// The trailing artifact digest does not authenticate the preceding bytes.
     #[error("portable snapshot SHA-256 mismatch")]
     DigestMismatch,
-    /// The embedded generic service configuration or channel answer was malformed.
     #[error("portable snapshot environment state malformed")]
     Environment(#[from] channel::ChannelError),
-    /// The snapshot store or vendor VM-state codec rejected imported bytes.
     #[error("portable snapshot store/VM-state failure")]
     Snapshot(#[from] SnapshotError),
-    /// The requested session-local handle is absent.
     #[error("unknown portable snapshot handle {0}")]
     UnknownSnapshot(u64),
 }
@@ -246,9 +191,6 @@ impl PortableSnapshotRef<'_> {
         if version >= V5_VERSION {
             out.write_all(self.control_state)?;
         }
-        // Finish the authenticated body before consuming the hash adapter;
-        // the digest itself is then written and flushed through the original
-        // writer below.
         out.flush()?;
         let digest = out.finish();
         writer.write_all(&digest)?;
@@ -345,11 +287,6 @@ impl PortableSnapshot {
     }
 }
 
-/// Encode the non-memory half of an in-process sparse snapshot.
-///
-/// This format intentionally has no RAM section and no whole-state digest:
-/// the store already authenticates each page and vm_state blob, while the
-/// sparse seam must not turn an export into an O(total-RAM) operation.
 pub(crate) fn encode_sparse_sidecar(
     sidecar: &SparsePortableSidecarRef<'_>,
 ) -> Result<Vec<u8>, PortableSnapshotError> {
@@ -419,10 +356,6 @@ pub(crate) fn encode_sparse_sidecar(
     Ok(out)
 }
 
-/// Decode and strictly validate an in-process sparse sidecar.
-///
-/// All section lengths are checked before allocation/copying, optional-section
-/// flags must agree with their lengths, and no trailing bytes are accepted.
 pub(crate) fn decode_sparse_sidecar(
     bytes: &[u8],
 ) -> Result<SparsePortableSidecar, PortableSnapshotError> {
@@ -520,7 +453,6 @@ fn decode_sdk(bytes: &[u8], version: u16) -> Result<SdkSnapshot, PortableSnapsho
     let recorded = channel::RecordedState::decode(&input.bytes()?)
         .map_err(|_| PortableSnapshotError::Malformed("SDK recorded state"))?;
     let pending_snapshot = input.boolean()?;
-    // Version 3 only admitted SDK snapshots with no pending stop.
     let pending_stop = if version >= 4 {
         decode_pending_stop(&mut input)?
     } else {
@@ -569,8 +501,6 @@ fn decode_sdk(bytes: &[u8], version: u16) -> Result<SdkSnapshot, PortableSnapsho
     })
 }
 
-// The SDK layer owns the stop vocabulary; the portable container carries the
-// outstanding response sequence and request verbatim, without resolving it.
 fn encode_pending_stop(out: &mut Vec<u8>, stop: Option<&SdkStop>) {
     match stop {
         None => out.push(0),
@@ -625,8 +555,6 @@ fn decode_pending_stop(
     })
 }
 
-// The old versions retain their resource limits and byte layouts. Version 6
-// changes the allocation policy, not the ownership or meaning of a section.
 fn complete_version(vm: usize, sdk: usize, policy: usize, control: usize) -> u16 {
     if vm > MAX_VM_STATE_LEN
         || sdk > MAX_SDK_LEN
@@ -693,8 +621,6 @@ fn bounded_len<R: Read>(
 }
 
 fn read_vec<R: Read>(input: &mut R, len: usize) -> Result<Vec<u8>, PortableSnapshotError> {
-    // Never reserve a declared section length before receiving its bytes. A
-    // truncated header advertising a huge v6 section costs only this buffer.
     let mut chunk = [0_u8; 64 * 1024];
     let mut bytes = Vec::new();
     while bytes.len() < len {
@@ -1010,9 +936,6 @@ mod tests {
         ignore = "161 MiB sparse-sidecar boundary regression; native-only allocation is intentional"
     )]
     fn sparse_v6_preserves_a_sidecar_larger_than_the_legacy_total_bound() {
-        // A suffix beyond MAX_SUFFIX_LEN selects v6. Make the resulting sidecar
-        // itself exceed MAX_SPARSE_SIDECAR_LEN so the v6 reader/writer branches
-        // cannot accidentally retain the legacy aggregate limit.
         let suffix = vec![0xA7; MAX_SPARSE_SIDECAR_LEN + 1];
         let policy = ServiceConfig::default();
         let mut encoded = encode_sparse_sidecar(&SparsePortableSidecarRef {
@@ -1040,8 +963,6 @@ mod tests {
         drop(decoded);
         drop(suffix);
 
-        // The same bytes are invalid under v5's bounded reader. Relabel in
-        // place so the test does not keep a second giant encoded clone alive.
         encoded[8..10].copy_from_slice(&V5_VERSION.to_le_bytes());
         assert!(matches!(
             decode_sparse_sidecar(&encoded),
@@ -1141,8 +1062,6 @@ mod tests {
 
     #[test]
     fn huge_version_six_declaration_reads_only_bounded_actual_bytes() {
-        // A v5 header has the same section positions as v6. Remove all body
-        // bytes and advertise a representable, enormous vendor-state section.
         let mut header = encoded_with_control_state(b"control");
         header[8..10].copy_from_slice(&VERSION.to_le_bytes());
         header[12..20].copy_from_slice(&0_u64.to_le_bytes());
@@ -1348,7 +1267,6 @@ mod tests {
         assert_eq!(decoded.trace_schedules, 5);
         assert!(decoded.tainted);
         assert!(decoded.control_state.is_empty());
-        // The sparse sidecar has no memory length, RAM section, or state hash.
         assert!(!bytes.windows(4).any(|tag| tag == b"MEM\0"));
         assert!(!bytes.windows(4).any(|tag| tag == b"SHA2"));
     }
@@ -1365,7 +1283,6 @@ mod tests {
                 u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
                 V5_VERSION
             );
-            // v5 adds one u64 length after the four v4 section lengths.
             assert_eq!(
                 u64::from_le_bytes(bytes[44..52].try_into().unwrap()),
                 control_state.len() as u64
@@ -1405,7 +1322,6 @@ mod tests {
                 u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
                 V5_VERSION
             );
-            // v5 adds one u64 length after the four v4 sidecar lengths.
             assert_eq!(
                 u64::from_le_bytes(bytes[44..52].try_into().unwrap()),
                 control_state.len() as u64
@@ -1463,8 +1379,6 @@ mod tests {
             Err(PortableSnapshotError::Malformed("trailing bytes"))
         ));
 
-        // The final body byte belongs to control_state, so it must be covered by
-        // the complete-artifact digest just like every earlier section.
         let mut corrupted = good;
         let body_last = corrupted.len() - 33;
         corrupted[body_last] ^= 1;
@@ -1647,7 +1561,6 @@ mod tests {
     #[test]
     fn snapshot_decoder_rejects_empty_vm_state() {
         let mut malformed = encoded();
-        // Header field layout: vm_state length occupies bytes 20..28.
         malformed[20..28].copy_from_slice(&0_u64.to_le_bytes());
         refresh_digest(&mut malformed);
         assert!(matches!(
@@ -1683,7 +1596,6 @@ mod tests {
 
     #[test]
     fn every_presence_flag_must_match_its_section_length() {
-        // Header offsets: flags=10, sdk length=28.
         {
             let flag = FLAG_SDK;
             let mut flag_without_section = encoded();
@@ -2025,8 +1937,6 @@ mod tests {
             Some(3)
         );
 
-        // Replace only the integrity-covered VM-state payload with the other raw
-        // provenance value. The stale trailing digest must reject it.
         let version = u16::from_le_bytes(artifact[8..10].try_into().unwrap());
         let header_len = if version >= V5_VERSION { 116 } else { 108 };
         let memory_len =
@@ -2041,10 +1951,6 @@ mod tests {
 
     #[test]
     fn sparse_sidecar_keeps_standard_xsave_provenance_at_a_fixed_charge_boundary() {
-        // This is the standard-format image shape returned by KVM_GET_XSAVE:
-        // a complete XSAVE header, a zero XCOMP_BV, and the architectural x87
-        // and SSE init values. The backend canonicalizer must retain raw BV
-        // provenance for all three equivalent encodings.
         fn captured_xsave(raw_bv: u64) -> (Vec<u8>, Option<u64>) {
             let mut image = vec![0_u8; 4096];
             image[0..2].copy_from_slice(&0x037f_u16.to_le_bytes());
@@ -2089,10 +1995,6 @@ mod tests {
             .unwrap()
         };
 
-        // Choose the opaque suffix so the old v5 sidecar ends exactly on a
-        // 512-byte SharedState chunk boundary. Adding tag 15 to the VM-state
-        // contributes 6 bytes of TLV framing plus its 8-byte payload, so a
-        // fresh capture must cross exactly one chunk for every raw BV.
         const SHARED_STATE_CHUNK_SIZE: usize = 512;
         const XSAVE_RESTORE_BV_TLV_LEN: usize = 2 + 4 + 8;
         let without_suffix = encode(&legacy_vm, &[]);
@@ -2174,8 +2076,6 @@ mod tests {
         let sdk_start = vm_state_start + vm_state_len;
         let policy_start = sdk_start + sdk_len;
         assert_eq!(policy_start + policy_len + 32, original.len());
-        // Flip RAM, VM state, SDK, and policy bytes; every mutation must
-        // reach the independent trailing digest check.
         for index in [memory_start, vm_state_start, sdk_start, policy_start] {
             let mut planted = original.clone();
             planted[index] ^= 1;
@@ -2188,18 +2088,12 @@ mod tests {
 
     #[test]
     fn bad_lengths_and_all_truncations_are_total() {
-        // Re-decoding every prefix re-hashes the prefix. Keep the full 8-KiB
-        // artifact natively, but avoid quadratic interpreted SHA-256 over
-        // thousands of semantically identical bulk-memory prefixes under
-        // Miri. The smaller artifact retains every section and the loop still
-        // exercises every one of its truncation points.
         let memory_len = if cfg!(miri) { 128 } else { 8192 };
         let bytes = encoded_with_memory_len(memory_len);
         for end in 0..bytes.len() {
             assert!(PortableSnapshot::read_from(&bytes[..end], memory_len).is_err());
         }
         let mut oversized = bytes;
-        // vm_state length begins after magic/version/flags/memory length.
         oversized[20..28].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(matches!(
             PortableSnapshot::read_from(oversized.as_slice(), memory_len),
@@ -2304,7 +2198,6 @@ mod tests {
             }
         }
         assert!(decode_pending_stop(&mut SliceReader::new(&[4])).is_err());
-        // An excessive request length must fail before a Question can be built.
         let mut bytes = vec![3];
         bytes.extend_from_slice(&[0; 22]);
         bytes.extend_from_slice(&u64::MAX.to_le_bytes());
@@ -2313,8 +2206,6 @@ mod tests {
 
     #[test]
     fn version_three_complete_and_sparse_artifacts_remain_readable() {
-        // Emitted by the version-3 writer at 7c1f9e89, not reconstructed by
-        // this implementation. See tests/fixtures/README.md for provenance.
         let (memory, _, sdk, _) = fixture();
         let full = include_bytes!("../tests/fixtures/sdk-v3-full.bin");
         let decoded = PortableSnapshot::read_from(full.as_slice(), memory.len()).unwrap();
@@ -2331,8 +2222,6 @@ mod tests {
 
     #[test]
     fn version_four_complete_and_sparse_artifacts_remain_byte_stable() {
-        // Emitted by the pre-control-state writer at c950d497, not reconstructed
-        // by this implementation. See tests/fixtures/README.md for provenance.
         let full = include_bytes!("../tests/fixtures/sdk-v4-full-pending.bin");
         assert_eq!(
             u16::from_le_bytes(full[8..10].try_into().unwrap()),

@@ -4,9 +4,9 @@
 # dependencies = []
 # ///
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Render the historical-bug roster table into bugs/historical/README.md.
+"""Render the historical-bug roster table into workloads/bugs/historical/README.md.
 
-Reads every ``bugs/historical/*/case.json`` and, optionally, a directory of
+Reads every ``workloads/bugs/historical/*/case.json`` and, optionally, a directory of
 report files produced by ``.github/workflows/historical-bugs.yml``. Report
 directories are named ``<case id>.<arm>.<mode>`` and hold the ``report.json``
 the CLI wrote, so a report attaches to a case without any extra bookkeeping.
@@ -29,6 +29,7 @@ COLUMNS = (
     "bug",
     "versions",
     "status",
+    "CI",
     "discovery",
     "latest replay",
     "latest control",
@@ -36,9 +37,10 @@ COLUMNS = (
     "replay command",
 )
 
-# Report directory names carry the arm and the mode; a replay of either kind
-# feeds the replay columns and a search feeds the executions column.
-REPLAY_MODES = ("probe", "witness")
+# Report directory names carry the arm and the mode; the current panel's fresh
+# discovery replay feeds the replay columns and a search feeds the executions
+# column.
+REPLAY_MODES = ("discovery",)
 
 
 def repo_root() -> Path:
@@ -47,7 +49,7 @@ def repo_root() -> Path:
 
 def load_cases(root: Path) -> list[dict]:
     cases = []
-    for path in sorted(root.glob("bugs/historical/*/case.json")):
+    for path in sorted(root.glob("workloads/bugs/historical/*/case.json")):
         case = json.loads(path.read_text())
         case["_dir"] = path.parent
         cases.append(case)
@@ -103,9 +105,8 @@ def first_hit(reports: dict, case_id: str) -> str:
 
 
 def replay_command(case: dict) -> str:
-    """The command that replays this case's strongest committed input."""
-    target = case.get("witness") or case.get("probe")
-    if not target:
+    """Show the command shape for a reproducer from the current run."""
+    if case.get("ci", {}).get("status", "runnable") != "runnable":
         return "—"
     version = case.get("arms", {}).get("vulnerable", {}).get("version", "?")
     run = case.get("run", {})
@@ -115,7 +116,7 @@ def replay_command(case: dict) -> str:
         f"--backend consonance "
         f"--kernel bzImage-{case.get('kernel_profile', '?')} "
         f"--base-initramfs initramfs.cpio.gz "
-        f"--fault-agent fault-agent --replay {target} --repeat 2 "
+        f"--fault-agent fault-agent --replay OUT/first-bug-input.json --repeat 1 "
         f"--horizon-ms {run.get('horizon_ms', '?')} "
         f"--ram-mib {run.get('ram_mib', '?')} "
         f"--knobs \"{knobs}\" --out OUT`"
@@ -137,6 +138,12 @@ def render(cases: list[dict], reports: dict) -> str:
             f"[{case_id}]({case_id}/README.md)",
             f"{vulnerable} / {fixed}",
             case.get("status", "?"),
+            case.get("ci", {}).get("status", "runnable")
+            + (
+                f": {case['ci']['reason']}"
+                if case.get("ci", {}).get("status") == "deferred"
+                else ""
+            ),
             case.get("discovery_mode", "?"),
             replay_outcome(reports, case_id, "vulnerable"),
             replay_outcome(reports, case_id, "control"),
@@ -152,7 +159,7 @@ def splice(readme: str, table: str) -> str:
     end = readme.find(END)
     if start == -1 or end == -1 or end < start:
         raise SystemExit(
-            f"bugs/historical/README.md is missing the {BEGIN} / {END} markers"
+            f"workloads/bugs/historical/README.md is missing the {BEGIN} / {END} markers"
         )
     head = readme[: start + len(BEGIN)]
     tail = readme[end:]
@@ -175,10 +182,10 @@ def main() -> int:
     args = parser.parse_args()
 
     root = repo_root()
-    readme_path = root / "bugs/historical/README.md"
+    readme_path = root / "workloads/bugs/historical/README.md"
     cases = load_cases(root)
     if not cases:
-        raise SystemExit("no bugs/historical/*/case.json found")
+        raise SystemExit("no workloads/bugs/historical/*/case.json found")
     reports = load_reports(args.reports)
 
     readme = readme_path.read_text()
@@ -186,7 +193,7 @@ def main() -> int:
     if args.check:
         if rendered != readme:
             print(
-                "bugs/historical/README.md roster is stale; "
+                "workloads/bugs/historical/README.md roster is stale; "
                 "run scripts/render-historical-bugs.py",
                 file=sys.stderr,
             )

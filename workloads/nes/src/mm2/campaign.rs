@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Mega Man 2 implementation of the game-neutral campaign interface.
-
 use std::{
     collections::BTreeSet,
     error::Error,
@@ -31,18 +29,17 @@ use crate::{
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
             CampaignConfig, CampaignJobResult, CampaignModeReport, CampaignOrigin,
-            CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation, GamePolicies,
-            InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, postcard_value_sha256,
-            replay_campaign_checkpointed, run_campaign_checkpointed,
+            CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy,
+            Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
+            postcard_value_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
 };
 
-/// Stream format written by Mega Man 2 campaigns.
 pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v1";
-/// Snapshot checkpoint format written by Mega Man 2 campaigns.
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v1";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
@@ -60,11 +57,9 @@ const VIABILITY_PROBE_FRAMES: u16 = 60;
 type Mm2Preference = (u8, u8, u16);
 type Mm2ChampionKey = (Mm2ProgressWatermark, Mm2Preference);
 
-/// Header placeholder for a game with no adaptive draw table.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Mm2NoTableHeader;
 
-/// ROM and emulator identity shared by Mega Man 2 workers.
 pub struct Mm2Game {
     rom: Vec<u8>,
     core_path: PathBuf,
@@ -76,16 +71,11 @@ pub struct Mm2Game {
 }
 
 impl Mm2Game {
-    /// Build a game context whose sealed genesis starts at one stage from
-    /// power-on.
     #[must_use]
     pub fn new_at_stage(rom: &[u8], core_path: &Path, core_sha256: &str, stage: Mm2Stage) -> Self {
         Self::new_at_stage_after(rom, core_path, core_sha256, power_on_walk(), stage)
     }
 
-    /// Build a game context whose sealed genesis starts at one stage after
-    /// `prefix` has run from power-on and left the game on the stage select
-    /// screen; earlier victories chain through here.
     #[must_use]
     pub fn new_at_stage_after(
         rom: &[u8],
@@ -117,16 +107,12 @@ impl Mm2Game {
         }
     }
 
-    /// Write the champion input to `path` each time it improves, so a long
-    /// run can be filmed at its deepest point before it ends.
     #[must_use]
     pub fn with_champion_input_path(mut self, path: PathBuf) -> Self {
         self.champion_input_path = Some(path);
         self
     }
 
-    /// The chords that walk from a victory at the end of `chords` back to
-    /// the stage select screen, so the next stage can chain from power-on.
     pub fn walk_to_stage_select(
         &self,
         chords: &[ButtonChord],
@@ -146,30 +132,25 @@ impl Mm2Game {
         Ok(())
     }
 
-    /// Inputs run from power-on before the stage is picked.
     #[must_use]
     pub fn prefix(&self) -> &[ButtonChord] {
         &self.prefix
     }
 
-    /// Pinned emulator identity recorded in streams.
     #[must_use]
     pub fn emulator_identity(&self) -> &str {
         &self.identity
     }
 
-    /// Stage used to construct target genesis.
     #[must_use]
     pub fn stage(&self) -> Mm2Stage {
         self.stage
     }
 }
 
-/// Fixed recorded run policy.
 #[derive(Clone, Copy, Debug)]
 pub struct Mm2CampaignRun;
 
-/// Game-owned campaign evidence.
 #[derive(Clone, Default)]
 pub struct Mm2CampaignEvidence {
     aggregate: Mm2Milestones,
@@ -182,17 +163,11 @@ pub struct Mm2CampaignEvidence {
     genesis_screen: Option<u8>,
 }
 
-/// Campaign origin.
 pub type Mm2CampaignOrigin = CampaignOrigin<Mm2Game>;
-/// Resume checkpoint.
 pub type Mm2CampaignCheckpoint = CampaignCheckpoint<Mm2Snapshot>;
-/// Whole-tree snapshot checkpoint.
 pub type Mm2SnapshotCheckpoint = SnapshotCheckpoint<Mm2Snapshot>;
-/// Stream header.
 pub type Mm2CampaignStreamHeader = CampaignStreamHeader<Mm2NoTableHeader>;
-/// Campaign report.
 pub type Mm2CampaignModeReport = CampaignModeReport<ButtonChord, Mm2ArchiveReport>;
-/// Progress sidecar record.
 pub type Mm2CampaignProgressRecord = CampaignProgressRecord<Mm2ArchiveKey>;
 type Mm2CampaignActionResult = CampaignActionResult<Mm2Game>;
 type Mm2CampaignJobResult = CampaignJobResult<Mm2Game>;
@@ -208,9 +183,7 @@ struct Mm2ResultAction<'a> {
     action: ButtonChord,
     observations: &'a [Mm2Observations],
     milestones: Mm2Milestones,
-    dead: bool,
-    victory: bool,
-    failed: bool,
+    outcome: Outcome,
     candidate: Option<Mm2ResultCandidate<'a>>,
 }
 
@@ -227,9 +200,7 @@ fn mm2_result_sha256(result: &Mm2CampaignJobResult) -> Result<String, Box<dyn Er
             action: action.action,
             observations: &action.observations,
             milestones: action.milestones,
-            dead: action.dead,
-            victory: action.victory,
-            failed: action.failed,
+            outcome: action.outcome,
             candidate: action
                 .candidate
                 .as_ref()
@@ -242,37 +213,21 @@ fn mm2_result_sha256(result: &Mm2CampaignJobResult) -> Result<String, Box<dyn Er
     postcard_value_sha256(&Mm2Result { actions })
 }
 
-/// Fixed configuration for one live campaign.
 pub struct Mm2CampaignConfig {
-    /// Campaign seed.
     pub campaign_seed: u64,
-    /// Worker thread count.
     pub workers: u32,
-    /// Admitted execution budget.
     pub execution_budget: u64,
-    /// Maximum actions in one clean-reset input.
     pub action_limit: usize,
-    /// Operator-supplied host label.
     pub host: String,
-    /// Optional live-only wall cutoff.
     pub wall_budget: Option<std::time::Duration>,
-    /// Live-only: continue issuing reservations after the first victory.
     pub continue_after_victory: bool,
-    /// Maximum retained archive entries.
     pub archive_entry_limit: usize,
-    /// Deterministic logical-memory budget for live search structures.
     pub memory_budget_mib: Option<usize>,
-    /// Live-only: materialize full archive inputs and snapshots at completion.
     pub materialize_final_artifacts: bool,
-    /// Admission policy.
     pub retention: RetentionPolicy,
-    /// Generic parent selector.
     pub selector: crate::search::archive::SelectorPolicy,
-    /// Generic suffix-length shape.
     pub suffix: SuffixShape,
-    /// Generic draw mixture.
     pub mixture: DrawMixture,
-    /// Live-only path receiving the first boss-defeating input.
     pub victory_input_path: Option<PathBuf>,
 }
 
@@ -285,7 +240,8 @@ impl Mm2CampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
-            continue_after_victory: self.continue_after_victory,
+            stop_rollout_on_objective: !self.continue_after_victory,
+            stop_campaign_on_objective: !self.continue_after_victory,
             archive_entry_limit: self.archive_entry_limit,
             reservations_per_worker:
                 crate::search::campaign::DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
@@ -296,12 +252,12 @@ impl Mm2CampaignConfig {
             mixture: self.mixture,
             retention: self.retention,
             selector: self.selector.clone(),
-            victory_input_path: self.victory_input_path.clone(),
+            objective_witness_path: self.victory_input_path.clone(),
         }
     }
 }
 
-fn recorded<'a>(policies: &'a GamePolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
+fn recorded<'a>(policies: &'a WorkloadPolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
     policies
         .get(field)
         .map(String::as_str)
@@ -333,6 +289,7 @@ fn admission_is_viable(
     Ok(viable)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_suffix(
     target: &mut Mm2Target,
     genesis_weapons: u8,
@@ -341,11 +298,23 @@ fn execute_suffix(
     suffix: &[ButtonChord],
     max_actions: usize,
     retention: RetentionPolicy,
+    stop_rollout_on_objective: bool,
 ) -> Result<Mm2CampaignJobResult, Box<dyn Error>> {
     let mut aggregate = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
-    if target.is_dead() || target.defeated_a_boss() {
+    let parent_outcome = Outcome {
+        objective_reached: target.exit_kind() == ExitKind::Ok && target.defeated_a_boss(),
+        disposition: if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_dead() || target.defeated_a_boss() {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        },
+    };
+    let mut objective_seen = parent_outcome.objective_reached;
+    if parent_outcome.disposition.is_terminal() {
         return Ok(CampaignJobResult { actions });
     }
     for action in suffix {
@@ -355,36 +324,49 @@ fn execute_suffix(
         length = length.saturating_add(1);
         target.apply(action);
         merge_action_milestones(&mut aggregate, target, genesis_weapons);
-        let observations = target.last_action_observations().to_vec();
-        let dead = target.is_dead();
-        let victory = target.defeated_a_boss();
-        let failed = target.exit_kind() != ExitKind::Ok;
-        let candidate = if dead || victory || failed {
-            None
+        let observations = if target.exit_kind() != ExitKind::Ok {
+            Vec::new()
         } else {
+            target.last_action_observations().to_vec()
+        };
+        let raw_objective = target.exit_kind() == ExitKind::Ok && target.defeated_a_boss();
+        let objective_reached = raw_objective && !objective_seen;
+        objective_seen |= raw_objective;
+        let disposition = if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_dead() || target.defeated_a_boss() {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        };
+        let outcome = Outcome {
+            objective_reached,
+            disposition,
+        };
+        let candidate = if matches!(outcome.disposition, ExecutionDisposition::Runnable) {
             let snapshot = target
                 .snapshot()
                 .ok_or("failed to snapshot Mega Man 2 suffix")?;
             let viable = match retention {
-                RetentionPolicy::ProbeAtAdmission45 => admission_is_viable(target, &snapshot)?,
-                RetentionPolicy::AdmitAlive => true,
+                RetentionPolicy::ProbeAtAdmission => admission_is_viable(target, &snapshot)?,
+                RetentionPolicy::Unprobed => true,
             };
             Some(CampaignCandidate {
                 key: archive_key(target.mechanical_state()),
                 viable,
                 snapshot,
             })
+        } else {
+            None
         };
         actions.push(CampaignActionResult {
             action: *action,
             observations,
             milestones: aggregate,
-            dead,
-            victory,
-            failed,
+            outcome,
             candidate,
         });
-        if dead || victory || failed {
+        if outcome.should_stop(stop_rollout_on_objective) {
             break;
         }
     }
@@ -413,9 +395,6 @@ fn update_first_inputs(
     }
 }
 
-/// The action's endpoint as a champion key, or nothing when the endpoint is
-/// a death: a dying player can reach keys no live input extends, and the
-/// champion input exists to be replayed and extended.
 fn action_champion_key(observations: &[Mm2Observations]) -> Option<Mm2ChampionKey> {
     observations
         .last()
@@ -438,7 +417,7 @@ impl CampaignTypes for Mm2Game {
     type ArchiveReport = Mm2ArchiveReport;
     type Run = Mm2CampaignRun;
     type DrawState = ();
-    type TableHeader = Mm2NoTableHeader;
+    type DrawHeader = Mm2NoTableHeader;
     type DrawCheckpoint = ();
 }
 
@@ -451,8 +430,14 @@ impl Reporting for Mm2Game {
         SNAPSHOT_CHECKPOINT_FORMAT
     }
 
-    fn image_sha256(&self) -> String {
+    fn workload_identity_sha256(&self) -> String {
         format!("{:x}", Sha256::digest(&self.rom))
+    }
+    fn action_cost_unit(&self) -> &'static str {
+        "frames"
+    }
+    fn execution_work_unit(&self) -> &'static str {
+        "frames"
     }
 
     fn result_sha256(&self, result: &Mm2CampaignJobResult) -> Result<String, Box<dyn Error>> {
@@ -476,7 +461,9 @@ impl Reporting for Mm2Game {
             progress_curve: state.progress_curve,
             retained: state.retained,
             rejected: state.rejected,
-            deaths: state.deaths,
+            deaths: state
+                .terminal_endpoints
+                .saturating_sub(state.terminal_objectives),
             selector: state.selector,
         }
     }
@@ -487,7 +474,7 @@ impl InputPolicy for Mm2Game {
         MAX_MM2_ACTIONS
     }
 
-    fn longest_action_time(&self) -> u64 {
+    fn max_action_cost(&self) -> u64 {
         u64::from(crate::mm2::archive::LONGEST_HOLD_FRAMES)
     }
 
@@ -499,7 +486,7 @@ impl InputPolicy for Mm2Game {
         0
     }
 
-    fn policies(&self, _run: &Mm2CampaignRun) -> GamePolicies {
+    fn policies(&self, _run: &Mm2CampaignRun) -> WorkloadPolicies {
         [
             (
                 CONTROLLER_VOCABULARY_FIELD,
@@ -519,7 +506,10 @@ impl InputPolicy for Mm2Game {
         .collect()
     }
 
-    fn resolve_recorded(&self, policies: &GamePolicies) -> Result<Mm2CampaignRun, Box<dyn Error>> {
+    fn resolve_recorded(
+        &self,
+        policies: &WorkloadPolicies,
+    ) -> Result<Mm2CampaignRun, Box<dyn Error>> {
         let expected = self.policies(&Mm2CampaignRun);
         if policies != &expected {
             for (field, value) in &expected {
@@ -606,7 +596,7 @@ impl InputPolicy for Mm2Game {
 }
 
 impl TargetExecution for Mm2Game {
-    fn action_time_fn(&self) -> fn(&ButtonChord) -> u64 {
+    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
 
@@ -637,8 +627,8 @@ impl TargetExecution for Mm2Game {
         target.restore(snapshot)
     }
 
-    fn frames_clocked(&self, target: &Mm2Target) -> u64 {
-        target.frames_clocked()
+    fn execution_work(&self, target: &Mm2Target) -> u64 {
+        target.execution_work()
     }
 
     fn apply_action(
@@ -670,10 +660,14 @@ impl TargetExecution for Mm2Game {
         suffix: &[ButtonChord],
         max_actions: usize,
         retention: RetentionPolicy,
+        stop_rollout_on_objective: bool,
     ) -> Result<Mm2CampaignJobResult, Box<dyn Error>> {
         target.restore(origin_snapshot)?;
         for action in replay {
             target.apply(action);
+            if self.execution_disposition(target).is_terminal() {
+                break;
+            }
         }
         execute_suffix(
             target,
@@ -683,24 +677,28 @@ impl TargetExecution for Mm2Game {
             suffix,
             max_actions,
             retention,
+            stop_rollout_on_objective,
         )
     }
 }
 
 impl Evaluation for Mm2Game {
-    fn is_terminal(&self, target: &Mm2Target) -> bool {
-        target.is_dead() || target.exit_kind() != ExitKind::Ok
+    fn execution_disposition(&self, target: &Mm2Target) -> ExecutionDisposition {
+        if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_dead() || target.defeated_a_boss() {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        }
     }
 
-    fn is_run_terminal(
+    fn objective_reached(
         &self,
         _run: &Mm2CampaignRun,
         target: &Mm2Target,
     ) -> Result<bool, Box<dyn Error>> {
-        if target.exit_kind() != ExitKind::Ok {
-            return Err("Mega Man 2 terminal predicate cannot inspect a failed emulator".into());
-        }
-        Ok(target.is_dead() || target.defeated_a_boss())
+        Ok(target.exit_kind() == ExitKind::Ok && target.defeated_a_boss())
     }
 
     fn current_key(&self, target: &Mm2Target) -> Result<Mm2ArchiveKey, Box<dyn Error>> {
@@ -826,7 +824,6 @@ impl Evaluation for Mm2Game {
     }
 }
 
-/// Run a campaign and return its report plus whole-tree checkpoint.
 pub fn run_mm2_campaign_checkpointed(
     game: &Mm2Game,
     config: &Mm2CampaignConfig,
@@ -837,7 +834,6 @@ pub fn run_mm2_campaign_checkpointed(
     run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)
 }
 
-/// Replay a recorded stream exactly.
 pub fn replay_mm2_campaign_checkpointed(
     game: &Mm2Game,
     stream_bytes: &[u8],

@@ -1,61 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Divergence injection: wrap a [`SubjectFactory`] so spawned machines are
-//! perturbed once, the first time their work counter reaches a chosen
-//! boundary. This simulates "run B has a nondeterminism bug at tick T" with T
-//! known, so the bisector can be tested against ground truth.
 
 use crate::{RunOutcome, Subject, SubjectError, SubjectFactory};
 use serde::{Deserialize, Serialize};
 
-/// A single one-shot state perturbation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Perturbation {
-    /// XOR register `reg` (index mod 8) with `mask`. Note that later writes
-    /// to the register can erase the divergence before a checkpoint observes
-    /// it; prefer [`Perturbation::XorPrng`] when persistence is required.
-    XorReg {
-        /// Register index (taken mod 8 by the toy machine).
-        reg: u8,
-        /// XOR mask; 0 is a no-op.
-        mask: u64,
-    },
-    /// XOR the PRNG state with `mask` (use a nonzero mask). The xorshift64*
-    /// state update is a bijection, so two states that differ once differ at
-    /// every later step — the divergence is permanent, which is what the
-    /// bisector property tests rely on.
-    XorPrng {
-        /// XOR mask; 0 is a no-op.
-        mask: u64,
-    },
-    /// Halt the machine immediately (produces [`crate::Verdict::HaltMismatch`]).
+    XorReg { reg: u8, mask: u64 },
+    XorPrng { mask: u64 },
     ForceHalt,
 }
 
-/// Machines that know how to apply a [`Perturbation`] to their own
-/// architectural state. [`Subject`] itself deliberately exposes no mutation
-/// hooks, so divergence injection needs this extra capability.
 pub trait Perturbable: Subject {
-    /// Apply `p` to the current architectural state.
     fn apply_perturbation(&mut self, p: &Perturbation);
 }
 
-/// Wraps spawned machines so that the first time work reaches ≥ `diverge_at`,
-/// `perturb` is applied exactly once. `diverge_at: u64::MAX` is the "never"
-/// sentinel: the factory behaves identically to `inner`, unconditionally —
-/// even for a machine whose work counter actually reaches `u64::MAX`.
-///
-/// Edge cases: `diverge_at: 0` perturbs at spawn (work starts at 0, which is
-/// already ≥ 0); a machine that halts strictly before `diverge_at` is never
-/// perturbed (the boundary is unreachable), but one that halts exactly *at*
-/// `diverge_at` is.
 #[derive(Debug, Clone)]
 pub struct FlakyFactory<F: SubjectFactory> {
-    /// Factory producing the machines to perturb.
     pub inner: F,
-    /// Work count at which the perturbation fires.
     pub diverge_at: u64,
-    /// What to do to the machine state at the boundary.
     pub perturb: Perturbation,
 }
 
@@ -69,7 +32,6 @@ where
         let mut inner = self.inner.spawn(seed);
         let mut applied = false;
         if self.diverge_at != u64::MAX && inner.work() >= self.diverge_at {
-            // Boundary already reached at spawn (diverge_at == 0).
             inner.apply_perturbation(&self.perturb);
             applied = true;
         }
@@ -82,9 +44,6 @@ where
     }
 }
 
-/// A machine wrapper that applies its perturbation once, exactly when work
-/// first reaches `diverge_at` — even when a `run_to` target lands beyond the
-/// boundary (it runs to the boundary internally, perturbs, then continues).
 #[derive(Debug, Clone)]
 pub struct FlakyMachine<M: Perturbable> {
     inner: M,
@@ -96,15 +55,11 @@ pub struct FlakyMachine<M: Perturbable> {
 impl<M: Perturbable> Subject for FlakyMachine<M> {
     fn run_to(&mut self, target: u64) -> Result<RunOutcome, SubjectError> {
         if self.diverge_at == u64::MAX {
-            // The "never" sentinel: behave identically to the inner machine,
-            // even if its work counter legitimately reaches u64::MAX.
             return self.inner.run_to(target);
         }
         if !self.applied && self.inner.work() < self.diverge_at && target >= self.diverge_at {
             let outcome = self.inner.run_to(self.diverge_at)?;
             if outcome == RunOutcome::Halted && self.inner.work() < self.diverge_at {
-                // Halted strictly before the boundary: the perturbation point
-                // is unreachable, never apply it.
                 return Ok(RunOutcome::Halted);
             }
             self.inner.apply_perturbation(&self.perturb);
@@ -122,8 +77,6 @@ impl<M: Perturbable> Subject for FlakyMachine<M> {
     }
 
     fn observable_digest(&self) -> [u8; 32] {
-        // A perturbation is a state defect, not deliberate guest output: expose
-        // the wrapped machine's observable digest unchanged.
         self.inner.observable_digest()
     }
 }
@@ -156,24 +109,20 @@ mod tests {
 
     #[test]
     fn observable_digest_delegates_to_inner_and_varies_with_output() {
-        // A RAND;OUT;HALT payload emits a seed-dependent value, so the wrapped
-        // machine's observable_digest is a real digest that varies with output.
         let prog = vec![asm::rand(0), asm::out(0), asm::halt()];
         let mk = |seed: u64| {
             let f = FlakyFactory {
                 inner: ToyFactory {
                     program: prog.clone(),
                 },
-                diverge_at: u64::MAX, // no-op wrapper
+                diverge_at: u64::MAX,
                 perturb: XOR_R0,
             };
             let mut m = f.spawn(seed);
             m.run_to(100).unwrap();
             m
         };
-        // Varies with the observed output ⇒ kills a constant [0;32]/[1;32] body.
         assert_ne!(mk(7).observable_digest(), mk(8).observable_digest());
-        // Delegates to the inner machine's observable digest (the real contract).
         let mut inner = ToyFactory {
             program: prog.clone(),
         }
@@ -185,20 +134,16 @@ mod tests {
     #[test]
     fn perturbs_exactly_at_boundary_even_when_target_lands_beyond() {
         let f = flaky(100, XOR_R0);
-        // Run straight past the boundary in one call.
         let mut m = f.spawn(SEED);
         m.run_to(100).unwrap();
         let hash_at_boundary = m.state_hash().unwrap();
 
-        // A clean machine run to the same point, then perturbed by hand,
-        // must match: proves the perturbation fired at 100, not at 150.
         let mut clean = toy().spawn(SEED);
         clean.run_to(100).unwrap();
         assert_ne!(clean.state_hash().unwrap(), hash_at_boundary);
         clean.apply_perturbation(&XOR_R0);
         assert_eq!(clean.state_hash().unwrap(), hash_at_boundary);
 
-        // And both continue identically afterwards.
         m.run_to(150).unwrap();
         clean.run_to(150).unwrap();
         assert_eq!(clean.state_hash().unwrap(), m.state_hash().unwrap());
@@ -221,12 +166,10 @@ mod tests {
     #[test]
     fn perturbation_is_applied_only_once_and_path_independent() {
         let f = flaky(100, XOR_R0);
-        // Many small run_to calls crossing the boundary...
         let mut a = f.spawn(SEED);
         for t in [30, 60, 99, 100, 101, 130, 700] {
             a.run_to(t).unwrap();
         }
-        // ...must equal one big call.
         let mut b = f.spawn(SEED);
         b.run_to(700).unwrap();
         assert_eq!(a.state_hash().unwrap(), b.state_hash().unwrap());
@@ -238,7 +181,7 @@ mod tests {
         let clean = toy();
         let mut a = clean.spawn(SEED);
         let mut b = f.spawn(SEED);
-        let wa = a.run_to(u64::MAX).unwrap(); // runs to natural halt
+        let wa = a.run_to(u64::MAX).unwrap();
         let wb = b.run_to(u64::MAX).unwrap();
         assert_eq!(wa, wb);
         assert_eq!(a.work(), b.work());
@@ -257,7 +200,6 @@ mod tests {
 
     #[test]
     fn halt_before_boundary_is_never_perturbed() {
-        // Program halts at work 3; boundary at 10 is unreachable.
         let prog = vec![asm::loadi(0, 7), asm::out(0), asm::halt()];
         let f = FlakyFactory {
             inner: ToyFactory {
@@ -272,14 +214,12 @@ mod tests {
         let mut clean = ToyFactory { program: prog }.spawn(SEED);
         clean.run_to(50).unwrap();
         assert_eq!(m.state_hash().unwrap(), clean.state_hash().unwrap());
-        // Repeated calls stay clean (the boundary check re-runs harmlessly).
         assert_eq!(m.run_to(60).unwrap(), RunOutcome::Halted);
         assert_eq!(m.state_hash().unwrap(), clean.state_hash().unwrap());
     }
 
     #[test]
     fn halt_exactly_at_boundary_is_perturbed() {
-        // Program halts at work 3 == diverge_at: work did reach the boundary.
         let prog = vec![asm::loadi(0, 7), asm::out(0), asm::halt()];
         let f = FlakyFactory {
             inner: ToyFactory {
@@ -305,10 +245,6 @@ mod tests {
         assert_eq!(m.work(), 137);
     }
 
-    /// Mock machine whose `run_to` jumps the work counter straight to the
-    /// target, making `work == u64::MAX` actually reachable — the toy machine
-    /// can't get there, but the trait permits it and the real-VM adapter is a
-    /// foreign impl.
     struct JumpMachine {
         work: u64,
         perturbed: bool,
@@ -335,8 +271,6 @@ mod tests {
             Ok(h)
         }
         fn observable_digest(&self) -> [u8; 32] {
-            // A bisection mock with no output channel: its work counter is all
-            // there is to observe, and there is no latent state to exclude.
             self.state_hash().unwrap()
         }
     }
@@ -363,7 +297,6 @@ mod tests {
 
     #[test]
     fn max_sentinel_never_perturbs_even_at_work_u64_max() {
-        // run_to path: the wrapped machine reaches work == u64::MAX.
         let f = FlakyFactory {
             inner: JumpFactory { spawn_at: 0 },
             diverge_at: u64::MAX,
@@ -380,7 +313,6 @@ mod tests {
             "u64::MAX sentinel must be an unconditional no-op"
         );
 
-        // spawn path symmetry: a machine that already sits at u64::MAX.
         let f = FlakyFactory {
             inner: JumpFactory { spawn_at: u64::MAX },
             diverge_at: u64::MAX,
@@ -393,7 +325,6 @@ mod tests {
 
     #[test]
     fn sentinel_guard_is_narrow_sub_max_boundaries_still_fire() {
-        // diverge_at just below the sentinel still perturbs, at the boundary.
         let f = FlakyFactory {
             inner: JumpFactory { spawn_at: 0 },
             diverge_at: u64::MAX - 1,

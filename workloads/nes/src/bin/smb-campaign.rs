@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Recorded campaign-mode conquest runs and their exact replays.
-
 use std::{
     env,
     error::Error,
@@ -31,10 +29,6 @@ use nes_workload::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-/// Archive memory budget of a run that names none. The archive keeps its
-/// population under this charge with proportional maintenance; a whole-game
-/// search stays inside it with room for the emulator and the workers on an
-/// ordinary machine.
 const DEFAULT_MEMORY_BUDGET_MIB: usize = 2048;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -49,7 +43,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     Err("unknown smb-campaign mode".into())
 }
 
-/// Live-only wall measurements; never part of the replayable report.
 #[derive(Debug, Serialize)]
 struct LiveThroughput {
     wall_seconds: f64,
@@ -59,7 +52,7 @@ struct LiveThroughput {
     frames_per_second: f64,
 }
 
-#[allow(clippy::disallowed_methods)] // not order-observable: wall time is live throughput evidence only.
+#[allow(clippy::disallowed_methods)]
 fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box<dyn Error>> {
     let origin_arg = args
         .next()
@@ -89,18 +82,8 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         .into_owned();
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
     let mut wall_budget = None;
-    // Defaults are the current behavior; the older policies stay selectable
-    // so historical recordings keep replaying under their own identifiers.
-    // The chord draw takes its button sequences from only the most recent
-    // retained window, so the visible table tracks the current level's
-    // successful presses and old regimes age out on their own.
-    // Every run uses it: replaced draw policies survive only as stream
-    // identifiers, never as run options.
-    // Retire thresholds are measured search statistics (99th-percentile
-    // picks-before-first-keeper per class) and should be re-measured for a
-    // new game rather than treated as universal constants.
     let chord = chord_policy_from_identifier("chord_draw_recorded_53:all,0,128,3,1,64,1024")?;
-    let mut retention = RetentionPolicy::AdmitAlive;
+    let mut retention = RetentionPolicy::Unprobed;
     let mut selector = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
         entry: 3,
         groups: vec![6, 12, 2],
@@ -236,8 +219,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let stream_path = output.join("stream.jsonl");
     let stream_file = fs::File::create(&stream_path)?;
     let mut stream = BufWriter::new(stream_file);
-    // Sidecar for live observation; separate file so the recorded stream is
-    // untouched by it.
     let mut progress = BufWriter::new(fs::File::create(output.join("progress-live.jsonl"))?);
     let started = std::time::Instant::now();
     let (report, checkpoint) =
@@ -257,9 +238,9 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let throughput = LiveThroughput {
         wall_seconds,
         executions_completed: report.executions_completed,
-        frames_emulated: report.frames_emulated,
+        frames_emulated: report.execution_work,
         executions_per_second: rate(report.executions_completed, wall_seconds),
-        frames_per_second: rate(report.frames_emulated, wall_seconds),
+        frames_per_second: rate(report.execution_work, wall_seconds),
     };
     fs::write(
         output.join("throughput-live.json"),
@@ -481,12 +462,12 @@ fn summary(report: &SmbCampaignModeReport) -> serde_json::Value {
         "retained": report.archive.retained,
         "rejected": report.archive.rejected,
         "deaths": report.archive.deaths,
-        "victories": report.victories,
+        "victories": report.objectives_reached,
         "probe_refused": report.probe_refused,
         "duplicates_skipped": report.duplicates_skipped,
-        "executions_to_first_victory": report.executions_to_first_victory,
-        "frames_emulated": report.frames_emulated,
-        "frames_to_first_victory": report.frames_to_first_victory,
+        "executions_to_first_victory": report.executions_to_first_objective,
+        "frames_emulated": report.execution_work,
+        "frames_to_first_victory": report.work_to_first_objective,
         "jobs_per_worker": report.jobs_per_worker,
         "stream_sha256": report.stream_sha256,
     })
@@ -500,7 +481,7 @@ fn read_rom() -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(fs::read(rom_path)?)
 }
 
-#[allow(clippy::cast_precision_loss)] // Throughput display only; counts stay far below 2^52.
+#[allow(clippy::cast_precision_loss)]
 fn rate(count: u64, wall_seconds: f64) -> f64 {
     if wall_seconds > 0.0 {
         count as f64 / wall_seconds

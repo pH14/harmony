@@ -74,7 +74,6 @@ fn golden_request_bytes_for_every_service_opcode() {
     event.extend_from_slice(&event_payload);
     assert_eq!(enc_req(ServiceId::Event, 1, 11, &event_payload), event);
 
-    // SDK opcode 3 carries a namespace, request id, and opaque package bytes.
     let mut service_payload = le32(7).to_vec();
     service_payload.extend_from_slice(&le64(50));
     service_payload.extend_from_slice(&[0xa5, 0x5a]);
@@ -119,9 +118,7 @@ fn golden_response_bytes_for_every_service_opcode() {
         (ServiceId::Block, 1, 3, Status::Ok, le64(99).to_vec()),
         (ServiceId::Block, 2, 4, Status::OutOfRange, Vec::new()),
         (ServiceId::Event, 1, 5, Status::Ok, Vec::new()),
-        // SDK opcode 3 data response: package payloads are opaque here.
         (ServiceId::Sdk, 3, 6, Status::Ok, vec![1, 0xa5]),
-        // SDK `coverage_yield`: next threshold 2, runnable index 1.
         (
             ServiceId::Sdk,
             2,
@@ -269,7 +266,6 @@ fn end_to_end_loopback_and_identical_transcripts() {
     assert_eq!(a, b);
 }
 
-/// A bare loopback that services one preconfigured dispatcher.
 struct DispatcherLoopback(Dispatcher);
 
 impl Transport for DispatcherLoopback {
@@ -279,7 +275,6 @@ impl Transport for DispatcherLoopback {
     }
 }
 
-/// Host response seam for pinning each half of the coverage response guard.
 struct CoverageResponseTransport {
     next: u64,
     selected: u32,
@@ -364,8 +359,6 @@ fn payload_fetch_is_exact_and_exhaustion_is_a_clean_status() {
     assert!(maximum.iter().all(|&byte| byte == 0xa5));
 }
 
-/// M6 threshold handshake: the first per-thread threshold is one, each exit
-/// prescribes the next exact count, and the selected runnable is in range.
 #[test]
 fn coverage_yield_round_trips_threshold_and_scheduler_selection() {
     let mut dispatcher = Dispatcher::new();
@@ -377,9 +370,6 @@ fn coverage_yield_round_trips_threshold_and_scheduler_selection() {
     assert_eq!(client.coverage_yield(9, 1, 2).unwrap(), (2, 0));
 }
 
-/// A wrong counter is the planted protocol negative: it must fail before a
-/// scheduling answer is minted, proving the previous-exit threshold is
-/// load-bearing rather than advisory.
 #[test]
 fn coverage_yield_rejects_skipped_stale_and_invalid_thresholds() {
     let mut dispatcher = Dispatcher::new();
@@ -401,8 +391,6 @@ fn coverage_yield_rejects_skipped_stale_and_invalid_thresholds() {
     );
 }
 
-/// Each response invariant is independently load-bearing: a host cannot hide
-/// one malformed field behind a valid value in the other field.
 #[test]
 fn coverage_yield_rejects_each_malformed_response_field_independently() {
     for (next, selected) in [(7, 0), (8, 2)] {
@@ -414,7 +402,6 @@ fn coverage_yield_rejects_each_malformed_response_field_independently() {
     }
 }
 
-/// Request and response buffer lengths are separate protocol invariants.
 #[test]
 fn sdk_coverage_rejects_each_bad_buffer_length_independently() {
     let mut svc = CoverageService::new();
@@ -435,7 +422,6 @@ fn sdk_coverage_rejects_each_bad_buffer_length_independently() {
     assert!(svc.asked().is_empty());
 }
 
-/// Coverage state is the generic SDK reference service's only stateful policy.
 #[test]
 fn coverage_service_state_round_trips() {
     let mut service = CoverageService::new();
@@ -456,8 +442,6 @@ fn coverage_service_state_round_trips() {
     assert_eq!(restored.save_state(), saved);
 }
 
-/// A persisted runnable selection is checked even when `ready` is nonzero;
-/// `selected == ready` is out of range and must fail closed.
 #[test]
 fn coverage_service_restore_rejects_out_of_range_selection() {
     let mut state = Vec::new();
@@ -523,8 +507,6 @@ fn malformed_dispatch_edge_cases() {
     assert_eq!(header.seq, 44);
     assert_eq!(header.status, Status::BadRequest as u16);
 
-    // Header parses but the payload is truncated: raw fields must be echoed,
-    // not the all-zeros reserved for unparseable headers.
     let truncated = enc_req(ServiceId::Console, 1, 77, b"abcdef");
     let len = dispatcher.dispatch(&truncated[..truncated.len() - 3], &mut resp);
     let (header, payload) = decode(&resp[..len]).unwrap();
@@ -534,8 +516,6 @@ fn malformed_dispatch_edge_cases() {
     assert_eq!(header.status, Status::BadRequest as u16);
     assert!(payload.is_empty());
 
-    // resp_buf large enough for a header but too small for the response payload:
-    // Internal with an empty payload, raw fields echoed.
     let entropy_req = enc_req(ServiceId::Entropy, 1, 78, &le32(64));
     let len = dispatcher.dispatch(&entropy_req, &mut resp[..32]);
     let (header, payload) = decode(&resp[..len]).unwrap();
@@ -558,8 +538,6 @@ impl Transport for FixedLenTransport {
 
 #[test]
 fn client_rejects_out_of_bounds_transport_length() {
-    // The response length ultimately comes from the host; the client must error,
-    // not panic, when it exceeds the response buffer.
     let mut client = Client::new(FixedLenTransport(MAX_FRAME + 904));
     assert_eq!(
         client.block_capacity(),
@@ -583,9 +561,6 @@ impl Transport for CountingTransport {
 
 #[test]
 fn event_emit_never_fragments() {
-    // One emit is one logical event: max-size data is exactly one Emit frame,
-    // and anything larger is rejected up front rather than split into multiple
-    // events the host would double-count.
     let frames = Rc::new(RefCell::new(0_usize));
     let transport = CountingTransport {
         dispatcher: test_dispatcher(3),
@@ -605,7 +580,6 @@ fn event_emit_never_fragments() {
 
 #[test]
 fn entropy_restore_rejects_zero_state() {
-    // State 0 is unreachable from save_state and would pin the stream at zero.
     let mut entropy = SeededEntropy::new(42);
     assert_eq!(entropy.restore_state(&[0_u8; 8]), Err(ProtoError::BadState));
     let mut out = [0_u8; 16];
@@ -624,8 +598,6 @@ fn dispatcher_failed_restore_preserves_state() {
     let _ = dispatcher.dispatch(&req[..len], &mut resp);
     let saved = dispatcher.save_state();
 
-    // A valid-but-different console chunk followed by a malformed entropy chunk:
-    // the restore must fail without leaving the console chunk applied.
     let mut bad = Vec::new();
     bad.extend_from_slice(&(ServiceId::Console as u16).to_le_bytes());
     bad.extend_from_slice(&le32(8));
@@ -638,11 +610,6 @@ fn dispatcher_failed_restore_preserves_state() {
     assert_eq!(dispatcher.save_state(), saved);
 }
 
-// ---------------------------------------------------------------------------
-// Package requests use the generic SDK opcode-3 channel. The protocol tests
-// assert framing and response bounds without decoding any package payload.
-// ---------------------------------------------------------------------------
-
 #[derive(Clone)]
 struct OpaquePackageService;
 
@@ -651,8 +618,6 @@ impl Service for OpaquePackageService {
         if opcode != 3 || payload.len() < 10 {
             return (Status::BadRequest, 0);
         }
-        // Echo the package bytes as an opaque data response. Namespace and
-        // request id are routing coordinates, not a fault-specific schema here.
         if response.len() < payload.len() - 10 + 1 {
             return (Status::Internal, 0);
         }
@@ -722,10 +687,6 @@ fn retired_fault_service_id_has_no_package_decoder() {
     assert_eq!(ServiceId::Sdk as u16, 6);
 }
 
-/// The task-110 pvclock registration round-trip: the guest
-/// `pvclock_register(gpa)` reaches the [`PvclockRegistrar`] service (id 7,
-/// op 1), which validates the page-aligned in-RAM GPA, records it, and answers
-/// the ABI version; a bad GPA is a clean status, never a silent accept.
 #[test]
 fn pvclock_register_round_trips_the_abi_version() {
     let fresh = || {
@@ -736,8 +697,6 @@ fn pvclock_register_round_trips_the_abi_version() {
         );
         Client::new(DispatcherLoopback(dispatcher))
     };
-    // Misaligned and out-of-range GPAs are clean OutOfRange statuses (fresh
-    // registrar each — a rejection must not consume the one-shot).
     let mut client = fresh();
     assert_eq!(
         client.pvclock_register(0x5001),
@@ -747,10 +706,7 @@ fn pvclock_register_round_trips_the_abi_version() {
         client.pvclock_register(1 << 20),
         Err(ClientError::Status(Status::OutOfRange))
     );
-    // A rejected attempt did not consume the one-shot: registering still works.
     assert_eq!(client.pvclock_register(0x5000).unwrap(), 1);
-    // ONE-SHOT (the frozen ABI, mirroring the production host): any second
-    // register — same GPA or another valid one — is a guest fault.
     assert_eq!(
         client.pvclock_register(0x5000),
         Err(ClientError::Status(Status::BadRequest))
@@ -759,13 +715,9 @@ fn pvclock_register_round_trips_the_abi_version() {
         client.pvclock_register(0x6000),
         Err(ClientError::Status(Status::BadRequest))
     );
-    // The last page of RAM is in range (fresh registrar).
     assert_eq!(fresh().pvclock_register((1 << 20) - 4096).unwrap(), 1);
 }
 
-/// A host with no pvclock service answers `UnknownService`, so a guest probing
-/// for the clock page gets a clean "not offered", never a panic — the pure
-/// opt-in posture of `consonance/vtime/README.md`.
 #[test]
 fn pvclock_register_without_service_is_a_clean_status() {
     let mut dispatcher = Dispatcher::new();
@@ -777,8 +729,6 @@ fn pvclock_register_without_service_is_a_clean_status() {
     );
 }
 
-/// `PvclockRegistrar` snapshots and restores its registration, like the other
-/// reference services.
 #[test]
 fn pvclock_registrar_state_round_trips() {
     let mut svc = PvclockRegistrar::new(1 << 20, 1);
@@ -786,8 +736,6 @@ fn pvclock_registrar_state_round_trips() {
     let (status, n) = svc.handle(1, &0x7000u64.to_le_bytes(), &mut out);
     assert_eq!((status, n), (Status::Ok, 4));
     assert_eq!(svc.registered(), Some(0x7000));
-    // One-shot holds on the SAME instance: a second register is a guest fault
-    // and the pinned target does not move.
     assert_eq!(
         svc.handle(1, &0x8000u64.to_le_bytes(), &mut out).0,
         Status::BadRequest
@@ -797,14 +745,11 @@ fn pvclock_registrar_state_round_trips() {
     let mut restored = PvclockRegistrar::new(0, 0);
     restored.restore_state(&saved).unwrap();
     assert_eq!(restored.registered(), Some(0x7000));
-    // ...and holds across the state round-trip too (restored state cannot be
-    // re-registered over — the supposedly pinned target stays pinned).
     assert_eq!(
         restored.handle(1, &0x9000u64.to_le_bytes(), &mut out).0,
         Status::BadRequest
     );
     assert_eq!(restored.registered(), Some(0x7000));
-    // A truncated blob is rejected, never a partial restore.
     assert_eq!(
         restored.restore_state(&saved[..saved.len() - 1]),
         Err(ProtoError::BadState)
@@ -812,16 +757,8 @@ fn pvclock_registrar_state_round_trips() {
     assert_eq!(restored.registered(), Some(0x7000));
 }
 
-/// A corrupt state blob cannot restore a registration `handle` would
-/// have rejected: `restore_state` re-runs the SAME 4 KiB-alignment +
-/// RAM-containment check on the decoded GPA (cross-model r12 P2). Without the
-/// check a crafted blob could pin an unaligned or out-of-RAM GPA that the live
-/// registration path forbids, and the host would then stamp outside the page
-/// window.
 #[test]
 fn pvclock_registrar_restore_revalidates_the_gpa() {
-    // Blob shape mirrors PvclockRegistrar::save_state:
-    //   ram_len (8 LE) | abi_version (4 LE) | tag (1) | gpa (8 LE, iff tag==1)
     let blob = |ram_len: u64, gpa: u64| {
         let mut b = Vec::new();
         b.extend_from_slice(&ram_len.to_le_bytes());
@@ -832,7 +769,6 @@ fn pvclock_registrar_restore_revalidates_the_gpa() {
     };
     let ram_len = 1u64 << 20;
 
-    // Misaligned GPA — `handle` answers OutOfRange, so restore must reject it.
     let mut svc = PvclockRegistrar::new(0, 0);
     assert_eq!(
         svc.restore_state(&blob(ram_len, 0x7001)),
@@ -840,7 +776,6 @@ fn pvclock_registrar_restore_revalidates_the_gpa() {
     );
     assert_eq!(svc.registered(), None, "no partial restore on rejection");
 
-    // Out-of-RAM GPA (page runs off the end) — likewise rejected.
     let mut svc = PvclockRegistrar::new(0, 0);
     assert_eq!(
         svc.restore_state(&blob(ram_len, ram_len)),
@@ -848,13 +783,11 @@ fn pvclock_registrar_restore_revalidates_the_gpa() {
     );
     assert_eq!(svc.registered(), None);
 
-    // A valid, page-aligned, in-RAM GPA still restores cleanly.
     let mut svc = PvclockRegistrar::new(0, 0);
     svc.restore_state(&blob(ram_len, ram_len - 4096)).unwrap();
     assert_eq!(svc.registered(), Some(ram_len - 4096));
 }
 
-/// An unknown pvclock opcode and a malformed payload are clean statuses.
 #[test]
 fn pvclock_registrar_rejects_bad_frames() {
     let mut svc = PvclockRegistrar::new(1 << 20, 1);

@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Game-neutral scoped worker pool for campaign job execution.
-
 use std::{collections::VecDeque, error::Error, fmt, sync::mpsc, thread};
 
-/// Credits cover both executing and completed-but-unadmitted jobs. Receiving a
-/// result does not release a credit: only its ordered admission does.
 pub(crate) struct ResultSlots {
     outstanding: Vec<usize>,
     available: VecDeque<u32>,
@@ -48,25 +44,17 @@ impl ResultSlots {
     }
 }
 
-/// One worker's completed output or deterministic failure text.
 #[derive(Debug)]
-pub struct WorkerReply<Output> {
-    /// Stable zero-based worker identifier.
-    pub worker: u32,
-    /// Executed output, or a failure produced while initializing or running the worker.
-    pub outcome: Result<Output, String>,
+pub(crate) struct WorkerReply<Output> {
+    pub(crate) worker: u32,
+    pub(crate) outcome: Result<Output, String>,
 }
 
-/// Failure to communicate with a campaign worker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WorkerPoolError {
-    /// The requested worker identifier is outside the configured pool.
+pub(crate) enum WorkerPoolError {
     UnknownWorker,
-    /// The requested worker has already been closed.
     WorkerClosed,
-    /// A worker exited before accepting its next job.
     WorkerExited,
-    /// Every worker reply sender closed while a result was still expected.
     RepliesClosed,
 }
 
@@ -83,19 +71,13 @@ impl fmt::Display for WorkerPoolError {
 
 impl Error for WorkerPoolError {}
 
-/// Coordinator-facing channels for a scoped worker set.
-pub struct WorkerPool<Job, Output> {
+pub(crate) struct WorkerPool<Job, Output> {
     job_senders: Vec<Option<mpsc::Sender<Job>>>,
     reply_receiver: mpsc::Receiver<WorkerReply<Output>>,
 }
 
 impl<Job, Output> WorkerPool<Job, Output> {
-    /// Send one job to a specific open worker.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown or closed worker, or when the worker exited.
-    pub fn send(&self, worker: u32, job: Job) -> Result<(), WorkerPoolError> {
+    pub(crate) fn send(&self, worker: u32, job: Job) -> Result<(), WorkerPoolError> {
         self.job_senders
             .get(usize::try_from(worker).map_err(|_| WorkerPoolError::UnknownWorker)?)
             .ok_or(WorkerPoolError::UnknownWorker)?
@@ -105,12 +87,7 @@ impl<Job, Output> WorkerPool<Job, Output> {
             .map_err(|_| WorkerPoolError::WorkerExited)
     }
 
-    /// Stop assigning work to one worker. Its scoped thread exits after its current job.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the worker identifier is outside the pool.
-    pub fn close(&mut self, worker: u32) -> Result<(), WorkerPoolError> {
+    pub(crate) fn close(&mut self, worker: u32) -> Result<(), WorkerPoolError> {
         let sender = self
             .job_senders
             .get_mut(usize::try_from(worker).map_err(|_| WorkerPoolError::UnknownWorker)?)
@@ -119,25 +96,12 @@ impl<Job, Output> WorkerPool<Job, Output> {
         Ok(())
     }
 
-    /// Wait for the next completed worker output.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if every reply sender closes before another result arrives.
-    pub fn receive(&self) -> Result<WorkerReply<Output>, WorkerPoolError> {
+    pub(crate) fn receive(&self) -> Result<WorkerReply<Output>, WorkerPoolError> {
         self.reply_receiver
             .recv()
             .map_err(|_| WorkerPoolError::RepliesClosed)
     }
 
-    /// Take one completed worker output without waiting.
-    ///
-    /// This lets a coordinator refill every physical executor whose reply is
-    /// already queued before it performs deterministic ordered admission.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if every reply sender has closed.
     pub(crate) fn try_receive(&self) -> Result<Option<WorkerReply<Output>>, WorkerPoolError> {
         match self.reply_receiver.try_recv() {
             Ok(reply) => Ok(Some(reply)),
@@ -147,16 +111,7 @@ impl<Job, Output> WorkerPool<Job, Output> {
     }
 }
 
-/// Run a coordinator against a scoped, game-neutral worker pool.
-///
-/// Worker identifiers, job assignment, selection, admission, randomness, and recording remain
-/// coordinator concerns. The pool owns only target initialization, job execution, and channels.
-/// Setting `workers` to one uses this exact path with a one-element pool.
-///
-/// # Errors
-///
-/// Returns any error produced by the coordinator callback.
-pub fn with_worker_pool<State, Job, Output, ResultValue, CoordinatorError>(
+pub(crate) fn with_worker_pool<State, Job, Output, ResultValue, CoordinatorError>(
     workers: u32,
     initialize: impl Fn(u32) -> Result<State, String> + Sync,
     execute: impl Fn(&mut State, Job) -> Result<Output, String> + Sync,
@@ -248,8 +203,6 @@ mod tests {
                 for job in [(Some(blocked), 0), (None, 1), (None, 2), (None, 3)] {
                     pool.send(slots.reserve().expect("bounded prefill"), job)?;
                 }
-                // Both replies must come from worker 1, before worker 0 is
-                // released and before any result credit is returned.
                 for value in [1, 3] {
                     let reply = pool.receive()?;
                     assert_eq!(reply.worker, 1);

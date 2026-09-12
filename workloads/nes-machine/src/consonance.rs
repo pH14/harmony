@@ -1,14 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Whole-VM Consonance implementation of the deterministic machine boundary.
-//!
-//! This module is the NES observation/controller adapter over the generic
-//! Consonance client session. The client owns the VM lifecycle and snapshot
-//! protocol; this adapter supplies the action payload encoding, publication
-//! discovery, billboard decoding, and cached NES observation windows. The guest
-//! play-agent publishes a fixed billboard, which is copied once after a run and
-//! then serves the small NES observation windows without touching the VM again.
-
 use std::{
     collections::BTreeMap,
     fmt::{self, Write as _},
@@ -163,8 +154,6 @@ impl ConsonanceProfile {
             return;
         };
         self.dirty_available_seals = self.dirty_available_seals.saturating_add(1);
-        // A one-layer seal with a complete dirty drain is the bounded-chain
-        // flatten path. The initial full base has no drained parent window.
         if chain_len == Some(1) {
             self.flatten_wall_samples_ns
                 .push(self.last_snapshot_wall_ns);
@@ -311,7 +300,6 @@ fn machine_snap(snapshot: ControlSnapId) -> SnapId {
     SnapId(snapshot.0)
 }
 
-/// Sparse portable snapshots are owned by the neutral Consonance client.
 pub use consonance_client::session::SparseSnapshot as ConsonancePortable;
 
 use nes_protocol::BillboardObservation;
@@ -324,7 +312,6 @@ fn parse_billboard(
         .map_err(|error| MachineError::Backend(error.to_string()))
 }
 
-/// One Consonance VM implementing [`Machine`].
 pub struct ConsonanceMachine {
     session: Session,
     power_on_publication: bool,
@@ -363,7 +350,6 @@ impl Drop for ConsonanceMachine {
 }
 
 impl ConsonanceMachine {
-    /// Boot one VM and retain its setup snapshot.
     pub fn new(kernel: &[u8], initramfs: &[u8]) -> Result<Self, MachineError> {
         let config = SessionConfig::new(RAM, SEED, RUN_BUDGET, CMDLINE)
             .with_identity_tag("consonance-nes-execution-v2");
@@ -375,8 +361,6 @@ impl ConsonanceMachine {
             ConsonanceProfile::new(std::env::var_os("HARMONY_CONSONANCE_PROFILE").is_some());
         let (setup_handle, setup_vtime) = session.setup_handle();
         let setup = machine_snap(setup_handle);
-        // Setup is a retained server snapshot. Replay it before discovering the
-        // guest publication so the setup observation always starts clean.
         drive_profiled(
             &mut session,
             &mut profile,
@@ -437,7 +421,6 @@ impl ConsonanceMachine {
         })
     }
 
-    /// Whether the guest exposes a game-neutral power-on core.
     pub fn starts_at_power_on(&self) -> bool {
         self.power_on_publication
     }
@@ -814,7 +797,6 @@ fn run_deadline(last_vtime: u64, budget: u64) -> Result<u64, MachineError> {
         .ok_or_else(|| MachineError::Backend("Consonance per-run deadline overflow".to_owned()))
 }
 
-/// Stable identity string for a Consonance whole-VM campaign stream.
 #[must_use]
 pub fn identity(kernel: &[u8], initramfs: &[u8]) -> String {
     format!(
@@ -824,7 +806,6 @@ pub fn identity(kernel: &[u8], initramfs: &[u8]) -> String {
     )
 }
 
-/// Construct a Consonance machine from guest image paths.
 pub fn from_paths(kernel: &Path, initramfs: &Path) -> Result<ConsonanceMachine, MachineError> {
     let kernel = std::fs::read(kernel)
         .map_err(|error| MachineError::Backend(format!("read kernel: {error}")))?;

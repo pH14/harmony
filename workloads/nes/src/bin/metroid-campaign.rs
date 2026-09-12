@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Run a bounded Metroid campaign and write its report, stream, and
-//! checkpoint.
-
 use std::{
     env,
     error::Error,
@@ -151,12 +148,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
-        retention: RetentionPolicy::AdmitAlive,
+        retention: RetentionPolicy::Unprobed,
         selector: args.selector.clone(),
         suffix: SuffixShape::OneToSix,
         mixture: args.mixture,
-        // A Metroid run ends only at death, so the deepest route is the
-        // champion rather than a victory endpoint.
         victory_input_path: None,
     };
     let mut stream = BufWriter::new(fs::File::create(args.output.join("stream.jsonl"))?);

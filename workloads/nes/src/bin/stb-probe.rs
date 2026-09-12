@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Probe Super Tilt Bro's sealed local-AI genesis and replay a short schedule.
-
 use std::{env, error::Error, fs, path::PathBuf};
 
 use machine::nes::ButtonChord;
@@ -163,20 +161,17 @@ fn run_correctness_probes(
         );
     }
 
-    // The same continuation from one snapshot must produce equivalent
-    // decoded observations after a repeated restore. A different branch is
-    // taken between the two runs to exercise cache and handle restoration.
     target.restore(&genesis)?;
     target.apply(&ButtonChord::new(0x01, 6));
     let branch = target.snapshot().ok_or("could not snapshot the A branch")?;
     let continuation = ButtonChord::new(0x80, 12);
     target.apply(&continuation);
     let first = (target.observe(), target.fingerprint());
-    let first_lifetime_frame = target.frames_clocked();
+    let first_lifetime_frame = target.execution_work();
     target.restore(&branch)?;
     target.apply(&continuation);
     let second = (target.observe(), target.fingerprint());
-    let second_lifetime_frame = target.frames_clocked();
+    let second_lifetime_frame = target.execution_work();
     if first != second {
         return Err("STB same-continuation snapshot replay diverged".into());
     }
@@ -202,21 +197,17 @@ fn run_correctness_probes(
         }))?
     );
 
-    // ProbeAtAdmission45, when explicitly selected, must inspect this future
-    // continuation and leave all live adapter state at the admission point.
     target.restore(&genesis)?;
     let before_probe = (target.observe(), target.fingerprint());
-    let before_probe_lifetime_frame = target.frames_clocked();
+    let before_probe_lifetime_frame = target.execution_work();
     let probe_survived = target.survives_probe(0, 45);
     let after_probe = (target.observe(), target.fingerprint());
-    let after_probe_lifetime_frame = target.frames_clocked();
+    let after_probe_lifetime_frame = target.execution_work();
     if before_probe != after_probe || target.exit_kind() != nes_workload::target::ExitKind::Ok {
         return Err(
             "STB admission probe failed its live-RAM and cached-state restoration checks".into(),
         );
     }
-    // survives_probe verifies live RAM immediately after restoration. Compare
-    // a subsequent continuation too; cached observations alone prove nothing.
     let continuation = ButtonChord::new(0x80, 12);
     target.apply(&continuation);
     let after_probed_continuation = (target.observe(), target.fingerprint());

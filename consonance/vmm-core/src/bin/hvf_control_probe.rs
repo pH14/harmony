@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Live Apple-HVF composition probe for the arm64 M2 control memslot.
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
 fn main() -> std::process::ExitCode {

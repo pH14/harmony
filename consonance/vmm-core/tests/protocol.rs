@@ -1,27 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! **Protocol tests** (`docs/TESTING.md`): the per-plane obligations of
-//! the control wire, driven through `ControlServer::handle` over a scripted
-//! `MockBackend`.
-//!
-//! Entirely portable — no `/dev/kvm`, no box. The wire is the one part of the
-//! system whose contract can be pinned exactly without hardware, which is why it
-//! is worth pinning here rather than discovering a violation inside a live gate.
-//!
-//! Two planes are exercised (`docs/PROTOCOL.md`):
-//!
-//! * **observation** — obligation: **hash neutrality**. Interleaving every
-//!   observation verb into a run must leave the final `state_hash` identical to
-//!   the same run with no observations at all. This is what makes an interactive
-//!   session safe: a human poking at a timeline cannot invalidate it.
-//! * **state algebra** — obligation: **replay identity**, of which the `Drop`
-//!   lifecycle is the deallocation half. A handle that outlives its state, or
-//!   state that outlives its handle, both break the identity
-//!   *state = replay(reproducer)*.
-//!
-//! The golden-encoding half of rung 4 lives in
-//! `dissonance/control-proto/tests/golden.rs`; the session and intervention
-//! planes are covered by `control-proto`'s negotiation tests and vmm-core's
-//! in-crate taint tests respectively.
 
 use control_proto::{HashScope, Reply, Request, SnapId, StopConditions, StopMask};
 use vmm_backend::{
@@ -31,15 +8,9 @@ use vmm_core::control::{ControlServer, server_caps};
 use vmm_core::vendor::x86::contract_vclock_config;
 use vmm_core::vmm::{GuestRam, Vmm, VtimeWiring};
 
-/// 16 KiB = 4 pages. Small enough that the state hash is cheap, large enough
-/// that the memory chunk is a real part of it.
 const RAM: usize = 0x4000;
-/// The live VM's seed. Any fixed value; the point is that both runs use it.
 const SEED: u64 = 0xBA5E;
 
-/// A configured, V-time-wired `Vmm<MockBackend>` with a distinctive memory image
-/// loaded, advanced past one `Rdtsc` so it sits at a synchronized (sealable)
-/// boundary — the same shape the box composition roots produce.
 fn vmm_at_sync(exits: Vec<Exit<X86>>, _work: u64) -> Vmm<MockBackend> {
     let mut m = MockBackend::new();
     let mut scripted = vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })];
@@ -67,8 +38,6 @@ fn vmm_at_sync(exits: Vec<Exit<X86>>, _work: u64) -> Vmm<MockBackend> {
     v
 }
 
-/// A server whose live VM is scripted with `exits` and whose factory boots fresh
-/// restore targets composed identically (the `ControlServer::new` contract).
 fn server(exits: Vec<Exit<X86>>) -> ControlServer<MockBackend> {
     let live = vmm_at_sync(exits, 500);
     let factory = Box::new(move || {
@@ -88,8 +57,6 @@ fn server(exits: Vec<Exit<X86>>) -> ControlServer<MockBackend> {
     ControlServer::new(live, factory)
 }
 
-/// Complete the mandatory handshake. Every other verb answers `Unsupported`
-/// before it, so a test that forgot this would measure the wrong thing.
 fn hello(srv: &mut ControlServer<MockBackend>) {
     let reply = srv
         .handle(&Request::Hello(server_caps()))
@@ -98,7 +65,6 @@ fn hello(srv: &mut ControlServer<MockBackend>) {
     assert!(matches!(reply, Reply::Hello(_)));
 }
 
-/// Ask for the whole-machine digest.
 fn state_hash(srv: &mut ControlServer<MockBackend>) -> [u8; 32] {
     match srv
         .handle(&Request::Hash {
@@ -112,7 +78,6 @@ fn state_hash(srv: &mut ControlServer<MockBackend>) -> [u8; 32] {
     }
 }
 
-/// Advance the VM to its next stop, with no deadline and nothing armed.
 fn run(srv: &mut ControlServer<MockBackend>) {
     srv.handle(&Request::Run {
         until: StopConditions {
@@ -125,9 +90,6 @@ fn run(srv: &mut ControlServer<MockBackend>) {
     .expect("run is answered");
 }
 
-/// **Every** observation verb, in one list, so the neutrality test cannot be
-/// quietly narrowed by dropping one. `Hash` is deliberately included: asking for
-/// the digest is itself an observation and must not perturb the machine either.
 fn observation_verbs() -> Vec<Request> {
     vec![
         Request::Hash {
@@ -140,7 +102,6 @@ fn observation_verbs() -> Vec<Request> {
     ]
 }
 
-/// The exits the two runs share: a couple of guest-visible events, then a halt.
 fn scripted_run() -> Vec<Exit<X86>> {
     vec![
         Exit::Arch(X86Exit::Io {
@@ -160,14 +121,11 @@ fn scripted_run() -> Vec<Exit<X86>> {
 
 #[test]
 fn observing_a_run_does_not_change_its_state_hash() {
-    // Control: run with no observations at all.
     let mut clean = server(scripted_run());
     hello(&mut clean);
     run(&mut clean);
     let expected = state_hash(&mut clean);
 
-    // Treatment: the same run, with every observation verb interleaved before
-    // it, and again after it.
     let mut observed = server(scripted_run());
     hello(&mut observed);
     for verb in observation_verbs() {
@@ -194,9 +152,6 @@ fn observing_a_run_does_not_change_its_state_hash() {
 
 #[test]
 fn the_neutrality_test_is_not_comparing_a_constant() {
-    // Non-vacuity guard. If the two servers hashed to the same value no matter
-    // what the guest did, the test above would pass while proving nothing. Run
-    // one server and not the other: the hashes must differ.
     let mut ran = server(scripted_run());
     hello(&mut ran);
     run(&mut ran);
@@ -212,7 +167,6 @@ fn the_neutrality_test_is_not_comparing_a_constant() {
     );
 }
 
-/// Seal a snapshot and return its handle.
 fn snapshot(srv: &mut ControlServer<MockBackend>) -> SnapId {
     match srv
         .handle(&Request::Snapshot)
@@ -248,9 +202,6 @@ fn dropping_a_snapshot_releases_it_from_the_store() {
         .expect("dropping a live handle succeeds");
     assert_eq!(reply, Reply::Unit);
 
-    // The obligation: the state is *released*, not merely forgotten. Asserted
-    // against the store's own accounting, because a server that only dropped its
-    // handle map would look identical from the wire.
     let after = srv.snapshot_store_stats();
     assert_eq!(
         after.snapshots, before.snapshots,
@@ -272,9 +223,6 @@ fn a_dropped_snapshot_is_no_longer_branchable_and_double_drop_is_an_error() {
         .expect("drop is not session-fatal")
         .expect("first drop succeeds");
 
-    // Double-drop is an error, never an idempotent success: a client that
-    // believes it still holds state it has released would mint reproducers that
-    // do not reproduce.
     let second = srv
         .handle(&Request::Drop(snap))
         .expect("a double drop is a wire error, not a session-fatal one");
@@ -283,8 +231,6 @@ fn a_dropped_snapshot_is_no_longer_branchable_and_double_drop_is_an_error() {
         "dropping an already-dropped handle must be an error, got {second:?}"
     );
 
-    // And the state algebra's own consequence: a released snapshot cannot be
-    // restored from.
     let replay = srv
         .handle(&Request::Replay(snap))
         .expect("replaying a dropped handle is a wire error, not session-fatal");
@@ -299,8 +245,6 @@ fn a_dangling_snapshot_handle_is_an_error() {
     let mut srv = server(vec![Exit::Common(CommonExit::Idle)]);
     hello(&mut srv);
 
-    // A handle the server never minted. Every state-algebra verb that takes one
-    // must refuse it loudly rather than answer for some other layer.
     let dangling = SnapId(0xDEAD_BEEF);
     for req in [Request::Drop(dangling), Request::Replay(dangling)] {
         let reply = req_reply(&mut srv, &req);
@@ -315,7 +259,6 @@ fn a_dangling_snapshot_handle_is_an_error() {
     );
 }
 
-/// Dispatch one verb, requiring only that the session survives it.
 fn req_reply(
     srv: &mut ControlServer<MockBackend>,
     req: &Request,

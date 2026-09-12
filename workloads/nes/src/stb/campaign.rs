@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Stb implementation of the game-neutral campaign interface.
-
 use std::{
     collections::BTreeSet,
     error::Error,
@@ -19,11 +17,12 @@ use crate::{
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
             CampaignConfig, CampaignJobResult, CampaignModeReport, CampaignOrigin,
-            CampaignStreamHeader, CampaignTypes, Evaluation, GamePolicies, InputPolicy, Reporting,
-            SnapshotCheckpoint, TargetExecution, postcard_value_sha256,
+            CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy, Reporting,
+            SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_value_sha256,
             replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        rollout::{ExecutionDisposition, Outcome},
     },
     stb::{
         archive::{
@@ -39,9 +38,7 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-/// Stream format written by Stb campaigns.
 pub const CAMPAIGN_STREAM_FORMAT: &str = "stb-quicknes-campaign-stream-v3";
-/// Snapshot checkpoint format written by Stb campaigns.
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "stb-quicknes-snapshot-checkpoint-v3";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
@@ -53,11 +50,9 @@ const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_no_start_select_v1";
 const TERMINAL_POLICY_IDENTIFIER: &str = "local_match_gameover_player_a_win_v2";
 
-/// Header placeholder for a game with no adaptive draw table.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbNoTableHeader;
 
-/// ROM and emulator identity shared by STB workers.
 pub struct StbGame {
     rom: Vec<u8>,
     core_path: PathBuf,
@@ -67,13 +62,11 @@ pub struct StbGame {
 }
 
 impl StbGame {
-    /// Build the original Easy-AI context over a pinned QuickNES core.
     #[must_use]
     pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
         Self::with_ai(rom, core_path, core_sha256, StbAi::Easy)
     }
 
-    /// Build a context with an explicitly selected native opponent difficulty.
     #[must_use]
     pub fn with_ai(rom: &[u8], core_path: &Path, core_sha256: &str, ai: StbAi) -> Self {
         let ai_level = ai.level();
@@ -92,7 +85,6 @@ impl StbGame {
         }
     }
 
-    /// Build from the external core named by `HARMONY_QUICKNES_CORE`.
     pub fn from_environment(rom: &[u8]) -> Result<Self, Box<dyn Error>> {
         let core_path = PathBuf::from(
             std::env::var_os("HARMONY_QUICKNES_CORE")
@@ -109,18 +101,15 @@ impl StbGame {
         self.ai
     }
 
-    /// Pinned emulator identity recorded in streams.
     #[must_use]
     pub fn emulator_identity(&self) -> &str {
         &self.identity
     }
 }
 
-/// Stb's fixed recorded run policy.
 #[derive(Clone, Copy, Debug)]
 pub struct StbCampaignRun;
 
-/// Game-owned campaign evidence.
 #[derive(Clone, Default)]
 pub struct StbCampaignEvidence {
     aggregate: StbMilestones,
@@ -132,15 +121,10 @@ pub struct StbCampaignEvidence {
     champion_key: Option<StbChampionKey>,
 }
 
-/// Stb campaign origin.
 pub type StbCampaignOrigin = CampaignOrigin<StbGame>;
-/// Stb resume checkpoint.
 pub type StbCampaignCheckpoint = CampaignCheckpoint<StbSnapshot>;
-/// Stb whole-tree snapshot checkpoint.
 pub type StbSnapshotCheckpoint = SnapshotCheckpoint<StbSnapshot>;
-/// Stb stream header.
 pub type StbCampaignStreamHeader = CampaignStreamHeader<StbNoTableHeader>;
-/// Stb campaign report.
 pub type StbCampaignModeReport = CampaignModeReport<ButtonChord, StbArchiveReport>;
 type StbCampaignActionResult = CampaignActionResult<StbGame>;
 type StbCampaignJobResult = CampaignJobResult<StbGame>;
@@ -156,9 +140,7 @@ struct StbResultAction<'a> {
     action: ButtonChord,
     observations: &'a [StbObservations],
     milestones: StbMilestones,
-    dead: bool,
-    victory: bool,
-    failed: bool,
+    outcome: Outcome,
     candidate: Option<StbResultCandidate<'a>>,
 }
 
@@ -175,9 +157,7 @@ fn stb_result_sha256(result: &StbCampaignJobResult) -> Result<String, Box<dyn Er
             action: action.action,
             observations: &action.observations,
             milestones: action.milestones,
-            dead: action.dead,
-            victory: action.victory,
-            failed: action.failed,
+            outcome: action.outcome,
             candidate: action
                 .candidate
                 .as_ref()
@@ -190,38 +170,21 @@ fn stb_result_sha256(result: &StbCampaignJobResult) -> Result<String, Box<dyn Er
     postcard_value_sha256(&StbResult { actions })
 }
 
-/// Fixed configuration for one live Stb campaign.
 pub struct StbCampaignConfig {
-    /// Campaign seed.
     pub campaign_seed: u64,
-    /// Worker thread count.
     pub workers: u32,
-    /// Admitted execution budget.
     pub execution_budget: u64,
-    /// Maximum actions in one clean-reset input.
     pub action_limit: usize,
-    /// Operator-supplied host label.
     pub host: String,
-    /// Optional live-only wall cutoff.
     pub wall_budget: Option<std::time::Duration>,
-    /// Live-only: continue issuing reservations after the first victory until
-    /// another live limit stops the run. Never recorded or used by replay.
     pub continue_after_victory: bool,
-    /// Maximum retained archive entries.
     pub archive_entry_limit: usize,
-    /// Deterministic logical-memory budget for live search structures.
     pub memory_budget_mib: Option<usize>,
-    /// Live-only: materialize full archive inputs and snapshots at completion.
     pub materialize_final_artifacts: bool,
-    /// Admission policy.
     pub retention: RetentionPolicy,
-    /// Generic parent selector.
     pub selector: crate::search::archive::SelectorPolicy,
-    /// Generic suffix-length shape.
     pub suffix: SuffixShape,
-    /// Generic draw mixture.
     pub mixture: DrawMixture,
-    /// Live-only path receiving the first winning input.
     pub victory_input_path: Option<PathBuf>,
 }
 
@@ -234,7 +197,8 @@ impl StbCampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
-            continue_after_victory: self.continue_after_victory,
+            stop_rollout_on_objective: !self.continue_after_victory,
+            stop_campaign_on_objective: !self.continue_after_victory,
             archive_entry_limit: self.archive_entry_limit,
             reservations_per_worker:
                 crate::search::campaign::DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
@@ -245,26 +209,23 @@ impl StbCampaignConfig {
             mixture: self.mixture,
             retention: self.retention,
             selector: self.selector.clone(),
-            victory_input_path: self.victory_input_path.clone(),
+            objective_witness_path: self.victory_input_path.clone(),
         }
     }
 }
 
-fn recorded<'a>(policies: &'a GamePolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
+fn recorded<'a>(policies: &'a WorkloadPolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
     policies
         .get(field)
         .map(String::as_str)
         .ok_or_else(|| format!("Stb stream is missing {field}").into())
 }
 
-fn merge_action_milestones(
+fn merge_action_milestones<M: Machine>(
     aggregate: &mut StbMilestones,
-    target: &StbTarget,
+    target: &StbTarget<M>,
 ) -> Result<(), Box<dyn Error>> {
     if target.exit_kind() != ExitKind::Ok {
-        // A target failure is an ordinary terminal search result. Its action
-        // may not have produced a complete observation, so retain the
-        // parent's milestones and let the generic campaign record `failed`.
         return Ok(());
     }
     for observation in target.last_action_observations() {
@@ -273,23 +234,30 @@ fn merge_action_milestones(
     Ok(())
 }
 
-// The shared rollout currently records the full requested action and requires
-// a candidate for every nonterminal endpoint. STB must shorten an action at an
-// interior ending and preserve phase-invalid observations without admitting
-// those endpoints. Keep this existing execution override until the shared
-// contract can represent both behaviors; the coordinator remains generic.
-fn execute_suffix(
-    target: &mut StbTarget,
+pub(super) fn execute_suffix<M: Machine<Portable = machine::SharedState>>(
+    target: &mut StbTarget<M>,
     parent_actions: usize,
     parent_milestones: StbMilestones,
     suffix: &[ButtonChord],
     max_actions: usize,
     retention: RetentionPolicy,
+    stop_rollout_on_objective: bool,
 ) -> Result<StbCampaignJobResult, Box<dyn Error>> {
     let mut aggregate = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
-    if target.is_match_over() || target.exit_kind() != ExitKind::Ok {
+    let parent_outcome = Outcome {
+        objective_reached: target.exit_kind() == ExitKind::Ok && target.player_a_won(),
+        disposition: if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_match_over() {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        },
+    };
+    let mut objective_seen = parent_outcome.objective_reached;
+    if parent_outcome.disposition.is_terminal() {
         return Ok(CampaignJobResult { actions });
     }
     for action in suffix {
@@ -300,12 +268,27 @@ fn execute_suffix(
         let action_start_frame = target.observe().frame_count;
         target.apply(action);
         merge_action_milestones(&mut aggregate, target)?;
-        let observations = target.last_action_observations().to_vec();
-        let victory = target.player_a_won();
-        let dead = target.is_match_over() && !victory;
-        let failed = target.exit_kind() != ExitKind::Ok;
+        let observations = if target.exit_kind() != ExitKind::Ok {
+            Vec::new()
+        } else {
+            target.last_action_observations().to_vec()
+        };
+        let raw_objective = target.exit_kind() == ExitKind::Ok && target.player_a_won();
+        let objective_reached = raw_objective && !objective_seen;
+        objective_seen |= raw_objective;
+        let disposition = if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_match_over() {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        };
+        let outcome = Outcome {
+            objective_reached,
+            disposition,
+        };
         let gameplay_valid = target.mechanical_state().gameplay.is_some();
-        let recorded_action = if dead || victory {
+        let recorded_action = if matches!(outcome.disposition, ExecutionDisposition::Terminal) {
             let elapsed = target
                 .observe()
                 .frame_count
@@ -315,18 +298,17 @@ fn execute_suffix(
         } else {
             *action
         };
-        let candidate = if dead || victory || failed || !gameplay_valid {
-            // The source clears fighter RAM during the short transition into
-            // game over. Keep the exact emulator endpoint and observations,
-            // but never admit that phase-invalid frame into the live archive.
+        let candidate = if !matches!(outcome.disposition, ExecutionDisposition::Runnable)
+            || !gameplay_valid
+        {
             None
         } else {
             let snapshot = target.snapshot().ok_or("failed to snapshot Stb suffix")?;
             let viable = match retention {
-                RetentionPolicy::AdmitAlive => true,
-                RetentionPolicy::ProbeAtAdmission45 => {
+                RetentionPolicy::Unprobed => true,
+                RetentionPolicy::ProbeAtAdmission => {
                     return Err(
-                        "STB deliberately rejects ProbeAtAdmission45: ordinary admission is sufficient".into(),
+                        "STB deliberately rejects ProbeAtAdmission: ordinary admission is sufficient".into(),
                     );
                 }
             };
@@ -341,12 +323,10 @@ fn execute_suffix(
             action: recorded_action,
             observations,
             milestones: aggregate,
-            dead,
-            victory,
-            failed,
+            outcome,
             candidate,
         });
-        if dead || victory || failed {
+        if outcome.should_stop(stop_rollout_on_objective) {
             break;
         }
     }
@@ -393,7 +373,7 @@ impl CampaignTypes for StbGame {
     type Run = StbCampaignRun;
     type DrawState = ();
     type DrawCheckpoint = ();
-    type TableHeader = StbNoTableHeader;
+    type DrawHeader = StbNoTableHeader;
 }
 
 impl Reporting for StbGame {
@@ -405,8 +385,14 @@ impl Reporting for StbGame {
         SNAPSHOT_CHECKPOINT_FORMAT
     }
 
-    fn image_sha256(&self) -> String {
+    fn workload_identity_sha256(&self) -> String {
         format!("{:x}", Sha256::digest(&self.rom))
+    }
+    fn action_cost_unit(&self) -> &'static str {
+        "frames"
+    }
+    fn execution_work_unit(&self) -> &'static str {
+        "frames"
     }
 
     fn result_sha256(&self, result: &StbCampaignJobResult) -> Result<String, Box<dyn Error>> {
@@ -430,7 +416,9 @@ impl Reporting for StbGame {
             progress_curve: state.progress_curve,
             retained: state.retained,
             rejected: state.rejected,
-            deaths: state.deaths,
+            deaths: state
+                .terminal_endpoints
+                .saturating_sub(state.terminal_objectives),
             selector: state.selector,
         }
     }
@@ -441,7 +429,7 @@ impl InputPolicy for StbGame {
         MAX_STB_ACTIONS
     }
 
-    fn longest_action_time(&self) -> u64 {
+    fn max_action_cost(&self) -> u64 {
         u64::from(crate::stb::archive::LONGEST_HOLD_FRAMES)
     }
 
@@ -453,7 +441,7 @@ impl InputPolicy for StbGame {
         0
     }
 
-    fn policies(&self, _run: &StbCampaignRun) -> GamePolicies {
+    fn policies(&self, _run: &StbCampaignRun) -> WorkloadPolicies {
         [
             (
                 CONTROLLER_VOCABULARY_FIELD,
@@ -473,7 +461,10 @@ impl InputPolicy for StbGame {
         .collect()
     }
 
-    fn resolve_recorded(&self, policies: &GamePolicies) -> Result<StbCampaignRun, Box<dyn Error>> {
+    fn resolve_recorded(
+        &self,
+        policies: &WorkloadPolicies,
+    ) -> Result<StbCampaignRun, Box<dyn Error>> {
         let expected = self.policies(&StbCampaignRun);
         if policies != &expected {
             for (field, value) in &expected {
@@ -558,7 +549,7 @@ impl InputPolicy for StbGame {
 }
 
 impl TargetExecution for StbGame {
-    fn action_time_fn(&self) -> fn(&ButtonChord) -> u64 {
+    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
 
@@ -588,8 +579,8 @@ impl TargetExecution for StbGame {
         target.restore(snapshot)
     }
 
-    fn frames_clocked(&self, target: &StbTarget) -> u64 {
-        target.frames_clocked()
+    fn execution_work(&self, target: &StbTarget) -> u64 {
+        target.execution_work()
     }
 
     fn apply_action(
@@ -619,6 +610,7 @@ impl TargetExecution for StbGame {
         suffix: &[ButtonChord],
         max_actions: usize,
         retention: RetentionPolicy,
+        stop_rollout_on_objective: bool,
     ) -> Result<StbCampaignJobResult, Box<dyn Error>> {
         target.restore(origin_snapshot)?;
         for action in replay {
@@ -631,24 +623,28 @@ impl TargetExecution for StbGame {
             suffix,
             max_actions,
             retention,
+            stop_rollout_on_objective,
         )
     }
 }
 
 impl Evaluation for StbGame {
-    fn is_terminal(&self, target: &StbTarget) -> bool {
-        target.is_match_over() || target.exit_kind() != ExitKind::Ok
+    fn execution_disposition(&self, target: &StbTarget) -> ExecutionDisposition {
+        if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_match_over() {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        }
     }
 
-    fn is_run_terminal(
+    fn objective_reached(
         &self,
         _run: &StbCampaignRun,
         target: &StbTarget,
     ) -> Result<bool, Box<dyn Error>> {
-        if target.exit_kind() != ExitKind::Ok {
-            return Err("Stb terminal predicate cannot inspect a failed emulator".into());
-        }
-        Ok(target.player_a_won())
+        Ok(target.exit_kind() == ExitKind::Ok && target.player_a_won())
     }
 
     fn current_key(&self, target: &StbTarget) -> Result<StbArchiveKey, Box<dyn Error>> {
@@ -779,7 +775,6 @@ impl Evaluation for StbGame {
     }
 }
 
-/// Run a Stb campaign and return its report plus whole-tree checkpoint.
 pub fn run_stb_campaign_checkpointed(
     game: &StbGame,
     config: &StbCampaignConfig,
@@ -790,7 +785,6 @@ pub fn run_stb_campaign_checkpointed(
     run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)
 }
 
-/// Replay a recorded Stb stream exactly.
 pub fn replay_stb_campaign_checkpointed(
     game: &StbGame,
     stream_bytes: &[u8],
@@ -827,9 +821,7 @@ mod tests {
                 action: ButtonChord::new(0x81, 3),
                 observations: vec![observation.clone()],
                 milestones: StbMilestones::default(),
-                dead: false,
-                victory: false,
-                failed: false,
+                outcome: Outcome::default(),
                 candidate: Some(CampaignCandidate {
                     key: archive_key(state).expect("synthetic live archive key"),
                     viable: true,

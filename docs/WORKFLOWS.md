@@ -1,54 +1,75 @@
 # GitHub Actions conventions
 
-Use `Category / Subject` display names. Every entry-point workflow has an
-automatic trigger; manual dispatch is optional. Keep existing filenames and
-required-check job identifiers stable where possible.
+Use `Category / Subject` display names. The allowed categories are enforced
+by the `ci-workflow-prefix` lint in `scripts/custom-lints.py`.
+
+| Category | Purpose | Trigger |
+| --- | --- | --- |
+| Checks | Static analysis, unit tests, API snapshots | PRs and pushes to main |
+| Smoke | Short end-to-end workloads (under 15 min) | PRs and pushes to main |
+| Acceptance | Long-running workload tests | Nightly schedule or manual dispatch |
+| Benchmarks | Performance and search campaigns | Nightly schedule or manual dispatch |
+| Nightly | Extended validation (Miri, mutation) | Nightly schedule |
+| Release | Build and publish artifacts | Version tags |
+
+Automatic per-PR jobs must finish within 15 minutes (`ci-pr-job-timeout`
+lint). Short workloads that verify basic function are smoke tests. Long-running
+workloads are acceptance tests that run on an off-hours schedule. The sharded
+in-diff mutation gate is the one explicit per-PR timeout exception; its named
+rationale is adjacent to the 90-minute timeout in `quality.yml`.
+Miri's full crate suites remain schedule/manual only (their existing 240- and
+320-minute ceilings are intentionally retained). Relevant PR changes select a
+per-crate Miri matrix with a 15-minute ceiling; dependency and toolchain
+changes select every target. The bounded matrix reports the affected unsafe
+crate directly while the scheduled suite remains the broad safety net.
+Guest-backed PR smokes restore an exact cache when available and otherwise use
+the most recent matching main-branch cache. Each smoke records the requested
+and resolved cache keys, hit mode, fixture-source changes, and validation
+scope. Prefix fallbacks verify the cached artifact manifest when one exists;
+older manifestless caches require every expected artifact to be nonempty and
+are reported as legacy file-presence validation. Scheduled/manual builders
+publish manifest-bearing replacements. A PR that changes a guest or image
+builder can therefore prove the host orchestration while the deep builder
+validates the changed fixture. If no durable cache exists, the smoke preserves
+a `cache-unavailable.txt` artifact and fails with the builder handoff required
+to make it runnable.
+
+## Current workflows
 
 | Workflow | Automatic triggers |
 | --- | --- |
 | Checks / Quality | PRs and pushes to main |
-| Checks / Memory safety | Nightly |
+| Checks / Memory safety | Relevant PRs and nightly/manual full suites |
 | Checks / Search evaluation | Relevant PRs and changes on main |
-| Acceptance / OCI | Relevant PRs and changes on main |
-| Acceptance / Consonance x86 | Relevant PRs and changes on main; nightly |
-| Acceptance / Workload backends | Relevant PRs and changes on main; nightly |
+| Acceptance / OCI | Bounded smoke on relevant PRs and main; deep nightly/manual |
+| Acceptance / Consonance x86 | Bounded smoke on relevant PRs and main; deep nightly/manual |
+| Acceptance / Workload backends | Bounded smoke on relevant PRs and main; deep nightly/manual |
 | Benchmarks / NES | Nightly, with parallel game/case jobs |
-| Benchmarks / Historical bugs | Nightly search; bounded replay on relevant PRs |
+| Smoke / PostgreSQL | Relevant PRs |
+| Benchmarks / Historical bugs | Nightly/manual search and replay panel |
 | Release / Harmony | Version tags |
 
-Benchmark workflows end with an always-running `report` job. It links each
-case's status, duration, and evidence artifacts, including failed cases. Existing
-case artifacts carry detailed outcomes, resource measurements, replay evidence,
-and videos where supported. Reports never turn a failed case into a success.
-There is no separate showcase workflow and reporting does not rerun search.
-The current game executables produce videos alongside their evaluation artifacts;
-the downstream report collects links to those outputs.
+## Skill evaluation boundary
 
-Use fail-fast: false on case matrices so one failure does not cancel other
-cases. Matrices share the owner's hosted-runner concurrency allowance with other
-workflows. Optional manual selectors narrow a multi-game suite; a Nova-only checkout
-runs Nova for both all and nova.
-ROM-dependent games stay in the local evaluation harness. New historical cases
-join the existing suite once implemented; documentation alone is not a runnable
-case. Known-bug replay and fixed-version checks stay inside that suite.
+The skill evaluator is not part of this checkout. When its `benchmarks/skills/`
+prerequisite lands, keep its two CI purposes separate:
+
+| Workflow | Automatic triggers | Owns |
+| --- | --- | --- |
+| Checks / Skill evaluator | Relevant PRs; manual guest qualification | Sandbox, build, guest-delivery, and grading qualification without model calls. Automatic jobs stay within 15 minutes; the guest job is manual-only and may use the 45-minute ceiling when given a trusted `guest_artifact_run_id`. |
+| Benchmarks / Developer skills | Nightly schedule; manual dispatch | Real-model investigation, integration, and end-to-end panels under their declared budgets. The job must fail before starting a paid attempt when provider credentials are missing. |
+
+The no-model runner and fixture qualification belong in `Checks / Skill
+evaluator`, alongside the other qualification harness checks. The benchmark
+workflow should invoke the shared runner for its panels without copying those
+checks or adding a real-model pull-request job. Do not add either workflow
+until the evaluator sources are present on the base branch; branch-only
+workflow definitions must not point at an absent `benchmarks/skills/` tree.
+
+## Job conventions
+
+Use `fail-fast: false` on case matrices so one failure does not cancel other
+cases. Benchmark workflows end with an always-running `report` job that links
+each case's status, duration, and evidence artifacts.
 
 Hardware qualification runs separately from public self-hosted CI.
-
-## Credentials
-
-The repository-managed pre-commit hook runs pinned detect-secrets via
-.pre-commit-config.yaml. It scans staged files offline, with credential
-verification disabled. Hex entropy detection is disabled because the repository
-contains many legitimate content hashes; other configured detectors remain active.
-Run scripts/install-quality-tools.sh to configure hooks, then install pre-commit
-and run pre-commit install-hooks as instructed. Do not replace core.hooksPath
-with a separate hook installation.
-
-GitHub native secret scanning and repository push protection provide centralized
-detection and blocking for supported token types. Neither covers every secret;
-local hooks may also be bypassed. A published credential must be revoked.
-
-TruffleHog is not required for normal commits. Its recommended pre-commit mode
-uses credential verification, which does not fit this repository's offline hook
-policy. A separate scanner should be added only for a demonstrated detection gap,
-with staged-file coverage, worktree behavior, latency, and network policy tested.

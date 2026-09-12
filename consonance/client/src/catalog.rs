@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Decode one SDK publisher's catalog and state events at a stopped evidence cut.
-//! The current event wire has no publisher identity. Multiple declarations are
-//! rejected so a client cannot silently merge colliding publisher registers.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Default)]

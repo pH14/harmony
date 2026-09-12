@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Replay-relevant engine lifecycle state, independent of vendor device records.
 
 use crate::snapshot::SnapshotError;
 use crate::vmm::TerminalReason;
@@ -39,7 +38,6 @@ impl EngineState {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, SnapshotError> {
         if bytes.is_empty() {
-            // Legacy snapshots had no engine record and restored as runnable.
             return Ok(Self::default());
         }
         if bytes.len() != 7 || bytes[..4] != [b'V', b'M', b'E', 1] {

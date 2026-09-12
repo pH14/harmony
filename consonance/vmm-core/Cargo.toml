@@ -18,7 +18,7 @@ workspace = true
 # (deny.toml [bans]) accepts the rule-2 sibling dependency — a bare `{ path }` is a
 # `*` requirement and would fail that gate. The path always wins for resolution.
 vmm-backend = { path = "../vmm-backend", version = "0.1.0" }
-# Rule-2 sibling exceptions (task 21): the V-time clock arithmetic and the seeded
+# Rule-2 sibling exception: the V-time clock arithmetic and the seeded
 # entropy stream both live *above* the `Backend` trait — vmm-core computes the
 # deterministic RDTSC = `VClock::tsc(work)` and the RDRAND/RDSEED bytes from the
 # same `SeededEntropy` stream the `Entropy` hypercall uses, so RDRAND and the
@@ -37,8 +37,8 @@ sha2 = "0.10"
 # Page-aligned, pinned host backing for `GuestRam` (rule-5 whitelist). Only used
 # off-Miri; under Miri `GuestRam` falls back to a `Vec<u8>` (see src/vmm.rs).
 memmap2 = "0.9"
-# Rule-2 sibling exception (task 30, Linux boot): the userspace xAPIC register
-# file + V-time timer (ruling R1) lives above the `Backend` trait — vmm-core
+# Rule-2 sibling exception (Linux boot): the userspace xAPIC register
+# file + V-time timer lives above the `Backend` trait — vmm-core
 # routes the guest's `0xFEE0_0000` MMIO into it and drives its timer off V-time.
 # Pure-logic, no_std, no features. Pinned `version` alongside `path` for
 # `cargo deny`'s wildcard ban (as for the other siblings).
@@ -47,12 +47,12 @@ lapic = { path = "../lapic", version = "0.1.0" }
 # generic-timer model, `tasks/112` M2) — the LAPIC's arm64 sibling, in the same
 # pure now_vns-in/deadlines-out shape. Pure-logic, no_std, no features.
 gicv3 = { path = "../gicv3", version = "0.1.0" }
-# bzImage / boot_params parsing for the Linux loader (task 30, rule-5 whitelist).
+# bzImage / boot_params parsing for the Linux loader (rule-5 whitelist).
 # `derive` for the `#[repr(C)]` boot-protocol structs; reads of the untrusted
 # image go through zerocopy's bounds-checked `read_from_prefix` (no panic, no
 # unsafe). Same 0.8 line `vm-state` already pins.
 zerocopy = { version = "0.8", features = ["derive"] }
-# Rule-2 sibling exceptions (task 39, live snapshot/branch — a REVIEWED dependency
+# Rule-2 sibling exceptions (live snapshot/branch — a REVIEWED dependency
 # addition, like the `kvm-*` deps): the two pure-logic snapshot crates the live
 # snapshot/branch path wires together. `snapshot-store` is the layered CoW guest-
 # memory page store (base + per-snapshot dirty-page overlays, content-addressed);
@@ -67,7 +67,7 @@ zerocopy = { version = "0.8", features = ["derive"] }
 snapshot-store = { path = "../snapshot-store", version = "0.1.0" }
 vm-state = { path = "../vm-state", version = "0.1.0" }
 
-# Task-58 frontier exceptions (the spec's surface list names vmm-core as the home
+# Frontier exceptions (the spec's surface list names vmm-core as the home
 # of the control-transport server): `control-proto` is dissonance's R2 wire
 # protocol (the versioned length-delimited codec + verb/reply types the server
 # speaks over a unix socket); `environment` owns the opaque `EnvSpec` reproducer
@@ -86,7 +86,7 @@ snapshot-store = { path = "../snapshot-store", version = "0.1.0", features = ["t
 # `mock` turns on `vmm_backend::MockBackend` — the scripted, no-`/dev/kvm`
 # substrate the pure-logic gates drive the event loop against (Mac + Linux).
 vmm-backend = { path = "../vmm-backend", version = "0.1.0", features = ["mock"] }
-# Wire the userspace xAPIC in the box-only `live_preemption` gate (task 47): that
+# Wire the userspace xAPIC in the box-only `live_preemption` gate: that
 # test boots the bare `irq-landing` payload on the patched backend, `wire_lapic`s a
 # timer, and proves preemption lands the LAPIC-timer interrupt mid-busy-spin. `lapic`
 # is already a (non-dev) sibling dependency; declared here so the integration test

@@ -1,20 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Bounded x86 CPU snapshot regression coverage.
-//!
-//! The live gate uses a deliberately small 32-bit protected-mode PAE guest. It
-//! fills the hardware PDPTR cache from one page directory, emits a scalar UART
-//! warmup while RAM still names that directory, then changes the guest PDPT in
-//! RAM without reloading CR3 and snapshots at the resulting PIO boundary. A
-//! complete save/encode/decode/restore must retain the cached page directory
-//! even though the RAM image now names another one.
-//!
-//! The warmup makes the fixture's starting point a valid running stop. It does
-//! not claim a particular KVM first-entry cache behavior; the earlier
-//! pre-first-entry explanation remains an unproven hypothesis.
-//!
-//! The KVM test is ignored because it needs Linux x86-64 `/dev/kvm`; the small
-//! mock test keeps the same page-aligned mapping and ownership seam exercised
-//! on every host, including under Miri.
 
 use vmm_backend::{Backend, CommonExit, Exit, Gpa, MockBackend, X86, X86Policy};
 use vmm_core::vendor::x86::contract;
@@ -26,8 +10,6 @@ use vmm_core::vmm::{GuestRam, TerminalReason, Vmm};
 
 const PAGE_SIZE: usize = 4096;
 
-/// The complete guest image is intentionally small enough to hash in the
-/// live gate while still placing both 2 MiB PAE mappings in one RAM slot.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const RAM_LEN: usize = 4 * 1024 * 1024;
 
@@ -48,24 +30,16 @@ const PD_A_GPA: usize = 0x5000;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const PD_B_GPA: usize = 0x6000;
 
-/// Entry 0 in the PDPT while the vCPU is configured. KVM loads this value into
-/// its cached PDPTR state when `SREGS2_FLAGS_PDPTRS_VALID` is supplied.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const PDPT_A_ENTRY: u64 = 0x5001;
-/// Entry 0 after the host mutates the guest RAM. The cached value must remain
-/// [`PDPT_A_ENTRY`] until the next architectural CR3/page-mode change.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const PDPT_B_ENTRY: u64 = 0x6001;
-/// `KVM_SREGS2_FLAGS_PDPTRS_VALID` from `asm/kvm.h`.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const SREGS2_FLAGS_PDPTRS_VALID: u64 = 1;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const IA32_EFER: u32 = 0xC000_0080;
-/// A scalar UART byte emitted before the RAM page-table mutation. It marks the
-/// running PIO boundary that every positive source arm reaches exactly once.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const WARMUP_MARKER: u8 = 0xA5;
-/// `mov edx, 0x3f8; mov al, WARMUP_MARKER; out dx, al`.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const WARMUP_LEN: usize = 5 + 2 + 1;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -78,9 +52,6 @@ const BASE_PROGRAM_LEN: usize = 21;
 const GUEST_PDPT_WRITE: [u8; GUEST_PDPT_WRITE_LEN] =
     [0xC7, 0x05, 0x00, 0x40, 0x00, 0x00, 0x01, 0x60, 0x00, 0x00];
 
-/// A short bound for this guest after the warmup: one UART exit followed by one
-/// HLT exit. The bound is test control only and never enters guest-visible state
-/// or hashing.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const MAX_STEPS: usize = 8;
 
@@ -91,10 +62,6 @@ fn production_policy() -> X86Policy {
     }
 }
 
-/// Compose a VMM after installing the production x86 policy and mapping its
-/// caller-owned, pinned RAM. `configure` runs after mapping so it can obtain a
-/// backend `save()` template (XSAVE/MSR shape is backend-specific) and restore
-/// an entry state over that template.
 fn compose<B, F>(mut guest_ram: GuestRam, mut backend: B, configure: F) -> Vmm<B>
 where
     B: Backend<A = X86>,
@@ -128,18 +95,11 @@ fn put_bytes(bytes: &mut [u8], gpa: usize, value: &[u8]) {
     bytes[gpa..gpa + value.len()].copy_from_slice(value);
 }
 
-/// Build the RAM image before it is handed to `Backend::map_memory`.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn guest_ram_image() -> GuestRam {
     let mut ram = GuestRam::new(RAM_LEN).expect("allocate guest RAM");
     let bytes = ram.as_mut_bytes();
 
-    // `mov edx, 0x3f8; mov al, WARMUP_MARKER; out dx, al; mov al, [0x8000];
-    // mov edx, 0x3f8; out dx, al; inc ebx; hlt` in a flat 32-bit code segment.
-    // The same bytes at the remapped physical address make a page directory
-    // mistake observable without introducing another exit. The UART port needs
-    // the DX form because OUT's immediate form is limited to an 8-bit port
-    // number.
     let program = [
         0xBA,
         0xF8,
@@ -168,16 +128,10 @@ fn guest_ram_image() -> GuestRam {
     bytes[DATA_GPA] = 0x42;
     bytes[REMAPPED_DATA_GPA] = 0x99;
 
-    // PDPT entry 0 initially points to PD A. Both directory entries are
-    // present, writable, and 2 MiB pages (`PS`), with PD B mapping VA 0..2 MiB
-    // to physical 2..4 MiB.
     put_u64(bytes, PDPT_GPA, PDPT_A_ENTRY);
     put_u64(bytes, PD_A_GPA, 0x83);
     put_u64(bytes, PD_B_GPA, 0x20_00_83);
 
-    // A real flat GDT backs the cached segment descriptors. The CPU uses the
-    // descriptor-cache values supplied below; the table makes the setup
-    // self-describing if KVM validates a selector against the guest image.
     put_u64(bytes, GDT_GPA, 0);
     put_u64(bytes, GDT_GPA + 8, 0x00CF_9B00_0000_FFFF);
     put_u64(bytes, GDT_GPA + 16, 0x00CF_9300_0000_FFFF);
@@ -185,9 +139,6 @@ fn guest_ram_image() -> GuestRam {
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-/// Prefix both physical copies of the guest program with a guest-authored
-/// PDPT write. The original 21-byte program remains unchanged after the
-/// prefix, so the only added behavior is the guest RAM mutation.
 fn guest_ram_image_with_guest_pdpt_write() -> GuestRam {
     let mut ram = guest_ram_image();
     let bytes = ram.as_mut_bytes();
@@ -240,9 +191,6 @@ fn data_segment() -> vmm_backend::Segment {
     }
 }
 
-/// Overlay a 32-bit protected-mode PAE state onto a backend's valid save
-/// template. The template supplies host-sized XSAVE and the exact allow-stateful
-/// MSR key set required by a live KVM restore.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn install_pae_entry<B: Backend<A = X86>>(backend: &mut B) {
     let mut state = backend.save().expect("save backend entry template");
@@ -284,9 +232,6 @@ fn wire_snapshot_path<B: Backend<A = X86>>(vmm: &mut Vmm<B>) {
     vmm.wire_snapshot_hashing();
 }
 
-/// Change only the guest RAM's PDPT entry. This host write executes no guest
-/// instruction and does not reload CR3, so the backend's cached PDPTR remains
-/// the entry for PD A.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn switch_guest_pdpt_to_b<B: Backend<A = X86>>(vmm: &mut Vmm<B>) {
     let mut page = [0u8; PAGE_SIZE];
@@ -297,8 +242,6 @@ fn switch_guest_pdpt_to_b<B: Backend<A = X86>>(vmm: &mut Vmm<B>) {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn run_warmup<B: Backend<A = X86>>(vmm: &mut Vmm<B>) {
-    // This is the canonical running PIO boundary: the first guest entry has
-    // already executed the scalar warmup OUT while RAM still points at PD A.
     assert_eq!(
         vmm.step().expect("run scalar UART warmup"),
         Step::Continued,
@@ -448,11 +391,6 @@ mod live_kvm {
     const MMIO_CODE_GPA: usize = 0x1000;
     const MMIO_TPR_GPA: u64 = 0xFEE0_0080;
     const MMIO_TPR_VALUE: u32 = 5;
-    /// `ADD dword ptr [0xFEE0_0080], 5; INC BX; HLT`.
-    ///
-    /// The address-size and operand-size prefixes make the first instruction
-    /// nine bytes long while the final `INC BX` remains the one-byte real-mode
-    /// witness. KVM exposes the xAPIC read and write as two userspace exits.
     const MMIO_PROGRAM: [u8; 11] = [
         0x67,
         0x66,
@@ -501,10 +439,6 @@ mod live_kvm {
         ram
     }
 
-    /// Overlay a flat real/unreal-mode entry state onto KVM's valid save
-    /// template. The 32-bit address-size prefix still uses the data segment's
-    /// hidden limit, so the maximal DS limit is what lets the instruction reach
-    /// the xAPIC page above the 64 KiB RAM image.
     fn install_mmio_entry<B: Backend<A = X86>>(backend: &mut B) {
         let mut state = backend.save().expect("save MMIO entry template");
         state.sregs.cs.base = 0;
@@ -512,7 +446,6 @@ mod live_kvm {
         state.sregs.ds.base = 0;
         state.sregs.ds.selector = 0;
         state.sregs.ds.limit = u32::MAX;
-        // VM entry requires page granularity for this 4 GiB effective limit.
         state.sregs.ds.g = 1;
         state.regs.rip = MMIO_CODE_GPA as u64;
         state.regs.rflags = 0x2;
@@ -564,9 +497,6 @@ mod live_kvm {
         std::env::var_os(variable).map(std::path::PathBuf::from)
     }
 
-    /// Retain raw phase bytes before a later cross-arm assertion can discard
-    /// the useful failure evidence. Reports are opt-in so the regression stays
-    /// portable; the hosted KVM workflow supplies the directory.
     fn retain_capture(
         root: Option<&std::path::Path>,
         label: &str,
@@ -617,10 +547,6 @@ mod live_kvm {
             .expect("write endpoint summary report");
     }
 
-    /// Read the LAPIC TPR from the opaque x86 device record after the public
-    /// `VmState` codec has decoded it. This keeps the test independent of a
-    /// product-only inspection accessor while proving the RMW's device result
-    /// itself was saved and restored.
     fn lapic_tpr(state: &vm_state::VmState) -> u32 {
         let bytes = &state.devices.0;
         let read_u32 = |offset: usize| {
@@ -724,9 +650,6 @@ mod live_kvm {
     fn mmio_rmw_finishes_before_full_vmm_snapshot() {
         require_kvm();
 
-        // The uninterrupted run establishes the reference stop and endpoint.
-        // The single first step must drain the ADD's LAPIC read and write before
-        // exposing the boundary; the INC witness must still be pending there.
         let mut uninterrupted = fresh_mmio_vmm();
         let before_vns = uninterrupted
             .effective_vns()
@@ -738,9 +661,6 @@ mod live_kvm {
         let uninterrupted_stop = capture_mmio_boundary(&uninterrupted, before_vns);
         let uninterrupted_endpoint = continue_to_hlt(&mut uninterrupted);
 
-        // A save-and-continue source must have the same complete state at the
-        // same serviced-instruction boundary. Repeated snapshot/capture calls
-        // are a fixpoint: they do not execute the successor or add exits.
         let mut save_and_continue = fresh_mmio_vmm();
         let save_before_vns = save_and_continue
             .effective_vns()
@@ -776,9 +696,6 @@ mod live_kvm {
         assert_eq!(bx, 0, "repeated capture must not retire INC BX");
         let save_and_continue_endpoint = continue_to_hlt(&mut save_and_continue);
 
-        // Restore the complete saved state into a fresh production-composed
-        // VMM. The fresh target has no prior exits, but its restored state and
-        // continuation must match the two source paths byte for byte.
         let mut cold = fresh_mmio_vmm();
         cold.restore_snapshot(&save_stop.memory, &save_stop.state)
             .expect("restore full MMIO VM snapshot");
@@ -814,7 +731,6 @@ mod live_kvm {
             "cold restore MMIO endpoint differs from the source; retained evidence is available"
         );
 
-        // The final instruction retired only after the stop was captured.
         assert_eq!(
             uninterrupted
                 .vcpu_record()
@@ -845,9 +761,6 @@ mod live_kvm {
     fn pae_cached_pdptrs_survive_full_vmm_snapshot_restore() {
         require_kvm();
 
-        // Uninterrupted reference: configure with PD A and execute the exact
-        // warmup that establishes the running PIO boundary before mutating RAM
-        // to PD B. No snapshot operation intervenes.
         let mut uninterrupted = fresh_vmm(true);
         wire_snapshot_path(&mut uninterrupted);
         run_warmup(&mut uninterrupted);
@@ -861,9 +774,6 @@ mod live_kvm {
         assert_eq!(saved_at_warmup.sregs.pdptrs[0], PDPT_A_ENTRY);
         let uninterrupted_endpoint = run_bounded(&mut uninterrupted, 0x42, PDPT_A_ENTRY);
 
-        // Save-and-continue: execute the same warmup, mutate RAM, and capture at
-        // the same running PIO boundary. This proves save/encode/decode itself
-        // does not advance time, retire an instruction, or rewrite the cache.
         let mut save_and_continue = fresh_vmm(true);
         wire_snapshot_path(&mut save_and_continue);
         run_warmup(&mut save_and_continue);
@@ -875,9 +785,6 @@ mod live_kvm {
         );
         let save_and_continue_endpoint = run_bounded(&mut save_and_continue, 0x42, PDPT_A_ENTRY);
 
-        // Fresh restore: the target starts with RAM's original PD A entry and a
-        // reset vCPU. restore_snapshot first restores the cached A PDPTRs, then
-        // copies the captured RAM image whose PDPT entry is B.
         let mut restored = fresh_vmm(false);
         wire_snapshot_path(&mut restored);
         restored
@@ -899,18 +806,11 @@ mod live_kvm {
             "fresh restore must reproduce CPU, RAM, VMM bytes, hash, UART, and V-time"
         );
 
-        // Negative control: with the saved validity bit and cached pointers
-        // explicitly removed, KVM must consult RAM's PD B and expose 0x99. If
-        // this fails on a host, retain the failure as evidence about that KVM
-        // implementation; the positive regression must not be weakened.
         let mut no_cached_pdptrs = capture.state.clone();
         no_cached_pdptrs.sregs.flags &= !SREGS2_FLAGS_PDPTRS_VALID;
         no_cached_pdptrs.sregs.pdptrs = [0; 4];
         let mut negative = fresh_vmm(false);
         wire_snapshot_path(&mut negative);
-        // `restore_snapshot` restores CPU state before copying the RAM image.
-        // Seed the target RAM with PD B so a restore without explicit PDPTRs
-        // makes KVM load B from memory during its `SET_SREGS2` operation.
         switch_guest_pdpt_to_b(&mut negative);
         negative
             .restore_snapshot(&capture.memory, &no_cached_pdptrs)
@@ -1133,37 +1033,36 @@ mod live_kvm {
     const XSAVE_PROGRAM_LEN: usize = 34;
     const XSAVE_ENDPOINT_RIP: usize = CODE_GPA + XSAVE_PROGRAM_LEN;
     const XSAVE_MARKER: u8 = 0x42;
-    /// `FNINIT; UART A5; EAX=3, EDX=0; XSAVE [0x9000]; UART 42; INC EBX; HLT`.
     const XSAVE_PROGRAM: [u8; XSAVE_PROGRAM_LEN] = [
         0xDB,
-        0xE3, // FNINIT
+        0xE3,
         0xBA,
         0xF8,
         0x03,
         0x00,
-        0x00, // MOV EDX, 0x3f8
+        0x00,
         0xB0,
         WARMUP_MARKER,
-        0xEE, // OUT DX, AL
+        0xEE,
         0xB8,
         0x03,
         0x00,
         0x00,
-        0x00, // MOV EAX, 3
+        0x00,
         0x31,
-        0xD2, // XOR EDX, EDX
+        0xD2,
         0x0F,
         0xAE,
         0x25,
         0x00,
         0x90,
         0x00,
-        0x00, // XSAVE [0x9000]
+        0x00,
         0xBA,
         0xF8,
         0x03,
         0x00,
-        0x00, // MOV EDX, 0x3f8
+        0x00,
         0xB0,
         XSAVE_MARKER,
         0xEE,
@@ -1183,9 +1082,9 @@ mod live_kvm {
     fn install_xsave_entry(backend: &mut KvmBackend) {
         install_pae_entry(backend);
         let mut state = backend.save().expect("save XSAVE entry template");
-        state.sregs.cr4 |= (1 << 9) | (1 << 18); // OSFXSR | OSXSAVE
-        state.sregs.cr0 &= !((1 << 2) | (1 << 3)); // EM | TS clear
-        state.xcr0 = 3; // x87 + SSE
+        state.sregs.cr4 |= (1 << 9) | (1 << 18);
+        state.sregs.cr0 &= !((1 << 2) | (1 << 3));
+        state.xcr0 = 3;
         backend
             .restore(&state)
             .expect("restore XSAVE-capable entry state");

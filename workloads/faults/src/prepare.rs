@@ -1,11 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Prepare an OCI workload and the in-guest fault agent for deterministic
-//! execution.
-//!
-//! The image contract is one file: `/etc/harmony/bundle`, the agent's own
-//! bundle format. It names the workload's nodes, its hooks, its readiness
-//! command and its one-time setup command, so the host learns the action
-//! alphabet from the same text the guest agent obeys.
 
 use std::{error::Error, path::Path};
 
@@ -14,34 +7,20 @@ use oci_support::image::Ownership;
 
 use crate::bundle::FaultVocabulary;
 
-/// Path the bundle occupies inside the workload image, and inside the guest.
 pub const BUNDLE_PATH: &str = "etc/harmony/bundle";
 
-/// A staged workload image and the action alphabet it declares.
 pub struct Prepared {
-    /// Nodes, hooks and places the bundle declares.
     pub vocabulary: FaultVocabulary,
-    /// The bundle text, kept so a report can pin the exact contract.
     pub bundle: String,
-    /// The assembled guest initramfs.
     pub initramfs: Vec<u8>,
 }
 
-/// Stage an OCI image without executing its commands on the host.
-///
-/// # Errors
-///
-/// Returns an error when the image cannot be staged, declares no bundle, or
-/// declares one this package cannot act on.
 pub fn prepare_oci(image: &str, base: &[u8], agent: &[u8]) -> Result<Prepared, Box<dyn Error>> {
     let staging = tempfile::tempdir()?;
     let staged = oci_support::image::stage(image, staging.path())?;
     prepare_rootfs(&staged.rootfs, &staged.owners, base, agent)
 }
 
-/// Assemble the guest initramfs from a staged rootfs. `owners` is the owner
-/// each rootfs entry gets in the guest: a node that drops privileges to the
-/// image's service account can only open what that account owns.
 fn prepare_rootfs(
     rootfs: &Path,
     owners: &Ownership,
@@ -67,8 +46,6 @@ fn prepare_rootfs(
     overlay.file("harmony-oci/rootfs/opt/harmony/fault-agent", 0o755, agent);
     overlay.file("init", 0o755, INIT);
     let control = overlay.finish();
-    // Linux accepts the next raw cpio header only at a four-byte boundary
-    // after decompressing the preceding initramfs member.
     let padding = (4 - image.len() % 4) % 4;
     image.resize(image.len() + padding, 0);
     image.extend(control);
@@ -254,7 +231,6 @@ ready /usr/bin/etcdctl endpoint health
         );
     }
 
-    /// One `newc` entry: its name, `(uid, gid)`, and the offset of the next.
     fn cpio_entry(bytes: &[u8], at: usize) -> (String, (u32, u32), usize) {
         let field = |i: usize| {
             let text = std::str::from_utf8(&bytes[at + 6 + 8 * i..at + 6 + 8 * (i + 1)]).unwrap();
@@ -271,10 +247,6 @@ ready /usr/bin/etcdctl endpoint health
         (name, (uid, gid), next)
     }
 
-    /// A node that drops to the image's service account can only open data
-    /// that account owns in the guest, so the owner the image recorded has to
-    /// survive into the initramfs even though the staged tree on the host
-    /// belongs to whoever ran the staging.
     #[test]
     fn assembled_initramfs_keeps_the_owner_the_image_gave_each_entry() {
         let root = tempfile::tempdir().unwrap();

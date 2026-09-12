@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Retrospective evidence replay. Never submits retained tapes to search.
 
 use nes_workload::{
     metroid::{
@@ -43,7 +42,11 @@ fn replay(
         return Err("game must be metroid or mm2".into());
     }
     let mut target = MetroidTarget::from_rom_bytes_headless(rom, core, core_hash)?;
-    let setup_frames = target.frames_clocked();
+    let setup_frames: u64 = target
+        .genesis_prefix()
+        .iter()
+        .map(|action| u64::from(action.hold_frames))
+        .sum();
     let mut progress = NamedProgress::default();
     let mut cells = BTreeSet::new();
     progress.observe(&target.observe(), 0, 0);
@@ -76,7 +79,9 @@ fn replay(
         "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
         "named_progress": progress, "observed_map_cells": area_cells,
         "endpoint": target.mechanical_state(), "route_frames": target.observe().frame_count,
-        "physical_frames_including_setup": target.frames_clocked(), "setup_frames": setup_frames,
+        "execution_work_frames": target.execution_work(),
+        "execution_work_scope": "post_setup_action_frames; probes and backend snapshot replay excluded",
+        "setup_frames": setup_frames,
         "snapshot_sha256": format!("{:x}", Sha256::digest(postcard::to_allocvec(&target.snapshot().ok_or("snapshot failed")?)?))
     }))
 }

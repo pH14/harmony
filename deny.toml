@@ -30,7 +30,7 @@ wildcards = "deny"
 multiple-versions = "warn"
 
 [licenses]
-# Our own first-party crates are AGPL-3.0-or-later (task 91). Every *dependency*
+# Our own first-party crates are AGPL-3.0-or-later. Every *dependency*
 # must be AGPL-compatible-as-inbound — i.e. its terms may be combined into an
 # AGPLv3 work. The permissive licenses below (MIT / Apache-2.0 / BSD / Unicode /
 # NCSA / Zlib / BSL-1.0) and the file-scoped MPL-2.0 all satisfy that
@@ -55,10 +55,6 @@ allow = [
   # Permissive transitive build/runtime dependencies used by the guest tools.
   "Zlib",
   "BSL-1.0",
-  # option-ext through tetanes-core -> dirs. MPL-2.0 permits distribution of
-  # the larger combined work under GPLv3/AGPLv3 while retaining MPL terms on
-  # option-ext's own files.
-  "MPL-2.0",
   # NCSA (University of Illinois/NCSA Open Source License): the LLVM libFuzzer
   # runtime pulled by libfuzzer-sys in the cargo-fuzz harnesses. Permissive,
   # FSF-certified GPL/AGPL-compatible.

@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Nova implementation of the game-neutral campaign interface.
-
 use std::{
     error::Error,
     io::Write,
@@ -30,11 +28,12 @@ use crate::{
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCheckpoint, CampaignConfig,
             CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
-            CampaignStreamHeader, CampaignTypes, Evaluation, GamePolicies, InputPolicy, Reporting,
-            SnapshotCheckpoint, TargetExecution, postcard_value_sha256,
+            CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy, Reporting,
+            SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_value_sha256,
             replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
 };
@@ -47,9 +46,7 @@ use crate::{
 ))]
 use machine::consonance::{ConsonanceMachine, identity as consonance_identity};
 
-/// Stream format written by Nova campaigns.
 pub const CAMPAIGN_STREAM_FORMAT: &str = "nova-quicknes-campaign-stream-v1";
-/// Snapshot checkpoint format written by Nova campaigns.
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "nova-quicknes-snapshot-checkpoint-v1";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
@@ -67,11 +64,9 @@ const VIABILITY_PROBE_FRAMES: u16 = 60;
 type NovaPreference = (u8, u8, u8, bool, u8, u8);
 type NovaChampionKey = (NovaProgressWatermark, NovaPreference);
 
-/// Header placeholder for a game with no adaptive draw table.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NovaNoTableHeader;
 
-/// ROM and emulator identity shared by Nova workers.
 pub struct NovaGame<M: NovaMachineKind = QuickNesMachine> {
     rom: Vec<u8>,
     level: NovaLevel,
@@ -80,16 +75,12 @@ pub struct NovaGame<M: NovaMachineKind = QuickNesMachine> {
     runtime: M::Configuration,
 }
 
-/// Machine construction used by a Nova campaign.
 #[doc(hidden)]
 pub trait NovaMachineKind: Machine + Sized {
-    /// Prepared runtime data for this concrete backend.
     type Configuration: Sync;
-    /// Construct one worker-local machine and seal Nova gameplay genesis.
     fn new_nova_target(game: &NovaGame<Self>) -> Result<NovaTarget<Self>, String>;
 }
 
-/// Native runtime artifacts, validated by the QuickNES driver.
 pub struct NativeConfiguration {
     core_path: PathBuf,
     core_sha256: String,
@@ -113,7 +104,6 @@ impl NovaMachineKind for QuickNesMachine {
     any(target_arch = "x86_64", target_arch = "aarch64"),
     not(miri)
 ))]
-/// Prepared controlled Linux artifacts for the VM backend.
 pub struct ConsonanceConfiguration {
     kernel: Vec<u8>,
     initramfs: Vec<u8>,
@@ -141,14 +131,11 @@ impl NovaMachineKind for ConsonanceMachine {
 }
 
 impl NovaGame<QuickNesMachine> {
-    /// Build a game context over a pinned QuickNES core.
     #[must_use]
     pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
         Self::new_at_level(rom, core_path, core_sha256, NovaLevel::default())
     }
 
-    /// Build a game context whose sealed genesis starts at one independently
-    /// selected Nova campaign level.
     #[must_use]
     pub fn new_at_level(rom: &[u8], core_path: &Path, core_sha256: &str, level: NovaLevel) -> Self {
         let identity = format!(
@@ -170,7 +157,6 @@ impl NovaGame<QuickNesMachine> {
         }
     }
 
-    /// Build from the external core named by `HARMONY_QUICKNES_CORE`.
     pub fn from_environment(rom: &[u8]) -> Result<Self, Box<dyn Error>> {
         let core_path = PathBuf::from(
             std::env::var_os("HARMONY_QUICKNES_CORE")
@@ -188,7 +174,6 @@ impl NovaGame<QuickNesMachine> {
     not(miri)
 ))]
 impl NovaGame<ConsonanceMachine> {
-    /// Build a Nova game whose evaluator runs QuickNES inside Consonance.
     #[must_use]
     pub fn new_consonance(rom: &[u8], kernel: &[u8], initramfs: &[u8]) -> Self {
         Self {
@@ -208,7 +193,6 @@ impl NovaGame<ConsonanceMachine> {
 }
 
 impl<M: NovaMachineKind> NovaGame<M> {
-    /// Continue through level clears and stop only once all levels are cleared.
     #[must_use]
     pub fn with_whole_game(mut self) -> Self {
         self.whole_game = true;
@@ -223,24 +207,20 @@ impl<M: NovaMachineKind> NovaGame<M> {
         }
     }
 
-    /// Pinned emulator identity recorded in streams.
     #[must_use]
     pub fn emulator_identity(&self) -> &str {
         &self.identity
     }
 
-    /// One-based Nova campaign level used to construct target genesis.
     #[must_use]
     pub fn level(&self) -> NovaLevel {
         self.level
     }
 }
 
-/// Nova's fixed recorded run policy.
 #[derive(Clone, Copy, Debug)]
 pub struct NovaCampaignRun;
 
-/// Game-owned campaign evidence.
 #[derive(Clone, Default)]
 pub struct NovaCampaignEvidence {
     aggregate: NovaMilestones,
@@ -252,19 +232,13 @@ pub struct NovaCampaignEvidence {
     champion_key: Option<NovaChampionKey>,
 }
 
-/// Nova campaign origin.
 pub type NovaCampaignOrigin<M = QuickNesMachine> = CampaignOrigin<NovaGame<M>>;
-/// Nova resume checkpoint.
 pub type NovaCampaignCheckpoint<M = QuickNesMachine> =
     CampaignCheckpoint<NovaSnapshot<<M as Machine>::Portable>>;
-/// Nova whole-tree snapshot checkpoint.
 pub type NovaSnapshotCheckpoint<M = QuickNesMachine> =
     SnapshotCheckpoint<NovaSnapshot<<M as Machine>::Portable>>;
-/// Nova stream header.
 pub type NovaCampaignStreamHeader = CampaignStreamHeader<NovaNoTableHeader>;
-/// Nova campaign report.
 pub type NovaCampaignModeReport = CampaignModeReport<ButtonChord, NovaArchiveReport>;
-/// Nova progress sidecar record.
 pub type NovaCampaignProgressRecord = CampaignProgressRecord<NovaArchiveKey>;
 type NovaCampaignActionResult<M> = CampaignActionResult<NovaGame<M>>;
 type NovaCampaignJobResult<M> = CampaignJobResult<NovaGame<M>>;
@@ -280,9 +254,7 @@ struct NovaResultAction<'a> {
     action: ButtonChord,
     observations: &'a [NovaObservations],
     milestones: NovaMilestones,
-    dead: bool,
-    victory: bool,
-    failed: bool,
+    outcome: Outcome,
     candidate: Option<NovaResultCandidate<'a>>,
 }
 
@@ -301,9 +273,7 @@ fn nova_result_sha256<M: NovaMachineKind>(
             action: action.action,
             observations: &action.observations,
             milestones: action.milestones,
-            dead: action.dead,
-            victory: action.victory,
-            failed: action.failed,
+            outcome: action.outcome,
             candidate: action
                 .candidate
                 .as_ref()
@@ -316,38 +286,21 @@ fn nova_result_sha256<M: NovaMachineKind>(
     postcard_value_sha256(&NovaResult { actions })
 }
 
-/// Fixed configuration for one live Nova campaign.
 pub struct NovaCampaignConfig {
-    /// Campaign seed.
     pub campaign_seed: u64,
-    /// Worker thread count.
     pub workers: u32,
-    /// Admitted execution budget.
     pub execution_budget: u64,
-    /// Maximum actions in one clean-reset input.
     pub action_limit: usize,
-    /// Operator-supplied host label.
     pub host: String,
-    /// Optional live-only wall cutoff.
     pub wall_budget: Option<std::time::Duration>,
-    /// Live-only: continue issuing reservations after the first victory until
-    /// another live limit stops the run. Never recorded or used by replay.
     pub continue_after_victory: bool,
-    /// Maximum retained archive entries.
     pub archive_entry_limit: usize,
-    /// Deterministic logical-memory budget for live search structures.
     pub memory_budget_mib: Option<usize>,
-    /// Live-only: materialize full archive inputs and snapshots at completion.
     pub materialize_final_artifacts: bool,
-    /// Admission policy.
     pub retention: RetentionPolicy,
-    /// Generic parent selector.
     pub selector: crate::search::archive::SelectorPolicy,
-    /// Generic suffix-length shape.
     pub suffix: SuffixShape,
-    /// Generic draw mixture.
     pub mixture: DrawMixture,
-    /// Live-only path receiving the first level-clearing input.
     pub victory_input_path: Option<PathBuf>,
 }
 
@@ -360,7 +313,8 @@ impl NovaCampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
-            continue_after_victory: self.continue_after_victory,
+            stop_rollout_on_objective: !self.continue_after_victory,
+            stop_campaign_on_objective: !self.continue_after_victory,
             archive_entry_limit: self.archive_entry_limit,
             reservations_per_worker:
                 crate::search::campaign::DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
@@ -371,12 +325,12 @@ impl NovaCampaignConfig {
             mixture: self.mixture,
             retention: self.retention,
             selector: self.selector.clone(),
-            victory_input_path: self.victory_input_path.clone(),
+            objective_witness_path: self.victory_input_path.clone(),
         }
     }
 }
 
-fn recorded<'a>(policies: &'a GamePolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
+fn recorded<'a>(policies: &'a WorkloadPolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
     policies
         .get(field)
         .map(String::as_str)
@@ -388,9 +342,6 @@ fn merge_action_milestones<M: Machine>(
     target: &NovaTarget<M>,
 ) -> Result<(), Box<dyn Error>> {
     if target.exit_kind() != ExitKind::Ok {
-        // A target failure is an ordinary terminal search result. Its action
-        // may not have produced a complete observation, so retain the
-        // parent's milestones and let the generic campaign record `failed`.
         return Ok(());
     }
     for observation in target.last_action_observations() {
@@ -466,7 +417,7 @@ impl<M: NovaMachineKind> CampaignTypes for NovaGame<M> {
     type Run = NovaCampaignRun;
     type DrawState = ();
     type DrawCheckpoint = ();
-    type TableHeader = NovaNoTableHeader;
+    type DrawHeader = NovaNoTableHeader;
 }
 
 impl<M: NovaMachineKind> Reporting for NovaGame<M> {
@@ -476,8 +427,14 @@ impl<M: NovaMachineKind> Reporting for NovaGame<M> {
     fn checkpoint_format(&self) -> &'static str {
         SNAPSHOT_CHECKPOINT_FORMAT
     }
-    fn image_sha256(&self) -> String {
+    fn workload_identity_sha256(&self) -> String {
         format!("{:x}", Sha256::digest(&self.rom))
+    }
+    fn action_cost_unit(&self) -> &'static str {
+        "frames"
+    }
+    fn execution_work_unit(&self) -> &'static str {
+        "frames"
     }
     fn result_sha256(&self, result: &NovaCampaignJobResult<M>) -> Result<String, Box<dyn Error>> {
         nova_result_sha256(result)
@@ -500,7 +457,9 @@ impl<M: NovaMachineKind> Reporting for NovaGame<M> {
             progress_curve: state.progress_curve,
             retained: state.retained,
             rejected: state.rejected,
-            deaths: state.deaths,
+            deaths: state
+                .terminal_endpoints
+                .saturating_sub(state.terminal_objectives),
             selector: state.selector,
         }
     }
@@ -517,7 +476,7 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
     fn draw_state_memory_bytes(&self, _state: &()) -> usize {
         0
     }
-    fn policies(&self, _run: &NovaCampaignRun) -> GamePolicies {
+    fn policies(&self, _run: &NovaCampaignRun) -> WorkloadPolicies {
         [
             (
                 CONTROLLER_VOCABULARY_FIELD,
@@ -543,7 +502,10 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
         )))
         .collect()
     }
-    fn resolve_recorded(&self, policies: &GamePolicies) -> Result<NovaCampaignRun, Box<dyn Error>> {
+    fn resolve_recorded(
+        &self,
+        policies: &WorkloadPolicies,
+    ) -> Result<NovaCampaignRun, Box<dyn Error>> {
         let expected = self.policies(&NovaCampaignRun);
         if policies != &expected {
             for (field, value) in &expected {
@@ -588,7 +550,7 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
         }
     }
 
-    fn longest_action_time(&self) -> u64 {
+    fn max_action_cost(&self) -> u64 {
         u64::from(crate::nova::archive::LONGEST_HOLD_FRAMES)
     }
 }
@@ -610,8 +572,8 @@ impl<M: NovaMachineKind> TargetExecution for NovaGame<M> {
     ) -> Result<(), Box<dyn Error>> {
         target.restore(snapshot)
     }
-    fn frames_clocked(&self, target: &NovaTarget<M>) -> u64 {
-        target.frames_clocked()
+    fn execution_work(&self, target: &NovaTarget<M>) -> u64 {
+        target.execution_work()
     }
     fn apply_action(
         &self,
@@ -623,7 +585,11 @@ impl<M: NovaMachineKind> TargetExecution for NovaGame<M> {
         merge_action_milestones(aggregate, target)
     }
     fn rollout_observations(&self, target: &NovaTarget<M>) -> Vec<NovaObservations> {
-        target.last_action_observations().to_vec()
+        if target.exit_kind() != ExitKind::Ok {
+            Vec::new()
+        } else {
+            target.last_action_observations().to_vec()
+        }
     }
     fn rollout_probe(
         &self,
@@ -642,7 +608,7 @@ impl<M: NovaMachineKind> TargetExecution for NovaGame<M> {
             .ok_or_else(|| "failed to snapshot Nova".into())
     }
 
-    fn action_time_fn(&self) -> fn(&ButtonChord) -> u64 {
+    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
 
@@ -760,30 +726,39 @@ impl<M: NovaMachineKind> Evaluation for NovaGame<M> {
             .ok_or_else(|| "Nova source archive has no retained entries".into())
     }
 
-    fn is_terminal(&self, target: &NovaTarget<M>) -> bool {
-        target.is_dead() || target.exit_kind() != ExitKind::Ok
+    fn execution_disposition(&self, target: &NovaTarget<M>) -> ExecutionDisposition {
+        if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_dead() || (!self.whole_game && target.cleared_a_level()) {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        }
     }
 
-    fn is_run_terminal(
+    fn objective_reached(
         &self,
         _run: &NovaCampaignRun,
         target: &NovaTarget<M>,
     ) -> Result<bool, Box<dyn Error>> {
-        if target.exit_kind() != ExitKind::Ok {
-            return Err("Nova terminal predicate cannot inspect a failed emulator".into());
-        }
-        Ok(target.is_dead() || self.terminal_reached(target))
+        Ok(target.exit_kind() == ExitKind::Ok && self.terminal_reached(target))
     }
 
     fn rollout_outcome(
         &self,
         _run: &NovaCampaignRun,
         target: &NovaTarget<M>,
-    ) -> Result<crate::search::rollout::Outcome, Box<dyn Error>> {
-        Ok(crate::search::rollout::Outcome {
-            dead: target.is_dead(),
-            victory: self.terminal_reached(target),
-            failed: target.exit_kind() != ExitKind::Ok,
+    ) -> Result<Outcome, Box<dyn Error>> {
+        let objective_reached = self.objective_reached(&NovaCampaignRun, target)?;
+        Ok(Outcome {
+            objective_reached,
+            disposition: if target.exit_kind() != ExitKind::Ok {
+                ExecutionDisposition::Failed
+            } else if target.is_dead() || (!self.whole_game && objective_reached) {
+                ExecutionDisposition::Terminal
+            } else {
+                ExecutionDisposition::Runnable
+            },
         })
     }
 
@@ -800,7 +775,6 @@ impl<M: NovaMachineKind> Evaluation for NovaGame<M> {
     }
 }
 
-/// Run a Nova campaign and return its report plus whole-tree checkpoint.
 pub fn run_nova_campaign_checkpointed<M: NovaMachineKind>(
     game: &NovaGame<M>,
     config: &NovaCampaignConfig,
@@ -811,7 +785,6 @@ pub fn run_nova_campaign_checkpointed<M: NovaMachineKind>(
     run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)
 }
 
-/// Replay a recorded Nova stream exactly.
 pub fn replay_nova_campaign_checkpointed<M: NovaMachineKind>(
     game: &NovaGame<M>,
     stream_bytes: &[u8],
@@ -842,9 +815,7 @@ mod tests {
                 action: ButtonChord::new(0x81, 3),
                 observations: vec![observation.clone()],
                 milestones: NovaMilestones::default(),
-                dead: false,
-                victory: false,
-                failed: false,
+                outcome: Outcome::default(),
                 candidate: Some(CampaignCandidate {
                     key: archive_key(state),
                     viable: true,
@@ -874,8 +845,6 @@ mod tests {
         let level = NovaLevel::from_number(17).expect("level");
         let game = NovaGame::new_at_level(&[1, 2, 3], Path::new("core.so"), &"a".repeat(64), level);
         assert_eq!(game.level(), level);
-        // This is the native identity emitted before the package extraction;
-        // changing it would make existing Nova streams unreplayable.
         assert_eq!(
             game.emulator_identity(),
             format!(

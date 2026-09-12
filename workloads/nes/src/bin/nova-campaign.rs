@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Run a bounded Nova the Squirrel campaign and render its champion.
-
 use std::{
     env,
     error::Error,
@@ -80,8 +78,6 @@ impl Args {
                 continue;
             }
             if flag == "--fixed-execution-soak" {
-                // Throughput acceptance runs must reach their exact budget
-                // even when ordinary search finds a victory first.
                 fixed_execution_soak = true;
                 continue;
             }
@@ -161,7 +157,7 @@ fn campaign_config(args: &Args) -> NovaCampaignConfig {
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
-        retention: RetentionPolicy::AdmitAlive,
+        retention: RetentionPolicy::Unprobed,
         selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
             entry: 3,
             groups: vec![6, 12, 2],
@@ -193,7 +189,7 @@ fn run_marketing_soak(
     drop(checkpoint);
 
     let best_input = live
-        .victory_input
+        .objective_witness
         .as_ref()
         .unwrap_or(&live.archive.champion_input)
         .clone();
@@ -211,14 +207,14 @@ fn run_marketing_soak(
         "execution_budget": live.execution_budget,
         "executions": live.executions_completed,
         "execution_budget_exact": live.executions_completed == live.execution_budget,
-        "frames_emulated": live.frames_emulated,
+        "frames_emulated": live.execution_work,
         "stream_sha256": &live.stream_sha256,
         "archive_entries": live.archive.entries.len(),
         "retained": live.archive.retained,
         "rejected": live.archive.rejected,
         "deaths": live.archive.deaths,
         "duplicates_skipped": live.duplicates_skipped,
-        "victories": live.victories,
+        "victories": live.objectives_reached,
         "jobs_per_worker": &live.jobs_per_worker,
         "progress": live.archive.progress_watermark,
         "milestones": live.archive.milestones,
@@ -298,7 +294,7 @@ fn run_qualified_campaign(
     fs::write(output.join("snapshots.bin"), &checkpoint_bytes)?;
 
     let best_input = live
-        .victory_input
+        .objective_witness
         .as_ref()
         .unwrap_or(&live.archive.champion_input);
     let best_endpoint = write_best_observation(game, best_input, output)?;
@@ -324,7 +320,7 @@ fn run_qualified_campaign(
         "retained_representatives": live.archive.entries.len(),
         "progress": live.archive.progress_watermark,
         "milestones": live.archive.milestones,
-        "victories": live.victories,
+        "victories": live.objectives_reached,
         "video": media.video,
         "audio_pcm_sha256": media.audio_pcm_sha256,
         "mp4_sha256": media.mp4_sha256,

@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! M0 oracles for assigned-at-exit V-time.  Every comparator used by the
-//! positive properties is also driven against a deliberately perturbed twin.
 
 use std::collections::BTreeSet;
 
@@ -147,9 +145,6 @@ fn script_for_deltas(deltas: &[u64]) -> Vec<Exit<X86>> {
     exits
 }
 
-/// Keep the native gate at the required 256 cases. Miri interprets each backend
-/// event and cannot use proptest's cwd-backed failure persistence under isolation,
-/// so it uses the repository's standard reduced/persistence-free configuration.
 fn proptest_config() -> ProptestConfig {
     let mut config = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { 256 });
     if cfg!(miri) {
@@ -202,11 +197,11 @@ proptest! {
 #[test]
 fn dedicated_mask_wfi_simultaneous_and_reassertion_workload() {
     let exits = vec![
-        mmio(1),                                    // vns 5: masked-at-deadline
-        Exit::Arch(X86Exit::Rdmsr { index: 0x10 }), // vns 7: simultaneous pair
-        Exit::Arch(X86Exit::Rdmsr { index: 0x10 }), // vns 9: first assertion while masked
-        mmio(2),                                    // vns 14: unmask + reassertion
-        Exit::Common(CommonExit::Idle),             // vns 14: WFI with already-due deadline
+        mmio(1),
+        Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+        Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+        mmio(2),
+        Exit::Common(CommonExit::Idle),
         Exit::Common(CommonExit::Shutdown),
     ];
     let mut loop_ = configured_loop(exits, 2);
@@ -219,8 +214,6 @@ fn dedicated_mask_wfi_simultaneous_and_reassertion_workload() {
     for _ in 0..4 {
         drive_once(&mut loop_);
     }
-    // Schedule at the current boundary, then WFI.  With no intervening exit,
-    // WFI is the first exit whose post-advance V-time is at the deadline.
     let wfi_due = loop_.schedule_interrupt(14, 60).unwrap();
     run_to_terminal(&mut loop_);
 

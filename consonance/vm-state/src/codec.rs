@@ -1,15 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The TLV encoder, decoder, and version peek.
-//!
-//! Container layout (all integers little-endian):
-//!
-//! ```text
-//! header:  magic:u32  version:u16  arch:u16  section_count:u16
-//! section: tag:u16  len:u32  payload[len]      (repeated, ascending tag order)
-//! ```
-//!
-//! Every legacy tag is present exactly once; sections are emitted in ascending
-//! tag order. Decoding is strict and total — see [`VmStateError`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -29,9 +18,6 @@ use crate::{
     VM_STATE_MAGIC, VM_STATE_VERSION, VmState,
 };
 
-// Section tags, in their canonical ascending order. Every legacy tag is present
-// exactly once; the v4 engine-state tag is required when the field is nonempty,
-// while v5/v6 permit it to be absent. X86 v6 tag 15 is required for v6.
 const TAG_REGS: u16 = 1;
 const TAG_SREGS: u16 = 2;
 const TAG_XCRS: u16 = 3;
@@ -46,19 +32,12 @@ const TAG_HYPERCALL: u16 = 11;
 const TAG_DEVICES: u16 = 12;
 const TAG_CONTRACT_HASH: u16 = 13;
 
-/// The number of sections in the legacy x86 blob.
 const LEGACY_SECTION_COUNT: u16 = 13;
 
-/// The engine-owned state section follows every existing x86 section.
 const TAG_ENGINE_STATE: u16 = 14;
 
-/// X86 v6's original XSAVE `XSTATE_BV`, retained across backend image
-/// normalization.
 const TAG_XSAVE_RESTORE_BV: u16 = 15;
 
-/// Length of the fixed container header (magic + version + arch tag + section
-/// count). 10 bytes since v2 (the arch tag); v4/v5/v6 add sections or extend
-/// records without changing this header.
 const HEADER_LEN: usize = 10;
 
 const MP_STATE_RUNNABLE: u8 = 0;
@@ -67,27 +46,6 @@ const MP_STATE_HALTED: u8 = 1;
 const CONTRACT_HASH_LEN: usize = 32;
 
 impl VmState {
-    /// Encode to the versioned TLV blob. Deterministic: equal `VmState` ⇒ equal
-    /// bytes (MSRs via the `BTreeMap`'s sorted order; timer entries written in the
-    /// `(deadline_vns, seq)` order the caller already holds them in — see the
-    /// errors below; all fixed records fully initialized with no padding). Empty
-    /// engine state and zero extended CPU fields retain the legacy v3 bytes.
-    /// Nonempty engine state selects v4 when the extended CPU fields are zero.
-    /// Any nonzero extended CPU field selects x86 v5, whose engine-state section
-    /// is optional. `xsave_restore_bv: Some(_)` selects x86 v6, whose v5 CPU
-    /// records and optional engine-state section are accompanied by required
-    /// tag 15.
-    ///
-    /// # Errors
-    ///
-    /// - [`VmStateError::InvalidField`] if `timers` violates a task-05
-    ///   `TimerQueue` invariant: entries not strictly ascending/unique by
-    ///   `(deadline_vns, seq)`, a duplicate `token`, or any `seq >= next_seq`
-    ///   (see `validate_timers`). `encode` does **not** silently fix these —
-    ///   silent canonicalization would break `decode(encode(s)?) == s`, so a
-    ///   non-conforming queue is rejected and the caller fixes it.
-    /// - [`VmStateError::InvalidField`] if a variable-length section would exceed
-    ///   `u32::MAX` bytes (not reachable for any real machine state).
     pub fn encode(&self) -> Result<Vec<u8>, VmStateError> {
         let extended_cpu = has_extended_cpu_fields(self);
         let version = if self.xsave_restore_bv.is_some() {
@@ -107,8 +65,6 @@ impl VmState {
             HeaderWire {
                 magic: VM_STATE_MAGIC.into(),
                 version: version.into(),
-                // The record set below is x86-64's; the tag says so, so a decoder
-                // can never reinterpret it as another architecture's.
                 arch: ARCH_X86_64.into(),
                 section_count: section_count.into(),
             }
@@ -166,19 +122,6 @@ impl VmState {
         Ok(out)
     }
 
-    /// Decode a blob produced by [`VmState::encode`]. Strict: validates magic,
-    /// the supported v3/v4/v5/v6 version, section count, ordering, and every field;
-    /// never panics on arbitrary input. A v3 blob decodes with an empty
-    /// engine-state field; a v4 blob must carry nonempty engine state; a v5 blob
-    /// carries nonzero extended x86 CPU state and may omit engine state; a v6
-    /// blob must carry the exact eight-byte tag-15 XSAVE restore-bits field and
-    /// may omit engine state.
-    ///
-    /// # Errors
-    ///
-    /// Returns the matching [`VmStateError`] for a bad magic, an unsupported
-    /// version, a truncated or trailing buffer, an unknown / duplicate /
-    /// out-of-order / missing section tag, or an out-of-range field value.
     pub fn decode(bytes: &[u8]) -> Result<VmState, VmStateError> {
         let header = HeaderWire::read_from_prefix(bytes)
             .map_err(|_| VmStateError::Truncated)?
@@ -195,9 +138,6 @@ impl VmState {
         {
             return Err(VmStateError::UnsupportedVersion(version));
         }
-        // The arch tag gates the RECORDS: this build carries only the x86-64
-        // record set, and another architecture's `REGS`/`SREGS` bytes would decode
-        // into x86 fields without a single length or tag mismatch. Fail closed.
         let arch = header.arch.get();
         if arch != ARCH_X86_64 {
             return Err(VmStateError::UnsupportedArch(arch));
@@ -228,15 +168,6 @@ impl VmState {
             let len = r.u32()? as usize;
             let payload = r.take(len)?;
 
-            // Sections must be STRICTLY ascending, so each tag appears at most
-            // once. `tag <= prev` means "not strictly greater than the previous":
-            // equal is a duplicate, smaller is out of order. Folding both into one
-            // comparison — rather than a separate `tag == prev` guard followed by
-            // `tag < prev` — keeps the boundary observable: a duplicate-tag blob
-            // distinguishes `<=` from `<`, and an out-of-order blob distinguishes
-            // the inner `==`, so neither operator has an untestable mutant. (With
-            // the split form the `<` was redundant with the earlier `==` return
-            // and `< vs <=` was an equivalent mutant.)
             if let Some(prev) = last_tag
                 && tag <= prev
             {
@@ -357,14 +288,6 @@ impl VmState {
         })
     }
 
-    /// The format version a blob was written with, read from the header without
-    /// decoding the body. Validates the magic but accepts any version (so a
-    /// caller can distinguish an unsupported version from a corrupt blob).
-    ///
-    /// # Errors
-    ///
-    /// [`VmStateError::Truncated`] if the buffer is shorter than the header, or
-    /// [`VmStateError::BadMagic`] if the magic does not match.
     pub fn peek_version(bytes: &[u8]) -> Result<u16, VmStateError> {
         let header = HeaderWire::read_from_prefix(bytes)
             .map_err(|_| VmStateError::Truncated)?
@@ -385,7 +308,6 @@ fn has_extended_cpu_values(sregs: &VcpuSregs, debugregs: &DebugRegs) -> bool {
     sregs.flags != 0 || sregs.pdptrs != [0; 4] || debugregs.flags != 0
 }
 
-/// Append one `tag:u16 len:u32 payload` section.
 pub(crate) fn put_section(out: &mut Vec<u8>, tag: u16, payload: &[u8]) -> Result<(), VmStateError> {
     let len = u32::try_from(payload.len()).map_err(|_| VmStateError::InvalidField)?;
     out.extend_from_slice(&tag.to_le_bytes());
@@ -394,8 +316,6 @@ pub(crate) fn put_section(out: &mut Vec<u8>, tag: u16, payload: &[u8]) -> Result
     Ok(())
 }
 
-/// Read a fixed-layout wire record from an exact-length payload, mapping a size
-/// mismatch to [`VmStateError::InvalidField`].
 pub(crate) fn read_fixed<W: FromBytes + KnownLayout + Immutable>(
     payload: &[u8],
 ) -> Result<W, VmStateError> {
@@ -421,8 +341,6 @@ fn encode_msrs(msrs: &MsrBlock) -> Result<Vec<u8>, VmStateError> {
     let count = u32::try_from(msrs.0.len()).map_err(|_| VmStateError::InvalidField)?;
     let mut payload = Vec::with_capacity(4 + msrs.0.len() * 12);
     payload.extend_from_slice(&count.to_le_bytes());
-    // BTreeMap iterates in ascending key order — deterministic regardless of
-    // the order MSRs were captured/inserted in.
     for (&index, &value) in &msrs.0 {
         let pair = MsrPairWire {
             index: index.into(),
@@ -447,8 +365,6 @@ fn decode_msrs(payload: &[u8]) -> Result<MsrBlock, VmStateError> {
     for chunk in chunks {
         let pair = read_fixed::<MsrPairWire>(chunk)?;
         let index = pair.index.get();
-        // Strictly ascending indices: rejects a duplicate or out-of-order list
-        // and guarantees the BTreeMap round-trips exactly.
         if let Some(p) = prev
             && index <= p
         {
@@ -460,20 +376,6 @@ fn decode_msrs(payload: &[u8]) -> Result<MsrBlock, VmStateError> {
     Ok(MsrBlock(map))
 }
 
-/// Validate the task-05 `TimerQueue` invariants a queue must satisfy to restore
-/// faithfully. Any violation is [`VmStateError::InvalidField`]:
-///
-/// 1. **Canonical firing order** — entries strictly ascending and unique by
-///    `(deadline_vns, seq)` (task-05 fires same-deadline timers in `seq`/FIFO
-///    order, so this is the order they must be stored and replayed in).
-/// 2. **Unique tokens** — task-05's queue keys a `token -> entry` index, so a
-///    duplicate `token` would make a later cancel/reschedule hit the wrong entry.
-/// 3. **`seq < next_seq`** — `next_seq` is the queue's next insertion counter; a
-///    stored `seq >= next_seq` would collide with the seq the restored queue
-///    hands out for its next same-deadline insertion.
-///
-/// Checking here (rather than silently fixing) is what makes
-/// `decode(encode(s)?) == s` hold for every `VmState` `encode` accepts.
 fn validate_timers(entries: &[TimerEntry], next_seq: u64) -> Result<(), VmStateError> {
     let mut prev_key: Option<(u64, u64)> = None;
     let mut tokens = BTreeSet::new();
@@ -497,10 +399,6 @@ fn validate_timers(entries: &[TimerEntry], next_seq: u64) -> Result<(), VmStateE
 
 pub(crate) fn encode_timers(timers: &TimerQueueState) -> Result<Vec<u8>, VmStateError> {
     let count = u32::try_from(timers.entries.len()).map_err(|_| VmStateError::InvalidField)?;
-    // Entries must already satisfy the task-05 TimerQueue invariants (see
-    // validate_timers): canonical (deadline_vns, seq) order, unique tokens, and
-    // every seq < next_seq. Reject a non-conforming queue rather than silently
-    // fixing it, so the round-trip contract holds for every accepted VmState.
     validate_timers(&timers.entries, timers.next_seq)?;
 
     let mut payload = Vec::with_capacity(12 + timers.entries.len() * 32);
@@ -538,9 +436,6 @@ pub(crate) fn decode_timers(payload: &[u8]) -> Result<TimerQueueState, VmStateEr
             period_vns: w.period_vns.get(),
         });
     }
-    // Enforce the same task-05 invariants on decode that encode does, so a
-    // hand-crafted blob can't smuggle in a queue that wouldn't restore faithfully
-    // (decode stays strict and symmetric with encode).
     validate_timers(&entries, next_seq)?;
     Ok(TimerQueueState { entries, next_seq })
 }
@@ -549,8 +444,6 @@ pub(crate) fn decode_contract_hash(payload: &[u8]) -> Result<[u8; 32], VmStateEr
     <[u8; CONTRACT_HASH_LEN]>::try_from(payload).map_err(|_| VmStateError::InvalidField)
 }
 
-/// Read a little-endian `u32` at `offset`, or [`VmStateError::InvalidField`] if
-/// the slice is too short (a malformed section, not a truncated buffer).
 pub(crate) fn le_u32(buf: &[u8], offset: usize) -> Result<u32, VmStateError> {
     let bytes = buf
         .get(offset..offset + 4)
@@ -558,7 +451,6 @@ pub(crate) fn le_u32(buf: &[u8], offset: usize) -> Result<u32, VmStateError> {
     Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
-/// Read a little-endian `u64` at `offset`, or [`VmStateError::InvalidField`].
 pub(crate) fn le_u64(buf: &[u8], offset: usize) -> Result<u64, VmStateError> {
     let bytes = buf
         .get(offset..offset + 8)
@@ -568,8 +460,6 @@ pub(crate) fn le_u64(buf: &[u8], offset: usize) -> Result<u64, VmStateError> {
     ]))
 }
 
-/// A forward-only cursor over the section stream. Every read that would pass the
-/// end of the buffer yields [`VmStateError::Truncated`].
 pub(crate) struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,

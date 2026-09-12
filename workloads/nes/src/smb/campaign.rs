@@ -1,15 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! SMB implementation of the generic campaign, see [`crate::search::campaign`].
-//!
-//! This module holds everything the generic coordinator asks a game for:
-//! target construction and stepping, key and milestone decoding from work
-//! RAM, the chord vocabularies a single action is drawn from, the mined
-//! chord tables and the source rule that seeds them, and the identifier
-//! strings recorded for those policies. The search layer owns the mutation
-//! shape, the mixture odds, admission, selection, and the resume rule; none
-//! of them is stated here.
-
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
@@ -28,16 +18,18 @@ use crate::{
     nes_backend::{NesBackend, SnapshotState},
     search::archive::RetentionPolicy,
     search::campaign::{
-        CampaignActionResult, CampaignCheckpoint, CampaignJobResult, CampaignModeReport,
-        CampaignOrigin, CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation,
-        GamePolicies, InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution,
-        postcard_result_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
+        CampaignActionResult, CampaignCheckpoint, CampaignJobRecord, CampaignJobResult,
+        CampaignModeReport, CampaignOrigin, CampaignProgressRecord, CampaignSkipRecord,
+        CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, Evaluation, InputPolicy,
+        Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_result_sha256,
+        replay_campaign_checkpointed, run_campaign_checkpointed,
     },
     search::draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
     search::empirical_steps::{
-        EmpiricalStepCheckpoint, EmpiricalStepHashRule, EmpiricalStepParameters,
-        EmpiricalStepTableRef, EmpiricalStepTables,
+        EmpiricalStepCheckpoint, EmpiricalStepParameters, EmpiricalStepTableRef,
+        EmpiricalStepTables,
     },
+    search::rollout::{ExecutionDisposition, Outcome},
     smb::archive::{
         DOWN_TEN_BUTTON_MASKS, KEY_POLICY_IDENTIFIER, REPLACEMENT_IDENTIFIER, SmbArchiveKey,
         SmbArchiveReport, admission_is_viable, archive_key, chord_time, merge_action_milestones,
@@ -64,52 +56,33 @@ use machine::consonance::{ConsonanceMachine, ConsonancePortable, identity as con
 
 pub use crate::search::campaign::{
     CampaignAdmissionDecision as SmbCampaignAdmissionDecision,
-    CampaignConfig as GenericCampaignConfig, CampaignJobRecord as SmbCampaignJobRecord,
-    CampaignOriginRecord as SmbCampaignOriginRecord, CampaignSkipRecord as SmbCampaignSkipRecord,
-    CampaignStreamRecord as SmbCampaignStreamRecord, RESUME_IDENTIFIER,
-    TreeImportCounts as SmbTreeImportCounts, derive_worker_seed,
+    CampaignConfig as GenericCampaignConfig, CampaignOriginRecord as SmbCampaignOriginRecord,
+    RESUME_IDENTIFIER, TreeImportCounts as SmbTreeImportCounts, derive_worker_seed,
 };
 
-/// Stream format identifier written as the first line of every campaign stream.
+pub type SmbCampaignJobRecord = CampaignJobRecord<EmpiricalStepCheckpoint>;
+pub type SmbCampaignSkipRecord = CampaignSkipRecord<EmpiricalStepCheckpoint>;
+pub type SmbCampaignStreamRecord = CampaignStreamRecord<EmpiricalStepCheckpoint>;
+
 pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v2";
 
-/// Format tag of the snapshot checkpoint file.
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-quicknes-snapshot-checkpoint-v3";
-/// Checkpoint format for whole-VM SMB snapshots.
 pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-consonance-snapshot-checkpoint-v1";
 
-/// Conservative portion of the global campaign budget reserved for the
-/// bounded empirical chord tables and their short pending/recent windows.
 const DRAW_STATE_MEMORY_RESERVE_BYTES: usize = 2 * 1024 * 1024;
 
-/// Identifier recorded for the hold distribution, see
-/// [`crate::smb::archive::sample_chord_from_masks`].
 pub const DURATION_IDENTIFIER: &str = "stratified";
 
-/// Stream-header field names SMB records its policies under. These are the
-/// recorded names, so they are pinned by every stream already written.
 pub const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
-/// Header field naming the archive key policy.
 pub const KEY_POLICY_FIELD: &str = "key_policy";
-/// Header field naming the hold distribution.
 pub const DURATION_POLICY_FIELD: &str = "duration_policy";
-/// Header field naming the chord policy.
 pub const CHORD_POLICY_FIELD: &str = "chord_policy";
-/// Header field naming the cell-replacement rule.
 pub const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
-/// Header field naming the run's success predicate. Absent from legacy streams,
-/// whose success predicate was unconditionally whole-game victory.
 pub const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
-/// Header field pinning the native emulator revision, build, options, and binary.
 pub const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 
-/// One recorded game policy of a campaign stream header.
-///
-/// # Errors
-///
-/// Returns an error when the header records no policy under `field`.
 pub fn recorded_policy<'a>(
-    policies: &'a GamePolicies,
+    policies: &'a WorkloadPolicies,
     field: &str,
 ) -> Result<&'a str, Box<dyn Error>> {
     policies
@@ -118,7 +91,6 @@ pub fn recorded_policy<'a>(
         .ok_or_else(|| format!("campaign stream is missing the {field} policy").into())
 }
 
-/// The SMB campaign game context: the ROM and everything decoded from it.
 pub struct SmbGame<M = QuickNesMachine, P = Vec<u8>> {
     rom: Vec<u8>,
     core_path: PathBuf,
@@ -153,7 +125,6 @@ fn quicknes_identity(core_sha256: &str) -> String {
     )
 }
 
-/// Backend construction used by SMB campaign workers.
 #[doc(hidden)]
 pub trait SmbMachineKind<P>: Machine + NesBackend<P> + Sized
 where
@@ -216,10 +187,6 @@ impl SmbMachineKind<ConsonancePortable> for ConsonanceMachine {
 }
 
 impl SmbGame<QuickNesMachine, Vec<u8>> {
-    /// Build a context over the pinned QuickNES execution target.
-    ///
-    /// The binary identity and all fixed core options are written into the
-    /// stream policy. Cross-core streams and checkpoints are rejected.
     #[must_use]
     pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
         Self {
@@ -234,11 +201,6 @@ impl SmbGame<QuickNesMachine, Vec<u8>> {
         }
     }
 
-    /// Build a context from the external core named by `HARMONY_QUICKNES_CORE`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the environment variable or core bytes cannot be read.
     pub fn from_environment(rom: &[u8]) -> Result<Self, Box<dyn Error>> {
         let core_path = PathBuf::from(
             std::env::var_os("HARMONY_QUICKNES_CORE")
@@ -270,11 +232,6 @@ impl SmbGame<QuickNesMachine, Vec<u8>> {
     not(miri)
 ))]
 impl SmbGame<ConsonanceMachine, ConsonancePortable> {
-    /// Build an SMB game whose workers boot a whole-VM Consonance machine.
-    ///
-    /// `SmbTarget::from_machine` owns the SMB power-on walk; the generic NES
-    /// guest image must therefore expose a power-on state when this backend is
-    /// used.
     #[must_use]
     pub fn new_consonance(rom: &[u8], kernel: &[u8], initramfs: &[u8]) -> Self {
         Self {
@@ -297,13 +254,11 @@ impl SmbGame<ConsonanceMachine, ConsonancePortable> {
 }
 
 impl<M, P> SmbGame<M, P> {
-    /// Pinned backend identity recorded in streams and fixture manifests.
     #[must_use]
     pub fn emulator_identity(&self) -> &str {
         &self.identity
     }
 
-    /// Snapshot checkpoint format for this emulator backend.
     #[must_use]
     pub fn snapshot_checkpoint_format(&self) -> &'static str {
         match &self.backend {
@@ -319,26 +274,18 @@ impl<M, P> SmbGame<M, P> {
     }
 }
 
-/// Per-run SMB policies recorded in the stream header.
 #[derive(Clone, Copy, Debug)]
 pub struct SmbCampaignRun {
-    /// Chord policy for this run.
     pub chord: SmbCampaignChordPolicy,
-    /// Controller vocabulary for this run.
     pub vocabulary: SmbButtonVocabulary,
-    /// Recorded terminal predicate. `None` denotes the legacy whole-game
-    /// victory policy and preserves byte-exact replay of old streams.
     pub terminal: Option<SmbTerminalPredicate>,
 }
 
-/// Live state of the recorded chord-draw policy: the folded tables and, on
-/// replay, the remembered versions recorded draws were made against.
 pub struct SmbDrawState {
     tables: Option<EmpiricalStepTables<ButtonChord>>,
     versions: BTreeMap<u64, SmbChordTableVersion>,
 }
 
-/// Game-owned evidence accumulated outside the archive.
 #[derive(Clone, Default)]
 pub struct SmbCampaignEvidence {
     aggregate: SmbMilestones,
@@ -349,66 +296,35 @@ pub struct SmbCampaignEvidence {
     champion_milestones: SmbMilestones,
 }
 
-/// The SMB origin instantiation.
 pub type SmbCampaignOrigin<M = QuickNesMachine, P = Vec<u8>> = CampaignOrigin<SmbGame<M, P>>;
-/// The SMB checkpoint instantiation.
 pub type SmbCampaignCheckpoint<P = Vec<u8>> = CampaignCheckpoint<SmbSnapshot<P>>;
-/// The SMB snapshot checkpoint instantiation.
 pub type SmbSnapshotCheckpoint<P = Vec<u8>> = SnapshotCheckpoint<SmbSnapshot<P>>;
-/// One SMB archive entry's snapshot.
 pub type SmbSnapshotCheckpointEntry<P = Vec<u8>> =
     crate::search::campaign::SnapshotCheckpointEntry<SmbSnapshot<P>>;
-/// The SMB stream header instantiation.
 pub type SmbCampaignStreamHeader = CampaignStreamHeader<SmbChordTableHeader>;
-/// The SMB campaign report instantiation.
 pub type SmbCampaignModeReport = CampaignModeReport<ButtonChord, SmbArchiveReport>;
-/// The SMB sidecar progress record instantiation.
 pub type SmbCampaignProgressRecord = CampaignProgressRecord<SmbArchiveKey>;
-/// One executed SMB action inside a job result.
 pub(crate) type SmbCampaignActionResult<M = QuickNesMachine, P = Vec<u8>> =
     CampaignActionResult<SmbGame<M, P>>;
-/// Fixed configuration for one live campaign run.
 pub struct SmbCampaignConfig {
-    /// Campaign seed from which every worker stream derives.
     pub campaign_seed: u64,
-    /// Number of worker threads.
     pub workers: u32,
-    /// Number of executed jobs the campaign admits, unless stopped by wall budget.
     pub execution_budget: u64,
-    /// Bounded clean-reset action horizon.
     pub action_limit: usize,
-    /// Operator-supplied host name recorded in the header; never probed.
     pub host: String,
-    /// Optional live-only wall cutoff that stops issuing new reservations.
     pub wall_budget: Option<std::time::Duration>,
-    /// Live-only: continue issuing reservations after the first victory until
-    /// another live limit stops the run. Never recorded or used by replay.
     pub continue_after_victory: bool,
-    /// Archive entry bound for this run, recorded in the header and report.
     pub archive_entry_limit: usize,
-    /// Reservations held ahead of ordered admission per worker, recorded in
-    /// the header's schedule policy.
     pub reservations_per_worker: usize,
-    /// Deterministic logical-memory budget for the live search structures.
     pub memory_budget_mib: Option<usize>,
-    /// Live-only: materialize full archive inputs and snapshots at completion.
     pub materialize_final_artifacts: bool,
-    /// Chord policy for this run, recorded in the header and report.
     pub chord: SmbCampaignChordPolicy,
-    /// Controller vocabulary for this run, recorded in the header and report.
     pub vocabulary: SmbButtonVocabulary,
-    /// Success predicate for this run, recorded in the stream header.
     pub terminal: SmbTerminalPredicate,
-    /// Admission rule for this run, recorded in the header and report.
     pub retention: RetentionPolicy,
-    /// Parent selector for this run, recorded in the header and report.
     pub selector: crate::search::archive::SelectorPolicy,
-    /// Suffix shape for this run, recorded in the header and report.
     pub suffix: SuffixShape,
-    /// Draw mixture for this run, recorded in the header and report.
     pub mixture: DrawMixture,
-    /// Live-only: where the first winning input is written the moment it is
-    /// admitted, before the in-flight jobs drain. Never recorded.
     pub victory_input_path: Option<std::path::PathBuf>,
 }
 
@@ -427,7 +343,8 @@ impl SmbCampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
-            continue_after_victory: self.continue_after_victory,
+            stop_rollout_on_objective: !self.continue_after_victory,
+            stop_campaign_on_objective: !self.continue_after_victory,
             archive_entry_limit: self.archive_entry_limit,
             reservations_per_worker: self.reservations_per_worker,
             memory_budget_mib: self.memory_budget_mib,
@@ -439,29 +356,22 @@ impl SmbCampaignConfig {
             },
             retention: self.retention,
             selector: self.selector.clone(),
-            victory_input_path: self.victory_input_path.clone(),
+            objective_witness_path: self.victory_input_path.clone(),
         }
     }
 }
 
-/// Mechanically recorded success predicate for an SMB campaign.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SmbTerminalPredicate {
-    /// Stop only on ordinary whole-game victory.
     #[default]
     GameVictory,
-    /// Stop when execution leaves the named zero-based world/level pair, or
-    /// reaches ordinary whole-game victory.
     LevelTransition {
-        /// Zero-based source world.
         world: u8,
-        /// Zero-based source level.
         level: u8,
     },
 }
 
 impl SmbTerminalPredicate {
-    /// Stable stream-header identifier for this predicate.
     #[must_use]
     pub fn identifier(self) -> String {
         match self {
@@ -472,11 +382,6 @@ impl SmbTerminalPredicate {
         }
     }
 
-    /// Parse one stable stream-header identifier.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown predicate or malformed world/level.
     pub fn from_identifier(identifier: &str) -> Result<Self, Box<dyn Error>> {
         if identifier == "game_victory" {
             return Ok(Self::GameVictory);
@@ -517,27 +422,16 @@ impl SmbTerminalPredicate {
     }
 }
 
-/// Controller vocabulary a campaign draws button masks from, recorded in
-/// the stream header per run.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SmbButtonVocabulary {
-    /// Masks written in the SMB-disassembly bit order the emulator reads
-    /// reversed; kept so its recordings replay byte-exact.
     DownTenMask,
-    /// The emulator-order chord set without B+direction chords; kept so its
-    /// recordings replay byte-exact.
     NesDownTen,
-    /// The emulator-order chord set with each direction alone and with A, B,
-    /// and A+B; kept so its recordings replay byte-exact.
     NesRunThirteen,
-    /// Every physically pressable chord: nine direction sets times none, A,
-    /// B, and A+B.
     #[default]
     NesPressable,
 }
 
 impl SmbButtonVocabulary {
-    /// Button masks this vocabulary draws from.
     #[must_use]
     pub fn masks(self) -> &'static [u8] {
         match self {
@@ -549,7 +443,6 @@ impl SmbButtonVocabulary {
     }
 }
 
-/// Header identifier for a controller vocabulary.
 #[must_use]
 pub fn button_vocabulary_identifier(vocabulary: SmbButtonVocabulary) -> &'static str {
     match vocabulary {
@@ -560,11 +453,6 @@ pub fn button_vocabulary_identifier(vocabulary: SmbButtonVocabulary) -> &'static
     }
 }
 
-/// Controller vocabulary named by a recorded header identifier.
-///
-/// # Errors
-///
-/// Returns an error when the identifier names no known vocabulary.
 pub fn button_vocabulary_from_identifier(
     identifier: &str,
 ) -> Result<SmbButtonVocabulary, Box<dyn Error>> {
@@ -577,12 +465,6 @@ pub fn button_vocabulary_from_identifier(
     }
 }
 
-/// A source archive's frontier identity: the shortest input among the entries
-/// at the deepest recorded `(world, level, progress)`, earliest id on ties.
-///
-/// # Errors
-///
-/// Returns an error when the source archive has no retained entries.
 pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInput, Box<dyn Error>> {
     let frontier = source
         .entries
@@ -599,17 +481,6 @@ pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInpu
         .ok_or_else(|| "source archive contains no frontier entries".into())
 }
 
-/// Expand one mutation seed into its complete suffix.
-///
-/// The search layer owns the shape and the mixture odds; SMB supplies only
-/// the two draws they compose — one chord from the run's vocabulary, and one
-/// chord offered by the run's mined tables. Public so recorded-artifact
-/// diagnostics can re-derive the actions a stream's jobs executed.
-///
-/// # Errors
-///
-/// Returns an error when a draw bound is invalid or a recorded chord policy
-/// is missing its folded tables.
 pub fn derive_suffix(
     mutation_seed: u64,
     shape: SuffixShape,
@@ -636,93 +507,42 @@ pub fn derive_suffix(
     )
 }
 
-/// SMB-only filter preserving the existing deep-lineage extraction semantics.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbChordSourceFilter {
-    /// Zero-based source world.
     pub world: u8,
-    /// Zero-based source level.
     pub level: u8,
-    /// Minimum retained source progress.
     pub minimum_progress: u16,
 }
 
-/// Which retained source entries seed the chord tables.
-///
-/// Live folding always consumes every retained input; this source rule only
-/// selects the entries folded from a source archive at start-up. Serde stays
-/// untagged so headers recorded before the all-levels rule existed, which
-/// serialized the bare filter fields, still deserialize as `Level`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum SmbChordSource {
-    /// One `(world, level)` pair at or past a progress floor.
     Level(SmbChordSourceFilter),
-    /// Every retained entry, so the rule carries no level knowledge.
     All(SmbChordSourceAll),
 }
 
-/// Marker for the level-neutral source rule.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbChordSourceAll {}
 
-/// Complete registered derivation for one pair of mined chord tables.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbChordTableDerivation {
-    /// Thin SMB source rule.
     pub source_filter: SmbChordSource,
-    /// Game-neutral extraction, mixture, update, and hash parameters.
     pub parameters: EmpiricalStepParameters,
-    /// Table-hash rule, bound to the policy identifier so historical
-    /// recordings keep verifying under the rule they were made with.
-    #[serde(default)]
-    pub hash_rule: EmpiricalStepHashRule,
-    /// What part of each retained input the fold consumes, bound to the
-    /// policy identifier for the same reason.
-    #[serde(default)]
-    pub fold: ChordFoldSource,
 }
 
-/// What part of one retained input a chord fold consumes.
-///
-/// Folding the full input duplicates the whole prefix on every keep, so the
-/// table and its fold cost grow with lineage depth; folding only the newly
-/// drawn suffix keeps both proportional to the new presses.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub enum ChordFoldSource {
-    /// The complete clean-reset input.
-    #[default]
-    FullInput,
-    /// Only the actions past the retained entry's parent input.
-    SuffixOnly,
-}
-
-/// Header provenance for a derived chord-table policy.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbChordTableHeader {
-    /// SHA-256 of the named resume archive, or SHA-256 of empty bytes at genesis.
     pub source_sha256: String,
-    /// Registered source filter and game-neutral fold parameters.
     pub derivation: SmbChordTableDerivation,
-    /// Hash after folding the named source and before the first campaign draw.
     pub initial: EmpiricalStepCheckpoint,
 }
 
-/// Chord policy a campaign draws chords from, recorded in the stream header.
-///
-/// The feedback tables are the only draw source; retired policies survive
-/// only as stream identifiers for recordings made before their removal, and
-/// those streams no longer replay.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SmbCampaignChordPolicy {
-    /// Derive recent and all-history tables from the recorded source, mixing
-    /// their registered empirical weights into the biased half of each draw.
     DerivedHalf(SmbChordTableDerivation),
 }
 
 impl Default for SmbCampaignChordPolicy {
-    /// The promoted level-neutral derivation with the registered
-    /// head-to-head fold parameters.
     fn default() -> Self {
         Self::DerivedHalf(SmbChordTableDerivation {
             source_filter: SmbChordSource::All(SmbChordSourceAll {}),
@@ -734,38 +554,15 @@ impl Default for SmbCampaignChordPolicy {
                 update_every_records: 64,
                 hash_every_records: 1024,
             },
-            hash_rule: EmpiricalStepHashRule::IncrementalCompactHistory,
-            fold: ChordFoldSource::SuffixOnly,
         })
     }
 }
 
-/// Header identifier for a chord policy.
 #[must_use]
 pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
     match policy {
         SmbCampaignChordPolicy::DerivedHalf(derivation) => {
             let parameters = derivation.parameters;
-            let prefix = match (derivation.fold, derivation.hash_rule) {
-                (ChordFoldSource::SuffixOnly, EmpiricalStepHashRule::FullJson) => {
-                    "chord_draw_recorded_52"
-                }
-                (ChordFoldSource::SuffixOnly, EmpiricalStepHashRule::IncrementalHistory) => {
-                    "chord_draw_recorded_52"
-                }
-                (ChordFoldSource::SuffixOnly, EmpiricalStepHashRule::IncrementalCompactHistory) => {
-                    "chord_draw_recorded_53"
-                }
-                (ChordFoldSource::FullInput, EmpiricalStepHashRule::FullJson) => {
-                    "chord_draw_recorded_50"
-                }
-                (ChordFoldSource::FullInput, EmpiricalStepHashRule::IncrementalHistory) => {
-                    "chord_draw_recorded_51"
-                }
-                (ChordFoldSource::FullInput, EmpiricalStepHashRule::IncrementalCompactHistory) => {
-                    "chord_draw_recorded_54"
-                }
-            };
             let source = match derivation.source_filter {
                 SmbChordSource::All(_) => "all".to_owned(),
                 SmbChordSource::Level(filter) => {
@@ -776,7 +573,7 @@ pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
                 }
             };
             format!(
-                "{prefix}:{source},{},{},{},{},{},{}",
+                "chord_draw_recorded_53:{source},{},{},{},{},{},{}",
                 parameters.prefix_steps,
                 parameters.recent_successes,
                 parameters.recent_weight,
@@ -788,53 +585,10 @@ pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
     }
 }
 
-/// Chord policy named by a recorded header identifier.
-///
-/// # Errors
-///
-/// Returns an error when the identifier names no known chord policy.
 pub fn chord_policy_from_identifier(
     identifier: &str,
 ) -> Result<SmbCampaignChordPolicy, Box<dyn Error>> {
-    let (fields, hash_rule, fold) =
-        if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_50:") {
-            (
-                Some(rest),
-                EmpiricalStepHashRule::FullJson,
-                ChordFoldSource::FullInput,
-            )
-        } else if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_51:") {
-            (
-                Some(rest),
-                EmpiricalStepHashRule::IncrementalHistory,
-                ChordFoldSource::FullInput,
-            )
-        } else if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_52:") {
-            (
-                Some(rest),
-                EmpiricalStepHashRule::IncrementalHistory,
-                ChordFoldSource::SuffixOnly,
-            )
-        } else if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_53:") {
-            (
-                Some(rest),
-                EmpiricalStepHashRule::IncrementalCompactHistory,
-                ChordFoldSource::SuffixOnly,
-            )
-        } else if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_54:") {
-            (
-                Some(rest),
-                EmpiricalStepHashRule::IncrementalCompactHistory,
-                ChordFoldSource::FullInput,
-            )
-        } else {
-            (
-                None,
-                EmpiricalStepHashRule::FullJson,
-                ChordFoldSource::FullInput,
-            )
-        };
-    if let Some(fields) = fields {
+    if let Some(fields) = identifier.strip_prefix("chord_draw_recorded_53:") {
         let mut fields = fields.split(',').peekable();
         let source_filter = if fields.peek() == Some(&"all") {
             fields.next();
@@ -862,8 +616,6 @@ pub fn chord_policy_from_identifier(
             SmbChordTableDerivation {
                 source_filter,
                 parameters,
-                hash_rule,
-                fold,
             },
         ));
     }
@@ -898,32 +650,23 @@ fn initial_chord_tables(
     origin: Option<(&str, &SmbArchiveReport)>,
 ) -> Result<InitialChordTables, Box<dyn Error>> {
     let SmbCampaignChordPolicy::DerivedHalf(derivation) = policy;
-    let mut tables =
-        EmpiricalStepTables::with_hash_rule(derivation.parameters, derivation.hash_rule)?;
+    let mut tables = EmpiricalStepTables::new(derivation.parameters)?;
     let source_sha256 = match origin {
         None => format!("{:x}", Sha256::digest([])),
         Some((file_sha256, report)) => {
-            let parent_len: BTreeMap<u64, usize> = match derivation.fold {
-                ChordFoldSource::FullInput => BTreeMap::new(),
-                ChordFoldSource::SuffixOnly => report
-                    .entries
-                    .iter()
-                    .map(|entry| (entry.id, entry.input.actions.len()))
-                    .collect(),
-            };
+            let parent_len: BTreeMap<u64, usize> = report
+                .entries
+                .iter()
+                .map(|entry| (entry.id, entry.input.actions.len()))
+                .collect();
             let mut source_pending = 0_u64;
             for entry in &report.entries {
                 if source_filter_matches(derivation.source_filter, entry) {
-                    let folded = match derivation.fold {
-                        ChordFoldSource::FullInput => entry.input.actions.as_slice(),
-                        ChordFoldSource::SuffixOnly => {
-                            let prefix = entry
-                                .parent_id
-                                .and_then(|parent| parent_len.get(&parent).copied())
-                                .unwrap_or(0);
-                            entry.input.actions.get(prefix..).unwrap_or(&[])
-                        }
-                    };
+                    let prefix = entry
+                        .parent_id
+                        .and_then(|parent| parent_len.get(&parent).copied())
+                        .unwrap_or(0);
+                    let folded = entry.input.actions.get(prefix..).unwrap_or(&[]);
                     tables.fold_retained(folded)?;
                     source_pending = source_pending.saturating_add(1);
                     if source_batch_ready(
@@ -970,14 +713,10 @@ fn current_chord_checkpoint(
         .map_err(Into::into)
 }
 
-/// One recorded table version, light enough to keep for every dispatch point:
-/// the append-only history is shared with the live fold and named by length,
-/// and only the bounded recent window is snapshotted (shared between versions
-/// whose visible tables did not change).
 struct SmbChordTableVersion {
     checkpoint: EmpiricalStepCheckpoint,
     history_len: usize,
-    history_counts: Option<std::rc::Rc<BTreeMap<ButtonChord, usize>>>,
+    history_counts: std::rc::Rc<BTreeMap<ButtonChord, usize>>,
     recent: std::rc::Rc<Vec<ButtonChord>>,
 }
 
@@ -996,22 +735,11 @@ fn recorded_chord_tables<'a>(
         return Err("derived chord draw table hash does not match replay".into());
     }
     let tables = tables.ok_or("derived chord policy has no folded tables")?;
-    if let Some(history_counts) = &version.history_counts {
-        return Ok(Some(EmpiricalStepTableRef::from_counts(
-            tables.parameters(),
-            &version.recent,
-            history_counts,
-            version.history_len,
-        )));
-    }
-    let history = tables
-        .all_history()
-        .get(..version.history_len)
-        .ok_or("derived chord version names history the fold does not hold")?;
-    Ok(Some(EmpiricalStepTableRef::from_parts(
+    Ok(Some(EmpiricalStepTableRef::from_counts(
         tables.parameters(),
         &version.recent,
-        history,
+        &version.history_counts,
+        version.history_len,
     )))
 }
 
@@ -1035,12 +763,8 @@ fn remember_chord_version(
         .map(|(_, last)| std::rc::Rc::clone(&last.recent))
         .unwrap_or_else(|| std::rc::Rc::new(tables.recent().to_vec()));
     let history_counts = reusable
-        .and_then(|(_, last)| last.history_counts.as_ref().map(std::rc::Rc::clone))
-        .or_else(|| {
-            tables
-                .compact_history()
-                .map(|counts| std::rc::Rc::new(counts.clone()))
-        });
+        .map(|(_, last)| std::rc::Rc::clone(&last.history_counts))
+        .unwrap_or_else(|| std::rc::Rc::new(tables.compact_history().clone()));
     versions.insert(
         tables.records(),
         SmbChordTableVersion {
@@ -1069,7 +793,7 @@ where
     type Run = SmbCampaignRun;
     type DrawState = SmbDrawState;
     type DrawCheckpoint = EmpiricalStepCheckpoint;
-    type TableHeader = SmbChordTableHeader;
+    type DrawHeader = SmbChordTableHeader;
 }
 
 impl<M, P> Reporting for SmbGame<M, P>
@@ -1083,8 +807,14 @@ where
     fn checkpoint_format(&self) -> &'static str {
         self.snapshot_checkpoint_format()
     }
-    fn image_sha256(&self) -> String {
+    fn workload_identity_sha256(&self) -> String {
         format!("{:x}", Sha256::digest(&self.rom))
+    }
+    fn action_cost_unit(&self) -> &'static str {
+        "frames"
+    }
+    fn execution_work_unit(&self) -> &'static str {
+        "frames"
     }
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
         postcard_result_sha256(result)
@@ -1107,7 +837,9 @@ where
             progress_curve: state.progress_curve,
             retained: state.retained,
             rejected: state.rejected,
-            deaths: state.deaths,
+            deaths: state
+                .terminal_endpoints
+                .saturating_sub(state.terminal_objectives),
             selector: state.selector,
         }
     }
@@ -1127,8 +859,8 @@ where
             .as_ref()
             .map_or(0, EmpiricalStepTables::memory_bytes)
     }
-    fn policies(&self, run: &SmbCampaignRun) -> GamePolicies {
-        let mut policies: GamePolicies = [
+    fn policies(&self, run: &SmbCampaignRun) -> WorkloadPolicies {
+        let mut policies: WorkloadPolicies = [
             (
                 CONTROLLER_VOCABULARY_FIELD,
                 button_vocabulary_identifier(run.vocabulary).to_owned(),
@@ -1147,7 +879,10 @@ where
         policies.insert(EMULATOR_BACKEND_FIELD.to_owned(), self.identity.clone());
         policies
     }
-    fn resolve_recorded(&self, policies: &GamePolicies) -> Result<SmbCampaignRun, Box<dyn Error>> {
+    fn resolve_recorded(
+        &self,
+        policies: &WorkloadPolicies,
+    ) -> Result<SmbCampaignRun, Box<dyn Error>> {
         let recorded = |field: &str| recorded_policy(policies, field);
         let pinned = [
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
@@ -1170,8 +905,6 @@ where
                 .map(|identifier| SmbTerminalPredicate::from_identifier(identifier))
                 .transpose()?,
         };
-        // A name SMB does not own would silently survive replay, so the
-        // recorded set must be exactly the set this build writes.
         let unknown = policies
             .keys()
             .find(|field| !self.policies(&run).contains_key(field.as_str()));
@@ -1200,17 +933,8 @@ where
     ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
         current_chord_checkpoint(state.tables.as_ref())
     }
-    fn draw_checkpoint_to_wire(
-        &self,
-        checkpoint: &EmpiricalStepCheckpoint,
-    ) -> Result<EmpiricalStepCheckpoint, Box<dyn Error>> {
-        Ok(checkpoint.clone())
-    }
-    fn draw_checkpoint_from_wire(
-        &self,
-        checkpoint: Option<&EmpiricalStepCheckpoint>,
-    ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
-        Ok(checkpoint.cloned())
+    fn draw_checkpoint_version(&self, checkpoint: &EmpiricalStepCheckpoint) -> u64 {
+        checkpoint.records
     }
     fn expand_suffix(
         &self,
@@ -1257,23 +981,19 @@ where
         state: &mut SmbDrawState,
         retained: &[(usize, &[ButtonChord])],
     ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
-        let SmbCampaignChordPolicy::DerivedHalf(derivation) = run.chord;
+        let SmbCampaignChordPolicy::DerivedHalf(_) = run.chord;
         let tables = state
             .tables
             .as_mut()
             .ok_or("derived chord policy has no folded tables")?;
         for (parent_actions, input) in retained {
-            let folded = match derivation.fold {
-                ChordFoldSource::FullInput => input,
-                ChordFoldSource::SuffixOnly => input.get(*parent_actions..).unwrap_or(&[]),
-            };
+            let folded = input.get(*parent_actions..).unwrap_or(&[]);
             tables.fold_retained(folded)?;
         }
         Ok(tables.finish_record()?)
     }
-    fn retained_inputs_need_full(&self, run: &SmbCampaignRun) -> bool {
-        let SmbCampaignChordPolicy::DerivedHalf(derivation) = run.chord;
-        matches!(derivation.fold, ChordFoldSource::FullInput)
+    fn retained_inputs_need_full(&self, _run: &SmbCampaignRun) -> bool {
+        false
     }
     fn remember_draw_version(
         &self,
@@ -1288,7 +1008,7 @@ where
         crate::smb::archive::MAX_SMB_COMPLETION_ACTIONS
     }
 
-    fn longest_action_time(&self) -> u64 {
+    fn max_action_cost(&self) -> u64 {
         u64::from(crate::smb::archive::LONG_HOLD_FRAMES.1)
     }
 }
@@ -1311,8 +1031,8 @@ where
     ) -> Result<(), Box<dyn Error>> {
         target.restore(snapshot)
     }
-    fn frames_clocked(&self, target: &SmbTarget<M, P>) -> u64 {
-        target.frames_clocked()
+    fn execution_work(&self, target: &SmbTarget<M, P>) -> u64 {
+        target.execution_work()
     }
     fn apply_action(
         &self,
@@ -1324,7 +1044,11 @@ where
         merge_action_milestones(milestones, target)
     }
     fn rollout_observations(&self, target: &SmbTarget<M, P>) -> Vec<SmbObservations> {
-        target.last_action_observations().to_vec()
+        if target.exit_kind() != ExitKind::Ok {
+            Vec::new()
+        } else {
+            target.last_action_observations().to_vec()
+        }
     }
     fn rollout_probe(
         &self,
@@ -1338,7 +1062,7 @@ where
         target.snapshot().ok_or_else(|| "failed to snapshot".into())
     }
 
-    fn action_time_fn(&self) -> fn(&ButtonChord) -> u64 {
+    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
 
@@ -1441,17 +1165,23 @@ where
         select_frontier_resume_input(source)
     }
 
-    fn is_terminal(&self, target: &SmbTarget<M, P>) -> bool {
-        target.is_dead() || target.exit_kind() != ExitKind::Ok
+    fn execution_disposition(&self, target: &SmbTarget<M, P>) -> ExecutionDisposition {
+        if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_dead() || target.is_victory() {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        }
     }
 
-    fn is_run_terminal(
+    fn objective_reached(
         &self,
         run: &SmbCampaignRun,
         target: &SmbTarget<M, P>,
     ) -> Result<bool, Box<dyn Error>> {
-        if self.is_terminal(target) {
-            return Ok(true);
+        if target.exit_kind() != ExitKind::Ok {
+            return Ok(false);
         }
         run.terminal.unwrap_or_default().reached(target)
     }
@@ -1460,11 +1190,17 @@ where
         &self,
         run: &SmbCampaignRun,
         target: &SmbTarget<M, P>,
-    ) -> Result<crate::search::rollout::Outcome, Box<dyn Error>> {
-        Ok(crate::search::rollout::Outcome {
-            dead: target.is_dead(),
-            victory: run.terminal.unwrap_or_default().reached(target)?,
-            failed: target.exit_kind() != ExitKind::Ok,
+    ) -> Result<Outcome, Box<dyn Error>> {
+        let objective_reached = self.objective_reached(run, target)?;
+        Ok(Outcome {
+            objective_reached,
+            disposition: if target.exit_kind() != ExitKind::Ok {
+                ExecutionDisposition::Failed
+            } else if target.is_dead() || objective_reached {
+                ExecutionDisposition::Terminal
+            } else {
+                ExecutionDisposition::Runnable
+            },
         })
     }
 
@@ -1485,12 +1221,6 @@ where
     }
 }
 
-/// Run one live campaign, writing the stream as it goes.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions as
-/// [`run_smb_campaign_checkpointed`].
 pub fn run_smb_campaign<M, P>(
     game: &SmbGame<M, P>,
     config: &SmbCampaignConfig,
@@ -1504,17 +1234,6 @@ where
     run_smb_campaign_with_progress(game, config, origin, stream, None)
 }
 
-/// Run a campaign, optionally emitting periodic progress lines to a sidecar.
-///
-/// The sidecar is pure observation: it reads archive state that is already
-/// settled, consumes no randomness, and writes to a sink separate from the
-/// recorded stream. A run with a sidecar and the same run without one record
-/// byte-identical streams and archives.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions as
-/// [`run_smb_campaign_checkpointed`].
 pub fn run_smb_campaign_with_progress<M, P>(
     game: &SmbGame<M, P>,
     config: &SmbCampaignConfig,
@@ -1529,13 +1248,6 @@ where
     run_smb_campaign_checkpointed(game, config, origin, stream, progress).map(|(report, _)| report)
 }
 
-/// Run a campaign, also returning every retained entry's snapshot so a later
-/// whole-tree resume can restore the population instead of re-emulating it.
-///
-/// # Errors
-///
-/// Returns an error when the origin is unusable, a worker fails, emulation or
-/// snapshotting fails, or the stream cannot be written.
 pub fn run_smb_campaign_checkpointed<M, P>(
     game: &SmbGame<M, P>,
     config: &SmbCampaignConfig,
@@ -1550,12 +1262,6 @@ where
     run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)
 }
 
-/// Replay a recorded campaign stream serially and rebuild its report.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions as
-/// [`replay_smb_campaign_checkpointed`].
 pub fn replay_smb_campaign<M, P>(
     game: &SmbGame<M, P>,
     stream_bytes: &[u8],
@@ -1569,12 +1275,6 @@ where
         .map(|(report, _)| report)
 }
 
-/// Replay a recorded campaign, also returning the rebuilt snapshot checkpoint.
-///
-/// # Errors
-///
-/// Returns an error when the stream is malformed, the origin does not match
-/// the header, or any recomputed value differs from the recorded one.
 pub fn replay_smb_campaign_checkpointed<M, P>(
     game: &SmbGame<M, P>,
     stream_bytes: &[u8],
@@ -1590,6 +1290,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::search::rollout::Outcome;
     use std::{
         cell::Cell,
         collections::{BTreeMap, BTreeSet},
@@ -1605,10 +1306,9 @@ mod tests {
         derive_worker_seed, remember_chord_version, source_batch_ready,
     };
     use crate::search::campaign::{
-        CAMPAIGN_SCHEDULE_IDENTITY, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Evaluation,
-        InputPolicy, TargetExecution,
+        DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Evaluation, InputPolicy, TargetExecution,
     };
-    use crate::search::empirical_steps::{EmpiricalStepHashRule, EmpiricalStepTables};
+    use crate::search::empirical_steps::EmpiricalStepTables;
     use crate::{
         search::empirical_steps::EmpiricalStepParameters,
         smb::archive::SmbArchiveReport,
@@ -1708,7 +1408,7 @@ mod tests {
             memory_budget_mib: None,
             materialize_final_artifacts: true,
             chord: SmbCampaignChordPolicy::default(),
-            retention: crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
+            retention: crate::search::archive::RetentionPolicy::ProbeAtAdmission,
             selector: crate::search::archive::SelectorPolicy::GroupUniform,
             suffix: SuffixShape::default(),
             mixture: DrawMixture::BiasedHalf,
@@ -1731,10 +1431,12 @@ mod tests {
     #[test]
     fn suffix_derivation_is_pure_and_bounded() {
         for seed in [0_u64, 0x5eed_ca01, u64::MAX] {
-            let empty = crate::search::empirical_steps::EmpiricalStepTableRef::from_parts(
+            let history = BTreeMap::new();
+            let empty = crate::search::empirical_steps::EmpiricalStepTableRef::from_counts(
                 empty_table_parameters(),
                 &[],
-                &[],
+                &history,
+                0,
             );
             let first = derive_suffix(
                 seed,
@@ -1787,49 +1489,37 @@ mod tests {
                 update_every_records: 2,
                 hash_every_records: 2,
             },
-            hash_rule: EmpiricalStepHashRule::default(),
-            fold: super::ChordFoldSource::default(),
         })
     }
 
     #[test]
-    fn smb_memory_and_retained_input_contracts_are_exact() {
+    fn smb_memory_and_suffix_input_contracts_are_exact() {
         let rom = synthetic_nrom();
         let game = test_game(&rom);
         let mut target = SmbTarget::loopback_for_tests(&rom).expect("target");
         target.reset();
         let snapshot = target.snapshot().expect("snapshot");
-        let mut full = derived_policy();
-        let SmbCampaignChordPolicy::DerivedHalf(mut derivation) = full;
-        derivation.fold = super::ChordFoldSource::FullInput;
-        full = SmbCampaignChordPolicy::DerivedHalf(derivation);
-        let full_run = SmbCampaignRun {
-            chord: full,
+        let run = SmbCampaignRun {
+            chord: derived_policy(),
             vocabulary: SmbButtonVocabulary::default(),
             terminal: Some(SmbTerminalPredicate::default()),
         };
-        derivation.fold = super::ChordFoldSource::SuffixOnly;
-        let suffix_run = SmbCampaignRun {
-            chord: SmbCampaignChordPolicy::DerivedHalf(derivation),
-            ..full_run
-        };
 
         assert_eq!(
-            game.draw_state_memory_reserve_bytes(&full_run, 96),
+            game.draw_state_memory_reserve_bytes(&run, 96),
             2 * 1024 * 1024
         );
         assert_eq!(
             <SmbGame as TargetExecution>::snapshot_memory_charge(&snapshot),
             snapshot.resident_memory_charge()
         );
-        assert!(game.retained_inputs_need_full(&full_run));
-        assert!(!game.retained_inputs_need_full(&suffix_run));
+        assert!(!game.retained_inputs_need_full(&run));
         assert!(!source_batch_ready(1, 2));
         assert!(source_batch_ready(2, 2));
         assert!(source_batch_ready(3, 2));
 
         let (mut draw_state, _) = game
-            .initial_draw_state(&full_run, None)
+            .initial_draw_state(&run, None)
             .expect("initial draw state");
         draw_state
             .tables
@@ -1849,9 +1539,7 @@ mod tests {
     #[test]
     fn remembered_chord_versions_reuse_only_an_exact_visible_table() {
         let SmbCampaignChordPolicy::DerivedHalf(derivation) = derived_policy();
-        let mut tables =
-            EmpiricalStepTables::with_hash_rule(derivation.parameters, derivation.hash_rule)
-                .expect("tables");
+        let mut tables = EmpiricalStepTables::new(derivation.parameters).expect("tables");
         let chord = ButtonChord::new(0x01, 4);
         tables.fold_retained(&[chord]).expect("fold chord");
         tables.finish_record().expect("finish record");
@@ -1859,12 +1547,13 @@ mod tests {
         let checkpoint = tables.checkpoint().expect("checkpoint");
         let history_len = tables.history_len();
         let required = BTreeSet::from([tables.records()]);
+        let history_counts = Rc::new(tables.compact_history().clone());
 
         let sentinel = Rc::new(vec![ButtonChord::new(0x80, 7)]);
         let exact = SmbChordTableVersion {
             checkpoint: checkpoint.clone(),
             history_len,
-            history_counts: None,
+            history_counts: Rc::clone(&history_counts),
             recent: Rc::clone(&sentinel),
         };
         let mut versions = BTreeMap::from([(0, exact)]);
@@ -1875,7 +1564,7 @@ mod tests {
         let wrong_len = SmbChordTableVersion {
             checkpoint: checkpoint.clone(),
             history_len: history_len.saturating_add(1),
-            history_counts: None,
+            history_counts: Rc::clone(&history_counts),
             recent: Rc::clone(&sentinel),
         };
         let mut versions = BTreeMap::from([(0, wrong_len)]);
@@ -1888,7 +1577,7 @@ mod tests {
         let wrong_hash = SmbChordTableVersion {
             checkpoint: wrong_hash,
             history_len,
-            history_counts: None,
+            history_counts,
             recent: Rc::clone(&sentinel),
         };
         let mut versions = BTreeMap::from([(0, wrong_hash)]);
@@ -1915,9 +1604,7 @@ mod tests {
                 log_line: String::new(),
             }],
             milestones,
-            dead: false,
-            victory: false,
-            failed: false,
+            outcome: Outcome::default(),
             candidate: None,
         }
     }
@@ -2029,23 +1716,20 @@ mod tests {
             chord_policy_from_identifier(&identifier).expect("parse derived policy"),
             policy
         );
-        assert!(chord_policy_from_identifier("chord_draw_recorded_50").is_err());
-        assert!(chord_policy_from_identifier("chord_draw_recorded_50:0").is_err());
-
+        assert!(identifier.starts_with("chord_draw_recorded_53:"));
+        for version in ["50", "51", "52", "54"] {
+            assert!(
+                chord_policy_from_identifier(&format!(
+                    "chord_draw_recorded_{version}:all,0,4,3,1,2,2"
+                ))
+                .is_err()
+            );
+        }
         let SmbCampaignChordPolicy::DerivedHalf(mut derivation) = policy;
-        derivation.hash_rule = EmpiricalStepHashRule::IncrementalHistory;
-        let incremental = SmbCampaignChordPolicy::DerivedHalf(derivation);
-        let identifier = chord_policy_identifier(incremental);
-        assert!(identifier.starts_with("chord_draw_recorded_51:"));
-        assert_eq!(
-            chord_policy_from_identifier(&identifier).expect("parse incremental policy"),
-            incremental
-        );
-
         derivation.source_filter = super::SmbChordSource::All(super::SmbChordSourceAll {});
         let all_levels = SmbCampaignChordPolicy::DerivedHalf(derivation);
         let identifier = chord_policy_identifier(all_levels);
-        assert!(identifier.starts_with("chord_draw_recorded_51:all,"));
+        assert!(identifier.starts_with("chord_draw_recorded_53:all,"));
         assert_eq!(
             chord_policy_from_identifier(&identifier).expect("parse all-levels policy"),
             all_levels
@@ -2087,7 +1771,8 @@ mod tests {
                 SmbMilestones::default(),
                 &[ButtonChord::new(0x01, 1)],
                 96,
-                crate::search::archive::RetentionPolicy::AdmitAlive,
+                crate::search::archive::RetentionPolicy::Unprobed,
+                true,
             )
             .expect("execute room action");
         let candidate = result.actions[0]
@@ -2115,10 +1800,12 @@ mod tests {
         first.reset();
         first.apply(&ButtonChord::new(0x81, 12));
         let snapshot = first.snapshot().expect("snapshot prefix");
-        let empty = crate::search::empirical_steps::EmpiricalStepTableRef::from_parts(
+        let history = BTreeMap::new();
+        let empty = crate::search::empirical_steps::EmpiricalStepTableRef::from_counts(
             empty_table_parameters(),
             &[],
-            &[],
+            &history,
+            0,
         );
         let suffix = derive_suffix(
             0x5eed_ca02,
@@ -2130,7 +1817,6 @@ mod tests {
             Some(empty),
         )
         .expect("derive suffix");
-        // Disturb the first instance so the job must depend on the snapshot alone.
         first.apply(&ButtonChord::new(0x02, 30));
         let run = SmbCampaignRun {
             chord: SmbCampaignChordPolicy::default(),
@@ -2147,7 +1833,8 @@ mod tests {
                 SmbMilestones::default(),
                 &suffix,
                 96,
-                crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
+                crate::search::archive::RetentionPolicy::ProbeAtAdmission,
+                false,
             )
             .expect("execute job on first instance");
         let on_second = game
@@ -2160,7 +1847,8 @@ mod tests {
                 SmbMilestones::default(),
                 &suffix,
                 96,
-                crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
+                crate::search::archive::RetentionPolicy::ProbeAtAdmission,
+                false,
             )
             .expect("execute job on second instance");
         assert_eq!(on_first, on_second);
@@ -2174,14 +1862,25 @@ mod tests {
         target.reset();
         target.poke_wram(0x0770, 2);
         target.poke_wram(0x075f, 7);
+        let run = SmbCampaignRun {
+            chord: SmbCampaignChordPolicy::default(),
+            vocabulary: SmbButtonVocabulary::default(),
+            terminal: Some(SmbTerminalPredicate::GameVictory),
+        };
+        assert_eq!(
+            game.execution_disposition(&target),
+            crate::search::rollout::ExecutionDisposition::Terminal
+        );
+        assert_eq!(
+            game.rollout_outcome(&run, &target)
+                .expect("won outcome")
+                .disposition,
+            game.execution_disposition(&target)
+        );
         let won = target.snapshot().expect("snapshot won state");
         let result = game
             .execute_job(
-                &SmbCampaignRun {
-                    chord: SmbCampaignChordPolicy::default(),
-                    vocabulary: SmbButtonVocabulary::default(),
-                    terminal: Some(SmbTerminalPredicate::GameVictory),
-                },
+                &run,
                 &mut target,
                 &won,
                 &[],
@@ -2189,7 +1888,8 @@ mod tests {
                 SmbMilestones::default(),
                 &[ButtonChord::new(0x01, 4)],
                 96,
-                crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
+                crate::search::archive::RetentionPolicy::ProbeAtAdmission,
+                true,
             )
             .expect("execute job");
         assert!(result.actions.is_empty());
@@ -2269,7 +1969,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_root_rejects_the_recorded_terminal_predicate() {
+    fn snapshot_root_accepts_a_terminal_objective_checkpoint() {
         use sha2::{Digest, Sha256};
 
         let rom = synthetic_nrom();
@@ -2294,16 +1994,19 @@ mod tests {
             ..genesis_config(0x5eed_ca21, 1, 1)
         };
         let origin = SmbCampaignOrigin::SnapshotRoot { checkpoint };
-        assert!(
-            run_smb_campaign_checkpointed(&rom, &config, &origin, &mut Vec::new(), None).is_err()
-        );
+        let mut stream = Vec::new();
+        let (report, _) = run_smb_campaign_checkpointed(&rom, &config, &origin, &mut stream, None)
+            .expect("terminal objective checkpoint is a valid zero-job campaign");
+        assert_eq!(report.objectives_reached, 1);
+        assert_eq!(report.terminal_objectives, 1);
+        assert_eq!(report.executions_completed, 0);
     }
 
     #[test]
     fn twelve_worker_windowed_streams_are_repeatable_and_replay_exactly() {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca21, 12, 24);
-        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        config.retention = crate::search::archive::RetentionPolicy::Unprobed;
         let mut first_stream = Vec::new();
         let first = run_smb_campaign(
             &rom,
@@ -2345,9 +2048,9 @@ mod tests {
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
             .expect("live campaign without a victory");
-        assert_eq!(live.victories, 0);
-        assert_eq!(live.frames_to_first_victory, None);
-        assert_eq!(live.executions_to_first_victory, None);
+        assert_eq!(live.objectives_reached, 0);
+        assert_eq!(live.work_to_first_objective, None);
+        assert_eq!(live.executions_to_first_objective, None);
         assert!(live.executions_completed > 0);
         let json = serde_json::to_string(&live).expect("serialize report");
         for field in ["frames_to_first_victory", "executions_to_first_victory"] {
@@ -2392,8 +2095,6 @@ mod tests {
         )
         .expect("window-64 live campaign");
         let recorded = String::from_utf8(stream).expect("stream is utf-8");
-        // Window 64 in the historical namespace is the legacy identifier
-        // verbatim, so a live run at that window must record its own.
         assert!(
             recorded
                 .lines()
@@ -2413,8 +2114,6 @@ mod tests {
             "deterministic_window_64_per_worker_v1",
             1,
         );
-        // Rewriting only the namespace claims a run recorded before the
-        // budget maintenance was corrected, which this stream is not.
         assert!(
             replay_smb_campaign_checkpointed(&rom, legacy_tagged.as_bytes(), None, None).is_err(),
             "the legacy path must not silently accept a live window-64 stream"
@@ -2422,14 +2121,10 @@ mod tests {
     }
 
     #[test]
-    fn a_budgeted_stream_in_a_historical_namespace_is_refused_rather_than_replayed() {
-        // Budgeted runs recorded before the maintenance correction enforced
-        // the budget at other stream positions and counted CLOCK work
-        // differently, so which entries survive differs. Replay must say so
-        // instead of running and diverging.
+    fn obsolete_campaign_policies_are_rejected_before_replay() {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca44, 2, 128);
-        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        config.retention = crate::search::archive::RetentionPolicy::Unprobed;
         config.memory_budget_mib = Some(4);
         config.archive_entry_limit = 1;
         let mut stream = Vec::new();
@@ -2442,105 +2137,42 @@ mod tests {
         let recorded = String::from_utf8(stream).expect("stream is utf-8");
         replay_smb_campaign(&rom, recorded.as_bytes(), None).expect("its own namespace replays");
 
-        let refused = "campaign stream recorded a memory budget under superseded maintenance \
-                       and cannot be replayed";
         for historical in [
             recorded.replacen("_per_worker_v3", "_per_worker_v1", 1),
+            recorded.replacen("_per_worker_v3", "_per_worker_v2", 1),
             recorded.replacen(
-                "\"schedule_policy\":\"deterministic_window_1_per_worker_v3\"",
-                "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"",
-                1,
-            ),
-            recorded.replacen(
-                "\"schedule_policy\":\"deterministic_window_1_per_worker_v3\",",
-                "",
+                "mechanical_watermark_bounded_1024_v2",
+                "mechanical_watermark_v1",
                 1,
             ),
         ] {
             let error = replay_smb_campaign(&rom, historical.as_bytes(), None)
-                .expect_err("a budgeted historical stream is refused");
-            assert_eq!(error.to_string(), refused);
+                .expect_err("an obsolete campaign policy is refused");
+            let message = error.to_string();
+            assert!(
+                message.contains("schedule policy") || message.contains("progress policy"),
+                "unexpected obsolete policy error: {message}"
+            );
         }
 
-        // The same rewrite stays replayable without a budget, because the
-        // maintenance step does nothing there.
-        let unbudgeted = genesis_config(0x5eed_ca45, 2, 32);
-        let mut stream = Vec::new();
-        run_smb_campaign(&rom, &unbudgeted, &SmbCampaignOrigin::Genesis, &mut stream)
-            .expect("unbudgeted live campaign");
-        let recorded = String::from_utf8(stream).expect("stream is utf-8");
-        replay_smb_campaign(
-            &rom,
-            recorded
-                .replacen("_per_worker_v3", "_per_worker_v1", 1)
-                .as_bytes(),
-            None,
-        )
-        .expect("an unbudgeted historical stream still replays");
-    }
-
-    #[test]
-    fn legacy_stream_omits_new_evaluator_payloads_on_replay() {
-        let rom = synthetic_nrom();
-        let config = genesis_config(0x5eed_ca22, 1, 4);
-        let mut stream = Vec::new();
-        let (live, live_checkpoint) = run_smb_campaign_checkpointed(
-            &rom,
-            &config,
-            &SmbCampaignOrigin::Genesis,
-            &mut stream,
-            None,
-        )
-        .expect("new campaign");
-        let recorded = String::from_utf8(stream).expect("stream is utf-8");
-        let historical = recorded.replacen(
-            "\"schedule_policy\":\"deterministic_window_1_per_worker_v3\"",
-            "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"",
+        let without_schedule = recorded.replacen(
+            "\"schedule_policy\":\"deterministic_window_1_per_worker_v3\",",
+            "",
             1,
         );
-        let (historical_replay, historical_checkpoint) =
-            replay_smb_campaign_checkpointed(&rom, historical.as_bytes(), None, None)
-                .expect("deterministic legacy policy replays");
-        let (historical_replay_again, historical_checkpoint_again) =
-            replay_smb_campaign_checkpointed(&rom, historical.as_bytes(), None, None)
-                .expect("legacy policy replays deterministically");
-        assert_eq!(historical_replay, historical_replay_again);
-        assert_eq!(historical_checkpoint, historical_checkpoint_again);
-        // Replacing only the schedule tag changes the stream digest by
-        // design; the archive and checkpoint must remain identical.
-        assert_eq!(historical_replay.archive, live.archive);
-        assert_eq!(historical_checkpoint, live_checkpoint);
-        assert_eq!(
-            historical_replay.schedule_identity,
-            CAMPAIGN_SCHEDULE_IDENTITY
-        );
-        let legacy = recorded
-            .replacen(
-                "\"schedule_policy\":\"deterministic_window_1_per_worker_v3\",",
-                "",
-                1,
-            )
-            .replacen(
-                "\"progress_policy\":\"mechanical_watermark_bounded_1024_v2\",",
-                "",
-                1,
-            )
-            .replacen("\"terminal_policy\":\"game_victory\",", "", 1);
-        let replay = replay_smb_campaign(&rom, legacy.as_bytes(), None)
-            .expect("legacy evaluator stream replays");
         assert!(
-            replay
-                .schedule_identity
-                .starts_with("the live schedule is not derivable")
+            replay_smb_campaign(&rom, without_schedule.as_bytes(), None).is_err(),
+            "a recording without the current schedule policy is refused"
+        );
+        let without_progress = recorded.replacen(
+            "\"progress_policy\":\"mechanical_watermark_bounded_1024_v2\",",
+            "",
+            1,
         );
         assert!(
-            !replay
-                .game_policies
-                .contains_key(super::TERMINAL_POLICY_FIELD)
+            replay_smb_campaign(&rom, without_progress.as_bytes(), None).is_err(),
+            "a recording without the current progress policy is refused"
         );
-        let curve = serde_json::to_string(&replay.archive.progress_curve)
-            .expect("serialize legacy progress curve");
-        assert!(!curve.contains("\"progress\""));
     }
 
     #[test]
@@ -2637,13 +2269,13 @@ mod tests {
             .expect("live campaign");
         assert_eq!(live.executions_completed, 32);
         assert_eq!(live.jobs_per_worker.iter().sum::<u64>(), 32);
-        assert_eq!(live.victories, 0);
-        assert_eq!(live.victory_input, None);
+        assert_eq!(live.objectives_reached, 0);
+        assert_eq!(live.objective_witness, None);
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
         for identifier in [
-            "room_cell_uniform_128",
-            "probe_at_admission_45",
+            "hierarchy_uniform_128",
+            "probe_at_admission",
             "fewest_frames_in_level",
             "whole_tree",
             "nes_pressable_36",
@@ -2656,7 +2288,7 @@ mod tests {
         for line in text.lines().skip(1) {
             assert!(line.contains("\"selector\""));
             assert_eq!(
-                line.contains("\"room_cell_uniform\""),
+                line.contains("\"hierarchy_uniform\""),
                 line.contains("\"concentration\"")
             );
         }
@@ -2684,9 +2316,7 @@ mod tests {
     fn budgeted_64_entry_campaign_reactivates_at_action_limit_and_replays_exactly() {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca31, 4, 8_192);
-        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
-        // This bounded setup drives the active population to the action limit
-        // while the 64-entry budget continues admitting replacements.
+        config.retention = crate::search::archive::RetentionPolicy::Unprobed;
         config.memory_budget_mib = Some(4);
         config.archive_entry_limit = 64;
         let mut stream = Vec::new();
@@ -2701,8 +2331,6 @@ mod tests {
         assert_eq!(live.executions_completed, 8_192);
         assert_eq!(live.memory_budget_mib, Some(4));
         assert!(live.resident_memory_bytes <= 4 * 1024 * 1024);
-        // Skips account a selection without inserting, so this run exercises
-        // the budget maintenance the coordinator spends outside admission.
         assert!(live.duplicates_skipped > 0);
         assert!(live.archive.retained > 1);
         assert!(live.history_compactions > 0);
@@ -2733,7 +2361,7 @@ mod tests {
     fn budgeted_single_entry_campaign_reactivates_displaced_anchor() {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca32, 1, 128);
-        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        config.retention = crate::search::archive::RetentionPolicy::Unprobed;
         config.memory_budget_mib = Some(4);
         config.archive_entry_limit = 1;
         let mut stream = Vec::new();
@@ -2801,7 +2429,7 @@ mod tests {
     }
 
     #[test]
-    fn admit_alive_campaign_probes_nothing_and_replays_byte_identically() {
+    fn unprobed_campaign_probes_nothing_and_replays_byte_identically() {
         let rom = synthetic_nrom();
         let probing = genesis_config(0x5eed_ca20, 4, 32);
         let mut probing_stream = Vec::new();
@@ -2813,19 +2441,17 @@ mod tests {
         )
         .expect("probing campaign");
         let mut config = genesis_config(0x5eed_ca20, 4, 32);
-        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        config.retention = crate::search::archive::RetentionPolicy::Unprobed;
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
             .expect("admit-alive campaign");
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
-        assert!(header.contains("\"retention_policy\":\"admit_alive\""));
+        assert!(header.contains("\"retention_policy\":\"unprobed\""));
         assert_eq!(live.probe_refused, 0);
-        assert!(
-            live.frames_emulated < probed.frames_emulated,
-            "skipping the probe must emulate fewer frames: {} against {}",
-            live.frames_emulated,
-            probed.frames_emulated
+        assert_eq!(
+            live.execution_work, probed.execution_work,
+            "probe work is restored and excluded from logical execution work"
         );
         let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay admit-alive");
         assert_eq!(
@@ -2849,7 +2475,7 @@ mod tests {
             .expect("retiring campaign");
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
-        assert!(header.contains("room_cell_uniform_128_retire:2,4,8,16"));
+        assert!(header.contains("hierarchy_uniform_128_retire:2,4,8,16"));
         assert!(live.archive.selector.retirement.is_some());
         let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay retiring");
         assert_eq!(
@@ -2873,7 +2499,7 @@ mod tests {
             .expect("energy campaign");
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
-        assert!(header.contains("room_cell_uniform_128_energy:2,4,8,16"));
+        assert!(header.contains("hierarchy_uniform_128_energy:2,4,8,16"));
         assert!(live.archive.selector.retirement.is_some());
         let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay energy");
         assert_eq!(
@@ -2884,13 +2510,10 @@ mod tests {
 
     #[test]
     fn retiring_selector_reports_survive_a_seed_sweep() {
-        // The scale replays diverged only in end-state retirement counters,
-        // so this sweeps seeds under reset-heavy thresholds until a live
-        // report and its replay disagree.
         let rom = synthetic_nrom();
         for seed in 0..24_u64 {
             let mut config = genesis_config(0x5eed_d000 + seed, 4, 64);
-            config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+            config.retention = crate::search::archive::RetentionPolicy::Unprobed;
             config.selector = crate::search::archive::SelectorPolicy::Retire(
                 crate::search::archive::RetireThresholds {
                     entry: 1,
@@ -2912,10 +2535,7 @@ mod tests {
             retention_policy_identifier, selector_policy_identifier,
         };
         use crate::smb::archive::selector_policy_from_identifier;
-        for policy in [
-            RetentionPolicy::ProbeAtAdmission45,
-            RetentionPolicy::AdmitAlive,
-        ] {
+        for policy in [RetentionPolicy::ProbeAtAdmission, RetentionPolicy::Unprobed] {
             assert_eq!(
                 retention_policy_from_identifier(retention_policy_identifier(policy))
                     .expect("retention round trip"),
@@ -2948,8 +2568,8 @@ mod tests {
             );
         }
         assert!(retention_policy_from_identifier("no_probe").is_err());
-        assert!(selector_policy_from_identifier("room_cell_uniform_128_retire:3,6,12").is_err());
-        assert!(selector_policy_from_identifier("room_cell_uniform_128_retire:3,6,12,0").is_err());
+        assert!(selector_policy_from_identifier("hierarchy_uniform_128_retire:3,6,12").is_err());
+        assert!(selector_policy_from_identifier("hierarchy_uniform_128_retire:3,6,12,0").is_err());
     }
 
     #[test]
@@ -2961,8 +2581,8 @@ mod tests {
             .expect("live campaign");
         let text = String::from_utf8(stream).expect("stream is utf-8");
         for (from, to) in [
-            ("room_cell_uniform_128", "concentrated_recency_128"),
-            ("probe_at_admission_45", "probe_at_admission_45_snapback_16"),
+            ("hierarchy_uniform_128", "concentrated_recency_128"),
+            ("probe_at_admission", "probe_at_admission_snapback_16"),
             ("fewest_frames_in_level", "fewest_actions"),
             ("\"whole_tree\"", "\"frontier_shortest\""),
             ("nes_pressable_36", "frozen_nine_mask"),
@@ -2981,8 +2601,6 @@ mod tests {
         let rom = synthetic_nrom();
         let config = SmbCampaignConfig {
             chord: derived_policy(),
-            // Cross the reservation window so a later job must draw against
-            // a table updated by earlier retained successes.
             ..genesis_config(0x5eed_ca13, 1, 20)
         };
         let mut stream = Vec::new();
@@ -2993,10 +2611,10 @@ mod tests {
             text.lines()
                 .next()
                 .expect("header")
-                .contains("\"chord_table\"")
+                .contains("\"draw_header\"")
         );
-        assert!(text.contains("\"chord_table_before\""));
-        assert!(text.contains("\"chord_table_after\""));
+        assert!(text.contains("\"draw_checkpoint_before\""));
+        assert!(text.contains("\"draw_checkpoint_after\""));
         let checkpoints = text
             .lines()
             .skip(1)
@@ -3005,8 +2623,8 @@ mod tests {
                     .expect("parse campaign record")
             })
             .filter_map(|record| match record {
-                SmbCampaignStreamRecord::Job(job) => job.draw_table_before,
-                SmbCampaignStreamRecord::Skip(skip) => skip.draw_table_before,
+                SmbCampaignStreamRecord::Job(job) => job.draw_checkpoint_before,
+                SmbCampaignStreamRecord::Skip(skip) => skip.draw_checkpoint_before,
             })
             .collect::<Vec<_>>();
         assert!(
@@ -3032,8 +2650,6 @@ mod tests {
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
             .expect("live campaign");
-        // Tampering with a recorded skip must fail replay loudly rather than
-        // silently reproducing the counters.
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         if let Some(skip_line) = text.lines().find(|line| line.contains("\"skip\"")) {
             let tampered_line = skip_line.replace("\"mutation_seed\":", "\"mutation_seed\":9");
@@ -3064,8 +2680,6 @@ mod tests {
         .expect("seed campaign");
         let source = seed_campaign.archive.clone();
         let source_sha = "0000000000000000000000000000000000000000000000000000000000000000";
-        // The re-emulated and checkpoint-restored campaigns below are two
-        // independent live runs whose archives are compared for equality.
         let tree_config = genesis_config(0x5eed_ca06, 1, 16);
         let mut tree_stream = Vec::new();
         let tree_live = run_smb_campaign(
@@ -3116,9 +2730,6 @@ mod tests {
         );
         assert_eq!(counts.checkpointed, 0);
 
-        // Restoring the compact source breeding population from its snapshot
-        // checkpoint reaches the same archive as re-emulating it, records the
-        // checkpoint in the header, and replays with or without the file.
         let checkpoint_bytes = seed_checkpoint.to_bytes().expect("encode checkpoint");
         let checkpoint = SmbCampaignCheckpoint {
             path: "seed-snapshots.bin".to_owned(),
@@ -3154,7 +2765,7 @@ mod tests {
         )
         .expect("checkpoint-restored campaign");
         assert_eq!(restored_live.archive, tree_live.archive);
-        assert!(restored_live.bootstrap_frames < tree_live.bootstrap_frames);
+        assert!(restored_live.bootstrap_execution_work < tree_live.bootstrap_execution_work);
         assert_eq!(
             restored_live.origin.checkpoint_sha256.as_deref(),
             Some(checkpoint.file_sha256.as_str())
@@ -3236,8 +2847,6 @@ mod tests {
             Some(&mut sidecar),
         )
         .expect("campaign with a sidecar");
-        // The deterministic window schedule means the sidecar run must record
-        // byte-identical stream bytes.
         assert_eq!(without, with);
         assert!(!with.is_empty());
         assert!(
@@ -3255,7 +2864,7 @@ mod tests {
         assert_eq!(records.first().unwrap().executions, 1);
         let progress = records.last().unwrap();
         assert_eq!(progress.executions, observed.executions_completed);
-        assert_eq!(progress.frames_emulated, observed.frames_emulated);
+        assert_eq!(progress.execution_work, observed.execution_work);
         assert!(progress.progress.is_some());
         assert!(progress.search_elapsed_millis.is_some());
         let replayed =
