@@ -4781,6 +4781,11 @@ mod tests {
         assert_eq!(isr & 1, 1, "vector 0x40 is in service after acceptance");
     }
 
+    #[test]
+    fn rflags_if_is_bit_9() {
+        assert_eq!(RFLAGS_IF, 0x200);
+    }
+
     fn if_set_state() -> VcpuState {
         VcpuState {
             regs: vmm_backend::VcpuRegs {
