@@ -2,7 +2,7 @@
 
 use std::{fs::File, io, os::fd::AsRawFd, ptr::NonNull};
 
-const CREATE: libc::c_ulong = 0xc008_4802;
+const CREATE: libc::Ioctl = 0xc008_4802_u32 as libc::Ioctl;
 
 #[repr(C)]
 struct Request {

@@ -1,0 +1,18 @@
+[package]
+name = "harmony-runtime-fixture"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[workspace]
+
+[dependencies]
+harmony-sdk = { path = "../sdk", version = "=0.1.0" }
+hypercall-doorbell = { path = "../../hypercall-doorbell", version = "=0.1.0", features = ["linux-device"] }
+
+[[bin]]
+name = "runtime-fixture"
+path = "src/main.rs"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
