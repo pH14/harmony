@@ -30,7 +30,7 @@ const READY: &[u8] = b"ARM64_PG_M3_READY";
 
 /// A failed M3 acceptance, gap, independent-comparator, or performance-evidence claim.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum M3ReportError {
+pub enum LivenessReportError {
     /// A required acceptance marker was absent from the serial stream.
     #[error("serial acceptance marker absent: {0}")]
     MissingMarker(&'static str),
@@ -171,10 +171,10 @@ impl GapHistogram {
     /// Rejects fewer than two samples or regressing V-time. Use
     /// [`Self::validate_bound`] for the milestone limit; keeping analysis and
     /// policy separate lets a failing live report retain the full histogram.
-    pub fn analyze(values: &[u64]) -> Result<Self, M3ReportError> {
+    pub fn analyze(values: &[u64]) -> Result<Self, LivenessReportError> {
         let observations = u64::try_from(values.len()).unwrap_or(u64::MAX);
         if values.len() < 2 {
-            return Err(M3ReportError::TooFewVtimeObservations(observations));
+            return Err(LivenessReportError::TooFewVtimeObservations(observations));
         }
 
         let mut counts = [0u64; 8];
@@ -183,7 +183,7 @@ impl GapHistogram {
             let before = pair[0];
             let after = pair[1];
             let Some(gap) = after.checked_sub(before) else {
-                return Err(M3ReportError::VtimeRegressed {
+                return Err(LivenessReportError::VtimeRegressed {
                     observation: u64::try_from(index + 1).unwrap_or(u64::MAX),
                     before,
                     after,
@@ -217,11 +217,11 @@ impl GapHistogram {
     /// Enforce the documented two-tick maximum.
     ///
     /// # Errors
-    /// Returns [`M3ReportError::GapTooLarge`] when the measured maximum is
+    /// Returns [`LivenessReportError::GapTooLarge`] when the measured maximum is
     /// greater than [`MAX_GAP_VNS`].
-    pub fn validate_bound(&self) -> Result<(), M3ReportError> {
+    pub fn validate_bound(&self) -> Result<(), LivenessReportError> {
         if self.max_gap_vns > MAX_GAP_VNS {
-            Err(M3ReportError::GapTooLarge {
+            Err(LivenessReportError::GapTooLarge {
                 observed: self.max_gap_vns,
                 limit: MAX_GAP_VNS,
             })
@@ -266,9 +266,9 @@ impl PhasePerformance {
         phase: &'static str,
         start: PerformanceMark,
         end: PerformanceMark,
-    ) -> Result<Self, M3ReportError> {
+    ) -> Result<Self, LivenessReportError> {
         let Some(exits) = end.exits.checked_sub(start.exits) else {
-            return Err(M3ReportError::InvalidPerformancePhase {
+            return Err(LivenessReportError::InvalidPerformancePhase {
                 phase,
                 start_exits: start.exits,
                 end_exits: end.exits,
@@ -277,7 +277,7 @@ impl PhasePerformance {
             });
         };
         let Some(wall_ns) = end.wall_ns.checked_sub(start.wall_ns) else {
-            return Err(M3ReportError::InvalidPerformancePhase {
+            return Err(LivenessReportError::InvalidPerformancePhase {
                 phase,
                 start_exits: start.exits,
                 end_exits: end.exits,
@@ -286,7 +286,7 @@ impl PhasePerformance {
             });
         };
         if exits == 0 || wall_ns == 0 {
-            return Err(M3ReportError::InvalidPerformancePhase {
+            return Err(LivenessReportError::InvalidPerformancePhase {
                 phase,
                 start_exits: start.exits,
                 end_exits: end.exits,
@@ -372,11 +372,11 @@ fn require_marker(
     serial: &[u8],
     marker: &'static [u8],
     name: &'static str,
-) -> Result<(), M3ReportError> {
+) -> Result<(), LivenessReportError> {
     if find(serial, marker) {
         Ok(())
     } else {
-        Err(M3ReportError::MissingMarker(name))
+        Err(LivenessReportError::MissingMarker(name))
     }
 }
 
@@ -386,13 +386,13 @@ fn require_marker(
 /// Rejects missing lifecycle markers, guest failure markers, kernel liveness
 /// reports, malformed SQL aggregates, malformed UUID/timestamp fields, repeated
 /// UUIDs, and any row count other than [`WORKLOAD_ROWS`].
-pub fn validate_acceptance(serial: &[u8]) -> Result<AcceptanceSummary, M3ReportError> {
+pub fn validate_acceptance(serial: &[u8]) -> Result<AcceptanceSummary, LivenessReportError> {
     for (marker, name) in [
         (b"M3_POSTGRES_FAIL".as_slice(), "M3_POSTGRES_FAIL"),
         (b"M3_KERNEL_HEALTH_FAIL".as_slice(), "M3_KERNEL_HEALTH_FAIL"),
     ] {
         if find(serial, marker) {
-            return Err(M3ReportError::FailureMarker(name));
+            return Err(LivenessReportError::FailureMarker(name));
         }
     }
     for (needle, name) in [
@@ -401,7 +401,7 @@ pub fn validate_acceptance(serial: &[u8]) -> Result<AcceptanceSummary, M3ReportE
         (b"watchdog: BUG".as_slice(), "watchdog BUG"),
     ] {
         if find_ascii_case_insensitive(serial, needle) {
-            return Err(M3ReportError::KernelLiveness(name));
+            return Err(LivenessReportError::KernelLiveness(name));
         }
     }
     for (marker, name) in [
@@ -431,7 +431,7 @@ pub fn validate_acceptance(serial: &[u8]) -> Result<AcceptanceSummary, M3ReportE
         }
         let fields: Vec<&[u8]> = line.split(|byte| *byte == b'|').collect();
         if fields.len() != 6 {
-            return Err(M3ReportError::MalformedRow {
+            return Err(LivenessReportError::MalformedRow {
                 row: rows,
                 reason: "expected six pipe-delimited fields",
             });
@@ -442,25 +442,25 @@ pub fn validate_acceptance(serial: &[u8]) -> Result<AcceptanceSummary, M3ReportE
             || fields[2] != expected_i.as_bytes()
             || fields[3] != expected_sum.as_bytes()
         {
-            return Err(M3ReportError::MalformedRow {
+            return Err(LivenessReportError::MalformedRow {
                 row: rows,
                 reason: "index/count/sum does not match the fixed SQL oracle",
             });
         }
         if !is_uuid(fields[4]) {
-            return Err(M3ReportError::MalformedRow {
+            return Err(LivenessReportError::MalformedRow {
                 row: rows,
                 reason: "UUID field has the wrong shape",
             });
         }
         if !is_timestamp(fields[5]) {
-            return Err(M3ReportError::MalformedRow {
+            return Err(LivenessReportError::MalformedRow {
                 row: rows,
                 reason: "timestamp field has the wrong shape",
             });
         }
         if !uuids.insert(fields[4].to_vec()) {
-            return Err(M3ReportError::RepeatedUuid { row: rows });
+            return Err(LivenessReportError::RepeatedUuid { row: rows });
         }
         if rows == WORKLOAD_ROWS {
             final_uuid = String::from_utf8_lossy(fields[4]).into_owned();
@@ -468,7 +468,7 @@ pub fn validate_acceptance(serial: &[u8]) -> Result<AcceptanceSummary, M3ReportE
         }
     }
     if rows != WORKLOAD_ROWS {
-        return Err(M3ReportError::WrongRowCount {
+        return Err(LivenessReportError::WrongRowCount {
             expected: WORKLOAD_ROWS,
             observed: rows,
         });
@@ -483,16 +483,16 @@ pub fn validate_acceptance(serial: &[u8]) -> Result<AcceptanceSummary, M3ReportE
 /// Require the normalized-trace histogram to match the independent pvclock stream.
 ///
 /// # Errors
-/// Returns [`M3ReportError::ComparatorMismatch`] if either maximum or gap count differs.
+/// Returns [`LivenessReportError::ComparatorMismatch`] if either maximum or gap count differs.
 pub fn compare_gap_oracles(
     trace: &GapHistogram,
     pvclock_max: u64,
     pvclock_count: u64,
-) -> Result<(), M3ReportError> {
+) -> Result<(), LivenessReportError> {
     if (trace.max_gap_vns(), trace.gap_count()) == (pvclock_max, pvclock_count) {
         Ok(())
     } else {
-        Err(M3ReportError::ComparatorMismatch {
+        Err(LivenessReportError::ComparatorMismatch {
             trace_max: trace.max_gap_vns(),
             trace_count: trace.gap_count(),
             pvclock_max,
@@ -505,11 +505,11 @@ pub fn compare_gap_oracles(
 ///
 /// # Errors
 /// Rejects any disagreement, including a trace truncated by one event.
-pub fn compare_exit_counts(event_loop: u64, trace: u64) -> Result<(), M3ReportError> {
+pub fn compare_exit_counts(event_loop: u64, trace: u64) -> Result<(), LivenessReportError> {
     if event_loop == trace {
         Ok(())
     } else {
-        Err(M3ReportError::ExitCountMismatch { event_loop, trace })
+        Err(LivenessReportError::ExitCountMismatch { event_loop, trace })
     }
 }
 
@@ -522,39 +522,47 @@ pub fn compare_exit_counts(event_loop: u64, trace: u64) -> Result<(), M3ReportEr
 /// # Errors
 /// Rejects non-UTF-8, missing/extra lines, a different payload or execution
 /// mode, non-integer fields, and a row count other than [`WORKLOAD_ROWS`].
-pub fn parse_x86_diagnostic(bytes: &[u8]) -> Result<Throughput, M3ReportError> {
+pub fn parse_x86_diagnostic(bytes: &[u8]) -> Result<Throughput, LivenessReportError> {
     let text = std::str::from_utf8(bytes)
-        .map_err(|_| M3ReportError::BaselineFormat("file is not UTF-8"))?;
+        .map_err(|_| LivenessReportError::BaselineFormat("file is not UTF-8"))?;
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() != 5 {
-        return Err(M3ReportError::BaselineFormat("expected exactly five lines"));
+        return Err(LivenessReportError::BaselineFormat(
+            "expected exactly five lines",
+        ));
     }
     if lines[0] != "format consonance.m3-x86-diagnostic.v1" {
-        return Err(M3ReportError::BaselineFormat("wrong format identifier"));
+        return Err(LivenessReportError::BaselineFormat(
+            "wrong format identifier",
+        ));
     }
     if lines[1] != "payload postgres-container" {
-        return Err(M3ReportError::BaselineFormat("wrong payload identifier"));
+        return Err(LivenessReportError::BaselineFormat(
+            "wrong payload identifier",
+        ));
     }
     if lines[2] != "mode descriptive-x86" {
-        return Err(M3ReportError::BaselineFormat("wrong execution mode"));
+        return Err(LivenessReportError::BaselineFormat("wrong execution mode"));
     }
     let rows = lines[3]
         .strip_prefix("rows ")
-        .ok_or(M3ReportError::BaselineFormat("missing rows field"))?
+        .ok_or(LivenessReportError::BaselineFormat("missing rows field"))?
         .parse::<u64>()
-        .map_err(|_| M3ReportError::BaselineFormat("rows is not a u64"))?;
+        .map_err(|_| LivenessReportError::BaselineFormat("rows is not a u64"))?;
     let wall_ns = lines[4]
         .strip_prefix("wall_ns ")
-        .ok_or(M3ReportError::BaselineFormat("missing wall_ns field"))?
+        .ok_or(LivenessReportError::BaselineFormat("missing wall_ns field"))?
         .parse::<u64>()
-        .map_err(|_| M3ReportError::BaselineFormat("wall_ns is not a u64"))?;
+        .map_err(|_| LivenessReportError::BaselineFormat("wall_ns is not a u64"))?;
     if rows != WORKLOAD_ROWS {
-        return Err(M3ReportError::BaselineFormat(
+        return Err(LivenessReportError::BaselineFormat(
             "row count does not match the fixed workload",
         ));
     }
     if wall_ns == 0 {
-        return Err(M3ReportError::BaselineFormat("wall_ns must be nonzero"));
+        return Err(LivenessReportError::BaselineFormat(
+            "wall_ns must be nonzero",
+        ));
     }
     Ok(Throughput { rows, wall_ns })
 }
@@ -598,7 +606,7 @@ mod tests {
         malformed.truncate(end);
         assert_eq!(
             validate_acceptance(&malformed),
-            Err(M3ReportError::MissingMarker("M3 terminal ready"))
+            Err(LivenessReportError::MissingMarker("M3 terminal ready"))
         );
     }
 
@@ -610,7 +618,7 @@ mod tests {
             .into_bytes();
         assert!(matches!(
             validate_acceptance(&malformed),
-            Err(M3ReportError::MalformedRow { row: 20, .. })
+            Err(LivenessReportError::MalformedRow { row: 20, .. })
         ));
     }
 
@@ -676,7 +684,7 @@ mod tests {
                 .into_bytes();
             assert!(matches!(
                 validate_acceptance(&malformed),
-                Err(M3ReportError::MalformedRow { row: 20, .. })
+                Err(LivenessReportError::MalformedRow { row: 20, .. })
             ));
         }
 
@@ -694,7 +702,7 @@ mod tests {
         );
         assert_eq!(
             validate_acceptance(&extra),
-            Err(M3ReportError::WrongRowCount {
+            Err(LivenessReportError::WrongRowCount {
                 expected: WORKLOAD_ROWS,
                 observed: WORKLOAD_ROWS + 1,
             })
@@ -708,7 +716,7 @@ mod tests {
         malformed_extra.splice(position..position, b"row|malformed\n".iter().copied());
         assert_eq!(
             validate_acceptance(&malformed_extra),
-            Err(M3ReportError::WrongRowCount {
+            Err(LivenessReportError::WrongRowCount {
                 expected: WORKLOAD_ROWS,
                 observed: WORKLOAD_ROWS + 1,
             })
@@ -730,7 +738,7 @@ mod tests {
     fn gap_regression_index_and_exact_bound_are_pinned() {
         assert_eq!(
             GapHistogram::analyze(&[0, 10, 5]),
-            Err(M3ReportError::VtimeRegressed {
+            Err(LivenessReportError::VtimeRegressed {
                 observation: 2,
                 before: 10,
                 after: 5,
@@ -748,7 +756,7 @@ mod tests {
             GapHistogram::analyze(&[0, MAX_GAP_VNS + 1])
                 .unwrap()
                 .validate_bound(),
-            Err(M3ReportError::GapTooLarge {
+            Err(LivenessReportError::GapTooLarge {
                 observed: MAX_GAP_VNS + 1,
                 limit: MAX_GAP_VNS,
             })
@@ -760,7 +768,7 @@ mod tests {
         let histogram = GapHistogram::analyze(&[0, 10, 20]).unwrap();
         assert!(matches!(
             compare_gap_oracles(&histogram, 11, 2),
-            Err(M3ReportError::ComparatorMismatch { .. })
+            Err(LivenessReportError::ComparatorMismatch { .. })
         ));
     }
 
@@ -791,7 +799,7 @@ mod tests {
         };
         assert!(matches!(
             PhasePerformance::between("workload", mark, mark),
-            Err(M3ReportError::InvalidPerformancePhase {
+            Err(LivenessReportError::InvalidPerformancePhase {
                 phase: "workload",
                 ..
             })
@@ -805,7 +813,7 @@ mod tests {
                     wall_ns: mark.wall_ns + 1,
                 },
             ),
-            Err(M3ReportError::InvalidPerformancePhase {
+            Err(LivenessReportError::InvalidPerformancePhase {
                 phase: "no exits",
                 ..
             })
@@ -819,7 +827,7 @@ mod tests {
                     wall_ns: mark.wall_ns,
                 },
             ),
-            Err(M3ReportError::InvalidPerformancePhase {
+            Err(LivenessReportError::InvalidPerformancePhase {
                 phase: "no wall time",
                 ..
             })
@@ -852,7 +860,7 @@ mod tests {
         failed.extend_from_slice(b"RcU StAlL detected\n");
         assert_eq!(
             validate_acceptance(&failed),
-            Err(M3ReportError::KernelLiveness("RCU stall"))
+            Err(LivenessReportError::KernelLiveness("RCU stall"))
         );
     }
 
@@ -861,7 +869,7 @@ mod tests {
         compare_exit_counts(101_792, 101_792).unwrap();
         assert_eq!(
             compare_exit_counts(101_792, 101_791),
-            Err(M3ReportError::ExitCountMismatch {
+            Err(LivenessReportError::ExitCountMismatch {
                 event_loop: 101_792,
                 trace: 101_791,
             })
@@ -892,7 +900,7 @@ mod tests {
                   rows 20\n\
                   wall_ns 123456\n",
             ),
-            Err(M3ReportError::BaselineFormat("wrong execution mode"))
+            Err(LivenessReportError::BaselineFormat("wrong execution mode"))
         );
     }
 }

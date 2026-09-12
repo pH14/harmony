@@ -1237,3 +1237,68 @@ pub(crate) fn vcpu_components(s: &VcpuState, out: &mut Vec<(&'static str, [u8; 3
     out.push(("xsave-header", part(512, 576)));
     out.push(("xsave-extended", part(576, xs.len())));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vmm::GuestRam;
+    use vmm_backend::{MockBackend, X86Policy};
+
+    const RAM: usize = 0x4000;
+
+    fn vmm(wire_lapic: bool) -> Vmm<MockBackend> {
+        let mut m = MockBackend::with_exits(vec![]);
+        m.set_policy(&X86Policy {
+            cpuid: vmm_backend::CpuidModel::default(),
+            msr_filter: vmm_backend::MsrFilter::default(),
+        })
+        .unwrap();
+        let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
+        if wire_lapic {
+            v.wire_lapic(
+                lapic::Lapic::new(lapic::LapicConfig {
+                    apic_id: 0,
+                    timer_hz: 24_000_000,
+                })
+                .unwrap(),
+            );
+        }
+        v
+    }
+
+    #[test]
+    fn inject_host_interrupt_sets_the_vector_bit_in_the_lapic_irr() {
+        let mut v = vmm(true);
+        v.inject_host_interrupt(0x40).unwrap();
+        let irr = v.devices.lapic.as_ref().unwrap().snapshot().irr;
+        assert_eq!(irr[0x40 / 32] & (1 << (0x40 % 32)), 1 << (0x40 % 32));
+        assert_eq!(irr.iter().map(|w| w.count_ones()).sum::<u32>(), 1);
+    }
+
+    #[test]
+    fn inject_host_interrupt_without_a_wired_lapic_is_a_contract_violation() {
+        let mut v = vmm(false);
+        assert!(matches!(
+            v.inject_host_interrupt(0x40),
+            Err(VmmError::ContractViolation(_))
+        ));
+    }
+
+    #[test]
+    fn inject_host_interrupt_refuses_a_vector_outside_the_xapic_space() {
+        let mut v = vmm(true);
+        assert!(matches!(
+            v.inject_host_interrupt(0x1_0000),
+            Err(VmmError::ContractViolation(_))
+        ));
+    }
+
+    #[test]
+    fn inject_host_interrupt_refuses_an_architecturally_reserved_vector() {
+        let mut v = vmm(true);
+        assert!(matches!(
+            v.inject_host_interrupt(8),
+            Err(VmmError::ContractViolation(_))
+        ));
+    }
+}

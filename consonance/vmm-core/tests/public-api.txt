@@ -65,76 +65,76 @@ pub fn vmm_core::exec::ExecSession::is_done(&self) -> bool
 pub fn vmm_core::exec::ExecSession::new(&str, u64) -> vmm_core::exec::ExecSession
 pub fn vmm_core::exec::ExecSession::truncated(&self) -> bool
 pub const vmm_core::exec::MAX_CAPTURE: usize
-pub mod vmm_core::m3_report
-pub enum vmm_core::m3_report::M3ReportError
-pub vmm_core::m3_report::M3ReportError::BaselineFormat(&'static str)
-pub vmm_core::m3_report::M3ReportError::ComparatorMismatch
-pub vmm_core::m3_report::M3ReportError::ComparatorMismatch::pvclock_count: u64
-pub vmm_core::m3_report::M3ReportError::ComparatorMismatch::pvclock_max: u64
-pub vmm_core::m3_report::M3ReportError::ComparatorMismatch::trace_count: u64
-pub vmm_core::m3_report::M3ReportError::ComparatorMismatch::trace_max: u64
-pub vmm_core::m3_report::M3ReportError::ExitCountMismatch
-pub vmm_core::m3_report::M3ReportError::ExitCountMismatch::event_loop: u64
-pub vmm_core::m3_report::M3ReportError::ExitCountMismatch::trace: u64
-pub vmm_core::m3_report::M3ReportError::FailureMarker(&'static str)
-pub vmm_core::m3_report::M3ReportError::GapTooLarge
-pub vmm_core::m3_report::M3ReportError::GapTooLarge::limit: u64
-pub vmm_core::m3_report::M3ReportError::GapTooLarge::observed: u64
-pub vmm_core::m3_report::M3ReportError::InvalidPerformancePhase
-pub vmm_core::m3_report::M3ReportError::InvalidPerformancePhase::end_exits: u64
-pub vmm_core::m3_report::M3ReportError::InvalidPerformancePhase::end_wall_ns: u64
-pub vmm_core::m3_report::M3ReportError::InvalidPerformancePhase::phase: &'static str
-pub vmm_core::m3_report::M3ReportError::InvalidPerformancePhase::start_exits: u64
-pub vmm_core::m3_report::M3ReportError::InvalidPerformancePhase::start_wall_ns: u64
-pub vmm_core::m3_report::M3ReportError::KernelLiveness(&'static str)
-pub vmm_core::m3_report::M3ReportError::MalformedRow
-pub vmm_core::m3_report::M3ReportError::MalformedRow::reason: &'static str
-pub vmm_core::m3_report::M3ReportError::MalformedRow::row: u64
-pub vmm_core::m3_report::M3ReportError::MissingMarker(&'static str)
-pub vmm_core::m3_report::M3ReportError::RepeatedUuid
-pub vmm_core::m3_report::M3ReportError::RepeatedUuid::row: u64
-pub vmm_core::m3_report::M3ReportError::TooFewVtimeObservations(u64)
-pub vmm_core::m3_report::M3ReportError::VtimeRegressed
-pub vmm_core::m3_report::M3ReportError::VtimeRegressed::after: u64
-pub vmm_core::m3_report::M3ReportError::VtimeRegressed::before: u64
-pub vmm_core::m3_report::M3ReportError::VtimeRegressed::observation: u64
-pub vmm_core::m3_report::M3ReportError::WrongRowCount
-pub vmm_core::m3_report::M3ReportError::WrongRowCount::expected: u64
-pub vmm_core::m3_report::M3ReportError::WrongRowCount::observed: u64
-pub struct vmm_core::m3_report::AcceptanceSummary
-impl vmm_core::m3_report::AcceptanceSummary
-pub fn vmm_core::m3_report::AcceptanceSummary::final_timestamp(&self) -> &str
-pub fn vmm_core::m3_report::AcceptanceSummary::final_uuid(&self) -> &str
-pub fn vmm_core::m3_report::AcceptanceSummary::rows(&self) -> u64
-pub struct vmm_core::m3_report::GapHistogram
-impl vmm_core::m3_report::GapHistogram
-pub fn vmm_core::m3_report::GapHistogram::analyze(&[u64]) -> core::result::Result<Self, vmm_core::m3_report::M3ReportError>
-pub fn vmm_core::m3_report::GapHistogram::counts(&self) -> &[u64; 8]
-pub fn vmm_core::m3_report::GapHistogram::gap_count(&self) -> u64
-pub fn vmm_core::m3_report::GapHistogram::max_gap_vns(&self) -> u64
-pub fn vmm_core::m3_report::GapHistogram::validate_bound(&self) -> core::result::Result<(), vmm_core::m3_report::M3ReportError>
-pub struct vmm_core::m3_report::PerformanceMark
-pub vmm_core::m3_report::PerformanceMark::exits: u64
-pub vmm_core::m3_report::PerformanceMark::wall_ns: u64
-pub struct vmm_core::m3_report::PhasePerformance
-impl vmm_core::m3_report::PhasePerformance
-pub fn vmm_core::m3_report::PhasePerformance::between(&'static str, vmm_core::m3_report::PerformanceMark, vmm_core::m3_report::PerformanceMark) -> core::result::Result<Self, vmm_core::m3_report::M3ReportError>
-pub fn vmm_core::m3_report::PhasePerformance::exits(self) -> u64
-pub fn vmm_core::m3_report::PhasePerformance::milli_exits_per_second(self) -> u128
-pub fn vmm_core::m3_report::PhasePerformance::wall_ns(self) -> u64
-pub struct vmm_core::m3_report::Throughput
-pub vmm_core::m3_report::Throughput::rows: u64
-pub vmm_core::m3_report::Throughput::wall_ns: u64
-impl vmm_core::m3_report::Throughput
-pub fn vmm_core::m3_report::Throughput::milli_rows_per_second(self) -> u128
-pub const vmm_core::m3_report::MAX_GAP_FACTOR: u64
-pub const vmm_core::m3_report::MAX_GAP_VNS: u64
-pub const vmm_core::m3_report::TICK_PERIOD_VNS: u64
-pub const vmm_core::m3_report::WORKLOAD_ROWS: u64
-pub fn vmm_core::m3_report::compare_exit_counts(u64, u64) -> core::result::Result<(), vmm_core::m3_report::M3ReportError>
-pub fn vmm_core::m3_report::compare_gap_oracles(&vmm_core::m3_report::GapHistogram, u64, u64) -> core::result::Result<(), vmm_core::m3_report::M3ReportError>
-pub fn vmm_core::m3_report::parse_x86_diagnostic(&[u8]) -> core::result::Result<vmm_core::m3_report::Throughput, vmm_core::m3_report::M3ReportError>
-pub fn vmm_core::m3_report::validate_acceptance(&[u8]) -> core::result::Result<vmm_core::m3_report::AcceptanceSummary, vmm_core::m3_report::M3ReportError>
+pub mod vmm_core::liveness_report
+pub enum vmm_core::liveness_report::LivenessReportError
+pub vmm_core::liveness_report::LivenessReportError::BaselineFormat(&'static str)
+pub vmm_core::liveness_report::LivenessReportError::ComparatorMismatch
+pub vmm_core::liveness_report::LivenessReportError::ComparatorMismatch::pvclock_count: u64
+pub vmm_core::liveness_report::LivenessReportError::ComparatorMismatch::pvclock_max: u64
+pub vmm_core::liveness_report::LivenessReportError::ComparatorMismatch::trace_count: u64
+pub vmm_core::liveness_report::LivenessReportError::ComparatorMismatch::trace_max: u64
+pub vmm_core::liveness_report::LivenessReportError::ExitCountMismatch
+pub vmm_core::liveness_report::LivenessReportError::ExitCountMismatch::event_loop: u64
+pub vmm_core::liveness_report::LivenessReportError::ExitCountMismatch::trace: u64
+pub vmm_core::liveness_report::LivenessReportError::FailureMarker(&'static str)
+pub vmm_core::liveness_report::LivenessReportError::GapTooLarge
+pub vmm_core::liveness_report::LivenessReportError::GapTooLarge::limit: u64
+pub vmm_core::liveness_report::LivenessReportError::GapTooLarge::observed: u64
+pub vmm_core::liveness_report::LivenessReportError::InvalidPerformancePhase
+pub vmm_core::liveness_report::LivenessReportError::InvalidPerformancePhase::end_exits: u64
+pub vmm_core::liveness_report::LivenessReportError::InvalidPerformancePhase::end_wall_ns: u64
+pub vmm_core::liveness_report::LivenessReportError::InvalidPerformancePhase::phase: &'static str
+pub vmm_core::liveness_report::LivenessReportError::InvalidPerformancePhase::start_exits: u64
+pub vmm_core::liveness_report::LivenessReportError::InvalidPerformancePhase::start_wall_ns: u64
+pub vmm_core::liveness_report::LivenessReportError::KernelLiveness(&'static str)
+pub vmm_core::liveness_report::LivenessReportError::MalformedRow
+pub vmm_core::liveness_report::LivenessReportError::MalformedRow::reason: &'static str
+pub vmm_core::liveness_report::LivenessReportError::MalformedRow::row: u64
+pub vmm_core::liveness_report::LivenessReportError::MissingMarker(&'static str)
+pub vmm_core::liveness_report::LivenessReportError::RepeatedUuid
+pub vmm_core::liveness_report::LivenessReportError::RepeatedUuid::row: u64
+pub vmm_core::liveness_report::LivenessReportError::TooFewVtimeObservations(u64)
+pub vmm_core::liveness_report::LivenessReportError::VtimeRegressed
+pub vmm_core::liveness_report::LivenessReportError::VtimeRegressed::after: u64
+pub vmm_core::liveness_report::LivenessReportError::VtimeRegressed::before: u64
+pub vmm_core::liveness_report::LivenessReportError::VtimeRegressed::observation: u64
+pub vmm_core::liveness_report::LivenessReportError::WrongRowCount
+pub vmm_core::liveness_report::LivenessReportError::WrongRowCount::expected: u64
+pub vmm_core::liveness_report::LivenessReportError::WrongRowCount::observed: u64
+pub struct vmm_core::liveness_report::AcceptanceSummary
+impl vmm_core::liveness_report::AcceptanceSummary
+pub fn vmm_core::liveness_report::AcceptanceSummary::final_timestamp(&self) -> &str
+pub fn vmm_core::liveness_report::AcceptanceSummary::final_uuid(&self) -> &str
+pub fn vmm_core::liveness_report::AcceptanceSummary::rows(&self) -> u64
+pub struct vmm_core::liveness_report::GapHistogram
+impl vmm_core::liveness_report::GapHistogram
+pub fn vmm_core::liveness_report::GapHistogram::analyze(&[u64]) -> core::result::Result<Self, vmm_core::liveness_report::LivenessReportError>
+pub fn vmm_core::liveness_report::GapHistogram::counts(&self) -> &[u64; 8]
+pub fn vmm_core::liveness_report::GapHistogram::gap_count(&self) -> u64
+pub fn vmm_core::liveness_report::GapHistogram::max_gap_vns(&self) -> u64
+pub fn vmm_core::liveness_report::GapHistogram::validate_bound(&self) -> core::result::Result<(), vmm_core::liveness_report::LivenessReportError>
+pub struct vmm_core::liveness_report::PerformanceMark
+pub vmm_core::liveness_report::PerformanceMark::exits: u64
+pub vmm_core::liveness_report::PerformanceMark::wall_ns: u64
+pub struct vmm_core::liveness_report::PhasePerformance
+impl vmm_core::liveness_report::PhasePerformance
+pub fn vmm_core::liveness_report::PhasePerformance::between(&'static str, vmm_core::liveness_report::PerformanceMark, vmm_core::liveness_report::PerformanceMark) -> core::result::Result<Self, vmm_core::liveness_report::LivenessReportError>
+pub fn vmm_core::liveness_report::PhasePerformance::exits(self) -> u64
+pub fn vmm_core::liveness_report::PhasePerformance::milli_exits_per_second(self) -> u128
+pub fn vmm_core::liveness_report::PhasePerformance::wall_ns(self) -> u64
+pub struct vmm_core::liveness_report::Throughput
+pub vmm_core::liveness_report::Throughput::rows: u64
+pub vmm_core::liveness_report::Throughput::wall_ns: u64
+impl vmm_core::liveness_report::Throughput
+pub fn vmm_core::liveness_report::Throughput::milli_rows_per_second(self) -> u128
+pub const vmm_core::liveness_report::MAX_GAP_FACTOR: u64
+pub const vmm_core::liveness_report::MAX_GAP_VNS: u64
+pub const vmm_core::liveness_report::TICK_PERIOD_VNS: u64
+pub const vmm_core::liveness_report::WORKLOAD_ROWS: u64
+pub fn vmm_core::liveness_report::compare_exit_counts(u64, u64) -> core::result::Result<(), vmm_core::liveness_report::LivenessReportError>
+pub fn vmm_core::liveness_report::compare_gap_oracles(&vmm_core::liveness_report::GapHistogram, u64, u64) -> core::result::Result<(), vmm_core::liveness_report::LivenessReportError>
+pub fn vmm_core::liveness_report::parse_x86_diagnostic(&[u8]) -> core::result::Result<vmm_core::liveness_report::Throughput, vmm_core::liveness_report::LivenessReportError>
+pub fn vmm_core::liveness_report::validate_acceptance(&[u8]) -> core::result::Result<vmm_core::liveness_report::AcceptanceSummary, vmm_core::liveness_report::LivenessReportError>
 pub mod vmm_core::portable_snapshot
 pub enum vmm_core::portable_snapshot::PortableSnapshotError
 pub vmm_core::portable_snapshot::PortableSnapshotError::BadFlags

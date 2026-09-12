@@ -3284,59 +3284,59 @@ where
                         counters.note_first_victory(sequence);
                     }
                     result_slots.admit(physical_worker)?;
-                    if let Some(sink) = progress.as_deref_mut() {
-                        if progress_checkpoint_due(sequence) {
-                            write_live_progress(
-                                &core,
-                                &counters,
-                                &coordinator_profile,
+                    if let Some(sink) = progress.as_deref_mut()
+                        && progress_checkpoint_due(sequence)
+                    {
+                        write_live_progress(
+                            &core,
+                            &counters,
+                            &coordinator_profile,
+                            draw_state_memory_bytes,
+                            telemetry_started,
+                            sink,
+                        )?;
+                        if coordinator_profile.enabled {
+                            eprintln!(
+                                "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} available_result_slots={} queued_specs={} completed_buffered={} job_frames={} replay_jobs={} replay_actions={} replay_time={} suffix_actions={} suffix_time={}",
+                                coordinator_profile.receive_wait_ns,
+                                coordinator_profile.admission_ns,
+                                coordinator_profile.bookkeeping_ns,
+                                coordinator_profile.history_compaction_ns,
+                                coordinator_profile.stream_write_ns,
+                                coordinator_profile.selection_ns,
+                                coordinator_profile.receives,
+                                coordinator_profile.admissions,
+                                coordinator_profile.selections,
+                                core.archive.entries.len(),
+                                core.archive.active_count(),
+                                core.archive.historical_input_actions(),
+                                core.archive.stored_input_actions(),
+                                core.archive.input_index_nodes(),
+                                core.archive.resident_snapshot_count(),
+                                core.archive.resident_snapshot_bytes(),
+                                core.archive.entry_metadata_memory_bytes(),
+                                core.archive.input_index_memory_bytes(),
+                                core.archive.novelty_memory_bytes(),
+                                core.archive.barren_memory_bytes(),
+                                core.archive.history_memory_bytes(),
                                 draw_state_memory_bytes,
-                                telemetry_started,
-                                sink,
-                            )?;
-                            if coordinator_profile.enabled {
-                                eprintln!(
-                                    "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} available_result_slots={} queued_specs={} completed_buffered={} job_frames={} replay_jobs={} replay_actions={} replay_time={} suffix_actions={} suffix_time={}",
-                                    coordinator_profile.receive_wait_ns,
-                                    coordinator_profile.admission_ns,
-                                    coordinator_profile.bookkeeping_ns,
-                                    coordinator_profile.history_compaction_ns,
-                                    coordinator_profile.stream_write_ns,
-                                    coordinator_profile.selection_ns,
-                                    coordinator_profile.receives,
-                                    coordinator_profile.admissions,
-                                    coordinator_profile.selections,
-                                    core.archive.entries.len(),
-                                    core.archive.active_count(),
-                                    core.archive.historical_input_actions(),
-                                    core.archive.stored_input_actions(),
-                                    core.archive.input_index_nodes(),
-                                    core.archive.resident_snapshot_count(),
-                                    core.archive.resident_snapshot_bytes(),
-                                    core.archive.entry_metadata_memory_bytes(),
-                                    core.archive.input_index_memory_bytes(),
-                                    core.archive.novelty_memory_bytes(),
-                                    core.archive.barren_memory_bytes(),
-                                    core.archive.history_memory_bytes(),
-                                    draw_state_memory_bytes,
-                                    core.archive
-                                        .resident_memory_bytes()
-                                        .saturating_add(draw_state_memory_bytes),
-                                    core.archive.snapshot_evictions(),
-                                    core.archive.history_compactions(),
-                                    core.archive.historical_entries_dropped(),
-                                    core.archive.input_reconstructions(),
-                                    result_slots.available(),
-                                    queued_specs.len(),
-                                    completed.len(),
-                                    counters.job_frames,
-                                    coordinator_profile.replay_jobs,
-                                    coordinator_profile.replay_actions,
-                                    coordinator_profile.replay_time,
-                                    coordinator_profile.suffix_actions,
-                                    coordinator_profile.suffix_time,
-                                );
-                            }
+                                core.archive
+                                    .resident_memory_bytes()
+                                    .saturating_add(draw_state_memory_bytes),
+                                core.archive.snapshot_evictions(),
+                                core.archive.history_compactions(),
+                                core.archive.historical_entries_dropped(),
+                                core.archive.input_reconstructions(),
+                                result_slots.available(),
+                                queued_specs.len(),
+                                completed.len(),
+                                counters.job_frames,
+                                coordinator_profile.replay_jobs,
+                                coordinator_profile.replay_actions,
+                                coordinator_profile.replay_time,
+                                coordinator_profile.suffix_actions,
+                                coordinator_profile.suffix_time,
+                            );
                         }
                     }
                     next_admission = next_admission.saturating_add(1);
