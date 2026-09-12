@@ -636,9 +636,18 @@ where
             return Ok(());
         }
         self.backend.retire_pending_completion()?;
+        self.saved_state = None;
         self.completion_staged = false;
         self.sdk_snapshot_reentry_required = false;
         Ok(())
+    }
+
+    pub fn prepare_snapshot_boundary(&mut self) -> Result<bool, VmmError> {
+        if !self.can_snapshot() {
+            return Ok(false);
+        }
+        self.retire_pending_completion()?;
+        Ok(true)
     }
 
     pub fn inject_serial_input(&mut self, bytes: &[u8]) {
@@ -731,6 +740,11 @@ where
     }
 
     pub fn save_vm_state(&self) -> Result<<B::A as Vendor>::Snapshot, VmmError> {
+        if self.completion_staged {
+            return Err(VmmError::ContractViolation(
+                "save_vm_state with a staged completion; retire it before capturing state".into(),
+            ));
+        }
         if !self.can_snapshot() {
             return Err(VmmError::ContractViolation(
                 "save_vm_state while an SDK stop is pending".to_string(),
@@ -2065,16 +2079,18 @@ where
         }
     }
 
-    pub fn take_snapshot_point(&mut self) -> bool {
-        if !self.sdk_snapshot_reentry_required
-            && self.can_snapshot()
-            && let Some(sdk) = self.sdk.as_mut()
-            && sdk.pending_snapshot
+    pub fn take_snapshot_point(&mut self) -> Result<bool, VmmError> {
+        if self.sdk_snapshot_reentry_required
+            || !self.sdk.as_ref().is_some_and(|sdk| sdk.pending_snapshot)
+            || !self.prepare_snapshot_boundary()?
         {
-            sdk.pending_snapshot = false;
-            return true;
+            return Ok(false);
         }
-        false
+        self.sdk
+            .as_mut()
+            .expect("pending snapshot has SDK state")
+            .pending_snapshot = false;
+        Ok(true)
     }
 
     fn decide_coverage(
@@ -5060,16 +5076,115 @@ mod tests {
         ]
     }
 
-    fn step_n(v: &mut Vmm<MockBackend>, n: usize) {
+    fn settled_steps(v: &mut Vmm<MockBackend>, n: usize) {
         for _ in 0..n {
             assert_eq!(v.step().unwrap(), Step::Continued);
+        }
+        assert!(v.prepare_snapshot_boundary().unwrap());
+    }
+
+    #[test]
+    fn snapshot_boundary_retires_serviced_exits_without_advancing_time() {
+        for exit in [
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+            Exit::Arch(X86Exit::Io {
+                port: 0x3f8,
+                size: 1,
+                write: Some(65),
+            }),
+        ] {
+            let mut vmm = full_vmm(nonzero_state(), vec![exit], 500, 9);
+            vmm.step().unwrap();
+            assert!(matches!(
+                vmm.save_vm_state(),
+                Err(VmmError::ContractViolation(_))
+            ));
+            let moment = vmm.effective_vns();
+            let counts = vmm.backend.exit_counts();
+            assert!(vmm.prepare_snapshot_boundary().unwrap());
+            assert_eq!(vmm.effective_vns(), moment);
+            assert_eq!(vmm.backend.exit_counts(), counts);
+            assert!(vmm.save_vm_state().is_ok());
+            let cpu = vmm.backend.save().unwrap();
+            vmm.backend.restore(&cpu).unwrap();
+        }
+    }
+
+    #[test]
+    fn snapshot_retirement_discards_cached_cpu_state() {
+        let mut vmm = full_vmm(
+            nonzero_state(),
+            vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })],
+            500,
+            9,
+        );
+        vmm.step().unwrap();
+        vmm.saved_state = Some(VcpuState::default());
+        assert!(vmm.prepare_snapshot_boundary().unwrap());
+        assert_eq!(vmm.save_vm_state().unwrap().regs.rax, 0x1111);
+    }
+
+    #[test]
+    fn sdk_snapshot_points_retire_the_post_marker_exit() {
+        let mut vmm = full_vmm(
+            nonzero_state(),
+            vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })],
+            500,
+            9,
+        );
+        enable_nominal(&mut vmm, 9);
+        vmm.sdk.as_mut().unwrap().pending_snapshot = true;
+        vmm.sdk_snapshot_reentry_required = true;
+        assert!(!vmm.take_snapshot_point().unwrap());
+        vmm.step().unwrap();
+        let moment = vmm.effective_vns();
+        let counts = vmm.backend.exit_counts();
+        assert!(vmm.take_snapshot_point().unwrap());
+        assert!(!vmm.take_snapshot_point().unwrap());
+        assert_eq!(vmm.effective_vns(), moment);
+        assert_eq!(vmm.backend.exit_counts(), counts);
+        assert!(vmm.save_vm_state().is_ok());
+    }
+
+    #[test]
+    fn unsupported_retirement_preserves_the_pending_sdk_point() {
+        use vmm_backend::{Arm64Exit, Arm64Policy, MockArm64Backend};
+
+        let mut backend = MockArm64Backend::new();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        backend.push_exit(Exit::Arch(Arm64Exit::Sysreg {
+            sysreg: 0,
+            write: None,
+        }));
+        backend.run().unwrap();
+        backend.complete_read(7).unwrap();
+        let mut vmm = Vmm::new(backend, GuestRam::new(TEST_RAM).unwrap());
+        vmm.enable_sdk(nominal_env(9), &ServiceConfig::default());
+        vmm.completion_staged = true;
+        vmm.sdk.as_mut().unwrap().pending_snapshot = true;
+        let counts = vmm.backend.exit_counts();
+
+        for _ in 0..2 {
+            assert!(matches!(
+                vmm.take_snapshot_point(),
+                Err(VmmError::Backend(
+                    vmm_backend::BackendError::Unsupported { .. }
+                ))
+            ));
+            assert!(vmm.completion_staged);
+            assert!(vmm.sdk.as_ref().unwrap().pending_snapshot);
+            assert_eq!(vmm.backend.exit_counts(), counts);
+            assert!(matches!(
+                vmm.save_vm_state(),
+                Err(VmmError::ContractViolation(_))
+            ));
         }
     }
 
     #[test]
     fn save_vm_state_round_trips_through_the_codec() {
         let mut a = full_vmm(nonzero_state(), mutate_exits(), 500, 0xABCD);
-        step_n(&mut a, 6);
+        settled_steps(&mut a, 6);
         let s = a.save_vm_state().expect("clean synchronized boundary");
         let bytes = s.encode().expect("encodable (ratio_den == 1)");
         assert_eq!(vm_state::VmState::decode(&bytes).unwrap(), s);
@@ -5088,7 +5203,7 @@ mod tests {
     )]
     fn restore_vm_state_reproduces_the_blob_byte_for_byte() {
         let mut a = full_vmm(nonzero_state(), mutate_exits(), 500, 0xABCD);
-        step_n(&mut a, 6);
+        settled_steps(&mut a, 6);
         let s = a.save_vm_state().unwrap();
 
         let mut b = full_vmm(VcpuState::default(), vec![], 9999, 0x0000);
@@ -5104,7 +5219,7 @@ mod tests {
     )]
     fn restore_vm_state_rejects_a_different_contract_atomically() {
         let mut a = full_vmm(nonzero_state(), mutate_exits(), 500, 0xABCD);
-        step_n(&mut a, 6);
+        settled_steps(&mut a, 6);
         let mut s = a.save_vm_state().unwrap();
         let version_5_hash = [
             0x01, 0xb0, 0x21, 0x4b, 0x93, 0x87, 0xe2, 0x05, 0xe4, 0xc3, 0xdd, 0x41, 0x87, 0x80,
@@ -5134,6 +5249,7 @@ mod tests {
     fn restore_trace_failure_is_classified_after_commit() {
         let mut source = vtime_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], 7);
         source.step().unwrap();
+        assert!(source.prepare_snapshot_boundary().unwrap());
         let snapshot = source.save_vm_state().unwrap();
 
         let mut target = vtime_vmm(Vec::new(), 7);
@@ -5251,7 +5367,7 @@ mod tests {
     )]
     fn restore_vm_state_rejects_a_clock_rate_mismatch() {
         let mut a = full_vmm(VcpuState::default(), mutate_exits(), 500, 1);
-        step_n(&mut a, 6);
+        settled_steps(&mut a, 6);
         let s = a.save_vm_state().unwrap();
         let reject = |bad: &vm_state::VmState, name: &str| {
             let mut b = full_vmm(VcpuState::default(), vec![], 100, 1);
@@ -5276,6 +5392,7 @@ mod tests {
     fn restore_into_unwired_vm_rejects_a_vtime_bearing_blob() {
         let mut a = vtime_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], 1);
         a.step().unwrap();
+        assert!(a.prepare_snapshot_boundary().unwrap());
         let s = a.save_vm_state().unwrap();
         assert!(
             s.vtime.guest_hz != 0,
@@ -5392,7 +5509,7 @@ mod tests {
     #[test]
     fn restore_vm_state_rejects_a_legacy_wiring_mismatch() {
         let mut a = full_vmm(VcpuState::default(), mutate_exits(), 500, 1);
-        step_n(&mut a, 6);
+        settled_steps(&mut a, 6);
         let mut s = a.save_vm_state().unwrap();
         let mut dev = snapshot::decode_device_blob(&s.devices.0).unwrap();
         assert!(
@@ -5412,7 +5529,7 @@ mod tests {
     #[test]
     fn restore_vm_state_rejects_a_staged_non_rng_completion() {
         let mut src = full_vmm(VcpuState::default(), mutate_exits(), 500, 1);
-        step_n(&mut src, 6);
+        settled_steps(&mut src, 6);
         let snap = src.save_vm_state().unwrap();
 
         let mut tgt = full_vmm(
@@ -5455,7 +5572,7 @@ mod tests {
     #[test]
     fn restore_vm_state_rejects_a_non_empty_timer_queue() {
         let mut a = full_vmm(VcpuState::default(), mutate_exits(), 500, 1);
-        step_n(&mut a, 6);
+        settled_steps(&mut a, 6);
         let mut s = a.save_vm_state().unwrap();
         s.timers.entries.push(vm_state::TimerEntry {
             deadline_vns: 1000,
@@ -5730,7 +5847,7 @@ mod tests {
         let mut mock = configured_mock(exits);
         mock.set_defer_accept(true);
         let mut a = lapic_vmm(mock);
-        step_n(&mut a, 5);
+        settled_steps(&mut a, 5);
         assert_eq!(
             a.backend.pending_irq(),
             Some(0x40),
@@ -5750,7 +5867,7 @@ mod tests {
         let mut mock = configured_mock(exits);
         mock.set_defer_accept(true);
         let mut a = lapic_vmm(mock);
-        step_n(&mut a, 5);
+        settled_steps(&mut a, 5);
         assert_eq!(
             a.backend.pending_irq(),
             Some(0x40),
@@ -5800,7 +5917,7 @@ mod tests {
             0,
             1,
         );
-        step_n(&mut v, 3);
+        settled_steps(&mut v, 3);
         let s = v.save_vm_state().unwrap();
         let dev = snapshot::decode_device_blob(&s.devices.0).unwrap();
         assert_eq!(dev.uart.dlm, 7, "save_vm_state must capture the UART DLM");
@@ -6289,6 +6406,7 @@ mod tests {
             "a pending (un-armed) pvclock registration must fail closed at the seal"
         );
         v.step().unwrap();
+        assert!(v.prepare_snapshot_boundary().unwrap());
         v.save_vm_state()
             .expect("an armed registration seals cleanly");
     }
@@ -6311,6 +6429,7 @@ mod tests {
         let live = vtime::pvclock::read(a.pvclock_page().unwrap()).unwrap();
         assert_ne!(live.seq, 0, "a mid-run refresh bumped the epoch");
         let page_before_seal = a.pvclock_page().unwrap().to_vec();
+        assert!(a.prepare_snapshot_boundary().unwrap());
         let vm_state = a.save_vm_state().unwrap();
         let image = a.guest_memory().to_vec();
         assert_eq!(
@@ -6353,6 +6472,7 @@ mod tests {
                 ring_pvclock_register(&mut src, PV_GPA);
             }
             src.step().unwrap();
+            assert!(src.prepare_snapshot_boundary().unwrap());
             src.save_vm_state().unwrap()
         };
         let registered_state = seal(true);
@@ -6366,6 +6486,7 @@ mod tests {
             );
             src.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 7).unwrap());
             src.step().unwrap();
+            assert!(src.prepare_snapshot_boundary().unwrap());
             src.save_vm_state().unwrap()
         };
         let reject = |vmm: &mut Vmm<MockBackend>, s: &vm_state::VmState, why: &str| {

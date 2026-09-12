@@ -17,11 +17,27 @@ mod platform {
 
     type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-    #[derive(Debug, Eq, PartialEq)]
+    #[derive(Eq, PartialEq)]
     struct Evidence {
         hash: [u8; 32],
         events: Vec<SdkEvent>,
         observation: Vec<u8>,
+    }
+
+    impl std::fmt::Debug for Evidence {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            use sha2::{Digest, Sha256};
+            f.debug_struct("Evidence")
+                .field("hash", &self.hash)
+                .field("events", &self.events)
+                .field(
+                    "observation_prefix",
+                    &&self.observation[..self.observation.len().min(32)],
+                )
+                .field("observation_len", &self.observation.len())
+                .field("observation_hash", &Sha256::digest(&self.observation))
+                .finish()
+        }
     }
 
     fn capture(session: &mut Session, progress: u64) -> Result<Evidence> {

@@ -831,6 +831,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             return Ok(Err(ControlError::SnapshotWhileArmed));
         }
         let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
+        match vmm.prepare_snapshot_boundary() {
+            Ok(true) => {}
+            Ok(false) | Err(VmmError::Backend(vmm_backend::BackendError::Unsupported { .. })) => {
+                return Ok(Err(ControlError::NotQuiescent));
+            }
+            Err(error) => return Err(error.into()),
+        }
         let vm_state = match vmm.save_vm_state() {
             Ok(s) => s,
             Err(VmmError::ContractViolation(_)) => return Ok(Err(ControlError::NotQuiescent)),
@@ -1282,7 +1289,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 && self.reseed_schedule.is_empty()
             {
                 let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-                if vmm.take_snapshot_point() {
+                if vmm.take_snapshot_point()? {
                     let vns = vmm.effective_vns().unwrap_or(0);
                     return Ok(Ok(Reply::Stop(StopReason::SnapshotPoint {
                         vtime: Moment(vns),
@@ -2334,6 +2341,28 @@ mod tests {
         match server.handle(&req).unwrap() {
             Ok(Reply::Stop(stop)) => stop,
             other => panic!("run reply: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn direct_snapshot_rejects_unsupported_completion_retirement() {
+        let make_vmm = || {
+            let mut backend =
+                MockArm64Backend::with_exits(vec![Exit::Arch(vmm_backend::Arm64Exit::Sysreg {
+                    sysreg: 0x0028_0400,
+                    write: Some(0),
+                })]);
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            Vmm::new(backend, GuestRam::new(RAM).unwrap())
+        };
+        let mut live = make_vmm();
+        assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued);
+        let mut server = ControlServer::new(live, Box::new(move || Ok(make_vmm())));
+        for _ in 0..2 {
+            assert_eq!(server.snapshot().unwrap(), Err(ControlError::NotQuiescent));
+            assert!(server.vmm.is_some());
+            assert!(server.sdk_snaps.is_empty());
+            assert!(server.latest_snapshot().is_none());
         }
     }
 
@@ -4027,6 +4056,9 @@ mod tests {
         fn complete_arch(&mut self, c: vmm_backend::X86Completion) -> vmm_backend::Result<()> {
             self.0.complete_arch(c)
         }
+        fn retire_pending_completion(&mut self) -> vmm_backend::Result<()> {
+            self.0.retire_pending_completion()
+        }
         fn save(&self) -> vmm_backend::Result<vmm_backend::VcpuState> {
             self.0.save()
         }
@@ -5202,6 +5234,9 @@ mod tests {
         fn complete_arch(&mut self, c: vmm_backend::X86Completion) -> vmm_backend::Result<()> {
             self.inner.complete_arch(c)
         }
+        fn retire_pending_completion(&mut self) -> vmm_backend::Result<()> {
+            self.inner.retire_pending_completion()
+        }
         fn save(&self) -> vmm_backend::Result<vmm_backend::VcpuState> {
             self.inner.save()
         }
@@ -5783,6 +5818,9 @@ mod tests {
         }
         fn complete_arch(&mut self, c: vmm_backend::X86Completion) -> vmm_backend::Result<()> {
             self.0.complete_arch(c)
+        }
+        fn retire_pending_completion(&mut self) -> vmm_backend::Result<()> {
+            self.0.retire_pending_completion()
         }
         fn save(&self) -> vmm_backend::Result<vmm_backend::VcpuState> {
             self.0.save()
