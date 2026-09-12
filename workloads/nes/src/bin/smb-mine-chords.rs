@@ -69,29 +69,46 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let source_bytes = fs::read(&source)?;
     let archive: SmbArchiveReport = serde_json::from_slice(&source_bytes)?;
+    let parent_lengths = archive
+        .entries
+        .iter()
+        .map(|entry| (entry.id, entry.input.actions.len()))
+        .collect::<BTreeMap<_, _>>();
     let mut tables = EmpiricalStepTables::new(parameters)?;
     let mut entries_used = 0_u64;
     let mut success_executions = Vec::new();
     for entry in &archive.entries {
         if (entry.key.world, entry.key.level) == (filter.world, filter.level)
             && entry.key.progress >= filter.minimum_progress
-            && entry.input.actions.len() > parameters.prefix_steps
         {
-            tables.fold_retained(&entry.input.actions)?;
-            entries_used = entries_used.saturating_add(1);
-            success_executions.push(entry.created_execution);
+            let prefix = entry
+                .parent_id
+                .and_then(|parent| parent_lengths.get(&parent).copied())
+                .unwrap_or(0);
+            let suffix = entry.input.actions.get(prefix..).unwrap_or(&[]);
+            tables.fold_retained(suffix)?;
+            if !suffix.is_empty() {
+                entries_used = entries_used.saturating_add(1);
+                success_executions.push(entry.created_execution);
+            }
         }
     }
     tables.flush()?;
     let checkpoint = tables.checkpoint()?;
     let mixed_len = tables.mixed_len()?;
+    let mut all_history = Vec::new();
     let mut mask_histogram = BTreeMap::<u8, u64>::new();
     let mut hold_histogram_by_12s = BTreeMap::<u8, u64>::new();
-    for chord in tables.all_history() {
-        *mask_histogram.entry(chord.buttons).or_insert(0) += 1;
-        *hold_histogram_by_12s
+    for (chord, count) in tables.compact_history() {
+        let count_usize = *count;
+        let count = u64::try_from(count_usize).unwrap_or(u64::MAX);
+        let mask_count = mask_histogram.entry(chord.buttons).or_insert(0);
+        *mask_count = mask_count.saturating_add(count);
+        let hold_count = hold_histogram_by_12s
             .entry(chord.hold_frames / 12)
-            .or_insert(0) += 1;
+            .or_insert(0);
+        *hold_count = hold_count.saturating_add(count);
+        all_history.extend(std::iter::repeat_n(*chord, count_usize));
     }
     let report = MiningReport {
         source,
@@ -110,7 +127,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .or_else(|| success_executions.first().copied()),
         last_success_execution: success_executions.last().copied(),
         recent: tables.recent().to_vec(),
-        all_history: tables.all_history().to_vec(),
+        all_history,
         mixed_chords: mixed_len,
         mask_histogram,
         hold_histogram_by_12s,

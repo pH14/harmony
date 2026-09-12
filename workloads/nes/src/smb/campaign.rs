@@ -25,8 +25,8 @@ use crate::{
     },
     search::draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
     search::empirical_steps::{
-        EmpiricalStepCheckpoint, EmpiricalStepHashRule, EmpiricalStepParameters,
-        EmpiricalStepTableRef, EmpiricalStepTables,
+        EmpiricalStepCheckpoint, EmpiricalStepParameters, EmpiricalStepTableRef,
+        EmpiricalStepTables,
     },
     smb::archive::{
         DOWN_TEN_BUTTON_MASKS, KEY_POLICY_IDENTIFIER, REPLACEMENT_IDENTIFIER, SmbArchiveKey,
@@ -523,17 +523,6 @@ pub struct SmbChordSourceAll {}
 pub struct SmbChordTableDerivation {
     pub source_filter: SmbChordSource,
     pub parameters: EmpiricalStepParameters,
-    #[serde(default)]
-    pub hash_rule: EmpiricalStepHashRule,
-    #[serde(default)]
-    pub fold: ChordFoldSource,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub enum ChordFoldSource {
-    #[default]
-    FullInput,
-    SuffixOnly,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -560,8 +549,6 @@ impl Default for SmbCampaignChordPolicy {
                 update_every_records: 64,
                 hash_every_records: 1024,
             },
-            hash_rule: EmpiricalStepHashRule::IncrementalCompactHistory,
-            fold: ChordFoldSource::SuffixOnly,
         })
     }
 }
@@ -571,26 +558,6 @@ pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
     match policy {
         SmbCampaignChordPolicy::DerivedHalf(derivation) => {
             let parameters = derivation.parameters;
-            let prefix = match (derivation.fold, derivation.hash_rule) {
-                (ChordFoldSource::SuffixOnly, EmpiricalStepHashRule::FullJson) => {
-                    "chord_draw_recorded_52"
-                }
-                (ChordFoldSource::SuffixOnly, EmpiricalStepHashRule::IncrementalHistory) => {
-                    "chord_draw_recorded_52"
-                }
-                (ChordFoldSource::SuffixOnly, EmpiricalStepHashRule::IncrementalCompactHistory) => {
-                    "chord_draw_recorded_53"
-                }
-                (ChordFoldSource::FullInput, EmpiricalStepHashRule::FullJson) => {
-                    "chord_draw_recorded_50"
-                }
-                (ChordFoldSource::FullInput, EmpiricalStepHashRule::IncrementalHistory) => {
-                    "chord_draw_recorded_51"
-                }
-                (ChordFoldSource::FullInput, EmpiricalStepHashRule::IncrementalCompactHistory) => {
-                    "chord_draw_recorded_54"
-                }
-            };
             let source = match derivation.source_filter {
                 SmbChordSource::All(_) => "all".to_owned(),
                 SmbChordSource::Level(filter) => {
@@ -601,7 +568,7 @@ pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
                 }
             };
             format!(
-                "{prefix}:{source},{},{},{},{},{},{}",
+                "chord_draw_recorded_53:{source},{},{},{},{},{},{}",
                 parameters.prefix_steps,
                 parameters.recent_successes,
                 parameters.recent_weight,
@@ -616,45 +583,7 @@ pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
 pub fn chord_policy_from_identifier(
     identifier: &str,
 ) -> Result<SmbCampaignChordPolicy, Box<dyn Error>> {
-    let (fields, hash_rule, fold) =
-        if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_50:") {
-            (
-                Some(rest),
-                EmpiricalStepHashRule::FullJson,
-                ChordFoldSource::FullInput,
-            )
-        } else if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_51:") {
-            (
-                Some(rest),
-                EmpiricalStepHashRule::IncrementalHistory,
-                ChordFoldSource::FullInput,
-            )
-        } else if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_52:") {
-            (
-                Some(rest),
-                EmpiricalStepHashRule::IncrementalHistory,
-                ChordFoldSource::SuffixOnly,
-            )
-        } else if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_53:") {
-            (
-                Some(rest),
-                EmpiricalStepHashRule::IncrementalCompactHistory,
-                ChordFoldSource::SuffixOnly,
-            )
-        } else if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_54:") {
-            (
-                Some(rest),
-                EmpiricalStepHashRule::IncrementalCompactHistory,
-                ChordFoldSource::FullInput,
-            )
-        } else {
-            (
-                None,
-                EmpiricalStepHashRule::FullJson,
-                ChordFoldSource::FullInput,
-            )
-        };
-    if let Some(fields) = fields {
+    if let Some(fields) = identifier.strip_prefix("chord_draw_recorded_53:") {
         let mut fields = fields.split(',').peekable();
         let source_filter = if fields.peek() == Some(&"all") {
             fields.next();
@@ -682,8 +611,6 @@ pub fn chord_policy_from_identifier(
             SmbChordTableDerivation {
                 source_filter,
                 parameters,
-                hash_rule,
-                fold,
             },
         ));
     }
@@ -718,32 +645,23 @@ fn initial_chord_tables(
     origin: Option<(&str, &SmbArchiveReport)>,
 ) -> Result<InitialChordTables, Box<dyn Error>> {
     let SmbCampaignChordPolicy::DerivedHalf(derivation) = policy;
-    let mut tables =
-        EmpiricalStepTables::with_hash_rule(derivation.parameters, derivation.hash_rule)?;
+    let mut tables = EmpiricalStepTables::new(derivation.parameters)?;
     let source_sha256 = match origin {
         None => format!("{:x}", Sha256::digest([])),
         Some((file_sha256, report)) => {
-            let parent_len: BTreeMap<u64, usize> = match derivation.fold {
-                ChordFoldSource::FullInput => BTreeMap::new(),
-                ChordFoldSource::SuffixOnly => report
-                    .entries
-                    .iter()
-                    .map(|entry| (entry.id, entry.input.actions.len()))
-                    .collect(),
-            };
+            let parent_len: BTreeMap<u64, usize> = report
+                .entries
+                .iter()
+                .map(|entry| (entry.id, entry.input.actions.len()))
+                .collect();
             let mut source_pending = 0_u64;
             for entry in &report.entries {
                 if source_filter_matches(derivation.source_filter, entry) {
-                    let folded = match derivation.fold {
-                        ChordFoldSource::FullInput => entry.input.actions.as_slice(),
-                        ChordFoldSource::SuffixOnly => {
-                            let prefix = entry
-                                .parent_id
-                                .and_then(|parent| parent_len.get(&parent).copied())
-                                .unwrap_or(0);
-                            entry.input.actions.get(prefix..).unwrap_or(&[])
-                        }
-                    };
+                    let prefix = entry
+                        .parent_id
+                        .and_then(|parent| parent_len.get(&parent).copied())
+                        .unwrap_or(0);
+                    let folded = entry.input.actions.get(prefix..).unwrap_or(&[]);
                     tables.fold_retained(folded)?;
                     source_pending = source_pending.saturating_add(1);
                     if source_batch_ready(
@@ -793,7 +711,7 @@ fn current_chord_checkpoint(
 struct SmbChordTableVersion {
     checkpoint: EmpiricalStepCheckpoint,
     history_len: usize,
-    history_counts: Option<std::rc::Rc<BTreeMap<ButtonChord, usize>>>,
+    history_counts: std::rc::Rc<BTreeMap<ButtonChord, usize>>,
     recent: std::rc::Rc<Vec<ButtonChord>>,
 }
 
@@ -812,22 +730,11 @@ fn recorded_chord_tables<'a>(
         return Err("derived chord draw table hash does not match replay".into());
     }
     let tables = tables.ok_or("derived chord policy has no folded tables")?;
-    if let Some(history_counts) = &version.history_counts {
-        return Ok(Some(EmpiricalStepTableRef::from_counts(
-            tables.parameters(),
-            &version.recent,
-            history_counts,
-            version.history_len,
-        )));
-    }
-    let history = tables
-        .all_history()
-        .get(..version.history_len)
-        .ok_or("derived chord version names history the fold does not hold")?;
-    Ok(Some(EmpiricalStepTableRef::from_parts(
+    Ok(Some(EmpiricalStepTableRef::from_counts(
         tables.parameters(),
         &version.recent,
-        history,
+        &version.history_counts,
+        version.history_len,
     )))
 }
 
@@ -851,12 +758,8 @@ fn remember_chord_version(
         .map(|(_, last)| std::rc::Rc::clone(&last.recent))
         .unwrap_or_else(|| std::rc::Rc::new(tables.recent().to_vec()));
     let history_counts = reusable
-        .and_then(|(_, last)| last.history_counts.as_ref().map(std::rc::Rc::clone))
-        .or_else(|| {
-            tables
-                .compact_history()
-                .map(|counts| std::rc::Rc::new(counts.clone()))
-        });
+        .map(|(_, last)| std::rc::Rc::clone(&last.history_counts))
+        .unwrap_or_else(|| std::rc::Rc::new(tables.compact_history().clone()));
     versions.insert(
         tables.records(),
         SmbChordTableVersion {
@@ -1071,23 +974,19 @@ where
         state: &mut SmbDrawState,
         retained: &[(usize, &[ButtonChord])],
     ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
-        let SmbCampaignChordPolicy::DerivedHalf(derivation) = run.chord;
+        let SmbCampaignChordPolicy::DerivedHalf(_) = run.chord;
         let tables = state
             .tables
             .as_mut()
             .ok_or("derived chord policy has no folded tables")?;
         for (parent_actions, input) in retained {
-            let folded = match derivation.fold {
-                ChordFoldSource::FullInput => input,
-                ChordFoldSource::SuffixOnly => input.get(*parent_actions..).unwrap_or(&[]),
-            };
+            let folded = input.get(*parent_actions..).unwrap_or(&[]);
             tables.fold_retained(folded)?;
         }
         Ok(tables.finish_record()?)
     }
-    fn retained_inputs_need_full(&self, run: &SmbCampaignRun) -> bool {
-        let SmbCampaignChordPolicy::DerivedHalf(derivation) = run.chord;
-        matches!(derivation.fold, ChordFoldSource::FullInput)
+    fn retained_inputs_need_full(&self, _run: &SmbCampaignRun) -> bool {
+        false
     }
     fn remember_draw_version(
         &self,
@@ -1385,7 +1284,7 @@ mod tests {
     use crate::search::campaign::{
         DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Evaluation, InputPolicy, TargetExecution,
     };
-    use crate::search::empirical_steps::{EmpiricalStepHashRule, EmpiricalStepTables};
+    use crate::search::empirical_steps::EmpiricalStepTables;
     use crate::{
         search::empirical_steps::EmpiricalStepParameters,
         smb::archive::SmbArchiveReport,
@@ -1508,10 +1407,12 @@ mod tests {
     #[test]
     fn suffix_derivation_is_pure_and_bounded() {
         for seed in [0_u64, 0x5eed_ca01, u64::MAX] {
-            let empty = crate::search::empirical_steps::EmpiricalStepTableRef::from_parts(
+            let history = BTreeMap::new();
+            let empty = crate::search::empirical_steps::EmpiricalStepTableRef::from_counts(
                 empty_table_parameters(),
                 &[],
-                &[],
+                &history,
+                0,
             );
             let first = derive_suffix(
                 seed,
@@ -1564,49 +1465,37 @@ mod tests {
                 update_every_records: 2,
                 hash_every_records: 2,
             },
-            hash_rule: EmpiricalStepHashRule::default(),
-            fold: super::ChordFoldSource::default(),
         })
     }
 
     #[test]
-    fn smb_memory_and_retained_input_contracts_are_exact() {
+    fn smb_memory_and_suffix_input_contracts_are_exact() {
         let rom = synthetic_nrom();
         let game = test_game(&rom);
         let mut target = SmbTarget::loopback_for_tests(&rom).expect("target");
         target.reset();
         let snapshot = target.snapshot().expect("snapshot");
-        let mut full = derived_policy();
-        let SmbCampaignChordPolicy::DerivedHalf(mut derivation) = full;
-        derivation.fold = super::ChordFoldSource::FullInput;
-        full = SmbCampaignChordPolicy::DerivedHalf(derivation);
-        let full_run = SmbCampaignRun {
-            chord: full,
+        let run = SmbCampaignRun {
+            chord: derived_policy(),
             vocabulary: SmbButtonVocabulary::default(),
             terminal: Some(SmbTerminalPredicate::default()),
         };
-        derivation.fold = super::ChordFoldSource::SuffixOnly;
-        let suffix_run = SmbCampaignRun {
-            chord: SmbCampaignChordPolicy::DerivedHalf(derivation),
-            ..full_run
-        };
 
         assert_eq!(
-            game.draw_state_memory_reserve_bytes(&full_run, 96),
+            game.draw_state_memory_reserve_bytes(&run, 96),
             2 * 1024 * 1024
         );
         assert_eq!(
             <SmbGame as TargetExecution>::snapshot_memory_charge(&snapshot),
             snapshot.resident_memory_charge()
         );
-        assert!(game.retained_inputs_need_full(&full_run));
-        assert!(!game.retained_inputs_need_full(&suffix_run));
+        assert!(!game.retained_inputs_need_full(&run));
         assert!(!source_batch_ready(1, 2));
         assert!(source_batch_ready(2, 2));
         assert!(source_batch_ready(3, 2));
 
         let (mut draw_state, _) = game
-            .initial_draw_state(&full_run, None)
+            .initial_draw_state(&run, None)
             .expect("initial draw state");
         draw_state
             .tables
@@ -1626,9 +1515,7 @@ mod tests {
     #[test]
     fn remembered_chord_versions_reuse_only_an_exact_visible_table() {
         let SmbCampaignChordPolicy::DerivedHalf(derivation) = derived_policy();
-        let mut tables =
-            EmpiricalStepTables::with_hash_rule(derivation.parameters, derivation.hash_rule)
-                .expect("tables");
+        let mut tables = EmpiricalStepTables::new(derivation.parameters).expect("tables");
         let chord = ButtonChord::new(0x01, 4);
         tables.fold_retained(&[chord]).expect("fold chord");
         tables.finish_record().expect("finish record");
@@ -1636,12 +1523,13 @@ mod tests {
         let checkpoint = tables.checkpoint().expect("checkpoint");
         let history_len = tables.history_len();
         let required = BTreeSet::from([tables.records()]);
+        let history_counts = Rc::new(tables.compact_history().clone());
 
         let sentinel = Rc::new(vec![ButtonChord::new(0x80, 7)]);
         let exact = SmbChordTableVersion {
             checkpoint: checkpoint.clone(),
             history_len,
-            history_counts: None,
+            history_counts: Rc::clone(&history_counts),
             recent: Rc::clone(&sentinel),
         };
         let mut versions = BTreeMap::from([(0, exact)]);
@@ -1652,7 +1540,7 @@ mod tests {
         let wrong_len = SmbChordTableVersion {
             checkpoint: checkpoint.clone(),
             history_len: history_len.saturating_add(1),
-            history_counts: None,
+            history_counts: Rc::clone(&history_counts),
             recent: Rc::clone(&sentinel),
         };
         let mut versions = BTreeMap::from([(0, wrong_len)]);
@@ -1665,7 +1553,7 @@ mod tests {
         let wrong_hash = SmbChordTableVersion {
             checkpoint: wrong_hash,
             history_len,
-            history_counts: None,
+            history_counts,
             recent: Rc::clone(&sentinel),
         };
         let mut versions = BTreeMap::from([(0, wrong_hash)]);
@@ -1806,23 +1694,20 @@ mod tests {
             chord_policy_from_identifier(&identifier).expect("parse derived policy"),
             policy
         );
-        assert!(chord_policy_from_identifier("chord_draw_recorded_50").is_err());
-        assert!(chord_policy_from_identifier("chord_draw_recorded_50:0").is_err());
-
+        assert!(identifier.starts_with("chord_draw_recorded_53:"));
+        for version in ["50", "51", "52", "54"] {
+            assert!(
+                chord_policy_from_identifier(&format!(
+                    "chord_draw_recorded_{version}:all,0,4,3,1,2,2"
+                ))
+                .is_err()
+            );
+        }
         let SmbCampaignChordPolicy::DerivedHalf(mut derivation) = policy;
-        derivation.hash_rule = EmpiricalStepHashRule::IncrementalHistory;
-        let incremental = SmbCampaignChordPolicy::DerivedHalf(derivation);
-        let identifier = chord_policy_identifier(incremental);
-        assert!(identifier.starts_with("chord_draw_recorded_51:"));
-        assert_eq!(
-            chord_policy_from_identifier(&identifier).expect("parse incremental policy"),
-            incremental
-        );
-
         derivation.source_filter = super::SmbChordSource::All(super::SmbChordSourceAll {});
         let all_levels = SmbCampaignChordPolicy::DerivedHalf(derivation);
         let identifier = chord_policy_identifier(all_levels);
-        assert!(identifier.starts_with("chord_draw_recorded_51:all,"));
+        assert!(identifier.starts_with("chord_draw_recorded_53:all,"));
         assert_eq!(
             chord_policy_from_identifier(&identifier).expect("parse all-levels policy"),
             all_levels
@@ -1892,10 +1777,12 @@ mod tests {
         first.reset();
         first.apply(&ButtonChord::new(0x81, 12));
         let snapshot = first.snapshot().expect("snapshot prefix");
-        let empty = crate::search::empirical_steps::EmpiricalStepTableRef::from_parts(
+        let history = BTreeMap::new();
+        let empty = crate::search::empirical_steps::EmpiricalStepTableRef::from_counts(
             empty_table_parameters(),
             &[],
-            &[],
+            &history,
+            0,
         );
         let suffix = derive_suffix(
             0x5eed_ca02,

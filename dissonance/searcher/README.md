@@ -22,6 +22,12 @@ of worker completion timing. Campaign streams require schedule policy version 3
 and the current bounded progress policy; recordings from superseded policy
 namespaces are rejected before replay because their snapshot accounting differs.
 
+Empirical step tables fold retained suffixes into an incremental hash and a
+deterministic frequency map capped at 4,096 distinct steps. The compact table
+is the only supported representation; SMB records it as
+`chord_draw_recorded_53:<source and parameters>`, and unknown or retired chord
+policy identifiers are rejected during replay.
+
 Physical executors default to at most one running or completed-but-unadmitted
 job each. `run_campaign_checkpointed_with_options` can explicitly allow two
 through `ResultBuffering::TwoPerWorker`. Credits return only at ordered
