@@ -14,6 +14,8 @@ pub trait Core {
     fn read_save_ram(&mut self, _out: &mut [u8]) -> Option<usize> {
         None
     }
+
+    fn initialize_save_ram(&mut self) {}
 }
 
 #[derive(Clone, Debug)]
@@ -136,6 +138,10 @@ impl Core for MockCore {
         out[..self.save_ram.len()].copy_from_slice(&self.save_ram);
         Some(self.save_ram.len())
     }
+
+    fn initialize_save_ram(&mut self) {
+        self.save_ram.fill(0xff);
+    }
 }
 
 #[cfg(test)]
@@ -185,5 +191,13 @@ mod tests {
         a.run_frame(RIGHT);
         assert!(a.serialize(&mut buf_a));
         assert_ne!(buf_a, buf_b, "different moment, different bytes");
+    }
+
+    #[test]
+    fn save_ram_initialization_matches_native_baseline() {
+        let mut core = MockCore::new();
+        core.save_ram_mut().fill(0);
+        core.initialize_save_ram();
+        assert!(core.save_ram.iter().all(|byte| *byte == 0xff));
     }
 }
