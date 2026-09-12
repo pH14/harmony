@@ -5,7 +5,7 @@
 # The input image and tools are built by the current checkout. The campaign is
 # bounded by both its deterministic execution budget and its wall budget. Its
 # report carries the first current-build reproducer; historical-search does not
-# replay a committed witness or make a prior witness a gate.
+# replay a committed input or make a prior run a gate.
 set -euo pipefail
 
 : "${CASE_ID:?}" "${ARM:?}" "${WORKLOAD_VERSION:?}" "${IMAGE_PREFIX:?}"

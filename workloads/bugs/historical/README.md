@@ -58,8 +58,9 @@ uses the package's fresh confirmation of each new finding and performs one
 fresh fixed-arm differential replay. A small set of manifest-declared clean
 trajectories exercises fresh starts, including no-find paths, with two fresh
 repeats on one arm so their state digests can be compared, under the case's
-aggregate replay-session cap. Committed probe and witness files remain
-historical references; they are not CI gates.
+aggregate replay-session cap. The committed probe file remains a historical
+reference; the current build's discovered input is the replay source and the
+probe is not a CI gate.
 
 The roster's CI column is `runnable` or `deferred: <reason>`. A search miss,
 infrastructure failure, found-but-replay-unverified candidate, and actual

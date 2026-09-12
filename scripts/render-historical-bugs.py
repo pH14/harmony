@@ -37,9 +37,10 @@ COLUMNS = (
     "replay command",
 )
 
-# Report directory names carry the arm and the mode; a replay of either kind
-# feeds the replay columns and a search feeds the executions column.
-REPLAY_MODES = ("discovery", "probe", "witness")
+# Report directory names carry the arm and the mode; the current panel's fresh
+# discovery replay feeds the replay columns and a search feeds the executions
+# column.
+REPLAY_MODES = ("discovery",)
 
 
 def repo_root() -> Path:

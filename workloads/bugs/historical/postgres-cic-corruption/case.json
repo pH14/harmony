@@ -121,7 +121,6 @@
   ],
   "discovery_mode": "guided",
   "status": "reproduced",
-  "witness": "workloads/bugs/historical/postgres-cic-corruption/witness.json",
   "ci": {
     "status": "runnable",
     "image_prefix": "pgcic",
