@@ -23,6 +23,27 @@ A layer that ships a child without an entry for its parent directory leaves
 that parent with the mode `tar` gave it when it created it, and the merge
 applies that mode over the lower layer's.
 
+`RuntimeConfig::user` retains the image `Config.User` value. The supported
+Linux forms are `uid`, `uid:gid`, `user`, `user:group`, `uid:group`, and
+`user:gid`. Numeric IDs are used as supplied. A named user or group must be
+present in the staged rootfs account files, and an unknown named account is an
+error. A numeric user without a group uses its staged `/etc/passwd` primary
+group when that UID is present; an unknown numeric UID keeps that UID and uses
+GID 0, so it never becomes UID 0. An omitted or empty user means root.
+
+`image::resolve_process_credentials` resolves this value against only
+`rootfs/etc/passwd` and `rootfs/etc/group`. If the group is omitted, the
+user's primary GID comes from `/etc/passwd` and memberships listed in
+`/etc/group` become sorted, de-duplicated `additional_gids`, excluding the
+primary GID. An explicit group selects only that GID and suppresses all
+supplementary groups. A missing optional group file contributes no additional
+groups; malformed or out-of-rootfs account files fail resolution. Named users
+never fall back to root.
+
+Runtime environment entries must use `VARNAME=VARVALUE` with a shell-safe
+variable name. Invalid entries fail image parsing instead of being silently
+discarded by the guest launcher.
+
 ```sh
 cargo test --manifest-path consonance/oci/Cargo.toml
 cargo clippy --manifest-path consonance/oci/Cargo.toml --all-targets -- -D warnings

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use crate::credentials;
+pub use crate::credentials::{CredentialsError, ProcessCredentials};
 use guest_image::Owner;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,6 +25,10 @@ pub enum ImageError {
     Unrecognized(PathBuf),
     #[error("image has no config/rootfs for this architecture")]
     NoConfig,
+    #[error("image environment entry {index} is not VARNAME=VARVALUE")]
+    InvalidEnvironment { index: usize },
+    #[error("image runtime field {field} contains a NUL byte")]
+    InvalidRuntimeField { field: &'static str },
     #[error("image names a path outside its layout or rootfs: {0}")]
     UnsafePath(String),
     #[error("tar: {0}")]
@@ -31,6 +37,8 @@ pub enum ImageError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Credentials(#[from] CredentialsError),
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
@@ -39,6 +47,50 @@ pub struct RuntimeConfig {
     pub cmd: Vec<String>,
     pub env: Vec<String>,
     pub working_dir: Option<String>,
+    pub user: Option<String>,
+}
+
+impl RuntimeConfig {
+    pub fn validate(&self) -> Result<(), ImageError> {
+        credentials::validate_user_spec(self.user.as_deref())?;
+        for (index, variable) in self.env.iter().enumerate() {
+            let Some((name, _)) = variable.split_once('=') else {
+                return Err(ImageError::InvalidEnvironment { index });
+            };
+            if name.is_empty()
+                || !name.bytes().enumerate().all(|(at, byte)| {
+                    byte == b'_'
+                        || byte.is_ascii_alphabetic() && at == 0
+                        || byte.is_ascii_alphanumeric() && at != 0
+                })
+            {
+                return Err(ImageError::InvalidEnvironment { index });
+            }
+        }
+        for argument in self
+            .entrypoint
+            .iter()
+            .chain(self.cmd.iter())
+            .chain(self.working_dir.iter())
+            .chain(self.user.iter())
+            .chain(self.env.iter())
+        {
+            if argument.contains('\0') {
+                return Err(ImageError::InvalidRuntimeField {
+                    field: "runtime metadata",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn resolve_process_credentials(
+        &self,
+        rootfs: &Path,
+    ) -> Result<ProcessCredentials, ImageError> {
+        self.validate()?;
+        Ok(credentials::resolve(self.user.as_deref(), rootfs)?)
+    }
 }
 
 pub struct StagedImage {
@@ -254,19 +306,30 @@ struct ImageConfigSection {
     cmd: Option<Vec<String>>,
     env: Option<Vec<String>>,
     working_dir: Option<String>,
+    user: Option<String>,
 }
 
 fn parse_runtime_config(blob: &[u8]) -> Result<RuntimeConfig, ImageError> {
     let file: ImageConfigFile = serde_json::from_slice(blob)?;
     let section = file.config;
-    Ok(section
+    let config = section
         .map(|c| RuntimeConfig {
             entrypoint: c.entrypoint.unwrap_or_default(),
             cmd: c.cmd.unwrap_or_default(),
             env: c.env.unwrap_or_default(),
             working_dir: c.working_dir,
+            user: c.user,
         })
-        .unwrap_or_default())
+        .unwrap_or_default();
+    config.validate()?;
+    Ok(config)
+}
+
+pub fn resolve_process_credentials(
+    config: &RuntimeConfig,
+    rootfs: &Path,
+) -> Result<ProcessCredentials, ImageError> {
+    config.resolve_process_credentials(rootfs)
 }
 
 fn check_relative(path: &Path) -> Result<(), ImageError> {
@@ -873,15 +936,30 @@ mod tests {
     #[test]
     fn runtime_config_parses_the_config_section() {
         let blob = br#"{"config":{"Entrypoint":["/e"],"Cmd":["run"],
-            "Env":["A=1"],"WorkingDir":"/w"},"rootfs":{}}"#;
+            "Env":["A=1"],"WorkingDir":"/w","User":"worker:shared"},"rootfs":{}}"#;
         let config = parse_runtime_config(blob).unwrap();
         assert_eq!(config.entrypoint, ["/e"]);
         assert_eq!(config.cmd, ["run"]);
         assert_eq!(config.env, ["A=1"]);
         assert_eq!(config.working_dir.as_deref(), Some("/w"));
+        assert_eq!(config.user.as_deref(), Some("worker:shared"));
 
         let empty = parse_runtime_config(b"{}").unwrap();
         assert!(empty.entrypoint.is_empty() && empty.cmd.is_empty());
+    }
+
+    #[test]
+    fn runtime_config_rejects_environment_entries_the_launcher_would_drop() {
+        for env in [
+            vec!["MISSING_EQUALS".to_string()],
+            vec!["1NAME=value".to_string()],
+        ] {
+            let blob = serde_json::json!({"config": {"Env": env}});
+            assert!(matches!(
+                parse_runtime_config(&serde_json::to_vec(&blob).unwrap()),
+                Err(ImageError::InvalidEnvironment { .. })
+            ));
+        }
     }
 
     #[test]

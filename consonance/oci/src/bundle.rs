@@ -220,6 +220,7 @@ mod tests {
             cmd: vec!["service".into()],
             env: vec!["APP_DATA=/var/lib/sample/data".into()],
             working_dir: Some("/app".into()),
+            user: None,
         }
     }
 
