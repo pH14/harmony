@@ -35,6 +35,11 @@ an RF-cleared control that must enter the guest debug handler.
 Exit counters include continuation accesses exactly once. Virtual-time policy,
 device models, snapshot formats, and entropy live above this crate.
 
+ARM64 snapshot capture rejects a pending exit or staged completion before it
+reads the vCPU. Completed MMIO reads and eagerly completed MMIO writes remain
+capturable; placeholder ARM64 sysreg exits remain uncapturable while their
+completion is pending.
+
 The `contract-tests` feature exposes the shared backend contract exam, and the
 `mock` feature enables portable fixtures:
 

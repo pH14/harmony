@@ -1187,6 +1187,9 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn save(&self) -> Result<Arm64VcpuState> {
+        if self.pending != Pending::None || self.completion_staged {
+            return Err(BackendError::PendingCompletion);
+        }
         save_vcpu(&self.kvm)
     }
 
@@ -1227,6 +1230,8 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 #[cfg(any(test, feature = "mock"))]
 #[derive(Debug, Default)]
 pub struct FakeKvm {
+    #[cfg(test)]
+    state_reads: std::sync::atomic::AtomicUsize,
     regs: std::collections::BTreeMap<u64, u64>,
     regs32: std::collections::BTreeMap<u64, u32>,
     regs128: std::collections::BTreeMap<u64, [u8; 16]>,
@@ -1381,6 +1386,9 @@ impl Arm64Kvm for FakeKvm {
     }
 
     fn get_one_reg(&self, id: u64) -> Result<u64> {
+        #[cfg(test)]
+        self.state_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self.regs.get(&id).copied().unwrap_or(0))
     }
 
@@ -1396,6 +1404,9 @@ impl Arm64Kvm for FakeKvm {
     }
 
     fn get_one_reg32(&self, id: u64) -> Result<u32> {
+        #[cfg(test)]
+        self.state_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self.regs32.get(&id).copied().unwrap_or(0))
     }
 
@@ -1411,6 +1422,9 @@ impl Arm64Kvm for FakeKvm {
     }
 
     fn get_one_reg128(&self, id: u64) -> Result<[u8; 16]> {
+        #[cfg(test)]
+        self.state_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self.regs128.get(&id).copied().unwrap_or([0; 16]))
     }
 
@@ -1426,6 +1440,9 @@ impl Arm64Kvm for FakeKvm {
     }
 
     fn get_mp_state(&self) -> Result<MpState> {
+        #[cfg(test)]
+        self.state_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self.mp_state)
     }
 
@@ -2044,6 +2061,77 @@ mod tests {
         assert_eq!(b.applied_irq, None);
         assert_eq!(b.accepted_irq, None);
         assert_eq!(b.reported_active_irq, None);
+    }
+
+    #[test]
+    fn save_rejects_pending_or_staged_completion_without_kvm_access() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+        let state = b.save().unwrap();
+        let calls = b.kvm().calls.clone();
+        let state_reads = b
+            .kvm()
+            .state_reads
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(state_reads > 0);
+
+        for pending in [Pending::SysregRead, Pending::SysregWrite] {
+            b.pending = pending;
+            b.completion_staged = false;
+            assert!(matches!(b.save(), Err(BackendError::PendingCompletion)));
+            assert_eq!(b.pending, pending);
+            assert!(!b.completion_staged);
+            assert_eq!(b.kvm().calls, calls);
+            assert_eq!(
+                b.kvm()
+                    .state_reads
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                state_reads
+            );
+        }
+
+        b.pending = Pending::None;
+        b.completion_staged = true;
+        assert!(matches!(b.save(), Err(BackendError::PendingCompletion)));
+        assert_eq!(b.pending, Pending::None);
+        assert!(b.completion_staged);
+        assert_eq!(b.kvm().calls, calls);
+        assert_eq!(
+            b.kvm()
+                .state_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            state_reads
+        );
+
+        b.completion_staged = false;
+        assert_eq!(b.save().unwrap(), state);
+    }
+
+    #[test]
+    fn save_accepts_completed_mmio_and_eager_mmio_write_states() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(mmio_load(0x0900_0018, 4));
+        fake.push_run(mmio_store(0x0900_0020, 0x5A, 1));
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+
+        let initial = b.save().unwrap();
+        assert!(matches!(
+            b.run(),
+            Ok(Exit::Common(CommonExit::Mmio { write: None, .. }))
+        ));
+        assert!(matches!(b.save(), Err(BackendError::PendingCompletion)));
+
+        b.complete_read(0x90).unwrap();
+        assert_eq!(b.save().unwrap(), initial);
+        assert!(matches!(
+            b.run(),
+            Ok(Exit::Common(CommonExit::Mmio { write: Some(_), .. }))
+        ));
+        assert_eq!(b.save().unwrap(), initial);
     }
 
     #[test]
