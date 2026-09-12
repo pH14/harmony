@@ -97,7 +97,8 @@ enable_busybox_symbol() {
 for symbol in STATIC BUSYBOX ASH SH_IS_ASH MOUNT UMOUNT MKDIR MKNOD CHMOD CHOWN \
     CAT ECHO GREP HALT POWEROFF REBOOT SETSID SETUIDGID ENV ID KILL SLEEP \
     LN RM CP MV TRUE FALSE TEST SYNC PRINTF HEAD TAIL TEE CUT WC PS SED TOUCH \
-    STAT READLINK MKFIFO TEST1 FEATURE_MOUNT_FLAGS FEATURE_STAT_FORMAT; do
+    STAT READLINK MKFIFO TEST1 FEATURE_MOUNT_FLAGS FEATURE_STAT_FORMAT \
+    FEATURE_SH_MATH FEATURE_SH_MATH_64; do
     enable_busybox_symbol "$symbol"
 done
 grep -qxF 'CONFIG_STATIC=y' "$busybox_obj/.config" || {
@@ -120,7 +121,8 @@ make -C "$BBSRC" O="$busybox_obj" CC="$busybox_cc" -j"$(nproc)" busybox >/dev/nu
 for symbol in STATIC BUSYBOX ASH SH_IS_ASH MOUNT UMOUNT MKDIR MKNOD CHMOD CHOWN \
     CAT ECHO GREP HALT POWEROFF REBOOT SETSID SETUIDGID ENV ID KILL SLEEP \
     LN RM CP MV TRUE FALSE TEST SYNC PRINTF HEAD TAIL TEE CUT WC PS SED TOUCH \
-    STAT READLINK MKFIFO TEST1 FEATURE_MOUNT_FLAGS FEATURE_STAT_FORMAT; do
+    STAT READLINK MKFIFO TEST1 FEATURE_MOUNT_FLAGS FEATURE_STAT_FORMAT \
+    FEATURE_SH_MATH FEATURE_SH_MATH_64; do
     grep -qxF "CONFIG_${symbol}=y" "$busybox_obj/.config" || {
         echo "FAIL: platform BusyBox lost CONFIG_${symbol}" >&2
         exit 1
@@ -166,6 +168,8 @@ if [ "$runtime_arch" = aarch64 ]; then
 else
     install -m 0755 "$LINUX_DIR/oci-init.sh" "$oci_root/init"
 fi
+"$oci_root/bin/busybox" sh -n "$oci_root/init"
+"$oci_root/bin/busybox" sh -n "$oci_root/usr/lib/harmony/init"
 
 printf 'root:x:0:0:root:/root:/bin/sh\n' >"$oci_root/etc/passwd"
 printf 'root:x:0:\n' >"$oci_root/etc/group"

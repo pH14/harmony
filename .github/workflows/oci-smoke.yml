@@ -73,7 +73,7 @@ jobs:
         run: |
           set -o pipefail
           for repetition in 1 2 3; do
-            timeout -k 10 720 cargo test --locked --release -p oci-support --test platform -- --ignored --nocapture \
+            timeout -k 10 720 cargo test --locked --release -p oci-support --test platform --test process_platform -- --ignored --nocapture \
               2>&1 | tee "platform-smoke/replay-$repetition.log"
           done
       - name: Publish qualified exact artifacts
@@ -157,7 +157,7 @@ jobs:
       - name: Platform execution and restore smoke
         run: |
           set -o pipefail
-          timeout -k 10 720 cargo test --locked --release -p oci-support --test platform -- --ignored --nocapture \
+          timeout -k 10 720 cargo test --locked --release -p oci-support --test platform --test process_platform -- --ignored --nocapture \
             2>&1 | tee platform-smoke/replay.log
       - uses: actions/upload-artifact@v4
         if: always()

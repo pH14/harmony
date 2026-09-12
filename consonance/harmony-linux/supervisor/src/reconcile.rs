@@ -36,9 +36,6 @@ pub struct ActiveWindows {
     hooks: Vec<HookWindow>,
 }
 
-pub type ActiveFaults = ActiveWindows;
-pub type NodeFaults = NodeActions;
-
 impl ActiveWindows {
     #[must_use]
     pub fn new() -> Self {

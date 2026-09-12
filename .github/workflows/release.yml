@@ -77,7 +77,7 @@ jobs:
           else
             export HARMONY_PLATFORM_KERNEL="$GITHUB_WORKSPACE/consonance/harmony-linux/build/$GUEST_ISA/bzImage"
           fi
-          timeout -k 10 720 cargo test --locked --release -p oci-support --test platform -- --ignored --nocapture
+          timeout -k 10 720 cargo test --locked --release -p oci-support --test platform --test process_platform -- --ignored --nocapture
       - run: tar -C consonance/harmony-linux/build -czf harmony-guest-${{ github.ref_name }}-${{ matrix.isa }}.tar.gz ${{ matrix.isa }}
       - uses: actions/upload-artifact@v4
         with:
