@@ -1795,13 +1795,13 @@ mod tests {
         assert!(!rootfs.join("d/.wh..wh..opq").exists());
     }
 
-    const POSTGRES: Owner = Owner { uid: 70, gid: 70 };
+    const SERVICE: Owner = Owner { uid: 70, gid: 70 };
 
     #[test]
     fn read_members_reads_the_owner_of_each_member() {
         let dir = tempfile::tempdir().unwrap();
         let body = [
-            raw_member_owned(b"data", b'5', "", b"", POSTGRES),
+            raw_member_owned(b"data", b'5', "", b"", SERVICE),
             raw_member(b"etc", b'5', "", b""),
             raw_member(
                 b"PaxHeaders/0",
@@ -1822,7 +1822,7 @@ mod tests {
         assert_eq!(
             owners,
             [
-                ("data".to_string(), POSTGRES),
+                ("data".to_string(), SERVICE),
                 ("etc".to_string(), Owner::ROOT),
                 ("wide".to_string(), Owner { uid: 70000, gid: 5 }),
             ]
@@ -1834,7 +1834,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         for (name, record) in [
             ("huge-uid.tar", pax_record("uid", "4294967296")),
-            ("text-gid.tar", pax_record("gid", "postgres")),
+            ("text-gid.tar", pax_record("gid", "service")),
         ] {
             let mut body = raw_member(b"PaxHeaders/0", b'x', "", record.as_bytes());
             body.extend_from_slice(&raw_member(b"file", b'0', "", b""));
@@ -1854,13 +1854,13 @@ mod tests {
         let mut owners = Ownership::default();
 
         let base = [
-            raw_member_owned(b"data/", b'5', "", b"", POSTGRES),
-            raw_member_owned(b"data/conf", b'0', "", b"cfg", POSTGRES),
-            raw_member_owned(b"data/sub/", b'5', "", b"", POSTGRES),
-            raw_member_owned(b"data/sub/x", b'0', "", b"x", POSTGRES),
-            raw_member_owned(b"gone", b'0', "", b"gone", POSTGRES),
-            raw_member_owned(b"swap/", b'5', "", b"", POSTGRES),
-            raw_member_owned(b"swap/child", b'0', "", b"child", POSTGRES),
+            raw_member_owned(b"data/", b'5', "", b"", SERVICE),
+            raw_member_owned(b"data/conf", b'0', "", b"cfg", SERVICE),
+            raw_member_owned(b"data/sub/", b'5', "", b"", SERVICE),
+            raw_member_owned(b"data/sub/x", b'0', "", b"x", SERVICE),
+            raw_member_owned(b"gone", b'0', "", b"gone", SERVICE),
+            raw_member_owned(b"swap/", b'5', "", b"", SERVICE),
+            raw_member_owned(b"swap/child", b'0', "", b"child", SERVICE),
             raw_member(b"etc", b'0', "", b"root"),
         ]
         .concat();
@@ -1879,12 +1879,12 @@ mod tests {
             "swap",
             "swap/child",
         ] {
-            assert_eq!(owners.owner_of(Path::new(path)), POSTGRES, "{path}");
+            assert_eq!(owners.owner_of(Path::new(path)), SERVICE, "{path}");
         }
         assert_eq!(owners.owner_of(Path::new("etc")), Owner::ROOT);
         assert_eq!(
             owners.owner_of(Path::new("./data/")),
-            POSTGRES,
+            SERVICE,
             "one entry, however spelled"
         );
 
@@ -1910,7 +1910,7 @@ mod tests {
         );
         assert_eq!(
             owners.owner_of(Path::new("data")),
-            POSTGRES,
+            SERVICE,
             "opaque keeps the directory"
         );
         assert_eq!(
@@ -2009,8 +2009,8 @@ mod tests {
         std::fs::write(blobs.join("c"), br#"{"config":{"Cmd":["/node"]}}"#).unwrap();
         let layer = [
             raw_member_owned(b"var/", b'5', "", b"", Owner::ROOT),
-            raw_member_owned(b"var/data/", b'5', "", b"", POSTGRES),
-            raw_member_owned(b"var/data/conf", b'0', "", b"cfg", POSTGRES),
+            raw_member_owned(b"var/data/", b'5', "", b"", SERVICE),
+            raw_member_owned(b"var/data/conf", b'0', "", b"cfg", SERVICE),
             raw_member(b"node", b'0', "", b"#!/bin/sh"),
         ]
         .concat();
@@ -2020,7 +2020,7 @@ mod tests {
         std::fs::create_dir_all(&stage_dir).unwrap();
         let staged = stage(layout.to_str().unwrap(), &stage_dir).unwrap();
         assert_eq!(staged.config.cmd, ["/node"]);
-        assert_eq!(staged.owners.owner_of(Path::new("var/data/conf")), POSTGRES);
+        assert_eq!(staged.owners.owner_of(Path::new("var/data/conf")), SERVICE);
         assert_eq!(staged.owners.owner_of(Path::new("var")), Owner::ROOT);
         use std::os::unix::fs::MetadataExt as _;
         let staging_user = std::fs::metadata(&stage_dir).unwrap().uid();
@@ -2054,8 +2054,8 @@ mod tests {
             owners.insert(name, owner);
             at = next;
         }
-        assert_eq!(owners["harmony-oci/rootfs/var/data"], POSTGRES);
-        assert_eq!(owners["harmony-oci/rootfs/var/data/conf"], POSTGRES);
+        assert_eq!(owners["harmony-oci/rootfs/var/data"], SERVICE);
+        assert_eq!(owners["harmony-oci/rootfs/var/data/conf"], SERVICE);
         assert_eq!(owners["harmony-oci/rootfs/var"], Owner::ROOT);
         assert_eq!(owners["harmony-oci/rootfs/node"], Owner::ROOT);
         assert_eq!(owners["harmony-oci/rootfs"], Owner::ROOT);

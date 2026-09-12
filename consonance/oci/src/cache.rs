@@ -63,14 +63,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("segments");
         let config = RuntimeConfig {
-            cmd: vec!["postgres".into()],
+            cmd: vec!["service".into()],
             ..RuntimeConfig::default()
         };
         assert!(load(&cache, "k-v2").is_none());
         store(&cache, "k-v2", b"segment-bytes", &config);
         let (segment, loaded) = load(&cache, "k-v2").unwrap();
         assert_eq!(segment, b"segment-bytes");
-        assert_eq!(loaded.cmd, ["postgres"]);
+        assert_eq!(loaded.cmd, ["service"]);
         let stray: Vec<_> = std::fs::read_dir(&cache)
             .unwrap()
             .filter(|e| {

@@ -1,9 +1,9 @@
-# OCI workload support
+# OCI support
 
 `oci-support` acquires registry images, OCI layouts, and Docker archives; stages
 their rootfs; and assembles deterministic guest image segments. Image parsing,
 layer validation, and digest-keyed cache behavior are shared by the Harmony OCI
-runner and workload packages. Packages own startup and checking contracts.
+runner and its callers. Callers own startup and checking contracts.
 
 `bundle::build_rootfs_segment` places an image under `/harmony-oci/rootfs`.
 `bundle::build_control_segment` provides the existing OCI command runner.
@@ -24,6 +24,6 @@ that parent with the mode `tar` gave it when it created it, and the merge
 applies that mode over the lower layer's.
 
 ```sh
-cargo test --manifest-path workloads/oci/Cargo.toml
-cargo clippy --manifest-path workloads/oci/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path consonance/oci/Cargo.toml
+cargo clippy --manifest-path consonance/oci/Cargo.toml --all-targets -- -D warnings
 ```

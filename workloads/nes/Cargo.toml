@@ -7,7 +7,7 @@ license = "AGPL-3.0-or-later"
 [workspace]
 
 [dependencies]
-guest-image = { path = "../guest-image", version = "=0.1.0" }
+guest-image = { path = "../../consonance/guest-image", version = "=0.1.0" }
 searcher = { path = "../../dissonance/searcher", version = "=0.1.0" }
 machine = { path = "../nes-machine", version = "=0.1.0" }
 postcard = { version = "=1.1.3", default-features = false, features = ["alloc", "use-std"] }

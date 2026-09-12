@@ -171,6 +171,7 @@ CONSONANCE_CORE_DIRS = [
     "consonance/control-proto",
     "consonance/environment",
     "consonance/gicv3",
+    "consonance/guest-image",
     "consonance/hypercall-doorbell",
     "consonance/hypercall-proto",
     "consonance/lapic",
@@ -181,6 +182,7 @@ CONSONANCE_CORE_DIRS = [
     "consonance/vmm-backend",
     "consonance/vmm-core",
     "consonance/vtime",
+    "consonance/oci",
 ]
 
 SEARCHER_DIRS = [

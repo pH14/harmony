@@ -228,10 +228,10 @@ exclude_re = [
     # not controllable from a unit test. The parsing these feed
     # (`parse_runtime_config`, manifest/layout resolution, layer whiteouts)
     # is unit-tested and stays gated.
-    "workloads/oci/src/image\\.rs.*(replace tool|local_image_id|ensure_local|export_from_tool)",
+    "consonance/oci/src/image\\.rs.*(replace tool|local_image_id|ensure_local|export_from_tool)",
     # `cache::key` is the image-ID lookup through docker/podman — same
     # category; the store/load/atomic-write logic it keys is unit-tested.
-    "workloads/oci/src/cache\\.rs.*replace key ->",
+    "consonance/oci/src/cache\\.rs.*replace key ->",
     # `preflight::run` composes the live host probes above, and `print_text`
     # is println-only reporting with no test-observable return (same category
     # as the loud-log entries in (c)).
@@ -240,10 +240,10 @@ exclude_re = [
     # nodes, which an unprivileged test cannot create (mknod needs root); the
     # fifo/socket halves of the guard ARE killed by the tree test's fifo and
     # socket entries.
-    "workloads/guest-image/src/lib\\.rs:.*replace != with == in Writer::walk$",
+    "consonance/guest-image/src/lib\\.rs:.*replace != with == in Writer::walk$",
     # newc type bits (0o040000/0o100000/0o120000) and the 0o7777-masked
     # permission bits are disjoint, so OR and XOR build identical headers —
     # the same provably-equivalent class as (b). The `|`→`&` and `&`→`^`/`|`
     # siblings ARE killed by the exact-mode header parse test.
-    "workloads/guest-image/src/lib\\.rs:.*replace \\| with \\^ in Writer::(dir|file|symlink)_owned$",
+    "consonance/guest-image/src/lib\\.rs:.*replace \\| with \\^ in Writer::(dir|file|symlink)_owned$",
 ]

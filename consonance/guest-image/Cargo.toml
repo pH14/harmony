@@ -1,16 +1,15 @@
 [package]
 name = "guest-image"
 version = "0.1.0"
-edition = "2024"
-license = "AGPL-3.0-or-later"
+edition.workspace = true
+license.workspace = true
 description = "Deterministic cpio helpers shared by Harmony guest image producers"
-
-# Standalone workspace: the root workspace intentionally excludes workload
-# packages and their image-building support crates.
-[workspace]
 
 [dependencies]
 thiserror = "2"
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints]
+workspace = true

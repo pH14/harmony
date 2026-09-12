@@ -229,11 +229,11 @@ mod tests {
 
     #[test]
     fn entries_record_the_owner_they_were_given() {
-        let postgres = Owner { uid: 70, gid: 70 };
+        let service = Owner { uid: 70, gid: 70 };
         let mut w = Writer::new();
-        w.dir_owned("data", 0o700, postgres);
-        w.file_owned("data/conf", 0o600, postgres, b"cfg");
-        w.symlink_owned("data/link", postgres, b"conf");
+        w.dir_owned("data", 0o700, service);
+        w.file_owned("data/conf", 0o600, service, b"cfg");
+        w.symlink_owned("data/link", service, b"conf");
         w.file("plain", 0o644, b"x");
         let bytes = w.finish();
 
@@ -250,9 +250,9 @@ mod tests {
         assert_eq!(
             owners,
             [
-                ("data".to_string(), postgres),
-                ("data/conf".to_string(), postgres),
-                ("data/link".to_string(), postgres),
+                ("data".to_string(), service),
+                ("data/conf".to_string(), service),
+                ("data/link".to_string(), service),
                 ("plain".to_string(), Owner::ROOT),
             ]
         );
@@ -264,10 +264,10 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("var/lib/data")).unwrap();
         std::fs::write(dir.path().join("var/lib/data/conf"), b"cfg").unwrap();
         std::fs::write(dir.path().join("etc"), b"root-owned").unwrap();
-        let postgres = Owner { uid: 70, gid: 70 };
+        let service = Owner { uid: 70, gid: 70 };
         let owner_of = |path: &std::path::Path| {
             if path.starts_with("var/lib/data") {
-                postgres
+                service
             } else {
                 Owner::ROOT
             }
@@ -292,8 +292,8 @@ mod tests {
                 ("root/etc".to_string(), Owner::ROOT),
                 ("root/var".to_string(), Owner::ROOT),
                 ("root/var/lib".to_string(), Owner::ROOT),
-                ("root/var/lib/data".to_string(), postgres),
-                ("root/var/lib/data/conf".to_string(), postgres),
+                ("root/var/lib/data".to_string(), service),
+                ("root/var/lib/data/conf".to_string(), service),
             ]
         );
 
