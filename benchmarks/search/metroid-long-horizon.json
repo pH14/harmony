@@ -18,7 +18,7 @@
     "window": 2,
     "result_slots": 2,
     "wall_seconds": 7200,
-    "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
+    "selector": "hierarchy_uniform_128_energy_frontier_cheapest:3,6,12,2",
     "suffix": "one_to_six",
     "mixture": "alphabet_only",
     "verification": "witness",

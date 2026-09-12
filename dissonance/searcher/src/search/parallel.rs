@@ -45,13 +45,13 @@ impl ResultSlots {
 }
 
 #[derive(Debug)]
-pub struct WorkerReply<Output> {
-    pub worker: u32,
-    pub outcome: Result<Output, String>,
+pub(crate) struct WorkerReply<Output> {
+    pub(crate) worker: u32,
+    pub(crate) outcome: Result<Output, String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WorkerPoolError {
+pub(crate) enum WorkerPoolError {
     UnknownWorker,
     WorkerClosed,
     WorkerExited,
@@ -71,13 +71,13 @@ impl fmt::Display for WorkerPoolError {
 
 impl Error for WorkerPoolError {}
 
-pub struct WorkerPool<Job, Output> {
+pub(crate) struct WorkerPool<Job, Output> {
     job_senders: Vec<Option<mpsc::Sender<Job>>>,
     reply_receiver: mpsc::Receiver<WorkerReply<Output>>,
 }
 
 impl<Job, Output> WorkerPool<Job, Output> {
-    pub fn send(&self, worker: u32, job: Job) -> Result<(), WorkerPoolError> {
+    pub(crate) fn send(&self, worker: u32, job: Job) -> Result<(), WorkerPoolError> {
         self.job_senders
             .get(usize::try_from(worker).map_err(|_| WorkerPoolError::UnknownWorker)?)
             .ok_or(WorkerPoolError::UnknownWorker)?
@@ -87,7 +87,7 @@ impl<Job, Output> WorkerPool<Job, Output> {
             .map_err(|_| WorkerPoolError::WorkerExited)
     }
 
-    pub fn close(&mut self, worker: u32) -> Result<(), WorkerPoolError> {
+    pub(crate) fn close(&mut self, worker: u32) -> Result<(), WorkerPoolError> {
         let sender = self
             .job_senders
             .get_mut(usize::try_from(worker).map_err(|_| WorkerPoolError::UnknownWorker)?)
@@ -96,7 +96,7 @@ impl<Job, Output> WorkerPool<Job, Output> {
         Ok(())
     }
 
-    pub fn receive(&self) -> Result<WorkerReply<Output>, WorkerPoolError> {
+    pub(crate) fn receive(&self) -> Result<WorkerReply<Output>, WorkerPoolError> {
         self.reply_receiver
             .recv()
             .map_err(|_| WorkerPoolError::RepliesClosed)
@@ -111,7 +111,7 @@ impl<Job, Output> WorkerPool<Job, Output> {
     }
 }
 
-pub fn with_worker_pool<State, Job, Output, ResultValue, CoordinatorError>(
+pub(crate) fn with_worker_pool<State, Job, Output, ResultValue, CoordinatorError>(
     workers: u32,
     initialize: impl Fn(u32) -> Result<State, String> + Sync,
     execute: impl Fn(&mut State, Job) -> Result<Output, String> + Sync,

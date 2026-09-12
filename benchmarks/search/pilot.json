@@ -18,8 +18,8 @@
     "window": 2,
     "result_slots": 2,
     "wall_seconds": 900,
-    "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
-    "suffix": "one_to_six_within_3_longest_actions_full_hold",
+    "selector": "hierarchy_uniform_128_energy_frontier_cheapest:3,6,12,2",
+    "suffix": "one_to_six_within_3_max_action_cost_full_hold",
     "mixture": "energy_splice:6",
     "verification": "witness",
     "frames": 60000000

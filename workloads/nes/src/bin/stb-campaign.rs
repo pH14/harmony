@@ -169,7 +169,7 @@ fn campaign_config(args: &Args) -> StbCampaignConfig {
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
-        retention: RetentionPolicy::AdmitAlive,
+        retention: RetentionPolicy::Unprobed,
         selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
             entry: 3,
             groups: vec![6, 12, 2],
@@ -226,7 +226,7 @@ fn run_qualified_campaign(
     fs::write(output.join("snapshots.bin"), &checkpoint_bytes)?;
 
     let champion = live
-        .victory_input
+        .objective_witness
         .clone()
         .unwrap_or_else(|| live.archive.champion_input.clone());
     let champion_endpoint = write_headless_observation(game, &champion, output, "champion")?;
@@ -243,7 +243,7 @@ fn run_qualified_campaign(
         } else {
             "qualified_campaign"
         },
-        "rom_sha256": game.image_sha256(),
+        "rom_sha256": game.workload_identity_sha256(),
         "ai": game.ai().name(),
         "ai_level": game.ai().level(),
         "match_completed": champion_endpoint.match_over(),
@@ -253,7 +253,7 @@ fn run_qualified_campaign(
         "execution_budget": live.execution_budget,
         "executions": live.executions_completed,
         "execution_budget_exact": live.executions_completed == live.execution_budget,
-        "frames_emulated": live.frames_emulated,
+        "frames_emulated": live.execution_work,
         "stream_sha256": live.stream_sha256,
         "stream_file_sha256": sha256(&stream_bytes),
         "report_sha256": sha256(&report_bytes),
@@ -265,7 +265,7 @@ fn run_qualified_campaign(
         "deaths": live.archive.deaths,
         "duplicates_skipped": live.duplicates_skipped,
         "probe_refused": live.probe_refused,
-        "victories": live.victories,
+        "victories": live.objectives_reached,
         "progress": live.archive.progress_watermark,
         "milestones": live.archive.milestones,
         "first_reached": live.archive.first_reached,
@@ -496,7 +496,7 @@ mod tests {
         assert!(campaign_config(&args).continue_after_victory);
         assert!(matches!(
             campaign_config(&args).retention,
-            nes_workload::search::archive::RetentionPolicy::AdmitAlive
+            nes_workload::search::archive::RetentionPolicy::Unprobed
         ));
     }
 

@@ -28,11 +28,12 @@ use crate::{
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCheckpoint, CampaignConfig,
             CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
-            CampaignStreamHeader, CampaignTypes, Evaluation, GamePolicies, InputPolicy, Reporting,
-            SnapshotCheckpoint, TargetExecution, postcard_value_sha256,
+            CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy, Reporting,
+            SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_value_sha256,
             replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
 };
@@ -253,9 +254,7 @@ struct NovaResultAction<'a> {
     action: ButtonChord,
     observations: &'a [NovaObservations],
     milestones: NovaMilestones,
-    dead: bool,
-    victory: bool,
-    failed: bool,
+    outcome: Outcome,
     candidate: Option<NovaResultCandidate<'a>>,
 }
 
@@ -274,9 +273,7 @@ fn nova_result_sha256<M: NovaMachineKind>(
             action: action.action,
             observations: &action.observations,
             milestones: action.milestones,
-            dead: action.dead,
-            victory: action.victory,
-            failed: action.failed,
+            outcome: action.outcome,
             candidate: action
                 .candidate
                 .as_ref()
@@ -316,7 +313,8 @@ impl NovaCampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
-            continue_after_victory: self.continue_after_victory,
+            stop_rollout_on_objective: !self.continue_after_victory,
+            stop_campaign_on_objective: !self.continue_after_victory,
             archive_entry_limit: self.archive_entry_limit,
             reservations_per_worker:
                 crate::search::campaign::DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
@@ -327,12 +325,12 @@ impl NovaCampaignConfig {
             mixture: self.mixture,
             retention: self.retention,
             selector: self.selector.clone(),
-            victory_input_path: self.victory_input_path.clone(),
+            objective_witness_path: self.victory_input_path.clone(),
         }
     }
 }
 
-fn recorded<'a>(policies: &'a GamePolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
+fn recorded<'a>(policies: &'a WorkloadPolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
     policies
         .get(field)
         .map(String::as_str)
@@ -419,7 +417,7 @@ impl<M: NovaMachineKind> CampaignTypes for NovaGame<M> {
     type Run = NovaCampaignRun;
     type DrawState = ();
     type DrawCheckpoint = ();
-    type TableHeader = NovaNoTableHeader;
+    type DrawHeader = NovaNoTableHeader;
 }
 
 impl<M: NovaMachineKind> Reporting for NovaGame<M> {
@@ -429,8 +427,14 @@ impl<M: NovaMachineKind> Reporting for NovaGame<M> {
     fn checkpoint_format(&self) -> &'static str {
         SNAPSHOT_CHECKPOINT_FORMAT
     }
-    fn image_sha256(&self) -> String {
+    fn workload_identity_sha256(&self) -> String {
         format!("{:x}", Sha256::digest(&self.rom))
+    }
+    fn action_cost_unit(&self) -> &'static str {
+        "frames"
+    }
+    fn execution_work_unit(&self) -> &'static str {
+        "frames"
     }
     fn result_sha256(&self, result: &NovaCampaignJobResult<M>) -> Result<String, Box<dyn Error>> {
         nova_result_sha256(result)
@@ -453,7 +457,9 @@ impl<M: NovaMachineKind> Reporting for NovaGame<M> {
             progress_curve: state.progress_curve,
             retained: state.retained,
             rejected: state.rejected,
-            deaths: state.deaths,
+            deaths: state
+                .terminal_endpoints
+                .saturating_sub(state.terminal_objectives),
             selector: state.selector,
         }
     }
@@ -470,7 +476,7 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
     fn draw_state_memory_bytes(&self, _state: &()) -> usize {
         0
     }
-    fn policies(&self, _run: &NovaCampaignRun) -> GamePolicies {
+    fn policies(&self, _run: &NovaCampaignRun) -> WorkloadPolicies {
         [
             (
                 CONTROLLER_VOCABULARY_FIELD,
@@ -496,7 +502,10 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
         )))
         .collect()
     }
-    fn resolve_recorded(&self, policies: &GamePolicies) -> Result<NovaCampaignRun, Box<dyn Error>> {
+    fn resolve_recorded(
+        &self,
+        policies: &WorkloadPolicies,
+    ) -> Result<NovaCampaignRun, Box<dyn Error>> {
         let expected = self.policies(&NovaCampaignRun);
         if policies != &expected {
             for (field, value) in &expected {
@@ -541,7 +550,7 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
         }
     }
 
-    fn longest_action_time(&self) -> u64 {
+    fn max_action_cost(&self) -> u64 {
         u64::from(crate::nova::archive::LONGEST_HOLD_FRAMES)
     }
 }
@@ -563,8 +572,8 @@ impl<M: NovaMachineKind> TargetExecution for NovaGame<M> {
     ) -> Result<(), Box<dyn Error>> {
         target.restore(snapshot)
     }
-    fn frames_clocked(&self, target: &NovaTarget<M>) -> u64 {
-        target.frames_clocked()
+    fn execution_work(&self, target: &NovaTarget<M>) -> u64 {
+        target.execution_work()
     }
     fn apply_action(
         &self,
@@ -576,7 +585,11 @@ impl<M: NovaMachineKind> TargetExecution for NovaGame<M> {
         merge_action_milestones(aggregate, target)
     }
     fn rollout_observations(&self, target: &NovaTarget<M>) -> Vec<NovaObservations> {
-        target.last_action_observations().to_vec()
+        if target.exit_kind() != ExitKind::Ok {
+            Vec::new()
+        } else {
+            target.last_action_observations().to_vec()
+        }
     }
     fn rollout_probe(
         &self,
@@ -595,7 +608,7 @@ impl<M: NovaMachineKind> TargetExecution for NovaGame<M> {
             .ok_or_else(|| "failed to snapshot Nova".into())
     }
 
-    fn action_time_fn(&self) -> fn(&ButtonChord) -> u64 {
+    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
 
@@ -713,30 +726,39 @@ impl<M: NovaMachineKind> Evaluation for NovaGame<M> {
             .ok_or_else(|| "Nova source archive has no retained entries".into())
     }
 
-    fn is_terminal(&self, target: &NovaTarget<M>) -> bool {
-        target.is_dead() || target.exit_kind() != ExitKind::Ok
+    fn execution_disposition(&self, target: &NovaTarget<M>) -> ExecutionDisposition {
+        if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_dead() || (!self.whole_game && target.cleared_a_level()) {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        }
     }
 
-    fn is_run_terminal(
+    fn objective_reached(
         &self,
         _run: &NovaCampaignRun,
         target: &NovaTarget<M>,
     ) -> Result<bool, Box<dyn Error>> {
-        if target.exit_kind() != ExitKind::Ok {
-            return Err("Nova terminal predicate cannot inspect a failed emulator".into());
-        }
-        Ok(target.is_dead() || self.terminal_reached(target))
+        Ok(target.exit_kind() == ExitKind::Ok && self.terminal_reached(target))
     }
 
     fn rollout_outcome(
         &self,
         _run: &NovaCampaignRun,
         target: &NovaTarget<M>,
-    ) -> Result<crate::search::rollout::Outcome, Box<dyn Error>> {
-        Ok(crate::search::rollout::Outcome {
-            dead: target.is_dead(),
-            victory: self.terminal_reached(target),
-            failed: target.exit_kind() != ExitKind::Ok,
+    ) -> Result<Outcome, Box<dyn Error>> {
+        let objective_reached = self.objective_reached(&NovaCampaignRun, target)?;
+        Ok(Outcome {
+            objective_reached,
+            disposition: if target.exit_kind() != ExitKind::Ok {
+                ExecutionDisposition::Failed
+            } else if target.is_dead() || (!self.whole_game && objective_reached) {
+                ExecutionDisposition::Terminal
+            } else {
+                ExecutionDisposition::Runnable
+            },
         })
     }
 
@@ -793,9 +815,7 @@ mod tests {
                 action: ButtonChord::new(0x81, 3),
                 observations: vec![observation.clone()],
                 milestones: NovaMilestones::default(),
-                dead: false,
-                victory: false,
-                failed: false,
+                outcome: Outcome::default(),
                 candidate: Some(CampaignCandidate {
                     key: archive_key(state),
                     viable: true,

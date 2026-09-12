@@ -16,10 +16,11 @@ use nes_workload::{
             selector_policy_from_identifier,
         },
         campaign::{
-            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, Game, ResultBuffering,
+            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, ResultBuffering, Workload,
             replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
         },
         draw::{draw_mixture_from_identifier, suffix_shape_from_identifier},
+        rollout::ExecutionDisposition,
     },
     smb::campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
     stb::{
@@ -45,8 +46,8 @@ fn telemetry_now() -> Instant {
     Instant::now()
 }
 
-fn victory_within_budget(first_victory_frames: Option<u64>, budget: Option<u64>) -> bool {
-    first_victory_frames.is_some_and(|frames| budget.is_none_or(|limit| frames <= limit))
+fn objective_within_budget(first_objective_frames: Option<u64>, budget: Option<u64>) -> bool {
+    first_objective_frames.is_some_and(|frames| budget.is_none_or(|limit| frames <= limit))
 }
 
 fn default_result_slots() -> usize {
@@ -125,16 +126,15 @@ fn phase(out: &Path, name: &str, started: Instant) -> Result<()> {
     )
 }
 
-fn replay_witness<G: Game>(game: &G, run: &G::Run, input: &Input<G::Action>) -> Result<Value> {
+fn replay_witness<G: Workload>(game: &G, run: &G::Run, input: &Input<G::Action>) -> Result<Value> {
     let mut target = game.new_target()?;
     let mut aggregate = G::Milestones::default();
     let mut evidence = G::Evidence::default();
     game.merge_snapshot_root_evidence(&mut evidence, &target)?;
-    let mut victory = false;
-    let mut dead = false;
-    let mut failed = false;
+    let mut objective_reached = false;
+    let mut disposition = ExecutionDisposition::Runnable;
     for (i, action) in input.actions.iter().enumerate() {
-        if dead || victory || failed {
+        if disposition.is_terminal() {
             return Err("witness contains actions after a terminal event".into());
         }
         let snapshot = game.snapshot(&mut target)?;
@@ -147,29 +147,29 @@ fn replay_witness<G: Game>(game: &G, run: &G::Run, input: &Input<G::Action>) -> 
             aggregate,
             &[*action],
             input.actions.len(),
-            RetentionPolicy::AdmitAlive,
+            RetentionPolicy::Unprobed,
+            true,
         )?;
         let [last] = result.actions.as_slice() else {
             return Err("witness did not execute its next action".into());
         };
         G::merge_witness_diagnostics(&mut evidence, &last.observations, i as u64 + 1);
         aggregate = last.milestones;
-        victory = last.victory;
-        dead = last.dead;
-        failed = last.failed;
+        objective_reached |= last.outcome.objective_reached;
+        disposition = last.outcome.disposition;
     }
-    if failed {
+    if disposition.is_failed() {
         return Err("witness emulator failed".into());
     }
     let endpoint = game.snapshot(&mut target)?;
     Ok(
-        json!({"victory": victory, "dead": dead, "milestones": aggregate,
+        json!({"victory": objective_reached, "disposition": disposition, "milestones": aggregate,
             "diagnostics": G::diagnostics(&evidence),
             "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one", "snapshot_sha256": format!("{:x}", Sha256::digest(postcard::to_allocvec(&endpoint)?))}),
     )
 }
 
-fn evaluate<G: Game>(
+fn evaluate<G: Workload>(
     game: G,
     run: G::Run,
     request: &Request,
@@ -193,7 +193,8 @@ where
         action_limit: request.actions,
         host: "nes-eval".into(),
         wall_budget: Some(Duration::from_secs(request.wall_seconds)),
-        continue_after_victory: false,
+        stop_rollout_on_objective: true,
+        stop_campaign_on_objective: true,
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         reservations_per_worker: request.window,
         memory_budget_mib: Some(request.memory_mib),
@@ -201,12 +202,12 @@ where
         run: run.clone(),
         suffix: suffix_shape_from_identifier(&request.suffix)?,
         mixture: draw_mixture_from_identifier(&request.mixture)?,
-        retention: RetentionPolicy::AdmitAlive,
+        retention: RetentionPolicy::Unprobed,
         selector: selector_policy_from_identifier(
             &request.selector,
             G::Key::groups().saturating_sub(2),
         )?,
-        victory_input_path: Some(out.join("victory-input.json")),
+        objective_witness_path: Some(out.join("victory-input.json")),
     };
     if request.workers == 0
         || request.executions == 0
@@ -249,7 +250,7 @@ where
         &mut stream,
         Some(&mut progress),
         CampaignExecutionOptions {
-            frame_budget: request.frames,
+            work_budget: request.frames,
             result_buffering,
         },
     )?;
@@ -259,7 +260,7 @@ where
     phase(out, "export", started)?;
     let export_started = telemetry_now();
     let mut value = serde_json::to_value(&report)?;
-    let witness: Input<G::Action> = if let Some(input) = &report.victory_input {
+    let witness: Input<G::Action> = if let Some(input) = &report.objective_witness {
         input.clone()
     } else {
         serde_json::from_value(value["archive"]["champion_input"].clone())?
@@ -280,7 +281,7 @@ where
     if first != second {
         return Err("witness replay endpoint is nondeterministic".into());
     }
-    if report.victories > 0 && first["victory"] != true {
+    if report.objectives_reached > 0 && first["victory"] != true {
         return Err("reported victory was not reproduced by its witness".into());
     }
     if full {
@@ -323,21 +324,21 @@ where
         }
     }
     let verification_seconds = verify_started.elapsed().as_secs_f64();
-    let solved = victory_within_budget(report.frames_to_first_victory, request.frames);
+    let solved = objective_within_budget(report.work_to_first_objective, request.frames);
     write_json(
         &out.join("result.json"),
         &json!({"format":"nes-eval-result-v1", "status":"complete", "solved":solved,
-            "victory_observed":report.victories>0,
-            "frame_budget_overshoot":request.frames.map(|limit| report.frames_emulated.saturating_sub(limit)),
-            "executions": report.executions_completed, "frames_emulated":report.frames_emulated,
-            "frames_to_first_victory":report.frames_to_first_victory, "executions_to_first_victory":report.executions_to_first_victory,
+            "victory_observed":report.objectives_reached>0,
+            "frame_budget_overshoot":request.frames.map(|limit| report.execution_work.saturating_sub(limit)),
+            "executions": report.executions_completed, "frames_emulated":report.execution_work,
+            "frames_to_first_victory":report.work_to_first_objective, "executions_to_first_victory":report.executions_to_first_objective,
             "preparation_seconds":preparation_seconds, "search_seconds":search_seconds, "executions_per_second":report.executions_completed as f64 / search_seconds,
-            "progress":value["archive"]["progress_watermark"], "milestones":value["archive"]["milestones"], "frames_per_second": report.frames_emulated as f64 / search_seconds,
+            "progress":value["archive"]["progress_watermark"], "milestones":value["archive"]["milestones"], "frames_per_second": report.execution_work as f64 / search_seconds,
             "export_seconds":export_seconds, "verification_seconds":verification_seconds,
             "witness_replays":2, "campaign_replay":full,
             "verification":request.verification, "witness":first, "milestone_witnesses":milestone_witnesses,
             "stream_sha256":format!("{:x}",stream.digest.finalize()), "stream_bytes_generated":stream.bytes, "stream_retained":full,
-            "stop_reason":if solved {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.frames_emulated >= limit) {"frame_limit"} else {"wall_limit"}
+            "stop_reason":if solved {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.execution_work >= limit) {"frame_limit"} else {"wall_limit"}
         }),
     )?;
     phase(out, "done", started)
@@ -463,13 +464,13 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::victory_within_budget;
+    use super::objective_within_budget;
 
     #[test]
     fn a_victory_in_the_drained_window_does_not_pass_the_frame_gate() {
-        assert!(victory_within_budget(Some(128), Some(128)));
-        assert!(!victory_within_budget(Some(129), Some(128)));
-        assert!(victory_within_budget(Some(129), None));
-        assert!(!victory_within_budget(None, Some(128)));
+        assert!(objective_within_budget(Some(128), Some(128)));
+        assert!(!objective_within_budget(Some(129), Some(128)));
+        assert!(objective_within_budget(Some(129), None));
+        assert!(!objective_within_budget(None, Some(128)));
     }
 }

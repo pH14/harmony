@@ -146,6 +146,7 @@ where
     action_observations: Vec<SmbObservations>,
     dead: bool,
     failed: bool,
+    execution_work: u64,
 }
 
 impl<M, P> SmbTarget<M, P>
@@ -207,6 +208,7 @@ where
             observation,
             dead: false,
             failed: false,
+            execution_work: 0,
         })
     }
 
@@ -309,8 +311,8 @@ where
     }
 
     #[must_use]
-    pub fn frames_clocked(&self) -> u64 {
-        self.machine.now().0
+    pub fn execution_work(&self) -> u64 {
+        self.execution_work
     }
 
     #[must_use]
@@ -410,6 +412,7 @@ where
                 Err(()) => break,
             }
             executed_frames = executed_frames.saturating_add(1);
+            self.execution_work = self.execution_work.saturating_add(1);
             let Ok(wram) = wram_array(&self.machine) else {
                 self.failed = true;
                 break;
@@ -760,9 +763,9 @@ mod tests {
         let mut restored = SmbTarget::loopback_for_tests(&rom).expect("load target");
         restored.restore(&won).expect("restore victory snapshot");
         assert!(restored.is_victory());
-        let frames_before = restored.frames_clocked();
+        let frames_before = restored.execution_work();
         restored.apply(&ButtonChord::new(0x01, 10));
-        assert_eq!(restored.frames_clocked(), frames_before);
+        assert_eq!(restored.execution_work(), frames_before);
         assert!(restored.last_action_observations().is_empty());
     }
 
@@ -782,7 +785,19 @@ mod tests {
         target.reset();
         let genesis = target.snapshot().expect("snapshot genesis");
         target.apply(&ButtonChord::new(0x01, 10));
+        let first_work = target.execution_work();
+        assert!(first_work > 0);
         assert_ne!(target.snapshot().expect("snapshot advanced"), genesis);
+        let saved = target.snapshot().expect("snapshot after first action");
+        target.apply(&ButtonChord::new(0x02, 10));
+        let second_work = target.execution_work();
+        assert!(second_work > first_work);
+        target.restore(&saved).expect("restore after second action");
+        assert_eq!(target.execution_work(), second_work);
+        target.reset();
+        assert_eq!(target.execution_work(), second_work);
+        target.apply(&ButtonChord::new(0x01, 10));
+        assert!(target.execution_work() > second_work);
         target.reset();
         assert_eq!(target.snapshot().expect("snapshot reset"), genesis);
     }

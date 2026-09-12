@@ -47,7 +47,7 @@ action payload codec.
 With the `consonance` feature on Linux x86-64 or arm64, the NES driver runs a
 prepared OCI ROM and QuickNES agent in one single-vCPU Consonance guest. It discovers
 the publication handle by SDK names, validates the shared `nes-protocol` codec, and reads
-observations at stopped action boundaries. Game initialization and evaluation
+observations at stopped action boundaries. Workload initialization and evaluation
 belong to the adapters in `nes-workload`.
 
 Setup and each action allow 2 seconds of virtual time on x86-64 and 20 seconds

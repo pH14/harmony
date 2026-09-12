@@ -18,6 +18,10 @@ The Consonance backend uses the `consonance` feature and requires Linux/KVM
 and matching guest artifacts; `harmony search --package nes --backend
 consonance ROM` selects it through the shared CLI.
 
+Campaign recordings use the current Dissonance schedule policy version 3 and
+bounded progress policy. Replay rejects recordings from superseded policy
+namespaces before constructing a replay target.
+
 ## Backend acceptance matrix
 
 The native/Consonance backend oracle covers SMB and Nova, but the available
@@ -30,7 +34,7 @@ CLI entry point. The larger Nova experiment in
 runtime and NES OCI image through its specialized campaign/oracle binaries; it
 does not provide SMB acceptance evidence.
 
-| Game/backend | Current evidence | Required artifacts and platform |
+| Workload/backend | Current evidence | Required artifacts and platform |
 | --- | --- | --- |
 | Nova/native | CI package acceptance and the Nova Consonance experiment exercise the pinned ROM and QuickNES core. | Host QuickNES core; the CI ROM is built from the pinned source recipe. |
 | Nova/Consonance | Real VM campaign and backend checks run in `.github/workflows/nova-consonance-experiment.yml`. | Linux/KVM, pinned kernel/runtime, NES OCI image, and the pinned Nova ROM/core. |

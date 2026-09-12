@@ -83,7 +83,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
     let mut wall_budget = None;
     let chord = chord_policy_from_identifier("chord_draw_recorded_53:all,0,128,3,1,64,1024")?;
-    let mut retention = RetentionPolicy::AdmitAlive;
+    let mut retention = RetentionPolicy::Unprobed;
     let mut selector = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
         entry: 3,
         groups: vec![6, 12, 2],
@@ -238,9 +238,9 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let throughput = LiveThroughput {
         wall_seconds,
         executions_completed: report.executions_completed,
-        frames_emulated: report.frames_emulated,
+        frames_emulated: report.execution_work,
         executions_per_second: rate(report.executions_completed, wall_seconds),
-        frames_per_second: rate(report.frames_emulated, wall_seconds),
+        frames_per_second: rate(report.execution_work, wall_seconds),
     };
     fs::write(
         output.join("throughput-live.json"),
@@ -462,12 +462,12 @@ fn summary(report: &SmbCampaignModeReport) -> serde_json::Value {
         "retained": report.archive.retained,
         "rejected": report.archive.rejected,
         "deaths": report.archive.deaths,
-        "victories": report.victories,
+        "victories": report.objectives_reached,
         "probe_refused": report.probe_refused,
         "duplicates_skipped": report.duplicates_skipped,
-        "executions_to_first_victory": report.executions_to_first_victory,
-        "frames_emulated": report.frames_emulated,
-        "frames_to_first_victory": report.frames_to_first_victory,
+        "executions_to_first_victory": report.executions_to_first_objective,
+        "frames_emulated": report.execution_work,
+        "frames_to_first_victory": report.work_to_first_objective,
         "jobs_per_worker": report.jobs_per_worker,
         "stream_sha256": report.stream_sha256,
     })

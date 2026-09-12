@@ -215,6 +215,7 @@ pub struct StbTarget<M: Machine = QuickNesMachine> {
     player_b_ko_count: u8,
     failed: bool,
     snapshot_base: Option<M::Portable>,
+    execution_work: u64,
 }
 
 impl<M: Machine> StbTarget<M> {
@@ -252,6 +253,7 @@ impl<M: Machine> StbTarget<M> {
             player_b_ko_count: 0,
             failed: false,
             snapshot_base: None,
+            execution_work: 0,
         })
     }
 
@@ -271,8 +273,8 @@ impl<M: Machine> StbTarget<M> {
     }
 
     #[must_use]
-    pub fn frames_clocked(&self) -> u64 {
-        self.machine.now().0
+    pub fn execution_work(&self) -> u64 {
+        self.execution_work
     }
 
     #[must_use]
@@ -532,6 +534,9 @@ impl<M: Machine> StbTarget<M> {
             self.failed = true;
             return;
         }
+        self.execution_work = self
+            .execution_work
+            .saturating_add(u64::try_from(produced_frames).unwrap_or(u64::MAX));
         let terminal_index = self
             .machine
             .frames()
@@ -1140,7 +1145,7 @@ mod tests {
     }
 
     impl Machine for ScriptedMachine {
-        type Portable = FakeState;
+        type Portable = machine::SharedState;
         fn snapshot(&mut self) -> Result<SnapId, MachineError> {
             Ok(self.save(self.state.clone()))
         }
@@ -1204,23 +1209,68 @@ mod tests {
                 .map(ToOwned::to_owned)
                 .ok_or(MachineError::ReadOutOfBounds)
         }
-        fn export(&mut self, id: SnapId, _: Option<&FakeState>) -> Result<FakeState, MachineError> {
-            self.snapshots
+        fn export(
+            &mut self,
+            id: SnapId,
+            _: Option<&Self::Portable>,
+        ) -> Result<Self::Portable, MachineError> {
+            let state = self
+                .snapshots
                 .get(&id.0)
-                .cloned()
-                .ok_or(MachineError::UnknownSnapshot)
+                .ok_or(MachineError::UnknownSnapshot)?;
+            let bytes = serde_json::to_vec(state).unwrap();
+            Ok(serde_json::from_value(serde_json::json!(bytes)).unwrap())
         }
-        fn import(&mut self, state: &FakeState) -> Result<SnapId, MachineError> {
-            Ok(self.save(state.clone()))
+        fn import(&mut self, state: &Self::Portable) -> Result<SnapId, MachineError> {
+            Ok(self.save(decode_portable(state)))
         }
-        fn portable_memory_charge(state: &FakeState) -> usize {
-            state.wram.len() + size_of::<usize>()
+        fn portable_memory_charge(state: &Self::Portable) -> usize {
+            QuickNesMachine::portable_memory_charge(state)
         }
         fn now(&self) -> machine::Moment {
             machine::Moment(self.clock)
         }
         fn frames(&self) -> &[[u8; WRAM_SIZE]] {
             &self.frames
+        }
+    }
+
+    fn decode_portable(state: &machine::SharedState) -> FakeState {
+        let bytes: Vec<u8> = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn campaign_suffix_continues_through_respawn_without_a_terminal_endpoint() {
+        use crate::search::{archive::RetentionPolicy, rollout::ExecutionDisposition};
+        for stop_on_objective in [false, true] {
+            let mut machine = ScriptedMachine::match_timeline();
+            let mut respawn = live_wram();
+            respawn[PLAYER_B_STATE] = PLAYER_STATE_INNEXISTANT;
+            respawn[PLAYER_B_STOCKS] = INITIAL_STOCKS - 1;
+            let mut resumed = live_wram();
+            resumed[PLAYER_B_STOCKS] = INITIAL_STOCKS - 1;
+            machine.timeline = vec![live_wram(), respawn, resumed];
+            let mut target = StbTarget::from_machine(machine).unwrap();
+            let result = crate::stb::campaign::execute_suffix(
+                &mut target,
+                0,
+                crate::stb::archive::StbMilestones::default(),
+                &[ButtonChord::new(1, 1), ButtonChord::new(2, 1)],
+                8,
+                RetentionPolicy::Unprobed,
+                stop_on_objective,
+            )
+            .expect("respawn suffix");
+            assert_eq!(result.actions.len(), 2);
+            assert!(result.actions.iter().all(|action| {
+                action.outcome.disposition == ExecutionDisposition::Runnable
+                    && !action.outcome.objective_reached
+            }));
+            assert!(result.actions[0].candidate.is_none());
+            assert!(result.actions[1].candidate.is_some());
+            assert_eq!(result.actions[1].milestones.opponent_kos, 1);
+            assert_eq!(target.observe().frame_count, 2);
         }
     }
 
@@ -1245,8 +1295,9 @@ mod tests {
                 .any(|o| o.decoded.gameplay.is_none() && !o.terminal)
         );
         let snapshot = target.snapshot().unwrap();
-        assert_eq!(snapshot.emulator_state.cursor, 7);
-        assert_eq!(snapshot.emulator_state.wram, snapshot.wram);
+        let portable = decode_portable(&snapshot.emulator_state);
+        assert_eq!(portable.cursor, 7);
+        assert_eq!(portable.wram, snapshot.wram);
         assert_eq!(snapshot.wram, target.machine.state.wram);
         assert_eq!(snapshot.observation, observed);
         target.apply(&ButtonChord::new(2, 3));
@@ -1257,6 +1308,8 @@ mod tests {
     fn restore_across_invalid_phase_and_another_worker_preserves_stock_evidence() {
         let mut target = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
         target.apply(&ButtonChord::new(1, 5));
+        let first_work = target.execution_work();
+        assert!(first_work > 0);
         let saved = target.snapshot().unwrap();
         assert_eq!(saved.observation.decoded.gameplay, None);
         assert_eq!(saved.player_b_ko_count, 4);
@@ -1264,10 +1317,18 @@ mod tests {
         target.apply(&continuation);
         let expected = target.observe();
         let expected_events = target.last_action_observations().to_vec();
+        let second_work = target.execution_work();
+        assert!(second_work > first_work);
         target.restore(&saved).unwrap();
+        assert_eq!(target.execution_work(), second_work);
         target.apply(&ButtonChord::new(4, 1));
+        let discarded_work = target.execution_work();
+        assert!(discarded_work > second_work);
         target.restore(&saved).unwrap();
+        assert_eq!(target.execution_work(), discarded_work);
         target.apply(&continuation);
+        let final_work = target.execution_work();
+        assert!(final_work > discarded_work);
         assert_eq!(target.observe(), expected);
         assert_eq!(target.last_action_observations(), expected_events);
         assert_eq!(expected.player_b_ko_count, 5);
@@ -1276,6 +1337,10 @@ mod tests {
         other.apply(&continuation);
         assert_eq!(other.observe(), expected);
         assert_eq!(other.fingerprint(), target.fingerprint());
+        target.reset();
+        assert_eq!(target.execution_work(), final_work);
+        target.apply(&ButtonChord::new(1, 5));
+        assert!(target.execution_work() > discarded_work);
         target.reset();
         assert_eq!(target.observe().frame_count, 0);
         assert_eq!(target.observe().player_b_ko_count, 0);
