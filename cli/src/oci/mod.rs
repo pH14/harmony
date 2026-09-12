@@ -75,6 +75,9 @@ struct RunRecord {
     steps: u64,
     terminal: String,
     container_rc: Option<i32>,
+    supervisor_failure_rc: Option<i32>,
+    runtime_rc: Option<i32>,
+    startup_rc: Option<i32>,
     serial_sha256: String,
 }
 
@@ -150,6 +153,9 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
     };
 
     let container_rc = parse_container_rc(&outcome.serial);
+    let supervisor_failure_rc = parse_supervisor_failure_rc(&outcome.serial);
+    let runtime_rc = parse_runtime_rc(&outcome.serial);
+    let startup_rc = parse_startup_rc(&outcome.serial);
     let execution_json = prepared.execution.to_vec()?;
     let record = RunRecord {
         image: args.image.clone(),
@@ -168,6 +174,9 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
         steps: outcome.steps,
         terminal: outcome.reason.clone(),
         container_rc,
+        supervisor_failure_rc,
+        runtime_rc,
+        startup_rc,
         serial_sha256: hex(&Sha256::digest(&outcome.serial)),
     };
 
@@ -183,9 +192,14 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
     )?;
 
     println!("digest      {}", record.serial_sha256);
-    match container_rc {
-        Some(rc) => println!("container   exited rc={rc}"),
-        None => println!("container   no exit marker (terminal: {})", record.terminal),
+    match (container_rc, supervisor_failure_rc, runtime_rc, startup_rc) {
+        (Some(rc), _, _, _) => println!("container   exited rc={rc}"),
+        (None, Some(rc), _, _) => println!("supervisor  setup failed rc={rc}"),
+        (None, None, Some(rc), _) => println!("runtime     exited rc={rc}"),
+        (None, None, None, Some(rc)) => println!("startup     failed rc={rc}"),
+        (None, None, None, None) => {
+            println!("container   no exit marker (terminal: {})", record.terminal)
+        }
     }
     println!("artifact    {}", out_dir.display());
     Ok(match container_rc {
@@ -208,10 +222,26 @@ fn prepare_for(
 }
 
 fn parse_container_rc(serial: &[u8]) -> Option<i32> {
+    parse_marker(serial, "HARMONY_OCI_APP_EXIT rc=")
+}
+
+fn parse_supervisor_failure_rc(serial: &[u8]) -> Option<i32> {
+    parse_marker(serial, "HARMONY_OCI_SUPERVISOR_FAILURE rc=")
+}
+
+fn parse_runtime_rc(serial: &[u8]) -> Option<i32> {
+    parse_marker(serial, "HARMONY_OCI_RUNTIME_EXIT rc=")
+}
+
+fn parse_startup_rc(serial: &[u8]) -> Option<i32> {
+    parse_marker(serial, "HARMONY_OCI_STARTUP_EXIT rc=")
+}
+
+fn parse_marker(serial: &[u8], marker: &str) -> Option<i32> {
     let text = String::from_utf8_lossy(serial);
     text.lines()
         .rev()
-        .find_map(|l| l.trim().strip_prefix("HARMONY_OCI_APP_EXIT rc="))
+        .find_map(|line| line.trim().strip_prefix(marker))
         .and_then(|rc| rc.trim().parse().ok())
 }
 
@@ -261,6 +291,30 @@ mod tests {
     }
 
     #[test]
+    fn application_and_supervisor_failure_127_markers_are_distinct() {
+        let application = b"HARMONY_OCI_APP_EXIT rc=127\nHARMONY_OCI_RUNTIME_EXIT rc=127\n";
+        assert_eq!(super::parse_container_rc(application), Some(127));
+        assert_eq!(super::parse_supervisor_failure_rc(application), None);
+
+        let supervisor =
+            b"HARMONY_OCI_SUPERVISOR_FAILURE rc=127\nHARMONY_OCI_RUNTIME_EXIT rc=127\n";
+        assert_eq!(super::parse_container_rc(supervisor), None);
+        assert_eq!(super::parse_supervisor_failure_rc(supervisor), Some(127));
+    }
+
+    #[test]
+    fn runtime_and_startup_markers_parse_separately() {
+        assert_eq!(
+            super::parse_runtime_rc(b"HARMONY_OCI_RUNTIME_EXIT rc=1\n"),
+            Some(1)
+        );
+        assert_eq!(
+            super::parse_startup_rc(b"HARMONY_OCI_STARTUP_EXIT rc=125\n"),
+            Some(125)
+        );
+    }
+
+    #[test]
     fn platform_init_has_one_fixed_launch_and_separate_failure_markers() {
         let init = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -273,7 +327,8 @@ mod tests {
         );
         assert!(init.contains("[ -x \"$RUNC\" ] || startup_failure 127"));
         assert!(init.contains("HARMONY_OCI_STARTUP_EXIT"));
-        assert!(init.contains("HARMONY_OCI_APP_EXIT rc=$runc_status"));
+        assert!(init.contains("HARMONY_OCI_RUNTIME_EXIT rc=$runc_status"));
+        assert!(!init.contains("HARMONY_OCI_APP_EXIT rc=$runc_status"));
         assert!(!init.contains("chroot"));
         assert!(!init.contains("runc --version"));
     }

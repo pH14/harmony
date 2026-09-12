@@ -4,28 +4,52 @@ use execution_proto::{EXECUTION_PATH, ExecutionSpec};
 use harmony_supervisor::process;
 use std::path::Path;
 
+#[derive(Debug, Eq, PartialEq)]
+enum RunOutcome {
+    Application(u8),
+    SupervisorFailure { code: u8, error: String },
+}
+
 fn main() {
     match run() {
-        Ok(code) => std::process::exit(i32::from(code)),
+        Ok(RunOutcome::Application(code)) => {
+            println!("HARMONY_OCI_APP_EXIT rc={code}");
+            std::process::exit(i32::from(code));
+        }
+        Ok(RunOutcome::SupervisorFailure { code, error }) => {
+            println!("HARMONY_OCI_SUPERVISOR_FAILURE rc={code}");
+            eprintln!("harmony-supervisor: {error}");
+            std::process::exit(i32::from(code));
+        }
         Err(error) => {
+            println!("HARMONY_OCI_SUPERVISOR_FAILURE rc=1");
             eprintln!("harmony-supervisor: {error}");
             std::process::exit(1);
         }
     }
 }
 
-fn run() -> Result<u8, String> {
+fn run() -> Result<RunOutcome, String> {
     let spec = ExecutionSpec::read(Path::new(EXECUTION_PATH))
         .map_err(|error| format!("{EXECUTION_PATH}: {error}"))?;
     match spec.bundle.as_deref() {
-        None => match process::run_once(&spec) {
-            Ok(status) => Ok(process::exit_code(&status)),
-            Err(error) => {
-                eprintln!("harmony-supervisor: {:?}: {error}", spec.argv.first());
-                Ok(process::spawn_error_code(&error))
-            }
+        None => Ok(run_application(&spec)),
+        Some(bundle) => {
+            runtime::run(&spec, Path::new(bundle)).map(|()| RunOutcome::SupervisorFailure {
+                code: 1,
+                error: "structured supervisor ended without an application exit".into(),
+            })
+        }
+    }
+}
+
+fn run_application(spec: &ExecutionSpec) -> RunOutcome {
+    match process::run_once(spec) {
+        Ok(status) => RunOutcome::Application(process::exit_code(&status)),
+        Err(error) => RunOutcome::SupervisorFailure {
+            code: process::spawn_error_code(&error),
+            error: format!("{:?}: {error}", spec.argv.first()),
         },
-        Some(bundle) => runtime::run(&spec, Path::new(bundle)).map(|()| 0),
     }
 }
 
@@ -565,5 +589,69 @@ mod runtime {
 
     pub fn run(_spec: &execution_proto::ExecutionSpec, _bundle_path: &Path) -> Result<(), String> {
         Err("structured supervision requires Linux x86_64 or aarch64".to_string())
+    }
+}
+
+#[cfg(all(test, not(miri), unix))]
+mod tests {
+    use super::{RunOutcome, run_application};
+    use execution_proto::ExecutionSpec;
+
+    fn current_groups() -> Vec<u32> {
+        // SAFETY: a zero-sized getgroups call writes no memory and returns the count.
+        let count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+        assert!(count >= 0);
+        let mut groups = vec![0; usize::try_from(count).unwrap()];
+        if count == 0 {
+            return groups;
+        }
+        // SAFETY: groups has count writable gid slots for this call.
+        let actual = unsafe { libc::getgroups(count, groups.as_mut_ptr()) };
+        assert!(actual >= 0);
+        groups.truncate(usize::try_from(actual).unwrap());
+        groups.sort_unstable();
+        groups.dedup();
+        groups
+    }
+
+    fn spec(argv: &[&str]) -> ExecutionSpec {
+        ExecutionSpec {
+            version: execution_proto::VERSION,
+            argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
+            env: Vec::new(),
+            cwd: "/".to_owned(),
+            // SAFETY: these libc calls read the calling process credentials and
+            // do not dereference a pointer or retain borrowed state.
+            uid: unsafe { libc::geteuid() },
+            gid: unsafe { libc::getegid() },
+            additional_gids: current_groups(),
+            bundle: None,
+        }
+    }
+
+    #[test]
+    fn completed_child_zero_is_an_application_outcome() {
+        assert_eq!(
+            run_application(&spec(&["/bin/sh", "-c", "exit 0"])),
+            RunOutcome::Application(0)
+        );
+    }
+
+    #[test]
+    fn completed_child_127_is_an_application_outcome() {
+        assert_eq!(
+            run_application(&spec(&["/bin/sh", "-c", "exit 127"])),
+            RunOutcome::Application(127)
+        );
+    }
+
+    #[test]
+    fn spawn_failure_127_is_a_supervisor_outcome() {
+        let outcome = run_application(&spec(&["/does/not/exist"]));
+        let RunOutcome::SupervisorFailure { code, error } = outcome else {
+            panic!("missing executable must not be reported as an application exit");
+        };
+        assert_eq!(code, 127);
+        assert!(error.contains("/does/not/exist"));
     }
 }

@@ -12,7 +12,7 @@ The launch contract has one invocation of the pinned `/usr/bin/runc`:
 the platform supervisor as root; the supervisor reads the mounted execution
 specification and applies application credentials and process settings. PID 1
 forwards termination signals, preserves process output, and emits separate
-startup and application exit markers before forcing the guest to reboot.
+startup, runtime, and application exit markers before forcing the guest to reboot.
 
 Before launch, PID 1 validates both Harmony character-device nodes and resolves
 their dynamic major/minor numbers into the platform-owned OCI policy. It allows

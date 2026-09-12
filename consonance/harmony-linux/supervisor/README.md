@@ -15,6 +15,12 @@ platform device operations. `/dev/harmony` is accessed through the shared
 transport. Parking uses the required `/dev/harmony-park` interface. Device errors fail
 execution rather than silently omitting a requested process action.
 
+An application exit marker is emitted only after the plain execution command has
+started and returned. Malformed execution input, structured setup errors, and
+spawn failures emit `HARMONY_OCI_SUPERVISOR_FAILURE` with the preserved
+errno-derived code, so a failed spawn with code 127 remains distinct from an
+application that actually exits 127.
+
 Tracked node and hook children retain their exit status until their owning
 `Child` consumes it. Orphan cleanup enumerates the supervising thread's other
 children and reaps them individually, so a finished hook cannot lose its status

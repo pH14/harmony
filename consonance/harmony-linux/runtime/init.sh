@@ -132,5 +132,5 @@ else
 fi
 
 trap - TERM INT HUP
-log "HARMONY_OCI_APP_EXIT rc=$runc_status"
+log "HARMONY_OCI_RUNTIME_EXIT rc=$runc_status"
 finish "$runc_status"

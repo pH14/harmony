@@ -59,7 +59,10 @@ harmony oci run alpine:3 --seed 7 --timeout 60 --out run-7 -- /bin/echo hello
 `oci run` accepts a registry image, OCI layout, or Docker image archive. It writes
 `serial.log` and `run.json` on completion. `--console` streams the full boot log.
 On timeout it preserves the partial serial log and returns an error without a
-successful run digest.
+successful run digest. `run.json` records separate application, supervisor, and
+runtime exit statuses: an application status is present only after the
+supervisor has observed the application process return, while a runtime status
+also covers a `runc` startup failure.
 
 On Linux x86 and arm64, the timeout watchdog sets a host cancellation latch and
 interrupts the owning KVM thread with reserved SIGUSR1. It repeats the interrupt
