@@ -106,3 +106,19 @@ or deliver new scheduled inputs between fragments. Snapshot capture performs no
 completion work. A periodic trace checkpoint crossed inside an instruction
 lands on its final access; deferred hash consumers use
 `virtual_time_checkpoint_due` to identify that exact capture position.
+
+PR acceptance combines the portable contract suite and selected Miri checks
+with bounded hardware gates. `x86-virtual-time.yml` checks serviced exits, RF,
+PAE translations, and guest-written XSAVE output, including a reused VM whose
+FPU state was changed by another continuation. `snapshot-linux-smoke.yml`
+compares two complete same-seed Linux execution logs; its success requires
+nonzero events and zero differences. The Nova Consonance smoke exercises
+workload continuations through the restore oracle.
+
+Linux smoke fixtures come from main's durable guest cache. Each run verifies
+the manifest and records the exact or last-known-good cache provenance. A
+fallback fixture does not validate changed guest source; the scheduled/manual
+builder supplies that evidence. Execution is bounded independently of builds,
+and failed gates retain diagnostics. Broader repetitions and vendor sampling
+remain scheduled/manual. These gates are regression evidence, not a claim that
+the retained XSAVE-presence and AMD NPT PAE counterexamples are resolved.

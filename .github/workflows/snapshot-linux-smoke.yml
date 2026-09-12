@@ -1,0 +1,138 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Acceptance / Linux snapshot consistency smoke
+
+on:
+  pull_request:
+    paths: ["consonance/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "flake.nix", "flake.lock", ".github/workflows/snapshot-linux-smoke.yml"]
+  push:
+    branches: [main]
+    paths: ["consonance/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "flake.nix", "flake.lock", ".github/workflows/snapshot-linux-smoke.yml"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+concurrency:
+  group: snapshot-linux-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+env:
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+
+jobs:
+  linux-consistency:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Initialize evidence
+        run: |
+          mkdir -p linux-consistency-report
+          git rev-parse HEAD >linux-consistency-report/commit.txt
+          uname -a >linux-consistency-report/host.txt
+          lscpu >>linux-consistency-report/host.txt
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+      - name: Restore the locked x86 guest artifacts
+        id: guest-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: nix-guest-output
+          key: guest-x86_64-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/linux/**', 'consonance/harmony-linux/nix/**', 'consonance/harmony-linux/libvoidstar/**') }}
+          restore-keys: |
+            guest-x86_64-v1-
+      - name: Verify and record guest cache provenance
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          CACHE_HIT: ${{ steps.guest-cache.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.guest-cache.outputs.cache-matched-key }}
+          CACHE_REQUESTED_KEY: guest-x86_64-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/linux/**', 'consonance/harmony-linux/nix/**', 'consonance/harmony-linux/libvoidstar/**') }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CACHE_MATCHED_KEY}" ]]; then
+            cat >linux-consistency-report/cache-unavailable.txt <<'EOF'
+          No exact or last-known-good x86 guest cache was available. The scheduled/manual deep builder must populate the durable guest cache before this smoke can execute.
+          EOF
+            echo '::error::Linux consistency PR smoke found no durable guest cache fallback.'
+            exit 1
+          fi
+          cat >linux-consistency-report/cache-provenance.txt <<EOF
+          requested_key=${CACHE_REQUESTED_KEY}
+          matched_key=${CACHE_MATCHED_KEY}
+          cache_hit=${CACHE_HIT}
+          commit=$(git rev-parse HEAD)
+          EOF
+          test -s nix-guest-output/MANIFEST.sha256
+          (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
+          changed=false
+          if [[ "${EVENT_NAME}" == pull_request ]]; then
+            git diff --name-only "${BASE_SHA}"...HEAD >linux-consistency-report/changed-files.txt
+          elif [[ "${EVENT_NAME}" == push && "${BEFORE_SHA}" != 0000000000000000000000000000000000000000 ]]; then
+            git diff --name-only "${BEFORE_SHA}" HEAD >linux-consistency-report/changed-files.txt
+          else
+            : >linux-consistency-report/changed-files.txt
+          fi
+          while IFS= read -r path; do
+            case "${path}" in
+              flake.nix|flake.lock|consonance/harmony-linux/linux/*|consonance/harmony-linux/nix/*|consonance/harmony-linux/libvoidstar/*)
+                changed=true
+                ;;
+            esac
+          done <linux-consistency-report/changed-files.txt
+          provenance=exact-input
+          validation_scope=guest-inputs-validated
+          if [[ "${CACHE_HIT}" != true ]]; then
+            provenance=last-known-good-cache-fallback
+            validation_scope=guest-inputs-validated-from-last-known-good
+            if [[ "${changed}" == true ]]; then
+              validation_scope=guest-inputs-not-validated-for-changed-source
+            fi
+            echo '::warning::Using the last-known-good guest cache; fixture source changes are covered by the scheduled/manual deep builder.'
+          fi
+          cat >linux-consistency-report/cache-provenance.txt <<EOF
+          requested_key=${CACHE_REQUESTED_KEY}
+          matched_key=${CACHE_MATCHED_KEY}
+          cache_hit=${CACHE_HIT}
+          provenance=${provenance}
+          fixture_source_changed=${changed}
+          validation_scope=${validation_scope}
+          commit=$(git rev-parse HEAD)
+          EOF
+      - name: Stage verified Linux fixture
+        run: |
+          mkdir -p consonance/harmony-linux/build
+          cp nix-guest-output/x86_64/bzImage consonance/harmony-linux/build/bzImage
+          cp nix-guest-output/x86_64/initramfs.cpio.gz consonance/harmony-linux/build/initramfs.cpio.gz
+          cp nix-guest-output/MANIFEST.sha256 linux-consistency-report/guest-manifest.sha256
+          sudo chmod a+rw /dev/kvm
+      - name: Build Linux consistency test
+        run: cargo test --locked --release -p vmm-core --test x86_kvm_linux_virtual_time --no-run
+      - name: Compare two complete same-seed Linux execution logs
+        env:
+          X2_BOOTS: "2"
+          X2_WALL_SECS: "90"
+        run: |
+          set -euo pipefail
+          timeout -k 10 240 cargo test --locked --release -p vmm-core \
+            --test x86_kvm_linux_virtual_time x2_same_seed_boots_one_normalized_log \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee linux-consistency-report/test.txt
+          grep -Fqx 'X2_BOOTS=2' linux-consistency-report/test.txt
+          grep -Eq '^X2_EVENTS=[1-9][0-9]*$' linux-consistency-report/test.txt
+          grep -Fqx 'X2_DIVERGENCES=0' linux-consistency-report/test.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' linux-consistency-report/test.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snapshot-linux-smoke-${{ github.run_id }}
+          path: linux-consistency-report
+          if-no-files-found: error
+          retention-days: 14

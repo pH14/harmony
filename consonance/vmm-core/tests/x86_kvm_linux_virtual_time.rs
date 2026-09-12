@@ -413,6 +413,7 @@ fn x2_same_seed_boots_one_normalized_log() {
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs.cpio.gz");
     let boots = env_u64("X2_BOOTS", 10);
+    assert!(boots >= 2, "determinism requires at least two boots");
     eprintln!("[x2] cmdline: {CMDLINE}");
 
     let reference = boot_once(&kernel, &initramfs, true);

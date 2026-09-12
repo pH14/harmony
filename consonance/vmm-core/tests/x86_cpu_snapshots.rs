@@ -1033,6 +1033,11 @@ mod live_kvm {
     const XSAVE_PROGRAM_LEN: usize = 34;
     const XSAVE_ENDPOINT_RIP: usize = CODE_GPA + XSAVE_PROGRAM_LEN;
     const XSAVE_MARKER: u8 = 0x42;
+    const XSAVE_LIVE_WARMUP_LEN: usize = XSAVE_WARMUP_LEN + 15;
+    const XSAVE_LIVE_PROGRAM_LEN: usize = XSAVE_PROGRAM_LEN + 15;
+    const XSAVE_LIVE_ENDPOINT_RIP: usize = CODE_GPA + XSAVE_LIVE_PROGRAM_LEN;
+    const XSAVE_MUTATOR_GPA: usize = CODE_GPA + 0x1000;
+    const XSAVE_MUTATOR_LEN: usize = 7;
     const XSAVE_PROGRAM: [u8; XSAVE_PROGRAM_LEN] = [
         0xDB,
         0xE3,
@@ -1070,13 +1075,98 @@ mod live_kvm {
         0xF4,
     ];
 
-    fn xsave_guest_ram_image() -> GuestRam {
+    const XSAVE_LIVE_PROGRAM: [u8; XSAVE_LIVE_PROGRAM_LEN] = [
+        0xDB,
+        0xE3,
+        0xD9,
+        0xE8,
+        0x66,
+        0x0F,
+        0x76,
+        0xC0,
+        0x66,
+        0x0F,
+        0x76,
+        0xFF,
+        0x66,
+        0x0F,
+        0x73,
+        0xF7,
+        0x0D,
+        0xBA,
+        0xF8,
+        0x03,
+        0x00,
+        0x00,
+        0xB0,
+        WARMUP_MARKER,
+        0xEE,
+        0xB8,
+        0x03,
+        0x00,
+        0x00,
+        0x00,
+        0x31,
+        0xD2,
+        0x0F,
+        0xAE,
+        0x25,
+        0x00,
+        0x90,
+        0x00,
+        0x00,
+        0xBA,
+        0xF8,
+        0x03,
+        0x00,
+        0x00,
+        0xB0,
+        XSAVE_MARKER,
+        0xEE,
+        0x43,
+        0xF4,
+    ];
+
+    const XSAVE_MUTATOR: [u8; XSAVE_MUTATOR_LEN] = [0xD9, 0xEE, 0x66, 0x0F, 0xEF, 0xC0, 0xF4];
+
+    fn xsave_guest_ram_image(program: &[u8]) -> GuestRam {
         let mut ram = guest_ram_image();
         let bytes = ram.as_mut_bytes();
         bytes[XSAVE_GPA..XSAVE_GPA + XSAVE_PAGE_LEN].fill(0);
-        put_bytes(bytes, CODE_GPA, &XSAVE_PROGRAM);
-        put_bytes(bytes, REMAPPED_CODE_GPA, &XSAVE_PROGRAM);
+        put_bytes(bytes, CODE_GPA, program);
+        put_bytes(bytes, REMAPPED_CODE_GPA, program);
+        put_bytes(bytes, XSAVE_MUTATOR_GPA, &XSAVE_MUTATOR);
         ram
+    }
+
+    fn assert_nonzero_xsave_output(page: &[u8]) {
+        assert!(
+            page.iter().any(|&byte| byte != 0),
+            "guest XSAVE must write a nonzero output page"
+        );
+    }
+
+    fn assert_live_register_xsave_output(page: &[u8]) {
+        assert_eq!(
+            &page[32..42],
+            &[0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+            "guest XSAVE must retain FLD1's +1.0 ST0 value"
+        );
+        assert!(
+            page[160..176].iter().all(|&byte| byte == 0xff),
+            "guest XSAVE must retain PCMPEQD's XMM0 value"
+        );
+        let shifted = (u64::MAX << 13).to_le_bytes();
+        assert_eq!(
+            &page[272..280],
+            shifted,
+            "guest XSAVE must retain PSLLQ's low XMM7 lane"
+        );
+        assert_eq!(
+            &page[280..288],
+            shifted,
+            "guest XSAVE must retain PSLLQ's high XMM7 lane"
+        );
     }
 
     fn install_xsave_entry(backend: &mut KvmBackend) {
@@ -1090,14 +1180,14 @@ mod live_kvm {
             .expect("restore XSAVE-capable entry state");
     }
 
-    fn fresh_xsave_vmm(configure: bool) -> Vmm<KvmBackend> {
+    fn fresh_xsave_vmm(configure: bool, program: &[u8]) -> Vmm<KvmBackend> {
         let backend = KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed: {e}"));
         let configure: fn(&mut KvmBackend) = if configure {
             install_xsave_entry
         } else {
             |_| {}
         };
-        compose(xsave_guest_ram_image(), backend, configure)
+        compose(xsave_guest_ram_image(program), backend, configure)
     }
 
     fn xsave_output_page(memory: &[u8]) -> &[u8] {
@@ -1117,7 +1207,7 @@ mod live_kvm {
         );
     }
 
-    fn run_xsave_endpoint(vmm: &mut Vmm<KvmBackend>) -> MmioCapture {
+    fn run_xsave_endpoint(vmm: &mut Vmm<KvmBackend>, endpoint_rip: usize) -> MmioCapture {
         let mut steps = 0;
         loop {
             assert!(steps < MAX_STEPS, "XSAVE guest exceeded bound");
@@ -1132,7 +1222,7 @@ mod live_kvm {
         }
         assert_eq!(vmm.serial(), &[WARMUP_MARKER, XSAVE_MARKER]);
         let capture = capture_full_vmm(vmm);
-        assert_eq!(capture.state.regs.rip, XSAVE_ENDPOINT_RIP as u64);
+        assert_eq!(capture.state.regs.rip, endpoint_rip as u64);
         assert_eq!(capture.state.regs.rbx, 1);
         assert_eq!(capture.state.xcrs.xcr0, 3);
         assert!(
@@ -1144,16 +1234,34 @@ mod live_kvm {
         capture
     }
 
-    #[test]
-    #[ignore = "live KVM; run with --ignored and XSAVE_CONTINUATION_REPORT_DIR"]
-    fn xsave_guest_bytes_survive_cold_continuation() {
-        require_kvm();
-        let report = report_root("XSAVE_CONTINUATION_REPORT_DIR");
+    fn run_xsave_mutator(vmm: &mut Vmm<KvmBackend>) -> MmioCapture {
+        assert_eq!(
+            vmm.step().expect("run XSAVE FPU/SSE mutator"),
+            Step::Terminal(TerminalReason::Idle)
+        );
+        let capture = capture_full_vmm(vmm);
+        assert_eq!(
+            capture.state.regs.rip,
+            (XSAVE_MUTATOR_GPA + XSAVE_MUTATOR_LEN) as u64
+        );
+        assert_eq!(capture.state.xcrs.xcr0, 3);
+        capture
+    }
 
-        let mut uninterrupted = fresh_xsave_vmm(true);
+    fn run_xsave_continuation(
+        program: &[u8],
+        warmup_rip: usize,
+        endpoint_rip: usize,
+        report_env: &str,
+        validate_output: fn(&[u8]),
+    ) {
+        require_kvm();
+        let report = report_root(report_env);
+
+        let mut uninterrupted = fresh_xsave_vmm(true, program);
         wire_snapshot_path(&mut uninterrupted);
         run_xsave_warmup(&mut uninterrupted);
-        let uninterrupted_endpoint = run_xsave_endpoint(&mut uninterrupted);
+        let uninterrupted_endpoint = run_xsave_endpoint(&mut uninterrupted, endpoint_rip);
         retain_capture(
             report.as_deref(),
             "original-endpoint",
@@ -1161,7 +1269,7 @@ mod live_kvm {
             xsave_output_page(&uninterrupted_endpoint.memory),
         );
 
-        let mut save_and_continue = fresh_xsave_vmm(true);
+        let mut save_and_continue = fresh_xsave_vmm(true, program);
         wire_snapshot_path(&mut save_and_continue);
         run_xsave_warmup(&mut save_and_continue);
         let save_before_memory = save_and_continue.guest_memory().to_vec();
@@ -1188,10 +1296,7 @@ mod live_kvm {
                 .all(|&byte| byte == 0),
             "XSAVE output must be empty at the saved UART boundary"
         );
-        assert_eq!(
-            save_stop.state.regs.rip,
-            (CODE_GPA + XSAVE_WARMUP_LEN) as u64
-        );
+        assert_eq!(save_stop.state.regs.rip, warmup_rip as u64);
         assert_eq!(save_stop.state.regs.rbx, 0);
         let save_repeated = capture_full_vmm(&save_and_continue);
         retain_capture(
@@ -1205,7 +1310,7 @@ mod live_kvm {
             "XSAVE saved stop differs on repeat; retained XSAVE evidence is available"
         );
         assert_eq!(save_stop.state.xcrs.xcr0, 3);
-        let save_and_continue_endpoint = run_xsave_endpoint(&mut save_and_continue);
+        let save_and_continue_endpoint = run_xsave_endpoint(&mut save_and_continue, endpoint_rip);
         retain_capture(
             report.as_deref(),
             "save-and-continue-endpoint",
@@ -1213,12 +1318,50 @@ mod live_kvm {
             xsave_output_page(&save_and_continue_endpoint.memory),
         );
 
-        let mut cold_unobserved = fresh_xsave_vmm(false);
+        let mut reused = fresh_xsave_vmm(true, program);
+        wire_snapshot_path(&mut reused);
+        run_xsave_warmup(&mut reused);
+        let reused_before_mutation = run_xsave_endpoint(&mut reused, endpoint_rip);
+        retain_capture(
+            report.as_deref(),
+            "reused-before-mutation-endpoint",
+            &reused_before_mutation,
+            xsave_output_page(&reused_before_mutation.memory),
+        );
+        assert_eq!(reused_before_mutation, save_and_continue_endpoint);
+        let mut mutator_state = save_stop.state.clone();
+        mutator_state.regs.rip = XSAVE_MUTATOR_GPA as u64;
+        reused
+            .restore_snapshot(&save_stop.memory, &mutator_state)
+            .expect("restore XSAVE mutator continuation into reused VM");
+        let mutated = run_xsave_mutator(&mut reused);
+        retain_capture(
+            report.as_deref(),
+            "reused-mutator-endpoint",
+            &mutated,
+            xsave_output_page(&mutated.memory),
+        );
+        assert_ne!(
+            mutated.state.xsave, save_stop.state.xsave,
+            "the guest FPU/SSE continuation must change the saved XSAVE state"
+        );
+        reused
+            .restore_snapshot(&save_stop.memory, &save_stop.state)
+            .expect("restore XSAVE boundary after reused VM mutation");
+        let reused_endpoint = run_xsave_endpoint(&mut reused, endpoint_rip);
+        retain_capture(
+            report.as_deref(),
+            "reused-restored-endpoint",
+            &reused_endpoint,
+            xsave_output_page(&reused_endpoint.memory),
+        );
+
+        let mut cold_unobserved = fresh_xsave_vmm(false, program);
         wire_snapshot_path(&mut cold_unobserved);
         cold_unobserved
             .restore_snapshot(&save_stop.memory, &save_stop.state)
             .expect("restore XSAVE continuation");
-        let cold_unobserved_endpoint = run_xsave_endpoint(&mut cold_unobserved);
+        let cold_unobserved_endpoint = run_xsave_endpoint(&mut cold_unobserved, endpoint_rip);
         retain_capture(
             report.as_deref(),
             "cold-unobserved-endpoint",
@@ -1226,7 +1369,7 @@ mod live_kvm {
             xsave_output_page(&cold_unobserved_endpoint.memory),
         );
 
-        let mut cold_observed = fresh_xsave_vmm(false);
+        let mut cold_observed = fresh_xsave_vmm(false, program);
         wire_snapshot_path(&mut cold_observed);
         cold_observed
             .restore_snapshot(&save_stop.memory, &save_stop.state)
@@ -1261,7 +1404,7 @@ mod live_kvm {
             cold_stop == save_stop,
             "XSAVE cold stop differs from saved stop; retained XSAVE evidence is available"
         );
-        let cold_observed_endpoint = run_xsave_endpoint(&mut cold_observed);
+        let cold_observed_endpoint = run_xsave_endpoint(&mut cold_observed, endpoint_rip);
         retain_capture(
             report.as_deref(),
             "cold-observed-endpoint",
@@ -1269,9 +1412,27 @@ mod live_kvm {
             xsave_output_page(&cold_observed_endpoint.memory),
         );
 
+        for capture in [
+            &uninterrupted_endpoint,
+            &save_and_continue_endpoint,
+            &reused_endpoint,
+            &cold_unobserved_endpoint,
+            &cold_observed_endpoint,
+        ] {
+            validate_output(xsave_output_page(&capture.memory));
+        }
+        assert_eq!(
+            xsave_output_page(&uninterrupted_endpoint.memory),
+            xsave_output_page(&reused_endpoint.memory),
+            "reused restore must preserve guest-authored XSAVE bytes"
+        );
         assert!(
             uninterrupted_endpoint == save_and_continue_endpoint,
             "uninterrupted and save-and-continue XSAVE futures differ; retained XSAVE evidence is available"
+        );
+        assert!(
+            uninterrupted_endpoint == reused_endpoint,
+            "uninterrupted and reused-restore XSAVE futures differ; retained XSAVE evidence is available"
         );
         assert!(
             save_and_continue_endpoint == cold_unobserved_endpoint,
@@ -1280,6 +1441,30 @@ mod live_kvm {
         assert!(
             cold_unobserved_endpoint == cold_observed_endpoint,
             "observing cold XSAVE state changes its future; retained XSAVE evidence is available"
+        );
+    }
+
+    #[test]
+    #[ignore = "live KVM; run with --ignored and XSAVE_CONTINUATION_REPORT_DIR"]
+    fn xsave_guest_bytes_survive_cold_continuation() {
+        run_xsave_continuation(
+            &XSAVE_PROGRAM,
+            CODE_GPA + XSAVE_WARMUP_LEN,
+            XSAVE_ENDPOINT_RIP,
+            "XSAVE_CONTINUATION_REPORT_DIR",
+            assert_nonzero_xsave_output,
+        );
+    }
+
+    #[test]
+    #[ignore = "live KVM; run with --ignored and XSAVE_LIVE_REGISTERS_REPORT_DIR"]
+    fn xsave_live_registers_survive_cold_continuation() {
+        run_xsave_continuation(
+            &XSAVE_LIVE_PROGRAM,
+            CODE_GPA + XSAVE_LIVE_WARMUP_LEN,
+            XSAVE_LIVE_ENDPOINT_RIP,
+            "XSAVE_LIVE_REGISTERS_REPORT_DIR",
+            assert_live_register_xsave_output,
         );
     }
 }

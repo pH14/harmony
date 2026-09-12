@@ -439,16 +439,22 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p pr-kvm-smoke
-          cargo test -p vmm-backend --test kvm_smoke \
+          timeout -k 10 120 cargo test -p vmm-backend --test kvm_smoke \
             bringup_smoke_out_then_hlt -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee pr-kvm-smoke/execution.txt
-          cargo test -p vmm-backend --test kvm_smoke \
+          grep -Fq 'running 1 test' pr-kvm-smoke/execution.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' pr-kvm-smoke/execution.txt
+          timeout -k 10 120 cargo test -p vmm-backend --test kvm_smoke \
             save_restore_round_trips_on_real_kvm -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee pr-kvm-smoke/restore.txt
-          cargo test -p vmm-core --test x86_kvm_virtual_time \
+          grep -Fq 'running 1 test' pr-kvm-smoke/restore.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' pr-kvm-smoke/restore.txt
+          timeout -k 10 120 cargo test -p vmm-core --test x86_kvm_virtual_time \
             x1_ten_same_seed_runs_produce_one_normalized_log \
             -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee pr-kvm-smoke/replay.txt
+          grep -Fq 'running 1 test' pr-kvm-smoke/replay.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' pr-kvm-smoke/replay.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -458,11 +464,8 @@ jobs:
           retention-days: 14
 
   # Bounded snapshot/completion qualification on the runner's built product
-  # tree. These are exact, ignored KVM regressions from #295/#299/#301/#302;
-  # every command must run one test and prove that in its own log. The PAE
-  # result is vendor/paging-aware because #314 is a known AMD default-NPT
-  # failure. Its strict oracle and raw log remain retained as evidence; a
-  # known AMD/NPT failure is never reported as universal qualification.
+  # tree. Every exact test is required on every replica, including AMD default
+  # NPT hosts, and every test has an independent external wall bound.
   snapshot-hardware:
     name: snapshot-hardware replica ${{ matrix.replica }}
     runs-on: ubuntu-24.04
@@ -473,11 +476,25 @@ jobs:
         replica: [1, 2]
     steps:
       - uses: actions/checkout@v4
+      - name: Initialize snapshot evidence
+        run: |
+          set -euo pipefail
+          mkdir -p snapshot-report
+          printf '%s\n' 'snapshot-hardware-started' > snapshot-report/job-started.txt
       - name: Install stable toolchain
         run: |
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
+      - name: Build snapshot gate test binaries once
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          cargo test --locked --release -p vmm-backend --test kvm_smoke --no-run \
+            2>&1 | tee snapshot-report/build-vmm-backend.log
+          cargo test --locked --release -p vmm-core --test x86_cpu_snapshots --no-run \
+            2>&1 | tee snapshot-report/build-vmm-core.log
       - name: Grant /dev/kvm access
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
@@ -487,10 +504,12 @@ jobs:
           ls -l /dev/kvm
       - name: Record host vendor and paging mode
         id: host
+        env:
+          SNAPSHOT_REPLICA: ${{ matrix.replica }}
         run: |
           set -euo pipefail
           mkdir -p snapshot-report
-          printf '%s\n' 'replica=${{ matrix.replica }}' > snapshot-report/replica.txt
+          printf '%s\n' "replica=$SNAPSHOT_REPLICA" > snapshot-report/replica.txt
           git rev-parse HEAD > snapshot-report/source-revision.txt
           {
             uname -a
@@ -520,138 +539,78 @@ jobs:
       - name: Run required KVM completion and full-VMM tests
         env:
           CARGO_TERM_COLOR: never
+          AMD_NPT: ${{ steps.host.outputs.amd_npt }}
         run: |
           set -euo pipefail
           mkdir -p snapshot-report
+          mkdir -p snapshot-report/npt-guest-write snapshot-report/xsave snapshot-report/xsave-live
 
           run_exact() {
             local package=$1
             local binary=$2
             local test_name=$3
             local label=$4
+            local env_assignment=${5:-}
             local log="snapshot-report/${label}.log"
-            printf '%s\n' "cargo test --locked --release -p ${package} --test ${binary} ${test_name} -- --ignored --exact --test-threads=1 --nocapture" | tee "snapshot-report/${label}.command"
-            cargo test --locked --release -p "$package" --test "$binary" "$test_name" \
-              -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee "$log"
-            grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
+            local result=0
+            local pipeline_status cargo_rc tee_rc
+            local command="timeout -k 10 60 cargo test --locked --release -p ${package} --test ${binary} ${test_name} -- --ignored --exact --test-threads=1 --nocapture"
+            if [[ -n "$env_assignment" ]]; then
+              command="env ${env_assignment} ${command}"
+            fi
+            printf '%s\n' "$command" | tee "snapshot-report/${label}.command"
+            set +e
+            if [[ -n "$env_assignment" ]]; then
+              env "$env_assignment" timeout -k 10 60 cargo test --locked --release \
+                -p "$package" --test "$binary" "$test_name" \
+                -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee "$log"
+            else
+              timeout -k 10 60 cargo test --locked --release \
+                -p "$package" --test "$binary" "$test_name" \
+                -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee "$log"
+            fi
+            pipeline_status=("${PIPESTATUS[@]}")
+            set -e
+            cargo_rc=${pipeline_status[0]}
+            tee_rc=${pipeline_status[1]}
+            if ! printf 'CARGO_EXIT=%s\nTEE_EXIT=%s\n' "$cargo_rc" "$tee_rc" | tee "snapshot-report/${label}.status"; then
+              result=1
+            fi
+            if [[ "$tee_rc" -ne 0 || "$cargo_rc" -ne 0 ]]; then
+              result=1
+            fi
+            if ! grep -Fq 'running 1 test' "$log"; then
+              result=1
+            fi
+            if ! grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"; then
+              result=1
+            fi
+            return "$result"
           }
 
-          run_exact vmm-backend kvm_smoke serviced_pio_is_exactly_snapshottable_without_guest_execution pio
-          run_exact vmm-backend kvm_smoke serviced_msr_is_exactly_snapshottable_without_guest_execution msr
-          run_exact vmm-backend kvm_smoke serviced_exception_payload_round_trips_and_empty_restore_clears_it exception-payload
-          run_exact vmm-backend kvm_smoke serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu mmio-backend
-          run_exact vmm-core x86_cpu_snapshots live_kvm::mmio_rmw_finishes_before_full_vmm_snapshot mmio-full-vmm
-      - name: PAE full-VMM snapshot gate
-        if: ${{ steps.host.outputs.amd_npt != 'true' }}
-        env:
-          CARGO_TERM_COLOR: never
-        run: |
-          set -euo pipefail
-          printf '%s\n' 'PAE_STATUS=required-gate' | tee snapshot-report/pae-status.txt
-          printf '%s\n' 'cargo test --locked --release -p vmm-core --test x86_cpu_snapshots live_kvm::pae_cached_pdptrs_survive_full_vmm_snapshot_restore -- --ignored --exact --test-threads=1 --nocapture' | tee snapshot-report/pae-full-vmm.command
-          cargo test --locked --release -p vmm-core --test x86_cpu_snapshots \
-            live_kvm::pae_cached_pdptrs_survive_full_vmm_snapshot_restore \
-            -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-report/pae-full-vmm.log
-          grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/pae-full-vmm.log
-      - name: AMD default-NPT guest-authored PAE observation (known unresolved)
-        if: ${{ steps.host.outputs.amd_npt == 'true' }}
-        continue-on-error: true
-        env:
-          CARGO_TERM_COLOR: never
-          NPT_REPORT_DIR: ${{ github.workspace }}/snapshot-report/npt-guest-write
-        run: |
-          set -euo pipefail
-          mkdir -p "$NPT_REPORT_DIR"
-          printf 'PAE_STATUS=%s\n' 'known-unresolved-amd-default-npt-guest-authored-observation' | tee snapshot-report/pae-status.txt
-          printf '%s\n' 'cargo test --locked --release -p vmm-core --test x86_cpu_snapshots live_kvm::amd_default_npt_pae_guest_write_observations -- --ignored --exact --test-threads=1 --nocapture' | tee snapshot-report/pae-full-vmm.command
-          set +e
-          cargo test --locked --release -p vmm-core --test x86_cpu_snapshots \
-            live_kvm::amd_default_npt_pae_guest_write_observations \
-            -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-report/pae-full-vmm.log
-          pipeline_status=("${PIPESTATUS[@]}")
-          cargo_rc=${pipeline_status[0]}
-          tee_rc=${pipeline_status[1]}
-          set -e
-          printf 'PAE_TEST_EXIT=%s\nPAE_TEE_EXIT=%s\n' "$cargo_rc" "$tee_rc" | tee -a snapshot-report/pae-status.txt
-          if [[ "$tee_rc" -ne 0 ]]; then
-            printf '%s\n' 'The PAE observation log could not be retained.' >&2
-            exit "$tee_rc"
-          fi
-          if grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/pae-full-vmm.log; then
-            [[ "$cargo_rc" -eq 0 ]] || exit "$cargo_rc"
-            printf '%s\n' 'PAE_OBSERVATION=guest-authored-test-passed-on-amd-default-npt' | tee -a snapshot-report/pae-status.txt
-          elif [[ "$cargo_rc" -ne 0 ]] && grep -Fq 'running 1 test' snapshot-report/pae-full-vmm.log && \
-              grep -Fq 'test result: FAILED. 0 passed; 1 failed; 0 ignored;' snapshot-report/pae-full-vmm.log; then
-            printf 'PAE_OBSERVATION=%s\n' 'guest-authored-strict-test-failed-on-amd-default-npt' | tee -a snapshot-report/pae-status.txt
-            printf '%s\n' 'The strict guest-authored PAE oracle failed on AMD default NPT; retaining the raw diagnostic outcome without qualification.'
-            exit "$cargo_rc"
+          failed=0
+          run_exact vmm-backend kvm_smoke serviced_pio_is_exactly_snapshottable_without_guest_execution pio || failed=1
+          run_exact vmm-backend kvm_smoke serviced_msr_is_exactly_snapshottable_without_guest_execution msr || failed=1
+          run_exact vmm-backend kvm_smoke serviced_exception_payload_round_trips_and_empty_restore_clears_it exception-payload || failed=1
+          run_exact vmm-backend kvm_smoke serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu mmio-backend || failed=1
+          run_exact vmm-core x86_cpu_snapshots live_kvm::mmio_rmw_finishes_before_full_vmm_snapshot mmio-full-vmm || failed=1
+          run_exact vmm-core x86_cpu_snapshots live_kvm::pae_cached_pdptrs_survive_full_vmm_snapshot_restore pae-full-vmm || failed=1
+          run_exact vmm-backend kvm_smoke resume_flag_preserves_instruction_breakpoint_continuation resume-flag || failed=1
+          run_exact vmm-core x86_cpu_snapshots live_kvm::xsave_guest_bytes_survive_cold_continuation xsave \
+            "XSAVE_CONTINUATION_REPORT_DIR=$PWD/snapshot-report/xsave" || failed=1
+          if [[ "$AMD_NPT" == true ]]; then
+            run_exact vmm-core x86_cpu_snapshots live_kvm::amd_default_npt_pae_guest_write_observations npt-guest-write \
+              "NPT_REPORT_DIR=$PWD/snapshot-report/npt-guest-write" || failed=1
           else
-            printf 'PAE_OBSERVATION=%s\n' 'unexpected-harness-or-infrastructure-failure' | tee -a snapshot-report/pae-status.txt
+            printf '%s\n' 'NPT_STATUS=not-required-on-non-amd-or-npt-disabled-host' > snapshot-report/npt-status.txt
+          fi
+          run_exact vmm-core x86_cpu_snapshots live_kvm::xsave_live_registers_survive_cold_continuation xsave-live \
+            "XSAVE_LIVE_REGISTERS_REPORT_DIR=$PWD/snapshot-report/xsave-live" || failed=1
+          if [[ "$failed" -ne 0 ]]; then
+            printf '%s\n' 'SNAPSHOT_GATE_STATUS=failed' | tee snapshot-report/required-tests.status
             exit 1
           fi
-      - name: Validate AMD default-NPT PAE observation classification
-        if: ${{ always() && steps.host.outputs.amd_npt == 'true' }}
-        env:
-          # Public diagnostic status, not a credential.
-          KNOWN_PAE_FAILURE: PAE_OBSERVATION=guest-authored-strict-test-failed-on-amd-default-npt # pragma: allowlist secret
-        run: |
-          set -euo pipefail
-          status=snapshot-report/pae-status.txt
-          log=snapshot-report/pae-full-vmm.log
-          test -s "$status"
-          test -s "$log"
-          grep -Fq 'PAE_TEE_EXIT=0' "$status"
-          phase_files=(memory.bin vm-state.bin state-blob.bin guest-bytes.bin summary.txt)
-          phase_dirs=(
-            original-endpoint
-            save-and-continue-stop
-            save-and-continue-stop-repeat
-            save-and-continue-endpoint
-            cold-unobserved-endpoint
-            cold-observed-stop
-            cold-observed-stop-repeat
-            cold-observed-endpoint
-          )
-          require_phase_evidence() {
-            local phase file
-            for phase in "${phase_dirs[@]}"; do
-              for file in "${phase_files[@]}"; do
-                test -s "snapshot-report/npt-guest-write/${phase}/${file}"
-              done
-            done
-          }
-          if grep -Fq 'PAE_OBSERVATION=guest-authored-test-passed-on-amd-default-npt' "$status"; then
-            grep -Fq 'PAE_TEST_EXIT=0' "$status"
-            grep -Fq 'running 1 test' "$log"
-            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
-            require_phase_evidence
-            printf '%s\n' 'AMD default-NPT PAE observation passed; raw evidence retained and reported as observational.'
-          elif grep -Fq "$KNOWN_PAE_FAILURE" "$status"; then
-            grep -Eq '^PAE_TEST_EXIT=[1-9][0-9]*$' "$status"
-            grep -Fq 'running 1 test' "$log"
-            grep -Fq 'test result: FAILED. 0 passed; 1 failed; 0 ignored;' "$log"
-            grep -Fq 'guest-authored original and save-and-continue futures differ' "$log"
-            require_phase_evidence
-            printf '%s\n' 'AMD default-NPT PAE strict oracle failed as an expected diagnostic outcome; this is not qualification.'
-          else
-            printf '%s\n' 'AMD default-NPT PAE observation has no valid pass/fail classification.' >&2
-            cat "$status" >&2
-            exit 1
-          fi
-      - name: XSAVE guest-written bytes required gate
-        if: always()
-        env:
-          CARGO_TERM_COLOR: never
-          XSAVE_CONTINUATION_REPORT_DIR: ${{ github.workspace }}/snapshot-report/xsave
-        run: |
-          set -euo pipefail
-          mkdir -p "$XSAVE_CONTINUATION_REPORT_DIR"
-          printf '%s\n' 'XSAVE_STATUS=required-gate' | tee snapshot-report/xsave-status.txt
-          printf '%s\n' 'cargo test --locked --release -p vmm-core --test x86_cpu_snapshots live_kvm::xsave_guest_bytes_survive_cold_continuation -- --ignored --exact --test-threads=1 --nocapture' | tee snapshot-report/xsave.command
-          cargo test --locked --release -p vmm-core --test x86_cpu_snapshots \
-            live_kvm::xsave_guest_bytes_survive_cold_continuation \
-            -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-report/xsave.log
-          grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/xsave.log
+          printf '%s\n' 'SNAPSHOT_GATE_STATUS=passed' | tee snapshot-report/required-tests.status
       - uses: actions/upload-artifact@v4
         if: always()
         with:
