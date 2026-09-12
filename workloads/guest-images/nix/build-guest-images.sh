@@ -192,8 +192,6 @@ if [ "$host_arch" = aarch64 ]; then
         names=(
             Image
             initramfs.cpio.gz
-            Image-postgres
-            initramfs-postgres.cpio.gz
             postgres
             psql
             pg_ctl
@@ -206,6 +204,13 @@ if [ "$host_arch" = aarch64 ]; then
         }
         cp -p "$artifacts/aarch64/$name" "$stage/aarch64/$name"
     done
+    [ -d "$artifacts/aarch64/oci-images/postgres.oci" ] || {
+        echo "FAIL: lock build did not produce aarch64/oci-images/postgres.oci" >&2
+        exit 1
+    }
+    mkdir -p "$stage/aarch64/oci-images"
+    cp -a "$artifacts/aarch64/oci-images/postgres.oci" \
+        "$stage/aarch64/oci-images/"
     if [ "$n6" -eq 1 ]; then
         for name in Image-n6-traps-off initramfs-n6.cpio.gz initramfs-n6-traps-off.cpio.gz; do
             [ -f "$artifacts/aarch64/$name" ] || {

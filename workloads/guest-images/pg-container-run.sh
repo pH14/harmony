@@ -2,7 +2,7 @@
 # Runs as PID 1 INSIDE the official-postgres OCI container (its `process.args`).
 # The ENTIRE bare-Postgres-style workload flow lives here — start the postgres binary,
 # wait for it cooperatively, drive the fixed insert/select loop, stop it — so the
-# guest `/init` only has to `runc run` this and wait. The point: the cooperative
+# outer OCI workload only has to invoke nested `runc`. The point: the cooperative
 # `psql` loop runs *inside* the container, where it works under the consonance
 # VMM for exactly the same reason the bare-Postgres image's loop did — a blocking
 # `psql` connect yields the single vCPU to the starting postmaster, whose RDTSCs

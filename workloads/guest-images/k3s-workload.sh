@@ -1,8 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# /init of the **Postgres-on-k3s workload image**. Selected by the kernel
-# `rdinit=/k3s-init` cmdline param. Brings up a single-node lightweight Kubernetes
-# cluster (k3s) inside the deterministic guest, then runs a CLIENT pod that makes
+# OCI entrypoint of the **Postgres-on-k3s workload image**. Brings up a
+# single-node lightweight Kubernetes cluster (k3s) inside the outer runtime's
+# namespaces, then runs a CLIENT pod that makes
 # calls to a POSTGRES server pod over the in-guest CNI (pod -> ClusterIP ->
 # kube-proxy DNAT -> the server pod, all intra-guest), runs the
 # gen_random_uuid()/clock_timestamp() workload, and streams it to ttyS0.
@@ -45,9 +45,9 @@ tail_k3s() {
 }
 
 # Terminal: print the seeded-CRNG witness (boot_id, identical across same-seed
-# runs), GUEST_READY only on a clean success, then a forced triple-fault reboot
-# (reboot=t,force on the cmdline) — the device_shutdown stall a plain poweroff
-# hits once block I/O has run is bypassed.
+# runs), GUEST_READY only on a clean success, then return the workload status.
+# The platform runtime owns the VM terminal and sends the final termination
+# signal after the OCI process exits.
 finish() {
     rc=$1
     log "boot_id=$($BB cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
@@ -57,25 +57,17 @@ finish() {
     else
         log "result rc=$rc (FAILED — see /run/k3s.log)"
     fi
+    if [ -n "${K3SPID:-}" ]; then
+        $BB kill "$K3SPID" 2>/dev/null || true
+        wait "$K3SPID" 2>/dev/null || true
+    fi
     $BB sync
-    exec $BB reboot -f
+    exit "$rc"
 }
 
-# --- kernel filesystems (as runc-init.sh) ------------------------------------
-$BB mount -t proc proc /proc
-$BB mount -t sysfs sysfs /sys
-$BB mount -t devtmpfs dev /dev 2>/dev/null
-$BB mkdir -p /dev/shm /dev/pts /run /tmp /var/lib
-$BB mount -t tmpfs tmpfs /dev/shm
-$BB mount -t devpts devpts /dev/pts 2>/dev/null
-$BB mount -t tmpfs tmpfs /run
-$BB mount -t tmpfs tmpfs /tmp
-$BB chmod 1777 /tmp /dev/shm
-$BB chmod 0666 /dev/console
-
 # --- kubelet/containerd data dirs on tmpfs (cAdvisor cannot stat the ramfs root) ---
-# The guest root is an initramfs (ramfs, device "rootfs"), which cAdvisor (embedded
-# in kubelet) cannot get filesystem stats for -> "failed to get rootfs info" aborts
+# The OCI rootfs is a ramfs-like root at runtime, which cAdvisor (embedded in
+# kubelet) cannot get filesystem stats for -> "failed to get rootfs info" aborts
 # the kubelet ContainerManager (and the overlayfs imagefs stat fails the same way).
 # cAdvisor DOES recognize tmpfs (statfs), so put the kubelet root-dir and containerd's
 # overlayfs snapshotter dir on tmpfs BEFORE k3s starts (cAdvisor caches mounts at
@@ -133,8 +125,8 @@ log "starting k3s server ($(k3s --version 2>/dev/null | $BB head -1)) — log ->
 # Foreground sub-processes (containerd, kubelet goroutines, apiserver, scheduler,
 # controllers, kube-proxy, flannel) are now driven by V-time preemption. Its
 # verbose log stays in a file; only our deterministic markers reach ttyS0.
-# runc on the initramfs ramdisk: the default pivot_root EINVALs ("rootfs on a
-# ramdisk whose root mount has no parent"). Make containerd's runc-v2
+# runc on the outer OCI rootfs: the default pivot_root EINVALs ("rootfs on a
+# ramdisk-like root whose mount has no parent"). Make containerd's runc-v2
 # shim pass --no-pivot (MS_MOVE+chroot) via a drop-in that the k3s-generated
 # config-v3.toml imports from config-v3.toml.d/ (merged into runc.options).
 $BB mkdir -p /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d

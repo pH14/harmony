@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the **Postgres-in-Docker workload initramfs** (consonance
+# Build the **Postgres-in-Docker workload OCI layout** (consonance
 # workload stream step 3 of 3 — the credibility money-shot: the off-the-shelf
 # **official `postgres` image** runs deterministically in the guest as a real
 # OCI container).
@@ -24,9 +24,9 @@
 # a generated `config.json`). The companion kernel is the *unchanged*
 # container-class bzImage (the §capability audit in consonance/harmony-linux/linux/README.md
 # confirmed cgroup-v2, the namespace set, TMPFS, EPOLL/FUTEX/… are all built in —
-# no kernel change). The container rootfs lives in the initramfs tmpfs (RAM), so
-# PGDATA is RAM-backed (fsync is a noop — no durability-fault surface, deferred
-# to D1, as with the bare-Postgres image).
+# no kernel change). The nested container rootfs lives in the outer OCI rootfs
+# (RAM at runtime), so PGDATA is RAM-backed (fsync is a noop — no
+# durability-fault surface, deferred to D1, as with the bare-Postgres image).
 #
 # Linux + root only (mounts, cgroup, the static-bin layout assume a Linux build
 # host; the box is the pinned build environment). On macOS run it in a
@@ -42,12 +42,12 @@ cd "$(dirname "$0")/../../consonance/harmony-linux/linux"
 . "$workload_dir/versions.lock"
 
 require_linux_amd64
-require_tools cc make gzip bzip2 cpio gunzip jq tar chroot mount umount
+require_tools cc make bzip2 python3 jq tar chroot mount umount
 # `runc` (for `runc spec`) is taken from the docker bundle we extract below.
 
 if [ "$(id -u)" != "0" ]; then
-    echo "FAIL: build-docker-image.sh must run as root (the cpio is packed owner 0:0" >&2
-    echo "      and the static layout mirrors the privileged guest rootfs)." >&2
+    echo "FAIL: build-docker-image.sh must run as root (the OCI layout preserves" >&2
+    echo "      the privileged nested-container rootfs ownership)." >&2
     exit 1
 fi
 
@@ -113,10 +113,10 @@ install_libvoidstar "$DKROOT"
 ln -sf /run "$DKROOT/var/run"                  # standard /var/run -> /run
 
 cp "$BBOBJ/busybox" "$DKROOT/bin/busybox"
-# /bin/sh is the /init interpreter; the rest let any `sh -c` / PATH lookup the
-# init (or a sub-shell) does resolve without a full coreutils.
+# The workload entrypoint and nested container setup use only this generic
+# BusyBox surface; platform mounts and lifecycle operations are outside the image.
 for a in sh mount umount mkdir chmod chown cat echo grep sleep kill nice ln rm cp \
-         true false test sync reboot poweroff head tail env printf cut wc ps sed \
+         true false test sync head tail env printf cut wc ps sed \
          cmp ls id mv touch dd find xargs; do
     ln -sf busybox "$DKROOT/bin/$a"
 done
@@ -126,8 +126,8 @@ for b in dockerd docker containerd containerd-shim-runc-v2 runc ctr docker-proxy
     [ -f "$DK_STAGE/docker/$b" ] && cp "$DK_STAGE/docker/$b" "$DKROOT/usr/local/bin/$b"
 done
 
-# runc `--no-pivot` wrapper. The container rootfs lives in the initramfs
-# (a ramdisk whose root mount has no parent), so runc's default pivot_root
+# runc `--no-pivot` wrapper. The nested container rootfs lives inside the outer
+# OCI rootfs (a ramdisk-like root whose mount has no parent), so runc's default pivot_root
 # EINVALs ("pivot_root: invalid argument"); runc's `--no-pivot` switches to the
 # MS_MOVE+chroot path that is documented for exactly "rootfs on top of a
 # ramdisk". containerd's shim resolves `runc` by PATH, so we shim it: the real
@@ -302,29 +302,18 @@ jq --argjson env "$IMG_ENV" '
 mv "$BUNDLE/config.json.new" "$BUNDLE/config.json"
 echo "   container runs /run-workload.sh as uid 999 on pre-baked PGDATA; rootfs=$(du -sh "$BUNDLE/rootfs" | cut -f1)"
 
-# The guest /init and the in-namespace container-setup helper (the latter runs
-# as the unshared container PID 1, before chroot; see docker-init.sh).
-install -m 0755 "$workload_dir/docker-init.sh" "$DKROOT/init"
-install -m 0755 "$workload_dir/container-setup.sh" "$DKROOT/container-setup.sh"
-# The REAL-runc /init, baked alongside as /runc-init and selected via the
-# kernel `rdinit=/runc-init` cmdline param (the unshare path above stays the
-# default /init for comparison). It `runc run`s the SAME /oci bundle generated above
-# — the config.json `runc spec` already wrote is runc-ready (allow-all devices,
-# terminal=false, runs /run-workload.sh). Compared to the unshare path, the Go runtime is
-# now preempted at the V-time LAPIC deadline (run_with_deadline), so runc's
-# container-init no longer deadlocks. See runc-init.sh + consonance/harmony-linux/linux/README.md.
-install -m 0755 "$workload_dir/runc-init.sh" "$DKROOT/runc-init"
+install -m 0755 "$workload_dir/docker-workload.sh" \
+    "$DKROOT/usr/local/bin/docker-workload.sh"
 
-# --- 5. pack the initramfs (sorted, fixed mtime, gzip -n) ---------------------
-# DEVTMPFS_MOUNT gives the guest /dev (incl. /dev/console) before init runs.
-# **Ownership is PRESERVED** (no `--owner=0:0`): the guest-side files (busybox,
-# the docker bins, /init, /etc) are root-owned because root created them, while
-# the OCI bundle keeps the image's own ownerships + the pre-baked PGDATA owned by
-# uid 999 — which the container's postgres (uid 999) needs at runtime. Forcing
-# 0:0 would make PGDATA root-owned and postgres would refuse it. Ownership is a
-# deterministic function of the image + initdb, so this stays reproducible.
-echo "== docker image: packing initramfs"
-find "$DKROOT" -mindepth 1 -exec touch -hcd @0 {} +
-( cd "$DKROOT" && find . -mindepth 1 -print0 | LC_ALL=C sort -z \
-    | cpio --null -o -H newc --quiet ) | gzip -n -9 >"$ART_DIR/initramfs-docker.cpio.gz"
-echo "ok: $ART_DIR/initramfs-docker.cpio.gz ($(du -h "$ART_DIR/initramfs-docker.cpio.gz" | cut -f1))"
+# --- 5. pack the OCI layout --------------------------------------------------
+# Ownership is preserved: the nested OCI bundle keeps the official image's
+# ownerships and pre-baked PGDATA remains owned by uid 999.
+OCI_OUT=$ART_DIR/oci-images/docker.oci
+rm -rf "$OCI_OUT"
+mkdir -p "$(dirname "$OCI_OUT")"
+python3 "$workload_dir/oci-package.py" \
+    --rootfs "$DKROOT" --architecture amd64 --output "$OCI_OUT" \
+    --entrypoint /usr/local/bin/docker-workload.sh \
+    --env PATH=/usr/local/bin:/bin:/sbin \
+    --user 0:0 --working-dir /
+echo "ok: $OCI_OUT"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the **Postgres-on-k3s workload initramfs** — the determinism
+# Build the **Postgres-on-k3s workload OCI layout** — the determinism
 # stress test at full stack height: a single-node lightweight Kubernetes cluster
 # inside the deterministic guest, with a CLIENT pod making calls to a POSTGRES
 # server pod over the in-guest CNI, deterministic-twice).
@@ -8,7 +8,8 @@
 # **What runs (see consonance/harmony-linux/linux/README.md).** One single-vCPU
 # guest boots `k3s` (a lightweight Kubernetes distro: ONE static Go binary that
 # bundles containerd + runc + the flannel/bridge/host-local CNI + kube-proxy +
-# kubectl, with a sqlite datastore). `k3s-init.sh` brings the cluster up, then:
+# kubectl, with a sqlite datastore). The OCI workload entrypoint brings the
+# cluster up, then:
 #   * a `postgres` Pod runs the official `postgres:17` OCI image on a **pre-baked
 #     PGDATA** (build-time initdb, baked here as a hostPath, uid 999) listening on
 #     TCP, fronted by a fixed-ClusterIP `postgres` Service;
@@ -35,7 +36,7 @@
 # OVERLAY_FS/the iptables + netfilter_xt set + cgroup-v2/namespaces); the
 # determinism overlay disables none of it. The companion kernel is the *unchanged*
 # bzImage. The k3s data dir, sqlite, container rootfs layers and PGDATA all
-# live in the initramfs tmpfs (RAM) -> deterministic VM-memory writes.
+# live in the outer OCI rootfs (RAM at runtime) -> deterministic VM-memory writes.
 #
 # Linux + root only (mounts, cgroup, chroot, the static layout assume a Linux
 # build host; the box is the pinned build environment). See CONTRIBUTING.md.
@@ -50,10 +51,10 @@ cd "$(dirname "$0")/../../consonance/harmony-linux/linux"
 . "$workload_dir/versions.lock"
 
 require_linux_amd64
-require_tools cc make gzip bzip2 cpio gunzip jq tar chroot mount umount
+require_tools cc make bzip2 python3 jq tar chroot mount umount
 
 if [ "$(id -u)" != "0" ]; then
-    echo "FAIL: build-k3s-image.sh must run as root (the cpio preserves the uid-999" >&2
+    echo "FAIL: build-k3s-image.sh must run as root (the OCI layout preserves the uid-999" >&2
     echo "      PGDATA ownership, and the static layout mirrors the privileged guest" >&2
     echo "      rootfs)." >&2
     exit 1
@@ -116,10 +117,10 @@ install_libvoidstar "$K3SROOT"
 ln -sf /run "$K3SROOT/var/run"
 
 cp "$BBOBJ/busybox" "$K3SROOT/bin/busybox"
-# /bin/sh is the /init interpreter; the rest let any `sh -c`/PATH lookup the init
-# (or k3s' shell-outs to `ip`, `mount`, ...) does resolve without full coreutils.
+# The workload entrypoint and k3s shell-outs use this generic BusyBox surface;
+# platform mounts and lifecycle operations are outside the image.
 for a in sh mount umount mkdir chmod chown cat echo grep sleep kill nice ln rm cp \
-         true false test sync reboot poweroff head tail env printf cut wc ps sed \
+         true false test sync head tail env printf cut wc ps sed \
          cmp ls id mv touch dd find xargs awk tr sort uniq date hostname dmesg \
          mountpoint nproc seq tee timeout ip; do
     ln -sf busybox "$K3SROOT/bin/$a"
@@ -132,7 +133,8 @@ for t in kubectl crictl ctr; do ln -sf k3s "$K3SROOT/usr/local/bin/$t"; done
 
 # The in-guest flow agent (optional). Built as a static musl binary by
 # a caller-supplied static musl `flow-agent` binary; bake it in when its path is
-# passed via FLOW_AGENT_BIN. `k3s-init.sh` starts it before the client pod (see there). The
+# passed via FLOW_AGENT_BIN. The workload entrypoint starts it before the client
+# pod. The
 # nominal path installs no rules; the FAULT path (gate B) additionally needs `nft`
 # + `tc` in the image — bake those alongside when driving a NetLatency/drop policy.
 if [ -n "${FLOW_AGENT_BIN:-}" ]; then
@@ -301,7 +303,7 @@ EOF
 
 # The postgres Pod + Service are baked into the server manifests dir, which k3s
 # auto-applies once the apiserver is up. The client Pod is applied separately by
-# k3s-init.sh AFTER the postgres pod is Ready (clean sequencing for the gate
+# workload entrypoint AFTER the postgres pod is Ready (clean sequencing for the gate
 # narrative; the client's retry loop makes it robust regardless).
 cat >"$K3SROOT/var/lib/rancher/k3s/server/manifests/postgres.yaml" <<EOF
 apiVersion: v1
@@ -380,17 +382,21 @@ spec:
       hostPath: { path: /k8s/client.sh, type: File }
 EOF
 
-# --- 7. the guest /init ------------------------------------------------------
-install -m 0755 "$workload_dir/k3s-init.sh" "$K3SROOT/k3s-init"
+# --- 7. install the OCI workload entrypoint ----------------------------------
+install -m 0755 "$workload_dir/k3s-workload.sh" \
+    "$K3SROOT/usr/local/bin/k3s-workload.sh"
 
-# --- 8. pack the initramfs (sorted, fixed mtime, gzip -n) ---------------------
+# --- 8. pack the OCI layout --------------------------------------------------
 # **Ownership is PRESERVED** (no --owner=0:0): the guest-side files are root-owned
 # (root created them) while /k8s/pgdata stays owned uid 999 — which the server
 # pod's postgres (uid 999) needs. Ownership is a deterministic function of the
 # image + initdb, so the image stays reproducible.
-echo "== k3s image: packing initramfs"
-mkdir -p "$ART_DIR"   # the artifact dir (consonance/harmony-linux/build) may not exist on a fresh checkout
-find "$K3SROOT" -mindepth 1 -exec touch -hcd @0 {} +
-( cd "$K3SROOT" && find . -mindepth 1 -print0 | LC_ALL=C sort -z \
-    | cpio --null -o -H newc --quiet ) | gzip -n -9 >"$ART_DIR/initramfs-k3s.cpio.gz"
-echo "ok: $ART_DIR/initramfs-k3s.cpio.gz ($(du -h "$ART_DIR/initramfs-k3s.cpio.gz" | cut -f1))"
+OCI_OUT=$ART_DIR/oci-images/k3s.oci
+rm -rf "$OCI_OUT"
+mkdir -p "$(dirname "$OCI_OUT")"
+python3 "$workload_dir/oci-package.py" \
+    --rootfs "$K3SROOT" --architecture amd64 --output "$OCI_OUT" \
+    --entrypoint /usr/local/bin/k3s-workload.sh \
+    --env PATH=/usr/local/bin:/bin:/sbin \
+    --user 0:0 --working-dir /
+echo "ok: $OCI_OUT"

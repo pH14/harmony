@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the **Postgres-campaign workload initramfs**: the bare-Postgres image (a static busybox + a real PostgreSQL 17 install + a
-# pre-`initdb`'d RAM-backed ext4 cluster) plus the planted-bug supervisor
-# `campaign-super` and the `campaign-init.sh` /init that runs it. Produces
-# consonance/harmony-linux/build/initramfs-campaign.cpio.gz.
+# Build the **Postgres-campaign workload OCI layout**: the bare-Postgres image
+# (a static busybox + a real PostgreSQL 17 install + a pre-`initdb`'d cluster)
+# plus the planted-bug supervisor `campaign-super`. The platform package owns
+# the kernel, mounts, PID 1, and final guest termination.
 #
 # This is `build-postgres-image.sh` with two additions, kept in lockstep with it:
 #   1. a static `campaign-super` compiled from campaign-super.c and installed at
 #      /campaign-super (the supervised process carrying the planted bug), and
-#   2. campaign-init.sh installed as /init (postgres workload → supervisor).
-# Everything else — the pinned .debs, the determinism overlay, the fixed-UUID
-# ext4, the reproducible cpio packing — is identical to the postgres image, so
+#   2. the shared OCI workload entrypoint dispatches postgres then the supervisor.
+# Everything else — the pinned .debs and determinism overlay — is identical to
+# the postgres image, so
 # the campaign image inherits the postgres image's determinism closure verbatim.
 #
 # The companion kernel is the *unchanged* container-class bzImage (no
@@ -18,8 +18,8 @@
 # all already available — the foreman verifies these on the box; if ioperm is
 # absent, campaign-super's /dev/port fallback path is used instead).
 #
-# Linux + root only (as build-postgres-image.sh — mke2fs -d bakes uid-70
-# ownership). On macOS run it in a linux/amd64 container as root; see
+# Linux + root only (as build-postgres-image.sh — the OCI layout preserves
+# uid-70 ownership). On macOS run it in a linux/amd64 container as root; see
 # CONTRIBUTING.md.
 set -euo pipefail
 
@@ -33,24 +33,22 @@ cd "$repo_root/consonance/harmony-linux/linux"
 . "$workload_dir/versions.lock"
 
 require_linux_amd64
-require_tools cc make gzip bzip2 cpio dpkg-deb mke2fs setpriv ldd ldconfig
+require_tools cc make bzip2 dpkg-deb python3 setpriv ldd ldconfig
 
 if [ "$(id -u)" != "0" ]; then
-    echo "FAIL: build-campaign-image.sh must run as root (mke2fs -d bakes uid-70 ownership)." >&2
+    echo "FAIL: build-campaign-image.sh must run as root (the OCI image preserves uid-70 ownership)." >&2
     exit 1
 fi
 
-# --- tunables (mirror build-postgres-image.sh; distinct ext4 UUID) -----------
+# --- tunables (mirror build-postgres-image.sh) -------------------------------
 PGV=$PG_MAJOR                                  # from versions.lock
 PG_UID=70                                      # guest postgres uid/gid (Debian's)
 BUILD_UID=65534                                # non-root uid for the build-time initdb
-FIXED_UUID="deadbeef-0000-0000-0000-000000000060"   # pinned ext4 UUID
-EXT4_SIZE=96M                                   # cluster (~22M) + workload WAL headroom
 WORKLOAD_N=20                                   # fixed insert/select iterations
 
 PGROOT=$BUILD_ROOT/campaign-root                # the assembled guest rootfs
 PG_STAGE=$BUILD_ROOT/campaign-stage             # extracted .debs
-STAGEFS=$BUILD_ROOT/campaign-stagefs            # initdb output, baked into the ext4
+STAGEFS=$BUILD_ROOT/campaign-stagefs            # initdb output, copied into PGDATA
 PGBIN=$PG_STAGE/usr/lib/postgresql/$PGV/bin
 
 # --- 0. fetch-verify + extract the pinned postgres .debs ---------------------
@@ -102,13 +100,14 @@ cc -static -O2 -Wall -Wextra -fno-asynchronous-unwind-tables \
 # --- 2. assemble the guest rootfs (mirrors build-postgres-image.sh) ----------
 echo "== campaign image: assembling rootfs"
 rm -rf "$PGROOT"
-mkdir -p "$PGROOT"/{bin,lib,lib64,etc,proc,sys,dev,tmp,run,pgmnt}
+mkdir -p "$PGROOT"/{bin,lib,lib64,etc,proc,sys,dev,tmp,run,var/lib/postgresql}
 mkdir -p "$PGROOT/lib/x86_64-linux-gnu" "$PGROOT/usr/lib/x86_64-linux-gnu"
+mkdir -p "$PGROOT/usr/local/bin"
 install_libvoidstar "$PGROOT"
 
 cp "$BBOBJ/busybox" "$PGROOT/bin/busybox"
-for a in sh mount umount mkdir chown chmod sleep printf seq setuidgid cat echo ls \
-         head tee env losetup poweroff reboot ln rm cp true false test expr sync id; do
+for a in sh mkdir chown chmod sleep printf seq setuidgid cat echo ls \
+         head tee env ln rm cp true false test expr sync id; do
     ln -sf busybox "$PGROOT/bin/$a"
 done
 
@@ -138,7 +137,7 @@ mkdir -p "$PGROOT/usr/share" "$PGROOT/usr/lib/locale"
 cp -a /usr/share/zoneinfo "$PGROOT/usr/share/"
 cp -a /usr/lib/locale/locale-archive /usr/lib/locale/C.utf8 "$PGROOT/usr/lib/locale/"
 
-printf 'root:x:0:0:root:/root:/bin/sh\npostgres:x:%s:%s:postgres:/pgmnt:/bin/sh\n' "$PG_UID" "$PG_UID" >"$PGROOT/etc/passwd"
+printf 'root:x:0:0:root:/root:/bin/sh\npostgres:x:%s:%s:postgres:/var/lib/postgresql:/bin/sh\n' "$PG_UID" "$PG_UID" >"$PGROOT/etc/passwd"
 printf 'root:x:0:\npostgres:x:%s:\n' "$PG_UID" >"$PGROOT/etc/group"
 printf 'passwd: files\ngroup: files\n' >"$PGROOT/etc/nsswitch.conf"
 ldconfig -r "$PGROOT" 2>/dev/null || true
@@ -170,13 +169,12 @@ autovacuum = off
 max_wal_size = 64MB
 EOF
 
-echo "== campaign image: baking fixed-UUID ext4 with the cluster"
+echo "== campaign image: copying the deterministic cluster into PGDATA"
 chown -R "$PG_UID:$PG_UID" "$STAGEFS"
-EXT4=$PGROOT/pgdata.ext4
-rm -f "$EXT4"
-mke2fs -q -t ext4 -U "$FIXED_UUID" \
-    -E lazy_itable_init=0,lazy_journal_init=0 \
-    -d "$STAGEFS" -F "$EXT4" "$EXT4_SIZE"
+mkdir -p "$PGROOT/var/lib/postgresql"
+cp -a "$STAGEFS/pgdata" "$PGROOT/var/lib/postgresql/data"
+chown -R "$PG_UID:$PG_UID" "$PGROOT/var/lib/postgresql/data"
+chmod 0700 "$PGROOT/var/lib/postgresql/data"
 
 # --- 4. the baked workload v2, identical to the postgres image ------
 {
@@ -189,11 +187,16 @@ mke2fs -q -t ext4 -U "$FIXED_UUID" \
     done
 } >"$PGROOT/workload.sql"
 
-install -m 0755 "$workload_dir/campaign-init.sh" "$PGROOT/init"
+install -m 0755 "$workload_dir/postgres-workload.sh" \
+    "$PGROOT/usr/local/bin/postgres-workload.sh"
 
-# --- 5. pack the initramfs (sorted, fixed mtime, owner 0:0, gzip -n) ----------
-echo "== campaign image: packing initramfs"
-find "$PGROOT" -mindepth 1 -exec touch -hcd @0 {} +
-( cd "$PGROOT" && find . -mindepth 1 -print0 | LC_ALL=C sort -z \
-    | cpio --null -o -H newc --owner=0:0 --quiet ) | gzip -n -9 >"$ART_DIR/initramfs-campaign.cpio.gz"
-echo "ok: $ART_DIR/initramfs-campaign.cpio.gz ($(du -h "$ART_DIR/initramfs-campaign.cpio.gz" | cut -f1))"
+# --- 5. pack the OCI layout --------------------------------------------------
+OCI_OUT=$ART_DIR/oci-images/campaign.oci
+rm -rf "$OCI_OUT"
+mkdir -p "$(dirname "$OCI_OUT")"
+python3 "$workload_dir/oci-package.py" \
+    --rootfs "$PGROOT" --architecture amd64 --output "$OCI_OUT" \
+    --entrypoint /usr/local/bin/postgres-workload.sh \
+    --env HARMONY_POSTGRES_VARIANT=campaign \
+    --user 0:0 --working-dir /var/lib/postgresql
+echo "ok: $OCI_OUT"
