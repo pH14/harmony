@@ -43,8 +43,8 @@ clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 
 # Guest-resident Linux glue: the `/dev/harmony` ioctl and process-group
-# signalling. Only referenced under the x86-64 Linux cfg.
-[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+# signalling. Only referenced under the Linux cfg (x86_64 and aarch64 guests).
+[target.'cfg(target_os = "linux")'.dependencies]
 libc = { version = "0.2" }
 
 [lints.clippy]

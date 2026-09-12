@@ -1,0 +1,58 @@
+{
+  "format": "harmony-historical-case-v1",
+  "id": "etcd-3.5-inconsistency",
+  "title": "etcd v3.5 consistent-index data loss after crash",
+  "software": "etcd",
+  "sources": {
+    "issue": "https://github.com/etcd-io/etcd/issues/13766",
+    "fix_commit": "https://github.com/etcd-io/etcd/pull/13854",
+    "postmortem": "https://github.com/etcd-io/etcd/blob/main/Documentation/postmortems/v3.5-data-inconsistency.md"
+  },
+  "versions": {
+    "affected": "3.5.2",
+    "fixed": "3.5.3"
+  },
+  "arms": {
+    "vulnerable": {
+      "version": "3.5.2",
+      "source_sha256": "ecb4d2bc76e48ae504d9a00b50bcc906503c4d0324acf9dee79d97d16f7282ad"
+    },
+    "control": {
+      "version": "3.5.3",
+      "source_sha256": "f381557feaa42dfe7f40a5c295f95266b7de341f49e76a3119dfaec3d0a24e5e"
+    }
+  },
+  "image": {
+    "context": ".",
+    "dockerfile": "bugs/historical/etcd-3.5-inconsistency/image/Dockerfile"
+  },
+  "instrumentation": {
+    "tool": "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-toolexec",
+    "version": "0.8.0",
+    "license": "MIT"
+  },
+  "kernel_profile": "faultlab",
+  "oracle": {
+    "assertion": 1,
+    "evidence": 11,
+    "kind": "always",
+    "source": "the agent's continuous check, not a drawn hook",
+    "detector": "client journal versus serializable reads from every recovered etcd member",
+    "fires_on": "an acknowledged key is missing or has a different value on any recovered member after restart",
+    "silent_when": ["a member is down", "the journal is empty", "a local member read is inconclusive"]
+  },
+  "actions": ["Wait", "EventKill", "EventPark", "Kill", "Pause", "Restart"],
+  "run": {
+    "horizon_ms": 500,
+    "ram_mib": 1024,
+    "knobs": {}
+  },
+  "search": {
+    "seed": 1,
+    "workers": 4,
+    "actions": 48,
+    "wall_minutes": 300
+  },
+  "discovery_mode": "guided",
+  "status": "reproduced"
+}

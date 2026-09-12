@@ -8,11 +8,13 @@ consonance guest workloads. The build scripts fetch sources from
 configuration fragments, assemble an image, and verify the resulting artifacts
 against `MANIFEST.sha256`.
 
-The x86 kernel carries the `/dev/harmony` character device and the optional
-exit-count paravirtual clock source. The arm64 series supplies the corresponding
-clock page, LSE-only userspace contract, and virtual clock event. Initramfs
-variants launch the minimal, database, container, campaign, game, and exec
-workloads.
+The x86 and arm64 kernels carry the `/dev/harmony` character device and the
+optional exit-count paravirtual clock source. x86 rings the existing `0x0ca1`
+I/O port; arm64 rings the VMM-reserved 32-bit MMIO doorbell at GPA
+`0x0a000000`. The arm64 faultlab profile enables this transport for the static
+fault agent. The x86-only faultlab profile also carries `/dev/harmony-park`;
+arm64 deliberately has no task-park device. Initramfs variants launch the
+minimal, database, container, campaign, game, and exec workloads.
 
 ## x86 kernel profiles
 
@@ -42,12 +44,35 @@ The fault-library profile additionally enables `CONFIG_HARMONY_PARK` for task
 parking. `x86-faultlab-config-fragment` records its configuration. The build
 selector is `FAULTLAB=1`; it no longer disables counter confinement.
 
+## ARM64 fault-library profile
+
+`ARM64_KERNEL_PROFILE=faultlab ./build-arm64-kernel.sh` produces
+`build/arm64/Image-faultlab`, and `build-arm64-faultlab-initramfs.sh` produces
+`build/arm64/initramfs-faultlab.cpio.gz`. The locked Nix guest-image builder
+publishes both artifacts on every native ARM64 build, including
+`--minimal-only` builds.
+
+This profile keeps the AA-5 ARM clock, counter, and LSE-only configuration from
+`arm64-config-fragment`, then adds the kernel surface needed by
+`workloads/faults::prepare_oci`: script execution, proc/sysfs/devtmpfs/tmpfs,
+loopback and TCP/Unix sockets, process signals and groups, futexes, and the
+epoll/eventfd/signalfd/timerfd interfaces used by the static fault agent and a
+stock etcd Go runtime. Its base initramfs contains only a static, LSE-only
+BusyBox with the applets used by the package-generated `/init` (`mkdir`,
+`mount`, `grep`, `ip link`, `chmod`, and `chroot`) plus `/dev/console`,
+`/dev/null`, and `/dev/kmsg`. `prepare_oci` appends its `/init`, OCI rootfs,
+and fault agent as later cpio members, so no workload-specific etcd tuning is
+baked into this base image. The ARM faultlab profile enables the synchronous
+`/dev/harmony` MMIO transport and has no task-park implementation; that
+pre-existing task-parking facility remains x86-only.
+
 ## Entry points
 
 ```sh
 make -C consonance/harmony-linux/linux image
 make -C consonance/harmony-linux/linux test
 make -C consonance/harmony-linux/linux arm64-image
+make -C consonance/harmony-linux/linux arm64-faultlab-image
 make -C consonance/harmony-linux/linux game-image
 make -C consonance/harmony-linux/linux go-runtime-image
 ```

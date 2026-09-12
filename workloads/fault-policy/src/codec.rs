@@ -51,6 +51,10 @@ const F_BLOCK_NOSPC: u8 = 8;
 const F_PROC_PAUSE: u8 = 9;
 const F_PROC_KILL: u8 = 10;
 const F_PROC_RESTART: u8 = 11;
+// Generic crash coordinate: a visit-count scale in the instrumented
+// deterministic event stream. This is deliberately past every historical
+// process tag.
+const F_PROC_EVENT_KILL: u8 = 20;
 // Per-flow network policies (task 50): fresh tags 12..=15, disjoint from the
 // retired per-frame net tags 0..=4 (now undefined) so a stale net byte rejects.
 const F_NET_LATENCY: u8 = 12;
@@ -65,6 +69,7 @@ const F_BUGGIFY_FIRE: u8 = 16;
 // undefined keeps a blob carrying it from decoding into anything.
 const F_RUN_HOOK: u8 = 17;
 const F_PROC_PARK: u8 = 19;
+const F_PROC_EVENT_PARK: u8 = 21;
 
 /// Append a `u16` little-endian.
 pub(crate) fn put_u16(w: &mut Vec<u8>, v: u16) {
@@ -125,6 +130,10 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
             put_u64(w, *d);
         }
         Fault::ProcKill => w.push(F_PROC_KILL),
+        Fault::ProcEventKill { rarity } => {
+            w.push(F_PROC_EVENT_KILL);
+            w.push(*rarity);
+        }
         Fault::ProcRestart => w.push(F_PROC_RESTART),
         Fault::BuggifyFire => w.push(F_BUGGIFY_FIRE),
         Fault::RunHook(id) => {
@@ -135,6 +144,11 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
             w.push(F_PROC_PARK);
             put_u64(w, *addr);
             put_u32(w, *hits);
+            put_u64(w, hold.0);
+        }
+        Fault::ProcEventPark { rarity, hold } => {
+            w.push(F_PROC_EVENT_PARK);
+            w.push(*rarity);
             put_u64(w, hold.0);
         }
     }
@@ -156,6 +170,7 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
         F_BLOCK_NOSPC => Fault::BlockNospc,
         F_PROC_PAUSE => Fault::ProcPause(Span(r.u64()?)),
         F_PROC_KILL => Fault::ProcKill,
+        F_PROC_EVENT_KILL => Fault::ProcEventKill { rarity: r.u8()? },
         F_PROC_RESTART => Fault::ProcRestart,
         F_BUGGIFY_FIRE => Fault::BuggifyFire,
         F_RUN_HOOK => Fault::RunHook(r.u32()?),
@@ -164,6 +179,14 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
             hits: r.u32()?,
             hold: Span(r.u64()?),
         },
+        F_PROC_EVENT_PARK => {
+            let rarity = r.u8()?;
+            let hold = Span(r.u64()?);
+            if hold.0 == 0 {
+                return Err(EnvError::Malformed);
+            }
+            Fault::ProcEventPark { rarity, hold }
+        }
         _ => return Err(EnvError::Malformed),
     };
     Ok(f)

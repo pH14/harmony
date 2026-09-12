@@ -1,7 +1,5 @@
 # etcd v3.5.0–3.5.2 — silent data inconsistency after untimely crash
 
-**Status: spec only — workload not yet built.**
-
 ## The bug
 
 etcd v3.5.0 (PR [#12855](https://github.com/etcd-io/etcd/pull/12855)) introduced backend hooks
@@ -20,6 +18,14 @@ WAL). Raft term/leader/applied-index stay in sync; only the data is wrong.
   [postmortem](https://github.com/etcd-io/etcd/blob/main/Documentation/postmortems/v3.5-data-inconsistency.md);
   earlier duplicates #13514, #13654.
 
+The workload uses the smallest topology faithful to the upstream report: three local etcd
+members sharing one Raft cluster. A client put can be acknowledged after the leader applies it
+while a follower is still between its WAL and backend apply; killing that follower leaves the
+other two members and the external client ledger as independent witnesses. A one-member
+durability oracle can theoretically observe the related interval after the local apply returns
+but before the buffered data is committed. It cannot directly observe the reported
+acknowledged-before-follower-apply divergence, and retrying a failed request can repair its key.
+
 ⚠️ Do not conflate with the **separate, later** consistent-index bug (crash during
 **defragmentation**, `unsafeCommit` skipping `OnPreCommitUnsafe`, entries *re-applied*, revision
 runs *higher*; affects ≤ v3.5.5, fixed ~v3.5.6 / PR #14730). That one is a candidate for a
@@ -27,34 +33,69 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
 
 ## The triple
 
-- **Workload**: etcd v3.5.2 (single member to start; 3-member once net faults exist), driven by
-  a sustained high-rate write client with many concurrent applies — the upstream repro is
-  "high stress + random SIGKILL". Build FROM the pinned release binary; no source patching.
-- **Fault surface**: kill/restart at a Moment — the window between CI persistence (periodic
-  batch-tx commit) and the corresponding entry applies. Upstream needed *random* SIGKILLs under
-  load and memory pressure to land in the window; Harmony searches Moments directly, which is
-  the point of the entry.
-- **Oracle** (in strength order):
-  1. Single-member ground truth: after restart, independently replay the WAL and compare
-     against bbolt contents (upstream had **no tool** for this — the postmortem notes
-     single-member corruption was undetectable; our harness sees both sides).
-     Practical proxy: client-side journal of acked writes → read-back after restart; any
-     acked-but-missing key is a hit.
-  2. Multi-member: cross-member `HashKV` / revision comparison (what
-     `--experimental-initial-corrupt-check` does; added v3.5.3, on-by-default later).
-     Symptoms per #13766: revision lag, differing dbSize, same key independently updatable
-     per endpoint.
+- **Workload**: the upstream etcd workload is three supervised local members, driven by an
+  uninstrumented Go helper that owns exactly four persistent clients through the cluster endpoint
+  set. Each client records every uniquely keyed, acknowledged put in a journal outside etcd and
+  keeps applying entries while Harmony explores faults. The fault agent starts the helper once the
+  cluster is ready and never restarts it, and the helper resumes each client's sequence from the
+  journal, so no incarnation can overwrite a lost key. The helper is built from one
+  pinned `go.etcd.io/etcd/client/v3` dependency shared by both arms; v3.5.2 and v3.5.3 differ
+  only in the Antithesis-instrumented server source revision. There are no correctness,
+  portability, batch, timing, wait, timeout, rate, or write-count knobs, fixed probe sequences,
+  version-specific addresses, or configuration knobs. The server executable for this entry must
+  be built from that pinned source by the Antithesis Go instrumentation pipeline; a release
+  archive or a stock etcd server executable does not satisfy this entry.
+- **Fault surface**: a hard process kill of one member followed by the normal supervisor restart,
+  while the clients are applying entries, and a hold that sleeps one member's thread at an
+  instrumented site. Together these target the small interval between consistent-index persistence
+  and the corresponding follower entry apply. Dissonance names the crash and hold coordinates by
+  how rare the site is: the Antithesis runtime receives the rarity over an inherited control
+  channel and fires at the first callback after the arm whose own site has been visited at most
+  `1 << rarity` times.
+- **Oracle**: the helper journals each acknowledged put outside etcd, and the fault agent reruns a
+  check that performs serializable local reads through each member. It compares every
+  member's recovered key/value set with the unique acknowledged ledger. An acknowledged-but-
+  missing or changed value on any member is the case's only failing assertion. A down member,
+  empty journal, or failed local read is silent, so a crash alone cannot be mistaken for
+  corruption. The multi-member oracle directly observes the follower-local divergence from the
+  upstream report.
 
-## Difficulty / knobs
+## Why the search holds a thread
 
-- Expected branches-to-find: unknown until measured — upstream's window is narrow (they needed
-  OOM-scale chaos to hit it). Knobs: write rate, bbolt batch interval/limit
-  (`--backend-batch-interval`, `--backend-batch-limit`) widen or shrink the CI-ahead-of-data
-  window. Record measured branches-to-find here once run.
-- **Nominal control**: same workload, clean shutdowns (SIGTERM + wait) — must never diverge.
+The window opens when a periodic commit persists the consistent index while the applying thread is
+still behind it, which needs two threads running at once. Plain random member kills reach it on
+3.5.2 on a multiprocessor host and never on one processor, and never on 3.5.3 either way. Consonance
+runs one virtual processor, so the search has to recreate on one processor what parallelism produced
+on many: holding a thread at an instrumented site long enough for the commit to run ahead of the
+data it claims to cover. The case's fault surface therefore pairs the event kill with an event park.
+
+## Discovery contract
+
+The case has one locked execution profile, bounded by wall time alone. CI runs the same search
+campaign on both instrumented arms on demand or on schedule. The vulnerable arm must find and
+replay assertion 1 with evidence point 11; the control must reach point 11 and stay clean under
+the identical campaign. A search miss is a regression in the test machinery, not a request to
+tune the workload.
+
+One campaign per arm under that profile:
+
+| arm | bug found | executions | executions to first hit | conclusive checks | kills fired of armed |
+|---|---|---|---|---|---|
+| 3.5.2 | yes | 1495 | 1492 | 5 | 239 of 596 |
+| 3.5.3 | no | 4900 | - | 6 | 724 of 1889 |
+
+Replaying the vulnerable arm's recorded input three times reproduces assertion 1 with evidence
+point 11 and the same whole-VM state hash every time. Replaying that identical input on the
+control reaches evidence point 11, reports no violation, and likewise repeats exactly. The
+control reaches the oracle at least as often as the vulnerable arm does, so its clean result
+says the fix holds rather than saying the oracle stayed silent.
+
+The only expected difference between the arms is the upstream etcd fix. Performance experiments
+may add separate profiles later, but they cannot alter the correctness or portability contract
+of this case.
 
 ## Why this entry is first
 
-Single binary, no kernel or version gymnastics, kill-at-Moment is a fault surface Harmony has
-today, the oracle is cheap, and it's the highest-recognition corruption bug in modern infra
-(it shook Kubernetes). It also has a natural sibling (the defrag bug) once this lands.
+Single binary, no kernel or version gymnastics, a generic instrumented event coordinate, and a cheap
+oracle make this a useful first target. It also has a natural sibling in the later defragmentation
+bug once this lands.

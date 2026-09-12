@@ -9,6 +9,7 @@
 //! | fault | window opens | window closes |
 //! |---|---|---|
 //! | `ProcKill` | `SIGKILL` the node's group | nothing: a kill is permanent |
+//! | `ProcEventKill` | arm the instrumented runtime at a site rarity | disarm the arm |
 //! | `ProcPause` | `SIGSTOP` | `SIGCONT` |
 //! | `ProcRestart` | `SIGKILL` | start the node again |
 //! | `RunHook` | launch the hook once | nothing: hooks are not awaited |
@@ -18,7 +19,7 @@
 //! counted and started again at the next tick, so a workload that crashes on
 //! its own keeps running and the count is the observable.
 
-use crate::faults::{ActiveFaults, Park};
+use crate::faults::{ActiveFaults, EventPark, Park};
 use crate::regs::RegisterSnapshot;
 
 /// One thing the agent must do to the guest this tick, in the order the
@@ -33,6 +34,17 @@ pub enum Action {
     Cont(u16),
     /// Spawn the node's command in a fresh process group.
     Start(u16),
+    /// Arm a running instrumented node to synchronously kill its process group
+    /// at a rare site in the deterministic event stream.
+    /// Arm the node's instrumented runtime at a site rarity scale.
+    ArmEventKill(u16, u64),
+    /// Remove an event-kill arm from a running instrumented node.
+    DisarmEventKill(u16),
+    /// Arm a running instrumented node to hold the calling thread of its first
+    /// callback at a rarely visited site.
+    ArmEventPark(u16, EventPark),
+    /// Remove an event-park arm from a running instrumented node.
+    DisarmEventPark(u16),
     /// Launch the hook once, without waiting for it.
     RunHook(u32),
     /// Arm a park on the node's process group through the guest kernel.
@@ -51,6 +63,15 @@ impl Action {
             Action::Stop(node) => format!("pause node {node}"),
             Action::Cont(node) => format!("resume node {node}"),
             Action::Start(node) => format!("start node {node}"),
+            Action::ArmEventKill(node, rarity) => {
+                format!("arm event kill node {node} rarity {rarity}")
+            }
+            Action::DisarmEventKill(node) => format!("disarm event kill node {node}"),
+            Action::ArmEventPark(node, park) => format!(
+                "arm event park node {node} rarity {} hold {}",
+                park.rarity, park.hold_nanos
+            ),
+            Action::DisarmEventPark(node) => format!("disarm event park node {node}"),
             Action::RunHook(id) => format!("run hook {id}"),
             Action::Park(node, park) => format!(
                 "park node {node} at {:#x} hit {} hold {}",
@@ -70,14 +91,32 @@ pub struct Counters {
     pub hooks_started: u64,
     /// Hooks that have exited.
     pub hooks_finished: u64,
-    /// Node exits with no fault in force.
+    /// Node exits not expected from Kill or Restart.
     pub unexpected_deaths: u64,
+    /// Node deaths observed while the node's EventKill arm was active.
+    pub event_kills_fired: u64,
+    /// Agent ticks the most recent fired EventKill arm survived.
+    pub event_kill_age_ticks: u64,
+    /// Instrumentation edge of the site the most recent EventKill fired at.
+    pub event_kill_site: u64,
+    /// Runs of the bundle's `check` command that finished.
+    pub checks_finished: u64,
+    /// Runs of the bundle's `check` command that emitted an assertion
+    /// directive. A run that finished without one reached no verdict.
+    pub checks_conclusive: u64,
+    /// Event parks that reached their site and held, read back from the
+    /// instrumented runtime.
+    pub event_parks_fired: u64,
+    /// Workload units a hook has verified, the greatest `@verified` seen.
+    pub verified: u64,
     /// Node starts after the initial one.
     pub restarts: u64,
     /// Bitmap of the `assert_sometimes` ids a hook has reported.
     pub sometimes: u64,
     /// Threads the guest kernel has parked at a place.
     pub parked: u64,
+    /// Exits of the bundle's `workload` process.
+    pub workload_deaths: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -89,6 +128,33 @@ struct NodeState {
     /// makes `ProcKill` permanent and `ProcRestart` the only fault that brings
     /// a node back.
     expected_down: bool,
+    /// The EventKill arm currently installed in this process, if any. The
+    /// standing-fault answer can close before the process exit is reaped, so
+    /// this process-owned state is what identifies the death's arm.
+    event_kill_armed: Option<u64>,
+    /// The tick the current arm was installed at, used to age a fire.
+    event_kill_armed_tick: u64,
+    /// An arm value that has already killed this node. An arm stands until the
+    /// input ends, so without this the restarted node would be armed again and
+    /// the same coordinate would kill it over and over.
+    event_kill_fired: Option<u64>,
+    /// Park fires read back from processes of this node that have since died.
+    /// The runtime's counter lives in the process, so a replacement starts at
+    /// zero and what the dead one held has to be kept here.
+    event_park_fires_banked: u64,
+    /// The last park-fire count read from this node's running process.
+    event_park_fires_live: u64,
+}
+
+impl NodeState {
+    /// Bank what this node's process held before its replacement starts
+    /// counting from zero.
+    fn bank_event_park_fires(&mut self) {
+        self.event_park_fires_banked = self
+            .event_park_fires_banked
+            .saturating_add(self.event_park_fires_live);
+        self.event_park_fires_live = 0;
+    }
 }
 
 /// The agent's model of its nodes and the last answer it applied.
@@ -97,6 +163,11 @@ pub struct Supervisor {
     nodes: Vec<NodeState>,
     previous: ActiveFaults,
     counters: Counters,
+    /// The next incarnation id for a managed process built with the
+    /// instrumented event runtime. This lives in the guest-resident
+    /// supervisor state so VM snapshots and replay preserve the allocator.
+    /// Zero is the exhausted marker; every assigned id is positive.
+    next_instrumented_process_id: u32,
 }
 
 impl Supervisor {
@@ -109,12 +180,30 @@ impl Supervisor {
                     alive: true,
                     paused: false,
                     expected_down: false,
+                    event_kill_armed: None,
+                    event_kill_armed_tick: 0,
+                    event_kill_fired: None,
+                    event_park_fires_banked: 0,
+                    event_park_fires_live: 0,
                 };
                 node_count
             ],
             previous: ActiveFaults::new(),
             counters: Counters::default(),
+            next_instrumented_process_id: 1,
         }
+    }
+
+    /// Allocate the next process incarnation id for an instrumented managed
+    /// node. The id is global to the supervisor, so starts across all nodes
+    /// cannot reuse one another's ids during an agent execution.
+    pub fn allocate_instrumented_process_id(&mut self) -> Result<u32, String> {
+        let id = self.next_instrumented_process_id;
+        if id == 0 {
+            return Err("instrumented process incarnation id space exhausted".to_owned());
+        }
+        self.next_instrumented_process_id = if id == i32::MAX as u32 { 0 } else { id + 1 };
+        Ok(id)
     }
 
     /// Reconcile one standing-poll answer, given the nodes observed to have
@@ -130,9 +219,21 @@ impl Supervisor {
             }
             state.alive = false;
             state.paused = false;
+            let armed = state.event_kill_armed.take();
+            if let Some(rarity) = armed {
+                state.event_kill_fired = Some(rarity);
+            }
             if !state.expected_down {
                 self.counters.unexpected_deaths += 1;
+                if armed.is_some() {
+                    self.counters.event_kills_fired += 1;
+                    self.counters.event_kill_age_ticks = self
+                        .counters
+                        .ticks
+                        .saturating_sub(state.event_kill_armed_tick);
+                }
             }
+            state.bank_event_park_fires();
         }
 
         let mut actions = Vec::new();
@@ -149,6 +250,8 @@ impl Supervisor {
                     actions.push(Action::Kill(node));
                     state.alive = false;
                     state.paused = false;
+                    state.event_kill_armed = None;
+                    state.bank_event_park_fires();
                 }
                 state.expected_down = true;
             }
@@ -160,12 +263,36 @@ impl Supervisor {
                 actions.push(Action::Cont(node));
                 state.paused = false;
             }
+            if now.event_kill != was.event_kill {
+                match now.event_kill {
+                    Some(rarity) if state.alive => {
+                        // A different arm is a new instruction, so an earlier
+                        // fire no longer suppresses it.
+                        state.event_kill_fired = None;
+                        actions.push(Action::ArmEventKill(node, rarity));
+                        state.event_kill_armed = Some(rarity);
+                        state.event_kill_armed_tick = self.counters.ticks;
+                    }
+                    None if was.event_kill.is_some() && state.alive => {
+                        actions.push(Action::DisarmEventKill(node));
+                        state.event_kill_armed = None;
+                    }
+                    _ => {}
+                }
+            }
             if let Some(park) = now.park {
                 if was.park != Some(park) {
                     actions.push(Action::Park(node, park));
                 }
             } else if was.park.is_some() {
                 actions.push(Action::Unpark(node));
+            }
+            if let Some(park) = now.event_park {
+                if was.event_park != Some(park) && state.alive {
+                    actions.push(Action::ArmEventPark(node, park));
+                }
+            } else if was.event_park.is_some() && state.alive {
+                actions.push(Action::DisarmEventPark(node));
             }
             // A restart window closing brings the node back unless a kill still
             // names it.
@@ -174,7 +301,18 @@ impl Supervisor {
                 state.alive = true;
                 state.paused = false;
                 state.expected_down = false;
+                state.event_kill_armed = None;
                 self.counters.restarts += 1;
+                // Event-kill is a one-shot arm owned by the process.  If the
+                // process died while its standing window remained open, the
+                // replacement needs the same arm after it starts.
+                if let Some(rarity) = now.event_kill
+                    && state.event_kill_fired != Some(rarity)
+                {
+                    actions.push(Action::ArmEventKill(node, rarity));
+                    state.event_kill_armed = Some(rarity);
+                    state.event_kill_armed_tick = self.counters.ticks;
+                }
             }
         }
 
@@ -194,10 +332,22 @@ impl Supervisor {
             actions.push(Action::Start(node));
             self.nodes[index].alive = true;
             self.nodes[index].paused = false;
+            self.nodes[index].event_kill_armed = None;
             self.counters.restarts += 1;
+            // A standing event-kill window survives the crash, but its arm
+            // does not: it lives in the old process.  Re-arm the replacement
+            // in action order, immediately after its Start action.
+            if let Some(rarity) = active.node(node).event_kill
+                && self.nodes[index].event_kill_fired != Some(rarity)
+            {
+                actions.push(Action::ArmEventKill(node, rarity));
+                self.nodes[index].event_kill_armed = Some(rarity);
+                self.nodes[index].event_kill_armed_tick = self.counters.ticks;
+            }
         }
 
         self.previous = active.clone();
+        self.recount_event_park_fires();
         actions
     }
 
@@ -209,6 +359,58 @@ impl Supervisor {
     /// Record that a park took its hit and held a thread.
     pub fn note_parked(&mut self) {
         self.counters.parked += 1;
+    }
+
+    /// Record that the bundle's workload process exited. The agent does not
+    /// restart it, so this marks the moment load stopped.
+    pub fn note_workload_death(&mut self) {
+        self.counters.workload_deaths += 1;
+    }
+
+    /// Record the runtime's running total of event parks that held. The
+    /// runtime counts per process, so a restarted node starts from zero and the
+    /// agent keeps the greatest total it has seen.
+    /// Record a hook's cumulative count of verified workload units. Hooks
+    /// report independently and a later one can be behind, so the agent keeps
+    /// the greatest count it has seen.
+    pub fn note_verified(&mut self, count: u64) {
+        self.counters.verified = self.counters.verified.max(count);
+    }
+
+    /// Record the site an instrumented node reported as it killed itself. The
+    /// edge only means anything against the symbol tables of the build that
+    /// produced it, so the agent forwards it without interpreting it.
+    pub fn note_event_kill_site(&mut self, edge: u64) {
+        self.counters.event_kill_site = edge;
+    }
+
+    pub fn note_event_park_fires(&mut self, node: u16, fires: u64) {
+        let Some(state) = self.nodes.get_mut(usize::from(node)) else {
+            return;
+        };
+        state.event_park_fires_live = fires;
+        self.recount_event_park_fires();
+    }
+
+    fn recount_event_park_fires(&mut self) {
+        self.counters.event_parks_fired = self
+            .nodes
+            .iter()
+            .map(|state| {
+                state
+                    .event_park_fires_banked
+                    .saturating_add(state.event_park_fires_live)
+            })
+            .fold(0_u64, u64::saturating_add);
+    }
+
+    /// Record that one run of the bundle's check finished, and whether it
+    /// reached a verdict.
+    pub fn note_check_finished(&mut self, verdict: bool) {
+        self.counters.checks_finished += 1;
+        if verdict {
+            self.counters.checks_conclusive += 1;
+        }
     }
 
     /// Record an `assert_sometimes` hit reported by a hook. Ids at or beyond
@@ -233,6 +435,12 @@ impl Supervisor {
         bits
     }
 
+    /// Whether every node the bundle declares is running.
+    #[must_use]
+    pub fn all_alive(&self) -> bool {
+        self.nodes.iter().all(|state| state.alive)
+    }
+
     /// The counters as published.
     #[must_use]
     pub fn counters(&self) -> Counters {
@@ -249,8 +457,16 @@ impl Supervisor {
             hooks_finished: self.counters.hooks_finished,
             sometimes: self.counters.sometimes,
             unexpected_deaths: self.counters.unexpected_deaths,
+            event_kills_fired: self.counters.event_kills_fired,
+            event_kill_age_ticks: self.counters.event_kill_age_ticks,
+            event_kill_site: self.counters.event_kill_site,
+            checks_finished: self.counters.checks_finished,
+            checks_conclusive: self.counters.checks_conclusive,
+            event_parks_fired: self.counters.event_parks_fired,
+            verified: self.counters.verified,
             restarts: self.counters.restarts,
             parked: self.counters.parked,
+            workload_deaths: self.counters.workload_deaths,
         }
     }
 }
@@ -285,6 +501,158 @@ mod tests {
         assert_eq!(sup.counters().unexpected_deaths, 0);
         assert_eq!(sup.counters().restarts, 0);
         assert_eq!(sup.counters().ticks, 5);
+    }
+
+    #[test]
+    fn an_event_kill_window_arms_and_disarms_without_signalling_at_the_boundary() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 19 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 19)]);
+        assert_eq!(sup.tick(&event, &[]), []);
+        assert_eq!(
+            sup.tick(&ActiveFaults::new(), &[]),
+            [Action::DisarmEventKill(0)]
+        );
+        assert_eq!(sup.alive_bitmap(), 1);
+    }
+
+    #[test]
+    fn an_event_kill_arm_fires_once_however_long_its_window_stands() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 19 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 19)]);
+
+        // The arm kills the process. Its window stands to the end of the
+        // input, so the replacement starts unarmed rather than walking into
+        // the same coordinate again.
+        assert_eq!(sup.tick(&event, &[0]), [Action::Start(0)]);
+        assert_eq!(sup.tick(&event, &[]), []);
+
+        // A different coordinate is a new instruction and arms normally.
+        let later = active(&[(0, Fault::ProcEventKill { rarity: 23 })]);
+        assert_eq!(sup.tick(&later, &[]), [Action::ArmEventKill(0, 23)]);
+    }
+
+    #[test]
+    fn park_fires_survive_the_process_that_held_them() {
+        let mut sup = Supervisor::new(2);
+        let park = active(&[(
+            0,
+            Fault::ProcEventPark {
+                rarity: 16,
+                hold: Span(2_000_000_000),
+            },
+        )]);
+        sup.tick(&park, &[]);
+        sup.note_event_park_fires(0, 3);
+        assert_eq!(sup.counters().event_parks_fired, 3);
+
+        // The replacement process counts from zero. What the dead one held is
+        // still evidence, so the total only ever grows.
+        sup.tick(&active(&[(0, Fault::ProcRestart)]), &[]);
+        sup.note_event_park_fires(0, 1);
+        assert_eq!(sup.counters().event_parks_fired, 4);
+
+        // Another node's fires add to the same total rather than replacing it.
+        sup.note_event_park_fires(1, 2);
+        assert_eq!(sup.counters().event_parks_fired, 6);
+    }
+
+    #[test]
+    fn an_event_park_arms_once_and_disarms_when_its_window_closes() {
+        let mut sup = Supervisor::new(1);
+        let park = active(&[(
+            0,
+            Fault::ProcEventPark {
+                rarity: 12,
+                hold: Span(50_000_000),
+            },
+        )]);
+        assert_eq!(
+            sup.tick(&park, &[]),
+            [Action::ArmEventPark(
+                0,
+                EventPark {
+                    rarity: 12,
+                    hold_nanos: 50_000_000,
+                }
+            )]
+        );
+        // The same window standing another tick is not a new instruction.
+        assert_eq!(sup.tick(&park, &[]), []);
+        assert_eq!(
+            sup.tick(&ActiveFaults::default(), &[]),
+            [Action::DisarmEventPark(0)]
+        );
+    }
+
+    #[test]
+    fn an_event_kill_death_has_a_dedicated_fired_counter() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 19 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 19)]);
+        assert_eq!(sup.tick(&event, &[0]), [Action::Start(0)]);
+        assert_eq!(sup.counters().event_kills_fired, 1);
+        // The generic death register retains its existing meaning and still
+        // records the process exit as an unexpected death.
+        assert_eq!(sup.counters().unexpected_deaths, 1);
+    }
+
+    #[test]
+    fn a_fired_event_kill_reports_how_many_ticks_its_arm_survived() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 19 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 19)]);
+        for _ in 0..5 {
+            assert_eq!(sup.tick(&event, &[]), []);
+        }
+        assert_eq!(sup.tick(&event, &[0]), [Action::Start(0)]);
+        assert_eq!(sup.counters().event_kill_age_ticks, 6);
+    }
+
+    #[test]
+    fn an_event_kill_death_is_counted_after_its_window_closes() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 19 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 19)]);
+        // The process exits before the next standing poll observes that the
+        // EventKill window has closed. The installed arm is still evidence.
+        assert_eq!(sup.tick(&ActiveFaults::new(), &[0]), [Action::Start(0)]);
+        assert_eq!(sup.counters().event_kills_fired, 1);
+    }
+
+    #[test]
+    fn a_kill_expected_death_does_not_increment_the_event_counter() {
+        let mut sup = Supervisor::new(1);
+        let both = active(&[
+            (0, Fault::ProcKill),
+            (0, Fault::ProcEventKill { rarity: 19 }),
+        ]);
+        assert_eq!(sup.tick(&both, &[]), [Action::Kill(0)]);
+        assert_eq!(sup.tick(&both, &[0]), []);
+        assert_eq!(sup.counters().event_kills_fired, 0);
+        assert_eq!(sup.counters().unexpected_deaths, 0);
+    }
+
+    #[test]
+    fn an_event_kill_rearms_after_restart_window_closes() {
+        let mut sup = Supervisor::new(1);
+        let both = active(&[
+            (0, Fault::ProcEventKill { rarity: 23 }),
+            (0, Fault::ProcRestart),
+        ]);
+        // Restart takes the running process down, so there is no control
+        // channel to arm yet.
+        assert_eq!(sup.tick(&both, &[]), [Action::Kill(0)]);
+        assert_eq!(sup.tick(&both, &[0]), []);
+
+        // The restart closes while event-kill remains standing.  Start first,
+        // then arm the new process.
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 23 })]);
+        assert_eq!(
+            sup.tick(&event, &[]),
+            [Action::Start(0), Action::ArmEventKill(0, 23)]
+        );
     }
 
     #[test]
@@ -472,6 +840,7 @@ mod tests {
         assert_eq!(snap.hooks_finished, 1);
         assert_eq!(snap.sometimes, 1 << 3);
         assert_eq!(snap.unexpected_deaths, 1);
+        assert_eq!(snap.event_kills_fired, 0);
         assert_eq!(snap.restarts, 1);
     }
 
@@ -495,5 +864,33 @@ mod tests {
             "park node 0 at 0x4b0e86 hit 28 hold 2000000"
         );
         assert_eq!(Action::Unpark(0).describe(), "unpark node 0");
+    }
+
+    #[test]
+    fn instrumented_process_ids_are_global_across_nodes() {
+        let mut sup = Supervisor::new(2);
+        assert_eq!(sup.allocate_instrumented_process_id(), Ok(1));
+        assert_eq!(sup.allocate_instrumented_process_id(), Ok(2));
+        assert_eq!(sup.allocate_instrumented_process_id(), Ok(3));
+    }
+
+    #[test]
+    fn instrumented_process_id_state_replays_from_a_snapshot() {
+        let mut sup = Supervisor::new(1);
+        assert_eq!(sup.allocate_instrumented_process_id(), Ok(1));
+        let mut replay = sup.clone();
+        assert_eq!(sup.allocate_instrumented_process_id(), Ok(2));
+        assert_eq!(replay.allocate_instrumented_process_id(), Ok(2));
+    }
+
+    #[test]
+    fn instrumented_process_id_overflow_fails_loudly() {
+        let mut sup = Supervisor::new(1);
+        sup.next_instrumented_process_id = i32::MAX as u32;
+        assert_eq!(sup.allocate_instrumented_process_id(), Ok(i32::MAX as u32));
+        assert_eq!(
+            sup.allocate_instrumented_process_id(),
+            Err("instrumented process incarnation id space exhausted".to_owned())
+        );
     }
 }

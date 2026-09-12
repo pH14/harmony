@@ -9,7 +9,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{arb_action, arb_answer, arb_host_fault, arb_spec, canon, config};
-use fault_policy::{Action, Answer, EnvError, EnvSpec, HostFault};
+use fault_policy::{Action, Answer, EnvError, EnvSpec, Fault, HostFault};
 use proptest::prelude::*;
 
 proptest! {
@@ -149,6 +149,17 @@ fn action_from_plane_conversions() {
 
     let ans = Answer::Supply(vec![1, 2, 3, 4]);
     assert_eq!(Action::from(ans.clone()), Action::Guest(ans));
+}
+
+// The kill's coordinate is a rarity scale, so every byte the wire can carry
+// names a site class. Nothing about it is out of range.
+#[test]
+fn every_event_kill_rarity_round_trips_through_the_shared_codec() {
+    for rarity in [0_u8, 1, 20, u8::MAX] {
+        let answer = Answer::Fault(Fault::ProcEventKill { rarity });
+        let bytes = answer.clone().encode();
+        assert_eq!(Answer::decode(&bytes), Ok(answer));
+    }
 }
 
 #[test]

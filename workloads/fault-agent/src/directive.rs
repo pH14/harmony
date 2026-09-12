@@ -25,6 +25,10 @@ pub enum Directive {
     Sometimes(u32),
     /// `assert_reachable` at this point.
     Reachable(u32),
+    /// The workload units the hook has verified so far, cumulative and
+    /// monotonic. It is a count, not an assertion point, so it lands in a
+    /// register instead of the SDK.
+    Verified(u64),
     /// `assert_always(cond)` at this point.
     Always {
         /// The assertion point id.
@@ -65,6 +69,7 @@ pub fn parse_directive(line: &str) -> Result<Option<Directive>, DirectiveError> 
     let directive = match verb {
         "@sometimes" => Directive::Sometimes(one_id(words, "@sometimes")?),
         "@reachable" => Directive::Reachable(one_id(words, "@reachable")?),
+        "@verified" => Directive::Verified(one_count(words, "@verified")?),
         "@always" => {
             let point = words
                 .next()
@@ -83,6 +88,20 @@ pub fn parse_directive(line: &str) -> Result<Option<Directive>, DirectiveError> 
         other => return Err(DirectiveError::UnknownVerb(other.to_string())),
     };
     Ok(Some(directive))
+}
+
+fn one_count<'a>(
+    mut words: impl Iterator<Item = &'a str>,
+    verb: &'static str,
+) -> Result<u64, DirectiveError> {
+    let count = words
+        .next()
+        .and_then(|w| w.parse::<u64>().ok())
+        .ok_or(DirectiveError::BadArguments { verb })?;
+    if words.next().is_some() {
+        return Err(DirectiveError::BadArguments { verb });
+    }
+    Ok(count)
 }
 
 fn one_id<'a>(
@@ -154,6 +173,17 @@ impl LineReader {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_verified_count_parses_as_a_count_not_an_assertion_point() {
+        assert_eq!(
+            parse_directive("@verified 4096"),
+            Ok(Some(Directive::Verified(4096)))
+        );
+        assert!(parse_directive("@verified").is_err());
+        assert!(parse_directive("@verified -1").is_err());
+        assert!(parse_directive("@verified 1 2").is_err());
+    }
+
     use super::*;
 
     #[test]

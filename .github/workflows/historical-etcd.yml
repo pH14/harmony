@@ -1,0 +1,353 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Benchmarks / Historical etcd v3.5 bug
+
+on:
+  pull_request:
+    paths:
+      - .github/scripts/historical-*.sh
+      - .github/workflows/historical-etcd.yml
+      - Cargo.lock
+      - Cargo.toml
+      - bugs/historical/etcd-3.5-inconsistency/**
+      - cli/**
+      - consonance/**
+      - dissonance/**
+      - flake.lock
+      - flake.nix
+      - scripts/render-historical-bugs.py
+      - workloads/**
+  workflow_dispatch:
+  schedule:
+    - cron: "30 6 * * *"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CASE_DIR: bugs/historical/etcd-3.5-inconsistency
+  SOFTWARE_NAME: etcd
+  IMAGE_PREFIX: etcd
+
+jobs:
+  manifest:
+    name: Read the locked etcd case manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      case_id: ${{ steps.read.outputs.case_id }}
+      horizon_ms: ${{ steps.read.outputs.horizon_ms }}
+      ram_mib: ${{ steps.read.outputs.ram_mib }}
+      seed: ${{ steps.read.outputs.seed }}
+      workers: ${{ steps.read.outputs.workers }}
+      actions: ${{ steps.read.outputs.actions }}
+      wall_minutes: ${{ steps.read.outputs.wall_minutes }}
+      knobs: ${{ steps.read.outputs.knobs }}
+      oracle_assertion: ${{ steps.read.outputs.oracle_assertion }}
+      oracle_evidence: ${{ steps.read.outputs.oracle_evidence }}
+      vulnerable_version: ${{ steps.read.outputs.vulnerable_version }}
+      vulnerable_sha256: ${{ steps.read.outputs.vulnerable_sha256 }}
+      control_version: ${{ steps.read.outputs.control_version }}
+      control_sha256: ${{ steps.read.outputs.control_sha256 }}
+      instrumentor_version: ${{ steps.read.outputs.instrumentor_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate and read case.json
+        id: read
+        run: |
+          set -euo pipefail
+          case_json="${CASE_DIR}/case.json"
+          jq -e '
+            .id == "etcd-3.5-inconsistency"
+            and (.run.knobs == {})
+            and (.instrumentation.tool == "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-toolexec")
+            and (.instrumentation.version == "0.8.0")
+            and (.instrumentation.license == "MIT")
+            and (.arms.vulnerable.source_sha256 | type == "string" and length == 64)
+            and (.arms.control.source_sha256 | type == "string" and length == 64)
+            and (.oracle | has("assertion") and has("evidence"))
+          ' "${case_json}" >/dev/null
+          emit() { printf '%s=%s\n' "$1" "$2" >>"${GITHUB_OUTPUT}"; }
+          emit case_id "$(jq -r .id "${case_json}")"
+          emit horizon_ms "$(jq -r .run.horizon_ms "${case_json}")"
+          emit ram_mib "$(jq -r .run.ram_mib "${case_json}")"
+          emit seed "$(jq -r .search.seed "${case_json}")"
+          emit workers "$(jq -r .search.workers "${case_json}")"
+          emit actions "$(jq -r .search.actions "${case_json}")"
+          emit wall_minutes "$(jq -r .search.wall_minutes "${case_json}")"
+          emit vulnerable_version "$(jq -r .arms.vulnerable.version "${case_json}")"
+          emit vulnerable_sha256 "$(jq -r .arms.vulnerable.source_sha256 "${case_json}")"
+          emit control_version "$(jq -r .arms.control.version "${case_json}")"
+          emit control_sha256 "$(jq -r .arms.control.source_sha256 "${case_json}")"
+          emit instrumentor_version "$(jq -r .instrumentation.version "${case_json}")"
+          emit oracle_assertion "$(jq -r .oracle.assertion "${case_json}")"
+          emit oracle_evidence "$(jq -r .oracle.evidence "${case_json}")"
+          emit knobs ""
+      - name: Summarize the manifest
+        run: |
+          set -euo pipefail
+          {
+            echo "## Case manifest"
+            echo
+            jq -r '
+              ["id", .id],
+              ["vulnerable", .arms.vulnerable.version],
+              ["control", .arms.control.version],
+              ["instrumentor", (.instrumentation.tool + "@v" + .instrumentation.version)],
+              ["oracle", "@\(.oracle.kind) \(.oracle.assertion) — \(.oracle.detector)"],
+              ["oracle verdict evidence", "@reachable \(.oracle.evidence)"],
+              ["knobs", "none"],
+              ["status", .status]
+              | "| \(.[0]) | \(.[1]) |"
+            ' "${CASE_DIR}/case.json"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+  guest:
+    name: Build the locked faultlab guest
+    needs: manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Build guest images
+        run: nix run .#guest-images -- --output "$PWD/guest"
+      - name: Verify guest manifest
+        run: (cd guest && sha256sum -c MANIFEST.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: etcd-guest-${{ github.run_id }}
+          path: |
+            guest/x86_64/bzImage-faultlab
+            guest/x86_64/initramfs.cpio.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  images:
+    name: Build pinned etcd workload images
+    needs: manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build both instrumented images
+        run: |
+          set -euo pipefail
+          mkdir -p oci-images
+          build_arm() {
+            local version="$1" sha="$2"
+            docker build --pull \
+              --build-arg "ETCD_VERSION=${version}" \
+              --build-arg "ETCD_SOURCE_SHA256=${sha}" \
+              --build-arg "ANTITHESIS_SDK_VERSION=${{ needs.manifest.outputs.instrumentor_version }}" \
+              --tag "harmony-etcd:${version}" \
+              --file "${CASE_DIR}/image/Dockerfile" .
+            docker run --rm --entrypoint /bin/sh "harmony-etcd:${version}" -c \
+              'test -x /opt/etcd/etcd && test -x /opt/etcd/etcdctl \
+               && test -x /opt/harmony/etcd-writer \
+               && test -x /opt/harmony/etcd-oracle \
+               && set -- /symbols/*.sym.tsv && test -s "$1" \
+               && test -s /symbols/harmony-instrumented-events \
+               && test -s /usr/lib/libvoidstar.so \
+               && test -s /licenses/etcd.txt && test -s /licenses/antithesis-sdk-go.txt \
+               && ! grep -a -q antithesishq/antithesis-sdk-go/instrumentation /opt/harmony/etcd-writer \
+               && ! grep -a -q antithesishq/antithesis-sdk-go/instrumentation /opt/harmony/etcd-oracle \
+               && grep -a -q antithesishq/antithesis-sdk-go/instrumentation /opt/etcd/etcd'
+            docker save --output "oci-images/${IMAGE_PREFIX}-${version}.oci" "harmony-etcd:${version}"
+          }
+          build_arm "${{ needs.manifest.outputs.vulnerable_version }}" \
+            "${{ needs.manifest.outputs.vulnerable_sha256 }}"
+          build_arm "${{ needs.manifest.outputs.control_version }}" \
+            "${{ needs.manifest.outputs.control_sha256 }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: etcd-images-${{ github.run_id }}
+          path: oci-images
+          if-no-files-found: error
+          retention-days: 1
+
+  tools:
+    name: Build Harmony and the static fault agent
+    needs: manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install musl
+        run: |
+          # The hosted image's Chrome repository can serve a stale Packages
+          # index. It is unrelated to this build; remove only that source so
+          # apt cannot make the tool build depend on it.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
+          rustup target add x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: Build tools
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p harmony-cli
+          cargo build --locked --release --manifest-path workloads/fault-agent/Cargo.toml \
+            --target x86_64-unknown-linux-musl
+          mkdir -p tools
+          cp target/release/harmony tools/harmony
+          cp workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent tools/fault-agent
+      - uses: actions/upload-artifact@v4
+        with:
+          name: etcd-tools-${{ github.run_id }}
+          path: tools
+          if-no-files-found: error
+          retention-days: 1
+
+  search:
+    name: Discover the bug on affected and fixed arms
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: [manifest, guest, images, tools]
+    runs-on: ubuntu-24.04
+    # The campaign's own bound is the case's wall budget plus the twenty
+    # minutes historical-search.sh allows a run that stops answering. This
+    # leaves that bound room to fire first, so a campaign that overruns is
+    # reported rather than cut off with no artifacts.
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [vulnerable, control]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-guest-${{ github.run_id }}
+          path: guest
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-images-${{ github.run_id }}
+          path: oci-images
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-tools-${{ github.run_id }}
+          path: tools
+      - name: Grant nested KVM access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run discovery campaign
+        env:
+          CASE_ID: ${{ needs.manifest.outputs.case_id }}
+          ARM: ${{ matrix.arm }}
+          WORKLOAD_VERSION: ${{ matrix.arm == 'vulnerable' && needs.manifest.outputs.vulnerable_version || needs.manifest.outputs.control_version }}
+          HORIZON_MS: ${{ needs.manifest.outputs.horizon_ms }}
+          RAM_MIB: ${{ needs.manifest.outputs.ram_mib }}
+          SEED: ${{ needs.manifest.outputs.seed }}
+          WORKERS: ${{ needs.manifest.outputs.workers }}
+          ACTIONS: ${{ needs.manifest.outputs.actions }}
+          WALL_MINUTES: ${{ needs.manifest.outputs.wall_minutes }}
+          KNOBS: ${{ needs.manifest.outputs.knobs }}
+          ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}
+          ORACLE_EVIDENCE: ${{ needs.manifest.outputs.oracle_evidence }}
+        run: .github/scripts/historical-search.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: etcd-search-${{ matrix.arm }}-${{ github.run_id }}
+          path: reports
+          if-no-files-found: warn
+          retention-days: 30
+
+  differential:
+    name: Replay the discovered execution on both arms
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: [manifest, guest, images, tools, search]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-guest-${{ github.run_id }}
+          path: guest
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-images-${{ github.run_id }}
+          path: oci-images
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-tools-${{ github.run_id }}
+          path: tools
+      - uses: actions/download-artifact@v4
+        with:
+          name: etcd-search-vulnerable-${{ github.run_id }}
+          path: discovery
+      - name: Grant nested KVM access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Replay one discovered execution unchanged on both arms
+        env:
+          CASE_ID: ${{ needs.manifest.outputs.case_id }}
+          HORIZON_MS: ${{ needs.manifest.outputs.horizon_ms }}
+          RAM_MIB: ${{ needs.manifest.outputs.ram_mib }}
+          KNOBS: ${{ needs.manifest.outputs.knobs }}
+          VULNERABLE_VERSION: ${{ needs.manifest.outputs.vulnerable_version }}
+          CONTROL_VERSION: ${{ needs.manifest.outputs.control_version }}
+          ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}
+          ORACLE_EVIDENCE: ${{ needs.manifest.outputs.oracle_evidence }}
+        run: |
+          .github/scripts/historical-replay.sh discovery \
+            "discovery/${CASE_ID}.vulnerable.search/first-bug-input.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: etcd-differential-${{ github.run_id }}
+          path: reports
+          if-no-files-found: warn
+          retention-days: 30
+
+  report:
+    name: Render the etcd museum entry
+    needs: [search, differential]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: etcd-search-vulnerable-${{ github.run_id }}
+          path: reports
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: etcd-search-control-${{ github.run_id }}
+          path: reports
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: etcd-differential-${{ github.run_id }}
+          path: reports
+      - name: Render the roster from this run's reports
+        run: |
+          set -euo pipefail
+          python3 scripts/render-historical-bugs.py --reports reports
+          {
+            echo "## Historical etcd roster"
+            echo
+            sed -n '/render-historical-bugs:begin/,/render-historical-bugs:end/p' \
+              bugs/historical/README.md | grep -v render-historical-bugs
+          } >>"${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: etcd-roster-${{ github.run_id }}
+          path: bugs/historical/README.md
+          if-no-files-found: warn
+          retention-days: 30

@@ -17,10 +17,17 @@ in the fault agent's bundle format:
 | `hook <id> <argv...>` | a command the search can run at any moment |
 | `setup <argv...>` | runs once, before any node starts |
 | `ready <argv...>` | must pass before the run's setup point is sealed |
+| `workload <argv...>` | load started once after ready and never restarted |
+| `check <argv...>` | an oracle the agent reruns on its own cadence |
 
 [`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
 alphabet, and assembles a guest initramfs: the base image, the OCI rootfs, and
 a control member holding the static fault agent and this package's init. The
+`EventKill` and `EventPark` actions are added automatically only when the image
+contains the
+Antithesis runtime bridge, generated symbol metadata, and the build's
+instrumented-node hash attestation; this capability is part of the recorded
+vocabulary used by replay. The
 init mounts the pseudo-filesystems, binds and chroots into the workload rootfs,
 and execs the agent. The control member is appended after the compressed
 members and padded to four bytes, which Linux initramfs requires before a raw
@@ -28,16 +35,18 @@ members and padded to four bytes, which Linux initramfs requires before a raw
 
 ## Actions
 
-An input is a list of actions, each running for one fixed horizon of guest
-time ([`target`](src/target.rs)):
+An input is a list of actions laid end to end over guest time
+([`target`](src/target.rs)). Every action but `Wait` runs for one horizon:
 
 | action | effect |
 |---|---|
-| `Wait` | nothing; the workload runs undisturbed for a horizon |
+| `Wait(scale)` | nothing; the workload runs undisturbed for `1 << scale` horizons, scale 0 to 7 |
 | `Kill(node)` | the node stays down for the whole horizon |
+| `EventKill(node, rarity)` | the instrumented runtime kills the node synchronously at the first callback after the arm whose own site has been visited at most `1 << rarity` times; the arm stands until it fires or the input ends |
 | `Pause(node, ticks)` | the node is stopped, then continued inside the horizon |
 | `Restart(node)` | the node is killed and comes back inside the horizon |
 | `Hook(id)` | the agent runs that hook once |
+| `EventPark(node, rarity, hold)` | the instrumented runtime holds one thread of the node for `hold` at the first callback after the arm whose own site has been visited at most `1 << rarity` times |
 | `Park(node, addr, hits, hold)` | guest threads are held at an execution place |
 | `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's seal when settling carried it past that start |
 
@@ -66,8 +75,36 @@ with the boot that reaches setup.
 
 [`campaign`](src/campaign.rs) implements the game-neutral campaign interface
 over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
-which pairs the sometimes-assertion set with the live-node bitmap and the
-hook-completion count.
+which pairs the sometimes-assertion set with node liveness, unexpected deaths,
+EventKill-fired outcomes, hook progress, and whether the workload process was
+still running. A check that finishes without emitting an assertion reached no
+verdict, so conclusive runs are counted separately from finished ones, and event
+parks that actually held are read back from the instrumented runtime because a
+hold leaves no other trace. A `check` reports assertions through the same directives a hook
+uses, so its evidence joins that key without the search having to draw
+anything. `EventKill` outcomes are decoded
+from the agent's dedicated monotonic fired counter rather than inferred from
+aggregate unexpected deaths. A drawn input is bounded in guest time as well as in actions: a `Wait` runs for
+many horizons, so the draw shortens a wait that would push the whole input past
+one horizon per permitted action, and cuts the suffix where even a one-horizon
+action no longer fits. A drawn `Wait` also has a floor. A workload's oracle
+needs the cluster up, writes acknowledged and a recovered member to read back
+before it reaches a verdict, so an input shorter than that ends before the
+oracle says anything and the execution that ran it answers nothing. A workload's progress decays with guest history, so a
+session that runs far past what the workload sustains buys nothing and holds a
+worker for the whole of it. `EventKill` and `EventPark` both draw a visit-count
+scale and leave the site to the runtime, which counts visits per site and
+resolves the coordinate itself. The host never names a site, so the coordinate
+survives a rebuild of the workload. A rare site is reached late and seldom,
+which is where a crash finds state a hot site has already passed through many
+times. The scale ladder reaches sites visited millions of times, because a
+workload's coverage stops growing once it settles: past that point a low scale
+names no site at all and the arm never fires. The runtime reports the edge of the site that killed, and the campaign
+summary carries it as `fired_site`; the image's `/symbols` tables are what turn
+that edge into a file and a line. An `EventPark` may hold for longer than a
+horizon, and its arm stands for the whole hold. Every other fault lands on a
+horizon boundary, so only a hold that outlasts the horizon leaves a thread still
+held when the next action's fault arrives.
 
 ## Running it
 
@@ -89,12 +126,24 @@ Every replay run boots a session no earlier run has touched, so no snapshot
 another run cached can stand in for guest execution: each run reaches the
 sealed setup point and executes the recorded actions itself. Each run records
 the actions it applied beside the horizons it ran in the guest, and the two are
-equal when nothing came from a cache. A search replays every bug it records the
+equal when nothing came from a cache. Each run also carries the endpoint's
+observations, because a fault whose only trace is a register -- an event kill
+that fired, an event park that held -- cannot be compared across runs from the
+stop and the assertions alone. A search replays every bug it records the
 same way, and reports the bug as confirmed only when the replay reproduced the
 evidence the campaign saw: the assertions it violated, or the same stop when
 the stop was the only evidence. `bug_found` and `first_bug_execution` come from
 the confirmed bugs, so a hit that no replay reproduced is reported and does not
 count as a rediscovery.
+
+`campaign-summary.json` carries a `measures` block for the operator: guest
+seconds executed, the greatest acknowledged-write count a hook reported through
+`@verified`, kills fired and unfired, the median and greatest number of agent
+ticks a fired arm survived after its arm, conclusive and inconclusive check
+runs, and the symbol of the site where an arm fired. They say whether a
+campaign is buying guest time, whether its oracle is reaching verdicts, and
+whether its faults are landing, which a bug count alone cannot. None of them
+reaches a search decision, an archive key, or a recorded byte.
 
 Search also writes
 `campaign-summary.json`, `stream.jsonl`, `progress.jsonl`,

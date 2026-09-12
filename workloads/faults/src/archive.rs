@@ -14,12 +14,13 @@ use searcher::search::{
 };
 
 use crate::bundle::FaultVocabulary;
-use crate::target::{FaultAction, FaultObservations};
+use crate::report::CampaignMeasures;
+use crate::target::{FaultAction, FaultObservations, action_horizons};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
 /// Recorded archive-key policy.
-pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_sometimes_hooks_alive_v2";
+pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_sometimes_hooks_alive_v5_workload";
 /// Completed hooks beyond this count stop distinguishing archive cells. A hook
 /// the workload lets re-run cheaply, such as a read-back that finds nothing to
 /// check, would otherwise turn repetition into an endless supply of new cells
@@ -37,7 +38,9 @@ pub struct FaultArchiveGroup {
     hooks_finished: u64,
     hooks_running: u64,
     alive: u64,
+    unexpected_deaths: u64,
     parked: u64,
+    workload_alive: bool,
 }
 
 /// Quality-diversity key for one fault-library endpoint: which `sometimes`
@@ -60,10 +63,19 @@ pub struct FaultArchiveKey {
     pub hooks_running: u64,
     /// Bitmap of live nodes.
     pub alive: u64,
+    /// Node deaths outside an ordinary kill or restart window, saturating at
+    /// [`HOOKS_FINISHED_KEY_CAP`]. An instrumented-event kill is intentionally
+    /// observed this way, so a coordinate that actually fired remains a
+    /// searchable prefix instead of pooling with an unreachable arm.
+    pub unexpected_deaths: u64,
     /// Threads parked at a place, saturating at [`HOOKS_FINISHED_KEY_CAP`].
     /// A park that fired and one that never reached its hit are different
     /// states of the workload.
     pub parked: u64,
+    /// Whether the agent-started workload process was still running. An
+    /// endpoint reached with the load still applying and one reached after it
+    /// died are different states, and only the first is strong evidence.
+    pub workload_alive: bool,
 }
 
 impl ArchiveKey for FaultArchiveKey {
@@ -74,21 +86,26 @@ impl ArchiveKey for FaultArchiveKey {
     }
 
     /// Depth 0 is the whole key, depth 1 drops node liveness so the same
-    /// workload progress under different survivor sets pools, and depth 2 is
-    /// the reached-site set alone.
+    /// workload progress under different survivor sets pools, and depth 2
+    /// keeps reached sites plus event-triggered deaths. Fired event
+    /// coordinates must not pool with arms that never reached a site of their
+    /// rarity; a kill that fired saw state a kill that did not never reached.
     fn group(self, depth: usize) -> Self::Group {
         let full = FaultArchiveGroup {
             sometimes: self.sometimes,
             hooks_finished: self.hooks_finished,
             hooks_running: self.hooks_running,
             alive: self.alive,
+            unexpected_deaths: self.unexpected_deaths,
             parked: self.parked,
+            workload_alive: self.workload_alive,
         };
         match depth {
             0 => full,
             1 => FaultArchiveGroup { alive: 0, ..full },
             _ => FaultArchiveGroup {
                 sometimes: self.sometimes,
+                unexpected_deaths: self.unexpected_deaths,
                 ..FaultArchiveGroup::default()
             },
         }
@@ -118,7 +135,9 @@ pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
             .saturating_sub(observations.hooks_finished)
             .min(HOOKS_FINISHED_KEY_CAP),
         alive: observations.alive,
+        unexpected_deaths: observations.unexpected_deaths.min(HOOKS_FINISHED_KEY_CAP),
         parked: observations.parked.min(HOOKS_FINISHED_KEY_CAP),
+        workload_alive: observations.workload_deaths == 0,
     }
 }
 
@@ -165,6 +184,10 @@ pub struct FaultProgressWatermark {
     pub hooks_finished: u64,
     /// Greatest agent tick count.
     pub ticks: u64,
+    /// Greatest number of finished runs of the bundle's check. A campaign
+    /// whose oracle never finishes a run reports nothing for a reason that has
+    /// nothing to do with the workload.
+    pub checks_finished: u64,
 }
 
 /// Fold one endpoint's observations into a progress watermark.
@@ -177,14 +200,16 @@ pub fn merge_progress_watermark(
             sometimes_sites: observation.sometimes_bitmap().count_ones(),
             hooks_finished: observation.hooks_finished,
             ticks: observation.ticks,
+            checks_finished: observation.checks_finished,
         });
     }
 }
 
-/// Every action costs exactly one horizon, so route cost is action count.
+/// Route cost in horizons. Only a `Wait` costs more than one, so the searcher
+/// prices a long stretch of undisturbed execution for what it actually runs.
 #[must_use]
-pub fn action_time(_action: &FaultAction) -> u64 {
-    1
+pub fn action_time(action: &FaultAction) -> u64 {
+    action_horizons(*action)
 }
 
 /// Pause durations in agent ticks.
@@ -198,6 +223,23 @@ pub const PARK_HITS: [u32; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
 /// thread at the first system call of another task past the deadline, or at
 /// the periodic tick, so a short hold lands within a few milliseconds.
 pub const PARK_HOLD_US: [u32; 3] = [500, 2_000, 10_000];
+/// Visit-count scales an event park or an event kill may name. A site's visit
+/// count spans orders of magnitude within one horizon, so the ladder is
+/// logarithmic: 0 names a site no callback has reached, 16 one reached tens of
+/// thousands of times, 24 one reached millions of times. The high rungs are
+/// what an arm placed after the workload has settled needs: coverage stops
+/// growing once a workload reaches its steady state, so a low rung finds no
+/// site to fire at and the arm stands until the input ends.
+pub const EVENT_SITE_RARITY: [u8; 7] = [0, 4, 8, 12, 16, 20, 24];
+/// Lengths of an event park's hold, in microseconds. The runtime sleeps inside
+/// the callback, so the hold is exact and can be far longer than a breakpoint
+/// park's: a hold has to outlast a batch commit for another thread to overtake
+/// the held one. The ladder reaches past a horizon because a fault in the next
+/// action lands on a horizon boundary, so only a hold longer than the horizon
+/// can still be holding a thread when that fault arrives.
+pub const EVENT_PARK_HOLD_US: [u32; 7] = [
+    1_000, 10_000, 50_000, 250_000, 500_000, 1_000_000, 2_000_000,
+];
 
 /// Draw one action from the bundle's vocabulary. A bundle that declares no
 /// hook cannot draw one, so that arm yields `Wait` rather than an action the
@@ -214,21 +256,38 @@ pub fn sample_action(
         Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault vocabulary alternative")?))
     };
     let node = u16::try_from(pick(rand, usize::from(vocabulary.nodes()))?)?;
-    match pick(rand, 7)? {
-        0 => Ok(FaultAction::Wait),
-        1 => Ok(FaultAction::Kill(node)),
-        2 => Ok(FaultAction::Pause(
+    match pick(rand, 9)? {
+        0 => Ok(FaultAction::Wait(sample_wait_scale(rand))),
+        1 if vocabulary.instrumented_events() => Ok(FaultAction::EventKill {
+            node,
+            rarity: EVENT_SITE_RARITY[pick(rand, EVENT_SITE_RARITY.len())?],
+        }),
+        1 => Ok(FaultAction::Wait(sample_wait_scale(rand))),
+        2 => Ok(FaultAction::Kill(node)),
+        3 => Ok(FaultAction::Pause(
             node,
             PAUSE_TICKS[pick(rand, PAUSE_TICKS.len())?],
         )),
-        3 => Ok(FaultAction::Restart(node)),
-        4 => match vocabulary.hooks() {
-            [] => Ok(FaultAction::Wait),
+        4 => Ok(FaultAction::Restart(node)),
+        5 => match vocabulary.hooks() {
+            [] => Ok(FaultAction::Wait(sample_wait_scale(rand))),
             hooks => Ok(FaultAction::Hook(hooks[pick(rand, hooks.len())?])),
         },
-        5 => Ok(FaultAction::Interrupt(VECTORS[pick(rand, VECTORS.len())?])),
+        6 if vocabulary.interrupt_injection() => {
+            Ok(FaultAction::Interrupt(VECTORS[pick(rand, VECTORS.len())?]))
+        }
+        // The arm64 Consonance backend delegates the GIC to KVM, so it has no
+        // generic host interrupt injection seam. Keep the draw deterministic
+        // while replacing the unavailable arm with a supported no-op action.
+        6 => Ok(FaultAction::Wait(sample_wait_scale(rand))),
+        7 if vocabulary.instrumented_events() => Ok(FaultAction::EventPark {
+            node,
+            rarity: EVENT_SITE_RARITY[pick(rand, EVENT_SITE_RARITY.len())?],
+            hold_us: EVENT_PARK_HOLD_US[pick(rand, EVENT_PARK_HOLD_US.len())?],
+        }),
+        7 => Ok(FaultAction::Wait(sample_wait_scale(rand))),
         _ => match vocabulary.places() {
-            [] => Ok(FaultAction::Wait),
+            [] => Ok(FaultAction::Wait(sample_wait_scale(rand))),
             places => Ok(FaultAction::Park {
                 node,
                 addr: places[pick(rand, places.len())?],
@@ -239,6 +298,40 @@ pub fn sample_action(
     }
 }
 
+/// Longest wait the draw produces. The type allows up to `WAIT_MAX_SCALE`, but
+/// a single action's guest duration is bounded by the wall limit that catches a
+/// hung guest, and guest time advances far slower than host time while the
+/// workload is saturating the processor. Measured on the etcd case at a 500 ms
+/// horizon: a 12-action input drawn at scale 5 or below runs in about 20
+/// seconds of host time, while one scale-6 action exceeded 256 seconds and was
+/// abandoned.
+pub const WAIT_DRAW_MAX_SCALE: u8 = 5;
+
+/// Shortest wait the draw produces. A workload's oracle needs the cluster up,
+/// writes acknowledged and a recovered member to read back before it can reach
+/// a verdict, which takes tens of horizons. An input shorter than that ends
+/// before the oracle says anything, so the same guest time spent on fewer and
+/// longer inputs buys far more verdicts than on many short ones.
+pub const WAIT_DRAW_MIN_SCALE: u8 = 3;
+
+/// Draw a wait length, halving the chance of each next scale above the floor. A
+/// wait costs `1 << scale` horizons to run, so drawing the scale uniformly
+/// would put most of a campaign's guest time in its longest waits: rebuilding
+/// an evicted prefix full of them costs that duration over again. Halving keeps
+/// the expected cost near the floor while every drawn scale stays reachable.
+fn sample_wait_scale(rand: &mut RomuDuoJrRand) -> u8 {
+    let scale = rand.next_u64().trailing_zeros();
+    u8::try_from(scale)
+        .unwrap_or(WAIT_DRAW_MAX_SCALE)
+        .saturating_add(WAIT_DRAW_MIN_SCALE)
+        .min(WAIT_DRAW_MAX_SCALE)
+}
+
+/// Draw across every positive `u64` scale without importing a workload event
+/// bound. Uniform raw integers almost never land in the finite event prefix an
+/// action executes. Choosing the binary scale uniformly gives short and long
+/// actions equal access to reachable coordinates while the low bits select a
+/// point within that scale.
 /// Progress-curve point.
 pub type FaultProgressPoint = ProgressPoint<FaultMilestones, FaultProgressWatermark>;
 /// Archive entry report.
@@ -260,6 +353,16 @@ pub struct FaultBugRecord {
     pub input: FaultInput,
     /// The terminal endpoint's observations.
     pub observations: FaultObservations,
+}
+
+/// Observation-only coordinate-refinement counters. These are reported for
+/// campaign diagnostics and never feed archive selection or admission.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaultCoordinateTelemetry {
+    /// EventKill observations admitted, fired or unfired.
+    pub attempted: u64,
+    /// EventKill observations whose arm fired.
+    pub fired: u64,
 }
 
 /// The campaign outcome a bug list implies: how many bugs were found and the
@@ -303,9 +406,15 @@ pub struct FaultArchiveReport {
     pub deaths: u64,
     /// Bugs found, in admission order, bounded by [`MAX_RECORDED_BUGS`].
     pub bugs: Vec<FaultBugRecord>,
+    /// Non-decision EventKill refinement telemetry.
+    #[serde(default)]
+    pub coordinate_telemetry: FaultCoordinateTelemetry,
     /// Generic selector accounting.
     #[serde(default)]
     pub selector: SelectorAccounting,
+    /// What the campaign bought, for the operator.
+    #[serde(default)]
+    pub measures: CampaignMeasures,
 }
 
 #[cfg(test)]
@@ -334,8 +443,39 @@ mod tests {
                 hooks_finished: 3,
                 hooks_running: 0,
                 alive: 0b11,
+                unexpected_deaths: 0,
                 parked: 0,
+                workload_alive: true,
             }
+        );
+    }
+
+    #[test]
+    fn a_dead_workload_keeps_its_endpoint_out_of_the_running_workload_cell() {
+        let running = endpoint(&[1], 1, 0b11);
+        let mut stopped = running.clone();
+        stopped.workload_deaths = 1;
+        assert!(archive_key(&running).workload_alive);
+        assert!(!archive_key(&stopped).workload_alive);
+        assert_ne!(archive_key(&running), archive_key(&stopped));
+    }
+
+    #[test]
+    fn unexpected_deaths_keep_a_fired_event_coordinate_in_its_own_cell() {
+        let armed_but_unreached = endpoint(&[1], 0, 1);
+        let mut fired = armed_but_unreached.clone();
+        fired.unexpected_deaths = 1;
+        assert_ne!(archive_key(&armed_but_unreached), archive_key(&fired));
+        assert_eq!(archive_key(&fired).unexpected_deaths, 1);
+        assert_ne!(
+            archive_key(&armed_but_unreached).group(2),
+            archive_key(&fired).group(2),
+        );
+
+        fired.unexpected_deaths = HOOKS_FINISHED_KEY_CAP + 1;
+        assert_eq!(
+            archive_key(&fired).unexpected_deaths,
+            HOOKS_FINISHED_KEY_CAP
         );
     }
 
@@ -432,6 +572,7 @@ mod tests {
     fn vocabulary() -> FaultVocabulary {
         FaultVocabulary::new(1, vec![1, 2])
             .expect("vocabulary")
+            .with_instrumented_events(true)
             .with_places(vec![0x4b0e86, 0x47eca0])
             .expect("places")
     }
@@ -442,25 +583,42 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(11);
         let mut kinds = BTreeSet::new();
         let kind = |action: &FaultAction| match action {
-            FaultAction::Wait => 0,
-            FaultAction::Kill(_) => 1,
-            FaultAction::Pause(..) => 2,
-            FaultAction::Restart(_) => 3,
-            FaultAction::Hook(_) => 4,
-            FaultAction::Interrupt(_) => 5,
-            FaultAction::Park { .. } => 6,
+            FaultAction::Wait(_) => 0,
+            FaultAction::EventKill { .. } => 1,
+            FaultAction::Kill(_) => 2,
+            FaultAction::Pause(..) => 3,
+            FaultAction::Restart(_) => 4,
+            FaultAction::Hook(_) => 5,
+            FaultAction::Interrupt(_) => 6,
+            FaultAction::EventPark { .. } => 7,
+            FaultAction::Park { .. } => 8,
         };
         for _ in 0..2_000 {
             let action = sample_action(&mut rand, &vocabulary).expect("draw an action");
             kinds.insert(kind(&action));
             match action {
-                FaultAction::Wait => {}
+                FaultAction::Wait(scale) => {
+                    assert!((WAIT_DRAW_MIN_SCALE..=WAIT_DRAW_MAX_SCALE).contains(&scale))
+                }
+                FaultAction::EventKill { node, rarity } => {
+                    assert!(node < vocabulary.nodes());
+                    assert!(EVENT_SITE_RARITY.contains(&rarity));
+                }
                 FaultAction::Kill(node) | FaultAction::Restart(node) => {
                     assert!(node < vocabulary.nodes());
                 }
                 FaultAction::Pause(node, ticks) => {
                     assert!(node < vocabulary.nodes());
                     assert!(PAUSE_TICKS.contains(&ticks));
+                }
+                FaultAction::EventPark {
+                    node,
+                    rarity,
+                    hold_us,
+                } => {
+                    assert!(node < vocabulary.nodes());
+                    assert!(EVENT_SITE_RARITY.contains(&rarity));
+                    assert!(EVENT_PARK_HOLD_US.contains(&hold_us));
                 }
                 FaultAction::Hook(id) => assert!(vocabulary.hooks().contains(&id)),
                 FaultAction::Interrupt(vector) => assert!(VECTORS.contains(&vector)),
@@ -477,7 +635,16 @@ mod tests {
                 }
             }
         }
-        assert_eq!(kinds.len(), 7, "every action kind is reachable");
+        let expected = if vocabulary.interrupt_injection() {
+            9
+        } else {
+            8
+        };
+        assert_eq!(
+            kinds.len(),
+            expected,
+            "every supported action kind is reachable"
+        );
     }
 
     #[test]
@@ -487,6 +654,16 @@ mod tests {
         for _ in 0..2_000 {
             let action = sample_action(&mut rand, &placeless).expect("draw");
             assert!(!matches!(action, FaultAction::Park { .. }));
+        }
+    }
+
+    #[test]
+    fn an_uninstrumented_vocabulary_never_draws_an_event_kill() {
+        let uninstrumented = FaultVocabulary::new(1, vec![1]).expect("vocabulary");
+        let mut rand = RomuDuoJrRand::with_seed(5);
+        for _ in 0..2_000 {
+            let action = sample_action(&mut rand, &uninstrumented).expect("draw");
+            assert!(!matches!(action, FaultAction::EventKill { .. }));
         }
     }
 
@@ -541,7 +718,12 @@ mod tests {
 
     #[test]
     fn every_action_costs_one_horizon() {
-        assert_eq!(action_time(&FaultAction::Wait), 1);
+        assert_eq!(action_time(&FaultAction::Wait(0)), 1);
+        assert_eq!(action_time(&FaultAction::Wait(5)), 32);
+        assert_eq!(
+            action_time(&FaultAction::Wait(crate::target::WAIT_MAX_SCALE)),
+            128
+        );
         assert_eq!(action_time(&FaultAction::Kill(4)), 1);
     }
 }

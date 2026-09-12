@@ -88,8 +88,14 @@ pub use standing::{
 /// the in-guest fault agent enforces — [`Fault::RunHook`] (byte tag `17`) and
 /// [`Fault::ProcPark`] (byte tag `19`) — both additive under the existing
 /// [`DecisionClass::Process`] discriminant. Byte tag `18` is permanently
-/// unassigned; see `codec.rs`.
-pub const CATALOG_VERSION: u16 = 5;
+/// unassigned; see `codec.rs`. Bumped to `6` for
+/// [`Fault::ProcEventKill`] (byte tag `20`), which names a place in the
+/// instrumented deterministic event stream. Bumped to `7` for
+/// [`Fault::ProcEventPark`] (byte tag `21`), which names a place in that same
+/// stream by how rarely its site has been visited. Bumped to `8` when
+/// [`Fault::ProcEventKill`] took that same rarity coordinate in place of an
+/// ordinal, which changes its payload from eight bytes to one.
+pub const CATALOG_VERSION: u16 = 8;
 
 /// The maximum number of bytes one [`Entropy`](DecisionPoint::Entropy) or
 /// [`Payload`](DecisionPoint::Payload) decision may supply. A faultable service

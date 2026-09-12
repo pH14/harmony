@@ -2,17 +2,24 @@
 
 //! Fault-package implementation of the game-neutral campaign interface.
 
-use std::{error::Error, io::Write, path::PathBuf, sync::OnceLock};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    io::Write,
+    path::PathBuf,
+    sync::{Mutex, OnceLock},
+};
 
 use searcher::{
     search::{
         archive::{RetentionPolicy, SelectorPolicy},
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignConfig,
-            CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
-            CampaignStreamHeader, CampaignTypes, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
-            Evaluation, GamePolicies, InitialDrawState, InputPolicy, Reporting, SnapshotCheckpoint,
-            TargetExecution, postcard_result_sha256, run_campaign_checkpointed,
+            CampaignExecutionOptions, CampaignJobResult, CampaignModeReport, CampaignOrigin,
+            CampaignProgressRecord, CampaignStreamHeader, CampaignTypes,
+            DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Evaluation, GamePolicies, InitialDrawState,
+            InputPolicy, Reporting, ResultBuffering, SnapshotCheckpoint, TargetExecution,
+            postcard_result_sha256, run_campaign_checkpointed_with_options,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
     },
@@ -23,14 +30,19 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     archive::{
-        DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord, FaultInput,
-        FaultMilestones, FaultProgressWatermark, KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS,
-        REPLACEMENT_IDENTIFIER, action_time, archive_key, bug_outcome, merge_milestones,
-        merge_progress_watermark, milestone_key, milestones, sample_action,
+        DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord,
+        FaultCoordinateTelemetry, FaultInput, FaultMilestones, FaultProgressWatermark,
+        KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS, REPLACEMENT_IDENTIFIER, action_time, archive_key,
+        bug_outcome, merge_milestones, merge_progress_watermark, milestone_key, milestones,
+        sample_action,
     },
-    bundle::FaultVocabulary,
+    bundle::{FaultVocabulary, MAX_NODES},
     consonance::{FaultConfig, FaultTarget, identity, snapshot_memory_charge},
-    target::{FaultAction, FaultObservations, FaultSnapshot, MAX_FAULT_ACTIONS},
+    report::{CampaignMeasures, KillAges},
+    target::{
+        FaultAction, FaultObservations, FaultSnapshot, MAX_FAULT_ACTIONS, WAIT_MAX_SCALE,
+        action_horizons, clamp_to_horizon_budget,
+    },
 };
 
 /// Stream format written by fault-package campaigns.
@@ -69,6 +81,9 @@ pub struct FaultGame {
     /// worker boots. It is a deterministic property of the image, so every
     /// worker learns the same one.
     root_seal: OnceLock<u64>,
+    /// Event outcomes produced by workers and consumed at ordered admission.
+    /// The full input key avoids making completion order observable.
+    event_outcomes: Mutex<BTreeMap<[u8; 32], Vec<bool>>>,
 }
 
 impl FaultGame {
@@ -81,6 +96,7 @@ impl FaultGame {
             config: config.clone(),
             identity: identity(kernel, initramfs, config),
             root_seal: OnceLock::new(),
+            event_outcomes: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -101,6 +117,36 @@ impl FaultGame {
     pub fn image_identity(&self) -> &str {
         &self.identity
     }
+
+    fn reset_event_outcomes(&self) {
+        self.event_outcomes
+            .lock()
+            .expect("fault event outcome mutex poisoned")
+            .clear();
+    }
+
+    fn record_event_outcome(&self, input: Vec<FaultAction>, fired: bool) {
+        self.event_outcomes
+            .lock()
+            .expect("fault event outcome mutex poisoned")
+            .entry(event_context_digest(&input))
+            .or_default()
+            .push(fired);
+    }
+
+    fn take_event_outcome(&self, input: &[FaultAction]) -> Option<bool> {
+        let mut outcomes = self
+            .event_outcomes
+            .lock()
+            .expect("fault event outcome mutex poisoned");
+        let key = event_context_digest(input);
+        let values = outcomes.get_mut(&key)?;
+        let fired = values.pop();
+        if values.is_empty() {
+            outcomes.remove(&key);
+        }
+        fired
+    }
 }
 
 /// Campaign evidence owned by the adapter.
@@ -111,6 +157,140 @@ pub struct FaultCampaignEvidence {
     champion_input: FaultInput,
     champion_milestones: FaultMilestones,
     bugs: Vec<FaultBugRecord>,
+    coordinate_attempted: u64,
+    coordinate_fired: u64,
+    fired_site_edge: Option<u64>,
+    kill_ages: KillAges,
+    acknowledged: u64,
+    checks_conclusive: u64,
+    checks_inconclusive: u64,
+}
+
+impl FaultCampaignEvidence {
+    /// The operator-facing measures this campaign accumulated. `guest_seconds`
+    /// and `fired_site` are left for the run that knows them.
+    fn measures(&self) -> CampaignMeasures {
+        let (median, max) = self.kill_ages.summarize();
+        CampaignMeasures {
+            guest_seconds: 0,
+            acknowledged_writes: self.acknowledged,
+            kills_fired: self.coordinate_fired,
+            kills_unfired: self
+                .coordinate_attempted
+                .saturating_sub(self.coordinate_fired),
+            kill_age_ticks_median: median,
+            kill_age_ticks_max: max,
+            checks_conclusive: self.checks_conclusive,
+            checks_inconclusive: self.checks_inconclusive,
+            fired_site: self.fired_site_edge,
+        }
+    }
+}
+
+const EVENT_NODE_COUNT: usize = MAX_NODES as usize;
+/// A campaign can retain many prefixes, but only a bounded set of them can
+/// have an event outcome in flight. Eviction is deterministic.
+const MAX_TRANSIENT_EVENT_OUTCOMES: usize = EVENT_NODE_COUNT * 4;
+
+fn adaptive_state_memory_reserve() -> usize {
+    // Transient outcomes use fixed-size digests and are consumed as soon as
+    // their job is admitted.
+    (std::mem::size_of::<[u8; 32]>() + std::mem::size_of::<bool>()) * MAX_TRANSIENT_EVENT_OUTCOMES
+}
+
+/// Coordinator-side draw state. The event coordinate is a rarity the
+/// instrumented runtime resolves against its own visit counts, so the host
+/// carries nothing between draws.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FaultDrawState;
+
+/// Stable, input-only context identity. It is deliberately independent of
+/// workload configuration, timing, and host scheduling.
+fn event_context_digest(actions: &[FaultAction]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update((actions.len() as u64).to_le_bytes());
+    for action in actions {
+        match *action {
+            FaultAction::Wait(scale) => {
+                digest.update([0]);
+                digest.update([scale]);
+            }
+            FaultAction::Kill(node) => {
+                digest.update([1]);
+                digest.update(node.to_le_bytes());
+            }
+            FaultAction::EventKill { node, rarity } => {
+                digest.update([2]);
+                digest.update(node.to_le_bytes());
+                digest.update([rarity]);
+            }
+            FaultAction::Pause(node, ticks) => {
+                digest.update([3]);
+                digest.update(node.to_le_bytes());
+                digest.update(ticks.to_le_bytes());
+            }
+            FaultAction::Restart(node) => {
+                digest.update([4]);
+                digest.update(node.to_le_bytes());
+            }
+            FaultAction::Hook(hook) => {
+                digest.update([5]);
+                digest.update(hook.to_le_bytes());
+            }
+            FaultAction::Interrupt(vector) => {
+                digest.update([6]);
+                digest.update(vector.to_le_bytes());
+            }
+            FaultAction::EventPark {
+                node,
+                rarity,
+                hold_us,
+            } => {
+                digest.update([8]);
+                digest.update(node.to_le_bytes());
+                digest.update([rarity]);
+                digest.update(hold_us.to_le_bytes());
+            }
+            FaultAction::Park {
+                node,
+                addr,
+                hits,
+                hold_us,
+            } => {
+                digest.update([7]);
+                digest.update(node.to_le_bytes());
+                digest.update(addr.to_le_bytes());
+                digest.update(hits.to_le_bytes());
+                digest.update(hold_us.to_le_bytes());
+            }
+        }
+    }
+    digest.finalize().into()
+}
+
+fn draw_fault_suffix(
+    run: &FaultCampaignRun,
+    parent: Option<&[FaultAction]>,
+    shape: SuffixShape,
+    mixture: MixtureDraw,
+    mutation_seed: u64,
+) -> Result<Vec<FaultAction>, Box<dyn Error>> {
+    let mut suffix = draw_suffix(
+        shape,
+        mixture.mixture,
+        mixture.weight,
+        mutation_seed,
+        |_| Ok(None),
+        |rand| sample_action(rand, &run.vocabulary),
+    )?;
+    let spent = parent
+        .unwrap_or_default()
+        .iter()
+        .copied()
+        .map(action_horizons)
+        .sum();
+    clamp_to_horizon_budget(spent, &mut suffix);
+    Ok(suffix)
 }
 
 /// Fault-package campaign origin.
@@ -302,12 +482,19 @@ impl CampaignTypes for FaultGame {
     type Evidence = FaultCampaignEvidence;
     type ArchiveReport = FaultArchiveReport;
     type Run = FaultCampaignRun;
-    type DrawState = ();
+    type DrawState = FaultDrawState;
     type DrawCheckpoint = ();
     type TableHeader = FaultNoTableHeader;
 }
 
 impl Reporting for FaultGame {
+    fn diagnostics(evidence: &FaultCampaignEvidence) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "event_coordinate_attempted": evidence.coordinate_attempted,
+            "event_coordinate_fired": evidence.coordinate_fired,
+        }))
+    }
+
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -346,7 +533,12 @@ impl Reporting for FaultGame {
             rejected: state.rejected,
             deaths: state.deaths,
             bugs: evidence.bugs.clone(),
+            coordinate_telemetry: FaultCoordinateTelemetry {
+                attempted: evidence.coordinate_attempted,
+                fired: evidence.coordinate_fired,
+            },
             selector: state.selector,
+            measures: evidence.measures(),
         }
     }
 }
@@ -357,7 +549,7 @@ impl InputPolicy for FaultGame {
     }
 
     fn longest_action_time(&self) -> u64 {
-        1
+        1 << WAIT_MAX_SCALE
     }
 
     fn policies(&self, run: &FaultCampaignRun) -> GamePolicies {
@@ -406,37 +598,66 @@ impl InputPolicy for FaultGame {
         _run: &FaultCampaignRun,
         _max_actions: usize,
     ) -> usize {
-        0
+        adaptive_state_memory_reserve()
     }
 
-    fn draw_state_memory_bytes(&self, _state: &()) -> usize {
-        0
+    fn draw_state_memory_bytes(&self, _state: &FaultDrawState) -> usize {
+        adaptive_state_memory_reserve()
     }
 
     fn initial_draw_state(
         &self,
-        _run: &FaultCampaignRun,
+        run: &FaultCampaignRun,
         _origin: Option<(&str, &FaultArchiveReport)>,
     ) -> Result<InitialDrawState<Self>, Box<dyn Error>> {
-        Ok(((), None))
+        let _ = run;
+        self.reset_event_outcomes();
+        Ok((FaultDrawState, None))
     }
 
     fn expand_suffix(
         &self,
         run: &FaultCampaignRun,
-        _state: &(),
+        _state: &FaultDrawState,
         shape: SuffixShape,
         mixture: MixtureDraw,
         mutation_seed: u64,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
-        draw_suffix(
-            shape,
-            mixture.mixture,
-            mixture.weight,
-            mutation_seed,
-            |_| Ok(None),
-            |rand| sample_action(rand, &run.vocabulary),
-        )
+        draw_fault_suffix(run, None, shape, mixture, mutation_seed)
+    }
+
+    // The horizon budget a suffix is clamped to is the parent's, so every
+    // draw needs the selected parent's exact input.
+    fn expand_suffix_needs_parent_input(&self, _run: &FaultCampaignRun) -> bool {
+        true
+    }
+
+    fn expand_suffix_with_parent(
+        &self,
+        run: &FaultCampaignRun,
+        _state: &FaultDrawState,
+        parent: &FaultInput,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        mutation_seed: u64,
+    ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
+        draw_fault_suffix(run, Some(&parent.actions), shape, mixture, mutation_seed)
+    }
+
+    fn expand_suffix_recorded_with_parent(
+        &self,
+        run: &FaultCampaignRun,
+        state: &FaultDrawState,
+        parent: &FaultInput,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        before: Option<&Self::DrawCheckpoint>,
+        mutation_seed: u64,
+    ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
+        if before.is_some() {
+            return Err("recorded stream carries an unsupported draw checkpoint".into());
+        }
+        self.expand_suffix_with_parent(run, state, parent, shape, mixture, mutation_seed)
     }
 }
 
@@ -506,7 +727,7 @@ impl TargetExecution for FaultGame {
         max_actions: usize,
         _retention: RetentionPolicy,
     ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
-        execute_job(
+        let result = execute_job(
             target,
             origin_snapshot,
             replay,
@@ -514,7 +735,22 @@ impl TargetExecution for FaultGame {
             parent_milestones,
             suffix,
             max_actions,
-        )
+        )?;
+        let outcomes = target.event_kill_outcomes();
+        let suffix_outcomes = outcomes
+            .get(replay.len()..)
+            .ok_or("fault target lost replay action outcomes")?;
+        let mut input = origin_snapshot.actions.clone();
+        input.extend_from_slice(replay);
+        for (index, action) in result.actions.iter().enumerate() {
+            input.push(action.action);
+            if matches!(action.action, FaultAction::EventKill { .. })
+                && let Some(Some(fired)) = suffix_outcomes.get(index).copied()
+            {
+                self.record_event_outcome(input.clone(), fired);
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -601,6 +837,39 @@ impl Evaluation for FaultGame {
     where
         F: FnOnce() -> Result<FaultInput, Box<dyn Error>>,
     {
+        let mut input = Some(input);
+        let event_input = if matches!(action.action, FaultAction::EventKill { .. }) {
+            let factory = input.take().expect("action input closure already consumed");
+            Some(factory()?)
+        } else {
+            None
+        };
+        if let Some(input) = event_input.as_ref()
+            && let Some(fired) = self.take_event_outcome(&input.actions)
+        {
+            evidence.coordinate_attempted = evidence.coordinate_attempted.saturating_add(1);
+            if fired {
+                evidence.coordinate_fired = evidence.coordinate_fired.saturating_add(1);
+                if let Some(last) = action.observations.last() {
+                    evidence.kill_ages.push(last.event_kill_age_ticks);
+                    // Edge zero is the absence of a report, not a site.
+                    if last.event_kill_site != 0 {
+                        evidence.fired_site_edge = Some(last.event_kill_site);
+                    }
+                }
+            }
+        }
+        for observation in &action.observations {
+            evidence.acknowledged = evidence.acknowledged.max(observation.verified);
+            evidence.checks_conclusive = evidence
+                .checks_conclusive
+                .max(observation.checks_conclusive);
+            evidence.checks_inconclusive = evidence.checks_inconclusive.max(
+                observation
+                    .checks_finished
+                    .saturating_sub(observation.checks_conclusive),
+            );
+        }
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);
         let bug = action
@@ -612,7 +881,13 @@ impl Evaluation for FaultGame {
             > milestone_key(evidence.champion_milestones))
         .then_some(action.milestones);
         if bug.is_some() || champion.is_some() {
-            let input = input()?;
+            let input = match event_input {
+                Some(input) => input,
+                None => {
+                    let factory = input.take().expect("action input closure already consumed");
+                    factory()?
+                }
+            };
             if let Some(observations) = bug {
                 evidence.bugs.push(FaultBugRecord {
                     execution: sequence,
@@ -664,8 +939,23 @@ pub fn run_fault_campaign_checkpointed(
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
 ) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
-    let (report, checkpoint) =
-        run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)?;
+    // Admission is ordered, so a worker that finishes early cannot be refilled
+    // until every earlier reservation admits. A fault input's cost spans two
+    // orders of magnitude, because one Wait runs for `1 << scale` horizons, so
+    // one long job at the admission cursor idles every other worker. A second
+    // buffered result per worker lets each start its next reserved job while
+    // its first waits its turn.
+    let (report, checkpoint) = run_campaign_checkpointed_with_options(
+        game,
+        &config.generic(),
+        origin,
+        stream,
+        progress,
+        CampaignExecutionOptions {
+            result_buffering: ResultBuffering::TwoPerWorker,
+            ..CampaignExecutionOptions::default()
+        },
+    )?;
     Ok((FaultCampaignReport::new(report), checkpoint))
 }
 
@@ -751,5 +1041,90 @@ mod tests {
             policies.get(HORIZON_FIELD).map(String::as_str),
             Some("2000000000")
         );
+    }
+
+    #[test]
+    fn event_outcomes_are_keyed_by_the_exact_input_and_consumed_once() {
+        let game = game();
+        let prefix = [FaultAction::Wait(0)];
+        let fired = FaultAction::EventKill { node: 2, rarity: 0 };
+        let unfired = FaultAction::EventKill {
+            node: 2,
+            rarity: 12,
+        };
+        let mut fired_input = prefix.to_vec();
+        fired_input.push(fired);
+        let mut unfired_input = prefix.to_vec();
+        unfired_input.push(unfired);
+        game.record_event_outcome(fired_input.clone(), true);
+        game.record_event_outcome(unfired_input.clone(), false);
+
+        assert_eq!(game.take_event_outcome(&fired_input), Some(true));
+        assert_eq!(game.take_event_outcome(&unfired_input), Some(false));
+        assert_eq!(game.take_event_outcome(&fired_input), None);
+    }
+
+    #[test]
+    fn a_fired_arm_records_its_age_and_the_site_that_killed() {
+        let game = game();
+        let run = run(1, vec![]);
+        game.initial_draw_state(&run, None).expect("draw state");
+        let observed = FaultAction::EventKill { node: 0, rarity: 0 };
+        let input = vec![FaultAction::Wait(0), FaultAction::Kill(0), observed];
+        game.record_event_outcome(input.clone(), true);
+        let action = FaultCampaignActionResult {
+            action: observed,
+            observations: vec![FaultObservations {
+                event_kill_age_ticks: 191,
+                event_kill_site: 4_211,
+                ..FaultObservations::default()
+            }],
+            milestones: FaultMilestones::default(),
+            dead: false,
+            victory: false,
+            failed: false,
+            candidate: None,
+        };
+        let mut evidence = FaultCampaignEvidence::default();
+        game.merge_action_evidence(&mut evidence, &action, 1, || {
+            Ok(FaultInput {
+                actions: input.clone(),
+            })
+        })
+        .expect("merge event observation");
+        assert_eq!(evidence.coordinate_attempted, 1);
+        assert_eq!(evidence.coordinate_fired, 1);
+        let measures = evidence.measures();
+        assert_eq!(measures.kills_fired, 1);
+        assert_eq!(measures.kills_unfired, 0);
+        assert_eq!(measures.kill_age_ticks_max, 191);
+        assert_eq!(measures.fired_site, Some(4_211));
+    }
+
+    #[test]
+    fn an_unreported_site_leaves_the_fired_site_unnamed() {
+        let game = game();
+        let run = run(1, vec![]);
+        game.initial_draw_state(&run, None).expect("draw state");
+        let observed = FaultAction::EventKill { node: 0, rarity: 4 };
+        let input = vec![FaultAction::Wait(0), observed];
+        game.record_event_outcome(input.clone(), true);
+        let action = FaultCampaignActionResult {
+            action: observed,
+            observations: vec![FaultObservations::default()],
+            milestones: FaultMilestones::default(),
+            dead: false,
+            victory: false,
+            failed: false,
+            candidate: None,
+        };
+        let mut evidence = FaultCampaignEvidence::default();
+        game.merge_action_evidence(&mut evidence, &action, 1, || {
+            Ok(FaultInput {
+                actions: input.clone(),
+            })
+        })
+        .expect("merge event observation");
+        assert_eq!(evidence.measures().fired_site, None);
     }
 }

@@ -741,7 +741,7 @@ fn branch_spec(client: &mut Server, snap: SnapId, spec: &InputSpec) -> Result<()
 }
 
 /// Issue one control request, abandoning the guest if it spends more than
-/// `wall_limit` of host time inside the run without taking an exit.
+/// `wall_limit` of total host time inside the request.
 ///
 /// The bound is measured against the host clock on purpose: a guest that stalls
 /// advances no virtual time, so nothing else can notice it. Once the guard

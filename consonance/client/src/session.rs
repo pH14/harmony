@@ -541,9 +541,9 @@ pub enum SessionError {
     #[error("guest stopped before the expected snapshot point: {0:?}")]
     Stop(StopReason),
     /// The guest spent more than the configured wall-clock limit inside one
-    /// run without taking an exit. The VM is abandoned; the session cannot be
+    /// run. The VM is abandoned; the session cannot be
     /// resumed and the caller reports the run rather than retrying it.
-    #[error("guest ran for more than {0:?} of host time without exiting")]
+    #[error("guest request exceeded its {0:?} host-time limit")]
     Hung(Duration),
     /// A previous run exceeded the wall-clock limit, so the VM was canceled
     /// and cannot be entered again. Reported by every later request instead of

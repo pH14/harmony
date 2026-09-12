@@ -4,8 +4,13 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
+#include <signal.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdatomic.h>
+#include <stdlib.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef HARMONY_OPEN
@@ -30,6 +35,9 @@ enum {
     HARMONY_COVERAGE_RESPONSE_SIZE = 12
 };
 
+#define HARMONY_COVERAGE_QUANTUM UINT64_C(64)
+#define HARMONY_AUTOMATIC_COVERAGE_NAMESPACE UINT32_C(0x80000000)
+
 struct harmony_coverage_state {
     uint32_t thread;
     uint32_t ready;
@@ -39,12 +47,290 @@ struct harmony_coverage_state {
 };
 
 static _Thread_local struct harmony_coverage_state harmony_coverage = {
-    0, 1, 0, 0, 1
+    0, 1, 0, 0, UINT64_MAX
 };
+static _Atomic uint64_t harmony_automatic_coverage_counter;
+static _Atomic uint64_t harmony_automatic_coverage_threshold =
+    HARMONY_COVERAGE_QUANTUM;
+static _Atomic bool harmony_automatic_coverage_enabled = true;
+static uint32_t harmony_automatic_process_id;
 static uint32_t harmony_next_guard = 1;
+static _Atomic uint64_t harmony_next_edge_offset;
+
+/*
+ * The event-kill coordinate names a place by how rarely its site has been
+ * reached rather than by an address, so it keeps its meaning across a rebuild
+ * of the workload. The kill lands on the first callback after the arm whose
+ * own site has been visited at most `1 << rarity` times, and it performs the
+ * kill synchronously.
+ *
+ * The arm flag is the linearization point for both sides of the protocol. An
+ * arm or disarm stores it; a callback claims the arm with one exchange. Their
+ * modification order decides which arm a callback belongs to, so control never
+ * has to drain callbacks that are doing unrelated device work.
+ */
+static _Atomic uint32_t harmony_event_ceiling;
+static _Atomic bool harmony_event_armed;
+static _Atomic uint64_t harmony_event_target;
+static _Atomic bool harmony_event_enabled;
+
+/*
+ * An event park names a place by how rarely its site has been reached rather
+ * than by an address, so the coordinate keeps its meaning across a rebuild of
+ * the workload. Visits are counted per site in a fixed open table: a collision
+ * makes a rare site look common, which loses a park rather than firing a wrong
+ * one. The hold runs on the calling thread only, so every other thread of the
+ * process keeps running through it.
+ */
+#define HARMONY_SITE_SLOTS (UINT64_C(1) << 19)
+static _Atomic uint32_t harmony_site_visits[HARMONY_SITE_SLOTS];
+static _Atomic uint64_t harmony_park_hold_nanos;
+static _Atomic uint32_t harmony_park_ceiling;
+static _Atomic bool harmony_park_armed;
+/* Parks that reached their site and held. The host reads this back through the
+   control channel, because a hold leaves no other trace the agent can see. */
+static _Atomic uint64_t harmony_park_fires;
+static pthread_once_t harmony_event_control_once = PTHREAD_ONCE_INIT;
+static pthread_mutex_t harmony_event_ready_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t harmony_event_ready_cond = PTHREAD_COND_INITIALIZER;
+static bool harmony_instrumentation_ready;
+static int harmony_event_control_fd = -1;
+static int harmony_event_report_fd = -1;
 
 /* The R-L3 transport ruling fixes the device path; it is not configurable. */
 static const char harmony_device_path[] = "/dev/harmony";
+
+static uint64_t get_u64(const unsigned char *in);
+static void put_u64(unsigned char *out, uint64_t value);
+static int write_all(int fd, const unsigned char *data, size_t size);
+
+static int event_fd_from_environment(const char *name)
+{
+    const char *text = getenv(name);
+    char *end;
+    unsigned long value;
+
+    if (text == NULL || *text == '\0')
+        return -1;
+    errno = 0;
+    value = strtoul(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || value > (unsigned long)INT_MAX)
+        return -1;
+    return (int)value;
+}
+
+static uint32_t process_id_from_environment(void)
+{
+    const char *text = getenv("HARMONY_INSTRUMENTED_PROCESS_ID");
+    char *end;
+    unsigned long value;
+
+    if (text == NULL || *text == '\0')
+        return 0;
+    errno = 0;
+    value = strtoul(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || value == 0 ||
+        value > (unsigned long)INT_MAX)
+        return 0;
+    return (uint32_t)value;
+}
+
+/*
+ * One control command is three little-endian words: the kind, and two
+ * arguments the kind gives meaning to. The whole command is echoed back so the
+ * agent knows which arm is in force before it lets the action proceed.
+ */
+enum {
+    HARMONY_EVENT_CMD_WORDS = 3,
+    HARMONY_EVENT_CMD_KILL = 1,
+    HARMONY_EVENT_CMD_PARK = 2,
+    HARMONY_EVENT_CMD_PARK_STATUS = 3
+};
+
+static int read_event_command(int fd, uint64_t *words)
+{
+    unsigned char bytes[HARMONY_EVENT_CMD_WORDS * sizeof(uint64_t)];
+    size_t consumed = 0;
+    size_t index;
+
+    while (consumed < sizeof(bytes)) {
+        ssize_t result = read(fd, bytes + consumed, sizeof(bytes) - consumed);
+        if (result < 0 && errno == EINTR)
+            continue;
+        if (result <= 0)
+            return -1;
+        consumed += (size_t)result;
+    }
+    for (index = 0; index < HARMONY_EVENT_CMD_WORDS; ++index)
+        words[index] = get_u64(bytes + index * sizeof(uint64_t));
+    return 0;
+}
+
+/* Fire at a site visited at most `1 << rarity` times before this callback. A
+ * rarity wider than the counter means every site qualifies. */
+static uint32_t site_ceiling(uint64_t rarity)
+{
+    if (rarity >= 32)
+        return UINT32_MAX;
+    return (uint32_t)(UINT32_C(1) << rarity);
+}
+
+static void park_disarm(void)
+{
+    atomic_store_explicit(&harmony_park_armed, false, memory_order_release);
+    atomic_store_explicit(&harmony_park_hold_nanos, 0, memory_order_release);
+}
+
+static void park_arm(uint64_t rarity, uint64_t hold_nanos)
+{
+    if (hold_nanos == 0) {
+        park_disarm();
+        return;
+    }
+    atomic_store_explicit(
+        &harmony_park_ceiling, site_ceiling(rarity), memory_order_release);
+    atomic_store_explicit(
+        &harmony_park_hold_nanos, hold_nanos, memory_order_release);
+    atomic_store_explicit(&harmony_park_armed, true, memory_order_release);
+}
+
+/* Hold this thread for `hold_nanos`, resuming across a signal. */
+static void park_hold(uint64_t hold_nanos)
+{
+    struct timespec remaining;
+
+    remaining.tv_sec = (time_t)(hold_nanos / UINT64_C(1000000000));
+    remaining.tv_nsec = (long)(hold_nanos % UINT64_C(1000000000));
+    while (nanosleep(&remaining, &remaining) != 0 && errno == EINTR)
+        continue;
+}
+
+/*
+ * Count this callback's site and return the visits it had before this one.
+ * The park and the kill share the count, so a callback is charged to its site
+ * exactly once however many arms are looking at it.
+ */
+static uint32_t site_visit(uint64_t edge)
+{
+    uint64_t slot;
+    uint32_t before;
+
+    slot = edge % HARMONY_SITE_SLOTS;
+    before = atomic_fetch_add_explicit(
+        &harmony_site_visits[slot], 1, memory_order_acq_rel);
+    if (before == UINT32_MAX)
+        atomic_store_explicit(
+            &harmony_site_visits[slot], UINT32_MAX, memory_order_release);
+    return before;
+}
+
+/*
+ * Report whether the park fires at a site with `before` earlier visits. The
+ * claim is one exchange, so exactly one thread takes an arm however many
+ * callbacks race for it.
+ */
+static bool park_claim(uint32_t before, uint64_t *hold_nanos)
+{
+    if (!atomic_load_explicit(&harmony_park_armed, memory_order_acquire))
+        return false;
+    if (before >= atomic_load_explicit(&harmony_park_ceiling, memory_order_acquire))
+        return false;
+    if (!atomic_exchange_explicit(&harmony_park_armed, false, memory_order_acq_rel))
+        return false;
+    (void)atomic_fetch_add_explicit(&harmony_park_fires, 1, memory_order_acq_rel);
+    *hold_nanos = atomic_load_explicit(
+        &harmony_park_hold_nanos, memory_order_acquire);
+    return *hold_nanos != 0;
+}
+
+static void *event_control_main(void *unused)
+{
+    uint64_t command[HARMONY_EVENT_CMD_WORDS];
+    unsigned char acknowledgement[sizeof(command)];
+    size_t index;
+
+    (void)unused;
+    if (pthread_mutex_lock(&harmony_event_ready_lock) != 0)
+        return NULL;
+    while (!harmony_instrumentation_ready) {
+        if (pthread_cond_wait(
+                &harmony_event_ready_cond, &harmony_event_ready_lock) != 0) {
+            (void)pthread_mutex_unlock(&harmony_event_ready_lock);
+            return NULL;
+        }
+    }
+    (void)pthread_mutex_unlock(&harmony_event_ready_lock);
+    while (read_event_command(harmony_event_control_fd, command) == 0) {
+        /* Disarm before the acknowledgement; callbacks skip publication. */
+        if (command[0] == HARMONY_EVENT_CMD_KILL)
+            atomic_store_explicit(&harmony_event_armed, false, memory_order_release);
+        else if (command[0] == HARMONY_EVENT_CMD_PARK)
+            park_disarm();
+        if (command[0] == HARMONY_EVENT_CMD_PARK_STATUS) {
+            command[1] = atomic_load_explicit(
+                &harmony_park_fires, memory_order_acquire);
+            command[2] = atomic_load_explicit(
+                &harmony_park_armed, memory_order_acquire) ? 1 : 0;
+        }
+        for (index = 0; index < HARMONY_EVENT_CMD_WORDS; ++index)
+            put_u64(acknowledgement + index * sizeof(uint64_t), command[index]);
+        if (write_all(harmony_event_control_fd, acknowledgement, sizeof(acknowledgement)) != 0) {
+            atomic_store_explicit(&harmony_event_armed, false, memory_order_release);
+            atomic_store_explicit(&harmony_event_target, 0, memory_order_release);
+            atomic_store_explicit(&harmony_event_enabled, false, memory_order_release);
+            park_disarm();
+            break;
+        }
+        /* The arm becomes visible only after its acknowledgement is sent.
+           Rarity 0 is a real coordinate, so the second argument, and not the
+           rarity, is what tells an arm from a disarm. */
+        if (command[0] == HARMONY_EVENT_CMD_KILL && command[2] != 0) {
+            atomic_store_explicit(
+                &harmony_event_target, command[1], memory_order_release);
+            atomic_store_explicit(
+                &harmony_event_ceiling, site_ceiling(command[1]),
+                memory_order_release);
+            atomic_store_explicit(&harmony_event_armed, true, memory_order_release);
+        } else if (command[0] == HARMONY_EVENT_CMD_PARK) {
+            park_arm(command[1], command[2]);
+        }
+    }
+    atomic_store_explicit(&harmony_event_armed, false, memory_order_release);
+    atomic_store_explicit(&harmony_event_target, 0, memory_order_release);
+    atomic_store_explicit(&harmony_event_enabled, false, memory_order_release);
+    park_disarm();
+    (void)close(harmony_event_control_fd);
+    harmony_event_control_fd = -1;
+    return NULL;
+}
+
+static void event_control_start(void)
+{
+    pthread_t thread;
+
+    harmony_automatic_process_id = process_id_from_environment();
+    harmony_event_control_fd = event_fd_from_environment("HARMONY_EVENT_KILL_FD");
+    harmony_event_report_fd = event_fd_from_environment("HARMONY_EVENT_REPORT_FD");
+    if (harmony_event_control_fd < 0)
+        return;
+    atomic_store_explicit(&harmony_event_enabled, true, memory_order_release);
+    if (pthread_create(&thread, NULL, event_control_main, NULL) == 0)
+        (void)pthread_detach(thread);
+    else {
+        atomic_store_explicit(&harmony_event_enabled, false, memory_order_release);
+        harmony_event_control_fd = -1;
+    }
+}
+
+static void event_control_activate(void)
+{
+    (void)pthread_once(&harmony_event_control_once, event_control_start);
+    if (pthread_mutex_lock(&harmony_event_ready_lock) != 0)
+        return;
+    harmony_instrumentation_ready = true;
+    (void)pthread_cond_broadcast(&harmony_event_ready_cond);
+    (void)pthread_mutex_unlock(&harmony_event_ready_lock);
+}
 
 static int write_all(int fd, const unsigned char *data, size_t size)
 {
@@ -160,13 +446,16 @@ static uint64_t get_u64(const unsigned char *in)
 
 /*
  * Give an instrumented logical thread a stable identity and runnable-set
- * width. The first prescribed threshold is one basic block. Reconfiguration
- * resets only this calling thread's TLS counter.
+ * width. Reconfiguration resets only this calling thread's TLS counter and
+ * replaces the process-wide fallback yield with the configured scheduler.
  */
 int harmony_coverage_configure(uint32_t thread, uint32_t ready)
 {
-    if (ready == 0)
+    if (ready == 0 ||
+        (thread & HARMONY_AUTOMATIC_COVERAGE_NAMESPACE) != 0)
         return -1;
+    atomic_store_explicit(
+        &harmony_automatic_coverage_enabled, false, memory_order_release);
     harmony_coverage.thread = thread;
     harmony_coverage.ready = ready;
     harmony_coverage.selected = 0;
@@ -180,7 +469,9 @@ uint32_t harmony_coverage_selected(void)
     return harmony_coverage.selected;
 }
 
-static int coverage_exchange(uint64_t observed)
+static int coverage_exchange_request(
+    uint32_t thread, uint64_t observed, uint32_t ready,
+    uint64_t *next_out, uint32_t *selected_out)
 {
     unsigned char request[HARMONY_COVERAGE_REQUEST_SIZE];
     unsigned char response[HARMONY_COVERAGE_RESPONSE_SIZE];
@@ -189,9 +480,9 @@ static int coverage_exchange(uint64_t observed)
     int fd;
 
     request[0] = HARMONY_CMD_COVERAGE;
-    put_u32(request + 1, harmony_coverage.thread);
+    put_u32(request + 1, thread);
     put_u64(request + 5, observed);
-    put_u32(request + 13, harmony_coverage.ready);
+    put_u32(request + 13, ready);
     if (pthread_mutex_lock(&harmony_device_lock) != 0)
         return -1;
     fd = HARMONY_OPEN(harmony_device_path, O_RDWR | O_CLOEXEC);
@@ -206,10 +497,10 @@ static int coverage_exchange(uint64_t observed)
     (void)pthread_mutex_unlock(&harmony_device_lock);
     next = get_u64(response);
     selected = get_u32(response + 8);
-    if (next <= observed || selected >= harmony_coverage.ready)
+    if (next <= observed || selected >= ready)
         return -1;
-    harmony_coverage.threshold = next;
-    harmony_coverage.selected = selected;
+    *next_out = next;
+    *selected_out = selected;
     return 0;
 
 fail_locked:
@@ -217,20 +508,137 @@ fail_locked:
     return -1;
 }
 
-void init_coverage_module(const void *module, size_t size)
+static int coverage_exchange(uint64_t observed)
 {
-    (void)module;
-    (void)size;
+    uint64_t next;
+    uint32_t selected;
+
+    if (coverage_exchange_request(
+            harmony_coverage.thread, observed, harmony_coverage.ready,
+            &next, &selected) != 0)
+        return -1;
+    harmony_coverage.threshold = next;
+    harmony_coverage.selected = selected;
+    return 0;
 }
 
-void notify_coverage(uint64_t edge)
+static void coverage_transport_failure(void)
 {
-    (void)edge;
+    /* A lost deterministic exit stream invalidates the execution. Terminate
+     * the managed process group so the supervisor observes and restarts it. */
+    (void)kill(0, SIGKILL);
+    _exit(127);
+}
+
+/*
+ * Instrumented programs that do not configure scheduler identities still
+ * need a deterministic escape from compute-only code. Count callbacks across
+ * the process and yield on a protocol-fixed cadence through a reserved logical
+ * thread. The counter is guest memory, so whole-VM snapshots replay it exactly.
+ */
+static void automatic_coverage_yield(void)
+{
+    uint64_t observed;
+    uint64_t threshold;
+    uint64_t next_yield;
+    uint64_t next_threshold;
+    uint32_t process;
+    uint32_t selected;
+
+    if (!atomic_load_explicit(
+            &harmony_automatic_coverage_enabled, memory_order_acquire))
+        return;
+    observed = atomic_fetch_add_explicit(
+        &harmony_automatic_coverage_counter, 1, memory_order_relaxed) + 1;
+    threshold = atomic_load_explicit(
+        &harmony_automatic_coverage_threshold, memory_order_acquire);
+    for (;;) {
+        if (observed < threshold || threshold == UINT64_MAX)
+            return;
+        if (atomic_compare_exchange_weak_explicit(
+                &harmony_automatic_coverage_threshold, &threshold, UINT64_MAX,
+                memory_order_acq_rel, memory_order_acquire))
+            break;
+    }
+    process = harmony_automatic_process_id;
+    if (process == 0)
+        process = (uint32_t)getpid() & ~HARMONY_AUTOMATIC_COVERAGE_NAMESPACE;
+    if (coverage_exchange_request(
+            HARMONY_AUTOMATIC_COVERAGE_NAMESPACE | process,
+            threshold / HARMONY_COVERAGE_QUANTUM, 1,
+            &next_yield, &selected) != 0 ||
+        next_yield > UINT64_MAX / HARMONY_COVERAGE_QUANTUM) {
+        coverage_transport_failure();
+    }
+    next_threshold = next_yield * HARMONY_COVERAGE_QUANTUM;
+    atomic_store_explicit(
+        &harmony_automatic_coverage_threshold, next_threshold,
+        memory_order_release);
+}
+
+uint64_t init_coverage_module(size_t num_edges, const char *symbols)
+{
+    (void)symbols;
+    /*
+     * LD_PRELOAD may first load this bridge into an uninstrumented launcher.
+     * Wait for the instrumentor's module registration so a standing arm is
+     * consumed by the executable that owns the deterministic event stream and
+     * survives an intervening exec.
+     */
+    event_control_activate();
+    return atomic_fetch_add_explicit(
+        &harmony_next_edge_offset, (uint64_t)num_edges, memory_order_relaxed);
+}
+
+/*
+ * Report whether the kill fires at a site with `before` earlier visits. The
+ * claim is one exchange, so exactly one thread takes the arm however many
+ * callbacks race for it, which is what makes the kill a single deterministic
+ * event rather than a race between them.
+ */
+static bool event_kill_claim(uint32_t before, uint64_t *target_out)
+{
+    if (!atomic_load_explicit(&harmony_event_armed, memory_order_acquire))
+        return false;
+    if (before >= atomic_load_explicit(&harmony_event_ceiling, memory_order_acquire))
+        return false;
+    if (!atomic_exchange_explicit(&harmony_event_armed, false, memory_order_acq_rel))
+        return false;
+    if (target_out != NULL)
+        *target_out = atomic_load_explicit(
+            &harmony_event_target, memory_order_acquire);
+    return true;
+}
+
+bool notify_coverage(uint64_t edge)
+{
+    uint64_t target = 0;
+    uint64_t hold_nanos = 0;
+    uint32_t before;
+
+    event_control_activate();
+    if (atomic_load_explicit(&harmony_event_enabled, memory_order_acquire)) {
+        before = site_visit(edge);
+        if (park_claim(before, &hold_nanos))
+            park_hold(hold_nanos);
+        if (event_kill_claim(before, &target)) {
+            if (harmony_event_report_fd >= 0) {
+                unsigned char report[2 * sizeof(uint64_t)];
+
+                put_u64(report, target);
+                put_u64(report + sizeof(uint64_t), edge);
+                (void)write_all(harmony_event_report_fd, report, sizeof(report));
+            }
+            (void)kill(0, SIGKILL);
+        }
+    }
     if (harmony_coverage.counter != UINT64_MAX)
         harmony_coverage.counter++;
     if (harmony_coverage.counter == harmony_coverage.threshold &&
         coverage_exchange(harmony_coverage.counter) != 0)
-        harmony_coverage.threshold = UINT64_MAX;
+        coverage_transport_failure();
+    automatic_coverage_yield();
+    return false;
 }
 
 void __sanitizer_cov_trace_pc_guard_init(uint32_t *start, uint32_t *stop)

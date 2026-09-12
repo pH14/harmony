@@ -3,8 +3,9 @@
 # Guest-kernel patches
 
 This directory contains diffs against the Linux version pinned in
-`../versions.lock`. The x86 and arm64 build scripts apply only the series for
-their target architecture.
+`../versions.lock`. The x86 build applies the x86 series; the arm64 build
+applies the arm64 series plus the shared x86 character-device base and its
+ARM64 MMIO fix-up. It never applies the x86 task-park patch.
 
 Kernel patch content remains under the kernel's GPL-2.0 license. First-party C
 code elsewhere in the repository uses the repository license. Keep kernel
@@ -79,6 +80,13 @@ reads.
 - `0004-arm64-harmony-virtual-time-clockevent.patch` expresses clock events as
   absolute work-clock deadlines on the MMIO page and uses virtual-timer PPI 27
   for delivery and acknowledgement.
+- `0013-arm64-harmony-character-device.patch` reuses x86 patch 0002's complete
+  `/dev/harmony` protocol and changes only its doorbell to the reserved ARM64
+  MMIO GPA `0x0a000000`. It is applied after the explicit x86 base patch by
+  `build-arm64-kernel.sh`; the ARM series never applies the x86 task-park patch.
+- `0014-arm64-harmony-cpu-relax-tick.patch` makes kernel `cpu_relax()` loops
+  ring the deterministic execution tick, so virtual-time deadlines and
+  rescheduling cannot freeze while the cooperative kernel is spinning.
 
 The arm64 build rejects surviving generic-counter reads, LL/SC instructions,
 and direct counter-compare programming in published artifacts.

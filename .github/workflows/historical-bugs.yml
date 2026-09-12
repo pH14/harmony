@@ -332,6 +332,8 @@ jobs:
       - name: Replay the probe on both arms
         env:
           CASE_ID: ${{ needs.manifest.outputs.case_id }}
+          SOFTWARE_NAME: PostgreSQL
+          IMAGE_PREFIX: pgcic
           HORIZON_MS: ${{ needs.manifest.outputs.horizon_ms }}
           RAM_MIB: ${{ needs.manifest.outputs.ram_mib }}
           VULNERABLE_VERSION: ${{ needs.manifest.outputs.vulnerable_version }}
@@ -379,6 +381,8 @@ jobs:
       - name: Replay the witness on both arms
         env:
           CASE_ID: ${{ needs.manifest.outputs.case_id }}
+          SOFTWARE_NAME: PostgreSQL
+          IMAGE_PREFIX: pgcic
           HORIZON_MS: ${{ needs.manifest.outputs.horizon_ms }}
           RAM_MIB: ${{ needs.manifest.outputs.ram_mib }}
           VULNERABLE_VERSION: ${{ needs.manifest.outputs.vulnerable_version }}
@@ -434,7 +438,9 @@ jobs:
         env:
           CASE_ID: ${{ needs.manifest.outputs.case_id }}
           ARM: ${{ matrix.arm }}
-          PG_VERSION: >-
+          SOFTWARE_NAME: PostgreSQL
+          IMAGE_PREFIX: pgcic
+          WORKLOAD_VERSION: >-
             ${{ matrix.arm == 'vulnerable' && needs.manifest.outputs.vulnerable_version
             || needs.manifest.outputs.control_version }}
           HORIZON_MS: ${{ needs.manifest.outputs.horizon_ms }}

@@ -7,9 +7,48 @@ ABI used by guest workloads. It sends SDK JSON to `/dev/harmony`, obtains
 seeded entropy through the driver's fixed transaction, and exposes the legacy
 coverage and sanitizer callback symbols expected by instrumented programs.
 
-Device exchanges are serialized per process. The library keeps explicit thread
-identities and counters for callback thresholding. Device errors fail closed:
-an event is dropped and entropy returns zero rather than using host randomness.
+Device exchanges are serialized per process. Unconfigured instrumented
+workloads use one process-wide callback counter and yield at the library's
+fixed 64-event cadence. This bounds compute-only execution on every backend
+without a machine counter or an operator setting. A callback that overtakes an
+in-flight yield claims the missed threshold on its next event, so a threaded
+program cannot permanently skip the software exit. The guest supervisor gives
+each managed process incarnation a deterministic stream identity, so restarts
+and PID reuse cannot inherit an earlier process's host threshold. A workload that calls
+`harmony_coverage_configure` replaces that fallback with its explicit logical
+thread identities and runnable sets. The high bit of a thread identity is
+reserved for the fallback's deterministic per-process streams. A failed
+coverage exchange terminates the managed process group instead of silently
+removing its software exits. Other device errors fail closed: an event is
+dropped and entropy returns zero rather than using host randomness.
+`init_coverage_module` follows the SDK ABI and assigns non-overlapping edge
+ranges to modules injected by the Go instrumentor.
+
+Instrumented workloads may also inherit `HARMONY_EVENT_KILL_FD`. Event control
+begins reading at the first instrumented module registration or callback, so
+the socket and a pending arm pass through an uninstrumented launcher without
+that launcher consuming it. A command is three little-endian `u64` words,
+`kind` then two arguments, and the library echoes the whole command back once
+the arm is in force. Kind 1 is the event kill: the second word is a
+visit-count scale and the third is non-zero to arm, and the library kills its
+own process group at the first callback after the arm whose own site has been
+visited at most `1 << scale` times. Kind 2 is the event park: the second word
+is a visit-count scale and the third a hold in nanoseconds, and the first
+callback after the arm whose site is that rare sleeps in place for that long
+before continuing. Both are synchronous instrumented-event coordinates. A zero
+third word and a zero hold each disarm their own kind. Each arm acts once; the
+library disarms itself as it fires. Arm publication is a bounded atomic
+replacement and never waits for an earlier callback to drain. Per-site visit
+counts live in a fixed open-addressed table indexed by the edge id and shared
+by both kinds, so a site seen far more often than the table is wide can alias
+with another; the coordinate is an approximation of rarity, not an exact count.
+A collision makes a rare site look common, which loses an arm rather than
+firing it somewhere else.
+
+A caller may additionally pass `HARMONY_EVENT_REPORT_FD`; immediately before an
+armed event kill, the bridge writes the armed rarity and the generated global
+edge id as two little-endian `u64` values. That edge names the site that
+killed, which a symbol table of the same build resolves.
 
 Build and test it with:
 

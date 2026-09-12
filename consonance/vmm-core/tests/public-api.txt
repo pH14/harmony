@@ -869,6 +869,7 @@ pub fn vmm_core::vmm::Vmm<B>::restore_snapshot(&mut self, &[u8], &<<B as vmm_bac
 pub fn vmm_core::vmm::Vmm<B>::restore_vm_state(&mut self, &<<B as vmm_backend::backend::Backend>::A as vmm_core::vendor::Vendor>::Snapshot) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::restore_vtime(&mut self, &vmm_core::vmm::VtimeSnapshot) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::run(&mut self) -> core::result::Result<vmm_core::vmm::RunResult, vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::run_progress(&self) -> core::option::Option<alloc::sync::Arc<vmm_backend::progress::RunProgress>>
 pub fn vmm_core::vmm::Vmm<B>::save_vm_state(&self) -> core::result::Result<<<B as vmm_backend::backend::Backend>::A as vmm_core::vendor::Vendor>::Snapshot, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::save_vtime(&self) -> core::result::Result<core::option::Option<vmm_core::vmm::VtimeSnapshot>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::sdk_coverage(&self) -> &[(u64, u32, u64, u32, u32)]

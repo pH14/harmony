@@ -1,0 +1,40 @@
+arm64: make cooperative kernel busy waits advance virtual time
+
+The Harmony clock advances only at guest exits. A kernel busy wait that uses
+cpu_relax() can therefore deadlock: its sched_clock() deadline remains frozen,
+need_resched() never becomes true, and the task that could release the resource
+never runs. Reader-owned rwsem optimistic spinning is one concrete trigger.
+
+Make every kernel cpu_relax() iteration ring the existing deterministic
+virtual-time MMIO tick before issuing YIELD. The tick is derived solely from a
+guest execution boundary and uses no machine counter or host time. Keep the
+vDSO definition unchanged: BUILD_VDSO code runs in userspace and cannot access
+the kernel's MMIO mapping.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/arch/arm64/include/asm/vdso/processor.h
++++ b/arch/arm64/include/asm/vdso/processor.h
+@@ -6,9 +6,19 @@
+ 
+ #ifndef __ASSEMBLY__
+ 
++#if defined(CONFIG_HARMONY_ARM_PVCLOCK) && !defined(BUILD_VDSO)
++void harmony_arm_virtual_time_tick(void);
++
++static inline void cpu_relax(void)
++{
++	harmony_arm_virtual_time_tick();
++	asm volatile("yield" ::: "memory");
++}
++#else
+ static inline void cpu_relax(void)
+ {
+ 	asm volatile("yield" ::: "memory");
+ }
++#endif
+ 
+ #endif /* __ASSEMBLY__ */
+ 

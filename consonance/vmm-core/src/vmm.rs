@@ -2111,6 +2111,12 @@ where
         self.backend.cancellation_flag()
     }
 
+    /// Host-only sequence used by a wall watchdog to distinguish slow forward
+    /// progress from a vCPU stuck inside its substrate run call.
+    pub fn run_progress(&self) -> Option<std::sync::Arc<vmm_backend::RunProgress>> {
+        self.backend.run_progress()
+    }
+
     /// The number of exact hypercall-doorbell rings since this VM was created.
     /// This host-only diagnostic counter is not part of state, hashes, or
     /// snapshots; it is narrower than [`Vmm::exit_counts`]'s I/O/MMIO totals.
@@ -4183,6 +4189,20 @@ mod tests {
 
         let unbounded = Vmm::new(configured_mock(Vec::new()), GuestRam::new(0x1000).unwrap());
         assert!(unbounded.cancellation_flag().is_none());
+    }
+
+    #[test]
+    fn run_progress_is_the_backend_counter() {
+        let progress = std::sync::Arc::new(vmm_backend::RunProgress::default());
+        let backend = configured_mock(Vec::new()).with_run_progress(progress.clone());
+        let vmm = Vmm::new(backend, GuestRam::new(0x1000).unwrap());
+        let reported = vmm.run_progress().expect("mock reports its counter");
+        assert!(std::sync::Arc::ptr_eq(&reported, &progress));
+        progress.record_exit();
+        assert_eq!(reported.sequence(), 1);
+
+        let silent = Vmm::new(configured_mock(Vec::new()), GuestRam::new(0x1000).unwrap());
+        assert!(silent.run_progress().is_none());
     }
 
     fn configured_mock(exits: Vec<Exit<X86>>) -> MockBackend {

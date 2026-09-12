@@ -11,6 +11,7 @@ use std::{error::Error, path::Path};
 
 use guest_image::Writer;
 use oci_support::image::Ownership;
+use sha2::{Digest, Sha256};
 
 use crate::bundle::FaultVocabulary;
 
@@ -57,7 +58,8 @@ fn prepare_rootfs(
         return Err("the bundle must reside inside the staged image".into());
     }
     let bundle = String::from_utf8(std::fs::read(document)?)?;
-    let vocabulary = FaultVocabulary::parse(&bundle)?;
+    let vocabulary =
+        FaultVocabulary::parse(&bundle)?.with_instrumented_events(has_instrumented_events(&root));
     let mut image = base.to_vec();
     image.extend(oci_support::bundle::build_rootfs_segment(&root, owners)?);
     let mut overlay = Writer::new();
@@ -79,6 +81,52 @@ fn prepare_rootfs(
     })
 }
 
+/// Derive the event-crash capability from artifacts produced by the pinned
+/// instrumentation build. Both the runtime bridge and nonempty symbol metadata
+/// are required; a bundle never opts into this action through configuration.
+fn has_instrumented_events(root: &Path) -> bool {
+    if !root.join("usr/lib/libvoidstar.so").is_file() || !valid_instrumented_event_attestation(root)
+    {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(root.join("symbols")) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.ends_with(".sym.tsv"))
+            && entry
+                .metadata()
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+    })
+}
+
+fn valid_instrumented_event_attestation(root: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join("symbols/harmony-instrumented-events")) else {
+        return false;
+    };
+    text.lines().any(|line| {
+        let Some((expected, image_path)) = line.split_once(char::is_whitespace) else {
+            return false;
+        };
+        if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return false;
+        }
+        let image_path = image_path.trim().trim_start_matches('/');
+        let Ok(executable) = root.join(image_path).canonicalize() else {
+            return false;
+        };
+        if !executable.starts_with(root) {
+            return false;
+        }
+        std::fs::read(executable).is_ok_and(|bytes| {
+            format!("{:x}", Sha256::digest(bytes)) == expected.to_ascii_lowercase()
+        })
+    })
+}
+
 const INIT: &[u8] = br##"#!/bin/sh
 set -eu
 # Kernel init environments need an explicit search path for guest tools.
@@ -88,47 +136,59 @@ stage=bootstrap
 # Keep failures before the SDK transport opens visible on the guest console.
 # The host can then distinguish an init/mount/chroot failure from a guest that
 # reached the agent but stopped before publishing setup_complete.
-trap 'rc=$?; echo "FAULT_INIT_EXIT stage=$stage rc=$rc" >&2' 0
-echo "FAULT_INIT_STAGE=$stage" >&2
+trap 'rc=$?; $BB echo "FAULT_INIT_EXIT stage=$stage rc=$rc" >&2' 0
+$BB echo "FAULT_INIT_STAGE=$stage" >&2
 $BB mkdir -p /proc /sys /dev /run /tmp
 # Kata's base initramfs has DEVTMPFS_MOUNT enabled, so /dev may already be
 # mounted before this package-owned init runs.  Check each target first so a
 # pre-mounted filesystem is accepted while a real mount failure still aborts
 # startup under `set -e`.
 stage=mount-proc
-echo "FAULT_INIT_STAGE=$stage" >&2
+$BB echo "FAULT_INIT_STAGE=$stage" >&2
 if ! $BB grep -q ' /proc proc' /proc/mounts 2>/dev/null; then
     $BB mount -t proc proc /proc
 fi
 stage=mount-sys
-echo "FAULT_INIT_STAGE=$stage" >&2
+$BB echo "FAULT_INIT_STAGE=$stage" >&2
 if ! $BB grep -q ' /sys sysfs' /proc/mounts 2>/dev/null; then
     $BB mount -t sysfs sysfs /sys
 fi
 stage=mount-dev
-echo "FAULT_INIT_STAGE=$stage" >&2
+$BB echo "FAULT_INIT_STAGE=$stage" >&2
 if ! $BB grep -q ' /dev devtmpfs' /proc/mounts 2>/dev/null; then
     $BB mount -t devtmpfs dev /dev
 fi
+# The fault guest has a private network namespace with no external interface.
+# Bring up its loopback device so local-only services (the normal distributed
+# workload shape) work without a workload-specific setup knob.
+$BB ip link set lo up
 ROOT=/harmony-oci/rootfs
 stage=prepare-rootfs
-echo "FAULT_INIT_STAGE=$stage" >&2
+$BB echo "FAULT_INIT_STAGE=$stage" >&2
 $BB mkdir -p "$ROOT/run" "$ROOT/tmp" "$ROOT/run/fault-agent"
 $BB chmod 1777 "$ROOT/tmp"
 stage=bind-rootfs
-echo "FAULT_INIT_STAGE=$stage" >&2
+$BB echo "FAULT_INIT_STAGE=$stage" >&2
 # iproute2's `ip netns exec` creates a mount namespace and makes `/` a
 # recursive slave.  A plain chroot root is not a mountpoint, so that operation
 # otherwise fails with EINVAL before the workload can configure its namespaces.
 $BB mount --bind "$ROOT" "$ROOT"
 stage=bind-pseudo-filesystems
-echo "FAULT_INIT_STAGE=$stage" >&2
+$BB echo "FAULT_INIT_STAGE=$stage" >&2
+# The OCI rootfs is unpacked into the initramfs ramfs.  Keep the standard
+# writable container paths on tmpfs so workloads can use their normal
+# filesystem layout without depending on the size of the boot archive.  This
+# also makes /tmp and /run behave the same way on every host and architecture.
+$BB mount -t tmpfs tmpfs "$ROOT/tmp"
+$BB mount -t tmpfs tmpfs "$ROOT/run"
+$BB mkdir -p "$ROOT/run/fault-agent"
+$BB chmod 1777 "$ROOT/tmp"
 for directory in dev proc sys; do
     $BB mkdir -p "$ROOT/$directory"
     $BB mount --bind "/$directory" "$ROOT/$directory"
 done
 stage=chroot-agent
-echo "FAULT_INIT_STAGE=$stage" >&2
+$BB echo "FAULT_INIT_STAGE=$stage" >&2
 exec $BB chroot "$ROOT" /opt/harmony/fault-agent \
     --bundle /etc/harmony/bundle --hook-dir /run/fault-agent
 "##;
@@ -159,6 +219,7 @@ ready /usr/bin/etcdctl endpoint health
         let repeated = prepare_rootfs(root.path(), &owners, b"base", b"agent-v1").unwrap();
         assert_eq!(first.vocabulary.nodes(), 1);
         assert_eq!(first.vocabulary.hooks(), [1, 2]);
+        assert!(!first.vocabulary.instrumented_events());
         assert_eq!(first.bundle, BUNDLE);
         assert_eq!(first.initramfs, repeated.initramfs);
         assert_ne!(
@@ -167,6 +228,46 @@ ready /usr/bin/etcdctl endpoint health
                 .unwrap()
                 .initramfs
         );
+    }
+
+    #[test]
+    fn preparation_derives_instrumented_events_from_runtime_and_symbols() {
+        let root = tempfile::tempdir().unwrap();
+        image(root.path());
+        std::fs::create_dir_all(root.path().join("usr/lib")).unwrap();
+        std::fs::create_dir_all(root.path().join("symbols")).unwrap();
+        std::fs::create_dir_all(root.path().join("opt/etcd")).unwrap();
+        std::fs::write(root.path().join("usr/lib/libvoidstar.so"), b"runtime").unwrap();
+        std::fs::write(root.path().join("symbols/etcd.sym.tsv"), b"1\tfile.go:1\n").unwrap();
+        std::fs::write(root.path().join("opt/etcd/etcd"), b"instrumented node").unwrap();
+        std::fs::write(
+            root.path().join("symbols/harmony-instrumented-events"),
+            b"f05c4a6fcf5bba49af1a80cf4015c096f55a4869c7df89cb85fa8737e993c995  /opt/etcd/etcd\n",
+        )
+        .unwrap();
+        let prepared =
+            prepare_rootfs(root.path(), &Ownership::default(), b"base", b"agent").unwrap();
+        assert!(prepared.vocabulary.instrumented_events());
+
+        std::fs::remove_file(root.path().join("symbols/etcd.sym.tsv")).unwrap();
+        let no_symbols =
+            prepare_rootfs(root.path(), &Ownership::default(), b"base", b"agent").unwrap();
+        assert!(!no_symbols.vocabulary.instrumented_events());
+
+        std::fs::write(root.path().join("symbols/etcd.sym.tsv"), b"1\tfile.go:1\n").unwrap();
+        std::fs::remove_file(root.path().join("symbols/harmony-instrumented-events")).unwrap();
+        let no_attestation =
+            prepare_rootfs(root.path(), &Ownership::default(), b"base", b"agent").unwrap();
+        assert!(!no_attestation.vocabulary.instrumented_events());
+
+        std::fs::write(
+            root.path().join("symbols/harmony-instrumented-events"),
+            b"0000000000000000000000000000000000000000000000000000000000000000  /opt/etcd/etcd\n",
+        )
+        .unwrap();
+        let wrong_hash =
+            prepare_rootfs(root.path(), &Ownership::default(), b"base", b"agent").unwrap();
+        assert!(!wrong_hash.vocabulary.instrumented_events());
     }
 
     #[test]
@@ -190,10 +291,16 @@ ready /usr/bin/etcdctl endpoint health
         let check = contains(b"if ! $BB grep -q ' /dev devtmpfs' /proc/mounts")
             .expect("devtmpfs mount check");
         let mount = contains(b"$BB mount -t devtmpfs dev /dev").expect("devtmpfs mount");
+        let loopback = contains(b"$BB ip link set lo up").expect("loopback setup");
         assert!(check < mount, "the mount is guarded by /proc/mounts");
         assert!(contains(b"|| true").is_none());
+        assert!(mount < loopback, "loopback follows /dev setup");
         assert!(contains(b"stage=mount-proc").is_some());
         assert!(contains(b"$BB mount --bind \"$ROOT\" \"$ROOT\"").is_some());
+        let tmpfs_tmp =
+            contains(b"$BB mount -t tmpfs tmpfs \"$ROOT/tmp\"").expect("workload /tmp tmpfs mount");
+        let tmpfs_run =
+            contains(b"$BB mount -t tmpfs tmpfs \"$ROOT/run\"").expect("workload /run tmpfs mount");
         let bind_rootfs = contains(b"stage=bind-rootfs").expect("bind-rootfs stage");
         let bind_pseudo =
             contains(b"stage=bind-pseudo-filesystems").expect("bind-pseudo-filesystems stage");
@@ -202,6 +309,9 @@ ready /usr/bin/etcdctl endpoint health
             bind_rootfs < bind_pseudo,
             "root bind must precede child mounts"
         );
+        assert!(bind_rootfs < tmpfs_tmp, "root bind must precede /tmp mount");
+        assert!(tmpfs_tmp < tmpfs_run, "/tmp mount must precede /run mount");
+        assert!(tmpfs_run < chroot, "writable mounts must precede chroot");
         assert!(bind_pseudo < chroot, "child mounts must precede chroot");
         assert!(contains(b"FAULT_INIT_EXIT stage=$stage rc=$rc").is_some());
         assert!(

@@ -13,7 +13,10 @@ use std::{error::Error, fs, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::target::{FaultAction, FaultStop};
+use crate::{
+    archive::FaultMilestones,
+    target::{FaultAction, FaultObservations, FaultStop},
+};
 
 /// Package name recorded in every report.
 pub const PACKAGE: &str = "faults";
@@ -113,6 +116,11 @@ pub struct ReplaySummary {
     /// `actions_applied` when every applied action ran in the guest rather
     /// than being answered from a cached snapshot of an earlier run.
     pub guest_horizons: u64,
+    /// The endpoint's registers and liveness. A fault that leaves no trace in
+    /// the stop or the assertions -- a kill that fired, a park that held -- is
+    /// visible only here, so a replay carries them for comparison.
+    #[serde(default)]
+    pub observations: FaultObservations,
 }
 
 /// Whether `replay` reproduced the evidence a campaign recorded for one bug.
@@ -177,6 +185,9 @@ pub struct Report {
     pub first_bug_execution: Option<u64>,
     /// Bugs the search recorded; empty in replay mode.
     pub bugs: Vec<BugSummary>,
+    /// Strongest workload milestones reached anywhere in a search campaign.
+    #[serde(default)]
+    pub campaign_milestones: FaultMilestones,
     /// Replay runs; empty in search mode.
     pub replays: Vec<ReplaySummary>,
     /// Action horizons the run clocked.
@@ -204,6 +215,7 @@ impl Report {
             bug_found: false,
             first_bug_execution: None,
             bugs: Vec::new(),
+            campaign_milestones: FaultMilestones::default(),
             replays: Vec::new(),
             horizons_clocked: 0,
             wall_seconds: 0,
@@ -388,6 +400,14 @@ mod live {
             horizon_nanos: archive.horizon_nanos,
         };
         let written = write_bug_reports(windows, &archive.bugs, &options.output)?;
+        let mut measures = archive.measures.clone();
+        // Guest time is the campaign's, not any one endpoint's: every admitted
+        // horizon ran the guest for `horizon_nanos`.
+        measures.guest_seconds = campaign_report
+            .campaign
+            .frames_emulated
+            .saturating_mul(archive.horizon_nanos)
+            / 1_000_000_000;
         let summary = json!({
             "mode": "faultlab_campaign",
             "image": game.image_identity(),
@@ -403,9 +423,11 @@ mod live {
             "archive_entries": archive.entries.len(),
             "progress": archive.progress_watermark,
             "milestones": archive.milestones,
+            "coordinate_telemetry": archive.coordinate_telemetry,
             "bugs_found": campaign_report.bugs_found,
             "executions_to_first_bug": campaign_report.executions_to_first_bug,
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),
+            "measures": measures,
         });
         std::fs::write(
             options.output.join("campaign-summary.json"),
@@ -413,6 +435,7 @@ mod live {
         )?;
         report.executions = campaign_report.campaign.executions_completed;
         report.horizons_clocked = campaign_report.campaign.frames_emulated;
+        report.campaign_milestones = archive.milestones;
         for bug in &written {
             // A campaign hit is a claim about an action list, so each one is
             // replayed from a fresh session: the replay both supplies the
@@ -529,6 +552,7 @@ mod live {
             sometimes: observation.sometimes.iter().copied().collect(),
             actions_applied: target.horizons_clocked(),
             guest_horizons: target.guest_horizons_run(),
+            observations: observation.clone(),
         };
         Ok(summary)
     }
@@ -650,6 +674,32 @@ mod tests {
         assert!(parse_recorded_input("{}").is_err());
     }
 
+    /// Every action list a historical case commits has to keep parsing under
+    /// the current vocabulary. A stale one is otherwise caught only by a guest
+    /// replay job that costs tens of minutes, long after the change broke it.
+    #[test]
+    fn every_committed_case_input_parses_under_the_current_vocabulary() {
+        let cases = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bugs/historical");
+        let mut checked = 0_u32;
+        for entry in std::fs::read_dir(&cases).expect("read the historical case directory") {
+            let case = entry.expect("read a case directory").path();
+            for name in ["probe.json", "witness.json"] {
+                let path = case.join(name);
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                parse_recorded_input(&text)
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 0,
+            "no committed case input under {}",
+            cases.display()
+        );
+    }
+
     fn replay_summary(bug: bool, stop: FaultStop, violations: &[u32]) -> ReplaySummary {
         ReplaySummary {
             run: 1,
@@ -660,6 +710,7 @@ mod tests {
             sometimes: vec![24],
             actions_applied: 3,
             guest_horizons: 3,
+            observations: FaultObservations::default(),
         }
     }
 

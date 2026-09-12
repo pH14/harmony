@@ -111,10 +111,8 @@ for applet in sh mount mkdir mknod chmod chroot cat echo grep halt poweroff rebo
 done
 printf 'root:x:0:0:root:/root:/bin/sh\n' >"$oci_root/etc/passwd"
 printf 'root:x:0:\n' >"$oci_root/etc/group"
-# The harness DTB's pl011 node is frozen without the primecell/clock
-# properties the kernel driver needs to probe, so there is no /dev/console
-# tty. The injected init routes all run output through this direct-MMIO
-# writer instead (the same transport the postgres image proved).
+# Keep the synchronous oracle transport independent of the kernel console
+# driver by routing it through the modeled PL011 data register directly.
 "$musl_cc" -static -Os -march=armv8.1-a+lse -mno-outline-atomics \
     -Wall -Wextra -Werror \
     "$LINUX_DIR/arm64-mmio-console.c" -o "$oci_root/bin/mmio-console"

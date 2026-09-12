@@ -346,6 +346,19 @@ pub enum Fault {
     ProcPause(Span),
     /// Kill a node.
     ProcKill,
+    /// Kill a node synchronously at a rare place in its instrumented
+    /// deterministic event stream: the first callback after the arm whose own
+    /// site has been visited at most `1 << rarity` times. The instrumented
+    /// runtime counts the visits, so the host never names a site and the
+    /// coordinate survives a rebuild. A rare site is reached late and seldom,
+    /// which is where a crash finds state a hot site has already passed
+    /// through many times.
+    ProcEventKill {
+        /// Visit-count scale of the site that kills: at most `1 << rarity`
+        /// earlier visits. Rarity 0 is a site never visited before, and a
+        /// rarity wider than the counter admits every site.
+        rarity: u8,
+    },
     /// Restart a node.
     ProcRestart,
     /// Fire a named SDK **buggify** site (task 73) — the guest-plane
@@ -375,6 +388,20 @@ pub enum Fault {
         /// How long the thread is held.
         hold: Span,
     },
+    /// Hold a node at a rare place in its instrumented deterministic event
+    /// stream: the first callback after the arm whose own site has been
+    /// visited at most `1 << rarity` times holds its calling thread for `hold`,
+    /// then continues. The instrumented runtime counts and holds, so the host
+    /// never names an address and the coordinate survives a rebuild. Other
+    /// threads keep running, which is what lets a background task interleave
+    /// with the held one on a single processor. Byte tag `21`.
+    ProcEventPark {
+        /// Visit-count scale of the site that holds: at most `1 << rarity`
+        /// earlier visits. Rarity 0 is a site never visited before.
+        rarity: u8,
+        /// How long the calling thread is held.
+        hold: Span,
+    },
 }
 
 impl Fault {
@@ -391,9 +418,11 @@ impl Fault {
             }
             Self::ProcPause(_)
             | Self::ProcKill
+            | Self::ProcEventKill { .. }
             | Self::ProcRestart
             | Self::RunHook(_)
-            | Self::ProcPark { .. } => DecisionClass::Process,
+            | Self::ProcPark { .. }
+            | Self::ProcEventPark { .. } => DecisionClass::Process,
             Self::BuggifyFire => DecisionClass::Buggify,
         }
     }

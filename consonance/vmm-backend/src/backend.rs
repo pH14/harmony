@@ -19,6 +19,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 use crate::arch::Arch;
 use crate::error::Result;
 use crate::exit::{Capabilities, Exit, ExitCounts};
+use crate::progress::RunProgress;
 use crate::types::Gpa;
 
 /// The trap apparatus, decoupled from the deterministic VMM above it.
@@ -248,6 +249,14 @@ pub trait Backend {
     fn cancellation_flag(&self) -> Option<Arc<AtomicBool>> {
         None
     }
+
+    /// Host-only progress emitted after each guest exit returned by [`Self::run`].
+    /// A client may use this to distinguish a guest that is actively taking
+    /// exits from one stuck inside a substrate entry. The progress sequence is
+    /// never guest-visible and is not part of snapshots or determinism hashes.
+    fn run_progress(&self) -> Option<Arc<RunProgress>> {
+        None
+    }
 }
 
 /// Blanket forward so the composition root can inject a concrete backend as a
@@ -336,6 +345,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn cancellation_flag(&self) -> Option<Arc<AtomicBool>> {
         (**self).cancellation_flag()
+    }
+
+    fn run_progress(&self) -> Option<Arc<RunProgress>> {
+        (**self).run_progress()
     }
 }
 
@@ -463,5 +476,24 @@ mod tests {
             Box::new(crate::MockBackend::new().with_cancellation_flag(Arc::clone(&latch)));
         let forwarded = boxed.cancellation_flag().expect("latch forwarded");
         assert!(Arc::ptr_eq(&forwarded, &latch));
+    }
+
+    #[test]
+    fn a_backend_without_progress_reports_none_through_a_box_too() {
+        assert!(DefaultRetireBackend.run_progress().is_none());
+        let without: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend);
+        assert!(without.run_progress().is_none());
+    }
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn box_forwards_the_backend_progress_unchanged() {
+        let progress = Arc::new(crate::RunProgress::default());
+        let boxed: Box<dyn Backend<A = X86>> =
+            Box::new(crate::MockBackend::new().with_run_progress(Arc::clone(&progress)));
+        let forwarded = boxed.run_progress().expect("progress forwarded");
+        assert!(Arc::ptr_eq(&forwarded, &progress));
+        progress.record_exit();
+        assert_eq!(forwarded.sequence(), 1);
     }
 }

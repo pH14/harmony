@@ -11,7 +11,7 @@ if [ "$(uname -sm)" != "Linux aarch64" ]; then
     exit 1
 fi
 
-repo_root=$(cd ../../.. && pwd)
+repo_root=$(cd ../.. && pwd)
 target=aarch64-unknown-linux-musl
 musl_prefix=${HARMONY_MUSL_PREFIX:-}
 [ -x "$musl_prefix/bin/musl-gcc" ] || {
