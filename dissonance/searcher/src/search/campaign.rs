@@ -3328,20 +3328,20 @@ mod tests {
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
     struct TestAction {
         input: u8,
-        hold_frames: u8,
+        work_units: u8,
     }
 
     impl TestAction {
-        fn new(input: u8, hold_frames: u8) -> Self {
+        fn new(input: u8, work_units: u8) -> Self {
             Self {
                 input,
-                hold_frames: hold_frames.max(1),
+                work_units: work_units.max(1),
             }
         }
     }
 
     fn test_action_cost(action: &TestAction) -> u64 {
-        u64::from(action.hold_frames).saturating_mul(2)
+        u64::from(action.work_units).saturating_mul(2)
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -3379,7 +3379,7 @@ mod tests {
             self.value = self.value.wrapping_add(action.input);
             self.execution_work = self
                 .execution_work
-                .saturating_add(u64::from(action.hold_frames));
+                .saturating_add(u64::from(action.work_units));
         }
 
         fn snapshot(&self) -> Result<u8, Box<dyn Error>> {
@@ -4047,13 +4047,13 @@ mod tests {
 "schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
-"action_limit":64,"archive_entry_limit":128,"controller_vocabulary":"nes_down_ten",
-"key_policy":"frozen_area_span","duration_policy":"stratified","suffix_policy":"one_or_two",
-"chord_policy":"chord_uniform","replacement_policy":"fewest_frames_in_level",
+"action_limit":64,"archive_entry_limit":128,"controller_vocabulary":"test_inputs",
+"key_policy":"test_key","duration_policy":"stratified","suffix_policy":"one_or_two",
+"chord_policy":"chord_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
 "parent_scheduler":"hierarchy_uniform_128","executor_mode":"snapshot_resume_archive",
 "worker_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
-"action_cost_unit":"frames","execution_work_unit":"frames"}"#;
+"action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
 
     #[test]
     fn incremental_postcard_digest_matches_encoded_bytes() {
@@ -4631,11 +4631,11 @@ mod tests {
         assert_eq!(header.schema_version, super::CAMPAIGN_SCHEMA_VERSION);
         assert_eq!(header.draw_header, None);
         let expected: WorkloadPolicies = [
-            ("controller_vocabulary", "nes_down_ten"),
-            ("key_policy", "frozen_area_span"),
+            ("controller_vocabulary", "test_inputs"),
+            ("key_policy", "test_key"),
             ("duration_policy", "stratified"),
             ("chord_policy", "chord_uniform"),
-            ("replacement_policy", "fewest_frames_in_level"),
+            ("replacement_policy", "least_cost_per_group"),
         ]
         .into_iter()
         .map(|(field, value)| (field.to_owned(), value.to_owned()))

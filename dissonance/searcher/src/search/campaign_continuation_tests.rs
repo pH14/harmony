@@ -6,20 +6,20 @@ use std::collections::{BTreeSet, VecDeque};
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 struct TestAction {
     input: u8,
-    hold_frames: u8,
+    work_units: u8,
 }
 
 impl TestAction {
-    fn new(input: u8, hold_frames: u8) -> Self {
+    fn new(input: u8, work_units: u8) -> Self {
         Self {
             input,
-            hold_frames: hold_frames.max(1),
+            work_units: work_units.max(1),
         }
     }
 }
 
 fn test_action_cost(action: &TestAction) -> u64 {
-    u64::from(action.hold_frames).saturating_mul(2)
+    u64::from(action.work_units).saturating_mul(2)
 }
 
 fn test_draw_action(fingerprint: u32, mutation_seed: u64) -> TestAction {
@@ -82,7 +82,7 @@ impl TestTarget {
         self.value = self.value.wrapping_add(action.input);
         self.execution_work = self
             .execution_work
-            .saturating_add(u64::from(action.hold_frames));
+            .saturating_add(u64::from(action.work_units));
     }
 
     fn snapshot(&self) -> Result<u8, Box<dyn Error>> {
