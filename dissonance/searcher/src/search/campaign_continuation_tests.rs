@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::*;
 use crate::search::archive::{RetireThresholds, SelectorAccounting, entries_by_suffix};
+use std::collections::{BTreeSet, VecDeque};
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 struct TestAction {
     input: u8,
@@ -20,6 +21,8 @@ fn test_action_time(action: &TestAction) -> u64 {
     u64::from(action.hold_frames)
 }
 
+const TEST_DRAW_VERSION_CAP: usize = 16;
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct TestDrawCheckpoint {
     generation: u64,
@@ -30,7 +33,7 @@ struct TestDrawCheckpoint {
 struct TestDrawState {
     generation: u64,
     fingerprint: u32,
-    versions: BTreeMap<u64, TestDrawCheckpoint>,
+    versions: VecDeque<TestDrawCheckpoint>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -135,10 +138,12 @@ impl Reporting for TestWorkload {
 
 impl InputPolicy for TestWorkload {
     fn draw_state_memory_reserve_bytes(&self, _run: &Self::Run, _max_actions: usize) -> usize {
-        64
+        std::mem::size_of::<TestDrawState>()
+            + TEST_DRAW_VERSION_CAP * std::mem::size_of::<TestDrawCheckpoint>()
     }
     fn draw_state_memory_bytes(&self, _state: &Self::DrawState) -> usize {
         std::mem::size_of::<TestDrawState>()
+            + TEST_DRAW_VERSION_CAP * std::mem::size_of::<TestDrawCheckpoint>()
     }
     fn policies(&self, _run: &Self::Run) -> WorkloadPolicies {
         WorkloadPolicies::new()
@@ -152,13 +157,10 @@ impl InputPolicy for TestWorkload {
         _origin: Option<(&str, &Self::ArchiveReport)>,
     ) -> Result<InitialDrawState<Self>, Box<dyn Error>> {
         let mut state = TestDrawState::default();
-        state.versions.insert(
-            0,
-            TestDrawCheckpoint {
-                generation: 0,
-                fingerprint: 0,
-            },
-        );
+        state.versions.push_back(TestDrawCheckpoint {
+            generation: 0,
+            fingerprint: 0,
+        });
         Ok((state, None))
     }
     fn expand_suffix(
@@ -198,7 +200,7 @@ impl InputPolicy for TestWorkload {
         let Some(before) = before else {
             return Err("stateful fixture omitted its draw checkpoint".into());
         };
-        if state.versions.get(&before.generation) != Some(before) {
+        if !state.versions.iter().any(|checkpoint| checkpoint == before) {
             return Err("recorded draw checkpoint does not match live state".into());
         }
         self.expand_suffix(run, state, shape, mixture, mutation_seed)
@@ -221,9 +223,10 @@ impl InputPolicy for TestWorkload {
         let checkpoint = self
             .draw_checkpoint(state)?
             .ok_or("stateful fixture omitted its draw checkpoint")?;
-        state
-            .versions
-            .insert(checkpoint.generation, checkpoint.clone());
+        if state.versions.len() == TEST_DRAW_VERSION_CAP {
+            state.versions.pop_front();
+        }
+        state.versions.push_back(checkpoint.clone());
         Ok(Some(checkpoint))
     }
 
@@ -234,7 +237,7 @@ impl InputPolicy for TestWorkload {
     ) -> Result<(), Box<dyn Error>> {
         state
             .versions
-            .retain(|version, _| required.contains(version));
+            .retain(|checkpoint| required.contains(&checkpoint.generation));
         Ok(())
     }
 

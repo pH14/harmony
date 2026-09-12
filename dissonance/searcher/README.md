@@ -55,6 +55,18 @@ A complete adapter receives the aggregate `Workload` implementation automaticall
 The `tests/interfaces.rs` fixture implements execution alone and exercises it
 through a function bounded only by `TargetExecution`.
 
+Stateful input policies provide a serializable `DrawCheckpoint` and optional
+`DrawHeader`. Campaign records carry those types directly; the coordinator
+only asks the policy for a checkpoint's history version when retaining replay
+state. It does not interpret the checkpoint payload. Stateless policies use
+`()`. Policy state and retained checkpoint history must fit the declared memory
+reserve.
+
+Streams require the current engine `schema_version` in addition to the
+workload's format identifier. Missing or unsupported engine versions are
+rejected before replay. The stateful resource fixture uses a distinct checkpoint
+shape and checks that corrupted checkpoint evidence is rejected.
+
 Workloads can expose bounded observation counters through `Reporting::diagnostics`.
 The engine places them only in the live progress sidecar. They never influence
 selection, admission, or deterministic reports. Witness evaluators may collect
