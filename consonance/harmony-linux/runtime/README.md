@@ -20,3 +20,7 @@ the platform image. This script writes status to its inherited output. On x86
 that is the kernel console. On ARM the fixed entrypoint routes output through
 the platform MMIO console service and drains it before reboot; the OCI payload
 does not receive the service's physical-memory device.
+
+The ARM kernel enables `/dev/mem` solely for that outer console service, which
+maps the modeled PL011 data register. It is absent from the OCI device mounts;
+application SDK and observation access uses `/dev/harmony`.
