@@ -109,6 +109,7 @@ impl ExecutionSpec {
         Ok(serde_json::from_slice(bytes)?)
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(text: &str) -> Result<Self, SpecError> {
         Ok(serde_json::from_str(text)?)
     }
@@ -125,6 +126,14 @@ impl ExecutionSpec {
     pub fn to_string(&self) -> Result<String, SpecError> {
         self.validate()?;
         Ok(serde_json::to_string(self)?)
+    }
+}
+
+impl std::str::FromStr for ExecutionSpec {
+    type Err = SpecError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        ExecutionSpec::from_str(text)
     }
 }
 
@@ -169,6 +178,18 @@ fn validate_path(field: &'static str, path: &str) -> Result<(), SpecError> {
             Component::CurDir | Component::ParentDir | Component::Prefix(_)
         )
     }) {
+        return Err(SpecError::UnnormalizedPath {
+            field,
+            path: path.to_string(),
+        });
+    }
+    let mut normalized = std::path::PathBuf::from("/");
+    for component in candidate.components() {
+        if let Component::Normal(part) = component {
+            normalized.push(part);
+        }
+    }
+    if normalized.to_str() != Some(path) {
         return Err(SpecError::UnnormalizedPath {
             field,
             path: path.to_string(),
@@ -258,6 +279,10 @@ mod tests {
                 "normalized",
             ),
             (
+                r#"{"version":1,"argv":["/bin/true"],"env":[],"cwd":"/a/","uid":0,"gid":0,"additional_gids":[],"bundle":null}"#,
+                "normalized",
+            ),
+            (
                 r#"{"version":1,"argv":["/bin/true"],"env":[],"cwd":"/","uid":0,"gid":0,"additional_gids":[],"bundle":"bundle"}"#,
                 "absolute",
             ),
@@ -266,6 +291,11 @@ mod tests {
             let error = ExecutionSpec::from_str(json).unwrap_err().to_string();
             assert!(error.contains(text), "{error} does not contain {text}");
         }
+        let duplicate_slash = format!(
+            r#"{{"version":1,"argv":["/bin/true"],"env":[],"cwd":"{}","uid":0,"gid":0,"additional_gids":[],"bundle":null}}"#,
+            concat!("/a/", "/b")
+        );
+        assert!(ExecutionSpec::from_str(&duplicate_slash).is_err());
         let mut invalid = spec();
         invalid.cwd = "relative".into();
         assert!(invalid.to_vec().is_err());

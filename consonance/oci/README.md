@@ -2,12 +2,39 @@
 
 `oci-support` acquires registry images, OCI layouts, and Docker archives; stages
 their rootfs; and assembles deterministic guest image segments. Image parsing,
-layer validation, and digest-keyed cache behavior are shared by the Harmony OCI
-runner and its callers. Callers own startup and checking contracts.
+layer validation, and optional digest-keyed caching are shared by the Harmony
+OCI callers. The host preparation API is `bundle::prepare`:
+
+```rust
+let staged = image::stage(image_name, staging_dir)?;
+let request = LaunchRequest::new(command)
+    .with_bundle("/etc/harmony/bundle")
+    .with_external_inputs(vec![ExternalInput::new("/etc/input", bytes)]);
+let prepared = bundle::prepare(&staged, &request)?;
+let initramfs = prepared.initramfs(platform_initramfs);
+```
+
+`PreparedExecution` owns the deterministic rootfs and platform control
+segments, the resolved `ExecutionSpec`, and a SHA-256 identity. The rootfs is
+placed at `/harmony-oci/rootfs`; the control segment owns
+`/harmony-oci/config.json`, `/harmony-oci/execution.json`, and sorted external
+files. Image contents cannot replace those control paths. The canonical OCI
+configuration always starts `/usr/lib/harmony/supervisor` as root. The
+supervisor reads the mounted execution specification and applies its argv,
+environment, working directory, and resolved image credentials to the
+application process.
+
+External destinations are absolute normalized paths with bounded count and
+payload size. Platform-owned paths, duplicate destinations, and file/parent
+conflicts are rejected. External files and the execution specification are
+read-only mounts; `/dev/harmony` and the supervisor-only `/dev/harmony-park`
+are the only Harmony device mounts. Guest startup invokes the pinned
+`/usr/bin/runc` once with the initramfs `--no-pivot` arrangement.
 
 `bundle::build_rootfs_segment` places an image under `/harmony-oci/rootfs`.
-`bundle::build_control_segment` provides the existing OCI command runner.
-Other packages append their own launch segment using `guest-image::Writer`.
+`bundle::build_control_segment` is available when a caller already has an
+`ExecutionSpec`; most callers should use `bundle::prepare`. Other packages
+append their own platform segment using `guest-image::Writer`.
 
 Layers are extracted with `tar -p --no-same-owner`: each entry takes the mode
 its header recorded, whatever the host umask, and belongs to the staging user

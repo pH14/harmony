@@ -27,6 +27,10 @@ pub enum ImageError {
     NoConfig,
     #[error("image environment entry {index} is not VARNAME=VARVALUE")]
     InvalidEnvironment { index: usize },
+    #[error("image environment key {key:?} occurs more than once")]
+    DuplicateEnvironmentKey { key: String },
+    #[error("image working directory {0:?} is not an absolute normalized path")]
+    InvalidWorkingDirectory(String),
     #[error("image runtime field {field} contains a NUL byte")]
     InvalidRuntimeField { field: &'static str },
     #[error("image names a path outside its layout or rootfs: {0}")]
@@ -53,6 +57,7 @@ pub struct RuntimeConfig {
 impl RuntimeConfig {
     pub fn validate(&self) -> Result<(), ImageError> {
         credentials::validate_user_spec(self.user.as_deref())?;
+        let mut environment_keys = BTreeSet::new();
         for (index, variable) in self.env.iter().enumerate() {
             let Some((name, _)) = variable.split_once('=') else {
                 return Err(ImageError::InvalidEnvironment { index });
@@ -65,6 +70,11 @@ impl RuntimeConfig {
                 })
             {
                 return Err(ImageError::InvalidEnvironment { index });
+            }
+            if !environment_keys.insert(name) {
+                return Err(ImageError::DuplicateEnvironmentKey {
+                    key: name.to_owned(),
+                });
             }
         }
         for argument in self
@@ -81,6 +91,12 @@ impl RuntimeConfig {
                 });
             }
         }
+        if let Some(directory) = self.working_dir.as_deref()
+            && !directory.is_empty()
+            && !absolute_normalized(directory)
+        {
+            return Err(ImageError::InvalidWorkingDirectory(directory.to_owned()));
+        }
         Ok(())
     }
 
@@ -91,6 +107,22 @@ impl RuntimeConfig {
         self.validate()?;
         Ok(credentials::resolve(self.user.as_deref(), rootfs)?)
     }
+}
+
+fn absolute_normalized(path: &str) -> bool {
+    let candidate = Path::new(path);
+    if !candidate.is_absolute() {
+        return false;
+    }
+    let mut normalized = PathBuf::from("/");
+    for component in candidate.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => return false,
+        }
+    }
+    normalized.to_str() == Some(path)
 }
 
 pub struct StagedImage {
@@ -958,6 +990,24 @@ mod tests {
             assert!(matches!(
                 parse_runtime_config(&serde_json::to_vec(&blob).unwrap()),
                 Err(ImageError::InvalidEnvironment { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn runtime_config_rejects_duplicate_environment_and_unnormalized_cwd() {
+        let duplicate = serde_json::json!({
+            "config": {"Env": ["A=one", "A=two"]}
+        });
+        assert!(matches!(
+            parse_runtime_config(&serde_json::to_vec(&duplicate).unwrap()),
+            Err(ImageError::DuplicateEnvironmentKey { .. })
+        ));
+        for directory in ["relative", "/a/../b", "/a//b", "/a/"] {
+            let blob = serde_json::json!({"config": {"WorkingDir": directory}});
+            assert!(matches!(
+                parse_runtime_config(&serde_json::to_vec(&blob).unwrap()),
+                Err(ImageError::InvalidWorkingDirectory(_)),
             ));
         }
     }

@@ -102,7 +102,7 @@ struct StreamFilter {
     all(target_os = "linux", target_arch = "x86_64"),
     test,
 ))]
-const MARKER_START: &[u8] = b"HARMONY_OCI: start";
+const MARKER_START: &[u8] = b"HARMONY_OCI: startup";
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
@@ -165,9 +165,9 @@ pub fn cmdline() -> &'static str {
     if cfg!(target_arch = "x86_64") {
         "console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 \
          nokaslr nosmp maxcpus=1 nox2apic hpet=disable cgroup_no_v1=all printk.time=0 \
-         harmony_pvclock random.trust_bootloader=on rdinit=/harmony-oci-init"
+         harmony_pvclock random.trust_bootloader=on rdinit=/init"
     } else {
-        "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/harmony-oci-init nohlt"
+        "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt"
     }
 }
 
@@ -316,9 +316,9 @@ mod tests {
     fn full_mode_passes_raw_bytes_incrementally() {
         let out = filtered(
             StreamMode::Full,
-            &[b"kernel noise\nHARMONY", b"_OCI: start\nhi\n"],
+            &[b"kernel noise\nHARMONY", b"_OCI: startup\nhi\n"],
         );
-        assert_eq!(out, b"kernel noise\nHARMONY_OCI: start\nhi\n");
+        assert_eq!(out, b"kernel noise\nHARMONY_OCI: startup\nhi\n");
     }
 
     #[test]
@@ -326,8 +326,8 @@ mod tests {
         let out = filtered(
             StreamMode::Container,
             &[
-                b"[    0.0] kernel boot chatter, longer than the marker\n[    0.1] HARMONY_OCI: start\nhello\n",
-                b"HARMONY_OCI: via chroot\nworld\nHARMONY_OCI_EXIT rc=0\nreboot noise\n",
+                b"[    0.0] kernel boot chatter, longer than the marker\n[    0.1] HARMONY_OCI: startup\nhello\n",
+                b"HARMONY_OCI: runc\nworld\nHARMONY_OCI_APP_EXIT rc=0\nHARMONY_OCI_EXIT rc=0\nreboot noise\n",
             ],
         );
         assert_eq!(out, b"hello\nworld\n");
@@ -338,8 +338,8 @@ mod tests {
         let out = filtered(
             StreamMode::Container,
             &[
-                b"HARMONY_OCI: sta",
-                b"rt\nab",
+                b"HARMONY_OCI: star",
+                b"tup\nab",
                 b"c\nHARMONY_OCI_EX",
                 b"IT rc=1\nlate\n",
             ],
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn cmdline_selects_the_injected_init() {
-        assert!(cmdline().contains("rdinit=/harmony-oci-init"));
+        assert!(cmdline().contains("rdinit=/init"));
         if cfg!(target_arch = "x86_64") {
             assert!(cmdline().contains("console=ttyS0"));
             assert!(

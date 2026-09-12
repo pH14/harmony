@@ -543,6 +543,7 @@ dependencies = [
 name = "oci-support"
 version = "0.1.0"
 dependencies = [
+ "execution-proto",
  "guest-image",
  "serde",
  "serde_json",
