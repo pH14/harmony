@@ -519,7 +519,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            binutils build-essential cc65 curl g++ git jq python3 shellcheck wget
+            binutils build-essential cc65 curl ffmpeg g++ git jq python3 shellcheck wget
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |

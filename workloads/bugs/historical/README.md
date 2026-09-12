@@ -62,6 +62,12 @@ aggregate replay-session cap. The committed probe file remains a historical
 reference; the current build's discovered input is the replay source and the
 probe is not a CI gate.
 
+The PostgreSQL image builder publishes a checksum-verified artifact keyed by
+the image sources and case manifest. PR smoke checks require that exact cache
+entry or artifact handoff; a prefix cache cannot qualify changed image sources.
+When neither exists, dispatch the historical workflow on the proposed branch
+and rerun the smoke after its image job publishes the handoff.
+
 The roster's CI column is `runnable` or `deferred: <reason>`. A search miss,
 infrastructure failure, found-but-replay-unverified candidate, and actual
 differential replay mismatch are separate outcomes in the run summary and

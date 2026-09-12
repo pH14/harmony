@@ -84,12 +84,35 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: oci-images
-          # The consolidated historical-bugs images job must save this same
-          # key after writing oci-images/MANIFEST.sha256 for prefix fallback.
+          # The historical images job uses this same source key for its
+          # cache and artifact handoff after verifying image checksums.
           key: pgcic-oci-v1-${{ hashFiles('workloads/bugs/historical/postgres-cic-corruption/image/**', 'workloads/bugs/historical/postgres-cic-corruption/case.json') }}
-          restore-keys: |
-            pgcic-oci-v1-manifest-
-            pgcic-oci-v1-
+      - name: Locate exact workload image handoff
+        id: image-handoff
+        if: steps.image-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_KEY: ${{ hashFiles('workloads/bugs/historical/postgres-cic-corruption/image/**', 'workloads/bugs/historical/postgres-cic-corruption/case.json') }}
+        run: |
+          run_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" \
+            -f name="pgcic-oci-v1-$IMAGE_KEY" -F per_page=100 \
+            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .workflow_run.id // empty')
+          echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
+      - name: Require exact workload image inputs
+        if: steps.image-cache.outputs.cache-hit != 'true' && steps.image-handoff.outputs.run_id == ''
+        run: |
+          echo '::error::Exact PostgreSQL workload images are missing. Run the historical workflow on this branch, then rerun this smoke after image publication.'
+          exit 1
+      - name: Clear superseded cached workload images
+        if: steps.image-handoff.outputs.run_id != ''
+        run: rm -rf oci-images
+      - uses: actions/download-artifact@v4
+        if: steps.image-handoff.outputs.run_id != ''
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.image-handoff.outputs.run_id }}
+          name: pgcic-oci-v1-${{ hashFiles('workloads/bugs/historical/postgres-cic-corruption/image/**', 'workloads/bugs/historical/postgres-cic-corruption/case.json') }}
+          path: oci-images
       - name: Verify platform and application artifacts
         run: |
           python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \

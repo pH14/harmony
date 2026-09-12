@@ -171,6 +171,14 @@ jobs:
         with:
           path: oci-images
           key: pgcic-oci-v1-${{ hashFiles('workloads/bugs/historical/postgres-cic-corruption/image/**', 'workloads/bugs/historical/postgres-cic-corruption/case.json') }}
+      - name: Publish the exact PostgreSQL smoke image handoff
+        if: matrix.id == 'postgres-cic-corruption'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pgcic-oci-v1-${{ hashFiles('workloads/bugs/historical/postgres-cic-corruption/image/**', 'workloads/bugs/historical/postgres-cic-corruption/case.json') }}
+          path: oci-images
+          if-no-files-found: error
+          retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
           name: historical-images-${{ matrix.id }}-${{ github.run_id }}
