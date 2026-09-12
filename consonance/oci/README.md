@@ -31,7 +31,9 @@ symlink-free paths in the staged image, so image aliases cannot redirect a
 mount over platform control files. External files and the execution specification are
 read-only mounts; `/dev/harmony` and the supervisor-only `/dev/harmony-park`
 are the only Harmony device mounts. Guest startup invokes the pinned
-`/usr/bin/runc` once with the initramfs `--no-pivot` arrangement.
+`/usr/bin/runc` once with the initramfs `--no-pivot` arrangement. The outer
+guest root is made recursively private before launch; the container uses
+`rslave` propagation, as required by this runtime mode.
 
 Rootfs and control-segment assembly are internal to `bundle::prepare`, which
 validates their combined mount layout before producing executable bytes.

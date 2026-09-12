@@ -25,6 +25,7 @@ finish() {
 
 startup_failure() {
     status=$1
+    log "HARMONY_OCI_STARTUP_FAILURE ${2:-required platform facility unavailable}"
     log "HARMONY_OCI_STARTUP_EXIT rc=$status"
     finish "$status"
 }
@@ -41,18 +42,18 @@ mount_required() {
     if "$BUSYBOX" mount -t "$filesystem" "$source" "$target" 2>/dev/null; then
         return 0
     fi
-    mounted "$target" || startup_failure 125
+    mounted "$target" || startup_failure 125 "mount $filesystem at $target failed"
 }
 
 log "HARMONY_OCI: startup"
 
 [ -x "$BUSYBOX" ] || finish 127
-[ -x "$RUNC" ] || startup_failure 127
-[ -d "$BUNDLE" ] || startup_failure 125
-[ -f "$BUNDLE/config.json" ] || startup_failure 125
-[ -f "$BUNDLE/execution.json" ] || startup_failure 125
-[ -d "$BUNDLE/rootfs" ] || startup_failure 125
-[ -x /usr/lib/harmony/supervisor ] || startup_failure 127
+[ -x "$RUNC" ] || startup_failure 127 "missing runtime: $RUNC"
+[ -d "$BUNDLE" ] || startup_failure 125 "missing bundle: $BUNDLE"
+[ -f "$BUNDLE/config.json" ] || startup_failure 125 "missing OCI configuration"
+[ -f "$BUNDLE/execution.json" ] || startup_failure 125 "missing execution specification"
+[ -d "$BUNDLE/rootfs" ] || startup_failure 125 "missing rootfs"
+[ -x /usr/lib/harmony/supervisor ] || startup_failure 127 "missing supervisor"
 
 mount_required proc proc /proc
 mount_required sysfs sysfs /sys
@@ -63,9 +64,9 @@ mount_required tmpfs tmpfs /run
 mount_required tmpfs tmpfs /tmp
 mount_required cgroup2 none /sys/fs/cgroup
 
-"$BUSYBOX" mount --make-rprivate / 2>/dev/null || startup_failure 125
-[ -e /dev/harmony ] || startup_failure 125
-[ -e /dev/harmony-park ] || startup_failure 125
+"$BUSYBOX" mount --make-rprivate / 2>/dev/null || startup_failure 125 "private root mount failed"
+[ -e /dev/harmony ] || startup_failure 125 "missing SDK device"
+[ -e /dev/harmony-park ] || startup_failure 125 "missing park device"
 
 runc_pid=
 # shellcheck disable=SC2329

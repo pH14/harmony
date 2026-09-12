@@ -97,7 +97,7 @@ enable_busybox_symbol() {
 for symbol in STATIC BUSYBOX ASH SH_IS_ASH MOUNT UMOUNT MKDIR MKNOD CHMOD CHOWN \
     CAT ECHO GREP HALT POWEROFF REBOOT SETSID SETUIDGID ENV ID KILL SLEEP \
     LN RM CP MV TRUE FALSE TEST SYNC PRINTF HEAD TAIL TEE CUT WC PS SED TOUCH \
-    STAT READLINK MKFIFO TEST1; do
+    STAT READLINK MKFIFO TEST1 FEATURE_MOUNT_FLAGS; do
     enable_busybox_symbol "$symbol"
 done
 grep -qxF 'CONFIG_STATIC=y' "$busybox_obj/.config" || {
@@ -120,7 +120,7 @@ make -C "$BBSRC" O="$busybox_obj" CC="$busybox_cc" -j"$(nproc)" busybox >/dev/nu
 for symbol in STATIC BUSYBOX ASH SH_IS_ASH MOUNT UMOUNT MKDIR MKNOD CHMOD CHOWN \
     CAT ECHO GREP HALT POWEROFF REBOOT SETSID SETUIDGID ENV ID KILL SLEEP \
     LN RM CP MV TRUE FALSE TEST SYNC PRINTF HEAD TAIL TEE CUT WC PS SED TOUCH \
-    STAT READLINK MKFIFO TEST1; do
+    STAT READLINK MKFIFO TEST1 FEATURE_MOUNT_FLAGS; do
     grep -qxF "CONFIG_${symbol}=y" "$busybox_obj/.config" || {
         echo "FAIL: platform BusyBox lost CONFIG_${symbol}" >&2
         exit 1

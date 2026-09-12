@@ -145,6 +145,9 @@ CONFIG_RD_GZIP=y
 # /proc, /sys, /dev for the init script.
 CONFIG_PROC_FS=y
 CONFIG_PROC_CHILDREN=y
+CONFIG_CGROUP_BPF=y
+CONFIG_BPF_SYSCALL=y
+# CONFIG_BPF_JIT is not set
 CONFIG_SYSFS=y
 CONFIG_DEVTMPFS=y
 # The package-neutral guest network substrate is built in so workloads can

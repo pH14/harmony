@@ -14,6 +14,10 @@ select or build an application image. The platform init receives the prepared
 bundle and owns guest setup, device exposure, runtime invocation, and terminal
 lifecycle.
 
+Cgroup v2 device enforcement requires `BPF_SYSCALL` and `CGROUP_BPF` for
+`runc`. Both architectures use the BPF interpreter with `BPF_JIT` disabled,
+so cgroup policy does not introduce dynamically generated kernel instructions.
+
 ## Canonical artifacts
 
 The x86 build publishes `build/x86_64/bzImage` and

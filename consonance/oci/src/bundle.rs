@@ -373,7 +373,7 @@ fn runc_spec(external_inputs: &[ValidatedExternalInput]) -> serde_json::Value {
         "hostname": "harmony",
         "mounts": mounts,
         "linux": {
-            "rootfsPropagation": "private",
+            "rootfsPropagation": "rslave",
             "cgroupsPath": "harmony",
             "namespaces": [
                 { "type": "pid" },
