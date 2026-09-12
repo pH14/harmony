@@ -3,12 +3,14 @@
 pub mod bundle;
 pub mod directive;
 pub mod faults;
+pub mod recovery;
 pub mod regs;
 pub mod supervisor;
 
 pub use bundle::{Bundle, BundleError, HookSpec, NodeSpec};
 pub use directive::{Directive, DirectiveError, LineReader};
 pub use faults::{ActiveFaults, NodeFaults, Park};
+pub use recovery::{RecoveryError, RecoveryGate};
 pub use regs::{RegisterSnapshot, Registers};
 pub use supervisor::{Action, Counters, Supervisor};
 

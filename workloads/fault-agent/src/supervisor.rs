@@ -132,7 +132,6 @@ impl Supervisor {
         for window in active.hooks() {
             if self.previous.hooks().binary_search(window).is_err() {
                 actions.push(Action::RunHook(window.id));
-                self.counters.hooks_started += 1;
             }
         }
 
@@ -150,6 +149,10 @@ impl Supervisor {
 
         self.previous = active.clone();
         actions
+    }
+
+    pub fn note_hook_started(&mut self) {
+        self.counters.hooks_started += 1;
     }
 
     pub fn note_hook_finished(&mut self) {
@@ -331,7 +334,28 @@ mod tests {
         let next = active(&[(0, Fault::RunHook(4)), (0, Fault::RunHook(7))]);
         assert_eq!(sup.tick(&next, &[]), [Action::RunHook(7)]);
         assert_eq!(sup.tick(&two, &[]), [Action::RunHook(1)]);
+        assert_eq!(sup.counters().hooks_started, 0);
+        for _ in 0..4 {
+            sup.note_hook_started();
+        }
         assert_eq!(sup.counters().hooks_started, 4);
+    }
+
+    #[test]
+    fn a_requested_hook_is_not_counted_until_it_is_started() {
+        let mut sup = Supervisor::new(1);
+        assert_eq!(
+            sup.tick(&active(&[(0, Fault::RunHook(1))]), &[]),
+            [Action::RunHook(1)]
+        );
+        assert_eq!(sup.counters().hooks_started, 0);
+        assert_eq!(sup.counters().hooks_finished, 0);
+
+        sup.note_hook_started();
+        assert_eq!(sup.counters().hooks_started, 1);
+        assert_eq!(sup.counters().hooks_finished, 0);
+        sup.note_hook_finished();
+        assert_eq!(sup.counters().hooks_finished, 1);
     }
 
     #[test]
@@ -340,9 +364,11 @@ mod tests {
         let mut first = ActiveFaults::new();
         first.insert(0, &Fault::RunHook(2), 0);
         assert_eq!(sup.tick(&first, &[]), [Action::RunHook(2)]);
+        sup.note_hook_started();
         let mut second = ActiveFaults::new();
         second.insert(0, &Fault::RunHook(2), 500);
         assert_eq!(sup.tick(&second, &[]), [Action::RunHook(2)]);
+        sup.note_hook_started();
         assert_eq!(sup.tick(&second, &[]), []);
         assert_eq!(sup.counters().hooks_started, 2);
     }
@@ -389,6 +415,8 @@ mod tests {
     fn the_snapshot_reports_every_register() {
         let mut sup = Supervisor::new(2);
         sup.tick(&active(&[(1, Fault::RunHook(2))]), &[0]);
+        assert_eq!(sup.counters().hooks_started, 0);
+        sup.note_hook_started();
         sup.note_hook_finished();
         sup.note_sometimes(3);
         let snap = sup.snapshot();

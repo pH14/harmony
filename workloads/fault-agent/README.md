@@ -50,6 +50,25 @@ cargo run --manifest-path workloads/fault-agent/Cargo.toml -- \
   --check-bundle --bundle path/to/bundle
 ```
 
+The `ready` command is checked before setup completes. When it is configured,
+every supervised node start begins a new recovery generation and launches the
+command as a child probe. The standing-fault poll continues while the probe
+runs; each tick checks whether it has exited and starts another attempt after a
+failed attempt. A slow or hung probe therefore does not stop polling, and hooks
+requested during recovery remain queued until the current generation is ready.
+If no `ready` command is configured, recovery remains immediately ready and
+hooks keep their existing behavior. Readiness comes from the command itself; the
+agent does not require every node to be alive before a hook can run.
+
+Queued hook requests preserve their order and repeated requests. The generation
+only controls new hook launches: a hook that was already running can finish
+after a later node start and continues publishing its directives and exit-42
+failure. The hook owns the validity of that assertion, so the agent does not
+discard an oracle result merely because another node recovered.
+The hooks-started observation advances only after a queued or immediate request
+successfully spawns its child; a request held behind readiness is not counted as
+running.
+
 ## Hook directives
 
 A hook reports its own assertions by writing one directive per stdout line,

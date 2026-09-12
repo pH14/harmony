@@ -16,7 +16,7 @@ in the fault agent's bundle format:
 | `node <name> <argv...>` | one workload process the agent supervises |
 | `hook <id> <argv...>` | a command the search can run at any moment |
 | `setup <argv...>` | runs once, before any node starts |
-| `ready <argv...>` | must pass before the run's setup point is sealed |
+| `ready <argv...>` | must pass before setup is sealed and before new hooks launch after a supervised node start |
 
 [`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
 alphabet, and assembles a guest initramfs: the base image, the OCI rootfs, and
@@ -25,6 +25,12 @@ init mounts the pseudo-filesystems, binds and chroots into the workload rootfs,
 and execs the agent. The control member is appended after the compressed
 members and padded to four bytes, which Linux initramfs requires before a raw
 `newc` header.
+
+After setup, readiness probes run asynchronously while standing-fault polling
+continues. The configured command decides readiness, including whether it can
+operate with some nodes down. Already-running hooks continue reporting their
+assertions across restarts; readiness only gates new launches. Bundles without
+a readiness command keep immediate hook launches.
 
 ## Actions
 
