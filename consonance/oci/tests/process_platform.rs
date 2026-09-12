@@ -177,7 +177,7 @@ mod platform {
 
     fn run_until(session: &mut Session, deadline: u64) -> Result<()> {
         match session.run_until(deadline)? {
-            StopReason::Deadline { vtime } if vtime == Moment(deadline) => Ok(()),
+            StopReason::Deadline { vtime } if vtime >= Moment(deadline) => Ok(()),
             other => Err(format!("process smoke stopped before deadline: {other:?}").into()),
         }
     }

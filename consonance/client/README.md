@@ -87,4 +87,6 @@ cargo clippy -p consonance-client --all-features --all-targets -- -D warnings
 handle while execution is stopped. Registration is resolved from SDK events in
 the current snapshot, so restoring an earlier snapshot also restores its handle
 lifetime. Unknown, revoked, malformed, and out-of-bounds observations fail before
-a guest-memory read. Workload adapters own interpretation of the returned bytes.
+a guest-memory read. Large observations are fetched in chunks within the control
+protocol's read limit while the guest remains stopped. Workload adapters own
+interpretation of the returned bytes.

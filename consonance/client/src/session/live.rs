@@ -490,7 +490,15 @@ impl Session {
     ) -> Result<Vec<u8>, Box<dyn Error>> {
         let events = self.sdk_events()?;
         let region = super::observation_descriptor(&events, handle)?;
-        self.read(region.range(offset, len)?, len)
+        let address = region.range(offset, len)?;
+        let mut bytes = Vec::with_capacity(len as usize);
+        let mut consumed = 0;
+        while consumed < len {
+            let chunk = (len - consumed).min(control_proto::READ_CAP);
+            bytes.extend(self.read(address + u64::from(consumed), chunk)?);
+            consumed += chunk;
+        }
+        Ok(bytes)
     }
 
     pub fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
