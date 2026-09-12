@@ -99,13 +99,14 @@ is explicitly selected:
 HARMONY_PLATFORM_KERNEL=/path/to/kernel \
 HARMONY_PLATFORM_INITRAMFS=/path/to/initramfs-oci.cpio.gz \
 HARMONY_PLATFORM_FIXTURE=/path/to/fixture-layout \
-cargo test -p oci-support --test platform -- --ignored --nocapture
+cargo test --locked --release -p oci-support --test platform -- --ignored --nocapture
 ```
 
 The fixture layout is built by `consonance/harmony-linux/runtime-fixture/package.py`.
 Kernel, runtime, and fixture must target the host architecture. The test currently
 uses the Linux in-process session backend; compilation alone is not a hardware
 qualification result.
+Run these checks in release mode because replay hashes the complete guest memory.
 
 The structured process smoke uses the same preparation path with an external
 `/etc/harmony/bundle`, installs a standing process-window service through the
@@ -117,5 +118,5 @@ portable snapshot and requires identical continuation evidence:
 HARMONY_PLATFORM_KERNEL=/path/to/kernel \
 HARMONY_PLATFORM_INITRAMFS=/path/to/initramfs-oci.cpio.gz \
 HARMONY_PLATFORM_FIXTURE=/path/to/fixture-layout \
-cargo test -p oci-support --test process_platform -- --ignored --nocapture
+cargo test --locked --release -p oci-support --test process_platform -- --ignored --nocapture
 ```
