@@ -112,8 +112,8 @@ with bounded hardware gates. `x86-virtual-time.yml` checks serviced exits, RF,
 PAE translations, and guest-written XSAVE output, including a reused VM whose
 FPU state was changed by another continuation. `snapshot-linux-smoke.yml`
 compares two complete same-seed Linux execution logs; its success requires
-nonzero events and zero differences. The Nova Consonance smoke exercises
-workload continuations through the restore oracle.
+nonzero events and zero differences. Workload acceptance smokes exercise
+continuations through their restore oracles.
 
 Linux smoke fixtures come from main's durable guest cache. Each run verifies
 the manifest and records the exact or last-known-good cache provenance. A
@@ -122,3 +122,9 @@ builder supplies that evidence. Execution is bounded independently of builds,
 and failed gates retain diagnostics. Broader repetitions and vendor sampling
 remain scheduled/manual. These gates are regression evidence, not a claim that
 the retained XSAVE-presence and AMD NPT PAE counterexamples are resolved.
+
+Full and sparse portable imports share the VMM's read-only restore preparation
+before entering the snapshot store. Invalid engine state, XSAVE provenance,
+device records, and clock wiring are rejected before changing the destination
+execution. Import requires a live validation target. This preflight does not
+replace backend validation or make host ioctl failures transactional.

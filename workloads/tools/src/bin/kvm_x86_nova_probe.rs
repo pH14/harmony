@@ -600,6 +600,38 @@ fn run() -> Result<(), String> {
         }
     }
 
+    fn export_snapshot(server: &Server, snap: SnapId) -> Result<Vec<u8>, String> {
+        let mut artifact = Vec::new();
+        server
+            .export_portable_snapshot(snap, &mut artifact)
+            .map_err(|error| format!("portable snapshot export failed: {error}"))?;
+        Ok(artifact)
+    }
+
+    fn retain_oracle_mismatch(label: &str, expected: &[u8], actual: &[u8]) -> Result<(), String> {
+        let Some(directory) = std::env::var_os("HARMONY_CONSONANCE_ORACLE_REPORT_DIR") else {
+            return Ok(());
+        };
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        std::fs::write(directory.join(format!("{label}-expected.bin")), expected)
+            .map_err(|error| error.to_string())?;
+        std::fs::write(directory.join(format!("{label}-actual.bin")), actual)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    fn snapshot_current(
+        server: &mut Server,
+        profile: &mut ProbeProfile,
+    ) -> Result<(SnapId, Vec<u8>), String> {
+        let snap = match drive(server, &Request::Snapshot, profile)? {
+            Reply::Snapshot { id, .. } => id,
+            other => return Err(format!("portable comparison snapshot returned {other:?}")),
+        };
+        Ok((snap, export_snapshot(server, snap)?))
+    }
+
     struct OracleInitial {
         components: Vec<(&'static str, [u8; 32])>,
         memory: Vec<u8>,
@@ -657,11 +689,15 @@ fn run() -> Result<(), String> {
         server: &mut Server,
         base: SnapId,
         profile: &mut ProbeProfile,
+        cold_factory: &dyn Fn() -> Result<Server, String>,
     ) -> Result<(), String> {
+        const CONTROL_AT: [u64; 8] = [1, 2, 4, 8, 16, 32, 64, 199];
+
         #[derive(Clone)]
         struct Edge {
             parent: SnapId,
             payload: Vec<u8>,
+            child: SnapId,
             hash: [u8; 32],
             components: Vec<(&'static str, [u8; 32])>,
             sdk_capture: String,
@@ -681,6 +717,7 @@ fn run() -> Result<(), String> {
         edges.push(Edge {
             parent: base,
             payload: action_a,
+            child: s1,
             initial_components: initial.components,
             hash: hash_whole(server, profile)?,
             components: server
@@ -699,6 +736,7 @@ fn run() -> Result<(), String> {
         edges.push(Edge {
             parent: s1,
             payload: action_b.clone(),
+            child: s2,
             initial_components: initial.components,
             hash: s2_hash,
             components: server
@@ -715,8 +753,19 @@ fn run() -> Result<(), String> {
             return Err("restore-oracle S1 + B did not reproduce S2".to_string());
         }
         let mut equal = 1u64;
+        let mut fresh_equal = 0usize;
+        let mut full_state_equal = 0usize;
+        let mut temporary_snapshots = Vec::new();
+        let mut control_edges = Vec::new();
 
-        let mut rng = SEED ^ 0x4954_454d_325f_5452;
+        let tree_seed = match std::env::var("HARMONY_CONSONANCE_ORACLE_TREE_SEED") {
+            Ok(value) => value
+                .parse::<u64>()
+                .map_err(|error| format!("invalid oracle tree seed: {error}"))?,
+            Err(std::env::VarError::NotPresent) => SEED ^ 0x4954_454d_325f_5452,
+            Err(error) => return Err(format!("invalid oracle tree seed: {error}")),
+        };
+        let mut rng = tree_seed;
         while edges.len() < 50 {
             let word = oracle_word(&mut rng);
             let parent = nodes[(word as usize) % nodes.len()];
@@ -728,6 +777,7 @@ fn run() -> Result<(), String> {
             edges.push(Edge {
                 parent,
                 payload,
+                child,
                 hash,
                 initial_components: initial.components,
                 components: server
@@ -747,6 +797,11 @@ fn run() -> Result<(), String> {
             let (_, replay_hash, initial) =
                 oracle_action(server, edge.parent, edge.payload.clone(), false, profile)?;
             if replay_hash != edge.hash {
+                if std::env::var_os("HARMONY_CONSONANCE_ORACLE_REPORT_DIR").is_some() {
+                    let expected = export_snapshot(server, edge.child)?;
+                    let (_, actual) = snapshot_current(server, profile)?;
+                    retain_oracle_mismatch("in-place-history", &expected, &actual)?;
+                }
                 let actual = server
                     .vmm()
                     .ok_or("oracle VM unavailable")?
@@ -821,7 +876,102 @@ fn run() -> Result<(), String> {
                     edge.parent, edge.payload, edge.hash
                 ));
             }
+            if CONTROL_AT.contains(&equal) {
+                control_edges.push(edge.clone());
+            }
             equal = equal.saturating_add(1);
+        }
+
+        for edge in control_edges {
+            let (_, replay_hash, _) =
+                oracle_action(server, edge.parent, edge.payload.clone(), false, profile)?;
+            if replay_hash != edge.hash {
+                let expected = export_snapshot(server, edge.child)?;
+                let (_, actual) = snapshot_current(server, profile)?;
+                retain_oracle_mismatch("post-pass-history", &expected, &actual)?;
+                return Err("restore-oracle post-pass in-place control differed".to_owned());
+            }
+            let expected_artifact = export_snapshot(server, edge.child)?;
+            let in_place_state = server
+                .vmm()
+                .ok_or("oracle VM unavailable")?
+                .state_blob()
+                .map_err(|error| format!("in-place state export failed: {error}"))?;
+            let (in_place_snap, in_place_artifact) = snapshot_current(server, profile)?;
+            if in_place_artifact != expected_artifact {
+                retain_oracle_mismatch(
+                    "in-place-portable",
+                    &expected_artifact,
+                    &in_place_artifact,
+                )?;
+                return Err(format!(
+                    "restore-oracle portable state differed for in-place comparison {}",
+                    fresh_equal + 1
+                ));
+            }
+            drop(expected_artifact);
+            let parent_artifact = export_snapshot(server, edge.parent)?;
+            let mut cold = cold_factory()?;
+            let mut cold_profile = ProbeProfile::new(true);
+            match drive(&mut cold, &Request::Hello(server_caps()), &mut cold_profile)? {
+                Reply::Hello(caps) if caps == server_caps() => {}
+                other => return Err(format!("cold hello returned {other:?}")),
+            }
+            let imported = cold
+                .import_portable_snapshot(parent_artifact.as_slice())
+                .map_err(|error| format!("cold portable import failed: {error}"))?;
+            drop(parent_artifact);
+            let (_, fresh_hash, _) = oracle_action(
+                &mut cold,
+                imported.id,
+                edge.payload.clone(),
+                false,
+                &mut cold_profile,
+            )?;
+            let fresh_state = cold
+                .vmm()
+                .ok_or("cold oracle VM unavailable")?
+                .state_blob()
+                .map_err(|error| format!("fresh state export failed: {error}"))?;
+            if fresh_state != in_place_state {
+                retain_oracle_mismatch("cold-state", &in_place_state, &fresh_state)?;
+                return Err(format!(
+                    "restore-oracle raw VM state differed for cold comparison {}",
+                    fresh_equal + 1
+                ));
+            }
+            drop(in_place_state);
+            let (_, fresh_artifact) = snapshot_current(&mut cold, &mut cold_profile)?;
+            if fresh_artifact != in_place_artifact {
+                retain_oracle_mismatch("cold-portable", &in_place_artifact, &fresh_artifact)?;
+                return Err(format!(
+                    "restore-oracle portable state differed for cold comparison {}",
+                    fresh_equal + 1
+                ));
+            }
+            temporary_snapshots.push(in_place_snap);
+            if fresh_hash != replay_hash || cold.in_place_fallbacks() != 0 {
+                return Err(format!(
+                    "restore-oracle in-place/cold mismatch at comparison {}",
+                    fresh_equal + 1
+                ));
+            }
+            fresh_equal += 1;
+            full_state_equal += 1;
+        }
+
+        if fresh_equal != CONTROL_AT.len() {
+            return Err("restore-oracle performed no fresh-VM controls".to_owned());
+        }
+        if full_state_equal != CONTROL_AT.len() {
+            return Err("restore-oracle performed no raw full-state comparisons".to_owned());
+        }
+
+        for snap in temporary_snapshots {
+            match drive(server, &Request::Drop(snap), profile)? {
+                Reply::Unit => {}
+                other => return Err(format!("temporary snapshot drop returned {other:?}")),
+            }
         }
 
         let fallbacks = server.in_place_fallbacks().saturating_sub(fallbacks_start);
@@ -833,9 +983,12 @@ fn run() -> Result<(), String> {
         let mut samples = profile.branch_wall_samples_ns[sample_start..].to_vec();
         samples.sort_unstable();
         println!(
-            "NOVA_CONSONANCE_RESTORE_ORACLE_OK equal={} tree_actions={} branch_median_ns={} branch_p99_ns={} restore_bytes={} fallbacks={}",
+            "NOVA_CONSONANCE_RESTORE_ORACLE_OK equal={} tree_actions={} fresh_equal={} full_state_equal={} tree_seed={} branch_median_ns={} branch_p99_ns={} restore_bytes={} fallbacks={}",
             equal,
             edges.len(),
+            fresh_equal,
+            full_state_equal,
+            tree_seed,
             percentile(&samples, 50),
             percentile(&samples, 99),
             profile.restore_bytes.saturating_sub(bytes_start),
@@ -960,7 +1113,18 @@ fn run() -> Result<(), String> {
         "NOVA_CONSONANCE_STATE_INVENTORY arch={inventory_arch} fresh_used_changed={changed_components}"
     );
     if restore_oracle {
-        run_restore_oracle(&mut server, base, &mut profile)?;
+        let cold_factory = || {
+            let live = boot(&kernel, &initramfs)
+                .map_err(|error| format!("cold boot compose: {error:?}"))?;
+            let cold_kernel = kernel.clone();
+            let cold_initramfs = initramfs.clone();
+            let factory: VmmFactory<Box<dyn Backend<A = HostArch>>> =
+                Box::new(move || boot(&cold_kernel, &cold_initramfs));
+            let mut cold = ControlServer::new(live, factory);
+            cold.set_restore_mode(RestoreMode::Memcpy);
+            Ok(cold)
+        };
+        run_restore_oracle(&mut server, base, &mut profile, &cold_factory)?;
     }
     let first = endpoint(&mut server, base, &mut profile)?;
     let second = endpoint(&mut server, base, &mut profile)?;

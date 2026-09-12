@@ -14,6 +14,9 @@ on:
       - scripts/build-quicknes-core.sh
       - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
+      - flake.nix
+      - flake.lock
 
   push:
     branches: [main]
@@ -27,6 +30,9 @@ on:
       - scripts/build-quicknes-core.sh
       - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
+      - flake.nix
+      - flake.lock
   schedule:
     - cron: "17 4 * * *"
 
@@ -137,6 +143,7 @@ jobs:
       - name: Verify x86 in-place restore oracle
         env:
           HARMONY_CONSONANCE_RESTORE_ORACLE: "1"
+          HARMONY_CONSONANCE_ORACLE_REPORT_DIR: ${{ github.workspace }}/nova-consonance-report/restore-artifacts
         run: |
           timeout -k 10 600 \
             workloads/tools/target/release/kvm_x86_nova_probe \
@@ -514,6 +521,7 @@ jobs:
             . -> target
             workloads/nes -> target
             workloads/nes-guest -> target
+            workloads/tools -> target
       - name: Restore the locked x86 guest artifacts
         id: guest-cache
         uses: actions/cache/restore@v4
@@ -607,6 +615,24 @@ jobs:
           HARMONY_NOVA_ROM: ${{ github.workspace }}/workloads/nes/build/nova/nova.nes
           HARMONY_NOVA_CORE_STATIC: ${{ github.workspace }}/workloads/nes/build/nova/libquicknes_libretro.a
         run: workloads/nes-guest/legacy/build-nova-game-image.sh
+      - name: Build the bounded full-state restore oracle
+        run: cargo build --locked --release --manifest-path workloads/tools/Cargo.toml --bin kvm_x86_nova_probe
+      - name: Verify the bounded full-state restore oracle
+        env:
+          HARMONY_CONSONANCE_RESTORE_ORACLE: "1"
+          HARMONY_CONSONANCE_ORACLE_REPORT_DIR: ${{ github.workspace }}/nova-consonance-pr-smoke/restore-artifacts
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          timeout -k 10 240 \
+            workloads/tools/target/release/kvm_x86_nova_probe \
+              nix-guest-output/x86_64/bzImage \
+              consonance/harmony-linux/build/initramfs-nova.cpio.gz \
+            2>&1 | tee nova-consonance-pr-smoke/restore-oracle.txt
+          grep -Eq 'NOVA_CONSONANCE_RESTORE_ORACLE_OK equal=200 tree_actions=50 fresh_equal=8 full_state_equal=8 .* fallbacks=0$' \
+            nova-consonance-pr-smoke/restore-oracle.txt
       - name: Run Nova search through Consonance
         run: |
           set -euo pipefail
