@@ -674,6 +674,32 @@ mod tests {
         assert!(parse_recorded_input("{}").is_err());
     }
 
+    /// Every action list a historical case commits has to keep parsing under
+    /// the current vocabulary. A stale one is otherwise caught only by a guest
+    /// replay job that costs tens of minutes, long after the change broke it.
+    #[test]
+    fn every_committed_case_input_parses_under_the_current_vocabulary() {
+        let cases = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bugs/historical");
+        let mut checked = 0_u32;
+        for entry in std::fs::read_dir(&cases).expect("read the historical case directory") {
+            let case = entry.expect("read a case directory").path();
+            for name in ["probe.json", "witness.json"] {
+                let path = case.join(name);
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                parse_recorded_input(&text)
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 0,
+            "no committed case input under {}",
+            cases.display()
+        );
+    }
+
     fn replay_summary(bug: bool, stop: FaultStop, violations: &[u32]) -> ReplaySummary {
         ReplaySummary {
             run: 1,

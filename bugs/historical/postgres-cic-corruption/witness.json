@@ -25,12 +25,18 @@
     {
       "Restart": 0
     },
-    "Wait",
+    {
+      "Wait": 0
+    },
     {
       "Hook": 4
     },
-    "Wait",
-    "Wait",
+    {
+      "Wait": 0
+    },
+    {
+      "Wait": 0
+    },
     {
       "Hook": 4
     },
@@ -49,16 +55,24 @@
     {
       "Hook": 4
     },
-    "Wait",
-    "Wait",
+    {
+      "Wait": 0
+    },
+    {
+      "Wait": 0
+    },
     {
       "Hook": 2
     },
-    "Wait",
+    {
+      "Wait": 0
+    },
     {
       "Hook": 3
     },
-    "Wait",
+    {
+      "Wait": 0
+    },
     {
       "Hook": 3
     }
