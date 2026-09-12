@@ -1,4 +1,4 @@
-# bugs/category — one canonical fault type per test
+# workloads/bugs/category — one canonical fault type per test
 
 Minimal, purpose-built tests where each entry isolates **one bug type** and is **named after
 the fault**. These are the unit tests of the finder: the smallest workload that exhibits the

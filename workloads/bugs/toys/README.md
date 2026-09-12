@@ -1,4 +1,4 @@
-# bugs/toys — small real systems with planted bugs
+# workloads/bugs/toys — small real systems with planted bugs
 
 Toy but *honest* implementations of real protocols and system components, each shipped with one
 or more **planted bugs** reachable only under injected adversity. Where `category/` isolates a

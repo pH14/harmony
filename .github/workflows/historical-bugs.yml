@@ -3,7 +3,7 @@ name: Benchmarks / Historical bugs
 
 # Runs the historical-bug cases on GitHub-hosted runners with nested KVM. The
 # only case wired up so far is the PostgreSQL CREATE INDEX CONCURRENTLY
-# corruption; `bugs/historical/postgres-cic-corruption/case.json` holds every
+# corruption; `workloads/bugs/historical/postgres-cic-corruption/case.json` holds every
 # pin, budget and pass threshold this workflow uses.
 
 on:
@@ -11,7 +11,7 @@ on:
     paths:
       - scripts/historical-*.sh
       - .github/workflows/historical-bugs.yml
-      - bugs/historical/postgres-cic-corruption/**
+      - workloads/bugs/historical/postgres-cic-corruption/**
       - cli/**
       - consonance/harmony-linux/**
       - scripts/render-historical-bugs.py
@@ -41,7 +41,7 @@ defaults:
     shell: bash
 
 env:
-  CASE_DIR: bugs/historical/postgres-cic-corruption
+  CASE_DIR: workloads/bugs/historical/postgres-cic-corruption
 
 jobs:
   manifest:
@@ -194,7 +194,7 @@ jobs:
         with:
           path: oci-images
           key: >-
-            pgcic-oci-v1-${{ hashFiles('bugs/historical/postgres-cic-corruption/image/**') }}-${{
+            pgcic-oci-v1-${{ hashFiles('workloads/bugs/historical/postgres-cic-corruption/image/**') }}-${{
             needs.manifest.outputs.vulnerable_sha256 }}-${{ needs.manifest.outputs.control_sha256 }}
       - name: Build and save both arms
         if: steps.image-cache.outputs.cache-hit != 'true'
@@ -483,13 +483,13 @@ jobs:
             echo "## Roster"
             echo
             sed -n '/render-historical-bugs:begin/,/render-historical-bugs:end/p' \
-              bugs/historical/README.md | grep -v render-historical-bugs
+              workloads/bugs/historical/README.md | grep -v render-historical-bugs
           } >>"${GITHUB_STEP_SUMMARY}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: historical-roster-${{ github.run_id }}
-          path: bugs/historical/README.md
+          path: workloads/bugs/historical/README.md
           if-no-files-found: warn
           retention-days: 30
       - uses: actions/github-script@v7

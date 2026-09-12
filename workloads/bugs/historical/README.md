@@ -1,4 +1,4 @@
-# bugs/historical — documented real-world bugs, reproduced
+# workloads/bugs/historical — documented real-world bugs, reproduced
 
 Real FOSS software pinned at a **pre-fix version**, driven so that a documented, historical bug
 fires under Harmony's fault/timing search and is caught by an automated oracle. These entries
@@ -45,7 +45,7 @@ reports and uploads the result, so the committed table lags the last CI run.
 <!-- render-historical-bugs:begin -->
 | bug | versions | status | discovery | latest replay | latest control | executions to first hit | replay command |
 |---|---|---|---|---|---|---|---|
-| [postgres-cic-corruption](postgres-cic-corruption/README.md) | 14.3 / 14.4 | reproduced | guided | bug found (2/2, probe) | silent (0/1, probe) | 221 | `harmony search --package faults IMAGE-14.3.oci --backend consonance --kernel bzImage-faultlab --base-initramfs initramfs.cpio.gz --fault-agent fault-agent --replay bugs/historical/postgres-cic-corruption/witness.json --repeat 2 --horizon-ms 500 --ram-mib 1024 --knobs "faultlab.churn_rows=20 faultlab.churn_slices=2 faultlab.churn_rounds=1200" --out OUT` |
+| [postgres-cic-corruption](postgres-cic-corruption/README.md) | 14.3 / 14.4 | reproduced | guided | — | — | — | `harmony search --package faults IMAGE-14.3.oci --backend consonance --kernel bzImage-faultlab --base-initramfs initramfs.cpio.gz --fault-agent fault-agent --replay workloads/bugs/historical/postgres-cic-corruption/witness.json --repeat 2 --horizon-ms 500 --ram-mib 1024 --knobs "faultlab.churn_rows=20 faultlab.churn_slices=2 faultlab.churn_rounds=1200" --out OUT` |
 <!-- render-historical-bugs:end -->
 
 ## Notes

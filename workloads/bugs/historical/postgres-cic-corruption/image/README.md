@@ -14,7 +14,7 @@ The same pins live in `../case.json`, which is what the workflow reads.
 ## Build both arms
 
 ```sh
-cd bugs/historical/postgres-cic-corruption/image
+cd workloads/bugs/historical/postgres-cic-corruption/image
 
 docker build --tag harmony-pgcic:14.3 .
 docker save --output pgcic-14.3.oci harmony-pgcic:14.3

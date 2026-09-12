@@ -8,6 +8,7 @@ on:
       - .github/workflows/nova-consonance-experiment.yml
       - consonance/**
       - workloads/**
+      - '!workloads/bugs/**'
       - dissonance/**
       - cli/**
       - scripts/build-quicknes-core.sh
@@ -20,6 +21,7 @@ on:
       - .github/workflows/nova-consonance-experiment.yml
       - consonance/**
       - workloads/**
+      - '!workloads/bugs/**'
       - dissonance/**
       - cli/**
       - scripts/build-quicknes-core.sh

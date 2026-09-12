@@ -678,7 +678,6 @@ TOPLEVEL_DIR_ALLOWLIST = {
     ".githooks",
     ".github",
     "benchmarks",
-    "bugs",
     "cli",
     "consonance",
     "dissonance",

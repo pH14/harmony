@@ -26,8 +26,8 @@
     }
   },
   "image": {
-    "context": "bugs/historical/postgres-cic-corruption/image",
-    "dockerfile": "bugs/historical/postgres-cic-corruption/image/Dockerfile",
+    "context": "workloads/bugs/historical/postgres-cic-corruption/image",
+    "dockerfile": "workloads/bugs/historical/postgres-cic-corruption/image/Dockerfile",
     "build_args": {
       "vulnerable": {
         "PG_VERSION": "14.3",
@@ -111,8 +111,8 @@
     "actions": 24,
     "wall_minutes": 150
   },
-  "probe": "bugs/historical/postgres-cic-corruption/probe.json",
+  "probe": "workloads/bugs/historical/postgres-cic-corruption/probe.json",
   "discovery_mode": "guided",
   "status": "reproduced",
-  "witness": "bugs/historical/postgres-cic-corruption/witness.json"
+  "witness": "workloads/bugs/historical/postgres-cic-corruption/witness.json"
 }
