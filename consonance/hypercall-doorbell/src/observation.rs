@@ -396,6 +396,20 @@ mod tests {
     #[cfg(not(miri))]
     #[test]
     fn real_munmap_releases_a_native_mapping() {
+        const CHILD: &str = "HARMONY_OBSERVATION_UNMAP_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "observation::tests::real_munmap_releases_a_native_mapping",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
         let length = 4096;
         let pointer = real_mmap(
             std::ptr::null_mut(),
