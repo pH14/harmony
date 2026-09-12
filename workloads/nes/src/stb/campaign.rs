@@ -348,7 +348,7 @@ impl CampaignTypes for StbGame {
     type Run = StbCampaignRun;
     type DrawState = ();
     type DrawCheckpoint = ();
-    type TableHeader = StbNoTableHeader;
+    type DrawHeader = StbNoTableHeader;
 }
 
 impl Reporting for StbGame {

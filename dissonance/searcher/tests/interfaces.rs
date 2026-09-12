@@ -62,7 +62,7 @@ impl CampaignTypes for TinyExecution {
     type Run = ();
     type DrawState = ();
     type DrawCheckpoint = ();
-    type TableHeader = ();
+    type DrawHeader = ();
 }
 
 fn action_time(action: &TinyAction) -> u64 {

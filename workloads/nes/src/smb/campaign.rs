@@ -18,10 +18,11 @@ use crate::{
     nes_backend::{NesBackend, SnapshotState},
     search::archive::RetentionPolicy,
     search::campaign::{
-        CampaignActionResult, CampaignCheckpoint, CampaignJobResult, CampaignModeReport,
-        CampaignOrigin, CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation,
-        InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
-        postcard_result_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
+        CampaignActionResult, CampaignCheckpoint, CampaignJobRecord, CampaignJobResult,
+        CampaignModeReport, CampaignOrigin, CampaignProgressRecord, CampaignSkipRecord,
+        CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, Evaluation, InputPolicy,
+        Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_result_sha256,
+        replay_campaign_checkpointed, run_campaign_checkpointed,
     },
     search::draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
     search::empirical_steps::{
@@ -54,11 +55,13 @@ use machine::consonance::{ConsonanceMachine, ConsonancePortable, identity as con
 
 pub use crate::search::campaign::{
     CampaignAdmissionDecision as SmbCampaignAdmissionDecision,
-    CampaignConfig as GenericCampaignConfig, CampaignJobRecord as SmbCampaignJobRecord,
-    CampaignOriginRecord as SmbCampaignOriginRecord, CampaignSkipRecord as SmbCampaignSkipRecord,
-    CampaignStreamRecord as SmbCampaignStreamRecord, RESUME_IDENTIFIER,
-    TreeImportCounts as SmbTreeImportCounts, derive_worker_seed,
+    CampaignConfig as GenericCampaignConfig, CampaignOriginRecord as SmbCampaignOriginRecord,
+    RESUME_IDENTIFIER, TreeImportCounts as SmbTreeImportCounts, derive_worker_seed,
 };
+
+pub type SmbCampaignJobRecord = CampaignJobRecord<EmpiricalStepCheckpoint>;
+pub type SmbCampaignSkipRecord = CampaignSkipRecord<EmpiricalStepCheckpoint>;
+pub type SmbCampaignStreamRecord = CampaignStreamRecord<EmpiricalStepCheckpoint>;
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v2";
 
@@ -788,7 +791,7 @@ where
     type Run = SmbCampaignRun;
     type DrawState = SmbDrawState;
     type DrawCheckpoint = EmpiricalStepCheckpoint;
-    type TableHeader = SmbChordTableHeader;
+    type DrawHeader = SmbChordTableHeader;
 }
 
 impl<M, P> Reporting for SmbGame<M, P>
@@ -920,17 +923,8 @@ where
     ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
         current_chord_checkpoint(state.tables.as_ref())
     }
-    fn draw_checkpoint_to_wire(
-        &self,
-        checkpoint: &EmpiricalStepCheckpoint,
-    ) -> Result<EmpiricalStepCheckpoint, Box<dyn Error>> {
-        Ok(checkpoint.clone())
-    }
-    fn draw_checkpoint_from_wire(
-        &self,
-        checkpoint: Option<&EmpiricalStepCheckpoint>,
-    ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
-        Ok(checkpoint.cloned())
+    fn draw_checkpoint_version(&self, checkpoint: &EmpiricalStepCheckpoint) -> u64 {
+        checkpoint.records
     }
     fn expand_suffix(
         &self,
@@ -2579,10 +2573,10 @@ mod tests {
             text.lines()
                 .next()
                 .expect("header")
-                .contains("\"chord_table\"")
+                .contains("\"draw_header\"")
         );
-        assert!(text.contains("\"chord_table_before\""));
-        assert!(text.contains("\"chord_table_after\""));
+        assert!(text.contains("\"draw_checkpoint_before\""));
+        assert!(text.contains("\"draw_checkpoint_after\""));
         let checkpoints = text
             .lines()
             .skip(1)
@@ -2591,8 +2585,8 @@ mod tests {
                     .expect("parse campaign record")
             })
             .filter_map(|record| match record {
-                SmbCampaignStreamRecord::Job(job) => job.draw_table_before,
-                SmbCampaignStreamRecord::Skip(skip) => skip.draw_table_before,
+                SmbCampaignStreamRecord::Job(job) => job.draw_checkpoint_before,
+                SmbCampaignStreamRecord::Skip(skip) => skip.draw_checkpoint_before,
             })
             .collect::<Vec<_>>();
         assert!(

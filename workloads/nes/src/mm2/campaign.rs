@@ -393,7 +393,7 @@ impl CampaignTypes for Mm2Game {
     type ArchiveReport = Mm2ArchiveReport;
     type Run = Mm2CampaignRun;
     type DrawState = ();
-    type TableHeader = Mm2NoTableHeader;
+    type DrawHeader = Mm2NoTableHeader;
     type DrawCheckpoint = ();
 }
 

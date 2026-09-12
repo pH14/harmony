@@ -419,7 +419,7 @@ impl<M: NovaMachineKind> CampaignTypes for NovaGame<M> {
     type Run = NovaCampaignRun;
     type DrawState = ();
     type DrawCheckpoint = ();
-    type TableHeader = NovaNoTableHeader;
+    type DrawHeader = NovaNoTableHeader;
 }
 
 impl<M: NovaMachineKind> Reporting for NovaGame<M> {

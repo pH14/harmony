@@ -25,7 +25,6 @@ use crate::search::draw::{
 };
 
 pub const SPLICE_ACTION_CAP: usize = 128;
-use crate::search::empirical_steps::EmpiricalStepCheckpoint;
 use crate::search::parallel::{ResultSlots, with_worker_pool};
 use crate::search::rand::RomuDuoJrRand;
 
@@ -36,8 +35,10 @@ pub type CampaignOutcome<G> = (
 
 pub type InitialDrawState<G> = (
     <G as CampaignTypes>::DrawState,
-    Option<<G as CampaignTypes>::TableHeader>,
+    Option<<G as CampaignTypes>::DrawHeader>,
 );
+
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 2;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window and admitted in reservation order; physical workers drain the window dynamically, \
@@ -142,8 +143,8 @@ pub trait CampaignTypes: Sync {
     type ArchiveReport: Clone;
     type Run: Clone + Sync;
     type DrawState;
-    type DrawCheckpoint: Clone + Debug + Eq + Send + Sync;
-    type TableHeader: Clone + Debug + Eq + Serialize + DeserializeOwned;
+    type DrawCheckpoint: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
+    type DrawHeader: Clone + Debug + Eq + Serialize + DeserializeOwned;
 }
 
 pub trait Reporting: CampaignTypes {
@@ -187,21 +188,8 @@ pub trait InputPolicy: CampaignTypes {
         let _ = state;
         Ok(None)
     }
-    fn draw_checkpoint_to_wire(
-        &self,
-        checkpoint: &Self::DrawCheckpoint,
-    ) -> Result<EmpiricalStepCheckpoint, Box<dyn Error>> {
-        let _ = checkpoint;
-        Err("stateless input policy produced a draw checkpoint".into())
-    }
-    fn draw_checkpoint_from_wire(
-        &self,
-        checkpoint: Option<&EmpiricalStepCheckpoint>,
-    ) -> Result<Option<Self::DrawCheckpoint>, Box<dyn Error>> {
-        if checkpoint.is_some() {
-            return Err("recorded stream carries an unsupported draw checkpoint".into());
-        }
-        Ok(None)
+    fn draw_checkpoint_version(&self, _checkpoint: &Self::DrawCheckpoint) -> u64 {
+        0
     }
     fn expand_suffix(
         &self,
@@ -459,6 +447,7 @@ pub struct CampaignConfig<G: Workload + ?Sized> {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "T: Serialize + DeserializeOwned")]
 pub struct CampaignStreamHeader<T> {
+    pub schema_version: u32,
     pub format: String,
     pub campaign_seed: u64,
     pub workers: u32,
@@ -487,12 +476,8 @@ pub struct CampaignStreamHeader<T> {
     pub mixture_policy: String,
     #[serde(flatten)]
     pub workload_policies: WorkloadPolicies,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "chord_table"
-    )]
-    pub draw_table: Option<T>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draw_header: Option<T>,
     pub retention_policy: String,
     pub parent_scheduler: String,
     pub executor_mode: String,
@@ -522,7 +507,8 @@ pub enum CampaignAdmissionDecision {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct CampaignJobRecord {
+#[serde(bound = "C: Serialize + DeserializeOwned")]
+pub struct CampaignJobRecord<C> {
     pub sequence: u64,
     pub worker: u32,
     pub parent_id: u64,
@@ -536,22 +522,15 @@ pub struct CampaignJobRecord {
     pub splice: Option<CampaignSpliceRecord>,
 
     pub selector: SelectorDraw,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "chord_table_before"
-    )]
-    pub draw_table_before: Option<EmpiricalStepCheckpoint>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "chord_table_after"
-    )]
-    pub draw_table_after: Option<EmpiricalStepCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draw_checkpoint_before: Option<C>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draw_checkpoint_after: Option<C>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct CampaignSkipRecord {
+#[serde(bound = "C: Serialize + DeserializeOwned")]
+pub struct CampaignSkipRecord<C> {
     pub worker: u32,
     pub parent_id: u64,
     pub mutation_seed: u64,
@@ -561,25 +540,18 @@ pub struct CampaignSkipRecord {
     pub splice: Option<CampaignSpliceRecord>,
 
     pub selector: SelectorDraw,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "chord_table_before"
-    )]
-    pub draw_table_before: Option<EmpiricalStepCheckpoint>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "chord_table_after"
-    )]
-    pub draw_table_after: Option<EmpiricalStepCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draw_checkpoint_before: Option<C>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draw_checkpoint_after: Option<C>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(bound = "C: Serialize + DeserializeOwned")]
 #[serde(tag = "event", rename_all = "snake_case")]
-pub enum CampaignStreamRecord {
-    Job(CampaignJobRecord),
-    Skip(CampaignSkipRecord),
+pub enum CampaignStreamRecord<C> {
+    Job(CampaignJobRecord<C>),
+    Skip(CampaignSkipRecord<C>),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1367,9 +1339,10 @@ fn stream_header<G: Workload>(
     workload: &G,
     config: &CampaignConfig<G>,
     origin: &CampaignOriginRecord,
-    draw_table: Option<G::TableHeader>,
-) -> CampaignStreamHeader<G::TableHeader> {
+    draw_header: Option<G::DrawHeader>,
+) -> CampaignStreamHeader<G::DrawHeader> {
     CampaignStreamHeader {
+        schema_version: CAMPAIGN_SCHEMA_VERSION,
         format: workload.stream_format().to_owned(),
         campaign_seed: config.campaign_seed,
         workers: config.workers,
@@ -1397,7 +1370,7 @@ fn stream_header<G: Workload>(
         suffix_policy: suffix_shape_identifier(config.suffix).to_owned(),
         mixture_policy: draw_mixture_identifier(config.mixture),
         workload_policies: workload.policies(&config.run),
-        draw_table,
+        draw_header,
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
         parent_scheduler: selector_policy_identifier(&config.selector),
         executor_mode: "snapshot_resume_archive".to_owned(),
@@ -1542,7 +1515,7 @@ impl CampaignCounters {
 
 fn build_report<G: Workload>(
     workload: &G,
-    header: &CampaignStreamHeader<G::TableHeader>,
+    header: &CampaignStreamHeader<G::DrawHeader>,
     origin: CampaignOriginRecord,
     core: CoordinatorCore<G>,
     counters: &CampaignCounters,
@@ -1683,9 +1656,9 @@ struct JobSpec<G: Workload + ?Sized> {
     suffix: Vec<G::Action>,
 }
 
-type SelectedJob<G> = (JobSpec<G>, PendingJob);
+type SelectedJob<G> = (JobSpec<G>, PendingJob<G>);
 
-struct PendingJob {
+struct PendingJob<G: Workload + ?Sized> {
     snapshot_id: u64,
     worker: u32,
     parent_id: u64,
@@ -1694,12 +1667,12 @@ struct PendingJob {
     splice_weight: u8,
     splice: Option<CampaignSpliceRecord>,
     selector: SelectorDraw,
-    draw_table_before: Option<EmpiricalStepCheckpoint>,
+    draw_checkpoint_before: Option<G::DrawCheckpoint>,
 }
 
 struct CompletedJob<G: Workload + ?Sized> {
     physical_worker: u32,
-    pending: PendingJob,
+    pending: PendingJob<G>,
     result: CampaignJobResult<G>,
     frames: u64,
     result_sha256: String,
@@ -2007,15 +1980,14 @@ where
             ..
         } => Some((file_sha256.as_str(), report.as_ref())),
     };
-    let (mut draw_state, draw_table_header) =
-        workload.initial_draw_state(&config.run, draw_origin)?;
+    let (mut draw_state, draw_header) = workload.initial_draw_state(&config.run, draw_origin)?;
     if !draw_state_memory_is_within_reserve(
         workload.draw_state_memory_bytes(&draw_state),
         workload.draw_state_memory_reserve_bytes(&config.run, config.action_limit),
     ) {
         return Err("initial draw state exceeds its deterministic memory reserve".into());
     }
-    let mut header = stream_header(workload, config, &origin_record, draw_table_header);
+    let mut header = stream_header(workload, config, &origin_record, draw_header);
     header.frame_budget = frame_budget;
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
@@ -2172,9 +2144,7 @@ where
                             counter_reset: false,
                             concentration: None,
                         };
-                        let checkpoint = workload.draw_checkpoint(draw_state)?;
-                        let draw_table_before =
-                            draw_checkpoint_to_wire(workload, checkpoint.as_ref())?;
+                        let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
                         let splice = Some(CampaignSpliceRecord::Tail {
                             donor_id: continuation.donor,
                             leaf_id: continuation.leaf,
@@ -2203,7 +2173,7 @@ where
                                 splice_weight,
                                 splice,
                                 selector,
-                                draw_table_before,
+                                draw_checkpoint_before,
                             },
                         )));
                     }
@@ -2227,8 +2197,6 @@ where
                         _ => (DEFAULT_MIXTURE_WEIGHT, 0),
                     };
                     let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
-                    let draw_table_before =
-                        draw_checkpoint_to_wire(workload, draw_checkpoint_before.as_ref())?;
                     let (spliced, splice) =
                         if energy_strategy(mutation_seed, mixture_weight, splice_weight)?
                             == EnergyStrategy::Splice
@@ -2286,8 +2254,6 @@ where
                     if all_prefixes_archived {
                         let draw_checkpoint_after =
                             workload.finish_stream_record(&config.run, draw_state, &[])?;
-                        let draw_table_after =
-                            draw_checkpoint_to_wire(workload, draw_checkpoint_after.as_ref())?;
                         writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
                             worker,
                             parent_id,
@@ -2296,8 +2262,8 @@ where
                             splice_weight,
                             splice,
                             selector,
-                            draw_table_before,
-                            draw_table_after,
+                            draw_checkpoint_before,
+                            draw_checkpoint_after,
                         }))?;
                         core.archive.record_selection(parent_index, &selector);
                         core.archive.maintain_memory_budget()?;
@@ -2330,14 +2296,14 @@ where
                             splice_weight,
                             splice,
                             selector,
-                            draw_table_before,
+                            draw_checkpoint_before,
                         },
                     )));
                 }
             };
 
             let pipeline_depth = admission_window_depth(workers, config.reservations_per_worker);
-            let mut pending = BTreeMap::<usize, PendingJob>::new();
+            let mut pending = BTreeMap::<usize, PendingJob<G>>::new();
             let mut completed = BTreeMap::<usize, CompletedJob<G>>::new();
             let mut queued_specs = VecDeque::with_capacity(
                 pipeline_depth.min(usize::try_from(config.execution_budget).unwrap_or(usize::MAX)),
@@ -2494,7 +2460,7 @@ where
                     {
                         std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
                     }
-                    let draw_table_after =
+                    let draw_checkpoint_after =
                         finish_record(workload, &config.run, &mut draw_state, &core, &decisions)?;
                     let draw_state_memory_bytes = workload.draw_state_memory_bytes(&draw_state);
                     if !draw_state_memory_is_within_reserve(
@@ -2532,8 +2498,8 @@ where
                         splice_weight: pending_job.splice_weight,
                         splice: pending_job.splice,
                         selector: pending_job.selector,
-                        draw_table_before: pending_job.draw_table_before,
-                        draw_table_after,
+                        draw_checkpoint_before: pending_job.draw_checkpoint_before,
+                        draw_checkpoint_after,
                     }))?;
                     coordinator_profile.stream_write_ns = coordinator_profile
                         .stream_write_ns
@@ -2699,7 +2665,7 @@ fn finish_record<G: Workload>(
     draw_state: &mut G::DrawState,
     core: &CoordinatorCore<G>,
     decisions: &[CampaignAdmissionDecision],
-) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
+) -> Result<Option<G::DrawCheckpoint>, Box<dyn Error>> {
     let needs_full = workload.retained_inputs_need_full(run);
     let mut retained_inputs = Vec::new();
     for decision in decisions {
@@ -2739,17 +2705,7 @@ fn finish_record<G: Workload>(
         .iter()
         .map(|(parent_actions, input)| (*parent_actions, input.actions.as_slice()))
         .collect::<Vec<_>>();
-    let checkpoint = workload.finish_stream_record(run, draw_state, &retained)?;
-    draw_checkpoint_to_wire(workload, checkpoint.as_ref())
-}
-
-fn draw_checkpoint_to_wire<G: Workload>(
-    workload: &G,
-    checkpoint: Option<&G::DrawCheckpoint>,
-) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
-    checkpoint
-        .map(|checkpoint| workload.draw_checkpoint_to_wire(checkpoint))
-        .transpose()
+    workload.finish_stream_record(run, draw_state, &retained)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2765,8 +2721,11 @@ where
     let stream_sha256 = format!("{:x}", Sha256::digest(stream_bytes));
     let text = std::str::from_utf8(stream_bytes)?;
     let mut lines = text.lines();
-    let header: CampaignStreamHeader<G::TableHeader> =
+    let header: CampaignStreamHeader<G::DrawHeader> =
         serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
+    if header.schema_version != CAMPAIGN_SCHEMA_VERSION {
+        return Err("campaign stream schema version is not recognized".into());
+    }
     if !archive_entry_limit_is_valid(header.archive_entry_limit) {
         return Err("recorded archive entry limit is outside the compiled bound".into());
     }
@@ -2793,17 +2752,17 @@ where
     let mut replay_job_parents = Vec::<u64>::new();
     let mut replay_job_metadata = Vec::<Vec<u64>>::new();
     for line in &record_lines {
-        let record: CampaignStreamRecord = serde_json::from_str(line)?;
+        let record: CampaignStreamRecord<G::DrawCheckpoint> = serde_json::from_str(line)?;
         let before = match record {
             CampaignStreamRecord::Job(job) => {
                 replay_job_parents.push(job.parent_id);
                 replay_job_metadata.push(vec![job.parent_id]);
-                job.draw_table_before
+                job.draw_checkpoint_before
             }
-            CampaignStreamRecord::Skip(skip) => skip.draw_table_before,
+            CampaignStreamRecord::Skip(skip) => skip.draw_checkpoint_before,
         };
         if let Some(before) = before {
-            required_draw_versions.insert(before.records);
+            required_draw_versions.insert(workload.draw_checkpoint_version(&before));
         }
     }
     let resume_input = match header.origin_kind.as_str() {
@@ -2888,7 +2847,7 @@ where
     ) {
         return Err("replay draw state exceeds its deterministic memory reserve".into());
     }
-    if replay_draw_header != header.draw_table {
+    if replay_draw_header != header.draw_header {
         return Err("re-derived draw table does not match the recorded header".into());
     }
     workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
@@ -2977,7 +2936,7 @@ where
 
     let mut replay_job_index = 0_usize;
     for line in record_lines {
-        let record: CampaignStreamRecord = serde_json::from_str(line)?;
+        let record: CampaignStreamRecord<G::DrawCheckpoint> = serde_json::from_str(line)?;
         match record {
             CampaignStreamRecord::Skip(skip) => {
                 let parent_index = core
@@ -2987,8 +2946,7 @@ where
                 let strategy =
                     energy_strategy(skip.mutation_seed, skip.mixture_weight, skip.splice_weight)?;
                 let spliced = replay_splice::<G>(strategy, skip.splice)?;
-                let draw_checkpoint_before =
-                    workload.draw_checkpoint_from_wire(skip.draw_table_before.as_ref())?;
+                let draw_checkpoint_before = skip.draw_checkpoint_before;
                 let mut suffix = match spliced {
                     Some(tail) => tail,
                     None => workload.expand_suffix_recorded(
@@ -3023,9 +2981,7 @@ where
                     counters.skips_per_worker[worker].saturating_add(1);
                 let draw_checkpoint_after =
                     workload.finish_stream_record(&replay_run, &mut draw_state, &[])?;
-                let draw_table_after =
-                    draw_checkpoint_to_wire(workload, draw_checkpoint_after.as_ref())?;
-                if draw_table_after != skip.draw_table_after {
+                if draw_checkpoint_after != skip.draw_checkpoint_after {
                     return Err("replayed skip draw-table checkpoint diverged".into());
                 }
                 workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
@@ -3065,8 +3021,7 @@ where
                 let strategy =
                     energy_strategy(job.mutation_seed, job.mixture_weight, job.splice_weight)?;
                 let spliced = replay_splice::<G>(strategy, job.splice.clone())?;
-                let draw_checkpoint_before =
-                    workload.draw_checkpoint_from_wire(job.draw_table_before.as_ref())?;
+                let draw_checkpoint_before = job.draw_checkpoint_before;
                 let mut suffix = match spliced {
                     Some(tail) => tail,
                     None => workload.expand_suffix_recorded(
@@ -3130,9 +3085,9 @@ where
                     )
                     .into());
                 }
-                let draw_table_after =
+                let draw_checkpoint_after =
                     finish_record(workload, &replay_run, &mut draw_state, &core, &decisions)?;
-                if draw_table_after != job.draw_table_after {
+                if draw_checkpoint_after != job.draw_checkpoint_after {
                     return Err(format!(
                         "replayed job {} draw-table checkpoint diverged",
                         job.sequence
@@ -3240,9 +3195,9 @@ mod tests {
         draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
         live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
         progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
-        replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
-        schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
-        stop_reservations_after_victory,
+        replay_campaign_checkpointed, replay_splice, resident_memory_is_within_budget,
+        retained_archive_indexes, schedule_policy_identifier, schedule_policy_is_supported,
+        schedule_policy_window, stop_reservations_after_victory,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
@@ -3338,7 +3293,7 @@ mod tests {
         type Run = ();
         type DrawState = ();
         type DrawCheckpoint = ();
-        type TableHeader = ();
+        type DrawHeader = ();
     }
 
     impl Reporting for TestWorkload {
@@ -3731,7 +3686,7 @@ mod tests {
         );
     }
 
-    const RECORDED_HEADER: &str = r#"{"format":"campaign-v1","campaign_seed":7,"workers":2,
+    const RECORDED_HEADER: &str = r#"{"schema_version":2,"format":"campaign-v1","campaign_seed":7,"workers":2,
 "schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"wall_budget_seconds":null,
@@ -4293,7 +4248,8 @@ mod tests {
         assert_eq!(header.mixture_policy, "biased_half");
         assert_eq!(header.suffix_policy, "one_or_two");
         assert_eq!(header.resume_policy, "whole_tree");
-        assert_eq!(header.draw_table, None);
+        assert_eq!(header.schema_version, super::CAMPAIGN_SCHEMA_VERSION);
+        assert_eq!(header.draw_header, None);
         let expected: WorkloadPolicies = [
             ("controller_vocabulary", "nes_down_ten"),
             ("key_policy", "frozen_area_span"),
@@ -4318,14 +4274,52 @@ mod tests {
     }
 
     #[test]
-    fn a_recorded_job_keeps_its_draw_table_field_names() {
+    fn replay_rejects_missing_or_unknown_campaign_schema_versions() {
+        let compact = RECORDED_HEADER.replace('\n', "");
+        let mut missing: serde_json::Value =
+            serde_json::from_str(&compact).expect("recorded header parses");
+        missing
+            .as_object_mut()
+            .expect("header is an object")
+            .remove("schema_version");
+        assert!(
+            replay_campaign_checkpointed::<TestWorkload>(
+                &TestWorkload,
+                serde_json::to_string(&missing)
+                    .expect("header re-encodes")
+                    .as_bytes(),
+                None,
+                None,
+            )
+            .is_err()
+        );
+
+        let mut unknown: serde_json::Value =
+            serde_json::from_str(&compact).expect("recorded header parses");
+        unknown["schema_version"] = serde_json::json!(1);
+        assert!(
+            replay_campaign_checkpointed::<TestWorkload>(
+                &TestWorkload,
+                serde_json::to_string(&unknown)
+                    .expect("header re-encodes")
+                    .as_bytes(),
+                None,
+                None,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_recorded_job_keeps_its_draw_checkpoint_field_names() {
         let line = r#"{"event":"job","sequence":1,"worker":0,"parent_id":0,"mutation_seed":9,
 "frames":12,"result_sha256":"ef","decisions":[],"mixture_weight":128,"splice_weight":128,
 "selector":{"path":"room_cell_uniform","classes_skipped":0,"counter_reset":false},
-"chord_table_before":{"records":3,"retained_successes":1,"table_sha256":"aa"},
-"chord_table_after":{"records":4,"retained_successes":2,"table_sha256":"bb"}}"#
+"draw_checkpoint_before":{"records":3,"retained_successes":1,"table_sha256":"aa"},
+"draw_checkpoint_after":{"records":4,"retained_successes":2,"table_sha256":"bb"}}"#
             .replace('\n', "");
-        let record: CampaignStreamRecord = serde_json::from_str(&line).expect("record parses");
+        let record: CampaignStreamRecord<EmpiricalStepCheckpoint> =
+            serde_json::from_str(&line).expect("record parses");
         let CampaignStreamRecord::Job(job) = record else {
             panic!("expected a job record");
         };
@@ -4335,7 +4329,7 @@ mod tests {
         );
         assert_eq!(job.selector.path, SelectorPath::GroupWalk);
         assert_eq!(
-            job.draw_table_before,
+            job.draw_checkpoint_before,
             Some(EmpiricalStepCheckpoint {
                 records: 3,
                 retained_successes: 1,
@@ -4344,10 +4338,10 @@ mod tests {
         );
         let written = serde_json::to_value(&job).expect("job serializes");
         let object = written.as_object().expect("job is an object");
-        assert!(object.contains_key("chord_table_before"));
-        assert!(object.contains_key("chord_table_after"));
-        assert!(!object.contains_key("draw_table_before"));
-        let round_trip: CampaignJobRecord =
+        assert!(object.contains_key("draw_checkpoint_before"));
+        assert!(object.contains_key("draw_checkpoint_after"));
+        assert!(!object.contains_key("chord_table_before"));
+        let round_trip: CampaignJobRecord<EmpiricalStepCheckpoint> =
             serde_json::from_value(written).expect("job round-trips");
         assert_eq!(round_trip, job);
         let _ = SelectorDraw {
@@ -4365,7 +4359,8 @@ mod tests {
 "splice":{"outcome":"tail","donor_id":4,"leaf_id":9,"tail_postcard":[1,2]},
 "selector":{"path":"uniform","classes_skipped":0,"counter_reset":false}}"#
             .replace('\n', "");
-        let record: CampaignStreamRecord = serde_json::from_str(&line).expect("record parses");
+        let record: CampaignStreamRecord<EmpiricalStepCheckpoint> =
+            serde_json::from_str(&line).expect("record parses");
         let CampaignStreamRecord::Job(job) = record else {
             panic!("expected a job record");
         };
@@ -4378,7 +4373,7 @@ mod tests {
             })
         );
         let written = serde_json::to_vec(&job).expect("job serializes");
-        let round_trip: CampaignJobRecord =
+        let round_trip: CampaignJobRecord<EmpiricalStepCheckpoint> =
             serde_json::from_slice(&written).expect("job round-trips");
         assert_eq!(round_trip, job);
     }

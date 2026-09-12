@@ -414,7 +414,7 @@ impl CampaignTypes for MetroidGame {
     type ArchiveReport = MetroidArchiveReport;
     type Run = MetroidCampaignRun;
     type DrawState = ();
-    type TableHeader = MetroidNoTableHeader;
+    type DrawHeader = MetroidNoTableHeader;
     type DrawCheckpoint = ();
 }
 

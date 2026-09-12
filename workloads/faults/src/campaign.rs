@@ -254,7 +254,7 @@ impl CampaignTypes for FaultWorkload {
     type Run = FaultCampaignRun;
     type DrawState = ();
     type DrawCheckpoint = ();
-    type TableHeader = FaultNoTableHeader;
+    type DrawHeader = FaultNoTableHeader;
 }
 
 impl Reporting for FaultWorkload {
